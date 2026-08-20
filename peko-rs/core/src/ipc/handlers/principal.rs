@@ -2302,7 +2302,7 @@ async fn run_principal_send(
             // loop. The single `RunSummary` packet is emitted after the
             // channel closes (see below).
             AgenticEvent::ToolStart { tool_id, name, .. } => {
-                tool_names.insert(tool_id.to_string(), name);
+                tool_names.insert(tool_id.clone(), name);
                 continue;
             }
             AgenticEvent::ToolEnd {
@@ -2311,7 +2311,7 @@ async fn run_principal_send(
                 success,
                 ..
             } if !success => {
-                let tool_id_str = tool_id.to_string();
+                let tool_id_str = tool_id.clone();
                 let tool_name = tool_names
                     .get(&tool_id_str)
                     .cloned()
@@ -3214,7 +3214,7 @@ async fn read_principal_log(
         Some(child_id) => {
             match metas
                 .iter()
-                .find(|m| m.session_id == child_id)
+                .find(|m| m.session_id.to_string() == child_id)
                 .and_then(|m| m.slug.clone())
             {
                 Some(slug) => find_peer_dm_channel(&port, &principal.id, &format!("/{slug}"))

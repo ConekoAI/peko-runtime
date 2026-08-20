@@ -666,11 +666,12 @@ impl SubagentExecutor {
                     .chain(std::iter::once(caller.current_session_id.clone()))
                     .collect();
             let found = metas.iter().find(|m| {
-                m.slug.as_deref() == Some(slug.as_str()) && subtree.contains(&m.session_id)
+                m.slug.as_deref() == Some(slug.as_str())
+                    && subtree.contains(&m.session_id.to_string())
             });
             if let Some(found) = found {
                 if found.standing && found.trigger == "spawn" {
-                    let child_id = found.session_id.clone();
+                    let child_id = found.session_id.to_string();
                     // When the session carries a `[children]`
                     // declaration, the requested subagent type must
                     // match it. Unrecoverable declarations (no event /
@@ -713,14 +714,20 @@ impl SubagentExecutor {
                 // what the fresh-spawn pre-flight below would produce);
                 // a non-sibling subtree collision gets the
                 // standing-specific structured refusal.
-                return Err(if found.parent_session_id.as_deref() == Some(parent_session_key) {
+                let found_parent_str = found.parent_session_id.map(|id| id.to_string());
+                // Sprint 6: `parent_session_id` in metadata is the
+                // canonical v5 UUID form of the parent's session id;
+                // canonicalize the input here so the sibling-vs-foreign
+                // branch picks the right error.
+                let parent_key = peko_session::SessionId::from(parent_session_key).to_string();
+                return Err(if found_parent_str.as_deref() == Some(parent_key.as_str()) {
                     peko_session::path::err_slug_conflict(
                         slug,
-                        &found.session_id,
-                        Some(parent_session_key),
+                        found.session_id,
+                        Some(peko_session::SessionId::from(parent_key.as_str())),
                     )
                 } else {
-                    crate::session::standing::err_name_not_standing(slug, &found.session_id)
+                    crate::session::standing::err_name_not_standing(slug, &found.session_id.as_str())
                 });
             }
         }
@@ -774,14 +781,18 @@ impl SubagentExecutor {
             peko_session::path::validate_slug(slug)?;
             let mut manager = self.session_manager.write().await;
             let metas = manager.list_all_sessions(false).await?;
-            if metas.iter().any(|m| m.session_id == parent_session_key) {
+            if metas
+                .iter()
+                .any(|m| m.session_id.to_string() == parent_session_key)
+            {
+                let parent_id = peko_session::SessionId::from(parent_session_key);
                 if let Some(conflict) =
-                    peko_session::path::slug_conflict(&metas, Some(parent_session_key), slug, "")
+                    peko_session::path::slug_conflict(&metas, Some(parent_id), slug, peko_session::SessionId::new())
                 {
                     return Err(peko_session::path::err_slug_conflict(
                         slug,
-                        &conflict,
-                        Some(parent_session_key),
+                        conflict,
+                        Some(parent_id),
                     ));
                 }
             }
@@ -1006,9 +1017,10 @@ impl SubagentExecutor {
         // `caller_session_key` echoed back). The LLM-facing tool
         // layer uses `resolve_reference` (the strict variant) so
         // the model still sees the structured refusal.
+        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
         let resolved_target = peko_session::path::resolve_id_or_path(
             &metas,
-            &caller.current_session_id,
+            caller_id,
             resume_session_id,
         )?;
         let resume_session_id = resolved_target.as_str();
@@ -1016,7 +1028,7 @@ impl SubagentExecutor {
         // Guard: target must exist.
         let target_meta = metas
             .iter()
-            .find(|m| m.session_id == resume_session_id)
+            .find(|m| m.session_id.to_string() == resume_session_id)
             .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1027,26 +1039,29 @@ impl SubagentExecutor {
         // Guard: cannot run inside the caller's own session or an
         // ancestor (would re-enter the caller's own run).
         if resume_session_id == caller.current_session_id
-            || caller.ancestors.iter().any(|a| a == resume_session_id)
+            || caller
+                .ancestors
+                .iter()
+                .any(|a| a.as_str() == resume_session_id)
         {
-            return Err(err_resume_into_own_run(resume_session_id));
+            return Err(err_resume_into_own_run(&resume_session_id));
         }
         // Guard: only spawned subagent sessions can be re-attached.
         if target_meta.trigger != "spawn" {
-            return Err(err_resume_not_spawned(resume_session_id));
+            return Err(err_resume_not_spawned(&resume_session_id));
         }
         // Guard: subtree callers stay inside their subtree (principal-
         // level callers pass automatically).
-        if !caller.is_base && !caller.privileged && !in_subtree(&caller, resume_session_id, &metas)
+        if !caller.is_base && !caller.privileged && !in_subtree(&caller, &resume_session_id, &metas)
         {
             return Err(err_out_of_tree(
-                resume_session_id,
+                &resume_session_id,
                 &caller.current_session_id,
             ));
         }
         // Guard: archived sessions have no business running.
         if target_meta.archived {
-            return Err(err_resume_archived(resume_session_id));
+            return Err(err_resume_archived(&resume_session_id));
         }
         // Guard: refuse while a run is in flight for the target.
         // Mechanism: subagent runs do NOT hold `InboxRegistry` run
@@ -1057,8 +1072,8 @@ impl SubagentExecutor {
         // metadata.
         {
             let registry = self.registry().read().await;
-            if registry.has_active_subagent_run_for_child(resume_session_id) {
-                return Err(err_run_active(resume_session_id));
+            if registry.has_active_subagent_run_for_child(&resume_session_id) {
+                return Err(err_run_active(&resume_session_id));
             }
         }
 
@@ -1069,13 +1084,13 @@ impl SubagentExecutor {
         // sub-tree below it even across daemon restarts and registry
         // GC (the registry-based `get_parent_depth` answer is lost
         // when run entries age out; the metadata chain is durable).
-        let child_depth = 1 + caller_context(resume_session_id, &metas)
+        let child_depth = 1 + caller_context(&resume_session_id, &metas)
             .ancestors
             .iter()
             .filter(|a| {
                 metas
                     .iter()
-                    .any(|m| &m.session_id == *a && m.trigger == "spawn")
+                    .any(|m| m.session_id.to_string() == a.as_str() && m.trigger == "spawn")
             })
             .count() as u32;
         if config.max_depth > 0 && child_depth > config.max_depth {
@@ -1102,7 +1117,7 @@ impl SubagentExecutor {
         let child_base = {
             let mut manager = self.session_manager.write().await;
             manager
-                .open_session(resume_session_id)
+                .open_session(&resume_session_id)
                 .await?
                 .expect("metadata existed but session failed to open")
                 .base()
@@ -1111,7 +1126,7 @@ impl SubagentExecutor {
 
         Ok(ResumePreflight {
             run_id,
-            session_id: resume_session_id.to_string(),
+            session_id: resume_session_id.clone(),
             child_base,
             child_depth,
         })
@@ -1154,9 +1169,10 @@ impl SubagentExecutor {
         // ids pass through (the runtime hands us the peer-child
         // session id directly). The LLM-facing tool layer uses the
         // strict variant.
+        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
         let resolved_target = peko_session::path::resolve_id_or_path(
             &metas,
-            &caller.current_session_id,
+            caller_id,
             target,
         )?;
         let target = resolved_target.as_str();
@@ -1164,7 +1180,7 @@ impl SubagentExecutor {
         // Guard: target must exist.
         let target_meta = metas
             .iter()
-            .find(|m| m.session_id == target)
+            .find(|m| m.session_id.to_string() == target)
             .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1174,35 +1190,37 @@ impl SubagentExecutor {
             })?;
         // Guard: the caller's own session or an ancestor compacts
         // automatically — refuse.
-        if target == caller.current_session_id || caller.ancestors.iter().any(|a| a == target) {
-            return Err(err_compact_ancestor(target));
+        if target == caller.current_session_id
+            || caller.ancestors.iter().any(|a| a.as_str() == target)
+        {
+            return Err(err_compact_ancestor(&target));
         }
         // Guard: subtree callers stay inside their subtree (principal-
         // level callers pass automatically).
-        if !caller.is_base && !caller.privileged && !in_subtree(&caller, target, &metas) {
-            return Err(err_out_of_tree(target, &caller.current_session_id));
+        if !caller.is_base && !caller.privileged && !in_subtree(&caller, &target, &metas) {
+            return Err(err_out_of_tree(&target, &caller.current_session_id));
         }
         // Guard: archived sessions have no future run to consume the
         // request.
         if target_meta.archived {
-            return Err(err_compact_archived(target));
+            return Err(err_compact_archived(&target));
         }
         // Guard: refuse while a run is in flight for the target (same
         // registry source of truth as the resume path).
         {
             let registry = self.registry().read().await;
-            if registry.has_active_subagent_run_for_child(target) {
-                return Err(err_run_active(target));
+            if registry.has_active_subagent_run_for_child(&target) {
+                return Err(err_run_active(&target));
             }
         }
 
         self.session_manager
             .read()
             .await
-            .set_compact_requested(target, true)
+            .set_compact_requested(&target, true)
             .await?;
         Ok(crate::tools::builtin::session::CompactRequestOutcome {
-            session_id: target.to_string(),
+            session_id: target.clone(),
             message: "Compaction scheduled — the engine summarizes the session at its next \
                       run. There is no completion signal; the next resume reflects the \
                       compacted history."
@@ -1236,20 +1254,27 @@ impl SubagentExecutor {
         // verbatim. The tool layer uses the strict variant
         // (`resolve_reference`) so the model gets the structured
         // refusal.
+        let caller_id = peko_session::SessionId::from(caller_session_key);
         let context_parent = peko_session::path::resolve_id_or_path(
             &metas,
-            caller_session_key,
+            caller_id,
             context_parent,
         )?;
 
-        if context_parent == caller_session_key {
-            return Ok(context_parent);
+        if context_parent.to_string() == caller_session_key {
+            return Ok(context_parent.to_string());
         }
         let caller = caller_context(caller_session_key, &metas);
-        if caller.is_base || caller.privileged || in_subtree(&caller, &context_parent, &metas) {
-            return Ok(context_parent);
+        if caller.is_base
+            || caller.privileged
+            || in_subtree(&caller, &context_parent.as_str(), &metas)
+        {
+            return Ok(context_parent.to_string());
         }
-        Err(err_context_out_of_tree(&context_parent, caller_session_key))
+        Err(err_context_out_of_tree(
+            &context_parent.as_str(),
+            caller_session_key,
+        ))
     }
 
     /// Register and dispatch one subagent run on the unified executor.
@@ -2081,7 +2106,7 @@ async fn execute_subagent_task(
             &peko_provider_api::ChatOptions::default(),
         ) {
             return Err(SpawnError::SpecGateFailed {
-                model_id: provider.model_id().to_string(),
+                model_id: provider.model_id().clone(),
                 reason: gate_err.to_string(),
             }
             .into());

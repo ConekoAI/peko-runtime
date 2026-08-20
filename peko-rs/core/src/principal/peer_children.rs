@@ -118,7 +118,7 @@ pub fn find_peer_child(metas: &[SessionMetadata], peer: &Subject) -> Option<Stri
     for attempt in 0..MAX_SLUG_ATTEMPTS {
         let candidate = suffixed_slug(&base_slug, attempt);
         match find_declared_child(metas, &trunk, &candidate) {
-            Some(m) if peer_matches(m, peer) => return Some(m.session_id.clone()),
+            Some(m) if peer_matches(m, peer) => return Some(m.session_id.to_string()),
             Some(_) => continue,
             None => return None,
         }
@@ -273,6 +273,12 @@ mod tests {
     use super::*;
     use crate::session::ownership::{caller_context, in_subtree};
 
+    /// Sprint 6: convert a fixture literal to the v5-derived UUID form
+    /// the runtime stores in `SessionMetadata.session_id`.
+    fn sid(literal: &str) -> String {
+        peko_session::SessionId::from(literal).to_string()
+    }
+
     fn principal_peer(did: &str) -> Subject {
         Subject::Principal(did.to_string().into())
     }
@@ -362,15 +368,15 @@ mod tests {
         let metas = metas_of(&manager).await;
         let child = metas
             .iter()
-            .find(|m| m.session_id == child_id)
+            .find(|m| m.session_id.to_string() == child_id)
             .expect("child metadata exists");
         assert_eq!(child.slug.as_deref(), Some("local-user"));
         assert!(child.standing, "peer child must be standing");
         assert!(child.privileged, "owner peer child must be privileged");
         assert_eq!(child.trigger, "spawn");
         assert_eq!(
-            child.parent_session_id.as_deref(),
-            Some("root:self"),
+            child.parent_session_id.map(|id| id.to_string()),
+            Some(peko_session::SessionId::from("root:self").to_string()),
             "peer child must be parented at the trunk"
         );
         assert_eq!(child.title.as_deref(), Some("user:local"));
@@ -394,13 +400,19 @@ mod tests {
             .unwrap();
 
         let metas = metas_of(&manager).await;
-        let s = metas.iter().find(|m| m.session_id == stranger_id).unwrap();
+        let s = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == stranger_id)
+            .unwrap();
         assert_eq!(s.slug.as_deref(), Some("user-mallory"));
         assert!(s.standing);
         assert!(!s.privileged);
         assert_eq!(s.peer_id.as_deref(), Some("mallory"));
 
-        let p = metas.iter().find(|m| m.session_id == a2a_id).unwrap();
+        let p = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == a2a_id)
+            .unwrap();
         assert_eq!(p.slug.as_deref(), Some("principal-didkeyz6mkstrang"));
         assert!(p.standing);
         assert!(!p.privileged);
@@ -443,8 +455,14 @@ mod tests {
         assert_ne!(a_id, b_id);
 
         let metas = metas_of(&manager).await;
-        let a = metas.iter().find(|m| m.session_id == a_id).unwrap();
-        let b = metas.iter().find(|m| m.session_id == b_id).unwrap();
+        let a = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == a_id)
+            .unwrap();
+        let b = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == b_id)
+            .unwrap();
         assert_eq!(a.slug.as_deref(), Some("user-foo-bar"));
         assert_eq!(b.slug.as_deref(), Some("user-foo-bar-2"));
 
@@ -491,7 +509,10 @@ mod tests {
             .await
             .unwrap();
         let metas = metas_of(&manager).await;
-        let child = metas.iter().find(|m| m.session_id == child_id).unwrap();
+        let child = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == child_id)
+            .unwrap();
         assert_eq!(child.slug.as_deref(), Some("user-alice-2"));
         assert!(child.standing);
         assert_eq!(metas.len(), 2, "the plain session is left untouched");
@@ -517,8 +538,8 @@ mod tests {
         assert!(!child_caller.is_base);
         assert!(child_caller.privileged);
         assert!(!child_caller.dangling);
-        assert_eq!(child_caller.ancestors, vec!["root:self".to_string()]);
-        assert!(!in_subtree(&child_caller, "root:self", &metas));
+        assert_eq!(child_caller.ancestors, vec![sid("root:self")]);
+        assert!(!in_subtree(&child_caller, &sid("root:self"), &metas));
 
         // Create the trunk (as the first self-turn would).
         {
@@ -529,7 +550,7 @@ mod tests {
         let metas = metas_of(&manager).await;
 
         // AFTER: the trunk caller is base and manages the child.
-        let trunk_caller = caller_context("root:self", &metas);
+        let trunk_caller = caller_context(&sid("root:self"), &metas);
         assert!(trunk_caller.is_base);
         assert!(in_subtree(&trunk_caller, &child_id, &metas));
     }

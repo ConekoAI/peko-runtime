@@ -6,6 +6,7 @@
 //! All metadata mutations go through the `MetadataController`, which is the
 //! sole authority for session metadata operations.
 
+use crate::id::SessionId;
 use crate::index::SessionEntry;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// To modify metadata, create a new instance and pass it to `MetadataController`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionMetadata {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub agent_name: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -37,7 +38,7 @@ pub struct SessionMetadata {
     pub model_context_limit: Option<usize>,
     pub transcript_file: String,
     pub title: Option<String>,
-    pub parent_session_id: Option<String>,
+    pub parent_session_id: Option<SessionId>,
     pub trigger: String,
     /// Subject type ("user" or "agent")
     pub peer_type: Option<String>,
@@ -59,16 +60,16 @@ pub struct SessionMetadata {
     pub privileged: bool,
     /// Per-parent-unique path segment for `/slug/...` addressing
     /// (see `crate::path`). `title` stays free-form display text;
-    /// the slug is the machine-stable segment. Root `root:*`
-    /// sessions carry no slug — they are addressable only as `/`
-    /// from inside their own tree.
+    /// the slug is the machine-stable segment. The trunk session
+    /// (sprint 6: `parent_session_id == None`) carries no slug —
+    /// it is addressable only as `/` from inside its own tree.
     pub slug: Option<String>,
 }
 
 impl SessionMetadata {
     /// Create new metadata for a session
     pub fn new(
-        session_id: impl Into<String>,
+        session_id: impl Into<SessionId>,
         agent_name: impl Into<String>,
         transcript_file: impl Into<String>,
     ) -> Self {
@@ -104,10 +105,10 @@ impl SessionMetadata {
 
     /// Create metadata with parent session (for branching)
     pub fn with_parent(
-        session_id: impl Into<String>,
+        session_id: impl Into<SessionId>,
         agent_name: impl Into<String>,
         transcript_file: impl Into<String>,
-        parent_session_id: impl Into<String>,
+        parent_session_id: impl Into<SessionId>,
     ) -> Self {
         let mut meta = Self::new(session_id, agent_name, transcript_file);
         meta.parent_session_id = Some(parent_session_id.into());
@@ -147,7 +148,7 @@ impl SessionMetadata {
     #[must_use]
     pub fn to_entry(&self) -> SessionEntry {
         SessionEntry {
-            session_id: self.session_id.clone(),
+            session_id: self.session_id,
             agent_name: self.agent_name.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -159,7 +160,7 @@ impl SessionMetadata {
             model_context_limit: self.model_context_limit,
             transcript_file: self.transcript_file.clone(),
             title: self.title.clone(),
-            parent_session_id: self.parent_session_id.clone(),
+            parent_session_id: self.parent_session_id,
             trigger: self.trigger.clone(),
             peer_type: self.peer_type.clone(),
             peer_id: self.peer_id.clone(),
@@ -304,8 +305,15 @@ mod tests {
 
     #[test]
     fn test_metadata_new() {
-        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
-        assert_eq!(meta.session_id, "sess_123");
+        let meta = SessionMetadata::new(
+            SessionId::parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+            "test_agent",
+            "sess_123.jsonl",
+        );
+        assert_eq!(
+            meta.session_id,
+            SessionId::parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap()
+        );
         assert_eq!(meta.agent_name, "test_agent");
         assert_eq!(meta.message_count, 0);
     }

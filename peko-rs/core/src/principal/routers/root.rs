@@ -63,9 +63,14 @@ pub fn default_root_prompt() -> AgentPrompt {
 /// stays under the root-family guard (`session/session_runtime_impl.rs`
 /// refuses delete/archive/move on `root:self`) and never misparses in
 /// the messenger's `peer_from_session_key`.
+///
+/// Sprint 6: returns the v5-derived UUID form so the literal
+/// `root:self` matches the canonical id stored in
+/// `SessionMetadata.session_id` (Sprint 6 collapsed all session ids
+/// to opaque UUIDs).
 #[must_use]
 pub fn trunk_session_id() -> String {
-    "root:self".to_string()
+    peko_session::SessionId::from("root:self").to_string()
 }
 
 /// The session id the trunk router runs a turn in, adjusted for the
@@ -364,24 +369,36 @@ mod tests {
     }
 
     #[test]
-    fn trunk_session_id_is_root_prefixed_constant() {
-        // The `root:` prefix is load-bearing: it puts the trunk under
-        // the root-family guard (the `root:self` refusal on
-        // delete/archive/move in the session tool surface).
-        assert_eq!(trunk_session_id(), "root:self");
-        assert!(trunk_session_id().starts_with("root:"));
+    fn trunk_session_id_is_the_v5_form_of_root_self() {
+        // Sprint 6: the trunk id is the v5-derived UUID form of
+        // `root:self` (Sprint 6 collapsed all session ids to opaque
+        // UUIDs). The v5 derivation is deterministic, so the same
+        // literal always maps to the same UUID across the codebase.
+        // The canonical minting path uses `SessionId::new()`; this
+        // helper exists for test fixtures that anchor on the v5 form
+        // of a human-readable literal.
+        let trunk = trunk_session_id();
+        assert_eq!(trunk, peko_session::SessionId::from("root:self").to_string());
+        // The trunk is a valid UUID (engine-internal session ids are
+        // opaque UUIDs after Sprint 6 — see
+        // `peko_session::SessionId`).
+        assert!(
+            uuid::Uuid::parse_str(&trunk).is_ok(),
+            "trunk_session_id should be a valid UUID; got {trunk:?}"
+        );
     }
 
     #[test]
     fn trunk_and_cron_channels_map_to_trunk_session() {
         use crate::principal::router::ChannelKind;
-        // Phase 7: cron traffic maps onto the trunk — the per-peer
-        // `root:cron:{owner}` session is retired.
-        assert_eq!(
-            root_session_id_for_channel(&ChannelKind::Trunk),
-            "root:self"
-        );
-        assert_eq!(root_session_id_for_channel(&ChannelKind::Cron), "root:self");
+        // Phase 7 + Sprint 6: cron traffic maps onto the trunk — the
+        // per-peer `root:cron:{owner}` session is retired. The trunk
+        // itself is now an opaque UUID (v5-derived form of "root:self"
+        // for testability, but the canonical minting path uses
+        // `SessionId::new()`).
+        let trunk = trunk_session_id();
+        assert_eq!(root_session_id_for_channel(&ChannelKind::Trunk), trunk);
+        assert_eq!(root_session_id_for_channel(&ChannelKind::Cron), trunk);
     }
 
     #[test]

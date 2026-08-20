@@ -39,6 +39,7 @@
 //! The `MetadataController` is the SOLE authority for session metadata.
 //! All session listings are verified for consistency.
 
+use crate::id::SessionId;
 use crate::index::{SessionEntry, SessionIndex};
 use crate::jsonl::{RotationReason, RotationSink, SessionStorage};
 use crate::key::safe_filename_component;
@@ -398,11 +399,11 @@ impl SessionHandle {
 /// Options for creating a new session
 #[derive(Debug, Clone)]
 pub struct SessionCreateOptions {
-    pub parent_session_id: Option<String>,
+    pub parent_session_id: Option<SessionId>,
     pub title: Option<String>,
     pub trigger: String,
     /// Specific session ID to use (if not provided, a UUID will be generated)
-    pub session_id: Option<String>,
+    pub session_id: Option<SessionId>,
 }
 
 impl Default for SessionCreateOptions {
@@ -425,7 +426,7 @@ impl SessionCreateOptions {
         Self::default()
     }
 
-    pub fn with_parent(mut self, parent_id: impl Into<String>) -> Self {
+    pub fn with_parent(mut self, parent_id: impl Into<SessionId>) -> Self {
         self.parent_session_id = Some(parent_id.into());
         self.trigger = "branch".to_string();
         self
@@ -441,7 +442,7 @@ impl SessionCreateOptions {
         self
     }
 
-    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+    pub fn with_session_id(mut self, session_id: impl Into<SessionId>) -> Self {
         self.session_id = Some(session_id.into());
         self
     }
@@ -1073,8 +1074,7 @@ impl SessionManager {
         // Use provided session ID or generate a new one
         let session_id = options
             .session_id
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            .unwrap_or_default();
         let session_key = derive_base_session_key(agent, peer);
 
         // 1. Create JSONL file directly using SessionStorage. The
@@ -1088,16 +1088,16 @@ impl SessionManager {
             .map(|p| p.to_string_lossy().to_string());
         storage
             .create_session_with_header(
-                &session_id,
+                &session_id.as_str(),
                 cwd,
                 crate::events::SessionTrigger::from_label(&options.trigger),
-                options.parent_session_id.clone(),
+                options.parent_session_id.map(|id| id.as_str()),
             )
             .await?;
 
         // 2. Create Session from components
         let session = Session::from_components(
-            session_id.clone(),
+            session_id.to_string(),
             agent.to_string(),
             session_key.clone(),
             peer.clone(),
@@ -1106,9 +1106,9 @@ impl SessionManager {
 
         // 2. Create metadata
         let mut metadata = SessionMetadata::new(
-            &session_id,
+            session_id,
             agent,
-            format!("{}.jsonl", safe_filename_component(&session_id)),
+            format!("{}.jsonl", safe_filename_component(&session_id.to_string())),
         );
         if let Some(parent_id) = options.parent_session_id {
             metadata.parent_session_id = Some(parent_id);
@@ -1145,14 +1145,14 @@ impl SessionManager {
         // hardcodes `parent_session_id: None` / `trigger: "user"` — copy
         // the values the caller actually supplied so the index matches
         // the metadata (2026-08-07 field test, Finding 7).
-        let entry_parent = metadata.parent_session_id.clone();
+        let entry_parent = metadata.parent_session_id;
         let entry_trigger = metadata.trigger.clone();
         controller.create_metadata(metadata).await?;
         if self.index.is_some() {
             let mut entry = SessionEntry::with_peer(
-                session_id.clone(),
+                session_id,
                 agent.to_string(),
-                format!("{}.jsonl", safe_filename_component(&session_id)),
+                format!("{}.jsonl", safe_filename_component(&session_id.to_string())),
                 peer.kind().to_string(),
                 peer.subject_id().to_string(),
             );
@@ -1175,7 +1175,7 @@ impl SessionManager {
 
         // Create handle with shared metadata controller (no circular reference)
         let metadata_arc = self.metadata_controller.clone();
-        Ok(SessionHandle::new(session_id, arc, None, metadata_arc))
+        Ok(SessionHandle::new(session_id.to_string(), arc, None, metadata_arc))
     }
 
     /// Open an existing session by ID
@@ -1348,7 +1348,7 @@ impl SessionManager {
         &mut self,
         parent_session_id: &str,
         label: Option<String>,
-    ) -> Result<String> {
+    ) -> Result<SessionId> {
         let agent = self
             .agent_name
             .as_ref()
@@ -1371,21 +1371,23 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Parent session '{parent_session_id}' not found"))?;
 
         // Generate new session ID
-        let new_session_id = uuid::Uuid::new_v4().to_string();
+        let new_session_id = SessionId::new();
 
         // Copy parent JSONL file to new session
         let storage = SessionStorage::new(sessions_dir.clone());
         storage
-            .copy_session(parent_session_id, &new_session_id)
+            .copy_session(parent_session_id, &new_session_id.to_string())
             .await?;
 
         // Create metadata for new session
         let mut new_metadata = SessionMetadata::new(
-            &new_session_id,
+            new_session_id,
             &agent,
-            format!("{}.jsonl", safe_filename_component(&new_session_id)),
+            format!("{}.jsonl", safe_filename_component(&new_session_id.to_string())),
         );
-        new_metadata.parent_session_id = Some(parent_session_id.to_string());
+        // Sprint 6: accept v5-derived fallback for fixture-style ids,
+        // matching `SessionId::from`. Production callers pass UUIDs.
+        new_metadata.parent_session_id = Some(SessionId::from(parent_session_id));
         new_metadata.title = label.or_else(|| {
             parent_metadata
                 .title
@@ -1512,7 +1514,7 @@ impl SessionManager {
     pub async fn move_session(
         &mut self,
         session_id: &str,
-        new_parent: Option<String>,
+        new_parent: Option<SessionId>,
     ) -> Result<()> {
         let old_parent = self
             .metadata_controller
@@ -1526,7 +1528,7 @@ impl SessionManager {
         self.metadata_controller
             .write()
             .await
-            .set_parent(session_id, new_parent.clone())
+            .set_parent(session_id, new_parent)
             .await?;
 
         // Audit trail: record the reparent as a System event. The
@@ -1840,11 +1842,17 @@ impl SessionManager {
         // peer-routing index, because the subagent executor can hold a
         // SessionManager instance whose `base_sessions` map never saw
         // the parent's root session.
+        //
+        // Sprint 6: the index lookup keys on the canonical v5 UUID form
+        // of `parent_session_key` (every engine-internal session id is a
+        // UUID). Canonicalize the input before lookup so fixture-style
+        // literals like "root-sess" resolve to their UUID form.
+        let parent_canonical = SessionId::from(parent_session_key).to_string();
         let mut controller = self.metadata_controller.write().await;
-        let parent_id = match controller.get_entry_from_index(parent_session_key).await {
+        let parent_id = match controller.get_entry_from_index(&parent_canonical).await {
             Ok(Some(entry)) => Some(entry.session_id),
             _ => match self.get_parent_base_session(parent_session_key).await {
-                Some(base) => Some(base.read().await.id.clone()),
+                Some(base) => SessionId::parse(&base.read().await.id.clone()),
                 None => {
                     let peer_key = crate::key::base_key_from_overlay(parent_session_key)
                         .unwrap_or_else(|| parent_session_key.to_string());
@@ -1852,6 +1860,7 @@ impl SessionManager {
                         .get_active_session_id(&peer_key)
                         .await
                         .unwrap_or(None)
+                        .and_then(|s| SessionId::parse(&s))
                 }
             },
         };
@@ -1861,7 +1870,7 @@ impl SessionManager {
         };
         match controller.get_entry_from_index(session_id).await {
             Ok(Some(mut entry)) => {
-                entry.parent_session_id = Some(parent_id.clone());
+                entry.parent_session_id = Some(parent_id);
                 entry.trigger = "spawn".to_string();
                 if let Err(e) = controller.update_entry(entry).await {
                     tracing::warn!(
@@ -3110,14 +3119,14 @@ mod tests {
 
         // Second call should use cache (this verifies shared controller is working)
         let metadata = handle.get_metadata().await.unwrap();
-        assert_eq!(metadata.session_id, handle.session_id());
+        assert_eq!(metadata.session_id.to_string(), handle.session_id());
 
         // Verify via manager's method also uses same cache
         let metadata2 = manager
             .get_session_metadata(handle.session_id())
             .await
             .unwrap();
-        assert_eq!(metadata2.session_id, handle.session_id());
+        assert_eq!(metadata2.session_id.to_string(), handle.session_id());
     }
 
     #[tokio::test]
@@ -3149,8 +3158,8 @@ mod tests {
         // `test_shared_metadata_controller_cache_hit`.)
         let m1 = handle1.get_metadata().await.unwrap();
         let m2 = handle2.get_metadata().await.unwrap();
-        assert_eq!(m1.session_id, handle1.session_id());
-        assert_eq!(m2.session_id, handle1.session_id());
+        assert_eq!(m1.session_id.to_string(), handle1.session_id());
+        assert_eq!(m2.session_id.to_string(), handle1.session_id());
         assert_eq!(m1.session_id, m2.session_id);
         assert_eq!(m1.last_total_tokens, m2.last_total_tokens);
         assert_eq!(m1.total_input_tokens, m2.total_input_tokens);
@@ -3216,12 +3225,12 @@ mod tests {
 
         // Verify metadata exists in index
         let metadata = handle.get_metadata().await.unwrap();
-        assert_eq!(metadata.session_id, session_id);
+        assert_eq!(metadata.session_id.to_string(), session_id);
 
         // Verify can be listed
         let sessions = manager.list_all_sessions(false).await.unwrap();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, session_id);
+        assert_eq!(sessions[0].session_id.to_string(), session_id);
     }
 
     #[tokio::test]
@@ -3317,12 +3326,12 @@ mod tests {
             .await
             .unwrap();
 
-        let branch_meta = manager.get_session_metadata(&branch_id).await.unwrap();
+        let branch_meta = manager.get_session_metadata(&branch_id.to_string()).await.unwrap();
         assert_eq!(branch_meta.peer_type.as_deref(), Some("user"));
         assert_eq!(branch_meta.peer_id.as_deref(), Some("alice"));
         assert_eq!(
-            branch_meta.parent_session_id.as_deref(),
-            Some(parent_id.as_str())
+            branch_meta.parent_session_id.map(|id| id.to_string()),
+            Some(parent_id.to_string())
         );
         assert_eq!(branch_meta.trigger, "branch");
     }
@@ -3507,7 +3516,7 @@ mod tests {
             SessionManager::new().with_sessions_dir_internal(temp.path()),
         ));
         let peer = Subject::User("alice".to_string());
-        let live_id = "root:user:alice".to_string();
+        let live_id = SessionId::from("root:user:alice").to_string();
 
         let handle = {
             let mut mgr = manager.write().await;

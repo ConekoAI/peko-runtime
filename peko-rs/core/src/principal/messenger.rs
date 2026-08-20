@@ -222,7 +222,7 @@ impl PeerMessenger for PrincipalPeerMessenger {
             {
                 let binding = metas
                     .iter()
-                    .find(|m| &m.session_id == child_id)
+                    .find(|m| m.session_id.to_string() == *child_id)
                     .and_then(|m| m.slug.clone())
                     .map(|slug| format!("/{slug}"));
                 let channel = match binding {
@@ -352,10 +352,11 @@ impl PeerMessenger for PrincipalPeerMessenger {
             let Some(parent) = meta.parent_session_id else {
                 return Ok(None);
             };
-            if let Some(peer) = peer_from_session_key(&parent) {
+            let parent_str = parent.to_string();
+            if let Some(peer) = peer_from_session_key(&parent_str) {
                 return Ok(Some(peer));
             }
-            current = parent;
+            current = parent_str;
         }
         Ok(None)
     }
@@ -612,8 +613,15 @@ mod tests {
         );
 
         // 3. The trunk carries the `[notify]` self-view line.
-        let trunk_jsonl =
-            std::fs::read_to_string(sessions_dir.join("root:self.jsonl")).expect("trunk JSONL");
+        //    Sprint 6: the trunk is a UUID; look it up by walking for
+        //    `parent_session_id == None`.
+        let trunk_id = metas
+            .iter()
+            .find(|m| m.parent_session_id.is_none())
+            .map(|m| m.session_id.to_string())
+            .expect("trunk exists");
+        let trunk_jsonl = std::fs::read_to_string(sessions_dir.join(format!("{trunk_id}.jsonl")))
+            .expect("trunk JSONL");
         assert!(
             trunk_jsonl.contains("[notify] 📨 agent some-session sent to user:local"),
             "trunk must carry the notify self-view: {trunk_jsonl}"

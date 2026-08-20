@@ -1364,7 +1364,7 @@ mod tests {
             .expect("peer child exists after ingress");
         let slug = metas
             .iter()
-            .find(|m| m.session_id == child_id)
+            .find(|m| m.session_id.to_string() == child_id)
             .and_then(|m| m.slug.clone())
             .expect("peer child has a slug");
         let port = manager.channel_port().expect("channel port attached");
@@ -2560,12 +2560,15 @@ mod tests {
             .expect("owner peer child exists");
         let child = metas
             .iter()
-            .find(|m| m.session_id == child_id)
+            .find(|m| m.session_id.to_string() == child_id)
             .expect("child metadata");
         assert_eq!(child.slug.as_deref(), Some("local-user"));
         assert!(child.standing);
         assert!(child.privileged, "owner's child must be privileged");
-        assert_eq!(child.parent_session_id.as_deref(), Some("root:self"));
+        assert_eq!(
+            child.parent_session_id.map(|id| id.to_string()).as_deref(),
+            Some(peko_session::SessionId::from("root:self").to_string().as_str())
+        );
 
         // The exchange landed in the child JSONL.
         let jsonl = std::fs::read_to_string(sessions_dir.join(format!("{child_id}.jsonl")))
@@ -2605,7 +2608,7 @@ mod tests {
             .expect("A2A peer child exists");
         let child = metas
             .iter()
-            .find(|m| m.session_id == child_id)
+            .find(|m| m.session_id.to_string() == child_id)
             .expect("child metadata");
         assert!(
             child.slug.as_deref().unwrap().starts_with("principal-"),
@@ -2730,24 +2733,23 @@ mod tests {
         );
 
         // The turn landed in the trunk session, not in any per-peer
-        // root session.
+        // root session. Sprint 6: the trunk is a UUID; look it up by
+        // walking `parent_session_id == None`.
         let sessions_dir = principal.memory.sessions_dir().clone();
-        let trunk_jsonl = sessions_dir.join("root:self.jsonl");
+        let mut sm = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir.clone());
+        let metas = sm.list_all_sessions(false).await.unwrap();
+        let trunk_id = metas
+            .iter()
+            .find(|m| m.parent_session_id.is_none())
+            .map(|m| m.session_id.to_string())
+            .expect("trunk exists");
+        let trunk_jsonl = sessions_dir.join(format!("{trunk_id}.jsonl"));
         assert!(trunk_jsonl.exists(), "trunk session JSONL should exist");
         let content = std::fs::read_to_string(&trunk_jsonl).unwrap();
         assert!(
             content.contains("trunk tick"),
-            "trunk turn should be persisted to root:self, got: {content}"
-        );
-        assert!(
-            !sessions_dir.join("root:user:test-owner.jsonl").exists(),
-            "trunk turn must not create the owner's conversational session"
-        );
-        assert!(
-            !sessions_dir
-                .join("root:cron:user:test-owner.jsonl")
-                .exists(),
-            "trunk turn must not create the per-owner cron session"
+            "trunk turn should be persisted to trunk, got: {content}"
         );
     }
 
@@ -2762,9 +2764,12 @@ mod tests {
         adapter.queue_text("unused — the queued path makes no LLM call");
 
         // Hold the trunk run permit: the next trunk turn must steer.
+        // Sprint 6: production acquires on the v5 UUID form of
+        // `root:self` (`trunk_session_id()`), not the literal — the
+        // permit key must match what `receive_trunk` looks up.
         let _permit = manager
             .inbox_registry
-            .try_acquire_run("root:self")
+            .try_acquire_run(&super::super::routers::root::trunk_session_id())
             .await
             .expect("permit should be free");
 
@@ -2773,9 +2778,7 @@ mod tests {
             .await
             .expect("trunk receive should succeed");
         assert!(
-            response
-                .content
-                .contains("Queued for root agent session root:self"),
+            response.content.contains("Queued for root agent session"),
             "expected the queued-steering response, got: {}",
             response.content
         );

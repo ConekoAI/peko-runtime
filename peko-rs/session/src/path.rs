@@ -13,9 +13,10 @@
 //!
 //! - `/` alone → the caller's **topmost ancestor** (the walk follows
 //!   `parent_session_id` from the caller's session to the root of the
-//!   caller's tree; cycle-safe). Root `root:*` sessions carry no slug
-//!   and are addressable only as `/` from inside their own tree —
-//!   cross-tree access is refused by the ownership guards anyway.
+//!   caller's tree; cycle-safe). The trunk session (the principal's
+//!   owner root, `parent_session_id == None`) carries no slug and is
+//!   addressable only as `/` from inside its own tree — cross-tree
+//!   access is refused by the ownership guards anyway.
 //! - `/a/b/c` → start at that same topmost ancestor; each segment
 //!   selects the child of the current node whose slug equals the
 //!   segment. Every segment must be a slug — raw ids are NOT accepted
@@ -30,6 +31,7 @@
 //! id as the last segment. That fallback is display-only — the
 //! resolver never accepts it as input.
 
+use crate::id::SessionId;
 use crate::metadata::SessionMetadata;
 
 /// Maximum slug length in characters (keeps paths readable and
@@ -47,14 +49,17 @@ pub fn validate_slug(slug: &str) -> anyhow::Result<()> {
     } else if slug.contains('/') {
         Some("it contains '/' — a slug is a single path segment".to_string())
     } else if slug.contains(':') {
-        // `:` is reserved for raw session ids (the tree root's parent
-        // session id, e.g. `root:user:alice`, carries them; and ad-hoc
-        // ids like `spawn:<uuid>:`/`channel:<id>:` are introduced via
-        // runtime extensions). Rejecting `:` here makes the LLM-facing
-        // addressing grammar unambiguous by construction — slugs can
-        // never look like raw ids and `looks_like_session_id` only has
-        // to flag genuine id shapes.
-        Some("it contains ':' — ':' is reserved for raw session ids; use a different slug".to_string())
+        // `:` is reserved for raw session ids (the legacy tree-root
+        // shape `root:<dim>:<name>` carried them; and runtime
+        // extensions stamp `spawn:<uuid>:` / `channel:<id>:` prefixes).
+        // Rejecting `:` here makes the LLM-facing addressing grammar
+        // unambiguous by construction — slugs can never look like
+        // raw ids and the LLM-facing resolver only refuses genuinely
+        // id-shaped input.
+        Some(
+            "it contains ':' — ':' is reserved for raw session ids; use a different slug"
+                .to_string(),
+        )
     } else if slug.trim() != slug {
         Some("it has leading or trailing whitespace".to_string())
     } else if slug.chars().count() > MAX_SLUG_LEN {
@@ -65,7 +70,7 @@ pub fn validate_slug(slug: &str) -> anyhow::Result<()> {
     match reason {
         Some(reason) => Err(anyhow::anyhow!(
             "invalid slug '{slug}': {reason} — slugs are 1-{MAX_SLUG_LEN} chars, contain no \
-             '/', and have no leading/trailing whitespace"
+             '/', and have no leading or trailing whitespace"
         )),
         None => Ok(()),
     }
@@ -77,24 +82,22 @@ pub fn validate_slug(slug: &str) -> anyhow::Result<()> {
 #[must_use]
 pub fn slug_conflict(
     metas: &[SessionMetadata],
-    parent: Option<&str>,
+    parent: Option<SessionId>,
     slug: &str,
-    exclude: &str,
-) -> Option<String> {
+    exclude: SessionId,
+) -> Option<SessionId> {
     metas
         .iter()
-        .find(|m| {
-            m.session_id != exclude
-                && m.parent_session_id.as_deref() == parent
-                && m.slug.as_deref() == Some(slug)
-        })
-        .map(|m| m.session_id.clone())
+        .find(|m| m.session_id != exclude && m.parent_session_id == parent && m.slug.as_deref() == Some(slug))
+        .map(|m| m.session_id)
 }
 
 /// Per-parent slug uniqueness violation, naming the conflicting
 /// session id (ownership.rs refusal style).
-pub fn err_slug_conflict(slug: &str, conflicting_id: &str, parent: Option<&str>) -> anyhow::Error {
-    let under = parent.unwrap_or("<tree root>");
+pub fn err_slug_conflict(slug: &str, conflicting_id: SessionId, parent: Option<SessionId>) -> anyhow::Error {
+    let under = parent
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "<tree root>".to_string());
     anyhow::anyhow!(
         "slug '{slug}' is already used by sibling session '{conflicting_id}' under parent \
          '{under}' — slugs are unique per parent; pick a different slug"
@@ -106,21 +109,21 @@ pub fn err_slug_conflict(slug: &str, conflicting_id: &str, parent: Option<&str>)
 /// The caller's topmost ancestor: walk `parent_session_id` from
 /// `from` to the root of its tree. Cycle-safe (bounded walk). `None`
 /// when `from` has no metadata in the slice.
-fn tree_root(metas: &[SessionMetadata], from: &str) -> Option<String> {
-    let find = |id: &str| metas.iter().find(|m| m.session_id == id);
+fn tree_root(metas: &[SessionMetadata], from: SessionId) -> Option<SessionId> {
+    let find = |id: SessionId| metas.iter().find(|m| m.session_id == id);
     let mut current = find(from)?;
     let mut seen = std::collections::HashSet::new();
-    seen.insert(current.session_id.clone());
-    while let Some(parent_id) = current.parent_session_id.clone() {
-        if !seen.insert(parent_id.clone()) {
+    seen.insert(current.session_id);
+    while let Some(parent_id) = current.parent_session_id {
+        if !seen.insert(parent_id) {
             break; // corrupt chain with a cycle — stop at what we have
         }
-        match find(&parent_id) {
+        match find(parent_id) {
             Some(parent) => current = parent,
             None => break, // dangling parent id — the walk ends here
         }
     }
-    Some(current.session_id.clone())
+    Some(current.session_id)
 }
 
 /// Resolve a `/`-rooted session path to a session id.
@@ -134,9 +137,9 @@ fn tree_root(metas: &[SessionMetadata], from: &str) -> Option<String> {
 /// segment (lists the available child slugs at the failing level).
 pub fn resolve_path(
     metas: &[SessionMetadata],
-    caller_session_id: &str,
+    caller_session_id: SessionId,
     path: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<SessionId> {
     anyhow::ensure!(
         path.starts_with('/'),
         "session path '{path}' must start with '/' — pass a raw session id to address by id"
@@ -151,28 +154,27 @@ pub fn resolve_path(
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut current = root;
     let mut seen = std::collections::HashSet::new();
-    seen.insert(current.clone());
+    seen.insert(current);
     for segment in segments {
         let child = metas.iter().find(|m| {
-            m.parent_session_id.as_deref() == Some(current.as_str())
-                && m.slug.as_deref() == Some(segment)
+            m.parent_session_id == Some(current) && m.slug.as_deref() == Some(segment)
         });
         match child {
-            Some(c) if seen.insert(c.session_id.clone()) => {
-                current = c.session_id.clone();
+            Some(c) if seen.insert(c.session_id) => {
+                current = c.session_id;
             }
             Some(c) => {
                 return Err(anyhow::anyhow!(
-                    "cannot resolve path '{path}': the tree below '{}' contains a cycle \
-                     (reached '{}' twice)",
-                    current,
-                    c.session_id
+                    "cannot resolve path '{path}': the tree below '{current}' contains a cycle \
+                     (reached '{c}' twice)",
+                    current = current,
+                    c = c.session_id
                 ));
             }
             None => {
                 let mut available: Vec<&str> = metas
                     .iter()
-                    .filter(|m| m.parent_session_id.as_deref() == Some(current.as_str()))
+                    .filter(|m| m.parent_session_id == Some(current))
                     .filter_map(|m| m.slug.as_deref())
                     .collect();
                 available.sort_unstable();
@@ -184,7 +186,9 @@ pub fn resolve_path(
                 };
                 return Err(anyhow::anyhow!(
                     "cannot resolve path '{path}': no child of '{current}' has slug \
-                     '{segment}' — {hint}"
+                     '{segment}' — {hint}",
+                    current = current,
+                    segment = segment
                 ));
             }
         }
@@ -198,40 +202,41 @@ pub fn resolve_path(
 /// `/memory/task-b`.
 ///
 /// Display-only inverse of [`resolve_path`]: ancestors without a slug
-/// are skipped as intermediate segments (the tree root `root:*`
-/// collapses into the leading `/`), and a slugless target falls back
-/// to its raw id as the last segment (`/memory/550e8400-…`). The
-/// resolver never accepts that fallback as input. Cycle-safe; a
-/// session missing from `metas` yields `/<id>`.
+/// are skipped as intermediate segments (the trunk session
+/// `parent_session_id == None` collapses into the leading `/`), and a
+/// slugless target falls back to its raw id as the last segment
+/// (`/memory/550e8400-…`). The resolver never accepts that fallback
+/// as input. Cycle-safe; a session missing from `metas` yields
+/// `/<id>`.
 #[must_use]
-pub fn compute_path(metas: &[SessionMetadata], session_id: &str) -> String {
-    let find = |id: &str| metas.iter().find(|m| m.session_id == id);
+pub fn compute_path(metas: &[SessionMetadata], session_id: SessionId) -> String {
+    let find = |id: SessionId| metas.iter().find(|m| m.session_id == id);
     let mut segments: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut cursor = Some(session_id.to_string());
+    let mut cursor = Some(session_id);
     let mut is_target = true;
     while let Some(id) = cursor {
-        if !seen.insert(id.clone()) {
+        if !seen.insert(id) {
             break; // corrupt chain with a cycle — stop, keep what we have
         }
-        let Some(meta) = find(&id) else {
+        let Some(meta) = find(id) else {
             // Dangling ancestor (or missing target): stop the walk.
             if is_target {
-                segments.push(id.clone());
+                segments.push(id.to_string());
             }
             break;
         };
         if is_target {
             // The final segment falls back to the raw id when the
             // target has no slug.
-            segments.push(meta.slug.clone().unwrap_or_else(|| id.clone()));
+            segments.push(meta.slug.clone().unwrap_or_else(|| id.to_string()));
         } else if let Some(ref slug) = meta.slug {
             // Intermediate segments are slug-only; slugless ancestors
             // are skipped.
             segments.push(slug.clone());
         }
         is_target = false;
-        cursor = meta.parent_session_id.clone();
+        cursor = meta.parent_session_id;
     }
     segments.reverse();
     format!("/{}", segments.join("/"))
@@ -249,7 +254,7 @@ pub fn compute_path(metas: &[SessionMetadata], session_id: &str) -> String {
 /// The derived slug is truncated so the result always passes
 /// [`validate_slug`] even for a near-cap source slug.
 #[must_use]
-pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: &str) -> Option<String> {
+pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: SessionId) -> Option<String> {
     let source = metas.iter().find(|m| m.session_id == source_id)?;
     let source_slug = source.slug.as_deref()?;
     // Reserve room for "-branch" plus a "-NN" uniquifier suffix.
@@ -271,13 +276,20 @@ pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: &str) -> Option<
 
 /// Quick heuristic: does `reference` look like a raw session id?
 ///
-/// True when the value contains `:` (the canonical tree-root shape is
-/// `root:<dimension>:<name>`; runtime extensions stamp `spawn:<uuid>:`
+/// True when the value contains `:` (legacy tree-root shape is
+/// `root:<dim>:<name>`; runtime extensions stamp `spawn:<uuid>:`
 /// or `channel:<id>:` prefixes), or when the value is a bare
-/// UUID/hex blob of length ≥ 32. The shape-based dispatch is the
-/// primary defense; this is a defense-in-depth nudge so a model
-/// that tries to pass a raw id anyway hits a structured refusal
-/// rather than getting a confusing "not found" later.
+/// UUID/hex blob of length ≥ 32.
+///
+/// **Sprint 6 caveat:** with the engine-internal id format collapsed
+/// to opaque UUIDs, every `SessionId::as_str()` matches this heuristic
+/// (32 chars of all-hex-or-dash). The function therefore still flags
+/// UUIDs but loses discriminative power over the legacy
+/// `root:<dim>:<name>` shape — which never appears in a sprint-6
+/// runtime anyway. Kept as defense-in-depth for the LLM-facing
+/// boundary; the canonical refusal is "the model has no path to
+/// produce a non-self raw id" since the schema-level validation
+/// catches malformed input before the resolver runs.
 #[must_use]
 pub fn looks_like_session_id(reference: &str) -> bool {
     if reference.is_empty() {
@@ -311,9 +323,9 @@ pub fn looks_like_session_id(reference: &str) -> bool {
 /// Used by [`resolve_reference`] for the caller-relative branch.
 pub fn resolve_relative(
     metas: &[SessionMetadata],
-    caller_session_id: &str,
+    caller_session_id: SessionId,
     segment: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<SessionId> {
     // Validate first so empty / `/`-containing / `:`-containing
     // references error with the canonical "invalid slug" message
     // rather than reaching the descendant scan.
@@ -324,56 +336,55 @@ pub fn resolve_relative(
     // re-enqueued for further descent after its grandchildren are
     // discovered. Cycles terminate because each node is processed at
     // most once.
-    let mut processed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut processed: std::collections::HashSet<SessionId> = std::collections::HashSet::new();
 
     // Level 0: direct children of the caller. Slugs are unique-per-
     // parent (see [`slug_conflict`]), so this is either zero or one
     // match — no ambiguity error needed.
     if let Some(child) = metas.iter().find(|m| {
-        m.parent_session_id.as_deref() == Some(caller_session_id)
+        m.parent_session_id == Some(caller_session_id)
             && m.slug.as_deref() == Some(segment)
     }) {
-        return Ok(child.session_id.clone());
+        return Ok(child.session_id);
     }
 
     // Levels 1..: breadth-first descent. At each level, collect all
     // matches by slug; if exactly one, return it; if multiple, error
     // with the compute_path renderings.
-    let mut frontier: Vec<String> = metas
+    let mut frontier: Vec<SessionId> = metas
         .iter()
-        .filter(|m| m.parent_session_id.as_deref() == Some(caller_session_id))
-        .map(|m| m.session_id.clone())
+        .filter(|m| m.parent_session_id == Some(caller_session_id))
+        .map(|m| m.session_id)
         .collect();
 
     while !frontier.is_empty() {
-        let mut next_frontier: Vec<String> = Vec::new();
-        let mut matches: Vec<String> = Vec::new();
+        let mut next_frontier: Vec<SessionId> = Vec::new();
+        let mut matches: Vec<SessionId> = Vec::new();
         for parent_id in &frontier {
-            if !processed.insert(parent_id.clone()) {
+            if !processed.insert(*parent_id) {
                 continue;
             }
-            for child in metas.iter().filter(|m| {
-                m.parent_session_id.as_deref() == Some(parent_id.as_str())
-            }) {
+            for child in metas
+                .iter()
+                .filter(|m| m.parent_session_id == Some(*parent_id))
+            {
                 if child.slug.as_deref() == Some(segment) {
-                    matches.push(child.session_id.clone());
+                    matches.push(child.session_id);
                 } else if !processed.contains(&child.session_id) {
-                    next_frontier.push(child.session_id.clone());
+                    next_frontier.push(child.session_id);
                 }
             }
         }
         match matches.len() {
             1 => return Ok(matches.remove(0)),
             n if n > 1 => {
-                let mut paths: Vec<String> = matches
-                    .iter()
-                    .map(|id| compute_path(metas, id))
-                    .collect();
+                let mut paths: Vec<String> = matches.iter().map(|id| compute_path(metas, *id)).collect();
                 paths.sort_unstable();
                 return Err(anyhow::anyhow!(
                     "'{segment}' is ambiguous under '{caller_session_id}': {n} descendants \
                      match — [{}]; pass an absolute path ('/.../{segment}') to disambiguate",
-                    paths.join(", ")
+                    paths.join(", "),
+                    caller_session_id = caller_session_id
                 ));
             }
             _ => {}
@@ -385,7 +396,7 @@ pub fn resolve_relative(
     // slugs as a hint, the same shape [`resolve_path`] uses.
     let mut available: Vec<&str> = metas
         .iter()
-        .filter(|m| m.parent_session_id.as_deref() == Some(caller_session_id))
+        .filter(|m| m.parent_session_id == Some(caller_session_id))
         .filter_map(|m| m.slug.as_deref())
         .collect();
     available.sort_unstable();
@@ -396,7 +407,8 @@ pub fn resolve_relative(
     };
     Err(anyhow::anyhow!(
         "cannot resolve '{segment}': no child or descendant of '{caller_session_id}' has slug \
-         '{segment}' — {hint}"
+         '{segment}' — {hint}",
+        caller_session_id = caller_session_id
     ))
 }
 
@@ -406,7 +418,7 @@ pub fn resolve_relative(
 /// |---|---|---|
 /// | Absolute slug path | `/a/b/c` | [`resolve_path`] (caller-anchored) |
 /// | Caller-relative slug | `agent-c` | [`resolve_relative`] (BFS by depth) |
-/// | Raw session id | `root:user:alice`, `550e8400-…` | REFUSED with structured error |
+/// | Raw session id | UUID, `root:user:alice` | REFUSED with structured error |
 ///
 /// The raw-id branch exists so the model gets an actionable refusal
 /// rather than a confusing descendant-search miss when it tries to
@@ -425,9 +437,9 @@ pub fn resolve_relative(
 /// shortcut.
 pub fn resolve_reference(
     metas: &[SessionMetadata],
-    caller_session_id: &str,
+    caller_session_id: SessionId,
     reference: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<SessionId> {
     anyhow::ensure!(
         !reference.is_empty(),
         "session reference is empty — pass a slug path ('/a/b/c') or a caller-relative slug \
@@ -440,8 +452,8 @@ pub fn resolve_reference(
         // Engine-internal self-reference: the engine passes its own
         // current_session_id verbatim (UUIDs in production). Allow
         // it through; refuse all other raw ids.
-        if reference == caller_session_id {
-            return Ok(reference.to_string());
+        if reference == caller_session_id.to_string() {
+            return Ok(caller_session_id);
         }
         return Err(anyhow::anyhow!(
             "raw session ids are not accepted as session references ('{reference}') — pass a \
@@ -472,9 +484,9 @@ pub fn resolve_reference(
 /// through the engine on the way to a guard).
 pub fn resolve_id_or_path(
     metas: &[SessionMetadata],
-    caller_session_id: &str,
+    caller_session_id: SessionId,
     reference: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<SessionId> {
     anyhow::ensure!(
         !reference.is_empty(),
         "session reference is empty — pass a slug path ('/a/b/c') or a raw session id"
@@ -485,31 +497,64 @@ pub fn resolve_id_or_path(
     // Engine-internal: trust the input as a raw id. The runtime hands
     // back canonical ids it produced itself; existence is validated by
     // the per-call guards, not by a shape heuristic.
-    Ok(reference.to_string())
+    //
+    // Sprint 6: accept either a canonical UUID or a v5-derived fallback
+    // (same semantics as `SessionId::from`) so engine-internal callers
+    // that carry fixture-style ids don't break. The non-UUID branch is
+    // gated to non-`/` references only; the LLM surface still routes
+    // through `resolve_reference` and rejects raw ids.
+    Ok(SessionId::from(reference))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn meta(id: &str, parent: Option<&str>, slug: Option<&str>) -> SessionMetadata {
-        let mut m = SessionMetadata::new(id, "agent", format!("{id}.jsonl"));
-        m.parent_session_id = parent.map(String::from);
-        m.slug = slug.map(String::from);
-        m
-    }
-
     /// root (no slug) ── memory ── task-b
     ///              └──── memory (child "notes")
     ///              └──── slugless
     fn tree() -> Vec<SessionMetadata> {
+        let root = SessionId::parse("00000000-0000-0000-0000-000000000001").unwrap();
+        let s_memory = SessionId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+        let s_task = SessionId::parse("00000000-0000-0000-0000-000000000003").unwrap();
+        let s_notes = SessionId::parse("00000000-0000-0000-0000-000000000004").unwrap();
+        let s_slugless = SessionId::parse("00000000-0000-0000-0000-000000000005").unwrap();
         vec![
-            meta("root:user:alice", None, None),
-            meta("s_memory", Some("root:user:alice"), Some("memory")),
-            meta("s_task", Some("s_memory"), Some("task-b")),
-            meta("s_notes", Some("s_memory"), Some("notes")),
-            meta("s_slugless", Some("root:user:alice"), None),
+            meta_at(root, None, None),
+            meta_at(s_memory, Some(root), Some("memory")),
+            meta_at(s_task, Some(s_memory), Some("task-b")),
+            meta_at(s_notes, Some(s_memory), Some("notes")),
+            meta_at(s_slugless, Some(root), None),
         ]
+    }
+
+    fn meta_at(id: SessionId, parent: Option<SessionId>, slug: Option<&str>) -> SessionMetadata {
+        // Build directly (don't delegate to `meta`, which takes a
+        // `Option<&str>` parent) — `parent` here is already a
+        // `SessionId`.
+        SessionMetadata {
+            session_id: id,
+            agent_name: "agent".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            message_count: 0,
+            turn_count: 0,
+            last_total_tokens: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            model_context_limit: None,
+            transcript_file: format!("{}.jsonl", id),
+            title: None,
+            parent_session_id: parent,
+            trigger: "user".to_string(),
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            compact_requested: false,
+            standing: false,
+            privileged: false,
+            slug: slug.map(String::from),
+        }
     }
 
     // ─── validate_slug ─────────────────────────────────────────────
@@ -542,26 +587,27 @@ mod tests {
 
     #[test]
     fn slug_conflict_is_per_parent() {
+        let root = SessionId::new();
+        let a1 = SessionId::new();
+        let a2 = SessionId::new();
+        let b1 = SessionId::new();
+        let new = SessionId::new();
         let metas = vec![
-            meta("root", None, None),
-            meta("a1", Some("root"), Some("dup")),
-            meta("a2", Some("root"), Some("other")),
-            meta("b1", Some("a2"), Some("dup")), // same slug, different parent
+            meta_at(root, None, None),
+            meta_at(a1, Some(root), Some("dup")),
+            meta_at(a2, Some(root), Some("other")),
+            meta_at(b1, Some(a2), Some("dup")),
         ];
-        assert_eq!(
-            slug_conflict(&metas, Some("root"), "dup", "new"),
-            Some("a1".to_string())
-        );
+        assert_eq!(slug_conflict(&metas, Some(root), "dup", new), Some(a1));
         // Different parent: no conflict.
-        assert_eq!(slug_conflict(&metas, Some("a2"), "dup", "b1"), None);
+        assert_eq!(slug_conflict(&metas, Some(a2), "dup", b1), None);
         // Exclusion lets a session keep its own slug (rename no-op).
-        assert_eq!(slug_conflict(&metas, Some("root"), "dup", "a1"), None);
+        assert_eq!(slug_conflict(&metas, Some(root), "dup", a1), None);
         // Root-level siblings (parent None) conflict with each other.
-        let roots = vec![meta("r1", None, Some("x")), meta("r2", None, Some("x"))];
-        assert_eq!(
-            slug_conflict(&roots, None, "x", "r1"),
-            Some("r2".to_string())
-        );
+        let r1 = SessionId::new();
+        let r2 = SessionId::new();
+        let roots = vec![meta_at(r1, None, Some("x")), meta_at(r2, None, Some("x"))];
+        assert_eq!(slug_conflict(&roots, None, "x", r1), Some(r2));
     }
 
     // ─── resolve_path ──────────────────────────────────────────────
@@ -569,40 +615,40 @@ mod tests {
     #[test]
     fn resolve_slash_anchors_at_callers_topmost_ancestor() {
         let metas = tree();
-        // From a nested caller, "/" is the tree root…
-        assert_eq!(
-            resolve_path(&metas, "s_task", "/").unwrap(),
-            "root:user:alice"
-        );
-        // …and from the root itself, "/" is the root.
-        assert_eq!(
-            resolve_path(&metas, "root:user:alice", "/").unwrap(),
-            "root:user:alice"
-        );
+        let s_task = metas[2].session_id;
+        let root = metas[0].session_id;
+        // From a nested caller, "/" is the tree root.
+        assert_eq!(resolve_path(&metas, s_task, "/").unwrap(), root);
+        // From the root itself, "/" is the root.
+        assert_eq!(resolve_path(&metas, root, "/").unwrap(), root);
     }
 
     #[test]
     fn resolve_multi_segment_from_nested_caller() {
         let metas = tree();
+        let s_task = metas[2].session_id;
+        let s_notes = metas[3].session_id;
+        let s_memory = metas[1].session_id;
         assert_eq!(
-            resolve_path(&metas, "s_notes", "/memory/task-b").unwrap(),
-            "s_task"
+            resolve_path(&metas, s_notes, "/memory/task-b").unwrap(),
+            s_task
         );
         assert_eq!(
-            resolve_path(&metas, "s_task", "/memory").unwrap(),
-            "s_memory"
+            resolve_path(&metas, s_task, "/memory").unwrap(),
+            s_memory
         );
         // Empty segments are tolerated ("//memory//").
         assert_eq!(
-            resolve_path(&metas, "s_task", "//memory//").unwrap(),
-            "s_memory"
+            resolve_path(&metas, s_task, "//memory//").unwrap(),
+            s_memory
         );
     }
 
     #[test]
     fn resolve_unknown_segment_lists_available_child_slugs() {
         let metas = tree();
-        let err = resolve_path(&metas, "root:user:alice", "/memory/nope").unwrap_err();
+        let root = metas[0].session_id;
+        let err = resolve_path(&metas, root, "/memory/nope").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("/memory/nope"), "{msg}");
         assert!(msg.contains("'nope'"), "{msg}");
@@ -610,40 +656,42 @@ mod tests {
         assert!(msg.contains("task-b"), "{msg}");
 
         // Leaf level with no slugged children says so.
-        let err = resolve_path(&metas, "root:user:alice", "/memory/task-b/x").unwrap_err();
+        let err = resolve_path(&metas, root, "/memory/task-b/x").unwrap_err();
         assert!(err.to_string().contains("no children with slugs"), "{err}");
     }
 
     #[test]
     fn resolve_requires_slugs_at_every_segment() {
+        let metas = tree();
+        let root = metas[0].session_id;
         // A slugless intermediate node is NOT addressable by its raw
         // id through the resolver — paths are slug-only by design.
-        let metas = tree();
-        let err = resolve_path(&metas, "root:user:alice", "/s_slugless").unwrap_err();
+        let err = resolve_path(&metas, root, "/s_slugless").unwrap_err();
         assert!(err.to_string().contains("no child"), "{err}");
     }
 
     #[test]
     fn resolve_missing_caller_metadata_errors() {
         let metas = tree();
-        let err = resolve_path(&metas, "ghost", "/memory").unwrap_err();
+        let ghost = SessionId::new();
+        let err = resolve_path(&metas, ghost, "/memory").unwrap_err();
         assert!(err.to_string().contains("no entry"), "{err}");
     }
 
     #[test]
     fn resolve_is_cycle_bounded() {
         // Corrupt chain: a → b → a. The root walk must terminate.
+        let a = SessionId::new();
+        let b = SessionId::new();
+        let c = SessionId::new();
         let metas = vec![
-            meta("a", Some("b"), Some("a")),
-            meta("b", Some("a"), Some("b")),
-            meta("c", Some("b"), Some("c")),
+            meta_at(a, Some(b), Some("a")),
+            meta_at(b, Some(a), Some("b")),
+            meta_at(c, Some(b), Some("c")),
         ];
-        // Terminates (which node "wins" as root is irrelevant for a
-        // corrupt tree; termination is the contract).
-        let resolved = resolve_path(&metas, "c", "/").unwrap();
-        assert!(resolved == "a" || resolved == "b");
-        // And a descent from that bounded root still works.
-        assert_eq!(resolve_path(&metas, "c", "/b/c").unwrap(), "c");
+        let resolved = resolve_path(&metas, c, "/").unwrap();
+        assert!(resolved == a || resolved == b);
+        assert_eq!(resolve_path(&metas, c, "/b/c").unwrap(), c);
     }
 
     // ─── compute_path ──────────────────────────────────────────────
@@ -651,28 +699,35 @@ mod tests {
     #[test]
     fn compute_path_joins_slugs_and_skips_slugless_ancestors() {
         let metas = tree();
-        assert_eq!(compute_path(&metas, "s_task"), "/memory/task-b");
-        assert_eq!(compute_path(&metas, "s_memory"), "/memory");
+        let s_task = metas[2].session_id;
+        let s_memory = metas[1].session_id;
+        let root = metas[0].session_id;
+        let s_slugless = metas[4].session_id;
+        assert_eq!(compute_path(&metas, s_task), "/memory/task-b");
+        assert_eq!(compute_path(&metas, s_memory), "/memory");
         // Root has no slug and no parent: bare "/<id>" fallback.
-        assert_eq!(compute_path(&metas, "root:user:alice"), "/root:user:alice");
+        assert_eq!(compute_path(&metas, root), format!("/{root}"));
         // Slugless target: raw id as the last segment.
-        assert_eq!(compute_path(&metas, "s_slugless"), "/s_slugless");
+        assert_eq!(compute_path(&metas, s_slugless), format!("/{s_slugless}"));
         // Slugless INTERMEDIATE ancestor is skipped.
+        let s_deep = SessionId::new();
         let mut deep = tree();
-        deep.push(meta("s_deep", Some("s_slugless"), Some("deep")));
-        assert_eq!(compute_path(&deep, "s_deep"), "/deep");
+        deep.push(meta_at(s_deep, Some(s_slugless), Some("deep")));
+        assert_eq!(compute_path(&deep, s_deep), "/deep");
     }
 
     #[test]
     fn compute_path_handles_missing_and_cyclic_metadata() {
         let metas = tree();
-        assert_eq!(compute_path(&metas, "ghost"), "/ghost");
+        let ghost = SessionId::new();
+        assert_eq!(compute_path(&metas, ghost), format!("/{ghost}"));
+        let a = SessionId::new();
+        let b = SessionId::new();
         let cyclic = vec![
-            meta("a", Some("b"), Some("a")),
-            meta("b", Some("a"), Some("b")),
+            meta_at(a, Some(b), Some("a")),
+            meta_at(b, Some(a), Some("b")),
         ];
-        // Terminates; exact shape is irrelevant for corrupt metadata.
-        assert!(compute_path(&cyclic, "a").starts_with('/'));
+        assert!(compute_path(&cyclic, a).starts_with('/'));
     }
 
     // ─── derive_branch_slug ────────────────────────────────────────
@@ -680,35 +735,43 @@ mod tests {
     #[test]
     fn derive_branch_slug_uniquifies_on_sibling_conflict() {
         let metas = tree();
+        let s_memory = metas[1].session_id;
+        let s_task = metas[2].session_id;
         assert_eq!(
-            derive_branch_slug(&metas, "s_memory"),
+            derive_branch_slug(&metas, s_memory),
             Some("memory-branch".to_string())
         );
-        // With an existing "memory-branch" child, the next free one wins.
+        // With existing branches, the next free one wins.
+        let s_b1 = SessionId::new();
+        let s_b2 = SessionId::new();
         let mut metas = tree();
-        metas.push(meta("s_b1", Some("s_memory"), Some("memory-branch")));
-        metas.push(meta("s_b2", Some("s_memory"), Some("memory-branch-2")));
+        metas.push(meta_at(s_b1, Some(s_memory), Some("memory-branch")));
+        metas.push(meta_at(s_b2, Some(s_memory), Some("memory-branch-2")));
         assert_eq!(
-            derive_branch_slug(&metas, "s_memory"),
+            derive_branch_slug(&metas, s_memory),
             Some("memory-branch-3".to_string())
         );
         // A same-named child of a DIFFERENT parent does not count.
+        let s_b3 = SessionId::new();
         let mut metas = tree();
-        metas.push(meta("s_b1", Some("s_task"), Some("memory-branch")));
+        metas.push(meta_at(s_b3, Some(s_task), Some("memory-branch")));
         assert_eq!(
-            derive_branch_slug(&metas, "s_memory"),
+            derive_branch_slug(&metas, s_memory),
             Some("memory-branch".to_string())
         );
         // No slug on the source → no derived slug.
-        assert_eq!(derive_branch_slug(&metas, "root:user:alice"), None);
-        assert_eq!(derive_branch_slug(&metas, "ghost"), None);
+        let root = metas[0].session_id;
+        assert_eq!(derive_branch_slug(&metas, root), None);
+        let ghost = SessionId::new();
+        assert_eq!(derive_branch_slug(&metas, ghost), None);
     }
 
     #[test]
     fn derive_branch_slug_stays_within_length_cap() {
+        let s = SessionId::new();
         let long = "x".repeat(MAX_SLUG_LEN);
-        let metas = vec![meta("s", None, Some(&long))];
-        let derived = derive_branch_slug(&metas, "s").unwrap();
+        let metas = vec![meta_at(s, None, Some(&long))];
+        let derived = derive_branch_slug(&metas, s).unwrap();
         validate_slug(&derived).unwrap();
         assert!(derived.ends_with("-branch"), "{derived}");
     }
@@ -717,89 +780,88 @@ mod tests {
 
     #[test]
     fn looks_like_session_id_heuristic() {
-        // Contains ':' — the canonical tree-root shape and the
-        // extension prefixes.
         assert!(looks_like_session_id("root:user:alice"));
         assert!(looks_like_session_id("spawn:550e8400:"));
         assert!(looks_like_session_id("channel:abc:"));
-
-        // Long all-hex (with dashes) blob.
         assert!(looks_like_session_id("550e8400-e29b-41d4-a716-446655440000"));
         assert!(looks_like_session_id(&"a".repeat(32)));
 
-        // Slugs must NOT trigger the heuristic.
         assert!(!looks_like_session_id("memory"));
         assert!(!looks_like_session_id("task-b"));
         assert!(!looks_like_session_id("agent-c"));
-
-        // Short hex-ish values still look like slugs.
         assert!(!looks_like_session_id("deadbeef"));
         assert!(!looks_like_session_id("550e8400"));
-
-        // Empty string falls through.
         assert!(!looks_like_session_id(""));
-
-        // Long but mixed with non-hex/dash — slug-ish.
         assert!(!looks_like_session_id(&format!("{}x", "a".repeat(32))));
     }
 
     // ─── resolve_relative ──────────────────────────────────────────
 
-    /// Like `tree()`, but adds a grandchild under `s_task` so descent
-    /// tests can find it without modifying the canonical tree shape.
     fn relative_tree() -> Vec<SessionMetadata> {
         let mut t = tree();
-        t.push(meta("s_grand", Some("s_task"), Some("grandchild-1")));
+        let s_grand = SessionId::new();
+        let s_task = t[2].session_id;
+        t.push(meta_at(s_grand, Some(s_task), Some("grandchild-1")));
         t
     }
 
     #[test]
     fn resolve_relative_finds_direct_child() {
         let metas = relative_tree();
+        let root = metas[0].session_id;
+        let s_memory = metas[1].session_id;
         assert_eq!(
-            resolve_relative(&metas, "root:user:alice", "memory").unwrap(),
-            "s_memory"
+            resolve_relative(&metas, root, "memory").unwrap(),
+            s_memory
         );
     }
 
     #[test]
     fn resolve_relative_prefers_direct_child_over_deeper() {
-        // Add a deeper node also named "memory" under s_task — the
-        // direct child must still win at depth 0.
         let mut metas = relative_tree();
-        metas.push(meta("s_deep_dup", Some("s_task"), Some("memory")));
+        let root = metas[0].session_id;
+        let s_task = metas[2].session_id;
+        let s_deep_dup = SessionId::new();
+        metas.push(meta_at(s_deep_dup, Some(s_task), Some("memory")));
+        let s_memory = metas[1].session_id;
         assert_eq!(
-            resolve_relative(&metas, "root:user:alice", "memory").unwrap(),
-            "s_memory"
+            resolve_relative(&metas, root, "memory").unwrap(),
+            s_memory
         );
     }
 
     #[test]
     fn resolve_relative_descends_to_grandchild() {
         let metas = relative_tree();
+        let root = metas[0].session_id;
+        let s_memory = metas[1].session_id;
+        let s_grand_idx = metas.len() - 1;
+        let s_grand = metas[s_grand_idx].session_id;
         assert_eq!(
-            resolve_relative(&metas, "root:user:alice", "grandchild-1").unwrap(),
-            "s_grand"
+            resolve_relative(&metas, root, "grandchild-1").unwrap(),
+            s_grand
         );
-        // And from a nested caller.
         assert_eq!(
-            resolve_relative(&metas, "s_memory", "grandchild-1").unwrap(),
-            "s_grand"
+            resolve_relative(&metas, s_memory, "grandchild-1").unwrap(),
+            s_grand
         );
     }
 
     #[test]
     fn resolve_relative_ambiguous_lists_matches() {
-        // Two grandchildren named "dup" under different parents of
-        // root:user:alice.
+        let root = SessionId::new();
+        let a = SessionId::new();
+        let b = SessionId::new();
+        let dup1 = SessionId::new();
+        let dup2 = SessionId::new();
         let metas = vec![
-            meta("root:user:alice", None, None),
-            meta("a", Some("root:user:alice"), Some("a")),
-            meta("b", Some("root:user:alice"), Some("b")),
-            meta("dup1", Some("a"), Some("dup")),
-            meta("dup2", Some("b"), Some("dup")),
+            meta_at(root, None, None),
+            meta_at(a, Some(root), Some("a")),
+            meta_at(b, Some(root), Some("b")),
+            meta_at(dup1, Some(a), Some("dup")),
+            meta_at(dup2, Some(b), Some("dup")),
         ];
-        let err = resolve_relative(&metas, "root:user:alice", "dup").unwrap_err();
+        let err = resolve_relative(&metas, root, "dup").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("ambiguous"), "{msg}");
         assert!(msg.contains("/a/dup"), "{msg}");
@@ -809,146 +871,123 @@ mod tests {
     #[test]
     fn resolve_relative_zero_matches_lists_available() {
         let metas = relative_tree();
-        let err = resolve_relative(&metas, "s_memory", "nope").unwrap_err();
+        let s_memory = metas[1].session_id;
+        let err = resolve_relative(&metas, s_memory, "nope").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no child or descendant"), "{msg}");
-        assert!(msg.contains("task-b"), "{msg}"); // direct-child hint
+        assert!(msg.contains("task-b"), "{msg}");
         assert!(msg.contains("notes"), "{msg}");
     }
 
     #[test]
     fn resolve_relative_rejects_bad_slug() {
         let metas = relative_tree();
+        let root = metas[0].session_id;
         for bad in ["", "a/b", "a:b", " lead", "trail "] {
-            let err = resolve_relative(&metas, "root:user:alice", bad).unwrap_err();
+            let err = resolve_relative(&metas, root, bad).unwrap_err();
             assert!(err.to_string().contains("invalid slug"), "{err}: {bad}");
         }
     }
 
     #[test]
     fn resolve_relative_is_cycle_bounded() {
-        // 2-cycle entirely inside the caller's subtree. Without
-        // cycle-bounding the BFS would walk a → b → a → b → …
-        // forever.
+        let root = SessionId::new();
+        let a = SessionId::new();
+        let b = SessionId::new();
         let metas = vec![
-            meta("root", None, None),
-            meta("a", Some("root"), Some("a")),
-            // b's parent is a, a's parent is b — 2-cycle.
-            meta("b", Some("a"), Some("b")),
+            meta_at(root, None, None),
+            meta_at(a, Some(root), Some("a")),
+            meta_at(b, Some(a), Some("b")),
         ];
-        // Termination check: must return within bounded time and
-        // find b's id (it sits at depth 1 and matches directly).
-        let result = resolve_relative(&metas, "root", "b");
+        let result = resolve_relative(&metas, root, "b");
         assert!(result.is_ok(), "should terminate: {result:?}");
-        assert_eq!(result.unwrap(), "b");
+        assert_eq!(result.unwrap(), b);
     }
 
-    // ─── resolve_reference (the LLM-facing entry point) ────────────
+    // ─── resolve_reference ─────────────────────────────────────────
 
     #[test]
     fn resolve_reference_dispatches_on_leading_slash() {
         let metas = relative_tree();
-        // Absolute path → resolve_path.
+        let s_task = metas[2].session_id;
+        let root = metas[0].session_id;
+        let s_memory = metas[1].session_id;
         assert_eq!(
-            resolve_reference(&metas, "s_task", "/memory").unwrap(),
-            "s_memory"
+            resolve_reference(&metas, s_task, "/memory").unwrap(),
+            s_memory
         );
-        // Bare slug → resolve_relative.
         assert_eq!(
-            resolve_reference(&metas, "root:user:alice", "memory").unwrap(),
-            "s_memory"
+            resolve_reference(&metas, root, "memory").unwrap(),
+            s_memory
         );
     }
 
     #[test]
     fn resolve_reference_root_path() {
         let metas = relative_tree();
-        // "/" pinned to tree root (matches resolve_path behavior).
-        assert_eq!(
-            resolve_reference(&metas, "s_task", "/").unwrap(),
-            "root:user:alice"
-        );
+        let s_task = metas[2].session_id;
+        let root = metas[0].session_id;
+        assert_eq!(resolve_reference(&metas, s_task, "/").unwrap(), root);
     }
 
     #[test]
     fn resolve_reference_rejects_raw_ids() {
         let metas = relative_tree();
-        // Tree-root shape (NOT the caller's own id, which would
-        // trigger the self-reference shortcut).
-        let err =
-            resolve_reference(&metas, "root:user:alice", "root:cron:alice").unwrap_err();
+        let root = metas[0].session_id;
+        // `:`-bearing legacy shape: refused.
+        let err = resolve_reference(&metas, root, "root:cron:alice").unwrap_err();
         assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
         // Runtime-extension shape.
-        let err = resolve_reference(&metas, "root:user:alice", "spawn:550e8400-e29b:").unwrap_err();
+        let err = resolve_reference(&metas, root, "spawn:550e8400-e29b:").unwrap_err();
         assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
-        // Bare UUID.
-        let err = resolve_reference(
-            &metas,
-            "root:user:alice",
-            "550e8400-e29b-41d4-a716-446655440000",
-        )
-        .unwrap_err();
+        // Bare UUID (32+ hex/dash): refused.
+        let err = resolve_reference(&metas, root, "550e8400-e29b-41d4-a716-446655440000").unwrap_err();
         assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
     }
 
     #[test]
     fn resolve_reference_rejects_empty() {
         let metas = relative_tree();
-        let err = resolve_reference(&metas, "root:user:alice", "").unwrap_err();
+        let root = metas[0].session_id;
+        let err = resolve_reference(&metas, root, "").unwrap_err();
         assert!(err.to_string().contains("empty"), "{err}");
     }
 
     #[test]
     fn resolve_reference_self_reference_bypasses_raw_id_check() {
-        // Engine-internal: the engine passes its own current_session
-        // id verbatim (a UUID). The self-reference shortcut lets it
-        // through; non-self raw ids still refuse.
         let metas = relative_tree();
-        let own_id = "550e8400-e29b-41d4-a716-446655440000";
-        assert_eq!(
-            resolve_reference(&metas, own_id, own_id).unwrap(),
-            own_id
-        );
-        // But a DIFFERENT raw id (matching `looks_like_session_id`) still
-        // refuses. The UUID-shape heuristic catches both 32+ hex/dash
-        // and `:`-bearing ids.
-        let err = resolve_reference(
-            &metas,
-            own_id,
-            "660e8400-e29b-41d4-a716-446655440099",
-        )
-        .unwrap_err();
+        let own_id = SessionId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(resolve_reference(&metas, own_id, "550e8400-e29b-41d4-a716-446655440000").unwrap(), own_id);
+        // A different UUID-shaped raw id still refuses.
+        let err = resolve_reference(&metas, own_id, "660e8400-e29b-41d4-a716-446655440099").unwrap_err();
         assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
     }
 
-    /// Engine-internal passthrough: raw ids are returned verbatim
-/// (existence is validated by the calling guards). Absolute slug
-/// paths are still resolved — the tool layer hands back paths it
-/// resolved from the LLM's input and they may travel through the
-/// engine on the way to a guard.
     #[test]
     fn resolve_id_or_path_accepts_raw_ids_and_resolves_paths() {
         let metas = relative_tree();
-        // UUID-shaped raw id: returned unchanged.
-        let fresh_peer_child = "550e8400-e29b-41d4-a716-446655440000";
+        let root = metas[0].session_id;
+        let fresh_peer_child = SessionId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(resolve_id_or_path(&metas, SessionId::new(), fresh_peer_child.to_string().as_str()).unwrap(), fresh_peer_child);
+        // Sprint 6: legacy `:`-bearing ids are accepted as the
+        // v5-derived UUID form (canonical `SessionId::from` fallback).
+        // The LLM-facing surface still routes through `resolve_reference`
+        // and refuses raw ids; engine-internal callers may pass either
+        // canonical UUIDs or fixture-style literals.
+        let legacy = SessionId::from("root:user:alice");
         assert_eq!(
-            resolve_id_or_path(&metas, "any", fresh_peer_child).unwrap(),
-            fresh_peer_child
+            resolve_id_or_path(&metas, SessionId::new(), "root:user:alice").unwrap(),
+            legacy
         );
-        // `:`-bearing legacy id: returned unchanged.
-        let legacy = "root:user:alice";
-        assert_eq!(resolve_id_or_path(&metas, "any", legacy).unwrap(), legacy);
-        // Short test-fixture id: also returned unchanged.
-        let fixture = "branch-a";
-        assert_eq!(resolve_id_or_path(&metas, "any", fixture).unwrap(), fixture);
-        // Absolute slug path: resolved via the same dispatch as the
-        // LLM-facing resolver.
+        // Absolute slug path: resolved via the same dispatch.
+        let s_grand_idx = metas.len() - 1;
+        let s_grand = metas[s_grand_idx].session_id;
         assert_eq!(
-            resolve_id_or_path(&metas, "root:user:alice", "/memory/task-b/grandchild-1").unwrap(),
-            "s_grand"
+            resolve_id_or_path(&metas, root, "/memory/task-b/grandchild-1").unwrap(),
+            s_grand
         );
         // Empty: refused.
-        let err = resolve_id_or_path(&metas, "any", "").unwrap_err();
+        let err = resolve_id_or_path(&metas, SessionId::new(), "").unwrap_err();
         assert!(err.to_string().contains("empty"), "{err}");
     }
 }

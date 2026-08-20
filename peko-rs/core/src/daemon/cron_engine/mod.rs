@@ -1758,8 +1758,11 @@ mod tests {
         assert!(runs[0].finished_at.is_some());
 
         // The cron turn ran in the TRUNK session.
-        let trunk_path = find_file_named(tmp.path(), "root:self.jsonl")
-            .expect("trunk session JSONL should exist");
+        let trunk_path = find_file_named(
+            tmp.path(),
+            &format!("{}.jsonl", peko_session::SessionId::from("root:self")),
+        )
+        .expect("trunk session JSONL should exist");
         let trunk_jsonl = std::fs::read_to_string(&trunk_path).unwrap();
         assert!(
             trunk_jsonl.contains("cron tick payload"),
@@ -1936,8 +1939,11 @@ mod tests {
         assert!(runs[0].finished_at.is_some());
 
         // The turn ran in the trunk session.
-        let trunk_path = find_file_named(tmp.path(), "root:self.jsonl")
-            .expect("trunk session JSONL should exist");
+        let trunk_path = find_file_named(
+            tmp.path(),
+            &format!("{}.jsonl", peko_session::SessionId::from("root:self")),
+        )
+        .expect("trunk session JSONL should exist");
         let trunk_jsonl = std::fs::read_to_string(&trunk_path).unwrap();
         assert!(
             trunk_jsonl.contains("organize your memory"),

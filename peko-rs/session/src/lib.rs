@@ -62,6 +62,7 @@ pub mod default_path_resolver;
 pub use default_path_resolver::DefaultPathResolver;
 pub mod directory;
 pub mod events;
+pub mod id;
 pub mod inbox_registry;
 pub mod index;
 pub mod jsonl;
@@ -93,6 +94,7 @@ pub use events::{
     SessionCreatedEvent, SessionEndedEvent, SessionEvent, SessionMessage, SessionTrigger,
     SystemEvent,
 };
+pub use id::SessionId;
 pub use inbox_registry::{InboxFactory, InboxRegistry, RunPermitGuard};
 pub use index::{SessionEntry, SessionIndex};
 pub use jsonl::{

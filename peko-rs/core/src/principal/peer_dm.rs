@@ -112,7 +112,7 @@ pub(crate) async fn peer_child_slug_readback(
         .await?;
     match metas
         .iter()
-        .find(|m| m.session_id == child_id)
+        .find(|m| m.session_id.to_string() == child_id)
         .and_then(|m| m.slug.clone())
     {
         Some(slug) => Ok(slug),

@@ -382,7 +382,8 @@ impl BindingResolver for SessionStoreBindingResolver {
             .await
             .list_all_sessions(false)
             .await?;
-        peko_session::path::resolve_path(&metas, &self.anchor, binding)
+        let anchor_id = peko_session::SessionId::from(self.anchor.as_str());
+        Ok(peko_session::path::resolve_path(&metas, anchor_id, binding)?.to_string())
     }
 }
 
@@ -794,6 +795,12 @@ mod tests {
 
     fn pid(s: &str) -> PrincipalId {
         PrincipalId(s.to_string())
+    }
+
+    /// Sprint 6: convert a test-fixture literal to the v5-derived UUID
+    /// form the runtime stores in `SessionMetadata.session_id`.
+    fn sid(literal: &str) -> String {
+        peko_session::SessionId::from(literal).to_string()
     }
 
     fn chan() -> ChannelId {
@@ -1493,13 +1500,15 @@ mod tests {
             .with_user("alice");
         let manager = Arc::new(RwLock::new(manager));
         let peer = peko_auth::Subject::User("alice".to_string());
+        let anchor = sid("root:user:alice");
+        let child_id_str = sid("child-1");
         {
             let mut mgr = manager.write().await;
             mgr.create_session(
                 "test-agent",
                 &peer,
                 SessionCreateOptions::new()
-                    .with_session_id("root:user:alice")
+                    .with_session_id(&anchor)
                     .with_trigger("user"),
             )
             .await
@@ -1508,8 +1517,8 @@ mod tests {
                 "test-agent",
                 &peer,
                 SessionCreateOptions::new()
-                    .with_session_id("child-1")
-                    .with_parent("root:user:alice")
+                    .with_session_id(&child_id_str)
+                    .with_parent(&anchor)
                     .with_trigger("spawn"),
             )
             .await
@@ -1517,7 +1526,7 @@ mod tests {
         }
         {
             let mgr = manager.read().await;
-            mgr.set_session_slug("child-1", Some("user-a".to_string()))
+            mgr.set_session_slug(&child_id_str, Some("user-a".to_string()))
                 .await
                 .unwrap();
         }
@@ -1527,15 +1536,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn resolver_passes_raw_ids_through() {
         let (manager, _tmp) = store_with_standing_child().await;
-        let resolver = SessionStoreBindingResolver::new(manager, "root:user:alice".to_string());
-        assert_eq!(resolver.resolve("child-1").await.unwrap(), "child-1");
+        let resolver =
+            SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
+        assert_eq!(resolver.resolve(&sid("child-1")).await.unwrap(), sid("child-1"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn resolver_resolves_slash_paths() {
         let (manager, _tmp) = store_with_standing_child().await;
-        let resolver = SessionStoreBindingResolver::new(manager, "root:user:alice".to_string());
-        assert_eq!(resolver.resolve("/user-a").await.unwrap(), "child-1");
+        let resolver =
+            SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
+        assert_eq!(resolver.resolve("/user-a").await.unwrap(), sid("child-1"));
         let err = resolver.resolve("/nope").await.unwrap_err();
         assert!(err.to_string().contains("user-a"), "{err}");
     }
@@ -1558,7 +1569,7 @@ mod tests {
             5,
             PrincipalId::generate(),
         );
-        let driver = SubagentResumeDriver::new(executor, "root:user:alice".to_string());
+        let driver = SubagentResumeDriver::new(executor, sid("root:user:alice"));
 
         // No provider configured: the resume path short-circuits to
         // its stub completion text (which embeds the task message) and
@@ -1568,7 +1579,7 @@ mod tests {
         // the turn — rather than session writes (those only happen
         // once a real provider drives the loop).
         let reply = driver
-            .drive_turn("child-1", "hello from the channel")
+            .drive_turn(&sid("child-1"), "hello from the channel")
             .await
             .unwrap();
         assert!(
@@ -1595,12 +1606,12 @@ mod tests {
             5,
             PrincipalId::generate(),
         );
-        let driver = SubagentResumeDriver::new(executor, "root:user:alice".to_string());
+        let driver = SubagentResumeDriver::new(executor, sid("root:user:alice"));
 
         // The root session itself is not a spawned session — the
         // resume guard refuses it (bound sessions must be spawned).
         let err = driver
-            .drive_turn("root:user:alice", "hi")
+            .drive_turn(&sid("root:user:alice"), "hi")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("spawn"), "{err}");

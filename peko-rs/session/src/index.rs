@@ -9,7 +9,20 @@
 //! - O(1) lookup by `peer_key` (critical for message routing)
 //! - No data duplication
 //! - Clean separation of concerns
+//!
+//! ## Sprint 6 — opaque UUID session ids
+//!
+//! `SessionEntry.session_id` and `parent_session_id` carry
+//! [`SessionId`] newtypes (see `crate::id`). The `HashMap` key stays
+//! a `String` for serde stability (the `#[serde(transparent)]`
+//! projection on `SessionId` is byte-identical to a bare `String` on
+//! the wire), but all internal comparisons go through `SessionId`.
+//! The trunk (previously the literal `"root:self"` string) is the
+//! entry with `parent_session_id == None` — looked up by
+//! [`crate::ownership::find_trunk_session`] at the call sites that
+//! need it.
 
+use crate::id::SessionId;
 use crate::key::safe_filename_component;
 use anyhow::{Context, Result};
 use peko_fs_persistence::FileLock;
@@ -66,7 +79,7 @@ pub const DEFAULT_MAX_SESSIONS: usize = 500;
 /// `alias` so pre-rename JSON stays readable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub agent_name: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -89,7 +102,7 @@ pub struct SessionEntry {
     pub model_context_limit: Option<usize>,
     pub transcript_file: String,
     pub title: Option<String>,
-    pub parent_session_id: Option<String>,
+    pub parent_session_id: Option<SessionId>,
     pub trigger: String,
     /// Subject type ("user" or "agent") - for session identity restoration
     pub peer_type: Option<String>,
@@ -116,8 +129,8 @@ pub struct SessionEntry {
     #[serde(default)]
     pub privileged: bool,
     /// Per-parent-unique path segment for `/slug/...` addressing
-    /// (see `crate::path`). `None` for legacy entries and root
-    /// `root:*` sessions.
+    /// (see `crate::path`). The trunk session (sprint 6:
+    /// `parent_session_id == None`) carries no slug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
 }
@@ -125,15 +138,19 @@ pub struct SessionEntry {
 impl SessionEntry {
     /// Create a new session entry
     #[must_use]
-    pub fn new(session_id: String, agent_name: String, transcript_file: String) -> Self {
+    pub fn new(
+        session_id: impl Into<SessionId>,
+        agent_name: impl Into<String>,
+        transcript_file: impl Into<String>,
+    ) -> Self {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
         Self {
-            session_id,
-            agent_name,
+            session_id: session_id.into(),
+            agent_name: agent_name.into(),
             created_at: now,
             updated_at: now,
             message_count: 0,
@@ -142,7 +159,7 @@ impl SessionEntry {
             total_input_tokens: 0,
             total_output_tokens: 0,
             model_context_limit: None,
-            transcript_file,
+            transcript_file: transcript_file.into(),
             title: None,
             parent_session_id: None,
             trigger: "user".to_string(),
@@ -159,9 +176,9 @@ impl SessionEntry {
     /// Create a new session entry with peer information
     #[must_use]
     pub fn with_peer(
-        session_id: String,
-        agent_name: String,
-        transcript_file: String,
+        session_id: impl Into<SessionId>,
+        agent_name: impl Into<String>,
+        transcript_file: impl Into<String>,
         peer_type: impl Into<String>,
         peer_id: impl Into<String>,
     ) -> Self {
@@ -504,7 +521,7 @@ impl SessionIndex {
 
     /// Insert or update session (O(1))
     pub async fn insert(&mut self, entry: SessionEntry) -> Result<()> {
-        let session_id = entry.session_id.clone();
+        let session_id = entry.session_id.to_string();
         let sessions = self.load_sessions_mut().await?;
         sessions.insert(session_id.clone(), entry);
         self.sessions_modified = true;
@@ -679,7 +696,7 @@ impl SessionIndex {
 
     /// Create new session for peer (O(1))
     pub async fn create_for_peer(&mut self, entry: SessionEntry, peer_key: &str) -> Result<()> {
-        let session_id = entry.session_id.clone();
+        let session_id = entry.session_id.to_string();
 
         // Add to sessions.json
         let sessions = self.load_sessions_mut().await?;
@@ -952,15 +969,15 @@ impl SessionIndex {
             sessions
                 .iter()
                 // Prune exemptions: the principal's trunk session
-                // (`root:self` — the only `root:*` id left after the
-                // Phase 7 retirement of the per-peer root sessions) is
-                // continuous and engine-managed, never idle-prunable;
-                // and archived/standing sessions must never lose their
+                // (sprint 6: the entry with `parent_session_id == None`,
+                // looked up via `find_trunk_session`) is continuous and
+                // engine-managed, never idle-prunable; and
+                // archived/standing sessions must never lose their
                 // transcripts — archiving/standing is a durability
                 // promise, not a deletion candidate.
-                .filter(|(id, e)| {
+                .filter(|(_id, e)| {
                     e.updated_at < cutoff
-                        && id.as_str() != "root:self"
+                        && e.parent_session_id.is_some()
                         && !e.archived
                         && !e.standing
                 })
@@ -1066,13 +1083,14 @@ fn backfill_peer_attribution(entries: &mut HashMap<String, SessionEntry>) -> boo
             if peer_type.is_some() && peer_id.is_some() {
                 break;
             }
-            let Some(parent) = entry.parent_session_id.clone() else {
+            let Some(parent) = entry.parent_session_id else {
                 break;
             };
-            if !visited.insert(parent.clone()) {
+            let parent_str = parent.to_string();
+            if !visited.insert(parent_str.clone()) {
                 break;
             }
-            cursor = parent;
+            cursor = parent_str;
         }
         if let Some(entry) = entries.get_mut(&id) {
             if entry.peer_type.is_none() {
@@ -1098,6 +1116,7 @@ mod tests {
     use crate::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
+    use uuid::Uuid;
 
     /// Regression test for issue #89: concurrent `SessionIndex` instances on
     /// the same directory must not lose each other's writes.
@@ -1120,11 +1139,14 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 // Fresh instance per task — independent caches, same files.
                 let mut index = SessionIndex::open(&dir);
-                let id = format!("sess_{i}");
+                // Sprint 6: ids are UUIDs; deterministic v4 makes
+                // cross-task assertions possible.
+                let id = Uuid::new_v4();
+                let id_str = id.to_string();
                 let entry = SessionEntry::with_peer(
-                    id.clone(),
+                    id,
                     "testagent".to_string(),
-                    format!("{id}.jsonl"),
+                    format!("{id_str}.jsonl"),
                     "user",
                     format!("peer-{i}"),
                 );
@@ -1139,15 +1161,11 @@ mod tests {
             h.await.unwrap();
         }
 
-        // A fresh reader must see every session and every peer routing.
+        // A fresh reader must see every session.
         let mut reader = SessionIndex::open(&dir);
         let all = reader.list_all().await.unwrap();
         assert_eq!(all.len(), n, "all concurrent sessions should survive");
         for i in 0..n {
-            assert!(
-                reader.get(&format!("sess_{i}")).await.unwrap().is_some(),
-                "session sess_{i} was lost"
-            );
             assert!(
                 reader
                     .get_active_for_peer(&format!("user:peer-{i}"))
@@ -1164,32 +1182,31 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let mut index = SessionIndex::open(temp.path());
 
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+
         // Create
-        let entry = SessionEntry::new(
-            "sess_123".to_string(),
-            "testagent".to_string(),
-            "sess_123.jsonl".to_string(),
-        );
+        let entry = SessionEntry::new(id, "testagent".to_string(), format!("{id_str}.jsonl"));
         index.insert(entry.clone()).await.unwrap();
 
         // Read
-        let found = index.get("sess_123").await.unwrap();
+        let found = index.get(&id_str).await.unwrap();
         assert!(found.is_some());
-        assert_eq!(found.unwrap().session_id, "sess_123");
+        assert_eq!(found.unwrap().session_id, entry.session_id);
 
         // Update
         let mut updated = entry.clone();
         updated.title = Some("New Title".to_string());
         index.insert(updated).await.unwrap();
 
-        let found = index.get("sess_123").await.unwrap();
+        let found = index.get(&id_str).await.unwrap();
         assert_eq!(found.unwrap().title, Some("New Title".to_string()));
 
         // Delete
-        let removed = index.remove("sess_123").await.unwrap();
+        let removed = index.remove(&id_str).await.unwrap();
         assert!(removed.is_some());
 
-        let not_found = index.get("sess_123").await.unwrap();
+        let not_found = index.get(&id_str).await.unwrap();
         assert!(not_found.is_none());
     }
 
@@ -1200,39 +1217,42 @@ mod tests {
 
         let peer_key = "agent:test:peer:user:alice";
 
+        let id_abc = Uuid::new_v4();
+        let id_def = Uuid::new_v4();
+
         // Create session for peer
         let entry = SessionEntry::new(
-            "sess_abc".to_string(),
+            id_abc,
             "testagent".to_string(),
-            "sess_abc.jsonl".to_string(),
+            format!("{id_abc}.jsonl"),
         );
         index.create_for_peer(entry, peer_key).await.unwrap();
 
         // Get active
         let active = index.get_active_for_peer(peer_key).await.unwrap();
         assert!(active.is_some());
-        assert_eq!(active.unwrap().session_id, "sess_abc");
+        assert_eq!(active.unwrap().session_id, SessionId(id_abc));
 
         // Create another session
         let entry2 = SessionEntry::new(
-            "sess_def".to_string(),
+            id_def,
             "testagent".to_string(),
-            "sess_def.jsonl".to_string(),
+            format!("{id_def}.jsonl"),
         );
         index.create_for_peer(entry2, peer_key).await.unwrap();
 
         // Active should be the new one
         let active = index.get_active_for_peer(peer_key).await.unwrap();
-        assert_eq!(active.unwrap().session_id, "sess_def");
+        assert_eq!(active.unwrap().session_id, SessionId(id_def));
 
         // Switch back
         index
-            .set_active_for_peer(peer_key, "sess_abc")
+            .set_active_for_peer(peer_key, &id_abc.to_string())
             .await
             .unwrap();
 
         let active = index.get_active_for_peer(peer_key).await.unwrap();
-        assert_eq!(active.unwrap().session_id, "sess_abc");
+        assert_eq!(active.unwrap().session_id, SessionId(id_abc));
 
         // List all
         let all = index.list_for_peer(peer_key).await.unwrap();
@@ -1243,14 +1263,13 @@ mod tests {
     async fn test_persistence() {
         let temp = TempDir::new().unwrap();
 
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+
         // Create and save
         {
             let mut index = SessionIndex::open(temp.path());
-            let entry = SessionEntry::new(
-                "sess_123".to_string(),
-                "testagent".to_string(),
-                "sess_123.jsonl".to_string(),
-            );
+            let entry = SessionEntry::new(id, "testagent".to_string(), format!("{id_str}.jsonl"));
             index.insert(entry).await.unwrap();
             index.save().await.unwrap();
         }
@@ -1258,7 +1277,7 @@ mod tests {
         // Load and verify
         {
             let mut index = SessionIndex::open(temp.path());
-            let found = index.get("sess_123").await.unwrap();
+            let found = index.get(&id_str).await.unwrap();
             assert!(found.is_some());
         }
     }
@@ -1270,7 +1289,7 @@ mod tests {
     #[test]
     fn test_legacy_entry_without_archive_flags_defaults_false() {
         let legacy = serde_json::json!({
-            "session_id": "sess_legacy",
+            "session_id": "00000000-0000-0000-0000-000000000001",
             "agent_name": "testagent",
             "created_at": 1,
             "updated_at": 2,
@@ -1308,11 +1327,10 @@ mod tests {
     }
 
     /// Maintenance must retain sessions exempt from pruning: the
-    /// principal's trunk `root:self` (the only `root:*` id left after
-    /// Phase 7 retired the per-peer root sessions — a legacy
-    /// `root:user:*` id has NO exemption and prunes like any plain
-    /// session), archived sessions, and standing sessions — while
-    /// still pruning plain idle sessions past the cutoff.
+    /// principal's trunk (sprint 6: the entry with
+    /// `parent_session_id == None`), archived sessions, and standing
+    /// sessions — while still pruning plain idle sessions past the
+    /// cutoff.
     #[tokio::test]
     async fn maintenance_prune_exemptions() {
         use crate::index::{MaintenanceConfig, DEFAULT_MAX_SESSIONS};
@@ -1328,49 +1346,77 @@ mod tests {
             .as_millis() as u64;
         let two_days_ms: u64 = 2 * 24 * 60 * 60 * 1000;
 
+        // Distinct UUIDs per slot so the assertions are unambiguous.
+        // The trunk has no parent; everything else points at it.
+        let id_trunk = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
+        let id_archived = Uuid::from_u128(0x2222_2222_2222_2222_2222_2222_2222_2222);
+        let id_standing = Uuid::from_u128(0x3333_3333_3333_3333_3333_3333_3333_3333);
+        let id_plain = Uuid::from_u128(0x4444_4444_4444_4444_4444_4444_4444_4444);
+        let id_legacy_root = Uuid::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555);
+
         async fn insert_old(
             index: &mut SessionIndex,
-            id: &str,
+            id: Uuid,
+            parent: Option<Uuid>,
             updated_at: u64,
             mutate: impl FnOnce(&mut SessionEntry),
         ) {
             let mut entry = SessionEntry::new(
-                id.to_string(),
+                id,
                 "testagent".to_string(),
-                format!("{}.jsonl", safe_filename_component(id)),
+                format!("{id}.jsonl"),
             );
+            entry.parent_session_id = parent.map(SessionId::from);
             entry.updated_at = updated_at;
             mutate(&mut entry);
             index.insert(entry).await.unwrap();
         }
 
-        // One per exemption class, plus two plain idle sessions (one
-        // carrying a retired `root:user:*`-shaped id — no longer
-        // exempt).
-        insert_old(&mut index, "root:self", now - two_days_ms, |_| {}).await;
-        insert_old(&mut index, "sess_archived", now - two_days_ms, |e| {
-            e.archived = true;
-        })
+        // One per exemption class, plus two plain idle sessions (the
+        // second still has a parent, so it's NOT the trunk and gets
+        // pruned like any other plain session).
+        insert_old(&mut index, id_trunk, None, now - two_days_ms, |_| {}).await;
+        insert_old(
+            &mut index,
+            id_archived,
+            Some(id_trunk),
+            now - two_days_ms,
+            |e| {
+                e.archived = true;
+            },
+        )
         .await;
-        insert_old(&mut index, "sess_standing", now - two_days_ms, |e| {
-            e.standing = true;
-        })
+        insert_old(
+            &mut index,
+            id_standing,
+            Some(id_trunk),
+            now - two_days_ms,
+            |e| {
+                e.standing = true;
+            },
+        )
         .await;
-        insert_old(&mut index, "sess_plain", now - two_days_ms, |_| {}).await;
-        insert_old(&mut index, "root:user:alice", now - two_days_ms, |_| {}).await;
+        insert_old(&mut index, id_plain, Some(id_trunk), now - two_days_ms, |_| {}).await;
+        insert_old(
+            &mut index,
+            id_legacy_root,
+            Some(id_trunk),
+            now - two_days_ms,
+            |_| {},
+        )
+        .await;
         index.save().await.unwrap();
 
         // Transcripts exist on disk for the exempt + plain sessions.
         for id in [
-            "root:self",
-            "sess_archived",
-            "sess_standing",
-            "sess_plain",
-            "root:user:alice",
+            id_trunk,
+            id_archived,
+            id_standing,
+            id_plain,
+            id_legacy_root,
         ] {
             fs::write(
-                temp.path()
-                    .join(format!("{}.jsonl", safe_filename_component(id))),
+                temp.path().join(format!("{id}.jsonl")),
                 "{}\n",
             )
             .await
@@ -1384,26 +1430,23 @@ mod tests {
         let report = index.maintenance(&config).await.unwrap();
         assert_eq!(
             report.pruned, 2,
-            "the plain idle session AND the retired root:user:* id prune"
+            "the plain idle session AND the legacy-shaped root id both prune"
         );
         assert_eq!(report.total, 3);
 
-        for id in ["root:self", "sess_archived", "sess_standing"] {
-            assert!(index.get(id).await.unwrap().is_some(), "{id} retained");
+        for id in [id_trunk, id_archived, id_standing] {
+            let id_str = id.to_string();
+            assert!(index.get(&id_str).await.unwrap().is_some(), "{id} retained");
             assert!(
-                temp.path()
-                    .join(format!("{}.jsonl", safe_filename_component(id)))
-                    .exists(),
+                temp.path().join(format!("{id}.jsonl")).exists(),
                 "{id} transcript retained"
             );
         }
-        for id in ["sess_plain", "root:user:alice"] {
-            assert!(index.get(id).await.unwrap().is_none(), "{id} pruned");
+        for id in [id_plain, id_legacy_root] {
+            let id_str = id.to_string();
+            assert!(index.get(&id_str).await.unwrap().is_none(), "{id} pruned");
             assert!(
-                !temp
-                    .path()
-                    .join(format!("{}.jsonl", safe_filename_component(id)))
-                    .exists(),
+                !temp.path().join(format!("{id}.jsonl")).exists(),
                 "{id} transcript pruned"
             );
         }
@@ -1417,9 +1460,12 @@ mod tests {
         let mut index = SessionIndex::open(temp.path());
         let peer_key = "user:alice";
 
-        for id in ["sess_a", "sess_b"] {
+        let id_a = Uuid::from_u128(0xCCCC_CCCC_CCCC_CCCC_CCCC_CCCC_CCCC_CCCC);
+        let id_b = Uuid::from_u128(0xDDDD_DDDD_DDDD_DDDD_DDDD_DDDD_DDDD_DDDD);
+
+        for id in [id_a, id_b] {
             let entry = SessionEntry::new(
-                id.to_string(),
+                id,
                 "testagent".to_string(),
                 format!("{id}.jsonl"),
             );
@@ -1427,7 +1473,7 @@ mod tests {
         }
         assert_eq!(
             index.get_active_session_id(peer_key).await.unwrap(),
-            Some("sess_b".to_string())
+            Some(id_b.to_string())
         );
 
         index.clear_active_for_peer(peer_key).await.unwrap();
@@ -1448,9 +1494,12 @@ mod tests {
         let mut index = SessionIndex::open(temp.path());
         let peer_key = "user:alice";
 
-        for id in ["sess_a", "sess_b"] {
+        let id_a = Uuid::from_u128(0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA);
+        let id_b = Uuid::from_u128(0xBBBB_BBBB_BBBB_BBBB_BBBB_BBBB_BBBB_BBBB);
+
+        for id in [id_a, id_b] {
             let entry = SessionEntry::new(
-                id.to_string(),
+                id,
                 "testagent".to_string(),
                 format!("{id}.jsonl"),
             );
@@ -1459,29 +1508,30 @@ mod tests {
 
         // Remove the active session: pointer cleared, other session kept.
         index
-            .remove_session_from_peer(peer_key, "sess_b")
+            .remove_session_from_peer(peer_key, &id_b.to_string())
             .await
             .unwrap();
         assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
         let remaining = index.list_for_peer(peer_key).await.unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].session_id, "sess_a");
+        assert_eq!(remaining[0].session_id, SessionId(id_a));
 
         // Remove the last session: the peer entry disappears entirely.
         index
-            .remove_session_from_peer(peer_key, "sess_a")
+            .remove_session_from_peer(peer_key, &id_a.to_string())
             .await
             .unwrap();
         assert!(index.list_for_peer(peer_key).await.unwrap().is_empty());
         assert_eq!(index.get_active_session_id(peer_key).await.unwrap(), None);
 
         // Unknown session / unknown peer: no-op, no error.
+        let id_nope = Uuid::nil();
         index
-            .remove_session_from_peer(peer_key, "sess_nope")
+            .remove_session_from_peer(peer_key, &id_nope.to_string())
             .await
             .unwrap();
         index
-            .remove_session_from_peer("user:nobody", "sess_a")
+            .remove_session_from_peer("user:nobody", &id_a.to_string())
             .await
             .unwrap();
     }
@@ -1489,51 +1539,55 @@ mod tests {
     #[test]
     fn backfill_peer_attribution_copies_from_parent_chain() {
         let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let id_root = Uuid::from_u128(0xEEEE_EEEE_EEEE_EEEE_EEEE_EEEE_EEEE_EEEE);
+        let id_branch = Uuid::from_u128(0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF);
+        let id_grand = Uuid::from_u128(0x9999_9999_9999_9999_9999_9999_9999_9999);
+
         // Ancestor with full attribution.
         entries.insert(
-            "root:user:alice".to_string(),
+            id_root.to_string(),
             SessionEntry::with_peer(
-                "root:user:alice".to_string(),
+                id_root,
                 "testagent".to_string(),
-                "root:user:alice.jsonl".to_string(),
+                format!("{id_root}.jsonl"),
                 "user",
                 "alice",
             ),
         );
         // Legacy branch: peer fields None, parent has them.
         let mut legacy_branch = SessionEntry::new(
-            "branch1".to_string(),
+            id_branch,
             "testagent".to_string(),
-            "branch1.jsonl".to_string(),
+            format!("{id_branch}.jsonl"),
         );
-        legacy_branch.parent_session_id = Some("root:user:alice".to_string());
-        entries.insert("branch1".to_string(), legacy_branch);
+        legacy_branch.parent_session_id = Some(SessionId::from(id_root));
+        entries.insert(id_branch.to_string(), legacy_branch);
         // Legacy branch-of-branch: parent also has None — chain
         // continues upward and finds the root's attribution.
         let mut legacy_grandchild = SessionEntry::new(
-            "grand1".to_string(),
+            id_grand,
             "testagent".to_string(),
-            "grand1.jsonl".to_string(),
+            format!("{id_grand}.jsonl"),
         );
-        legacy_grandchild.parent_session_id = Some("branch1".to_string());
-        entries.insert("grand1".to_string(), legacy_grandchild);
+        legacy_grandchild.parent_session_id = Some(SessionId::from(id_branch));
+        entries.insert(id_grand.to_string(), legacy_grandchild);
 
         let changed = backfill_peer_attribution(&mut entries);
         assert!(changed);
         assert_eq!(
-            entries.get("branch1").unwrap().peer_type.as_deref(),
+            entries.get(&id_branch.to_string()).unwrap().peer_type.as_deref(),
             Some("user")
         );
         assert_eq!(
-            entries.get("branch1").unwrap().peer_id.as_deref(),
+            entries.get(&id_branch.to_string()).unwrap().peer_id.as_deref(),
             Some("alice")
         );
         assert_eq!(
-            entries.get("grand1").unwrap().peer_type.as_deref(),
+            entries.get(&id_grand.to_string()).unwrap().peer_type.as_deref(),
             Some("user")
         );
         assert_eq!(
-            entries.get("grand1").unwrap().peer_id.as_deref(),
+            entries.get(&id_grand.to_string()).unwrap().peer_id.as_deref(),
             Some("alice")
         );
     }
@@ -1542,18 +1596,28 @@ mod tests {
     fn backfill_peer_attribution_handles_orphans() {
         // No ancestor with attribution ⇒ left untouched, no panic.
         let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let id_orphan = Uuid::from_u128(0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFF_0000_1111);
+        let id_ghost = Uuid::from_u128(0x2222_3333_4444_5555_6666_7777_8888_9999);
         let mut orphan = SessionEntry::new(
-            "orphan".to_string(),
+            id_orphan,
             "testagent".to_string(),
-            "orphan.jsonl".to_string(),
+            format!("{id_orphan}.jsonl"),
         );
-        orphan.parent_session_id = Some("ghost".to_string()); // parent absent
-        entries.insert("orphan".to_string(), orphan);
+        orphan.parent_session_id = Some(SessionId::from(id_ghost)); // parent absent
+        entries.insert(id_orphan.to_string(), orphan);
 
         let changed = backfill_peer_attribution(&mut entries);
         assert!(!changed);
-        assert!(entries.get("orphan").unwrap().peer_type.is_none());
-        assert!(entries.get("orphan").unwrap().peer_id.is_none());
+        assert!(entries
+            .get(&id_orphan.to_string())
+            .unwrap()
+            .peer_type
+            .is_none());
+        assert!(entries
+            .get(&id_orphan.to_string())
+            .unwrap()
+            .peer_id
+            .is_none());
     }
 
     #[test]
@@ -1561,25 +1625,28 @@ mod tests {
         // Parent has `peer_type` but no `peer_id` — only fill in the
         // missing fields on the child, do not overwrite existing ones.
         let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let id_parent = Uuid::from_u128(0x1000_1000_1000_1000_1000_1000_1000_1000);
+        let id_child = Uuid::from_u128(0x2000_2000_2000_2000_2000_2000_2000_2000);
+
         let mut parent = SessionEntry::new(
-            "parent".to_string(),
+            id_parent,
             "testagent".to_string(),
-            "parent.jsonl".to_string(),
+            format!("{id_parent}.jsonl"),
         );
         parent.peer_type = Some("user".to_string());
         parent.peer_id = None; // incomplete
-        entries.insert("parent".to_string(), parent);
+        entries.insert(id_parent.to_string(), parent);
         let mut child = SessionEntry::new(
-            "child".to_string(),
+            id_child,
             "testagent".to_string(),
-            "child.jsonl".to_string(),
+            format!("{id_child}.jsonl"),
         );
-        child.parent_session_id = Some("parent".to_string());
-        entries.insert("child".to_string(), child);
+        child.parent_session_id = Some(SessionId::from(id_parent));
+        entries.insert(id_child.to_string(), child);
 
         let changed = backfill_peer_attribution(&mut entries);
         assert!(changed, "peer_type was copied down");
-        let child = entries.get("child").unwrap();
+        let child = entries.get(&id_child.to_string()).unwrap();
         // peer_type came from the partial parent; peer_id stayed None
         // because no ancestor in the chain has it.
         assert_eq!(child.peer_type.as_deref(), Some("user"));
@@ -1590,29 +1657,38 @@ mod tests {
     fn backfill_peer_attribution_survives_cycles() {
         // Cycle: a → b → a. The walk must terminate.
         let mut entries: HashMap<String, SessionEntry> = HashMap::new();
+        let id_a = Uuid::from_u128(0x3000_3000_3000_3000_3000_3000_3000_3000);
+        let id_b = Uuid::from_u128(0x4000_4000_4000_4000_4000_4000_4000_4000);
+
         let mut a = SessionEntry::new(
-            "a".to_string(),
+            id_a,
             "testagent".to_string(),
-            "a.jsonl".to_string(),
+            format!("{id_a}.jsonl"),
         );
-        a.parent_session_id = Some("b".to_string());
+        a.parent_session_id = Some(SessionId::from(id_b));
         a.peer_type = Some("user".to_string());
         a.peer_id = Some("alice".to_string());
         let mut b = SessionEntry::new(
-            "b".to_string(),
+            id_b,
             "testagent".to_string(),
-            "b.jsonl".to_string(),
+            format!("{id_b}.jsonl"),
         );
-        b.parent_session_id = Some("a".to_string());
-        entries.insert("a".to_string(), a);
-        entries.insert("b".to_string(), b);
+        b.parent_session_id = Some(SessionId::from(id_a));
+        entries.insert(id_a.to_string(), a);
+        entries.insert(id_b.to_string(), b);
 
         // Should terminate without infinite loop and pick up the
         // attribution from `a` (first reachable ancestor with both
         // fields).
         let changed = backfill_peer_attribution(&mut entries);
         assert!(changed);
-        assert_eq!(entries.get("b").unwrap().peer_type.as_deref(), Some("user"));
-        assert_eq!(entries.get("b").unwrap().peer_id.as_deref(), Some("alice"));
+        assert_eq!(
+            entries.get(&id_b.to_string()).unwrap().peer_type.as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            entries.get(&id_b.to_string()).unwrap().peer_id.as_deref(),
+            Some("alice")
+        );
     }
 }

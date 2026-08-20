@@ -151,7 +151,9 @@ impl SessionManagerRuntime {
         metas: &[SessionMetadata],
         reference: &str,
     ) -> anyhow::Result<String> {
-        peko_session::path::resolve_reference(metas, &caller.current_session_id, reference)
+        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
+        peko_session::path::resolve_reference(metas, caller_id, reference)
+            .map(|id| id.to_string())
             .map_err(|e| self.refuse(e))
     }
 }
@@ -188,7 +190,7 @@ impl SessionRuntime for SessionManagerRuntime {
             .filter(|m| {
                 let tree_match = caller.is_base
                     || caller.privileged
-                    || in_subtree(&caller, &m.session_id, &metadatas);
+                    || in_subtree(&caller, &m.session_id.as_str(), &metadatas);
                 let archived_match = include_archived || !m.archived;
                 let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
@@ -205,27 +207,31 @@ impl SessionRuntime for SessionManagerRuntime {
                 tree_match && archived_match && peer_match && agent_match && active_match
             })
             .take(limit)
-            .map(|m| SessionInfo {
-                session_key: m.session_id.clone(),
-                session_id: m.session_id.clone(),
-                agent_id: Some(m.agent_name.clone()),
-                label: m.title.clone(),
-                created_at: chrono::DateTime::from_timestamp_millis(m.created_at as i64)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default(),
-                last_activity: chrono::DateTime::from_timestamp_millis(m.updated_at as i64)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default(),
-                message_count: m.message_count,
-                peer_type: m.peer_type.clone(),
-                peer_id: m.peer_id.clone(),
-                archived: m.archived,
-                run_active: false, // filled below when a registry is bound
-                slug: m.slug.clone(),
-                // Computed display path (slug segments; slugless
-                // ancestors skipped, slugless target falls back to its
-                // raw id). Ids stay the canonical key.
-                path: peko_session::path::compute_path(&metadatas, &m.session_id),
+            .map(|m| {
+                let id_str = m.session_id.to_string();
+                let path = peko_session::path::compute_path(&metadatas, m.session_id);
+                SessionInfo {
+                    session_key: id_str.clone(),
+                    session_id: id_str,
+                    agent_id: Some(m.agent_name.clone()),
+                    label: m.title.clone(),
+                    created_at: chrono::DateTime::from_timestamp_millis(m.created_at as i64)
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_default(),
+                    last_activity: chrono::DateTime::from_timestamp_millis(m.updated_at as i64)
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_default(),
+                    message_count: m.message_count,
+                    peer_type: m.peer_type.clone(),
+                    peer_id: m.peer_id.clone(),
+                    archived: m.archived,
+                    run_active: false, // filled below when a registry is bound
+                    slug: m.slug.clone(),
+                    // Computed display path (slug segments; slugless
+                    // ancestors skipped, slugless target falls back to its
+                    // raw id). Ids stay the canonical key.
+                    path,
+                }
             })
             .collect();
 
@@ -307,7 +313,7 @@ impl SessionRuntime for SessionManagerRuntime {
         let metadata = manager.get_session_metadata(session_id).await?;
 
         Ok(SessionStatusResult {
-            session_id: metadata.session_id,
+            session_id: metadata.session_id.to_string(),
             agent_name: metadata.agent_name,
             created_at: chrono::DateTime::from_timestamp_millis(metadata.created_at as i64)
                 .map(|dt| dt.to_rfc3339())
@@ -327,7 +333,7 @@ impl SessionRuntime for SessionManagerRuntime {
             peer_type: metadata.peer_type,
             peer_id: metadata.peer_id,
             label: metadata.title,
-            parent_session: metadata.parent_session_id,
+            parent_session: metadata.parent_session_id.map(|id| id.to_string()),
         })
     }
 
@@ -355,7 +361,7 @@ impl SessionRuntime for SessionManagerRuntime {
                     // D5: subtree callers search only their subtree.
                     let tree_match = caller.is_base
                         || caller.privileged
-                        || in_subtree(&caller, &m.session_id, &metas);
+                        || in_subtree(&caller, &m.session_id.as_str(), &metas);
                     let visible_match = !m.archived;
                     let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
                         let (have_kind, have_id) =
@@ -367,7 +373,7 @@ impl SessionRuntime for SessionManagerRuntime {
                     });
                     tree_match && visible_match && peer_match
                 })
-                .map(|m| m.session_id.clone())
+                .map(|m| m.session_id.to_string())
                 .collect();
             let sessions_dir = manager
                 .sessions_dir()
@@ -406,16 +412,17 @@ impl SessionRuntime for SessionManagerRuntime {
         // children on conflict) so the copy stays path-addressable.
         // The branch is a child of its source, so the pre-branch
         // metadata slice is the right sibling set.
-        let derived_slug = peko_session::path::derive_branch_slug(&metas, &session_key);
+        let source_id = peko_session::SessionId::from(session_key.as_str());
+        let derived_slug = peko_session::path::derive_branch_slug(&metas, source_id);
 
         let new_session_id = manager.branch_session_by_id(&session_key, label).await?;
         if let Some(slug) = derived_slug {
             manager
-                .set_session_slug(&new_session_id, Some(slug))
+                .set_session_slug(&new_session_id.as_str(), Some(slug))
                 .await?;
         }
         Ok(BranchOutcome {
-            new_session_id,
+            new_session_id: new_session_id.to_string(),
             parent_session_id: session_key,
         })
     }
@@ -494,7 +501,7 @@ impl SessionRuntime for SessionManagerRuntime {
         let (caller, metas) = self.caller_and_metas(&mut manager).await?;
         let session_key = &self.resolve_ref(&caller, &metas, session_key)?;
 
-        if !metas.iter().any(|m| &m.session_id == session_key) {
+        if !metas.iter().any(|m| m.session_id.as_str() == *session_key) {
             return Err(anyhow::anyhow!("Session not found: {session_key}"));
         }
         self.guard_not_self(&caller, session_key)?;
@@ -528,8 +535,8 @@ impl SessionRuntime for SessionManagerRuntime {
             }
             post_order.push(id.clone());
             for m in &metas {
-                if m.parent_session_id.as_deref() == Some(id.as_str()) {
-                    stack.push(m.session_id.clone());
+                if m.parent_session_id.as_ref().map(|p| p.as_str()).as_deref() == Some(id.as_str()) {
+                    stack.push(m.session_id.to_string());
                 }
             }
         }
@@ -586,10 +593,10 @@ impl SessionRuntime for SessionManagerRuntime {
         let session_key = &self.resolve_ref(&caller, &metas, session_key)?;
         let new_parent = &self.resolve_ref(&caller, &metas, &new_parent)?;
 
-        if !metas.iter().any(|m| &m.session_id == session_key) {
+        if !metas.iter().any(|m| m.session_id.as_str() == *session_key) {
             return Err(anyhow::anyhow!("Session not found: {session_key}"));
         }
-        if !metas.iter().any(|m| &m.session_id == new_parent) {
+        if !metas.iter().any(|m| m.session_id.as_str() == *new_parent) {
             return Err(anyhow::anyhow!("Session not found: {new_parent}"));
         }
         self.guard_not_self(&caller, session_key)?;
@@ -624,16 +631,21 @@ impl SessionRuntime for SessionManagerRuntime {
         // the new one. Refusal names the conflicting session id.
         let target_slug = metas
             .iter()
-            .find(|m| &m.session_id == session_key)
+            .find(|m| m.session_id.as_str() == *session_key)
             .and_then(|m| m.slug.as_deref());
         if let Some(slug) = target_slug {
-            if let Some(conflict) =
-                peko_session::path::slug_conflict(&metas, Some(new_parent), slug, session_key)
-            {
+            let new_parent_id = peko_session::SessionId::from(new_parent);
+            let session_id_for_check = peko_session::SessionId::from(session_key);
+            if let Some(conflict) = peko_session::path::slug_conflict(
+                &metas,
+                Some(new_parent_id),
+                slug,
+                session_id_for_check,
+            ) {
                 return Err(self.refuse(peko_session::path::err_slug_conflict(
                     slug,
-                    &conflict,
-                    Some(new_parent),
+                    conflict,
+                    Some(new_parent_id),
                 )));
             }
         }
@@ -667,7 +679,10 @@ impl SessionRuntime for SessionManagerRuntime {
         }
 
         manager
-            .move_session(session_key, Some(new_parent.clone()))
+            .move_session(
+                session_key,
+                Some(peko_session::SessionId::from(new_parent)),
+            )
             .await
     }
 
@@ -681,7 +696,7 @@ impl SessionRuntime for SessionManagerRuntime {
         self.guard_tree(&caller, session_key, &metas)?;
         let meta = metas
             .iter()
-            .find(|m| &m.session_id == session_key)
+            .find(|m| m.session_id.as_str() == *session_key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
         if meta.archived {
             return Err(self.refuse(err_compact_archived(session_key)));
@@ -795,6 +810,13 @@ mod tests {
     use peko_session::SessionCreateOptions;
     use tempfile::TempDir;
 
+    /// Sprint 6: convert a test-fixture literal (e.g. "spawn1") to
+    /// the v5-derived UUID form the runtime stores in
+    /// `SessionMetadata.session_id` and returns over the wire.
+    fn sid(literal: &str) -> String {
+        peko_session::SessionId::from(literal).to_string()
+    }
+
     /// Tempdir-backed harness: real `SessionManager`, real
     /// `InboxRegistry` (standalone factory), caller's current session
     /// settable per test.
@@ -834,7 +856,11 @@ mod tests {
         }
 
         async fn set_current(&self, id: &str) {
-            *self.current.write().await = Some(id.to_string());
+            // Sprint 6: convert the literal to its v5-derived UUID
+            // form so it matches the canonical id stored in
+            // `SessionMetadata.session_id`.
+            *self.current.write().await =
+                Some(peko_session::SessionId::from(id).to_string());
         }
 
         async fn create(&self, id: &str, parent: Option<&str>) {
@@ -852,9 +878,13 @@ mod tests {
         }
 
         async fn add_user_message(&self, id: &str, text: &str) {
+            // Sprint 6: convert the literal to its v5-derived UUID
+            // form so it matches the canonical id stored in
+            // `SessionMetadata.session_id`.
+            let id = peko_session::SessionId::from(id).to_string();
             let mut manager = self.manager.write().await;
             let handle = manager
-                .open_session(id)
+                .open_session(&id)
                 .await
                 .unwrap()
                 .expect("session openable");
@@ -880,11 +910,11 @@ mod tests {
     async fn tree_harness(current: &str) -> Harness {
         let h = Harness::new().await;
         h.create("root:user:alice", None).await;
-        h.create("spawn1", Some("root:user:alice")).await;
+        h.create("spawn1", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("spawn1", "a").await;
-        h.create("child1", Some("spawn1")).await;
+        h.create("child1", Some(sid("spawn1").as_str())).await;
         h.set_slug("child1", "b").await;
-        h.create("spawn2", Some("root:user:alice")).await;
+        h.create("spawn2", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("spawn2", "c").await;
         h.set_current(current).await;
         h
@@ -910,13 +940,13 @@ mod tests {
         let history = h.runtime.get_history("/c", 10, false).await.unwrap();
         assert_eq!(history.len(), 1);
         let status = h.runtime.get_status("/c").await.unwrap();
-        assert_eq!(status.session_id, "spawn2");
+        assert_eq!(status.session_id, sid("spawn2"));
 
         // Search spans the store.
         h.add_user_message("child1", "needle in child").await;
         let hits = h.runtime.search_sessions("needle", None, 10).await.unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].session_id, "child1");
+        assert_eq!(hits[0].session_id, sid("child1"));
 
         // Rename / archive / unarchive / compact / branch on others.
         h.runtime
@@ -935,7 +965,7 @@ mod tests {
         h.runtime.set_archived("/c", false).await.unwrap();
         h.runtime.request_compaction("/c").await.unwrap();
         let outcome = h.runtime.branch_session("/c", None).await.unwrap();
-        assert_eq!(outcome.parent_session_id, "spawn2");
+        assert_eq!(outcome.parent_session_id, sid("spawn2"));
 
         // Branching the CURRENT session is allowed (lock-safe copy).
         h.runtime.branch_session("/", None).await.unwrap();
@@ -970,7 +1000,7 @@ mod tests {
         // child of root:user:alice via a slug so the resolver can
         // find it (sibling-root addressing is out of scope for v1;
         // see sprint 5 plan).
-        h.create("root:self", Some("root:user:alice")).await;
+        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("root:self", "self").await;
         let err = h
             .runtime
@@ -983,14 +1013,14 @@ mod tests {
 
         // A retired-shape id (`root:cron:*`) has no family protection
         // anymore: it deletes like any plain session.
-        h.create("root:cron:alice", Some("root:user:alice")).await;
+        h.create("root:cron:alice", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("root:cron:alice", "cron-alice").await;
         let outcome = h
             .runtime
             .delete_session("/cron-alice", true)
             .await
             .unwrap();
-        assert_eq!(outcome.deleted, vec!["root:cron:alice".to_string()]);
+        assert_eq!(outcome.deleted, vec![sid("root:cron:alice")]);
     }
 
     #[tokio::test]
@@ -999,14 +1029,14 @@ mod tests {
 
         // spawn1 has child1: non-recursive refuses and names the child.
         let err = h.runtime.delete_session("/a", false).await.unwrap_err();
-        assert!(err.to_string().contains("child1"), "{err}");
+        assert!(err.to_string().contains(&sid("child1")), "{err}");
         assert!(err.to_string().contains("recursive:true"), "{err}");
 
         // Recursive deletes children first.
         let outcome = h.runtime.delete_session("/a", true).await.unwrap();
         assert_eq!(
             outcome.deleted,
-            vec!["child1".to_string(), "spawn1".to_string()]
+            vec![sid("child1"), sid("spawn1")]
         );
         assert!(h.runtime.get_status("/a").await.is_err());
         assert!(h.runtime.get_status("/a/b").await.is_err());
@@ -1016,21 +1046,21 @@ mod tests {
     async fn delete_run_permit_held_refuses_then_succeeds() {
         let h = tree_harness("root:user:alice").await;
 
-        let guard = h.registry.try_acquire_run("spawn2").await.unwrap();
+        let guard = h.registry.try_acquire_run(&sid("spawn2")).await.unwrap();
         let err = h.runtime.delete_session("/c", false).await.unwrap_err();
-        assert!(err.to_string().contains("spawn2"), "{err}");
+        assert!(err.to_string().contains(&sid("spawn2")), "{err}");
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
 
         let outcome = h.runtime.delete_session("/c", false).await.unwrap();
-        assert_eq!(outcome.deleted, vec!["spawn2".to_string()]);
+        assert_eq!(outcome.deleted, vec![sid("spawn2")]);
     }
 
     #[tokio::test]
     async fn archive_run_permit_held_refuses() {
         let h = tree_harness("root:user:alice").await;
 
-        let guard = h.registry.try_acquire_run("spawn2").await.unwrap();
+        let guard = h.registry.try_acquire_run(&sid("spawn2")).await.unwrap();
         let err = h.runtime.set_archived("/c", true).await.unwrap_err();
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
@@ -1042,15 +1072,15 @@ mod tests {
     async fn list_marks_run_active_with_held_permit() {
         let h = tree_harness("root:user:alice").await;
 
-        let guard = h.registry.try_acquire_run("child1").await.unwrap();
+        let guard = h.registry.try_acquire_run(&sid("child1")).await.unwrap();
         let all = h
             .runtime
             .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
-        let child = all.iter().find(|s| s.session_id == "child1").unwrap();
+        let child = all.iter().find(|s| s.session_id == sid("child1")).unwrap();
         assert!(child.run_active);
-        let other = all.iter().find(|s| s.session_id == "spawn2").unwrap();
+        let other = all.iter().find(|s| s.session_id == sid("spawn2")).unwrap();
         assert!(!other.run_active);
         drop(guard);
     }
@@ -1070,7 +1100,7 @@ mod tests {
         };
 
         let h = tree_harness("root:user:alice").await;
-        h.create("subrun_probe", Some("root:user:alice")).await;
+        h.create("subrun_probe", Some(sid("root:user:alice").as_str())).await;
 
         let registry = get_or_create_registry_for_agent("test-agent-list-run-active");
         let task_id = "task_subrun_probe".to_string();
@@ -1081,11 +1111,18 @@ mod tests {
                 task_id.clone(),
                 "Agent".to_string(),
                 json!({}),
-                "root:user:alice".to_string(),
+                sid("root:user:alice"),
                 AsyncToolConfig::default(),
                 TaskMetadata::Subagent(SubagentMetadata {
-                    child_session_key: "subrun_probe".to_string(),
-                    child_session_id: Some("subrun_probe".to_string()),
+                    // Sprint 6: child_session_id is the v5 UUID form
+                    // that `SessionMetadata.session_id` carries, so the
+                    // `has_active_subagent_run_for_child` lookup
+                    // (matched on `info.session_id == child`) finds the
+                    // run. The legacy overlay `child_session_key` is
+                    // kept populated for compat in case any
+                    // engine-internal caller still matches it.
+                    child_session_key: sid("subrun_probe"),
+                    child_session_id: Some(sid("subrun_probe")),
                     cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
                     depth: 1,
                     announce_completion: false,
@@ -1098,7 +1135,7 @@ mod tests {
             .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
-        let probe = all.iter().find(|s| s.session_id == "subrun_probe").unwrap();
+        let probe = all.iter().find(|s| s.session_id == sid("subrun_probe")).unwrap();
         assert!(probe.run_active, "live subagent run must mark run_active");
 
         // Terminal runs no longer count.
@@ -1111,7 +1148,7 @@ mod tests {
             .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
-        let probe = all.iter().find(|s| s.session_id == "subrun_probe").unwrap();
+        let probe = all.iter().find(|s| s.session_id == sid("subrun_probe")).unwrap();
         assert!(!probe.run_active);
     }
 
@@ -1178,7 +1215,7 @@ mod tests {
         let outcome = h.runtime.delete_session("/a/b", true).await.unwrap();
         assert_eq!(
             outcome.deleted,
-            vec![branch.new_session_id, "child1".to_string()]
+            vec![branch.new_session_id, sid("child1")]
         );
     }
 
@@ -1195,15 +1232,15 @@ mod tests {
             .await
             .unwrap();
         let ids: Vec<&str> = all.iter().map(|s| s.session_id.as_str()).collect();
-        assert!(ids.contains(&"spawn1"));
-        assert!(ids.contains(&"child1"));
-        assert!(!ids.contains(&"spawn2"));
-        assert!(!ids.contains(&"root:user:alice"));
+        assert!(ids.contains(&sid("spawn1").as_str()));
+        assert!(ids.contains(&sid("child1").as_str()));
+        assert!(!ids.contains(&sid("spawn2").as_str()));
+        assert!(!ids.contains(&sid("root:user:alice").as_str()));
 
         // search: hits only from in-tree sessions.
         let hits = h.runtime.search_sessions("needle", None, 10).await.unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].session_id, "child1");
+        assert_eq!(hits[0].session_id, sid("child1"));
 
         // history/status: out-of-tree explicit keys refuse; in-tree works.
         let err = h
@@ -1236,7 +1273,7 @@ mod tests {
         h.manager
             .write()
             .await
-            .set_privileged("spawn1", true)
+            .set_privileged(&sid("spawn1"), true)
             .await
             .unwrap();
 
@@ -1263,7 +1300,7 @@ mod tests {
         // After the move, spawn2 is under spawn1 (caller). Address it
         // via the new path /a/c.
         let outcome = h.runtime.delete_session("/a/c", true).await.unwrap();
-        assert_eq!(outcome.deleted, vec!["spawn2".to_string()]);
+        assert_eq!(outcome.deleted, vec![sid("spawn2")]);
 
         // Self-mutation is still refused.
         let err = h.runtime.delete_session("/a", true).await.unwrap_err();
@@ -1284,7 +1321,7 @@ mod tests {
         // addressing isn't supported in the resolver scope; see
         // sprint 5 plan). The engine-managed guard fires on the id
         // shape regardless of where it sits in the tree.
-        h.create("root:self", Some("root:user:alice")).await;
+        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("root:self", "self").await;
         let err = h.runtime.set_archived("/self", true).await.unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
@@ -1304,12 +1341,12 @@ mod tests {
             .unwrap();
         // After move, child1 sits under spawn2 → path /c/b.
         let status = h.runtime.get_status("/c/b").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some("spawn2"));
+        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn2").as_str()));
 
         // Audit trail: a System "reparent" event landed in child1's
         // JSONL recording old → new parent.
         let storage = SessionStorage::new(h._temp.path().to_path_buf());
-        let events = storage.load_events("child1").await.unwrap();
+        let events = storage.load_events(&sid("child1")).await.unwrap();
         let reparent = events
             .iter()
             .find_map(|e| match e {
@@ -1317,8 +1354,8 @@ mod tests {
                 _ => None,
             })
             .expect("reparent System event must be appended");
-        assert_eq!(reparent.detail["old_parent"], "spawn1");
-        assert_eq!(reparent.detail["new_parent"], "spawn2");
+        assert_eq!(reparent.detail["old_parent"], sid("spawn1"));
+        assert_eq!(reparent.detail["new_parent"], sid("spawn2"));
 
         // Moving UNDER a live root:* session is allowed. child1's
         // current path is /c/b (just moved under spawn2).
@@ -1329,7 +1366,7 @@ mod tests {
         // After this move, child1 sits directly under root:user:alice
         // with slug "b" → path /b.
         let status = h.runtime.get_status("/b").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some("root:user:alice"));
+        assert_eq!(status.parent_session.as_deref(), Some(sid("root:user:alice").as_str()));
 
         // Unknown endpoints error.
         assert!(h
@@ -1392,14 +1429,14 @@ mod tests {
         );
 
         // Fully in-tree move works.
-        h.create("grandchild1", Some("child1")).await;
+        h.create("grandchild1", Some(sid("child1").as_str())).await;
         h.set_slug("grandchild1", "g").await;
         h.runtime
             .move_session("/a/b/g", "/a".to_string())
             .await
             .unwrap();
         let status = h.runtime.get_status("/a/g").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some("spawn1"));
+        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn1").as_str()));
     }
 
     #[tokio::test]
@@ -1432,7 +1469,7 @@ mod tests {
         // resolver can address it (sibling-root addressing isn't
         // supported in the resolver scope). The engine-managed guard
         // fires on the id shape regardless of where it sits.
-        h.create("root:self", Some("root:user:alice")).await;
+        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("root:self", "self").await;
 
         let err = h
@@ -1444,7 +1481,7 @@ mod tests {
 
         // A retired-shape id (`root:cron:*`) moves like any plain
         // session — Phase 7 narrowed the family guard to the trunk.
-        h.create("root:cron:alice", Some("root:user:alice")).await;
+        h.create("root:cron:alice", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("root:cron:alice", "cron-alice").await;
         h.runtime
             .move_session("/cron-alice", "/a".to_string())
@@ -1456,7 +1493,10 @@ mod tests {
     async fn move_run_permit_held_refuses_then_succeeds() {
         let h = tree_harness("root:user:alice").await;
 
-        let guard = h.registry.try_acquire_run("child1").await.unwrap();
+        // Sprint 6: permit key is the v5 UUID form of `child1` (the
+        // canonical `SessionMetadata.session_id`) so the run-active
+        // check inside `move_session` sees it.
+        let guard = h.registry.try_acquire_run(&sid("child1")).await.unwrap();
         let err = h
             .runtime
             .move_session("/a/b", "/c".to_string())
@@ -1471,7 +1511,7 @@ mod tests {
             .unwrap();
         // After move, child1 sits under spawn2 → /c/b.
         let status = h.runtime.get_status("/c/b").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some("spawn2"));
+        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn2").as_str()));
     }
 
     /// A run on a DESCENDANT of the move target also refuses — the
@@ -1480,7 +1520,11 @@ mod tests {
     async fn move_descendant_run_active_refuses() {
         let h = tree_harness("root:user:alice").await;
 
-        let guard = h.registry.try_acquire_run("child1").await.unwrap();
+        // Sprint 6: the run permit key must be the v5 UUID form of
+        // `child1` (the canonical `SessionMetadata.session_id`) to
+        // match what `move_session`'s descendant `peek_run_held` call
+        // looks up.
+        let guard = h.registry.try_acquire_run(&sid("child1")).await.unwrap();
         let err = h
             .runtime
             .move_session("/a", "/c".to_string())
@@ -1511,7 +1555,7 @@ mod tests {
         // resolver can address it (sibling-root addressing isn't
         // supported). The engine-managed guard fires on the id shape
         // regardless of where it sits.
-        h.create("root:self", Some("root:user:alice")).await;
+        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("root:self", "self").await;
         let runtime: SharedSessionRuntime = Arc::new(SessionManagerRuntime::new(
             Arc::clone(&h.manager),
@@ -1575,10 +1619,14 @@ mod tests {
         /// Set a session's slug directly through the manager (the raw
         /// write path; uniqueness is enforced by the controller).
         async fn set_slug(&self, id: &str, slug: &str) {
+            // Sprint 6: convert the literal to its v5-derived UUID
+            // form so it matches the canonical id stored in
+            // `SessionMetadata.session_id`.
+            let id = peko_session::SessionId::from(id).to_string();
             self.manager
                 .read()
                 .await
-                .set_session_slug(id, Some(slug.to_string()))
+                .set_session_slug(&id, Some(slug.to_string()))
                 .await
                 .unwrap();
         }
@@ -1600,16 +1648,16 @@ mod tests {
 
         // status + history accept /paths (multi-segment included).
         let status = h.runtime.get_status("/a").await.unwrap();
-        assert_eq!(status.session_id, "spawn1");
+        assert_eq!(status.session_id, sid("spawn1"));
         let status = h.runtime.get_status("/a/b").await.unwrap();
-        assert_eq!(status.session_id, "child1");
+        assert_eq!(status.session_id, sid("child1"));
         h.add_user_message("child1", "hello via path").await;
         let history = h.runtime.get_history("/a/b", 10, false).await.unwrap();
         assert_eq!(history.len(), 1);
 
         // "/" is the caller's topmost ancestor (the tree root).
         let status = h.runtime.get_status("/").await.unwrap();
-        assert_eq!(status.session_id, "root:user:alice");
+        assert_eq!(status.session_id, sid("root:user:alice"));
 
         // rename via path, slug-only.
         h.runtime
@@ -1617,7 +1665,7 @@ mod tests {
             .await
             .unwrap();
         let status = h.runtime.get_status("/a/b2").await.unwrap();
-        assert_eq!(status.session_id, "child1");
+        assert_eq!(status.session_id, sid("child1"));
 
         // move accepts /paths for BOTH params.
         h.runtime
@@ -1625,14 +1673,14 @@ mod tests {
             .await
             .unwrap();
         let status = h.runtime.get_status("/c/b2").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some("spawn2"));
+        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn2").as_str()));
 
         // compact + archive + delete via path.
         h.runtime.request_compaction("/c/b2").await.unwrap();
         h.runtime.set_archived("/c/b2", true).await.unwrap();
         h.runtime.set_archived("/c/b2", false).await.unwrap();
         let outcome = h.runtime.delete_session("/c/b2", false).await.unwrap();
-        assert_eq!(outcome.deleted, vec!["child1".to_string()]);
+        assert_eq!(outcome.deleted, vec![sid("child1")]);
     }
 
     #[tokio::test]
@@ -1649,7 +1697,7 @@ mod tests {
 
         // In-tree path resolves and reads fine for the subtree caller.
         let status = h.runtime.get_status("/a/b").await.unwrap();
-        assert_eq!(status.session_id, "child1");
+        assert_eq!(status.session_id, sid("child1"));
     }
 
     #[tokio::test]
@@ -1671,7 +1719,7 @@ mod tests {
             .rename_session("/c", None, Some("a".to_string()))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("spawn1"), "{err}");
+        assert!(err.to_string().contains(&sid("spawn1")), "{err}");
         assert!(err.to_string().contains("unique per parent"), "{err}");
 
         // Same slug under a DIFFERENT parent is fine.
@@ -1680,7 +1728,7 @@ mod tests {
             .await
             .unwrap();
         let status = h.runtime.get_status("/a/c").await.unwrap();
-        assert_eq!(status.session_id, "child1");
+        assert_eq!(status.session_id, sid("child1"));
 
         // Invalid slug format: structured error.
         let err = h
@@ -1695,7 +1743,7 @@ mod tests {
     async fn move_refuses_slug_conflict_at_destination() {
         let h = slug_tree_harness("root:user:alice").await;
         // Give spawn2 its own child with slug "b" — child1's slug.
-        h.create("child2", Some("spawn2")).await;
+        h.create("child2", Some(sid("spawn2").as_str())).await;
         h.set_slug("child2", "b").await;
 
         let err = h
@@ -1703,7 +1751,9 @@ mod tests {
             .move_session("/a/b", "/c".to_string())
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("child2"), "{err}");
+        // Sprint 6: the conflicting session is identified by its v5
+        // UUID form in the error message.
+        assert!(err.to_string().contains(&sid("child2")), "{err}");
         assert!(err.to_string().contains("unique per parent"), "{err}");
 
         // Moving under a parent with no conflicting child slug works.
@@ -1712,7 +1762,7 @@ mod tests {
             .await
             .unwrap();
         let status = h.runtime.get_status("/b").await.unwrap();
-        assert_eq!(status.session_id, "child1");
+        assert_eq!(status.session_id, sid("child1"));
     }
 
     #[tokio::test]
@@ -1755,14 +1805,18 @@ mod tests {
             .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
-        let by_id = |id: &str| all.iter().find(|s| s.session_id == id).unwrap();
+        let by_id = |id: &str| {
+            let id = peko_session::SessionId::from(id).to_string();
+            all.iter().find(|s| s.session_id == id).unwrap()
+        };
         assert_eq!(by_id("spawn1").slug.as_deref(), Some("a"));
         assert_eq!(by_id("spawn1").path, "/a");
         assert_eq!(by_id("child1").path, "/a/b");
         assert_eq!(by_id("spawn2").path, "/c");
-        // Slugless sessions fall back to their raw id as last segment.
+        // Slugless sessions fall back to their raw id (v5 UUID form
+        // after Sprint 6) as last segment.
         assert_eq!(by_id("root:user:alice").slug, None);
-        assert_eq!(by_id("root:user:alice").path, "/root:user:alice");
+        assert_eq!(by_id("root:user:alice").path, format!("/{}", sid("root:user:alice")));
     }
 
     // ─── Sprint 5: relative addressing + raw-id refusal ──────────────
@@ -1776,16 +1830,16 @@ mod tests {
         h.set_slug("spawn1", "a").await;
         h.set_slug("child1", "b").await;
         h.set_slug("spawn2", "c").await;
-        h.create("grandchild1", Some("child1")).await;
+        h.create("grandchild1", Some(sid("child1").as_str())).await;
         h.set_slug("grandchild1", "g").await;
-        h.create("kid2", Some("spawn2")).await;
+        h.create("kid2", Some(sid("spawn2").as_str())).await;
         h.set_slug("kid2", "k").await;
-        h.create("leaf2", Some("kid2")).await;
+        h.create("leaf2", Some(sid("kid2").as_str())).await;
         h.set_slug("leaf2", "leaf").await;
         // Slug "c2" under spawn2 collides with... nothing visible from
         // the trunk at this depth, but makes the descent easy to
         // reason about.
-        h.create("spawn3", Some("spawn2")).await;
+        h.create("spawn3", Some(sid("spawn2").as_str())).await;
         h.set_slug("spawn3", "c2").await;
         h
     }
@@ -1796,13 +1850,13 @@ mod tests {
         // when no same-name sibling collides under the caller.
         let h = deep_tree_harness("root:user:alice").await;
         let status = h.runtime.get_status("g").await.unwrap();
-        assert_eq!(status.session_id, "grandchild1");
+        assert_eq!(status.session_id, sid("grandchild1"));
 
         // From a mid-tree caller (spawn2), a grandchild slug resolves
         // by descent within the caller's subtree.
         let h = deep_tree_harness("spawn2").await;
         let status = h.runtime.get_status("leaf").await.unwrap();
-        assert_eq!(status.session_id, "leaf2");
+        assert_eq!(status.session_id, sid("leaf2"));
 
         // Same slug appearing under two different children of the
         // caller (both spawn2 and spawn3's children could share a slug
@@ -1811,7 +1865,7 @@ mod tests {
         // from the trunk.
         let h = deep_tree_harness("root:user:alice").await;
         let status = h.runtime.get_status("c2").await.unwrap();
-        assert_eq!(status.session_id, "spawn3");
+        assert_eq!(status.session_id, sid("spawn3"));
     }
 
     #[tokio::test]
@@ -1823,9 +1877,9 @@ mod tests {
         h.set_slug("child1", "b").await;
         h.set_slug("spawn2", "c").await;
         // Both spawn1 and spawn2 get a child named "notes".
-        h.create("notes_a", Some("spawn1")).await;
+        h.create("notes_a", Some(sid("spawn1").as_str())).await;
         h.set_slug("notes_a", "notes").await;
-        h.create("notes_c", Some("spawn2")).await;
+        h.create("notes_c", Some(sid("spawn2").as_str())).await;
         h.set_slug("notes_c", "notes").await;
 
         let err = h.runtime.get_status("notes").await.unwrap_err();
@@ -1834,9 +1888,10 @@ mod tests {
         assert!(msg.contains("/a/notes"), "{msg}");
         assert!(msg.contains("/c/notes"), "{msg}");
 
-        // Narrowing with an absolute path resolves.
+        // Narrowing with an absolute path resolves. Sprint 6: session id is
+        // the v5 UUID form, not the literal fixture name.
         let status = h.runtime.get_status("/c/notes").await.unwrap();
-        assert_eq!(status.session_id, "notes_c");
+        assert_eq!(status.session_id, sid("notes_c"));
     }
 
     /// Raw session ids — anything with `:` or a long hex shape — are

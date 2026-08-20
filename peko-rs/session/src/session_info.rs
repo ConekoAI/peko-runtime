@@ -84,7 +84,7 @@ pub struct SessionInfo {
 impl From<SessionEntry> for SessionInfo {
     fn from(entry: SessionEntry) -> Self {
         Self {
-            id: entry.session_id,
+            id: entry.session_id.to_string(),
             agent_name: entry.agent_name,
             created_at: entry.created_at,
             updated_at: entry.updated_at,
@@ -94,7 +94,7 @@ impl From<SessionEntry> for SessionInfo {
             total_input_tokens: entry.total_input_tokens,
             total_output_tokens: entry.total_output_tokens,
             model_context_limit: entry.model_context_limit,
-            parent_session_id: entry.parent_session_id,
+            parent_session_id: entry.parent_session_id.map(|id| id.to_string()),
             title: entry.title,
             peer_type: entry.peer_type,
             peer_id: entry.peer_id,

@@ -21,6 +21,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 
+/// Sprint 6: convert a fixture literal to the v5-derived UUID form the
+/// runtime stamps on `SessionMetadata.session_id` and returns over the wire.
+fn sid(literal: &str) -> String {
+    peko_session::SessionId::from(literal).to_string()
+}
+
 /// Per-test agent-name counter so each subagent integration test gets its own
 /// global async-task registry. Without this, every test shares one registry
 /// (keyed by "test_agent" in `get_or_create_registry_for_agent`) and
@@ -1411,12 +1417,17 @@ async fn create_standing_child(
     declared_type: Option<&str>,
 ) {
     create_linked_session(session_manager, agent_name, id, Some(parent_id), "spawn").await;
+    // Sprint 6: the canonical session id is the v5 UUID form of the
+    // fixture literal. Re-derive it here so the standing flag and the
+    // declaration event both key on the same id as the JSONL filename
+    // (`{sessions_dir}/{v5_uuid}.jsonl`).
+    let canonical_id = peko_session::SessionId::from(id).to_string();
     {
         let mgr = session_manager.read().await;
-        mgr.set_session_slug(id, Some(slug.to_string()))
+        mgr.set_session_slug(&canonical_id, Some(slug.to_string()))
             .await
             .unwrap();
-        mgr.set_standing(id, true).await.unwrap();
+        mgr.set_standing(&canonical_id, true).await.unwrap();
     }
     if let Some(declared) = declared_type {
         let dir = session_manager
@@ -1425,7 +1436,7 @@ async fn create_standing_child(
             .sessions_dir()
             .cloned()
             .unwrap();
-        crate::session::standing::record_declared_child(&dir, id, slug, declared, None)
+        crate::session::standing::record_declared_child(&dir, &canonical_id, slug, declared, None)
             .await
             .unwrap();
     }
@@ -1494,10 +1505,11 @@ async fn new_with_name_attaches_to_standing_child() {
     assert!(run_id.starts_with("run_"));
 
     // Attach: the run targets the EXISTING standing child, and no new
-    // session was minted.
+    // session was minted. Sprint 6: child_session_id is the v5 UUID
+    // form of the fixture literal.
     assert_eq!(
         run_child_session_id(&registry, &run_id).await.as_deref(),
-        Some("child-memory"),
+        Some(sid("child-memory").as_str()),
         "name matching a standing child must attach to it"
     );
     let session_count_after = session_manager
@@ -1572,7 +1584,7 @@ async fn new_with_fresh_name_spawns_new_session() {
         .unwrap();
     let fresh = metas
         .iter()
-        .find(|m| m.session_id == child_id)
+        .find(|m| m.session_id.to_string() == child_id)
         .expect("fresh child metadata exists");
     assert_eq!(fresh.slug.as_deref(), Some("about-user"));
     assert!(!fresh.standing, "fresh spawns are not standing");
@@ -1627,7 +1639,8 @@ async fn new_with_name_colliding_non_standing_errors() {
         .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("not a standing child"), "{msg}");
-    assert!(msg.contains("plain-notes"), "{msg}");
+    // Sprint 6: the colliding session id appears as its v5 UUID form.
+    assert!(msg.contains(&sid("plain-notes")), "{msg}");
 }
 
 #[tokio::test]
@@ -1693,9 +1706,11 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
         )
         .await
         .unwrap();
+    // Sprint 6: child_session_id is the v5 UUID form of the fixture
+    // literal (`sid("child-memory")`).
     assert_eq!(
         run_child_session_id(&registry, &run_id).await.as_deref(),
-        Some("child-memory")
+        Some(sid("child-memory").as_str())
     );
 }
 
@@ -1818,7 +1833,9 @@ async fn compact_happy_path_flags_session_without_trigger_requirement() {
         .request_compaction("branch-a", "root-sess")
         .await
         .unwrap();
-    assert_eq!(outcome.session_id, "branch-a");
+    // Sprint 6: request_compaction resolves the target through
+    // `SessionId::from`, so the returned id is the v5 UUID form.
+    assert_eq!(outcome.session_id, sid("branch-a"));
     assert!(
         outcome.message.contains("no completion signal") || outcome.message.contains("next run"),
         "outcome must be honest about deferred semantics: {}",
@@ -1833,7 +1850,7 @@ async fn compact_happy_path_flags_session_without_trigger_requirement() {
         .unwrap();
     let target = metas
         .iter()
-        .find(|m| m.session_id == "branch-a")
+        .find(|m| m.session_id.to_string() == sid("branch-a"))
         .expect("target metadata present");
     assert!(
         target.compact_requested,
@@ -1959,7 +1976,7 @@ async fn spawn_with_name_stamps_child_slug() {
         .unwrap();
     let child = metas
         .iter()
-        .find(|m| m.parent_session_id.as_deref() == Some("root-sess"))
+        .find(|m| m.parent_session_id.map(|id| id.to_string()).as_deref() == Some(peko_session::SessionId::from("root-sess").to_string().as_str()))
         .expect("spawned child present");
     assert_eq!(child.slug.as_deref(), Some("task-b"));
     assert_eq!(child.trigger, "spawn");
@@ -1981,7 +1998,7 @@ async fn spawn_with_name_stamps_child_slug() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("unique per parent"), "{err}");
-    assert!(err.to_string().contains(&child.session_id), "{err}");
+    assert!(err.to_string().contains(&child.session_id.to_string()), "{err}");
 
     // Invalid slug format refuses at spawn too.
     let err = executor
@@ -2051,7 +2068,7 @@ async fn resume_and_compact_accept_path_targets() {
         .request_compaction("/worker", "root-sess")
         .await
         .unwrap();
-    assert_eq!(outcome.session_id, "spawn-a");
+    assert_eq!(outcome.session_id, sid("spawn-a"));
 
     // Unknown path segments surface the actionable resolver error
     // (available child slugs listed), before any guard runs.
@@ -2279,7 +2296,7 @@ async fn streaming_resume_registers_active_run_in_registry() {
         if registry
             .read()
             .await
-            .has_active_subagent_run_for_child("spawn-a")
+            .has_active_subagent_run_for_child(sid("spawn-a").as_str())
         {
             observed_active = true;
             break;
@@ -2305,7 +2322,7 @@ async fn streaming_resume_registers_active_run_in_registry() {
     assert!(!registry
         .read()
         .await
-        .has_active_subagent_run_for_child("spawn-a"));
+        .has_active_subagent_run_for_child(sid("spawn-a").as_str()));
 }
 
 /// Cancellation: a cancelled parent token surfaces as a refused
@@ -2469,7 +2486,11 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
 
     // The "channel driver" run: an active subagent entry for the
     // child, exactly the metadata shape `register_subagent_run`
-    // writes.
+    // writes. Sprint 6: the registry stores the canonical v5 UUID form
+    // of the child session id, not the literal `spawn-a` — production
+    // sets this via `SessionId::from(...)` in `register_subagent_run`,
+    // and the lookup in `has_active_subagent_run_for_child` matches
+    // against the same canonical form.
     let mut entry = AsyncTaskEntry::with_metadata(
         "run_channel_turn".to_string(),
         "Agent".to_string(),
@@ -2477,8 +2498,8 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
         "root-sess".to_string(),
         AsyncToolConfig::default(),
         TaskMetadata::Subagent(SubagentMetadata {
-            child_session_key: "spawn-a".to_string(),
-            child_session_id: Some("spawn-a".to_string()),
+            child_session_key: sid("spawn-a"),
+            child_session_id: Some(sid("spawn-a")),
             cleanup: SpawnCleanupPolicy::Keep,
             depth: 1,
             announce_completion: false,
@@ -2523,7 +2544,7 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
         .into_iter()
         .filter(|e| {
             matches!(&e.metadata, TaskMetadata::Subagent(m)
-                if m.child_session_id.as_deref() == Some("spawn-a"))
+                if m.child_session_id.as_deref() == Some(sid("spawn-a").as_str()))
         })
         .count();
     assert_eq!(runs_for_child, 1, "no double-run may be registered");
@@ -2589,7 +2610,7 @@ async fn streaming_resume_sequential_turns_keep_history() {
 
     // The child session kept both turns.
     let mut manager = session_manager.write().await;
-    let handle = manager.open_session("spawn-a").await.unwrap().unwrap();
+    let handle = manager.open_session(sid("spawn-a").as_str()).await.unwrap().unwrap();
     let history = handle.load_history().await.unwrap();
     for needle in ["first message", "second message"] {
         assert!(

@@ -2148,15 +2148,17 @@ impl Agent {
         let mut output = String::from("📁 Sessions:\n\n");
 
         for (i, session) in sessions.iter().enumerate() {
-            let is_active = active_id.is_some_and(|id| id == session.session_id);
+            let is_active = active_id.is_some_and(|id| id == session.session_id.as_str());
             let marker = if is_active { "●" } else { "○" };
             let label = session.title.as_deref().unwrap_or("unnamed");
-            let short_id = &session.session_id[..8];
+            let short_id = &session.session_id.as_str()[..8];
 
             output.push_str(&format!("{} {}. {} ({})", marker, i + 1, label, short_id));
 
-            if let Some(ref parent) = session.parent_session_id {
-                output.push_str(&format!(" [branched from {}]", &parent[..8]));
+            if let Some(parent) = session.parent_session_id {
+                let parent_str = parent.as_str();
+                let parent_short = &parent_str[..8];
+                output.push_str(&format!(" [branched from {}]", parent_short));
             }
 
             if is_active {
@@ -2222,7 +2224,7 @@ impl Agent {
                     let target_lower = target.to_lowercase();
                     sessions
                         .iter()
-                        .find(|s| s.session_id.to_lowercase().starts_with(&target_lower))
+                        .find(|s| s.session_id.as_str().to_lowercase().starts_with(&target_lower))
                         .map(|s| s.session_id.clone())
                         .ok_or_else(|| {
                             anyhow::anyhow!(
@@ -2230,11 +2232,12 @@ impl Agent {
                             )
                         })?
                 };
+                let session_id_str = session_id.as_str().clone();
 
-                self.session_switch(peer, &session_id).await?;
+                self.session_switch(peer, &session_id_str).await?;
                 Ok((true, format!(
                     "↔️  Switched to session {}\n\nPrevious messages are now from the selected session context.",
-                    &session_id[..8]
+                    &session_id_str[..8]
                 )))
             }
             "/sessions" => {
@@ -2245,7 +2248,7 @@ impl Agent {
                         Some(s.session_id.as_str())
                             == sessions.first().map(|f| f.session_id.as_str())
                     })
-                    .map(|s| s.session_id.clone());
+                    .map(|s| s.session_id.to_string());
                 let output = self.format_session_list(&sessions, active_id.as_deref());
                 Ok((true, output))
             }

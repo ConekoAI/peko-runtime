@@ -152,7 +152,7 @@ pub fn find_declared_child<'a>(
         m.slug.as_deref() == Some(name)
             && m.standing
             && m.trigger == "spawn"
-            && tree_root_id(&m.session_id, metas).as_deref() == Some(owner_root)
+            && tree_root_id(&m.session_id.to_string(), metas).as_deref() == Some(owner_root)
     })
 }
 
@@ -177,6 +177,13 @@ fn tree_root_id(session_id: &str, metas: &[SessionMetadata]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::session::ownership::{descendants_of, in_subtree};
+
+    /// Sprint 6: convert a test-fixture literal (e.g. `"root:self"`)
+    /// to the v5-derived UUID form the runtime stores in
+    /// `SessionMetadata.session_id`.
+    fn sid(literal: &str) -> String {
+        peko_session::SessionId::from(literal).to_string()
+    }
 
     /// Build a `SessionManager` over a tempdir and write a
     /// `principal.toml` with the given `[children]` table body into
@@ -224,8 +231,8 @@ mod tests {
         assert!(child.standing, "child must be standing");
         assert_eq!(child.trigger, "spawn");
         assert_eq!(
-            child.parent_session_id.as_deref(),
-            Some("root:self"),
+            child.parent_session_id.map(|id| id.to_string()),
+            Some(peko_session::SessionId::from("root:self").to_string()),
             "child must be parented at the trunk session"
         );
         assert_eq!(child.title.as_deref(), Some("Memory curator"));
@@ -233,7 +240,7 @@ mod tests {
         // The declaration is recoverable from the child JSONL.
         let sessions_dir = manager.read().await.sessions_dir().cloned().unwrap();
         assert_eq!(
-            crate::session::standing::declared_subagent_type(&sessions_dir, &child.session_id)
+            crate::session::standing::declared_subagent_type(&sessions_dir, &child.session_id.as_str())
                 .await
                 .as_deref(),
             Some("archivist")
@@ -357,15 +364,15 @@ mod tests {
 
         // (b) BEFORE the trunk exists: the child is a spawned (non-base)
         // caller; its dangling parent id stays in its ancestor chain.
-        let child_caller = caller_context(&child_id, &metas);
+        let child_caller = caller_context(&child_id.as_str(), &metas);
         assert!(!child_caller.is_base);
         assert!(!child_caller.dangling);
-        assert_eq!(child_caller.ancestors, vec!["root:self".to_string()]);
+        assert_eq!(child_caller.ancestors, vec![sid("root:self")]);
         // The child cannot manage its (missing) parent — outside its subtree.
-        assert!(!in_subtree(&child_caller, "root:self", &metas));
+        assert!(!in_subtree(&child_caller, &sid("root:self"), &metas));
         // Adjacency still works without a parent entry: the dangling
         // trunk's descendants include the child.
-        assert_eq!(descendants_of("root:self", &metas), vec![child_id.clone()]);
+        assert_eq!(descendants_of(&sid("root:self"), &metas), vec![child_id.as_str().clone()]);
 
         // Create the trunk session (as the first self-turn would).
         {
@@ -378,15 +385,15 @@ mod tests {
 
         // (a) The trunk caller is base → manages the whole store,
         // including the pre-existing standing child.
-        let root_caller = caller_context("root:self", &metas);
+        let root_caller = caller_context(&sid("root:self"), &metas);
         assert!(root_caller.is_base);
-        assert!(in_subtree(&root_caller, &child_id, &metas));
+        assert!(in_subtree(&root_caller, &child_id.as_str(), &metas));
 
         // (b) AFTER: the child is still a spawned caller confined to
         // its own subtree.
-        let child_caller = caller_context(&child_id, &metas);
+        let child_caller = caller_context(&child_id.as_str(), &metas);
         assert!(!child_caller.is_base);
-        assert!(!in_subtree(&child_caller, "root:self", &metas));
+        assert!(!in_subtree(&child_caller, &sid("root:self"), &metas));
         // …but it manages its OWN subtree: a grandchild under the child.
         {
             let mut mgr = manager.write().await;
@@ -399,11 +406,11 @@ mod tests {
         let metas = metas_of(&manager).await;
         let grandchild = metas
             .iter()
-            .find(|m| m.parent_session_id.as_deref() == Some(child_id.as_str()))
+            .find(|m| m.parent_session_id.map(|id| id.to_string()).as_deref() == Some(&child_id.as_str()))
             .unwrap();
-        assert!(in_subtree(&child_caller, &grandchild.session_id, &metas));
+        assert!(in_subtree(&child_caller, &grandchild.session_id.as_str(), &metas));
         // …and still not the trunk.
-        assert!(!in_subtree(&child_caller, "root:self", &metas));
+        assert!(!in_subtree(&child_caller, &sid("root:self"), &metas));
     }
 
     /// The match requires the parent chain to root at THIS principal's
@@ -415,16 +422,16 @@ mod tests {
         foreign.slug = Some("memory".to_string());
         foreign.standing = true;
         foreign.trigger = "spawn".to_string();
-        foreign.parent_session_id = Some("root:user:bob".to_string());
+        foreign.parent_session_id = Some(peko_session::SessionId::from("root:user:bob"));
         let metas = vec![foreign];
-        assert!(find_declared_child(&metas, "root:user:alice", "memory").is_none());
-        assert!(find_declared_child(&metas, "root:user:bob", "memory").is_some());
+        assert!(find_declared_child(&metas, &sid("root:user:alice"), "memory").is_none());
+        assert!(find_declared_child(&metas, &sid("root:user:bob"), "memory").is_some());
         // Wrong flags never match.
         let mut not_standing = SessionMetadata::new("c2", "agent", "c2.jsonl");
         not_standing.slug = Some("memory".to_string());
         not_standing.trigger = "spawn".to_string();
-        not_standing.parent_session_id = Some("root:user:alice".to_string());
-        assert!(find_declared_child(&[not_standing], "root:user:alice", "memory").is_none());
+        not_standing.parent_session_id = Some(peko_session::SessionId::from("root:user:alice"));
+        assert!(find_declared_child(&[not_standing], &sid("root:user:alice"), "memory").is_none());
     }
 
     /// Standing children survive maintenance pruning even when older
@@ -445,11 +452,18 @@ mod tests {
             .clone();
 
         // Age the standing child AND a plain session past the cutoff.
+        // The plain session is parented at the trunk so the
+        // maintenance filter (which exempts parentless entries) sees
+        // it as a prune candidate.
         let plain_id = {
             let mut mgr = manager.write().await;
             let peer = Subject::User("alice".to_string());
             let handle = mgr
-                .create_session("root", &peer, SessionCreateOptions::new())
+                .create_session(
+                    "root",
+                    &peer,
+                    SessionCreateOptions::new().with_parent(sid("root:self")),
+                )
                 .await
                 .unwrap();
             handle.session_id().to_string()
@@ -457,7 +471,8 @@ mod tests {
         {
             let mut mgr = manager.write().await;
             let index = mgr.index_mut().expect("index initialized");
-            for id in [&child_id, &plain_id] {
+            for id in [child_id.as_str(), plain_id.as_str().to_string()] {
+                let id: &str = id.as_str();
                 let mut entry = index.get(id).await.unwrap().unwrap();
                 entry.updated_at = 0; // ancient
                 index.insert(entry).await.unwrap();
@@ -472,7 +487,7 @@ mod tests {
             // Read through to disk (bypass the 30s index cache) so the
             // assertion can't be fooled by a stale in-memory view; the
             // metadata-controller cache is likewise not consulted here.
-            assert!(index.get_uncached(&child_id).await.unwrap().is_some());
+            assert!(index.get_uncached(&child_id.as_str()).await.unwrap().is_some());
             assert!(index.get_uncached(&plain_id).await.unwrap().is_none());
         }
     }
