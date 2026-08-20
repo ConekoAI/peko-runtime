@@ -177,12 +177,33 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"new\" requires 'prompt' and 'subagent_type'"
                 ));
             }
+            // Sprint 5: a slug is required at spawn. The new session's
+            // address — and the address of every child of it — is its
+            // slug path; raw ids are refused at the tool boundary.
+            // Validate here so the model gets an actionable error
+            // before the runtime touches state.
+            match args.name.as_deref() {
+                None | Some("") => {
+                    return Err(anyhow::anyhow!(
+                        "action \"new\" requires 'name' (slug) — the per-parent-unique path \
+                         segment used for /a/b addressing (1-64 chars, no '/', no ':', no \
+                         leading/trailing whitespace)"
+                    ));
+                }
+                Some(slug) => {
+                    if let Err(e) = peko_session::path::validate_slug(slug) {
+                        return Err(anyhow::anyhow!(
+                            "action \"new\" 'name' is not a valid slug: {e}"
+                        ));
+                    }
+                }
+            }
         }
         AgentAction::Resume => {
             if args.session_key.is_none() {
                 return Err(anyhow::anyhow!(
-                    "action \"resume\" requires 'session_key' — pass a session id from the \
-                     session tool's list"
+                    "action \"resume\" requires 'session_key' — pass a slug path ('/a/b/c') or \
+                     a caller-relative slug ('agent-c') from the session tool's list (`path` field)"
                 ));
             }
             if args.prompt.is_empty() || args.subagent_type.is_empty() {
@@ -201,8 +222,8 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
         AgentAction::Compact => {
             if args.session_key.is_none() {
                 return Err(anyhow::anyhow!(
-                    "action \"compact\" requires 'session_key' — pass a session id from the \
-                     session tool's list"
+                    "action \"compact\" requires 'session_key' — pass a slug path ('/a/b/c') or \
+                     a caller-relative slug ('agent-c') from the session tool's list (`path` field)"
                 ));
             }
         }
@@ -697,17 +718,17 @@ impl Tool for AgentTool {
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Actions:
-- new (default): Spawn a sub-agent run in an isolated or shared session. Requires prompt + subagent_type.
-- resume: Re-attach this run to an existing spawned session you own (session_key from the session tool's list) — the subagent continues with its full prior history. Requires session_key + prompt + subagent_type. Mutually exclusive with isolated.
-- compact: Flag a session for engine-driven summarization. Requires session_key only (prompt and subagent_type are ignored if supplied). Returns immediately after flagging the session; the engine summarizes at the target's next run. There is no completion signal; the target's next resume will reflect the compacted history.
+- new (default): Spawn a sub-agent run in an isolated or shared session. Requires prompt + subagent_type + name (slug). The 'name' becomes the child session's slug — the address you use later ('/.../<name>') — and must be unique among your session's existing children.
+- resume: Re-attach this run to an existing spawned session you own. session_key accepts a slug path ('/a/b/c') or a caller-relative slug ('agent-c') from the session tool's list (`path` field). Raw session ids are REFUSED — pass the `path` field instead. Requires session_key + prompt + subagent_type. Mutually exclusive with isolated.
+- compact: Flag a session for engine-driven summarization. session_key follows the same slug-path / caller-relative-slug grammar as resume (raw ids refused). Requires session_key only (prompt and subagent_type are ignored if supplied). Returns immediately after flagging; the engine summarizes at the target's next run.
 
 Parameters:
 - action: "new" | "resume" | "compact" (default: "new")
 - prompt: Description of the task to execute (required for new and resume)
 - subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required for new and resume)
-- session_key: Target session (required for resume and compact; ignored for new) — a raw session id from the session tool's list, or an absolute path ('/a/b' of slugs, anchored at the root of your session tree; see the session tool list's `path` field)
+- session_key: Target session (required for resume and compact; ignored for new) — a slug path ('/a/b/c') or a caller-relative slug ('agent-c') from the session tool's list (`path` field). Raw session ids are refused.
 - description: Optional description for tracking (matches Claude Code's Agent schema)
-- name: Optional slug for the spawned session (new only) — the per-parent-unique path segment so you can later address the child as '/.../<name>' (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's existing children). If your subtree already contains a STANDING session with this slug (declared via the principal's [children] config), the run attaches to that session with its full history instead of spawning fresh; the subagent_type must match the declaration. A name colliding with a non-standing session is an error — rename semantics live in the session tool.
+- name: REQUIRED slug for the spawned session (new only) — the per-parent-unique path segment so you can later address the child as '/.../<name>' (1-64 chars, no '/', no ':', no leading/trailing whitespace; must be unique among your session's existing children). If your subtree already contains a STANDING session with this slug (declared via the principal's [children] config), the run attaches to that session with its full history instead of spawning fresh; the subagent_type must match the declaration. A name colliding with a non-standing session is an error — rename semantics live in the session tool.
 - model: Optional model override for the subagent (matches Claude Code's Agent schema)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
@@ -729,16 +750,16 @@ Limits:
 
 Examples:
 // Blocking spawn - parent waits for result (auto-detaches on timeout)
-{"prompt": "Use Write to create report.txt with a summary", "subagent_type": "writer"}
+{"prompt": "Use Write to create report.txt with a summary", "subagent_type": "writer", "name": "writer-1"}
 
 // Isolated context - fresh session
-{"prompt": "Analyze confidential data", "subagent_type": "analyst", "isolated": true, "cleanup": "delete"}
+{"prompt": "Analyze confidential data", "subagent_type": "analyst", "name": "analyst-secret", "isolated": true, "cleanup": "delete"}
 
 // Persistent worker - continue a previous spawned session with its history
-{"action": "resume", "session_key": "<session-id from session list>", "prompt": "Now update report.txt with the new numbers", "subagent_type": "writer"}
+{"action": "resume", "session_key": "/writer-1", "prompt": "Now update report.txt with the new numbers", "subagent_type": "writer"}
 
 // Compact a long transcript before the next resume
-{"action": "compact", "session_key": "<session-id from session list>"}"#
+{"action": "compact", "session_key": "/writer-1"}"#
             .to_string()
     }
 
@@ -762,7 +783,7 @@ Examples:
                 },
                 "session_key": {
                     "type": "string",
-                    "description": "Target session: a raw session id from the session tool's list, or an absolute path ('/a/b' of slugs anchored at the root of your session tree). Required for resume and compact. Ignored for new."
+                    "description": "Target session: an absolute slug path ('/a/b/c' from your tree root) or a caller-relative slug ('agent-c' matching one of your descendants). Raw session ids are refused. Required for resume and compact. Ignored for new."
                 },
                 "description": {
                     "type": "string",
@@ -770,7 +791,7 @@ Examples:
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional slug for the spawned session (new only): the per-parent-unique path segment for later '/.../<name>' addressing (1-64 chars, no '/', no leading/trailing whitespace; must be unique among your session's children). A slug matching an existing STANDING session in your subtree attaches to it instead of spawning fresh."
+                    "description": "Slug for the spawned session (REQUIRED for 'new'; ignored otherwise): the per-parent-unique path segment for later '/.../<name>' addressing (1-64 chars, no '/', no ':', no leading/trailing whitespace; must be unique among your session's children). A slug matching an existing STANDING session in your subtree attaches to it instead of spawning fresh."
                 },
                 "model": {
                     "type": "string",
@@ -1727,6 +1748,7 @@ mod tests {
             .execute(serde_json::json!({
                 "prompt": "x",
                 "subagent_type": "writer",
+                "name": "writer-1",
                 "cleanup": "purge",
             }))
             .await
