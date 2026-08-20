@@ -1009,21 +1009,16 @@ impl SubagentExecutor {
             (caller_context(parent_session_key, &metas), metas)
         };
 
-        // Resolve the LLM-facing reference (slug path, caller-
-        // relative slug, or raw id) to a canonical session id BEFORE
-        // the guards — they all run on ids. Engine-internal
-        // entrypoint: accepts raw ids from the runtime itself
-        // (peer-child session ids just minted by `spawn_child`,
-        // `caller_session_key` echoed back). The LLM-facing tool
-        // layer uses `resolve_reference` (the strict variant) so
-        // the model still sees the structured refusal.
-        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
-        let resolved_target = peko_session::path::resolve_id_or_path(
-            &metas,
-            caller_id,
-            resume_session_id,
-        )?;
-        let resume_session_id = resolved_target.as_str();
+        // Sprint 6: the engine-internal entrypoint receives canonical UUIDs
+        // (the LLM-facing tool layer resolves slug paths via
+        // `resolve_reference` before handing off; the runtime hands
+        // back the canonical id it produced). No shape heuristic to
+        // apply — just canonicalize the input and let the per-call
+        // guards validate existence. `resolve_reference` is the strict
+        // LLM-facing variant; engine-internal code does not need it.
+        let _ = peko_session::SessionId::from(caller.current_session_id.as_str());
+        let canonical = peko_session::SessionId::from(resume_session_id);
+        let resume_session_id = canonical.as_str();
 
         // Guard: target must exist.
         let target_meta = metas
@@ -1162,20 +1157,14 @@ impl SubagentExecutor {
             (caller_context(caller_session_key, &metas), metas)
         };
 
-        // Resolve the LLM-facing reference (slug path, caller-
-        // relative slug, or raw id) to a canonical session id BEFORE
-        // the guards — they all run on ids. Engine-internal
-        // entrypoint: same dispatch as `resolve_reference` but raw
-        // ids pass through (the runtime hands us the peer-child
-        // session id directly). The LLM-facing tool layer uses the
-        // strict variant.
-        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
-        let resolved_target = peko_session::path::resolve_id_or_path(
-            &metas,
-            caller_id,
-            target,
-        )?;
-        let target = resolved_target.as_str();
+        // Sprint 6: engine-internal entrypoint. The reference arrived via
+        // the runtime as a canonical UUID (the LLM-facing tool layer
+        // resolves slug paths through `resolve_reference` before
+        // handing off). Canonicalize via `SessionId::from` and let
+        // the per-call guards validate existence.
+        let _ = peko_session::SessionId::from(caller.current_session_id.as_str());
+        let canonical = peko_session::SessionId::from(target);
+        let target = canonical.as_str();
 
         // Guard: target must exist.
         let target_meta = metas
@@ -1247,19 +1236,12 @@ impl SubagentExecutor {
         let mut manager = self.session_manager.write().await;
         let metas = manager.list_all_sessions(false).await?;
 
-        // Resolve the LLM-facing reference first so raw ids are
-        // normalized to canonical session ids (consistent with the
-        // rest of the runtime) before the in-subtree check. Engine-
-        // internal entrypoint: raw ids from the runtime are accepted
-        // verbatim. The tool layer uses the strict variant
-        // (`resolve_reference`) so the model gets the structured
-        // refusal.
-        let caller_id = peko_session::SessionId::from(caller_session_key);
-        let context_parent = peko_session::path::resolve_id_or_path(
-            &metas,
-            caller_id,
-            context_parent,
-        )?;
+        // Sprint 6: engine-internal entrypoint. The reference arrived via
+        // the runtime as a canonical UUID; canonicalize via
+        // `SessionId::from` and let the in-subtree check validate
+        // ownership.
+        let _ = peko_session::SessionId::from(caller_session_key);
+        let context_parent = peko_session::SessionId::from(context_parent);
 
         if context_parent.to_string() == caller_session_key {
             return Ok(context_parent.to_string());

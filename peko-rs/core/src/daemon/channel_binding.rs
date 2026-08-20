@@ -342,17 +342,17 @@ impl ChannelResponder for PassiveBindingResponder {
 /// path resolution with a clear error; the responder logs and retries
 /// on the next event.
 ///
-/// **Note (sprint 5):** bindings are config-authored, not LLM-authored
+/// **Note (sprint 5 + 6):** bindings are config-authored, not LLM-authored
 /// (the user puts a `local-user:<id>` entry in `principals.toml` and
-/// it never goes through the tool surface), so the raw-id passthrough
-/// here is deliberate — it diverges from the LLM-facing
-/// `peko_session::path::resolve_reference` which refuses raw ids. The
-/// engine-internal `peko_session::path::resolve_id_or_path` accepts
-/// raw ids by design (used by `resume_preflight` /
-/// `request_compaction` / `validate_context_parent` for ids the
-/// runtime itself produced); this resolver sits closer to that
-/// surface than the LLM-facing one. Do not "fix" this without first
-/// wiring bindings through the same resolver.
+/// it never goes through the tool surface). After sprint 6 commit 2
+/// the engine has a single resolver — `peko_session::path::resolve_reference`
+/// — that handles both `/`-paths and engine self-references; raw ids
+/// of any other shape refuse. The engine-internal entrypoints
+/// (`resume_preflight` / `request_compaction` / `validate_context_parent`)
+/// canonicalize via `SessionId::from` directly rather than going through
+/// a heuristic; this resolver sits closer to that surface than to the
+/// LLM-facing one. Do not "fix" this without first wiring bindings
+/// through the same resolver.
 pub(crate) struct SessionStoreBindingResolver {
     session_manager: Arc<RwLock<SessionManager>>,
     anchor: String,

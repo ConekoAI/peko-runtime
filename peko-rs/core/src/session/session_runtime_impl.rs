@@ -1819,84 +1819,17 @@ mod tests {
         assert_eq!(by_id("root:user:alice").path, format!("/{}", sid("root:user:alice")));
     }
 
-    // ─── Sprint 5: relative addressing + raw-id refusal ──────────────
+    // ─── Sprint 5 + 6: path-only LLM-facing surface ─────────────────
+    //
+    // Sprint 6 collapsed the three-form grammar (slug path, caller-
+    // relative slug, raw id) into a strict two-form grammar (slug path
+    // or self-reference) since engine-internal ids are opaque UUIDs.
+    // The caller-relative slug tests from sprint 5 are gone — raw ids
+    // are uniformly refused with the actionable message below.
 
-    /// Build a tree with slugs for the relative-addressing tests:
-    /// root:user:alice ── spawn1 ("a") ── child1 ("b") ── grandchild1 ("g")
-    ///                  └──── spawn2 ("c") ── kid2 ("k") ── leaf2 ("leaf")
-    ///                              └──── spawn3 ("c2") (slug collision)
-    async fn deep_tree_harness(current: &str) -> Harness {
-        let h = tree_harness(current).await;
-        h.set_slug("spawn1", "a").await;
-        h.set_slug("child1", "b").await;
-        h.set_slug("spawn2", "c").await;
-        h.create("grandchild1", Some(sid("child1").as_str())).await;
-        h.set_slug("grandchild1", "g").await;
-        h.create("kid2", Some(sid("spawn2").as_str())).await;
-        h.set_slug("kid2", "k").await;
-        h.create("leaf2", Some(sid("kid2").as_str())).await;
-        h.set_slug("leaf2", "leaf").await;
-        // Slug "c2" under spawn2 collides with... nothing visible from
-        // the trunk at this depth, but makes the descent easy to
-        // reason about.
-        h.create("spawn3", Some(sid("spawn2").as_str())).await;
-        h.set_slug("spawn3", "c2").await;
-        h
-    }
-
-    #[tokio::test]
-    async fn relative_slug_resolves_end_to_end() {
-        // From the trunk, a grandchild slug is reachable by descent
-        // when no same-name sibling collides under the caller.
-        let h = deep_tree_harness("root:user:alice").await;
-        let status = h.runtime.get_status("g").await.unwrap();
-        assert_eq!(status.session_id, sid("grandchild1"));
-
-        // From a mid-tree caller (spawn2), a grandchild slug resolves
-        // by descent within the caller's subtree.
-        let h = deep_tree_harness("spawn2").await;
-        let status = h.runtime.get_status("leaf").await.unwrap();
-        assert_eq!(status.session_id, sid("leaf2"));
-
-        // Same slug appearing under two different children of the
-        // caller (both spawn2 and spawn3's children could share a slug
-        // — but in this fixture "leaf" appears only under kid2). Add
-        // an unambiguous match: "c2" lives under spawn2, unambiguous
-        // from the trunk.
-        let h = deep_tree_harness("root:user:alice").await;
-        let status = h.runtime.get_status("c2").await.unwrap();
-        assert_eq!(status.session_id, sid("spawn3"));
-    }
-
-    #[tokio::test]
-    async fn relative_slug_ambiguous_lists_all_paths() {
-        // Two same-name grandchildren under different children of the
-        // trunk — the relative resolver must error with all paths.
-        let h = tree_harness("root:user:alice").await;
-        h.set_slug("spawn1", "a").await;
-        h.set_slug("child1", "b").await;
-        h.set_slug("spawn2", "c").await;
-        // Both spawn1 and spawn2 get a child named "notes".
-        h.create("notes_a", Some(sid("spawn1").as_str())).await;
-        h.set_slug("notes_a", "notes").await;
-        h.create("notes_c", Some(sid("spawn2").as_str())).await;
-        h.set_slug("notes_c", "notes").await;
-
-        let err = h.runtime.get_status("notes").await.unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("'notes' is ambiguous"), "{msg}");
-        assert!(msg.contains("/a/notes"), "{msg}");
-        assert!(msg.contains("/c/notes"), "{msg}");
-
-        // Narrowing with an absolute path resolves. Sprint 6: session id is
-        // the v5 UUID form, not the literal fixture name.
-        let status = h.runtime.get_status("/c/notes").await.unwrap();
-        assert_eq!(status.session_id, sid("notes_c"));
-    }
-
-    /// Raw session ids — anything with `:` or a long hex shape — are
-    /// REFUSED at the LLM-facing surface so the model learns to use
-    /// the `path` field from `session list` instead.
+    /// Raw session ids — anything that isn't a `/`-prefixed path or the
+    /// caller's own id — are REFUSED at the LLM-facing surface so the
+    /// model learns to use the `path` field from `session list` instead.
     #[tokio::test]
     async fn raw_id_refused_with_actionable_message() {
         let h = tree_harness("root:user:alice").await;
@@ -1923,18 +1856,16 @@ mod tests {
         assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
 
         // The refusal is consistent across actions (history / rename /
-        // delete all flow through `resolve_ref`).
+        // delete all flow through `resolve_reference`).
         let err = h
             .runtime
             .get_history("spawn2", 10, false)
             .await
             .unwrap_err();
-        // "spawn2" isn't a session id shape, so it falls through to
-        // `resolve_relative` — which errors because no descendant has
-        // slug "spawn2" (the slug is "c"). The refusal is different
-        // from the raw-id refusal but proves the same boundary.
+        // "spawn2" isn't a `/`-prefixed path or the caller's own id,
+        // so it falls into the raw-id refusal arm.
         assert!(
-            err.to_string().contains("no child or descendant"),
+            err.to_string().contains("raw session ids are not accepted"),
             "{err}"
         );
 

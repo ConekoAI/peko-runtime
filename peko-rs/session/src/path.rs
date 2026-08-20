@@ -274,41 +274,6 @@ pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: SessionId) -> Op
 
 // ─── LLM-facing reference resolution ───────────────────────────────
 
-/// Quick heuristic: does `reference` look like a raw session id?
-///
-/// True when the value contains `:` (legacy tree-root shape is
-/// `root:<dim>:<name>`; runtime extensions stamp `spawn:<uuid>:`
-/// or `channel:<id>:` prefixes), or when the value is a bare
-/// UUID/hex blob of length ≥ 32.
-///
-/// **Sprint 6 caveat:** with the engine-internal id format collapsed
-/// to opaque UUIDs, every `SessionId::as_str()` matches this heuristic
-/// (32 chars of all-hex-or-dash). The function therefore still flags
-/// UUIDs but loses discriminative power over the legacy
-/// `root:<dim>:<name>` shape — which never appears in a sprint-6
-/// runtime anyway. Kept as defense-in-depth for the LLM-facing
-/// boundary; the canonical refusal is "the model has no path to
-/// produce a non-self raw id" since the schema-level validation
-/// catches malformed input before the resolver runs.
-#[must_use]
-pub fn looks_like_session_id(reference: &str) -> bool {
-    if reference.is_empty() {
-        return false;
-    }
-    if reference.contains(':') {
-        return true;
-    }
-    if reference.len() >= 32 {
-        let only_hex_or_dash = reference
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() || c == '-');
-        if only_hex_or_dash {
-            return true;
-        }
-    }
-    false
-}
-
 /// Resolve a bare slug (no leading `/`) to a session id by searching
 /// the caller's descendants. Direct children first — slugs are
 /// unique-per-parent so this is unambiguous at depth 0 — then
@@ -412,29 +377,27 @@ pub fn resolve_relative(
     ))
 }
 
-/// Single LLM-facing entry point for session references. Three forms:
+/// Single LLM-facing entry point for session references. Two accepted
+/// forms:
 ///
 /// | Form | Example | Resolver |
 /// |---|---|---|
 /// | Absolute slug path | `/a/b/c` | [`resolve_path`] (caller-anchored) |
-/// | Caller-relative slug | `agent-c` | [`resolve_relative`] (BFS by depth) |
-/// | Raw session id | UUID, `root:user:alice` | REFUSED with structured error |
+/// | Caller's own session id | UUID | SELF (engine-internal call shape) |
 ///
-/// The raw-id branch exists so the model gets an actionable refusal
-/// rather than a confusing descendant-search miss when it tries to
-/// pass a raw id it picked up from a prior tool call (the Agent
-/// spawn response now emits `path`/`slug` only — see commit 2 — but
-/// old examples in training data may still produce ids).
+/// Everything else — non-`/`, non-self — is REFUSED with a structured
+/// error so the model learns to use the `path` field from
+/// `session list` output. Sprint 5 collapsed the LLM-facing surface to
+/// slug paths; sprint 6 collapses the heuristic
+/// (`looks_like_session_id`) now that the engine-internal id format is
+/// opaque UUIDs. The legacy `root:<dim>:<name>` shape never appears in
+/// a sprint-6 runtime, and raw non-self UUIDs are by construction not
+/// produced by any tool the model sees.
 ///
-/// **Engine-internal self-reference:** if `reference` equals
-/// `caller_session_id` exactly, return it directly. This is the
-/// shape of the engine's internal `current_session` call (e.g.
-/// `session status` with no `session_key`) and bypassing the
-/// raw-id check there avoids forcing every engine call site to
-/// resolve a slug path before invoking the runtime. The LLM-facing
-/// surface still refuses raw ids via the three-form grammar — the
-/// `looks_like_session_id` check fires before the self-reference
-/// shortcut.
+/// **Engine-internal self-reference:** the engine passes its own
+/// `current_session_id` verbatim (UUIDs in production). Bypassing the
+/// raw-id check there avoids forcing every engine call site to resolve
+/// a slug path before invoking the runtime.
 pub fn resolve_reference(
     metas: &[SessionMetadata],
     caller_session_id: SessionId,
@@ -442,68 +405,19 @@ pub fn resolve_reference(
 ) -> anyhow::Result<SessionId> {
     anyhow::ensure!(
         !reference.is_empty(),
-        "session reference is empty — pass a slug path ('/a/b/c') or a caller-relative slug \
-         ('agent-c')"
+        "session reference is empty — pass a slug path ('/a/b/c')"
     );
+    if reference == caller_session_id.to_string() {
+        return Ok(caller_session_id);
+    }
     if reference.starts_with('/') {
         return resolve_path(metas, caller_session_id, reference);
     }
-    if looks_like_session_id(reference) {
-        // Engine-internal self-reference: the engine passes its own
-        // current_session_id verbatim (UUIDs in production). Allow
-        // it through; refuse all other raw ids.
-        if reference == caller_session_id.to_string() {
-            return Ok(caller_session_id);
-        }
-        return Err(anyhow::anyhow!(
-            "raw session ids are not accepted as session references ('{reference}') — pass a \
-             slug path ('/a/b/c') or a caller-relative slug ('agent-c'); use the `path` field \
-             from `session list` output"
-        ));
-    }
-    resolve_relative(metas, caller_session_id, reference)
-}
-
-/// Engine-internal resolver for the three-form grammar.
-///
-/// Same dispatch as [`resolve_reference`], but raw ids are accepted as-is
-/// instead of refused. Used by engine entrypoints
-/// (`resume_preflight`, `request_compaction`, `validate_context_parent`)
-/// where the id comes from a trusted source (the peer-child session id
-/// just minted by `spawn_child`, the caller's own `current_session_key`,
-/// a slug path the tool layer already resolved). Existence is validated
-/// by the per-call guards.
-///
-/// **Deliberate divergence from [`resolve_reference`]:** the LLM-facing
-/// tool layer uses `resolve_reference` so the model sees a structured
-/// refusal when it passes a raw id. Engine-internal code holds canonical
-/// session ids it produced itself — applying the refusal heuristic there
-/// would force every engine call site to re-shape its input, with no
-/// safety gain. Absolute slug paths are still resolved (the tool layer
-/// hands back paths it resolved from the LLM's input — they may travel
-/// through the engine on the way to a guard).
-pub fn resolve_id_or_path(
-    metas: &[SessionMetadata],
-    caller_session_id: SessionId,
-    reference: &str,
-) -> anyhow::Result<SessionId> {
-    anyhow::ensure!(
-        !reference.is_empty(),
-        "session reference is empty — pass a slug path ('/a/b/c') or a raw session id"
-    );
-    if reference.starts_with('/') {
-        return resolve_path(metas, caller_session_id, reference);
-    }
-    // Engine-internal: trust the input as a raw id. The runtime hands
-    // back canonical ids it produced itself; existence is validated by
-    // the per-call guards, not by a shape heuristic.
-    //
-    // Sprint 6: accept either a canonical UUID or a v5-derived fallback
-    // (same semantics as `SessionId::from`) so engine-internal callers
-    // that carry fixture-style ids don't break. The non-UUID branch is
-    // gated to non-`/` references only; the LLM surface still routes
-    // through `resolve_reference` and rejects raw ids.
-    Ok(SessionId::from(reference))
+    Err(anyhow::anyhow!(
+        "raw session ids are not accepted as session references ('{reference}') — pass a \
+         slug path ('/a/b/c') or your own session id; use the `path` field from `session list` \
+         output"
+    ))
 }
 
 #[cfg(test)]
@@ -776,25 +690,6 @@ mod tests {
         assert!(derived.ends_with("-branch"), "{derived}");
     }
 
-    // ─── looks_like_session_id ─────────────────────────────────────
-
-    #[test]
-    fn looks_like_session_id_heuristic() {
-        assert!(looks_like_session_id("root:user:alice"));
-        assert!(looks_like_session_id("spawn:550e8400:"));
-        assert!(looks_like_session_id("channel:abc:"));
-        assert!(looks_like_session_id("550e8400-e29b-41d4-a716-446655440000"));
-        assert!(looks_like_session_id(&"a".repeat(32)));
-
-        assert!(!looks_like_session_id("memory"));
-        assert!(!looks_like_session_id("task-b"));
-        assert!(!looks_like_session_id("agent-c"));
-        assert!(!looks_like_session_id("deadbeef"));
-        assert!(!looks_like_session_id("550e8400"));
-        assert!(!looks_like_session_id(""));
-        assert!(!looks_like_session_id(&format!("{}x", "a".repeat(32))));
-    }
-
     // ─── resolve_relative ──────────────────────────────────────────
 
     fn relative_tree() -> Vec<SessionMetadata> {
@@ -910,15 +805,17 @@ mod tests {
     fn resolve_reference_dispatches_on_leading_slash() {
         let metas = relative_tree();
         let s_task = metas[2].session_id;
-        let root = metas[0].session_id;
         let s_memory = metas[1].session_id;
+        // `/`-rooted path: resolved via the caller-anchored slug walk.
         assert_eq!(
             resolve_reference(&metas, s_task, "/memory").unwrap(),
             s_memory
         );
+        // Engine self-reference: the caller's own id bypasses the
+        // raw-id refusal (the engine's `current_session` call shape).
         assert_eq!(
-            resolve_reference(&metas, root, "memory").unwrap(),
-            s_memory
+            resolve_reference(&metas, s_task, s_task.to_string().as_str()).unwrap(),
+            s_task
         );
     }
 
@@ -961,33 +858,5 @@ mod tests {
         // A different UUID-shaped raw id still refuses.
         let err = resolve_reference(&metas, own_id, "660e8400-e29b-41d4-a716-446655440099").unwrap_err();
         assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
-    }
-
-    #[test]
-    fn resolve_id_or_path_accepts_raw_ids_and_resolves_paths() {
-        let metas = relative_tree();
-        let root = metas[0].session_id;
-        let fresh_peer_child = SessionId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        assert_eq!(resolve_id_or_path(&metas, SessionId::new(), fresh_peer_child.to_string().as_str()).unwrap(), fresh_peer_child);
-        // Sprint 6: legacy `:`-bearing ids are accepted as the
-        // v5-derived UUID form (canonical `SessionId::from` fallback).
-        // The LLM-facing surface still routes through `resolve_reference`
-        // and refuses raw ids; engine-internal callers may pass either
-        // canonical UUIDs or fixture-style literals.
-        let legacy = SessionId::from("root:user:alice");
-        assert_eq!(
-            resolve_id_or_path(&metas, SessionId::new(), "root:user:alice").unwrap(),
-            legacy
-        );
-        // Absolute slug path: resolved via the same dispatch.
-        let s_grand_idx = metas.len() - 1;
-        let s_grand = metas[s_grand_idx].session_id;
-        assert_eq!(
-            resolve_id_or_path(&metas, root, "/memory/task-b/grandchild-1").unwrap(),
-            s_grand
-        );
-        // Empty: refused.
-        let err = resolve_id_or_path(&metas, SessionId::new(), "").unwrap_err();
-        assert!(err.to_string().contains("empty"), "{err}");
     }
 }
