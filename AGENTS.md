@@ -703,20 +703,26 @@ cargo test --all-features
     unique among the caller's children) so the spawned session is
     addressable later as `/.../<name>` — `resume` re-attaches a run
     to an existing spawned session — `session_key` accepts a slug
-    path (`/a/b/c`) or caller-relative slug (`agent-c`); raw session
-    ids are REFUSED at the tool layer (the engine keeps using raw
-    ids internally via `peko_session::path::resolve_id_or_path`) —
-    `compact` flags the session and returns immediately; the engine
-    summarizes at the target's next run, no completion signal). The principal's trunk session
-    (`root:self`) is the ONLY root-family session (since sprint 2,
-    2026-08-17): continuous, engine-managed, cron-only — external
-    ingress (CLI send / A2A / Hub) lands in per-peer standing children
-    (`/local-user`, `/user-x`, `/principal-{did}`) provisioned by
+    path (`/a/b/c`) or the caller's own session id (engine
+    self-reference); non-`/`, non-self raw session ids are REFUSED
+    at the tool layer with a structured error (engine-internal sites
+    canonicalize via `peko_session::SessionId::from` directly —
+    `peko_session::path::resolve_id_or_path` retired in sprint 6
+    commit 2) — `compact` flags the session and returns immediately;
+    the engine summarizes at the target's next run, no completion
+    signal). The principal's trunk session is the ONLY root-family
+    session (since sprint 2, 2026-08-17; sprint 6 retired the
+    `root:self` magic-string id on 2026-08-20): it is the session
+    with `parent_session_id = None`, looked up via
+    `peko_session::ownership::find_trunk_session(metas)`. Continuous,
+    engine-managed, cron-only — external ingress (CLI send / A2A /
+    Hub) lands in per-peer standing children (`/local-user`,
+    `/user-x`, `/principal-{did}`) provisioned by
     `principal/peer_children.rs` and driven by
     `principal/child_turns.rs`; bound DM channels wake their bound
     child (`daemon/channel_binding.rs`). The per-peer `root:{peer}` /
     `root:cron:{owner}` sessions are retired. Delete/archive/move on
-    `root:self` are refused, and no caller may mutate the session it
+    the trunk are refused, and no caller may mutate the session it
     is running in. Ownership: a caller in a base session — or a
     `privileged` one (the owner's `/local-user` child) — manages the
     whole store; a spawned (subtree) caller manages only its own

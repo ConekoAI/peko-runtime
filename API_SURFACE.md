@@ -879,27 +879,76 @@ then the doc sweep this section belongs to). Engine-internal call
 sites keep using raw session ids via `resolve_id_or_path`; the
 `SessionStoreBindingResolver` (channel binding) keeps its raw-id
 passthrough by design — bindings are config-authored, not
-LLM-authored.
+LLM-authored. **Sprint 6 commit 2 collapsed the three-form grammar
+to two and retired the engine-internal `resolve_id_or_path`** — see
+the Sprint 6 section below.
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `peko_session::path::resolve_reference` | `peko_session::path` | ✅ New | Single LLM-facing entry point: `/a/b/c` → `resolve_path`, `agent-c` → `resolve_relative` (BFS), raw id → REFUSED |
-| `peko_session::path::resolve_id_or_path` | `peko_session::path` | ✅ New | Engine-internal entry point: same dispatch, raw ids pass through verbatim. Used by `resume_preflight`, `request_compaction`, `validate_context_parent` in `agents::subagent_executor.rs` |
-| `peko_session::path::resolve_relative` | `peko_session::path` | ✅ New | BFS descent resolver: direct children first (unique-per-parent), then breadth-first; multiple matches at the same depth → structured error listing all candidate paths |
-| `peko_session::path::looks_like_session_id` | `peko_session::path` | ✅ New | Shape heuristic for raw-id refusal: `:`-bearing values + 32+ char all-hex/dash blobs |
+| `peko_session::path::resolve_reference` | `peko_session::path` | ✅ New | Single LLM-facing entry point: `/a/b/c` → `resolve_path`, `agent-c` → `resolve_relative` (BFS), raw id → REFUSED. **Sprint 6 commit 2** collapsed to two arms (`/`-path or caller self-reference); see below |
+| `peko_session::path::resolve_id_or_path` | `peko_session::path` | ⚠️ Retired | Engine-internal entry point: same dispatch, raw ids pass through verbatim. Used by `resume_preflight`, `request_compaction`, `validate_context_parent` in `agents::subagent_executor.rs`. **Retired in sprint 6 commit 2** — engine sites now canonicalize via `SessionId::from` |
+| `peko_session::path::resolve_relative` | `peko_session::path` | ⚠️ Retired | BFS descent resolver: direct children first (unique-per-parent), then breadth-first. **Retired in sprint 6 commit 2** alongside the caller-relative slug arm |
+| `peko_session::path::looks_like_session_id` | `peko_session::path` | ⚠️ Retired | Shape heuristic for raw-id refusal: `:`-bearing values + 32+ char all-hex/dash blobs. **Retired in sprint 6 commit 2** — UUIDs lose discriminative power over legacy `:`-bearing shapes once engine ids are opaque |
 | `validate_slug` (+`:` arm) | `peko_session::path` | ✅ Extended | Rejects `:` so slugs cannot collide with raw ids by construction |
 | `Agent` `name` (REQUIRED for `action = "new"`) | `tools::builtin::messaging::agent` | ✅ Breaking | `validate_slug` runs upfront; old in-repo callers updated to pass `"writer"` |
 | `Agent` `session_key` (raw-id refusal) | `tools::builtin::messaging::agent` | ✅ Breaking | `Resume` / `Compact` errors cite the slug-path grammar instead of "pass a session id" |
 | `channel_binding::SessionStoreBindingResolver` (raw-id passthrough retained, doc-only) | `daemon::channel_binding` | ✅ Documented | Deliberate divergence — bindings come from `principals.toml` and never go through the tool surface |
 
-**Deferred to follow-ups (NOT in sprint 5):**
+**Deferred to follow-ups (NOT in sprint 5; some closed in sprint 6):**
 
+- ✅ `peko_session::path::resolve_id_or_path` engine-internal helper — closed in sprint 6 commit 2 (engine sites canonicalize via `SessionId::from`).
+- ✅ `peko_session::path::resolve_relative` BFS helper — closed in sprint 6 commit 2 alongside the caller-relative slug arm.
+- ✅ `peko_session::path::looks_like_session_id` heuristic — closed in sprint 6 commit 2.
 - `SessionInfo` dropping `session_key` / `session_id` (keep only `path` / `slug`)
 - `SessionStatusResult` / `BranchOutcome` / `DeleteOutcome` / `CompactRequestOutcome` — replace raw `session_id` with computed `path`
 - `ListScope { root: Option<String>, principal: bool }` + `SessionRuntime::list_sessions(scope: ListScope)` signature change
 - `session list` default scope = caller's subtree (with `scope: "principal"` widening for privileged trunk callers and `path: "/other"` subtree scoping)
 - `SessionCache` (test impl) — path-resolution seam
 - Spawn response — replace `child_session_key` with `path` + `slug` (additive `child_path` on `SubagentMetadata` → `SubagentRunView`)
+
+### PEKO Sprint 6 (2026-08-20) — opaque UUID session ids, peer is a channel concern
+
+Breaking (prelaunch): the session layer takes back one job — storage
++ parent chain — and gives up peer routing, which has lived at the
+channel layer since sprint 3 phase 12b. Three commits land in order
+on `feat/agent-session-paradigm`:
+
+1. `feat(session)!: opaque UUID session ids + peer via parent walk` (`6bcfa9fa`)
+2. `refactor(session): collapse path resolver heuristics` (`2294f13e`)
+3. The doc sweep (this section).
+
+**Three-layer identity model:**
+
+| Layer | Id shape | Job |
+|---|---|---|
+| LLM surface (Agent + session tools) | slug path (`/a/b/c`) | Address by human-meaningful name |
+| Engine-internal session | opaque UUID | Storage key + parent-chain walk |
+| Peer / routing | channel id (`principal:<did>`, `user:<id>`, `chan_<8>`, `group:<slug>`) | Conversation surface + cross-runtime |
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `peko_session::SessionId` | `peko_session::id` | ✅ New | Newtype around `Uuid`, `#[serde(transparent)]`, `Copy`. Engine-internal `SessionMetadata.session_id` and `parent_session_id` are `SessionId`. `SessionId::from(s)` falls back to v5 UUID for non-UUID inputs so fixture-style literals round-trip without breakage |
+| `peko_session::ownership::find_trunk_session` | `peko_session::ownership` | ✅ New | Replaces `trunk_session_id()` magic string. Returns the session with `parent_session_id = None`, or `None` if no trunk exists. The anchor for engine-managed guards (`err_live_base_managed`), `ensure_declared_children`, `ensure_peer_child`, `principal::routers::root::root_session_id_for_channel` |
+| `peko_session::ownership::resolve_peer_via_parent_walk` | `peko_session::ownership` | ✅ New | Replaces `peer_from_session_key`. Walks `parent_session_id` from any leaf up to `parent_session_id = None`, reading stamped `peer_type` / `peer_id` on each ancestor; the trunk has no peer stamped so the walk terminates with `None`. Filter skips the `standing_*` / `spawn_*` placeholders |
+| `peko_session::path::resolve_reference` (collapsed) | `peko_session::path` | ✅ Breaking | Three-form grammar (sprint 5) → two-form. `/`-prefixed path → `resolve_path`; non-`/` non-self → REFUSED. Caller self-reference shortcut retained for engine `current_session` shape |
+| ❌ `trunk_session_id()` | `principal::routers::root` | ❌ Retired | Replaced by `find_trunk_session(metas)`. The legacy `root:self` magic-string id is gone |
+| ❌ `peer_from_session_key` | `principal::messenger` | ❌ Retired | Replaced by `resolve_peer_via_parent_walk` |
+| ❌ `parse_session_key_v2`, `parse_session_key` (v1), `base_key_from_overlay` | `peko_session::key` | ❌ Retired | The `agent:{a}:peer:{type}:{id}[:subagent:{uuid}][:overlay:{type}:{id}]` shape is gone. Peer identity comes from stamped metadata; agent identity from `meta.agent_name`; subagent / overlay identity from `parent_session_id` linking. JSONL filenames use `SessionId::as_str()` (UUIDs are filesystem-safe) |
+| ❌ `peko_session::path::looks_like_session_id` | `peko_session::path` | ❌ Retired | Engine-internal ids are opaque UUIDs, so the heuristic loses discriminative power; the LLM-facing refusal now keys on the strict two-form grammar instead |
+| ❌ `peko_session::path::resolve_id_or_path` | `peko_session::path` | ❌ Retired | Engine-internal callers in `agents::subagent_executor.rs` canonicalize via `SessionId::from` directly — no shape heuristic, no separate resolver |
+
+**Risk callouts (none materialized):**
+
+- **Subagent key shape change**: 15+ test files using `:peer:` / `:subagent:` / `:overlay:` literals migrated to UUID fixtures with parent-chain metadata. Mechanical sweep.
+- **`find_trunk_session` `Option` return**: sites that load the principal use `.expect("trunk exists")`; sites that handle the no-trunk case use `.unwrap_or_default()`. Both patterns verified.
+- **`child_session_key` → `child_session_id` DTO ripple**: DTOs are `serde(transparent)` over `SessionId`, so the wire shape stays a string. No IPC packet actually carries this field today.
+- **`live_root_id` integration test helper**: rewritten to walk `sessions.json` for the entry with `parent_session_id = None`.
+
+**Out of scope (deferred):**
+
+- Migrating pre-existing on-disk sessions — prelaunch posture, no on-disk sessions exist.
+- Multi-principal trunk lookup — today there's exactly one principal per runtime instance.
+- Hash-keyed map optimization (`HashMap<String, ...>` → `HashMap<Uuid, ...>`) — opportunistic, not audited.
 
 ---
 

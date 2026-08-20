@@ -75,22 +75,22 @@ rather than a passive request handler.
   (the tree root shape `root:<dim>:<name>` and the runtime-extension
   prefixes `spawn:<uuid>:` / `channel:<id>:`), so slugs cannot collide
   with raw ids by construction.
-- Reach is by **slug path only** on the LLM-facing surface, in three
-  forms:
+- Reach is by **slug path only** on the LLM-facing surface, in one of
+  two forms:
     - `/a/b/c` — absolute path anchored at the caller's topmost ancestor.
-    - `agent-c` — caller-relative slug; direct children first, then
-      breadth-first descent (multiple matches at the same depth → a
-      structured error listing all candidate paths).
-    - Raw session id (anything containing `:` or a UUID-shaped blob) —
-      **REFUSED** with a structured error pointing the caller at the
-      `path` field in `session list`.
+    - The caller's own session id (UUID) — engine self-reference; every
+      other shape is **REFUSED** with a structured error pointing the
+      caller at the `path` field in `session list`.
   Path resolution anchors at the caller's topmost ancestor and walks
   by slug; unknown segments produce structured errors listing
-  available children. Engine-internal call sites (resume_preflight,
-  request_compaction, validate_context_parent) keep using raw session
-  ids directly via the `resolve_id_or_path` engine-internal entry
-  point — the LLM-facing `resolve_reference` is for the tool layer
-  only.
+  available children. Engine-internal call sites (`resume_preflight`,
+  `request_compaction`, `validate_context_parent`) receive canonical
+  UUIDs from the runtime itself and canonicalize via
+  `SessionId::from` — there is no engine-internal heuristic resolver
+  (`resolve_id_or_path` retired in sprint 6 commit 2). The session
+  layer is intentionally id-shape-agnostic: engine-internal ids are
+  opaque UUIDs (sprint 6 commit 1) and peer identity lives at the
+  channel layer, not in the session id.
 - `session list` defaults to the **caller's subtree** (not the whole
   principal's tree). Privileged trunk callers opt into a wider view
   with `scope: "principal"`; non-privileged callers who ask for the

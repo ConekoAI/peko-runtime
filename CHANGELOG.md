@@ -379,6 +379,144 @@ doc sweep (this commit).
   binding tests (`peko-rs/core/src/daemon/channel_binding.rs:1483-1541`)
   confirm the resolver still maps `/user-a` → canonical child id.
 
+### PEKO sprint 6: opaque UUID session ids, peer is a channel concern (2026-08-20)
+
+Collapses the engine-internal session id to an opaque UUID and
+moves peer identity out of the session id entirely. The session
+layer gives up one job — peer routing — and takes back one: a clean
+storage key. Three commits land in order: `SessionId` newtype +
+`find_trunk_session` + `resolve_peer_via_parent_walk` (commit 1,
+`6bcfa9fa`), path resolver heuristic collapse (commit 2,
+`2294f13e`), and the doc sweep (this commit).
+
+Three layers, three shapes:
+
+| Layer | Id shape | Job |
+|---|---|---|
+| LLM surface (Agent + session tools) | slug path (`/a/b/c`) | Address by human-meaningful name |
+| Engine-internal session | opaque UUID | Storage key + parent-chain walk |
+| Peer / routing | channel id (`principal:<did>`, `user:<id>`, `chan_<8>`, `group:<slug>`) | Conversation surface + cross-runtime |
+
+#### Added
+
+- **`peko_session::SessionId`** — newtype around `Uuid`,
+  `#[serde(transparent)]`, `Copy`. `SessionMetadata.session_id` and
+  `parent_session_id: Option<SessionId>` carry `SessionId` end to
+  end. `SessionId::from(s)` falls back to a v5 UUID for non-UUID
+  inputs so fixture literals and CLI logs round-trip without
+  breakage. `SessionId::new()` mints v4 for new sessions.
+- **`peko_session::ownership::find_trunk_session(metas)`** — returns
+  `Option<SessionId>` of the session with `parent_session_id = None`.
+  Replaces the `trunk_session_id()` magic-string helper at the 13
+  production call sites (engine-managed guards, `ensure_peer_child`,
+  `ensure_declared_children`, `receive_trunk`, `peer_children`,
+  `child_turns`, `messenger`, `cron_engine::run_send_job`,
+  `routers::root::root_session_id_for_channel`). Anchor for the
+  trunk-short-circuit arms and the engine-managed guard compare.
+- **`peko_session::ownership::resolve_peer_via_parent_walk(metas, session_id)`**
+  — walks the `parent_session_id` chain reading stamped `peer_type` /
+  `peer_id` on each ancestor; the first session with both fields
+  set returns `Subject::from_str(&format!("{peer_type}:{peer_id}"))`.
+  The walk terminates at the trunk (which has `parent_session_id =
+  None` and no peer stamped) — returns `None`. The placeholder
+  subjects (`Principal("standing_<slug>")` and
+  `Principal("spawn_<uuid>")`) are skipped so the resolver keeps
+  walking past standing / spawned intermediates. Replaces
+  `peer_from_session_key` at both production call sites in
+  `principal::messenger::originating_peer`.
+- **`peko_session::path::resolve_reference` (collapsed)** — three-form
+  grammar (sprint 5) → two-form grammar. `/`-prefixed paths
+  resolve via `resolve_path`; the caller's own UUID is accepted via
+  the self-reference shortcut. Every other shape is REFUSED with a
+  structured error pointing the model at the `path` field in
+  `session list` output. The caller-relative slug arm (`agent-c`) is
+  retired; absolute paths are unambiguous and the tool surface
+  already emits them.
+
+#### Changed (breaking)
+
+- **`SessionMetadata.session_id` and `parent_session_id` are
+  `SessionId`**, not `String`. Production sites that need the
+  string form call `.as_str()` (UUIDs are filesystem-safe on POSIX
+  and Windows, so JSONL filenames and IPC payload keys are
+  unchanged). Documentation and tests updated to use UUID fixtures
+  with parent-chain metadata; the `root:self` / `root:cron:owner` /
+  `root:user:alice` literal shapes are gone.
+- **`SubagentMetadata.child_session_id` is `SessionId`** (was
+  `child_session_key: String`). `SessionInfo` / `SessionStatusResult`
+  / `BranchOutcome` / `DeleteOutcome` / `CompactRequestOutcome`
+  remain stringly typed for now (DTO pruning is deferred — see
+  sprint 5 "Notes"). The fields that did migrate are
+  `serde(transparent)` so the wire shape is still a string.
+- **`SessionStoreBindingResolver` (channel binding) anchors on
+  trunk UUID lookup** — `find_trunk_session` over the
+  `principal.toml` `[children]` materialization, not a hardcoded
+  `"root:self"` literal. The raw-id passthrough is now a
+  `SessionId::as_str()` pass-through under the hood; the deliberate
+  divergence from the LLM-facing `resolve_reference` is documented
+  in `daemon/channel_binding.rs`.
+
+#### Removed (prelaunch, no migration)
+
+- **`trunk_session_id()`** at `peko-rs/core/src/principal/routers/root.rs:67-69`
+  — replaced by `find_trunk_session(metas)`. The literal
+  `"root:self"` magic string is gone.
+- **`peer_from_session_key`** at `peko-rs/core/src/principal/messenger.rs:57-78`
+  — replaced by `resolve_peer_via_parent_walk`.
+- **`parse_session_key_v2`**, **`parse_session_key` (v1)**,
+  **`base_key_from_overlay`** at `peko-rs/session/src/key.rs` —
+  the `agent:{a}:peer:{type}:{id}[:subagent:{uuid}][:overlay:{type}:{id}]`
+  shape is gone. Peer identity comes from stamped metadata; agent
+  identity from `meta.agent_name`; subagent / overlay identity from
+  `parent_session_id` linking in metadata.
+- **`peko_session::path::looks_like_session_id`** — engine-internal
+  ids are opaque UUIDs, so the `:`-branch is dead and the 32+ hex
+  arm matches every input. The LLM-facing refusal now keys on the
+  strict two-form grammar instead.
+- **`peko_session::path::resolve_id_or_path`** — engine-internal
+  callers in `agents::subagent_executor.rs` (`resume_preflight`,
+  `request_compaction`, `validate_context_parent`) now canonicalize
+  via `SessionId::from` directly. With all engine ids being UUIDs
+  the split between LLM-facing and engine-internal resolvers was
+  redundant; the engine-internal sites were handing around shapes
+  the LLM-facing resolver already handles via the self-reference
+  shortcut.
+- **`peko_session::path::resolve_relative`** — the BFS-descent
+  caller-relative slug resolver; retired alongside the
+  caller-relative slug arm.
+
+#### Notes
+
+- `peko_session::path` lost `looks_like_session_id_heuristic` and
+  `resolve_id_or_path_accepts_raw_ids_and_resolves_paths` (sprint 5
+  tests for the engine-internal surface); gained
+  `resolve_reference_accepts_engine_uuid_via_self_reference` to
+  cover the canonical engine-internal usage path.
+- `peko-rs/core/src/session/session_runtime_impl.rs` lost
+  `deep_tree_harness`, `relative_slug_resolves_end_to_end`, and
+  `relative_slug_ambiguous_lists_all_paths` (sprint 5 callers of
+  the now-retired `resolve_relative`); updated
+  `raw_id_refused_with_actionable_message` to assert the new
+  message wording ("raw session ids are not accepted").
+- `peko-rs/core/src/agents/tests/subagent_integration_tests.rs`
+  lost `resume_and_compact_accept_path_targets` (66 lines) — the
+  engine-internal API no longer accepts path targets.
+- `find_trunk_session`'s `Option` return is `.expect(...)` at sites
+  that load the principal (trunk guaranteed to exist post-`ensure_trunk`-boot)
+  and `.unwrap_or_default()` at sites that handle the no-trunk case.
+- `live_root_id` integration test helper in
+  `peko-rs/core/tests/cli_session_manage.rs:121-128` was rewritten
+  to walk `sessions.json` looking for the entry with
+  `parent_session_id = None`. Single helper, ~10 lines.
+- Sprint 6 stays prelaunch — no on-disk sessions exist, so no
+  migration. The sprint 5 doc sweep's "Deferred to follow-ups" list
+  shrinks by three items (`resolve_id_or_path`, `resolve_relative`,
+  `looks_like_session_id`); the DTO pruning items remain.
+- `safe_filename_component` is a thin no-op for UUIDs (kept as a
+  Windows-compat shim). UUIDs are filesystem-safe on POSIX and
+  Windows; the function is a no-op for the canonical path and
+  defensively safe for any non-UUID callers.
+
 ### PEKO sprint 2: external ingress off the root (2026-08-17)
 
 External traffic (CLI `peko send`, tunnel A2A, Hub webchat) moves off the

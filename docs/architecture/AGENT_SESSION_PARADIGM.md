@@ -78,23 +78,29 @@ structurally, a **tree of sessions**:
 family (`root:*`) is continuous and engine-managed: delete/archive on it
 is refused, and no caller may mutate the session it is running in.
 
-**(implemented — Phase 3 of the paradigm sprint, 2026-08-15)** The
-principal trunk exists: **`root:self`** (`trunk_session_id()` in
-`peko-rs/core/src/principal/routers/root.rs`). Design choices:
+**(implemented — Phase 3 of the paradigm sprint, 2026-08-15; sprint 6
+re-anchored 2026-08-20)** The principal trunk exists: the session with
+`parent_session_id = None`, looked up via
+`peko_session::ownership::find_trunk_session(metas)`. **Sprint 6
+collapsed the legacy `root:self` magic-string trunk** — engine-internal
+ids are now opaque UUIDs, and the trunk anchor is "the root of the
+tree" rather than a literal string. Design choices:
 
-- The `root:` prefix is load-bearing — the trunk inherits the
-  root-family guards (delete/archive/move refused) for free. A bare
-  `root` id was rejected: it would escape the `starts_with("root:")`
-  guard and misparse in the messenger.
-- Trunk turns are peer-less: `ChannelKind::Trunk` routes to the constant
-  `root:self` regardless of the subject; `PrincipalManager::receive_trunk`
-  uses the owner as a proxy subject for permission/recall but overrides
-  the session id, and **skips chat-log projection** (a self-thread
-  convention is deferred). The per-session run permit + steering fallback
+- The trunk inherits the root-family guards (delete/archive/move
+  refused, prune-exempt) by identity: it's the one session with no
+  parent. Engine-managed guards compare against the trunk UUID via
+  `find_trunk_session`, not against a literal.
+- Trunk turns are peer-less: `ChannelKind::Trunk` routes to the
+  resolved trunk UUID regardless of the subject;
+  `PrincipalManager::receive_trunk` uses the owner as a proxy subject
+  for permission/recall but overrides the session id, and **skips
+  chat-log projection**. The per-session run permit + steering fallback
   apply — a cron tick during an active trunk run steers instead of
   failing.
-- `peer_from_session_key("root:self")` returns `None` explicitly — the
-  trunk has no external peer.
+- `resolve_peer_via_parent_walk(trunk_uuid, metas)` returns `None`
+  explicitly — the trunk has no external peer (and no `peer_type` /
+  `peer_id` stamped on its metadata). The parent walk terminates at
+  `parent_session_id = None` with `None`.
 
 **(implemented — Phase 7 of sprint 2, 2026-08-17; breaking)** The trunk
 is now the ONLY root session and is cron-only — unreachable from outside:
@@ -109,7 +115,7 @@ is now the ONLY root session and is cron-only — unreachable from outside:
   `root:{peer}` / `root:cron:{peer}` sessions and their routing are
   **deleted**; `RootRouter` routes the trunk only.
 - The root-family guards (delete/archive/move refusal, prune exemption)
-  now protect exactly `root:self`.
+  now protect exactly the trunk UUID (`find_trunk_session(metas)`).
 - Chat-log projection for peer turns is unchanged (keyed
   `(principal_did, peer)`); the per-peer memory-recall artifact points at
   the peer-child session id.
@@ -203,22 +209,24 @@ ownership.rs-style) anchors `/` at the caller's topmost ancestor and
 walks children by slug; unknown segments produce structured errors
 listing the available child slugs.
 
-**LLM-facing addressing grammar (sprint 5, three forms via
-`peko_session::path::resolve_reference`):**
+**LLM-facing addressing grammar (sprint 5; sprint 6 commit 2 collapsed
+to two forms via `peko_session::path::resolve_reference`):**
 
 | Form | Example | Resolver branch |
 |------|---------|-----------------|
 | Absolute slug path | `/a/b/c` | `resolve_path` (caller-anchored) |
-| Caller-relative slug | `agent-c` | `resolve_relative` (BFS by depth, direct children first) |
-| Raw session id | `root:user:alice`, `550e8400-…` | **REFUSED** with structured error |
+| Caller's own session id (UUID) | engine self-reference | Self-reference shortcut |
+| Anything else | non-`/`, non-self | **REFUSED** with structured error |
 
-The raw-id branch exists so the model gets an actionable refusal
-rather than a confusing descendant-search miss when it tries to
-pass a raw id it picked up from a prior tool call. Engine-internal
-call sites bypass the refusal via
-`peko_session::path::resolve_id_or_path`, which accepts raw ids
-verbatim — the runtime holds canonical ids it produced itself;
-existence is validated by the per-call guards.
+The refusal branch exists so the model gets an actionable error
+pointing at the `path` field in `session list` output rather than a
+confusing descendant-search miss. **Sprint 6 commit 2 collapsed the
+three-form grammar** (slug path, caller-relative slug, raw id) to
+two forms now that engine-internal ids are opaque UUIDs — the
+shape heuristic `looks_like_session_id` and the engine-internal
+`resolve_id_or_path` are retired. Engine-internal call sites
+(`resume_preflight`, `request_compaction`, `validate_context_parent`)
+canonicalize via `peko_session::SessionId::from` directly.
 
 Set points: session tool `rename` (`slug`), Agent tool `new`
 (`name` is REQUIRED — `validate_slug` runs upfront), `branch`
@@ -374,10 +382,12 @@ three variants:
 - `Send` — fires a full agent turn. Default: isolated in
   `root:cron:{owner}` with the reply delivered as a note to the
   conversational root session. With `target: "trunk"` (Phase 3): the turn
-  lands in the trunk `root:self` — the paradigm's heartbeat.
+  lands in the trunk — the paradigm's heartbeat. **Sprint 6**: the
+  trunk id is the resolved `find_trunk_session(metas)` UUID, not a
+  magic string.
 - `Notify` — pure delivery, no agent turn, zero tokens.
 - `SpawnTool` — an async tool run; with `wake_on_completion` it posts a
-  steering message into the trunk inbox `root:self` (Phase 3b — one PEKO,
+  steering message into the trunk inbox (Phase 3b — one PEKO,
   one root).
 
 Schedule kinds cover the needed rhythms: `At`, `Every`, `Cron` (with
@@ -425,7 +435,7 @@ audit measured the current tool surface against that need:
 | Channel push broadcast (`subscribe_events`) | ✅ implemented (desktop UI only consumer) | `channel/src/store.rs:296-320` |
 | Channel log ≠ session log | ✅ implemented | `peko-rs/channel/` (DM channels double as the consumer-visible record since Phase 13) |
 | Cron turn/notify/spawn-tool + idle/event schedules | ✅ implemented | `peko-rs/cron/`, `daemon/cron_engine/` |
-| Principal trunk `/` (self session, cron-kept, supervising) | ✅ implemented (Phase 3) | `root:self` via `trunk_session_id()` + `ChannelKind::Trunk` + `receive_trunk`; cron `Send target:"trunk"` (§2.1) |
+| Principal trunk `/` (self session, cron-kept, supervising) | ✅ implemented (Phase 3; sprint 6 re-anchored) | `find_trunk_session(metas)` (the session with `parent_session_id = None`) + `ChannelKind::Trunk` + `receive_trunk`; cron `Send target:"trunk"` (§2.1); legacy `trunk_session_id()` magic string retired |
 | Standing named children (`/memory`, `/about-user`, …) | ✅ implemented (Phase 2) | `principal.toml` `[children]` + `principal/children.rs` ensure-declared; Agent `new`-with-name attach (§2.2) |
 | Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
 | Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
@@ -464,11 +474,13 @@ Items 1–3 were **fixed in Phase 0 of the paradigm sprint**
    to fresh cursors with a warning. First-ever boot still starts from
    offset 0 by design (benign while the responder is Noop).
 4. ~~**Cron actions disagree about the root session.**~~ **Resolved
-   (Phases 3 + 3b):** `Send` has an explicit `target` (`"trunk"` →
-   `root:self`; default → `root:cron:{owner}` + note), and `SpawnTool`'s
-   `wake_on_completion` now steers the trunk inbox (`root:self`) — one
-   PEKO, one root (PEKO.md §K). Trunk-targeted `Every` sends enforce a
-   60s floor (`TRUNK_MIN_INTERVAL_MS`).
+   (Phases 3 + 3b; sprint 6 re-anchored):** `Send` has an explicit
+   `target` (`"trunk"` → `find_trunk_session(metas)` UUID; default →
+   `root:cron:{owner}` + note), and `SpawnTool`'s `wake_on_completion`
+   now steers the trunk inbox — one PEKO, one root (PEKO.md §K).
+   Trunk-targeted `Every` sends enforce a 60s floor
+   (`TRUNK_MIN_INTERVAL_MS`). The legacy `root:self` magic string is
+   retired.
 5. **Dead code to reclaim or delete:** the `:subagent:{uuid}` key helpers
    (`peko-rs/session/src/subagent_key.rs` — tests + re-export only) and
    `err_resume_cross_family` (`session/ownership.rs:216` — zero call
@@ -510,4 +522,38 @@ off the root, children are the front door:
 7. ✅ **Ingress re-route (breaking)** — CLI/A2A/Hub land in per-peer
    children; `root:{peer}` / `root:cron:{owner}` retired; cron `Send`
    defaults to the trunk; notes → owner's child, `[notify]` → trunk;
-   root-family guards protect exactly `root:self`.
+   root-family guards protect exactly the trunk UUID
+   (`find_trunk_session(metas)`).
+
+Sprint 6 (2026-08-20, same branch) re-anchored the session identity
+shape — engine-internal ids are opaque UUIDs, peer routing is a
+channel-layer concern:
+
+8. ✅ **Opaque UUID session ids + peer via parent walk** —
+   `peko_session::SessionId` newtype around `Uuid`; engine-internal
+   `SessionMetadata.session_id` and `parent_session_id` are `SessionId`;
+   the trunk anchor is `find_trunk_session(metas)` (the session with
+   `parent_session_id = None`); peer routing walks `parent_session_id`
+   from any leaf up to the trunk via `resolve_peer_via_parent_walk`,
+   reading the stamped `peer_type` / `peer_id` on each ancestor.
+9. ✅ **Path resolver heuristic collapse** — `peko_session::path`
+   drops `looks_like_session_id` and the engine-internal
+   `resolve_id_or_path`; `resolve_reference` is now the single
+   two-arm resolver (`/`-path or caller self-reference). Everything
+   else refuses with the structured error.
+
+The three-layer model:
+
+| Layer | Id shape | Job |
+|---|---|---|
+| LLM surface (Agent + session tools) | slug path (`/a/b/c`) | Address by human-meaningful name |
+| Engine-internal session | opaque UUID | Storage key + parent-chain walk |
+| Peer / routing | channel id (`principal:<did>`, `user:<id>`, `chan_<8>`, `group:<slug>`) | Conversation surface + cross-runtime |
+
+**Sprint 6 takes the session layer back to one job**: storage + parent
+chain. Peer identity has lived at the channel layer since sprint 3
+phase 12b; sprint 6 finishes the separation by removing the legacy
+peer-encoding in the session id (`peer_from_session_key`,
+`parse_session_key_v2`, `parse_session_key` v1, `base_key_from_overlay`,
+`trunk_session_id` magic string) so the storage layer doesn't need to
+know what a peer is.
