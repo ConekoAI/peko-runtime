@@ -698,11 +698,16 @@ cargo test --all-features
     `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`,
     `move`);
     the `Agent` tool is the *generate* side (3 LLM-driving actions via
-    the `action` param, default `new`: `new` spawns, `resume`
-    re-attaches a run to an existing spawned session — the old
-    `resume_session` tool param is gone — `compact` flags the session
-    and returns immediately; the engine summarizes at the target's
-    next run, no completion signal). The principal's trunk session
+    the `action` param, default `new`: `new` spawns and now REQUIRES
+    a `name` slug (1-64 chars, no `/`, no `:`, no outer whitespace;
+    unique among the caller's children) so the spawned session is
+    addressable later as `/.../<name>` — `resume` re-attaches a run
+    to an existing spawned session — `session_key` accepts a slug
+    path (`/a/b/c`) or caller-relative slug (`agent-c`); raw session
+    ids are REFUSED at the tool layer (the engine keeps using raw
+    ids internally via `peko_session::path::resolve_id_or_path`) —
+    `compact` flags the session and returns immediately; the engine
+    summarizes at the target's next run, no completion signal). The principal's trunk session
     (`root:self`) is the ONLY root-family session (since sprint 2,
     2026-08-17): continuous, engine-managed, cron-only — external
     ingress (CLI send / A2A / Hub) lands in per-peer standing children
@@ -738,6 +743,21 @@ cargo test --all-features
     `agents/subagent_executor.rs` branches on `trigger == "spawn"`.
     The prompt's `SessionSnapshot` carries the real session id
     (`TurnPromptContext.session_id`).
+  - **2026-08-20 sprint 5 (slug-path addressing):** the LLM-facing
+    addressing surface collapses to slug paths. The `session` tool's
+    `status` / `history` / `rename` / `delete` / `branch` /
+    `archive` / `unarchive` / `move` actions accept a slug path
+    (`/a/b/c`), a caller-relative slug (`agent-c`), and REFUSE raw
+    session ids at the tool boundary (`peko_session::path::resolve_reference`).
+    `session list` defaults to the **caller's subtree** (no longer
+    the whole principal's tree); `scope: "principal"` widens for
+    privileged trunk callers (non-privileged callers who ask get
+    ownership-clamped to their subtree with a structured warning);
+    `path: "/other/sub"` scopes further to any subtree the caller
+    has ownership access to. `Agent` `new` requires a `name` slug so
+    the spawned session is addressable as `/.../<name>`. The
+    validation lives in `validate_slug` and rejects `:` to keep the
+    grammar unambiguous (slugs can never look like raw ids).
   - **2026-08-18 sprint 3 Phase 10 (DM channels + push-wake):** every
     peer ingress path (`peko send` IPC, tunnel A2A `receive`/
     `receive_streaming`, Hub webchat, IPC Steer) funnels through

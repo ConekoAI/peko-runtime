@@ -1117,10 +1117,15 @@ to their own subtree; archived sessions are excluded.
 
 **Session path addressing (slugs).** Sessions form trees via
 `parent_session_id`; each session may carry a `slug` — a
-per-parent-unique path segment (1–64 chars, no `/`, no
+per-parent-unique path segment (1–64 chars, no `/`, no `:`, no
 leading/trailing whitespace) — so a session is addressable as
-`/a/b/c` from anywhere inside its own tree. `title` stays free-form
-display text; the slug is the machine-stable segment.
+`/a/b/c` from anywhere inside its own tree. `:` is reserved for raw
+session ids (the tree-root shape `root:<dim>:<name>` and the
+runtime-extension prefixes `spawn:<uuid>:` / `channel:<id>:`); the
+`validate_slug` `:` arm keeps the LLM-facing grammar unambiguous
+by construction (slugs cannot look like raw ids).
+`title` stays free-form display text; the slug is the machine-stable
+segment.
 
 - **Uniqueness is per parent**: two sessions may share a slug iff
   their parents differ. Enforced at every set point (`session
@@ -1129,29 +1134,65 @@ display text; the slug is the machine-stable segment.
   `-branch-2`, … — and `move`, which re-checks against the
   DESTINATION's siblings) by scanning siblings in the metadata slice;
   a conflict is a structured error naming the conflicting session id.
-- **Resolution**: any tool parameter accepting a session reference
-  (`session_key` on the `session` tool incl. `move`'s `new_parent`;
-  `session_key` on the Agent tool's `resume`/`compact`) accepts a
-  `/`-rooted path. `/` alone anchors at the caller's **topmost
-  ancestor** (the root of the caller's tree); each further segment
-  selects the child of the current node whose slug equals the
-  segment. An unknown segment errors with the available child slugs
-  at the failing level. Resolution is cycle-safe and happens in the
-  runtime adapter layer before the (unchanged) ownership guards, ids
-  remain the canonical key everywhere else, and resolver input is
-  slug-only — raw ids are never accepted as intermediate segments.
+- **LLM-facing addressing grammar (sprint 5)** — every tool
+  parameter that takes a session reference (`session_key` on the
+  `session` tool incl. `move`'s `new_parent`; `session_key` on the
+  Agent tool's `resume`/`compact`) accepts one of three forms via
+  the canonical `peko_session::path::resolve_reference` entry point:
+
+  | Form | Example | Resolver branch |
+  |------|---------|-----------------|
+  | Absolute slug path | `/a/b/c` | `resolve_path` (caller-anchored) |
+  | Caller-relative slug | `agent-c` | `resolve_relative` (BFS by depth) |
+  | Raw session id | `root:user:alice`, `550e8400-…` | **REFUSED** with structured error |
+
+  - `/` alone anchors at the caller's **topmost ancestor** (the root
+    of the caller's tree); each further segment selects the child
+    of the current node whose slug equals the segment. An unknown
+    segment errors with the available child slugs at the failing
+    level.
+  - Caller-relative descent is direct-child first (slugs are
+    unique-per-parent so this is unambiguous at depth 0), then
+    breadth-first. Multiple matches at the same depth → a structured
+    error listing all candidate paths so the caller narrows by
+    passing an absolute `/a/b/c` path.
+  - Raw-id refusal uses the `looks_like_session_id` shape
+    heuristic (`:`-bearing values + 32+ char all-hex/dash blobs).
+    Engine-internal call sites (`resume_preflight`,
+    `request_compaction`, `validate_context_parent`) bypass this
+    via `peko_session::path::resolve_id_or_path`, which accepts
+    raw ids verbatim — existence is validated by the per-call
+    guards, not by shape.
+
+  Resolution is cycle-safe and happens in the runtime adapter layer
+  before the (unchanged) ownership guards; ids remain the canonical
+  key everywhere else, and resolver input is slug-only on the
+  LLM-facing surface — raw ids are never accepted there.
 - The trunk (`root:self`) carries no slug and is addressable only as
   `/` from inside its own tree (cross-tree access is refused by the
   ownership guards anyway).
+- `session list` defaults to the **caller's subtree** (no longer
+  the whole principal's tree). Privileged trunk callers opt into a
+  wider view with `scope: "principal"`; non-privileged callers who
+  ask for the wider scope get ownership-clamped to their subtree
+  with a structured warning. The `path` parameter scopes further to
+  any subtree the caller has ownership access to.
 - `session list` entries carry `slug` and a computed absolute `path`
   (display-only): ancestors without a slug are skipped as
   intermediate segments, and a slugless target falls back to its raw
   id as the last segment (e.g. `/memory/550e8400-…`).
+- `Agent` `action = "new"` REQUIRES a `name` slug (validated
+  upfront via `validate_slug`); standing-child attach by name still
+  works — a `name` matching an existing `standing == true`
+  session in the caller's subtree re-attaches via the resume path
+  instead of minting a fresh session.
 
 The pure resolver/validators live in `peko_session::path`
-(`resolve_path`, `compute_path`, `validate_slug`, `slug_conflict`,
-`derive_branch_slug`) over `&[SessionMetadata]` slices — no IO, no
-locks, mirroring the ownership-guard style.
+(`resolve_reference`, `resolve_id_or_path`, `resolve_path`,
+`resolve_relative`, `looks_like_session_id`, `compute_path`,
+`validate_slug`, `slug_conflict`, `derive_branch_slug`) over
+`&[SessionMetadata]` slices — no IO, no locks, mirroring the
+ownership-guard style.
 
 **Standing named children (`[children]` in `principal.toml`, Phase
 2).** A principal may declare standing first-level children that

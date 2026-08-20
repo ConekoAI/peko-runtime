@@ -71,10 +71,32 @@ rather than a passive request handler.
 
 - Children are organized hierarchically via `parent_session_id`.
 - Each child carries a per-parent-unique **slug** (1–64 chars, no `/`,
-  no outer whitespace).
-- Reach is by **path** (`/a/b/c`) or **raw id**; path resolution anchors
-  at the caller's topmost ancestor and walks by slug; unknown segments
-  produce structured errors listing available children.
+  no `:`, no outer whitespace). `:` is reserved for raw session ids
+  (the tree root shape `root:<dim>:<name>` and the runtime-extension
+  prefixes `spawn:<uuid>:` / `channel:<id>:`), so slugs cannot collide
+  with raw ids by construction.
+- Reach is by **slug path only** on the LLM-facing surface, in three
+  forms:
+    - `/a/b/c` — absolute path anchored at the caller's topmost ancestor.
+    - `agent-c` — caller-relative slug; direct children first, then
+      breadth-first descent (multiple matches at the same depth → a
+      structured error listing all candidate paths).
+    - Raw session id (anything containing `:` or a UUID-shaped blob) —
+      **REFUSED** with a structured error pointing the caller at the
+      `path` field in `session list`.
+  Path resolution anchors at the caller's topmost ancestor and walks
+  by slug; unknown segments produce structured errors listing
+  available children. Engine-internal call sites (resume_preflight,
+  request_compaction, validate_context_parent) keep using raw session
+  ids directly via the `resolve_id_or_path` engine-internal entry
+  point — the LLM-facing `resolve_reference` is for the tool layer
+  only.
+- `session list` defaults to the **caller's subtree** (not the whole
+  principal's tree). Privileged trunk callers opt into a wider view
+  with `scope: "principal"`; non-privileged callers who ask for the
+  wider scope get ownership-clamped to their subtree with a structured
+  warning. The `path` parameter scopes further to any subtree the
+  caller has ownership access to.
 - **Subtree scoping**: a node manages only its own subtree — never
   siblings, never ancestors, never the protected `root:*` family.
 - **Standing children** are declared in `principal.toml` `[children]`,

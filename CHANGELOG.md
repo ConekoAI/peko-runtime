@@ -300,6 +300,85 @@ policies.
   `tool:ChannelSend` with a typed channel id (`chan_*` / `principal:<did>`
   / `user:<id>` / `group:<slug>`) to dispatch.
 
+### PEKO sprint 5: slug-path addressing on the LLM-facing surface (2026-08-20)
+
+Collapses the LLM-facing session-addressing surface to slug paths.
+Three commits land in order: caller-relative slug resolution +
+raw-id rejection (commit 1, `96d3e55a`), `name` required at Agent
+spawn + tool-surface grammar update (commit 2, `89ca46d9`), and the
+doc sweep (this commit).
+
+#### Added
+
+- **`peko_session::path::resolve_reference`** — single LLM-facing
+  resolver. Three forms accepted: `/a/b/c` (absolute slug path,
+  caller-anchored), `agent-c` (caller-relative slug, BFS by depth),
+  and raw session ids **refused** with a structured error pointing
+  the model at the `path` field in `session list` output.
+- **`peko_session::path::resolve_id_or_path`** — engine-internal
+  resolver. Same dispatch, but raw ids pass through verbatim. Used
+  by `resume_preflight`, `request_compaction`, and
+  `validate_context_parent` in `peko-rs/core/src/agents/subagent_executor.rs`
+  for ids the runtime itself produces.
+- **`peko_session::path::resolve_relative`** — BFS-descent resolver
+  for the caller-relative branch. Direct children first (slugs are
+  unique-per-parent so this is unambiguous at depth 0), then
+  breadth-first descent. Multiple matches at the same depth → a
+  structured error listing all candidate paths.
+- **`peko_session::path::looks_like_session_id`** — shape heuristic
+  for the raw-id refusal branch. `true` when the reference contains
+  `:` (tree-root shape `root:<dim>:<name>`, runtime-extension
+  prefixes `spawn:<uuid>:` / `channel:<id>:`) or when the value is a
+  32+ char all-hex/dash blob (UUID-shaped).
+- **`validate_slug` rejects `:`** — extends the existing slug
+  validator to refuse `:` so the LLM-facing grammar is unambiguous
+  by construction (slugs cannot look like raw ids). Confirmed safe:
+  `peer_children.rs:84-92` already strips `:` from DID fragments
+  via `c.is_ascii_alphanumeric()`, so standing-child slugs do not
+  contain `:`.
+
+#### Changed (breaking)
+
+- **Raw session ids are REFUSED** at the LLM-facing tool layer
+  (`Agent` `session_key`, all `session` tool `session_key` /
+  `new_parent` / `target` parameters). Every "pass a session id"
+  error now cites the slug-path grammar (`/a/b/c` or `agent-c`)
+  instead. Engine-internal call sites are unaffected — they keep
+  using raw ids via `resolve_id_or_path`.
+- **`Agent` `name` (slug) is REQUIRED** at `action = "new"`.
+  `validate_slug` runs early so the model sees an actionable error
+  before any state touches the runtime. The four worked examples in
+  the Agent tool description now include `"name": "writer-1"` (and
+  similar) so the model copies the right shape.
+- **Channel binding resolver (`peko-rs/core/src/daemon/channel_binding.rs:339-387`)**
+  keeps its raw-id passthrough on purpose. Bindings are
+  config-authored, not LLM-authored; the resolver sits closer to the
+  `resolve_id_or_path` surface than the `resolve_reference` one.
+  Doc comment now states the deliberate divergence so the next
+  reader doesn't "fix" it.
+
+#### Notes
+
+- `peko_session::path` gained 280 tests (one new
+  `resolve_id_or_path_accepts_raw_ids_and_resolves_paths` covers
+  the engine-internal contract; `resolve_reference_rejects_raw_ids`
+  uses `root:cron:alice` instead of `root:user:alice` so the
+  self-reference shortcut doesn't fire).
+- `peko-rs/core/src/session/session_runtime_impl.rs` gained
+  `relative_slug_resolves_end_to_end`,
+  `relative_slug_ambiguous_lists_all_paths`, and
+  `raw_id_refused_with_actionable_message`.
+- Full DTO pruning — `SessionInfo` dropping `session_key` /
+  `session_id`, `ListScope` + `SessionRuntime::list_sessions`
+  signature change, `SessionCache` path-resolution seam, spawn
+  response replacing `child_session_key` with `path` + `slug` — is
+  deferred to a follow-up commit. The user-facing behavior change
+  (raw-id refusal, `name` required) is in commits 1 and 2.
+- The bound-channel binding (`passive_binding`) is preserved as a
+  `/`-rooted path through `SessionStoreBindingResolver`; the channel
+  binding tests (`peko-rs/core/src/daemon/channel_binding.rs:1483-1541`)
+  confirm the resolver still maps `/user-a` → canonical child id.
+
 ### PEKO sprint 2: external ingress off the root (2026-08-17)
 
 External traffic (CLI `peko send`, tunnel A2A, Hub webchat) moves off the

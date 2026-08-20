@@ -192,24 +192,48 @@ stale-by-design (never read back — the index is the source of truth for
 parentage). No reader caches the parent chain, so a reparent takes effect
 on the next guard evaluation.
 
-**(implemented — Phase 1b of the paradigm sprint, 2026-08-15)** Path
-addressing exists. Sessions carry an optional **slug** — a
-per-parent-unique path segment (`SessionMetadata.slug` /
-`SessionEntry.slug`, serde-default, validated: 1–64 chars, no `/`, no
-outer whitespace). The resolver (`peko-rs/session/src/path.rs`, pure
-functions over a metadata slice, ownership.rs-style) anchors `/` at the
-caller's topmost ancestor and walks children by slug; unknown segments
-produce structured errors listing the available child slugs. Every
-segment must be a slug — raw ids are not accepted as intermediate
-segments (a slugless node is addressed by raw id). Set points: session
-tool `rename` (optional `slug`), Agent tool `new` (optional `name`),
-`branch` (derives `<source-slug>-branch`, uniquified), and `move`
-(re-checks uniqueness among destination siblings). Resolution happens at
-the tool-runtime boundary for every `session_key`-shaped param
-(`/`-prefixed values resolve, raw ids pass through), *before* the
-unchanged ownership guards — paths are a computed view; ids stay the
-canonical key everywhere. `session list` shows `slug` + computed `path`
-(`compute_path` skips slugless ancestors, display-only).
+**(implemented — Phase 1b of the paradigm sprint, 2026-08-15; sprint 5
+2026-08-20 collapses the LLM-facing surface)** Path addressing exists.
+Sessions carry an optional **slug** — a per-parent-unique path segment
+(`SessionMetadata.slug` / `SessionEntry.slug`, serde-default,
+validated: 1–64 chars, no `/`, no `:`, no outer whitespace; `:` is
+reserved for raw session ids). The resolver
+(`peko-rs/session/src/path.rs`, pure functions over a metadata slice,
+ownership.rs-style) anchors `/` at the caller's topmost ancestor and
+walks children by slug; unknown segments produce structured errors
+listing the available child slugs.
+
+**LLM-facing addressing grammar (sprint 5, three forms via
+`peko_session::path::resolve_reference`):**
+
+| Form | Example | Resolver branch |
+|------|---------|-----------------|
+| Absolute slug path | `/a/b/c` | `resolve_path` (caller-anchored) |
+| Caller-relative slug | `agent-c` | `resolve_relative` (BFS by depth, direct children first) |
+| Raw session id | `root:user:alice`, `550e8400-…` | **REFUSED** with structured error |
+
+The raw-id branch exists so the model gets an actionable refusal
+rather than a confusing descendant-search miss when it tries to
+pass a raw id it picked up from a prior tool call. Engine-internal
+call sites bypass the refusal via
+`peko_session::path::resolve_id_or_path`, which accepts raw ids
+verbatim — the runtime holds canonical ids it produced itself;
+existence is validated by the per-call guards.
+
+Set points: session tool `rename` (`slug`), Agent tool `new`
+(`name` is REQUIRED — `validate_slug` runs upfront), `branch`
+(derives `<source-slug>-branch`, uniquified), and `move`
+(re-checks uniqueness among destination siblings). Resolution
+happens at the tool-runtime boundary for every `session_key`-shaped
+param, *before* the unchanged ownership guards — paths are a
+computed view; ids stay the canonical key everywhere.
+`session list` defaults to the **caller's subtree** (not the whole
+principal's tree); `scope: "principal"` widens for privileged trunk
+callers (non-privileged callers who ask get ownership-clamped to
+their subtree with a structured warning); `path: "/other/sub"`
+scopes further to any subtree the caller has ownership access to.
+`session list` shows `slug` + computed `path` (`compute_path`
+skips slugless ancestors, display-only).
 
 ## 3. Channels: the external interface
 

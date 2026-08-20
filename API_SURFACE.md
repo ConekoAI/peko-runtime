@@ -871,6 +871,36 @@ pub type SessionContext = ExecutionContext;
 pub type SessionContext = SessionKeyContext;
 ```
 
+### PEKO Sprint 5 (2026-08-20) — slug-path addressing on the LLM-facing surface
+
+Breaking (prelaunch): the LLM-facing addressing surface collapses to
+slug paths. Three commits land in order (`96d3e55a`, `89ca46d9`,
+then the doc sweep this section belongs to). Engine-internal call
+sites keep using raw session ids via `resolve_id_or_path`; the
+`SessionStoreBindingResolver` (channel binding) keeps its raw-id
+passthrough by design — bindings are config-authored, not
+LLM-authored.
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `peko_session::path::resolve_reference` | `peko_session::path` | ✅ New | Single LLM-facing entry point: `/a/b/c` → `resolve_path`, `agent-c` → `resolve_relative` (BFS), raw id → REFUSED |
+| `peko_session::path::resolve_id_or_path` | `peko_session::path` | ✅ New | Engine-internal entry point: same dispatch, raw ids pass through verbatim. Used by `resume_preflight`, `request_compaction`, `validate_context_parent` in `agents::subagent_executor.rs` |
+| `peko_session::path::resolve_relative` | `peko_session::path` | ✅ New | BFS descent resolver: direct children first (unique-per-parent), then breadth-first; multiple matches at the same depth → structured error listing all candidate paths |
+| `peko_session::path::looks_like_session_id` | `peko_session::path` | ✅ New | Shape heuristic for raw-id refusal: `:`-bearing values + 32+ char all-hex/dash blobs |
+| `validate_slug` (+`:` arm) | `peko_session::path` | ✅ Extended | Rejects `:` so slugs cannot collide with raw ids by construction |
+| `Agent` `name` (REQUIRED for `action = "new"`) | `tools::builtin::messaging::agent` | ✅ Breaking | `validate_slug` runs upfront; old in-repo callers updated to pass `"writer"` |
+| `Agent` `session_key` (raw-id refusal) | `tools::builtin::messaging::agent` | ✅ Breaking | `Resume` / `Compact` errors cite the slug-path grammar instead of "pass a session id" |
+| `channel_binding::SessionStoreBindingResolver` (raw-id passthrough retained, doc-only) | `daemon::channel_binding` | ✅ Documented | Deliberate divergence — bindings come from `principals.toml` and never go through the tool surface |
+
+**Deferred to follow-ups (NOT in sprint 5):**
+
+- `SessionInfo` dropping `session_key` / `session_id` (keep only `path` / `slug`)
+- `SessionStatusResult` / `BranchOutcome` / `DeleteOutcome` / `CompactRequestOutcome` — replace raw `session_id` with computed `path`
+- `ListScope { root: Option<String>, principal: bool }` + `SessionRuntime::list_sessions(scope: ListScope)` signature change
+- `session list` default scope = caller's subtree (with `scope: "principal"` widening for privileged trunk callers and `path: "/other"` subtree scoping)
+- `SessionCache` (test impl) — path-resolution seam
+- Spawn response — replace `child_session_key` with `path` + `slug` (additive `child_path` on `SubagentMetadata` → `SubagentRunView`)
+
 ---
 
 ## Test Coverage Requirements
