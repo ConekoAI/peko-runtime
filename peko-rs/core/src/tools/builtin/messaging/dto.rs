@@ -89,7 +89,15 @@ impl Default for AgentConfig {
 // ─── SpawnError (lifted from src/agents/subagent_error.rs) ─────────
 
 /// Errors that can occur when spawning a subagent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Sprint 7 Commit 4: the built-in `SpawnError` enum mirrors the
+/// root-side enum (`crate::agents::subagent_error::SpawnError`) 1:1
+/// so the `AgentTool::format_error_response` typed walk covers every
+/// pre-flight refusal without falling through to string parsing.
+/// `Eq` is removed from the derive because `CostCeilingExceeded`
+/// carries `f64` fields (which don't implement `Eq`) — callers
+/// compare fields individually.
+#[derive(Debug, Clone, PartialEq)]
 pub enum SpawnError {
     /// The spawn depth limit was exceeded.
     DepthLimitExceeded { current: u32, max: u32 },
@@ -99,6 +107,28 @@ pub enum SpawnError {
     Timeout { seconds: u64 },
     /// The subagent execution failed with an error message.
     ExecutionFailed(String),
+    /// Phase 3 of `feature/multi-model-subagents` — the
+    /// spawn-time pre-flight estimated cost for the call exceeds
+    /// the principal's `cost_per_call_max`.
+    CostCeilingExceeded {
+        /// Estimated cost in USD (positive).
+        estimated: f64,
+        /// Per-call ceiling in USD (positive).
+        ceiling: f64,
+        /// Model id of the chosen provider — for the error message.
+        model_id: String,
+    },
+    /// Phase 1 of `feature/multi-model-subagents` — the chosen
+    /// model's `ModelSpec` cannot serve the subagent the parent
+    /// asked for (e.g. text-only model picked for a tool-using
+    /// subagent).
+    SpecGateFailed {
+        /// Model id of the chosen provider — for the error message.
+        model_id: String,
+        /// Human-readable reason from the spec gate (e.g.
+        /// "model lacks tool support").
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for SpawnError {
@@ -118,6 +148,23 @@ impl std::fmt::Display for SpawnError {
             }
             SpawnError::ExecutionFailed(msg) => {
                 write!(f, "Subagent execution failed: {msg}")
+            }
+            SpawnError::CostCeilingExceeded {
+                estimated,
+                ceiling,
+                model_id,
+            } => {
+                write!(
+                    f,
+                    "Per-spawn cost ceiling exceeded: ${:.4} estimated > ${:.4} ceiling for model '{}'",
+                    estimated, ceiling, model_id
+                )
+            }
+            SpawnError::SpecGateFailed { model_id, reason } => {
+                write!(
+                    f,
+                    "Model '{model_id}' cannot serve this subagent: {reason}"
+                )
             }
         }
     }

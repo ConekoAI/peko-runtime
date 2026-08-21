@@ -347,104 +347,44 @@ impl AgentTool {
 
     /// Format error response
     ///
-    /// Classifies the error using a typed `SpawnError` when available,
-    /// falling back to string matching only for untyped errors. Walks
-    /// the `anyhow` chain first; if no typed error is found (the async
-    /// exec layer stringifies the error at `executor.rs:343` before it
-    /// reaches us), parses the well-defined `SpawnError` Display
-    /// format to reconstruct the typed fields.
+    /// Sprint 7 Commit 4: the typed walk is the only classification
+    /// path. The pre-Sprint-7 string-parsing fallback (`parse_two_u32s`
+    /// + `parse_one_u32`) was a workaround for the async-exec layer's
+    /// stringification at
+    /// `extensions/async_exec/executor.rs:353`, which destroyed the
+    /// typed chain. Every pre-flight refusal (`DepthLimitExceeded`,
+    /// `ConcurrentLimitExceeded`, `CostCeilingExceeded`,
+    /// `SpecGateFailed`) preserves the typed chain through the
+    /// executor's `anyhow::anyhow!(SpawnError::*)` wraps and reaches
+    /// us intact. Post-task failures that the async-exec layer
+    /// stringifies now collapse to the generic `"error"` envelope —
+    /// accepted regression per the Sprint 7 plan; future phases can
+    /// thread the typed error through `AsyncTaskEntry::metadata` to
+    /// restore classification without re-introducing brittle string
+    /// parsing here.
     fn format_error_response(
         error: &anyhow::Error,
     ) -> anyhow::Result<serde_json::Value> {
-        // 1. Try typed classification first, walking the anyhow chain
-        //    because intermediate layers re-wrap the typed error with
-        //    a string-formatted `anyhow!`.
+        // 1. Walk the anyhow chain to find the typed `SpawnError`.
+        //    Intermediate layers re-wrap typed errors with
+        //    string-formatted `anyhow!`, so the typed source can be
+        //    several layers deep.
         for source in error.chain() {
             if let Some(spawn_err) = source.downcast_ref::<crate::tools::builtin::messaging::dto::SpawnError>() {
                 return Self::spawn_error_to_json(spawn_err);
             }
         }
 
-        // 2. The async-exec layer at `extensions/async_exec/executor.rs:343`
-        //    stringifies `e.to_string()` when constructing
-        //    `AsyncTaskStatus::Failed`. The typed chain is gone by the
-        //    time we get here, so parse the well-defined
-        //    `SpawnError::Display` shape and reconstruct the typed
-        //    fields. Display formats (canonical from
-        //    `subagent_error.rs` and `messaging/dto.rs`):
-        //      DepthLimitExceeded { current, max }
-        //        → "Maximum spawn depth exceeded: {current} (max: {max})"
-        //      ConcurrentLimitExceeded { current, max }
-        //        → "Maximum concurrent subagent runs exceeded: {current} (max: {max})"
-        //      Timeout { seconds }
-        //        → "Subagent execution timed out after {seconds} seconds"
+        // 2. Untyped error envelope — no `SpawnError` in the chain.
+        //    The async-exec layer's stringification route lands here
+        //    for any failure that didn't originate as a typed
+        //    `SpawnError`. We surface the message verbatim and let
+        //    the parent LLM decide what to do.
         let error_msg = error.to_string();
-
-        if let Some((current, max)) =
-            parse_two_u32s(&error_msg, "Maximum spawn depth exceeded:", "(max:")
-        {
-            return Ok(json!({
-                "status": "forbidden",
-                "error_type": "DepthLimitExceeded",
-                "current_depth": current,
-                "max_depth": max,
-                "error": error_msg,
-                "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
-            }));
-        }
-
-        if let Some((current, max)) = parse_two_u32s(
-            &error_msg,
-            "Maximum concurrent subagent runs exceeded:",
-            "(max:",
-        ) {
-            return Ok(json!({
-                "status": "forbidden",
-                "error_type": "ConcurrentLimitExceeded",
-                "current_concurrent": current,
-                "max_concurrent": max,
-                "error": error_msg,
-                "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
-            }));
-        }
-
-        if let Some(secs) = parse_one_u32(&error_msg, "Subagent execution timed out after", "seconds")
-        {
-            return Ok(json!({
-                "status": "timeout",
-                "error_type": "Timeout",
-                "timeout_seconds": secs,
-                "error": error_msg,
-                "note": "Subagent execution timed out."
-            }));
-        }
-
-        // 3. Fallback to string matching for untyped errors
-        let lower_msg = error_msg.to_lowercase();
-        if lower_msg.contains("depth") {
-            Ok(json!({
-                "status": "forbidden",
-                "error": error_msg,
-                "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
-            }))
-        } else if lower_msg.contains("concurrent") {
-            Ok(json!({
-                "status": "forbidden",
-                "error": error_msg,
-                "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
-            }))
-        } else if lower_msg.contains("timeout") || lower_msg.contains("timed out") {
-            Ok(json!({
-                "status": "timeout",
-                "error": error_msg,
-                "note": "Subagent execution timed out."
-            }))
-        } else {
-            Ok(json!({
-                "status": "error",
-                "error": error_msg
-            }))
-        }
+        Ok(json!({
+            "status": "error",
+            "error": error_msg
+        }))
     }
 
     /// Render a typed `SpawnError` to the canonical JSON envelope.
@@ -480,6 +420,23 @@ impl AgentTool {
                 "error_type": "ExecutionFailed",
                 "error": msg,
             }),
+            crate::tools::builtin::messaging::dto::SpawnError::CostCeilingExceeded { estimated, ceiling, model_id } => json!({
+                "status": "forbidden",
+                "error_type": "CostCeilingExceeded",
+                "estimated_cost_usd": estimated,
+                "ceiling_cost_usd": ceiling,
+                "model_id": model_id,
+                "error": spawn_err.to_string(),
+                "note": "Per-spawn cost ceiling exceeded. The chosen model is too expensive for this principal."
+            }),
+            crate::tools::builtin::messaging::dto::SpawnError::SpecGateFailed { model_id, reason } => json!({
+                "status": "forbidden",
+                "error_type": "SpecGateFailed",
+                "model_id": model_id,
+                "reason": reason,
+                "error": spawn_err.to_string(),
+                "note": "The chosen model cannot serve this subagent. Pick a model with the required capabilities."
+            }),
         })
     }
 
@@ -507,37 +464,9 @@ impl AgentTool {
     }
 }
 
-/// Parse two `u32`s from a string of the shape
-/// `"<prefix>{a}<sep>{b}<suffix>"`. Returns `None` if the prefix or
-/// separator can't be located or the captures don't parse as u32.
-fn parse_two_u32s(s: &str, prefix: &str, sep: &str) -> Option<(u32, u32)> {
-    let after_prefix = s.find(prefix)? + prefix.len();
-    let rest = &s[after_prefix..];
-    let sep_idx = rest.find(sep)?;
-    let a: u32 = rest[..sep_idx].trim().parse().ok()?;
-    let after_sep = &rest[sep_idx + sep.len()..];
-    // Skip leading whitespace before scanning digits — the second
-    // number is preceded by a space in the SpawnError Display format
-    // (e.g. `"... (max: {max})"` becomes `"... (max: 3)"` so `after_sep`
-    // is `" 3)"`, not `"3)"`).
-    let after_ws = after_sep.trim_start();
-    // Stop at the first non-digit character for the second number.
-    let end = after_ws
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(after_ws.len());
-    let b: u32 = after_ws[..end].trim().parse().ok()?;
-    Some((a, b))
-}
-
-/// Parse a single `u32` from a string of the shape
-/// `"<prefix>{n}<suffix>"`. Returns `None` if the prefix can't be
-/// located or the capture doesn't parse as u32.
-fn parse_one_u32(s: &str, prefix: &str, suffix: &str) -> Option<u32> {
-    let after_prefix = s.find(prefix)? + prefix.len();
-    let rest = &s[after_prefix..];
-    let suffix_idx = rest.find(suffix)?;
-    rest[..suffix_idx].trim().parse().ok()
-}
+// (Sprint 7 Commit 4: `parse_two_u32s` and `parse_one_u32` were
+// deleted — `format_error_response` no longer parses Display strings;
+// every typed `SpawnError` reaches us through the anyhow chain.)
 
 // (Trait helpers used by the port live in `subagent_runtime.rs`:
 // `SubagentRuntimeAuditExt` provides principal-id/name accessors that
@@ -1129,6 +1058,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_response_formatting() {
+        // Sprint 7 Commit 4: the typed walk is the only classification
+        // path. The pre-Sprint-7 string-parsing fallback is gone —
+        // every typed `SpawnError` (including the two new variants)
+        // round-trips through the anyhow chain.
+
         // Test typed depth error
         let depth_err = anyhow::anyhow!(crate::tools::builtin::messaging::dto::SpawnError::DepthLimitExceeded {
             current: 4,
@@ -1185,40 +1119,64 @@ mod tests {
             .unwrap()
             .contains("something went wrong"));
 
-        // Field-test fix (2026-08-02): the async-exec layer stringifies
-        // `SpawnError` into `AsyncTaskStatus::Failed { error: String }`
-        // before it reaches us, destroying the typed chain. Verify the
-        // Display-string fallback reconstructs the typed fields.
-        let stringified_depth = anyhow::anyhow!(
-            "Subagent failed: Maximum spawn depth exceeded: 4 (max: 3)"
+        // Test typed cost ceiling error (Sprint 7 Commit 4: previously
+        // a silent typed walk + missing match arm in
+        // `spawn_error_to_json`).
+        let cost_err = anyhow::anyhow!(
+            crate::tools::builtin::messaging::dto::SpawnError::CostCeilingExceeded {
+                estimated: 0.135,
+                ceiling: 0.10,
+                model_id: "claude-opus-4-8".into(),
+            }
         );
-        let response = AgentTool::format_error_response(&stringified_depth).unwrap();
-        assert_eq!(response["error_type"].as_str().unwrap(), "DepthLimitExceeded");
-        assert_eq!(response["current_depth"].as_u64().unwrap(), 4);
-        assert_eq!(response["max_depth"].as_u64().unwrap(), 3);
-
-        let stringified_concurrent = anyhow::anyhow!(
-            "Subagent failed: Maximum concurrent subagent runs exceeded: 6 (max: 5)"
-        );
-        let response = AgentTool::format_error_response(&stringified_concurrent).unwrap();
+        let response = AgentTool::format_error_response(&cost_err).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert_eq!(
             response["error_type"].as_str().unwrap(),
-            "ConcurrentLimitExceeded"
+            "CostCeilingExceeded"
         );
-        assert_eq!(response["current_concurrent"].as_u64().unwrap(), 6);
-        assert_eq!(response["max_concurrent"].as_u64().unwrap(), 5);
+        assert!(
+            (response["estimated_cost_usd"].as_f64().unwrap() - 0.135).abs() < 1e-9
+        );
+        assert!(
+            (response["ceiling_cost_usd"].as_f64().unwrap() - 0.10).abs() < 1e-9
+        );
+        assert_eq!(
+            response["model_id"].as_str().unwrap(),
+            "claude-opus-4-8"
+        );
 
-        let stringified_timeout =
-            anyhow::anyhow!("Subagent execution timed out after 300 seconds");
-        let response = AgentTool::format_error_response(&stringified_timeout).unwrap();
-        assert_eq!(response["status"].as_str().unwrap(), "timeout");
-        assert_eq!(response["timeout_seconds"].as_u64().unwrap(), 300);
-
-        // Test fallback string matching for untyped errors
-        let untyped = anyhow::anyhow!("Some random depth-related failure");
-        let response = AgentTool::format_error_response(&untyped).unwrap();
+        // Test typed spec gate error (Sprint 7 Commit 4: same fix).
+        let spec_err = anyhow::anyhow!(
+            crate::tools::builtin::messaging::dto::SpawnError::SpecGateFailed {
+                model_id: "claude-haiku-4-5".into(),
+                reason: "model lacks tool support".into(),
+            }
+        );
+        let response = AgentTool::format_error_response(&spec_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
-        assert!(response["note"].as_str().unwrap().contains("depth"));
+        assert_eq!(response["error_type"].as_str().unwrap(), "SpecGateFailed");
+        assert_eq!(
+            response["model_id"].as_str().unwrap(),
+            "claude-haiku-4-5"
+        );
+        assert_eq!(
+            response["reason"].as_str().unwrap(),
+            "model lacks tool support"
+        );
+
+        // Untyped error envelope: the typed walk doesn't find a
+        // `SpawnError` in the chain — surface the message verbatim
+        // under the generic `"error"` status. This is the new
+        // post-task-failure path (async-exec stringification route).
+        let untyped = anyhow::anyhow!("some random unrelated failure");
+        let response = AgentTool::format_error_response(&untyped).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "error");
+        assert_eq!(
+            response["error"].as_str().unwrap(),
+            "some random unrelated failure"
+        );
+        assert!(response.get("error_type").is_none());
     }
 
     #[test]
