@@ -620,12 +620,19 @@ impl CronEngine {
     /// Phase 7 (sprint 2, 2026-08-17): the trunk is the DEFAULT (and
     /// only) destination — `target: None` and `target = "trunk"` are
     /// the same route; the per-owner `root:cron:{owner}` session is
-    /// retired. The owner-facing projection survives:
-    /// `deliver_send_job_note` cross-posts the labeled outcome note
-    /// into the owner's standing peer child (via the peer messenger).
-    /// The fired prompt itself lives in the trunk session JSONL (the
-    /// Phase-13 retirement of the chat-log crate dropped the separate
-    /// `record_cron_input` projection).
+    /// retired.
+    ///
+    /// **Cron is silent to the user.** The agent (the trunk) is the
+    /// active entry point for any user-facing message — it talks back
+    /// via `ChannelSend`. The cron engine does NOT cross-post the
+    /// agent's reply into the owner's standing peer child or the
+    /// user's DM channel: doing so duplicates the agent's `ChannelSend`
+    /// and reads as either noise (when the agent already replied) or a
+    /// fake reply (when the agent failed). The agent is responsible
+    /// for communication; the cron engine's only audit trail is the
+    /// `CronRun` history (operator-facing, via `peko cron history`),
+    /// the trunk session JSONL (engine context), and the
+    /// `IdleDetector::record_activity` bump.
     async fn run_send_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
@@ -660,11 +667,6 @@ impl CronEngine {
             _ => {}
         }
 
-        let peer = {
-            let config = principal.config.read().await;
-            config.owner.clone()
-        };
-
         match pm
             .receive_trunk(principal.id.clone(), job.task_description(), None)
             .await
@@ -672,8 +674,6 @@ impl CronEngine {
             Ok(response) => {
                 self.idle_detector
                     .record_activity(&principal.name().await)
-                    .await;
-                self.deliver_send_job_note(&principal, &peer, &job.name, &response.content)
                     .await;
                 Ok(("success".to_string(), Some(response.content)))
             }
@@ -757,54 +757,6 @@ impl CronEngine {
                 "failed".to_string(),
                 Some(format!("notify delivery error: {e}")),
             )),
-        }
-    }
-
-    /// Append a fired Send job's outcome to the owner's CONVERSATIONAL
-    /// session as a labeled note (2026-08-07 field test, F2).
-    ///
-    /// Phase 7: the cron turn itself runs in the TRUNK session
-    /// (`root:self`); this note is the only thing that crosses into the
-    /// human's session — which is now the owner's standing peer child
-    /// of the trunk (the messenger resolves it find-only; the retired
-    /// `root:{owner}` session is never addressed). It never triggers a
-    /// turn: if a turn is in flight the note lands mid-history and is
-    /// picked up (and shape-repaired if needed) at the next load; if
-    /// idle, it waits in the JSONL for the user's next message. Tagged
-    /// `MessageSource::Cron` so consumers can distinguish it from human
-    /// input; user-role because the Anthropic-style adapter maps
-    /// system-role messages to the top-level system parameter
-    /// (last-one-wins), which would clobber the system prompt.
-    ///
-    /// Delivery goes through the peer-messenger port (2026-08-08
-    /// `send_peer` unification) — same mechanism the `send_peer`
-    /// tool's user branch uses.
-    async fn deliver_send_job_note(
-        &self,
-        principal: &Arc<crate::principal::Principal>,
-        peer: &peko_auth::Subject,
-        job_name: &str,
-        outcome: &str,
-    ) {
-        let excerpt: String = outcome.chars().take(500).collect();
-        let note = format!("⏰ [cron job '{job_name}' fired] {excerpt}");
-        let caller_label = format!("cron job '{job_name}'");
-        let did = principal.did().await;
-        let Some(messenger) = self.messenger() else {
-            warn!("cron note: no peer messenger available for {job_name}");
-            return;
-        };
-        if let Err(e) = messenger
-            .deliver_note(
-                &did.0,
-                peer,
-                &note,
-                peko_session::events::MessageSource::Cron,
-                Some(&caller_label),
-            )
-            .await
-        {
-            warn!("cron note append failed for {job_name}: {e}");
         }
     }
 
@@ -1641,12 +1593,15 @@ mod tests {
 
     /// Phase 7 (sprint 2): a `Send` cron job (default target) fires its
     /// turn into the principal's TRUNK session `root:self` — the
-    /// `root:cron:{owner}` session is retired — and leaves a labeled
-    /// note with the outcome in the owner's standing peer child so the
-    /// user actually sees the result. The trunk also carries the
-    /// `[notify]` self-view line for the note delivery.
+    /// `root:cron:{owner}` session is retired. The cron engine is now
+    /// silent to the user (PR-B, 2026-08-21): the agent owns
+    /// user-facing communication via `ChannelSend`, and the cron
+    /// engine does NOT cross-post the reply into the owner's standing
+    /// peer child or the user's DM channel. The trunk JSONL still
+    /// carries the agent's full transcript (engine context), and the
+    /// run lands in `CronRun` history (operator-facing).
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_send_job_fires_into_trunk_and_delivers_note() {
+    async fn test_send_job_fires_into_trunk_and_is_silent_to_user() {
         let tmp = TempDir::new().unwrap();
 
         // Principal manager with a mock resolver; two queued texts:
@@ -1772,15 +1727,19 @@ mod tests {
             trunk_jsonl.contains("cron turn reply"),
             "trunk session should contain the turn's reply, got: {trunk_jsonl}"
         );
-        // The note delivery's `[notify]` self-view line lands in the
-        // trunk (Phase 7: the principal's self-view lives there).
+        // PR-B: the cron engine no longer cross-posts anything — the
+        // dispatcher's `[notify]` self-view line is gone too (it was a
+        // side effect of `deliver_note` calling `messenger.deliver_note`,
+        // which is no longer invoked).
         assert!(
-            trunk_jsonl.contains("[notify]"),
-            "trunk session should carry the note-delivery self-view line, got: {trunk_jsonl}"
+            !trunk_jsonl.contains("[notify]"),
+            "trunk session must NOT carry a cron note-delivery self-view line, got: {trunk_jsonl}"
         );
 
-        // The owner's peer child holds the human turn plus the labeled
-        // cron note — and NOT the raw cron message.
+        // The owner's peer child holds ONLY the human turn from the
+        // conversational reply — the cron engine's reply is silent
+        // (PR-B, 2026-08-21). The agent is responsible for any
+        // user-facing communication via `ChannelSend`.
         let child_id = owner_child_id(&principal, &owner)
             .await
             .expect("owner peer child should exist");
@@ -1792,12 +1751,12 @@ mod tests {
             "owner child should contain the human turn"
         );
         assert!(
-            conv_jsonl.contains("⏰ [cron job 'test-job' fired]"),
-            "owner child should contain the cron note, got: {conv_jsonl}"
+            !conv_jsonl.contains("⏰ [cron job 'test-job' fired]"),
+            "owner child must NOT contain a cron-fired note (PR-B silence), got: {conv_jsonl}"
         );
         assert!(
-            conv_jsonl.contains("cron turn reply"),
-            "note should carry the cron turn's outcome"
+            !conv_jsonl.contains("cron turn reply"),
+            "owner child must NOT contain the cron turn's reply text (PR-B silence), got: {conv_jsonl}"
         );
         assert!(
             !conv_jsonl.contains("cron tick payload"),
@@ -1819,11 +1778,11 @@ mod tests {
 
     /// Phase 7 (2026-08-17): `target = "trunk"` stays accepted and is
     /// the SAME route as the default — the turn fires into the
-    /// principal's trunk session `root:self`, and the outcome note
-    /// cross-posts into the owner's standing peer child exactly like
-    /// the default path (the Phase-3 "trunk means no note" special
-    /// case is gone: the note no longer duplicates anything, since
-    /// the note lives in the owner child, not the trunk).
+    /// principal's trunk session `root:self`. PR-B (2026-08-21) makes
+    /// the cron engine silent to the user, so unlike the previous
+    /// Phase-3 behavior the owner child does NOT receive a cross-post
+    /// note. The agent owns any user-facing communication via
+    /// `ChannelSend`.
     ///
     /// `#[serial]` because the principal-manager tests mutate the
     /// process-global `PEKO_HOME` (identity key storage root); running
@@ -1960,8 +1919,9 @@ mod tests {
             "the per-owner cron session is retired — it must never be created"
         );
 
-        // The owner's peer child holds the human turn plus the note
-        // cross-post — and NOT the raw trunk payload.
+        // The owner's peer child holds ONLY the human turn — the cron
+        // engine is silent (PR-B, 2026-08-21). The agent is responsible
+        // for any user-facing communication via `ChannelSend`.
         let child_id = owner_child_id(&principal, &owner)
             .await
             .expect("owner peer child should exist");
@@ -1973,8 +1933,12 @@ mod tests {
             "owner child should contain the human turn"
         );
         assert!(
-            conv_jsonl.contains("⏰ [cron job 'self-upkeep' fired]"),
-            "owner child should carry the outcome note, got: {conv_jsonl}"
+            !conv_jsonl.contains("⏰ [cron job 'self-upkeep' fired]"),
+            "owner child must NOT contain a cron-fired note (PR-B silence), got: {conv_jsonl}"
+        );
+        assert!(
+            !conv_jsonl.contains("trunk turn reply"),
+            "owner child must NOT contain the cron turn's reply text (PR-B silence), got: {conv_jsonl}"
         );
         assert!(
             !conv_jsonl.contains("organize your memory"),
