@@ -150,7 +150,7 @@ job — the daemon asks the `AsyncExecutor` to run `tool_name` with
 supports multiple schedule kinds (`at`, `interval_ms`, event-triggered jobs
 via `event_topic`/`event_filter`). To schedule a classic cron job, supply
 `cron`; otherwise supply one of the extension fields. Extra fields:
-`label`, `at`, `interval_ms`, `start_at`, `timezone`, `idle_ms`,
+`label`, `at`, `interval_ms`, `timezone`, `idle_ms`,
 `event_topic`, `event_filter`.
 
 **Sprint 7 Commit D (2026-08-21)** restricted the tool to scheduling

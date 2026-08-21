@@ -72,9 +72,6 @@ pub struct CronCreateArgs {
     /// Interval in milliseconds for recurring jobs
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
-    /// Optional start time for interval-based jobs
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub start_at: Option<String>,
     /// Timezone for cron expression (default UTC)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
@@ -185,10 +182,6 @@ impl Tool for CronCreateTool {
                 "interval_ms": {
                     "type": "integer",
                     "description": "Interval in milliseconds for recurring jobs"
-                },
-                "start_at": {
-                    "type": "string",
-                    "description": "Optional start time for interval-based jobs"
                 },
                 "timezone": {
                     "type": "string",
@@ -309,7 +302,7 @@ mod tests {
         assert!(props.get("params").is_some());
         assert!(props.get("wake_on_completion").is_some());
         assert!(props.get("timeout_secs").is_some());
-        // Sprint 7 Commit C + D: dropped fields stay gone.
+        // Sprint 7 Commit C + D + E: dropped fields stay gone.
         assert!(props.get("prompt").is_none());
         assert!(props.get("message").is_none());
         assert!(props.get("target").is_none());
@@ -317,6 +310,7 @@ mod tests {
         assert!(props.get("recurring").is_none());
         assert!(props.get("durable").is_none());
         assert!(props.get("task").is_none());
+        assert!(props.get("start_at").is_none());
     }
 
     /// Phase 3: `target` parsed through the typed args struct, and the
