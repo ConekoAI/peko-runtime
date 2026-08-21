@@ -298,22 +298,23 @@ async fn session_delete_current_session_refused() {
 
     let live_id = live_root_id(&cli);
 
-    // Send #2: the agent tries to delete the session it is running in.
+    // Send #2: the agent tries to remove the session it is running in.
     // The tool returns the structured refusal as the tool result; the
     // parent then reports.
+    // Sprint 7 Commit F (2026-08-21): `delete` → `remove` (bash-aligned).
     let script = serde_json::json!({
         second_needle: [
             { "tool_call": { "name": "session", "arguments":
-                serde_json::json!({ "action": "delete", "session_key": live_id }).to_string()
+                serde_json::json!({ "action": "remove", "session_key": live_id }).to_string()
             } },
-            "DELETE_REFUSED",
+            "REMOVE_REFUSED",
         ],
     })
     .to_string();
     configure_mock(&mock_url, &script).await;
     let prompt = format!(
-        "Delete the current session with the session tool, then respond with \
-         DELETE_REFUSED regardless of the outcome. Use the needle '{second_needle}'."
+        "Remove the current session with the session tool, then respond with \
+         REMOVE_REFUSED regardless of the outcome. Use the needle '{second_needle}'."
     );
     let (out, err, status) = run(
         &cli,
@@ -322,20 +323,20 @@ async fn session_delete_current_session_refused() {
     );
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("DELETE_REFUSED"),
-        "send #2 did not report DELETE_REFUSED: stdout={out} stderr={err}",
+        out.contains("REMOVE_REFUSED"),
+        "send #2 did not report REMOVE_REFUSED: stdout={out} stderr={err}",
     );
 
-    // The live session survived the refused delete.
+    // The live session survived the refused remove.
     let index = sessions_index(&cli);
     assert!(
         index.as_object().unwrap().contains_key(&live_id),
-        "live session {live_id} must survive the refused delete"
+        "live session {live_id} must survive the refused remove"
     );
     let safe = live_id.replace(['<', '>', ':', '"', '/', '\\', '|', '?', '*'], "-");
     assert!(
         sessions_dir(&cli).join(format!("{safe}.jsonl")).exists(),
-        "live transcript must survive the refused delete"
+        "live transcript must survive the refused remove"
     );
 }
 

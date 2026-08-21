@@ -694,9 +694,12 @@ cargo test --all-features
     `<id>.jsonl`) and readers (`load_events`/`load_normalized`)
     stitch pages 1..N + the current page transparently. Legacy
     `#`-suffixed JSONLs stay inert on disk. The `session` tool is the
-    *persist* side (10 storage actions: `status`, `list`, `history`,
-    `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`,
-    `move`);
+    *persist* side (7 storage actions, bash-aligned: `status`,
+    `list`, `history`, `find`, `copy`, `move`, `remove` —
+    Sprint 7 Commit F 2026-08-21 trimmed from 10: `search`→`find`,
+    `branch`→`copy`, `delete`→`remove`, `rename` folded into
+    `move` (in-place title/slug), `archive`/`unarchive` dropped
+    (sessions are monotonically visible until `remove`));
     the `Agent` tool is the *generate* side (3 LLM-driving actions via
     the `action` param, default `new`: `new` spawns and now REQUIRES
     a `name` slug (1-64 chars, no `/`, no `:`, no outer whitespace;
@@ -751,10 +754,10 @@ cargo test --all-features
     (`TurnPromptContext.session_id`).
   - **2026-08-20 sprint 5 (slug-path addressing):** the LLM-facing
     addressing surface collapses to slug paths. The `session` tool's
-    `status` / `history` / `rename` / `delete` / `branch` /
-    `archive` / `unarchive` / `move` actions accept a slug path
-    (`/a/b/c`), a caller-relative slug (`agent-c`), and REFUSE raw
-    session ids at the tool boundary (`peko_session::path::resolve_reference`).
+    `status` / `history` / `copy` / `move` / `remove` actions accept
+    a slug path (`/a/b/c`), a caller-relative slug (`agent-c`), and
+    REFUSE raw session ids at the tool boundary
+    (`peko_session::path::resolve_reference`).
     `session list` defaults to the **caller's subtree** (no longer
     the whole principal's tree); `scope: "principal"` widens for
     privileged trunk callers (non-privileged callers who ask get

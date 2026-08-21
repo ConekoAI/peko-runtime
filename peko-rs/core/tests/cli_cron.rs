@@ -1171,18 +1171,3 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
          (agent stderr: {err})"
     );
 }
-
-/// Agent uses CronCreate's `message` arg (F4, 2026-08-07 field test) to
-/// schedule a user-facing reminder. Before `message` existed the tool
-/// could only build SpawnTool jobs, so "remind me …" requests produced
-/// no user-visible output. The daemon-side assertion checks the stored
-/// job is a `Notify` action carrying the reminder text (pure delivery,
-/// no agent turn — 2026-08-08 `send_peer` unification).
-///
-/// **Removed in Sprint 7 Commit D.** CronCreate no longer accepts
-/// `message`; it is a SpawnTool-only factory. User-facing reminders
-/// must go through the CLI's `peko cron add --message "..."`
-/// (which builds a `Send` job firing a turn into the principal's
-/// trunk session `root:self`) or via `tool="Agent"` + an explicit
-/// Agent prompt. The Notify path that this test exercised no longer
-/// exists.

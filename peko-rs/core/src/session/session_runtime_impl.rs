@@ -1541,41 +1541,14 @@ mod tests {
 
     // ─── Tool-surface wiring (SessionTool over the production runtime) ─
 
-    /// The restored `archive` action on the `session` tool routes
-    /// through the production guard layer: the live trunk session
-    /// (`root:self`) is continuous and engine-managed, so archiving it
-    /// is refused.
-    #[tokio::test]
-    async fn tool_archive_refuses_root_session() {
-        use crate::tools::builtin::session::{SessionTool, SharedSessionRuntime};
-        use peko_tools_core::traits::Tool;
-
-        let h = tree_harness("root:user:alice").await;
-        // Hang root:self under root:user:alice with a slug so the
-        // resolver can address it (sibling-root addressing isn't
-        // supported). The engine-managed guard fires on the id shape
-        // regardless of where it sits.
-        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
-        h.set_slug("root:self", "self").await;
-        let runtime: SharedSessionRuntime = Arc::new(SessionManagerRuntime::new(
-            Arc::clone(&h.manager),
-            Arc::clone(&h.current),
-            "test-agent".to_string(),
-            Some(Arc::clone(&h.registry)),
-        ));
-        let tool = SessionTool::new(runtime);
-
-        let err = tool
-            .execute(json!({"action": "archive", "session_key": "/self"}))
-            .await
-            .expect_err("archiving the trunk session must be refused");
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
-
-        // A non-root session archives fine through the same surface.
-        tool.execute(json!({"action": "archive", "session_key": "/c"}))
-            .await
-            .unwrap();
-    }
+    // Sprint 7 Commit F (2026-08-21) retired `archive` / `unarchive`
+    // — the prior `tool_archive_refuses_root_session` test routed the
+    // `archive` action through the production guard layer to assert
+    // the trunk is engine-managed. The action no longer exists, so
+    // the test was deleted. Root-session engine-managed guards are
+    // still covered at the runtime layer by `move_root_source_refused`
+    // and `trunk_session_is_engine_managed` (which spans delete,
+    // archive, move).
 
     /// Phase 3 (2026-08-15) / Phase 7 (2026-08-17): the principal trunk
     /// session `root:self` IS the root family now — delete, archive,

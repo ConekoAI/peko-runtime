@@ -19,11 +19,24 @@
 //! reads (`list_sessions` / `get_history` / `get_status` /
 //! `search_sessions` / `current_session_key`) and storage mutations
 //! (`branch_session` / `rename_session` / `set_archived` /
-//! `delete_session` / `move_session`). `request_compaction` rides the same trait but is
-//! engine-facing only — the model-facing `compact` affordance lives on
-//! the Agent tool. Production wiring uses the `SessionManagerRuntime`
-//! adapter in `src/session/session_runtime_impl.rs`; tests construct a
+//! `delete_session` / `move_session`). `request_compaction` rides
+//! the same trait but is engine-facing only — the model-facing
+//! `compact` affordance lives on the Agent tool. Production wiring
+//! uses the `SessionManagerRuntime` adapter in
+//! `src/session/session_runtime_impl.rs`; tests construct a
 //! [`SessionCache`] (in this module, an in-memory implementation).
+//!
+//! Note on `SessionRuntime` method names vs. tool-action names:
+//! the runtime methods are storage verbs (`branch_session`,
+//! `delete_session`, `rename_session`, `move_session`,
+//! `set_archived`); the model-facing tool actions are bash-aligned
+//! verbs (`copy`, `remove`, in-place `move`, no archive/unarchive).
+//! The tool layer is the only place that bridges between the two —
+//! see `tool.rs::SessionTool::execute` for the dispatch. `set_archived`
+//! stays on the trait for legacy record compatibility (records that
+//! already carry `archived: true` are still readable via
+//! `list_sessions` with `include_archived: true`), but no model-facing
+//! action writes it. Sprint 7 Commit F (2026-08-21).
 
 pub mod cache;
 pub mod tool;
