@@ -8,7 +8,6 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
 use crate::principal::router::AgentPromptSummary;
-use crate::tools::builtin::DynamicSessionKeyProvider;
 use peko_auth::Subject;
 use peko_engine::AgenticEvent;
 use peko_message::LlmMessage;
@@ -233,11 +232,12 @@ where
 
     // Register the principal-scoped `Agent` tool after `Agent::new*` but
     // before execution so it is available on the principal's shared
-    // core.
-    let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-        "agent:{}:cli:default",
-        prompt.name
-    )));
+    // core. Sprint 7: the tool no longer needs a runtime-mutable
+    // session-key provider; the canonical caller session id flows
+    // through `ToolContext::session_id` on the production path. The
+    // `DynamicSessionKeyProvider` machinery stays around for
+    // non-engine callers (tests, async_executor) that bind the
+    // runtime port's `session_id()` accessor directly.
     let session_manager = SessionManager::new()
         .with_sessions_dir_internal(ctx.sessions_dir.clone())
         .with_agent_name(&prompt.name)
@@ -475,25 +475,22 @@ where
         .with_agent_config(agent.config.clone()),
     );
 
-    let agent_tool = Arc::new(
-        crate::tools::builtin::messaging::agent_tool_with_workspace_and_session(
-            subagent_executor,
-            Some(ctx.workspace_path.clone()),
-            Box::new(session_key_provider.clone()),
-        ),
-    );
+    // Sprint 7: the Agent tool no longer takes a workspace or session
+    // provider at construction time. The runtime port
+    // (`SubagentExecutorRuntime`) reads its workspace from the
+    // executor's `principal_workspace` field, and the caller session
+    // id comes from `ToolContext::session_id` on the production
+    // path (with `SubagentRuntime::session_id()` as the fallback
+    // for non-engine callers).
+    let agent_tool = Arc::new(crate::tools::builtin::messaging::new_agent_tool(
+        subagent_executor,
+    ));
     crate::extensions::builtin::BuiltinToolAdapter::register_tool(
         &core,
         agent_tool,
         ctx.principal_id(),
     )
     .await?;
-
-    // Stamp the current session key so the Agent tool can auto-detect it.
-    {
-        let sid = session.read().await.id.clone();
-        session_key_provider.set_session_key(sid);
-    }
 
     // Run the agentic loop in LIVE streaming mode so the root agent emits
     // per-token `AssistantDelta` events (not a single buffered

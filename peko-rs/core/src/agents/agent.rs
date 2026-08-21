@@ -237,17 +237,14 @@ impl Agent {
         )));
 
         // Add Agent tool with executor and session provider. When this agent
-        // runs as a Principal root agent, scope the tool to the principal
-        // workspace so subagents resolve from
-        // `<workspace>/agents/<name>/AGENT.md`. Otherwise the `Agent` tool
-        // resolves from the global agent registry only.
-        let workspace = self.principal_workspace.clone();
+        // Sprint 7: the Agent tool reads its workspace from the runtime
+        // port (`SubagentExecutorRuntime::workspace()`), which reads
+        // it from `SubagentExecutor::principal_workspace`. The
+        // session-key provider is no longer threaded through the
+        // constructor — the canonical caller session id comes from
+        // `ToolContext::session_id`.
         tools.push(Arc::new(
-            crate::tools::builtin::messaging::agent_tool_with_workspace_and_session(
-                self.subagent_executor.clone(),
-                workspace,
-                Box::new(self.session_key_provider.clone()),
-            ),
+            crate::tools::builtin::messaging::new_agent_tool(self.subagent_executor.clone()),
         ));
 
         // Add planning todo (Task*) tools backed by the agent's session storage.

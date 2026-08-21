@@ -128,6 +128,36 @@ pub trait SubagentRuntime: Send + Sync {
     fn principal_name(&self) -> Option<String> {
         None
     }
+
+    /// Maximum spawn depth the runtime enforces on incoming
+    /// `ExecutionConfig.max_depth` calls. The production adapter
+    /// reads this from the executor's principal config; test
+    /// fixtures override to assert the tool projects the value
+    /// onto the spawn request. Default `3` (the round-7
+    /// historical cap).
+    fn max_depth(&self) -> u32 {
+        3
+    }
+
+    /// The spawning principal's workspace (the `<workspace>/agents/`
+    /// resolution root). `None` means global agents only
+    /// (standalone / test paths). Default `None`; production
+    /// adapter overrides.
+    fn workspace(&self) -> Option<&Path> {
+        None
+    }
+
+    /// The calling run's own session id (the engine-side caller
+    /// of the `Agent` tool). The tool reads this in the
+    /// `Tool::execute` (no-`ToolContext`) path so non-engine
+    /// callers (tests, async_executor) can still supply a
+    /// session id. On the production `execute_with_context`
+    /// path, `ctx.session_id` is preferred and this accessor is
+    /// the fallback. Default `None`; production adapter
+    /// overrides.
+    fn session_id(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Type alias for the shared runtime handle threaded through every

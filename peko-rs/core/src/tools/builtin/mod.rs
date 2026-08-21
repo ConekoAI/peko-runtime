@@ -54,8 +54,8 @@ pub use bash::BashTool;
 pub use channel::{ChannelReadTool, ChannelSendTool};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
-    AgentTool, DynamicSessionKeyProvider, SessionKeyProvider, SharedSubagentRuntime,
-    SpawnAuditEvent, SpawnRequest, StaticSessionKeyProvider, SubagentRuntime,
+    AgentTool, DynamicSessionKeyProvider, SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest,
+    SubagentRuntime,
 };
 pub use plan::{
     PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool,

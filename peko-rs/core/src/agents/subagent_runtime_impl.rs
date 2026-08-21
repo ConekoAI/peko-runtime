@@ -399,6 +399,16 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     fn principal_name(&self) -> Option<String> {
         self.executor.principal_name().map(str::to_owned)
     }
+
+    fn workspace(&self) -> Option<&Path> {
+        // Forward the principal's bound workspace (set via
+        // `SubagentExecutor::with_principal_workspace`) so the
+        // built-in `AgentTool` resolves `<workspace>/agents/<name>/`
+        // before falling back to the global layout. Sprint 7
+        // collapsed the tool's own `workspace` field onto the
+        // runtime port — this accessor is the canonical owner.
+        self.executor.principal_workspace()
+    }
 }
 
 // ─── Agent-prompt parsing (inlined to keep `agents/` free of `principal/` import) ─

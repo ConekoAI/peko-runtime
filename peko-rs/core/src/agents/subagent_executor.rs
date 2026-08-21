@@ -570,6 +570,16 @@ impl SubagentExecutor {
         self
     }
 
+    /// Snapshot of the spawning principal's workspace, if bound.
+    /// Used by `SubagentExecutorRuntime::workspace()` so the
+    /// built-in `AgentTool` resolves subagent configs from the
+    /// principal's `<workspace>/agents/` directory before falling
+    /// back to the global layout.
+    #[must_use]
+    pub fn principal_workspace(&self) -> Option<&std::path::Path> {
+        self.principal_workspace.as_deref()
+    }
+
     /// Set the spawning principal's plan DAG port. Propagated into the
     /// spawned `Agent` via `Agent::with_principal_plan_port` so depth-1
     /// children register the seven `Plan*` built-in tools against the

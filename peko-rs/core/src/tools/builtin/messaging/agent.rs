@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 #[cfg(test)]
 use std::path::Path;
-use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -29,60 +28,10 @@ use crate::tools::builtin::messaging::subagent_runtime::{
     SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest,
 };
 
-/// Maximum allowed spawn depth (safety limit)
-const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
-
-/// Maximum concurrent subagent runs per agent
-const DEFAULT_MAX_CONCURRENT: usize = 5;
-
 /// Trait for providing the current session key
 ///
 /// This allows the tool to get the current session key at execution time,
 /// even though the session is determined at runtime.
-pub trait SessionKeyProvider: Send + Sync {
-    /// Get the current session key
-    fn current_session_key(&self) -> String;
-}
-
-/// Simple session key provider that returns a static key
-pub struct StaticSessionKeyProvider {
-    session_key: String,
-}
-
-impl StaticSessionKeyProvider {
-    #[must_use]
-    pub fn new(session_key: impl Into<String>) -> Self {
-        Self {
-            session_key: session_key.into(),
-        }
-    }
-}
-
-impl SessionKeyProvider for StaticSessionKeyProvider {
-    fn current_session_key(&self) -> String {
-        self.session_key.clone()
-    }
-}
-
-// Blanket impl so callers can store `Arc<DynamicSessionKeyProvider>`
-// (the runtime mutable session-key handle owned by the daemon) and
-// pass the Arc directly where a `Box<dyn SessionKeyProvider>` is
-// expected. The orphan rule permits this blanket impl because
-// `SessionKeyProvider` is local to `peko_tools_builtin`.
-impl<T: SessionKeyProvider + ?Sized> SessionKeyProvider for std::sync::Arc<T> {
-    fn current_session_key(&self) -> String {
-        (**self).current_session_key()
-    }
-}
-
-// Note: `DynamicSessionKeyProvider` (and the
-// `impl SessionKeyProvider for Arc<DynamicSessionKeyProvider>` shim)
-// are intentionally not lifted — they belong to the daemon/runtime
-// layer that needs to mutate session keys at runtime, not to the
-// built-in tool itself. Root continues to define them at
-// `src/tools/builtin/messaging/agent.rs` (now a shim) and the
-// principal runner constructs the Arc to pass into AgentTool.
-
 /// Agent tool arguments.
 ///
 /// Trimmed surface (sprint 7, 2026-08-21): the LLM-facing tool takes
@@ -225,96 +174,25 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
 /// Results are announced back to the parent when complete.
 pub struct AgentTool {
     /// Runtime port — the only seam between the tool and the
-    /// daemon/agent state.
+    /// daemon/agent state. Sprint 7 collapsed the previous
+    /// `workspace` / `session_provider` / `max_depth` /
+    /// `max_concurrent` fields onto the port: workspace is the
+    /// runtime's bound principal workspace, the caller session
+    /// id comes from `ToolContext::session_id` (with the runtime
+    /// port's `session_id()` accessor as the fallback), and the
+    /// depth / concurrency caps live in the executor itself
+    /// (`SubagentExecutor::max_concurrent`). The tool reads the
+    /// spawn-depth cap via [`SubagentRuntime::max_depth`] and
+    /// forwards it onto `ExecutionConfig.max_depth` so the
+    /// executor's per-spawn gate sees it.
     runtime: SharedSubagentRuntime,
-    /// Optional principal workspace. When set, `subagent_type` resolution
-    /// prefers principal-scoped `AGENT.md` files at
-    /// `<workspace>/agents/<name>/...` before falling back to the global
-    /// `~/.peko/agents/<name>/config.toml` layout.
-    workspace: Option<PathBuf>,
-    /// Session key provider to get current session at execution time.
-    session_provider: Option<Box<dyn SessionKeyProvider>>,
-    /// Maximum spawn depth allowed
-    max_depth: u32,
-    /// Maximum concurrent runs
-    max_concurrent: usize,
 }
 
 impl AgentTool {
     /// Create a new Agent tool with a runtime port.
     #[must_use]
     pub fn new(runtime: SharedSubagentRuntime) -> Self {
-        Self {
-            runtime,
-            workspace: None,
-            session_provider: None,
-            max_depth: DEFAULT_MAX_SPAWN_DEPTH,
-            max_concurrent: DEFAULT_MAX_CONCURRENT,
-        }
-    }
-
-    /// Create an Agent tool with an optional principal workspace.
-    ///
-    /// When the workspace is `Some`, `subagent_type` resolution will
-    /// first look under `<workspace>/agents/<name>/...` before falling
-    /// back to the global layout. Pass `None` for the legacy global-only
-    /// lookup (standalone / test path).
-    #[must_use]
-    pub fn with_workspace(runtime: SharedSubagentRuntime, workspace: Option<PathBuf>) -> Self {
-        Self {
-            runtime,
-            workspace,
-            session_provider: None,
-            max_depth: DEFAULT_MAX_SPAWN_DEPTH,
-            max_concurrent: DEFAULT_MAX_CONCURRENT,
-        }
-    }
-
-    /// Create an Agent tool with a session key provider
-    #[must_use]
-    pub fn with_session_provider(
-        runtime: SharedSubagentRuntime,
-        provider: Box<dyn SessionKeyProvider>,
-    ) -> Self {
-        Self {
-            runtime,
-            workspace: None,
-            session_provider: Some(provider),
-            max_depth: DEFAULT_MAX_SPAWN_DEPTH,
-            max_concurrent: DEFAULT_MAX_CONCURRENT,
-        }
-    }
-
-    /// Create an Agent tool with both a principal workspace and a session
-    /// key provider. This is the production constructor used by the
-    /// principal runner and the root agent.
-    #[must_use]
-    pub fn with_workspace_and_session(
-        runtime: SharedSubagentRuntime,
-        workspace: Option<PathBuf>,
-        provider: Box<dyn SessionKeyProvider>,
-    ) -> Self {
-        Self {
-            runtime,
-            workspace,
-            session_provider: Some(provider),
-            max_depth: DEFAULT_MAX_SPAWN_DEPTH,
-            max_concurrent: DEFAULT_MAX_CONCURRENT,
-        }
-    }
-
-    /// Set maximum spawn depth
-    #[must_use]
-    pub fn with_max_depth(mut self, max_depth: u32) -> Self {
-        self.max_depth = max_depth;
-        self
-    }
-
-    /// Set maximum concurrent runs
-    #[must_use]
-    pub fn with_max_concurrent(mut self, max_concurrent: usize) -> Self {
-        self.max_concurrent = max_concurrent;
-        self
+        Self { runtime }
     }
 
     /// Resolve subagent_type to an AgentConfig via the runtime port.
@@ -334,7 +212,7 @@ impl AgentTool {
         }
 
         self.runtime
-            .resolve_agent_config(subagent_type, self.workspace.as_deref(), model_override)
+            .resolve_agent_config(subagent_type, self.runtime.workspace(), model_override)
             .await
     }
 
@@ -370,7 +248,7 @@ impl AgentTool {
         // spawn is later blocked by a runtime error).
         let subagent_config = self
             .runtime
-            .resolve_agent_config(subagent_type, self.workspace.as_deref(), model.as_deref())
+            .resolve_agent_config(subagent_type, self.runtime.workspace(), model.as_deref())
             .await?;
 
         // Audit the spawn under the parent principal, if an observability hub
@@ -443,7 +321,7 @@ impl AgentTool {
                     // it from ExecutionConfig.
                     label: None,
                     announce_completion: true,
-                    max_depth: self.max_depth,
+                    max_depth: self.runtime.max_depth(),
                     model_override: model.clone(),
                 },
                 timeout_seconds,
@@ -775,13 +653,10 @@ Examples:
         let action = parse_action(&args.action)?;
         validate_action_args(action, &args)?;
 
-        // The caller's own session (auto-detected) — used as the
-        // parent_session_key on the spawn request when no explicit
-        // override is supplied.
-        let caller_session_key = self
-            .session_provider
-            .as_ref()
-            .map(|p| p.current_session_key());
+        // The caller's own session — read from the runtime port as the
+        // fallback for non-`ToolContext` callers. The production
+        // `execute_with_context` path prefers `ctx.session_id`.
+        let caller_session_key = self.runtime.session_id();
 
         if action == AgentAction::Compact {
             return self.execute_compact(&args, caller_session_key).await;
@@ -835,13 +710,13 @@ Examples:
         validate_action_args(action, &args)?;
 
         // The caller's own session id comes from the engine's tool
-        // context on the production path; the session-key provider is
-        // the fallback.
-        let caller_session_key = ctx.session_id.clone().or_else(|| {
-            self.session_provider
-                .as_ref()
-                .map(|p| p.current_session_key())
-        });
+        // context on the production path; the runtime port's
+        // `session_id()` is the fallback for non-context paths
+        // (tests, async_executor).
+        let caller_session_key = ctx
+            .session_id
+            .clone()
+            .or_else(|| self.runtime.session_id());
 
         if action == AgentAction::Compact {
             return self.execute_compact(&args, caller_session_key).await;
@@ -910,6 +785,11 @@ struct TestSubagentState {
     principal_id: String,
     /// Principal display name used in audit events.
     principal_name: Option<String>,
+    /// Caller session id returned by [`SubagentRuntime::session_id`].
+    /// Tests set this to inject a synthetic caller session id on
+    /// the no-`ToolContext` path. Default `None` matches the trait
+    /// default.
+    session_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -929,6 +809,7 @@ impl TestSubagentRuntime {
                 compaction_requests: Vec::new(),
                 principal_id: String::new(),
                 principal_name: None,
+                session_id: None,
             }),
         }
     }
@@ -1024,6 +905,19 @@ impl TestSubagentRuntime {
             .expect("TestSubagentRuntime mutex poisoned")
             .principal_id = id.into();
     }
+
+    /// Set the caller session id returned by
+    /// [`SubagentRuntime::session_id`]. Used by tests to inject a
+    /// synthetic caller session id on the no-`ToolContext` path so
+    /// `AgentTool::execute` (no context) can be exercised without
+    /// the runtime-mutable `DynamicSessionKeyProvider` machinery
+    /// the production agent_runner used to thread through.
+    pub fn set_session_id(&self, id: impl Into<String>) {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .session_id = Some(id.into());
+    }
 }
 
 #[cfg(test)]
@@ -1091,6 +985,14 @@ impl SubagentRuntime for TestSubagentRuntime {
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .principal_name
+            .clone()
+    }
+
+    fn session_id(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .session_id
             .clone()
     }
 
@@ -1162,10 +1064,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let tool = AgentTool::with_workspace(
-            runtime.clone() as SharedSubagentRuntime,
-            Some(PathBuf::from("/tmp/nonexistent")),
-        );
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
@@ -1179,10 +1078,7 @@ mod tests {
     async fn test_agent_state_registry_denies_disabled_subagent() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:other");
-        let tool = AgentTool::with_workspace(
-            runtime.clone() as SharedSubagentRuntime,
-            Some(PathBuf::from("/tmp/nonexistent")),
-        );
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let result = tool.resolve_subagent_config("writer", None).await;
         assert!(
@@ -1206,10 +1102,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let tool = AgentTool::with_workspace(
-            runtime.clone() as SharedSubagentRuntime,
-            Some(PathBuf::from("/tmp/nonexistent")),
-        );
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         // No grants registered: missing authorization context is denied.
         let result = tool.resolve_subagent_config("writer", None).await;
@@ -1225,23 +1118,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_tool_with_session_provider() {
+    async fn test_agent_tool_uses_runtime_session_id() {
+        // Sprint 7: the `AgentTool` reads the caller session id from
+        // the runtime port's `session_id()` accessor (production
+        // path uses `ToolContext::session_id`; this verifies the
+        // runtime port fallback path). The port itself is the SoT
+        // for the no-context fallback.
         let runtime = Arc::new(TestSubagentRuntime::new());
-        let provider = Box::new(StaticSessionKeyProvider::new("test:session:key"));
-        let tool =
-            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+        runtime.set_session_id("caller:sess:runtime-port");
+        let _tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
-        assert_eq!(tool.name(), "Agent");
+        assert_eq!(runtime.session_id(), Some("caller:sess:runtime-port".into()));
     }
 
     #[test]
     fn test_default_max_depth() {
-        assert_eq!(DEFAULT_MAX_SPAWN_DEPTH, 3);
+        // Sprint 7: depth is no longer a tool-level constant — it lives
+        // on the runtime port. The runtime port's default is `3`.
+        let runtime = TestSubagentRuntime::new();
+        assert_eq!(runtime.max_depth(), 3);
     }
 
     #[test]
     fn test_default_max_concurrent() {
-        assert_eq!(DEFAULT_MAX_CONCURRENT, 5);
+        // Sprint 7: `max_concurrent` moved off the tool onto the
+        // `SubagentExecutor` itself (principal-level knob —
+        // `SubagentExecutor::new` takes the cap as a constructor
+        // argument). The tool no longer carries the constant; this
+        // test is a placeholder documenting the move.
     }
 
     #[tokio::test]
@@ -1518,9 +1422,8 @@ mod tests {
     #[tokio::test]
     async fn test_compact_routes_to_request_compaction() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        let provider = Box::new(StaticSessionKeyProvider::new("caller:sess"));
-        let tool =
-            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let result = tool
             .execute(serde_json::json!({
@@ -1544,9 +1447,8 @@ mod tests {
     #[tokio::test]
     async fn test_compact_requires_path() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        let provider = Box::new(StaticSessionKeyProvider::new("caller:sess"));
-        let tool =
-            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         let err = tool
             .execute(serde_json::json!({ "action": "compact" }))
             .await
@@ -1664,9 +1566,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        let provider = Box::new(StaticSessionKeyProvider::new("caller:sess"));
-        let tool =
-            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let result = tool
             .execute(serde_json::json!({
@@ -1701,9 +1602,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        let provider = Box::new(StaticSessionKeyProvider::new("caller:sess"));
-        let tool =
-            AgentTool::with_session_provider(runtime.clone() as SharedSubagentRuntime, provider);
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let result = tool
             .execute(serde_json::json!({
