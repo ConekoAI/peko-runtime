@@ -9,10 +9,10 @@
 //!
 //! ## Layout
 //!
-//! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`,
-//!   `DeliveryMode`), the `CronRuntime` port trait + global registry, the
-//!   helper functions, and the 3 tool impls (`CronCreateTool`,
-//!   `CronDeleteTool`, `CronListTool`).
+//! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`),
+//!   the `CronRuntime` port trait + global registry, the helper functions,
+//!   and the 3 tool impls (`CronCreateTool`, `CronDeleteTool`,
+//!   `CronListTool`).
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
 //! - [`events`], [`idle`] — scheduler-side submodules
@@ -60,7 +60,7 @@ pub use tools::{
     build_send_job, build_spawn_tool_job, calculate_next_interval_anchored, calculate_next_run,
     global_runtime, normalize_cron_expr, render_job_list, resolve_delete_after_run, resolve_label,
     resolve_prompt, resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
-    CronJob, CronJobAction, CronListTool, CronRuntime, DeliveryMode, ScheduleKind,
+    CronJob, CronJobAction, CronListTool, CronRuntime, ScheduleKind,
     DEFAULT_MAX_RETRIES,
 };
 
@@ -521,8 +521,7 @@ mod tests {
                 message: "Test message".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -563,8 +562,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -618,8 +616,7 @@ mod tests {
                 timeout_secs: Some(60),
                 description: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -688,8 +685,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - chrono::Duration::hours(1),
@@ -709,8 +705,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + chrono::Duration::hours(1),
@@ -764,8 +759,7 @@ mod tests {
                 message: "x".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -931,8 +925,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -984,8 +977,7 @@ mod tests {
                     message: "Hello".to_string(),
                     target: None,
                 },
-                delivery: DeliveryMode::None,
-                delete_after_run: false,
+                                delete_after_run: false,
                 enabled: true,
                 created_at: Utc::now(),
                 next_run: Utc::now(),

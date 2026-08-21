@@ -6,7 +6,7 @@
 //! | PS script             | Rust tests                                                                 |
 //! |-----------------------|----------------------------------------------------------------------------|
 //! | `cron_basics.ps1`     | `cron_*_persists`, `cron_list_*`, `cron_remove_*`, `cron_history_*`         |
-//! | `cron_execution.ps1`  | `cron_run_triggers_due_job`, `cron_announce_writes_file_on_run`            |
+//! | `cron_execution.ps1`  | `cron_run_triggers_due_job`                                                 |
 //! | `cron_agent_tool.ps1` | `cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job`, `cron_agent_tool_create_message_makes_notify_job` |
 //! | `cron_idle_event.ps1` | `cron_add_idle_does_not_panic`, `cron_add_event_does_not_panic`            |
 //!
@@ -856,72 +856,11 @@ fn cron_run_triggers_due_job() {
     );
 }
 
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn cron_announce_writes_file_on_run() {
-    if skip_if_no_mock().is_none() {
-        return;
-    }
-    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
-    let _daemon = CronDaemonGuard::spawn(&cli);
-    remove_jobs_with_prefix(&cli, "e2e-cron-announce-");
-
-    // Announcements land at `<data_dir>/runtime/announcements/<job_id>_<ts>.json`
-    // (Phase A: announcements live under the Runtime tier
-    // (`{data_dir}/runtime/announcements/`), not the bare data dir).
-    // `PekoCli` sets `PEKO_HOME=peko_dir`, but `default_data_dir()` (in
-    // `src/common/paths.rs:65`) appends `/data` to PEKO_HOME, so the
-    // daemon's `data_dir` resolves to `<peko_dir>/data`, not `<peko_dir>`.
-    // Announcements therefore live at `<peko_dir>/data/runtime/announcements/`.
-    let announce_dir = cli.peko_dir().join("data").join("runtime").join("announcements");
-    // Clean any leftovers from a prior failed run.
-    if announce_dir.exists() {
-        let _ = std::fs::remove_dir_all(&announce_dir);
-    }
-
-    // 2s in the future; with --announce the engine writes a JSON file on completion.
-    let near_future = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
-    let name = "e2e-cron-announce-target";
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "cron",
-            "at",
-            "--principal",
-            TEST_PRINCIPAL,
-            "--name",
-            name,
-            "--at",
-            &near_future,
-            "--message",
-            "announce me",
-            "--announce",
-        ],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
-
-    // Wait for the daemon's poll + run + announce write. 8s budget.
-    let mut wrote = false;
-    for _ in 0..8 {
-        std::thread::sleep(Duration::from_secs(1));
-        if announce_dir.exists()
-            && std::fs::read_dir(&announce_dir)
-                .map(|it| it.filter_map(|e| e.ok()).count() > 0)
-                .unwrap_or(false)
-        {
-            wrote = true;
-            break;
-        }
-    }
-    assert!(
-        wrote,
-        "no announcement file appeared in {} within 8s",
-        announce_dir.display()
-    );
-}
+// Sprint 7 Commit B: `cron_announce_writes_file_on_run` removed.
+// The `--announce` flag and the engine's `handle_delivery` /
+// `send_announcement` (which wrote `{data_dir}/runtime/announcements/
+// <job_id>_<ts>.json`) are gone. No reader ever consumed the file; the
+// side-effect was functionally dead.
 
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]

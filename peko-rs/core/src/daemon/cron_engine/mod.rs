@@ -19,8 +19,7 @@ use chrono::Utc;
 use peko_auth::caller::CallerContext;
 use peko_cron::events::SystemEvent;
 use peko_cron::{
-    CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, DeliveryMode,
-    IdleDetector,
+    CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, IdleDetector,
 };
 use peko_observability::Observability;
 use peko_subject::PrincipalId;
@@ -581,9 +580,13 @@ impl CronEngine {
             }
         }
 
-        if let DeliveryMode::Announce { .. } = job.delivery {
-            self.handle_delivery(&job, &status).await?;
-        }
+        // Sprint 7 Commit B: `DeliveryMode::Announce` side-effect retired.
+        // The engine previously branched on `job.delivery` here, calling
+        // `handle_delivery` → `send_announcement`, which only wrote an
+        // unread JSON file to `{data_dir}/runtime/announcements/`. No
+        // reader existed; the `--announce` CLI flag is gone, the
+        // `CronJob.delivery` field is gone, and the engine's
+        // announce-related helpers are deleted below.
 
         // One-shot reaping keys on the FIRE, not the run outcome:
         // "fired" is the lifecycle fact that retires a one-shot job;
@@ -965,71 +968,6 @@ impl CronEngine {
         Ok(finalized)
     }
 
-    async fn handle_delivery(&self, job: &CronJob, status: &str) -> Result<()> {
-        match &job.delivery {
-            DeliveryMode::Announce {
-                channel,
-                to,
-                best_effort,
-            } => {
-                info!("📢 Announcing job '{}' result: {}", job.name, status);
-
-                if *best_effort {
-                    if let Err(e) =
-                        self.send_announcement(job, status, channel.as_deref(), to.as_deref())
-                    {
-                        warn!("Failed to send announcement (best_effort=true): {}", e);
-                    }
-                } else {
-                    self.send_announcement(job, status, channel.as_deref(), to.as_deref())?;
-                }
-            }
-            DeliveryMode::None => {}
-        }
-        Ok(())
-    }
-
-    fn send_announcement(
-        &self,
-        job: &CronJob,
-        status: &str,
-        channel: Option<&str>,
-        to: Option<&str>,
-    ) -> Result<()> {
-        let announcement = serde_json::json!({
-            "type": "cron_announcement",
-            "job_id": job.id,
-            "job_name": job.name,
-            "status": status,
-            "message": job.task_description(),
-            "channel": channel,
-            "to": to,
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-
-        // Phase A: announcements live under the Runtime tier
-        // (`{data_dir}/runtime/announcements/`), not the bare data
-        // dir. The exact path is a deferred detail for a future
-        // Phase A.5; for now route through the typed resolver to
-        // get on the right bucket without re-introducing a hard
-        // join.
-        let announcements_dir = self
-            .path_resolver
-            .runtime_layout()
-            .runtime_dir
-            .join("announcements");
-        std::fs::create_dir_all(&announcements_dir)?;
-
-        let file_name = format!("{}_{}.json", job.id, Utc::now().timestamp());
-        let file_path = announcements_dir.join(&file_name);
-
-        let content = serde_json::to_string_pretty(&announcement)?;
-        std::fs::write(&file_path, content)?;
-
-        info!("📢 Announcement written to: {}", file_path.display());
-        Ok(())
-    }
-
     // ------------------------------------------------------------------
     // Event filtering
     // ------------------------------------------------------------------
@@ -1294,8 +1232,7 @@ mod tests {
                 message: "Hello from cron".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1368,8 +1305,7 @@ mod tests {
                 timeout_secs: Some(7200),
                 description: Some("ping description".to_string()),
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::minutes(5),
@@ -1496,8 +1432,7 @@ mod tests {
                 timeout_secs: Some(7200),
                 description: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::minutes(5),
@@ -1679,8 +1614,7 @@ mod tests {
                 message: "cron tick payload".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1868,8 +1802,7 @@ mod tests {
                 message: "organize your memory".to_string(),
                 target: Some("trunk".to_string()),
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1994,8 +1927,7 @@ mod tests {
                 timeout_secs: Some(60),
                 description: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -2132,8 +2064,7 @@ mod tests {
                 timeout_secs: Some(60),
                 description: Some("wake attribution test".to_string()),
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -2262,8 +2193,7 @@ mod tests {
             action: CronJobAction::Notify {
                 message: "💧 Time to drink water".to_string(),
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -2373,8 +2303,7 @@ mod tests {
             action: CronJobAction::Notify {
                 message: "manual trigger ping".to_string(),
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::hours(1),
@@ -2490,8 +2419,7 @@ mod tests {
                 message: "fast fire".to_string(),
                 target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),

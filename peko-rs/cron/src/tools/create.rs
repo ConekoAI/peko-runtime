@@ -17,7 +17,6 @@
 use crate::tools::{
     add_job_via_runtime, build_notify_job, build_send_job, build_spawn_tool_job, global_runtime,
     resolve_delete_after_run, resolve_label, resolve_schedule_kind, validate_send_target,
-    DeliveryMode,
 };
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
@@ -398,7 +397,6 @@ impl Tool for CronCreateTool {
                     peko_subject::PrincipalId(principal_id.clone()),
                     schedule,
                     message_text,
-                    DeliveryMode::None,
                     delete_after_run,
                     next_run,
                     Some(target),
@@ -414,7 +412,6 @@ impl Tool for CronCreateTool {
                     peko_subject::PrincipalId(principal_id.clone()),
                     schedule,
                     message_text,
-                    DeliveryMode::None,
                     delete_after_run,
                     next_run,
                 )
@@ -440,7 +437,6 @@ impl Tool for CronCreateTool {
                 schedule,
                 tool_name,
                 final_params,
-                DeliveryMode::None,
                 delete_after_run,
                 next_run,
                 args.wake_on_completion,
@@ -459,7 +455,6 @@ impl Tool for CronCreateTool {
                 schedule,
                 "Agent".to_string(),
                 serde_json::json!({ "prompt": prompt_text }),
-                DeliveryMode::None,
                 delete_after_run,
                 next_run,
                 None,

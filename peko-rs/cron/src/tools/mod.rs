@@ -9,15 +9,17 @@
 //!
 //! ## DTOs
 //!
-//! [`ScheduleKind`], [`DeliveryMode`], [`CronJobAction`], and
-//! [`CronJob`] are serialization-friendly types shared between the
-//! tool side (peko-tools-builtin) and the daemon side (root's
+//! [`ScheduleKind`], [`CronJobAction`], and [`CronJob`] are
+//! serialization-friendly types shared between the tool side
+//! (peko-tools-builtin) and the daemon side (root's
 //! `src/cron/mod.rs`). For Phase 10b the daemon side keeps its own
-//! copy and re-exports these four from peko-tools-builtin via
-//! `pub use peko_tools_builtin::cron::{ScheduleKind, DeliveryMode,
-//! CronJobAction, CronJob};` — single source of truth going forward.
-//! A compile-time JSON-roundtrip test pins the two sides' shapes
-//! together.
+//! copy and re-exports these three from peko-tools-builtin via
+//! `pub use peko_tools_builtin::cron::{ScheduleKind, CronJobAction,
+//! CronJob};` — single source of truth going forward. A
+//! compile-time JSON-roundtrip test pins the two sides' shapes
+//! together. (Sprint 7 Commit B dropped the `DeliveryMode` enum and
+//! `CronJob.delivery` field — the engine's `Announce` side-effect
+//! was unread.)
 //!
 //! ## Port
 //!
@@ -194,21 +196,6 @@ impl ScheduleKind {
     }
 }
 
-/// Delivery configuration for job results.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryMode {
-    /// No delivery, silent execution.
-    #[default]
-    None,
-    /// Announce results to channel.
-    Announce {
-        channel: Option<String>,
-        to: Option<String>,
-        best_effort: bool,
-    },
-}
-
 /// What a cron job does when it fires.
 ///
 /// Three shapes:
@@ -312,7 +299,6 @@ pub struct CronJob {
     pub schedule: ScheduleKind,
     #[serde(flatten)]
     pub action: CronJobAction,
-    pub delivery: DeliveryMode,
     pub delete_after_run: bool,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -420,7 +406,6 @@ pub fn build_send_job(
     principal_id: PrincipalId,
     schedule: ScheduleKind,
     message: String,
-    delivery: DeliveryMode,
     delete_after_run: bool,
     next_run: DateTime<Utc>,
     target: Option<String>,
@@ -431,7 +416,6 @@ pub fn build_send_job(
         principal_id,
         schedule,
         action: CronJobAction::Send { message, target },
-        delivery,
         delete_after_run,
         enabled: true,
         created_at: Utc::now(),
@@ -454,7 +438,6 @@ pub fn build_notify_job(
     principal_id: PrincipalId,
     schedule: ScheduleKind,
     message: String,
-    delivery: DeliveryMode,
     delete_after_run: bool,
     next_run: DateTime<Utc>,
 ) -> CronJob {
@@ -464,7 +447,6 @@ pub fn build_notify_job(
         principal_id,
         schedule,
         action: CronJobAction::Notify { message },
-        delivery,
         delete_after_run,
         enabled: true,
         created_at: Utc::now(),
@@ -486,7 +468,6 @@ pub fn build_spawn_tool_job(
     schedule: ScheduleKind,
     tool_name: String,
     tool_params: serde_json::Value,
-    delivery: DeliveryMode,
     delete_after_run: bool,
     next_run: DateTime<Utc>,
     wake_on_completion: Option<bool>,
@@ -505,7 +486,6 @@ pub fn build_spawn_tool_job(
             timeout_secs,
             description,
         },
-        delivery,
         delete_after_run,
         enabled: true,
         created_at: Utc::now(),
@@ -943,7 +923,6 @@ mod tests {
                 timeout_secs: Some(3600),
                 description: Some("read file".into()),
             },
-            delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),
@@ -1101,7 +1080,6 @@ mod tests {
                 timeout_secs: None,
                 description: Some("poll chan_a1b2c3d4 for new events".into()),
             },
-            delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),
