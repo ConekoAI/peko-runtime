@@ -167,10 +167,7 @@ uses `anyOf` rather than requiring `id`). The canonical Claude call passes
 ### `CronList` 🔧
 
 ```json
-{
-  "status_filter": "string? (peko extension)",
-  "kind_filter": "string? (peko extension)"
-}
+{}
 ```
 
 Returns:
@@ -181,8 +178,9 @@ Returns:
 }
 ```
 
-**Peko extensions:** `status_filter` and `kind_filter` query parameters, and
-the return is wrapped as `{ jobs, count }` instead of a bare array.
+**Peko extensions:** the return is wrapped as `{ jobs, count }` instead of a
+bare array. Sprint 7 Commit A dropped `status_filter` / `kind_filter`
+(declared + schema'd but never read in `execute_with_context`).
 
 ## Agent control
 
