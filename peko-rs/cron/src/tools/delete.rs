@@ -37,9 +37,6 @@ pub struct CronDeleteArgs {
     /// Job ID to cancel
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Legacy alias for `id` (peko extension)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<String>,
     /// Optional label to cancel (peko extension; alternative to `id`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -118,9 +115,6 @@ impl Tool for CronDeleteTool {
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
             verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
             id
-        } else if let Some(job_id) = args.job_id.filter(|s| !s.is_empty()) {
-            verify_id_belongs_to_principal(&*runtime, &job_id, &principal_id).await?;
-            job_id
         } else if let Some(label) = args.label {
             resolve_id_by_label(&*runtime, &label, &principal_id).await?
         } else {

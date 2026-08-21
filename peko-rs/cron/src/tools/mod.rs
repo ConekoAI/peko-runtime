@@ -245,8 +245,6 @@ pub enum CronJobAction {
         wake_on_completion: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
     },
 }
 
@@ -342,9 +340,6 @@ impl CronJob {
                 if !message.is_empty() =>
             {
                 message.clone()
-            }
-            CronJobAction::SpawnTool { description, .. } if description.is_some() => {
-                description.clone().unwrap()
             }
             _ => format!("scheduled job '{}'", self.name),
         }
@@ -472,7 +467,6 @@ pub fn build_spawn_tool_job(
     next_run: DateTime<Utc>,
     wake_on_completion: Option<bool>,
     timeout_secs: Option<u64>,
-    description: Option<String>,
 ) -> CronJob {
     CronJob {
         id,
@@ -484,7 +478,6 @@ pub fn build_spawn_tool_job(
             tool_params,
             wake_on_completion,
             timeout_secs,
-            description,
         },
         delete_after_run,
         enabled: true,
@@ -741,7 +734,6 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                     tool_params,
                     wake_on_completion,
                     timeout_secs,
-                    description,
                 } => {
                     map.insert(
                         "tool".to_string(),
@@ -758,12 +750,6 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                         map.insert(
                             "timeout_secs".to_string(),
                             serde_json::Value::Number((*t).into()),
-                        );
-                    }
-                    if let Some(d) = description {
-                        map.insert(
-                            "description".to_string(),
-                            serde_json::Value::String(d.clone()),
                         );
                     }
                 }
@@ -921,7 +907,6 @@ mod tests {
                 tool_params: serde_json::json!({"path": "/tmp/x"}),
                 wake_on_completion: Some(true),
                 timeout_secs: Some(3600),
-                description: Some("read file".into()),
             },
             delete_after_run: false,
             enabled: true,
@@ -1078,7 +1063,6 @@ mod tests {
                 }),
                 wake_on_completion: Some(true),
                 timeout_secs: None,
-                description: Some("poll chan_a1b2c3d4 for new events".into()),
             },
             delete_after_run: false,
             enabled: true,

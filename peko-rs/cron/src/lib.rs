@@ -614,7 +614,6 @@ mod tests {
                 tool_params: serde_json::json!({"command": "true"}),
                 wake_on_completion: Some(false),
                 timeout_secs: Some(60),
-                description: None,
             },
                         delete_after_run: true,
             enabled: true,
