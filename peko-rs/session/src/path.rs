@@ -76,6 +76,43 @@ pub fn validate_slug(slug: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Validate a path reference (`/a/b/c` or `a/b/c`) — the LLM-facing
+/// form used by tools like `Agent` and the session tool's `path`
+/// field. Splits on `/`, rejects empty segments and segments that
+/// fail [`validate_slug`], rejects UUID-shaped segments that look
+/// like raw session ids, and accepts the empty string only when
+/// explicitly allowed (the caller can check first).
+///
+/// Caller-relative paths (`a/b/c`) and full paths (`/a/b/c`) both
+/// pass — leading slash is stripped before segment validation. The
+/// trunk's leading `/` is implied; never supply a single bare UUID
+/// as a path.
+pub fn validate_path(path: &str) -> anyhow::Result<()> {
+    if path.is_empty() {
+        return Err(anyhow::anyhow!(
+            "path is empty — pass a slug path ('/a/b/c') or caller-relative ('agent-c')"
+        ));
+    }
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!(
+            "path is just '/' — supply at least one segment"
+        ));
+    }
+    for (i, segment) in trimmed.split('/').enumerate() {
+        if segment.is_empty() {
+            return Err(anyhow::anyhow!(
+                "path '{path}' has an empty segment at position {i}"
+            ));
+        }
+        // Each segment is a slug; reuse the slug rules.
+        validate_slug(segment).map_err(|e| {
+            anyhow::anyhow!("path '{path}' segment '{segment}': {e}")
+        })?;
+    }
+    Ok(())
+}
+
 /// First session (other than `exclude`) whose parent is `parent` and
 /// whose slug equals `slug` — i.e. the per-parent-uniqueness conflict.
 /// Returns the conflicting session id, if any.
