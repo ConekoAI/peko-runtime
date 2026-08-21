@@ -196,14 +196,6 @@ impl CronScheduler {
                 crate::tools::validate_send_target(target)?;
                 crate::tools::validate_trunk_send_interval(&job.schedule, target)?;
             }
-            CronJobAction::Notify { message } => {
-                if message.trim().is_empty() {
-                    anyhow::bail!(
-                        "CronJob {} action requires a non-empty 'message'",
-                        job.action.kind_label()
-                    );
-                }
-            }
             CronJobAction::SpawnTool { tool_name, .. } => {
                 if tool_name.trim().is_empty() {
                     anyhow::bail!("CronJob SpawnTool action requires a non-empty 'tool_name'");

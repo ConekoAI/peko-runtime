@@ -198,15 +198,13 @@ impl ScheduleKind {
 
 /// What a cron job does when it fires.
 ///
-/// Three shapes:
+/// Two shapes:
 /// - CLI cron (`peko cron add …`) writes a [`Self::Send`] job — at fire
 ///   time the daemon delivers `message` to the Principal's owner root
 ///   session as a user-message, exactly like a deferred `peko send`.
-/// - Agent cron (`CronCreate` tool) with `message` writes a
-///   [`Self::Notify`] job — pure delivery, no agent turn.
-/// - Agent cron (`CronCreate` tool) with `prompt`/`tool` writes a
-///   [`Self::SpawnTool`] job — at fire time the daemon asks the
-///   `AsyncExecutor` to run `tool_name` with `tool_params`.
+/// - Agent cron (`CronCreate` tool) writes a [`Self::SpawnTool`] job —
+///   at fire time the daemon asks the `AsyncExecutor` to run
+///   `tool_name` with `tool_params`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CronJobAction {
@@ -230,12 +228,6 @@ pub enum CronJobAction {
         )]
         target: Option<String>,
     },
-    /// Pure notification delivery (2026-08-08): the message text is
-    /// appended to the owner's conversational session as a labeled
-    /// note — NO agent turn runs (unlike [`Self::Send`], which is a
-    /// deferred `peko send`). Zero tokens, instant; what the
-    /// `CronCreate` tool's `message` arg builds.
-    Notify { message: String },
     /// Schedule an async tool run attributed to the Principal's root.
     SpawnTool {
         tool_name: String,
@@ -254,7 +246,6 @@ impl CronJobAction {
     pub fn kind_label(&self) -> &'static str {
         match self {
             Self::Send { .. } => "send",
-            Self::Notify { .. } => "notify",
             Self::SpawnTool { .. } => "spawn_tool",
         }
     }
@@ -263,12 +254,6 @@ impl CronJobAction {
     #[must_use]
     pub fn is_send(&self) -> bool {
         matches!(self, Self::Send { .. })
-    }
-
-    /// Whether the action is a [`Self::Notify`].
-    #[must_use]
-    pub fn is_notify(&self) -> bool {
-        matches!(self, Self::Notify { .. })
     }
 
     /// Whether the action is a [`Self::SpawnTool`].
@@ -336,11 +321,7 @@ impl CronJob {
     #[must_use]
     pub fn task_description(&self) -> String {
         match &self.action {
-            CronJobAction::Send { message, .. } | CronJobAction::Notify { message }
-                if !message.is_empty() =>
-            {
-                message.clone()
-            }
+            CronJobAction::Send { message, .. } if !message.is_empty() => message.clone(),
             _ => format!("scheduled job '{}'", self.name),
         }
     }
@@ -411,37 +392,6 @@ pub fn build_send_job(
         principal_id,
         schedule,
         action: CronJobAction::Send { message, target },
-        delete_after_run,
-        enabled: true,
-        created_at: Utc::now(),
-        next_run,
-        last_run: None,
-        last_status: None,
-        run_count: 0,
-        consecutive_failures: 0,
-        max_retries: None,
-    }
-}
-
-/// Build a `Notify`-action [`CronJob`] from caller parameters.
-/// Mirrors [`build_send_job`] but pure-delivery: no agent turn runs
-/// at fire time.
-#[allow(clippy::too_many_arguments)]
-pub fn build_notify_job(
-    id: String,
-    name: String,
-    principal_id: PrincipalId,
-    schedule: ScheduleKind,
-    message: String,
-    delete_after_run: bool,
-    next_run: DateTime<Utc>,
-) -> CronJob {
-    CronJob {
-        id,
-        name,
-        principal_id,
-        schedule,
-        action: CronJobAction::Notify { message },
         delete_after_run,
         enabled: true,
         created_at: Utc::now(),
@@ -722,12 +672,6 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                     if let Some(t) = target {
                         map.insert("target".to_string(), serde_json::Value::String(t.clone()));
                     }
-                }
-                CronJobAction::Notify { message } => {
-                    map.insert(
-                        "task".to_string(),
-                        serde_json::Value::String(message.clone()),
-                    );
                 }
                 CronJobAction::SpawnTool {
                     tool_name,

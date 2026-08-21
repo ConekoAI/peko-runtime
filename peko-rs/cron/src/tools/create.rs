@@ -5,24 +5,20 @@
 //! per the Phase 10 plan rule, built-in tools may not import daemon
 //! state.
 //!
-//! Supports two action kinds:
-//! - `prompt` shorthand — schedules an `Agent` tool run (a `SpawnTool`
-//!   job whose `tool_name="Agent"` and `params={ prompt }`).
-//! - explicit `tool` + `params` — schedules any tool run.
-//!
-//! Plus the delivery-only `message` path (a `Notify` job — or, with
-//! `target="trunk"`, a `Send` job firing a turn into the principal's
-//! trunk session `root:self`; Phase 3, 2026-08-15).
+//! Always writes a `SpawnTool` job — at fire time the daemon asks the
+//! `AsyncExecutor` to run `tool_name` with `tool_params`. Caller must
+//! supply `tool` and `params` (the JSON schema's `required` enforces
+//! this).
 
 use crate::tools::{
-    add_job_via_runtime, build_notify_job, build_send_job, build_spawn_tool_job, global_runtime,
-    resolve_delete_after_run, resolve_label, resolve_schedule_kind, validate_send_target,
+    add_job_via_runtime, build_spawn_tool_job, global_runtime, resolve_delete_after_run,
+    resolve_label, resolve_schedule_kind,
 };
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 
 /// `CronCreate` tool — create scheduled jobs
 pub struct CronCreateTool;
@@ -43,36 +39,14 @@ impl Default for CronCreateTool {
 /// `CronCreate` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CronCreateArgs {
-    /// Prompt/task — required unless `tool` or `message` is provided.
-    /// When supplied (and no `tool`), it is shorthand for
-    /// `tool="Agent", params={ prompt }`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    /// `Send`-action message for reminders/notifications. When set, the
-    /// job delivers this message to the user (as a labeled
-    /// notification) instead of running a tool.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    /// `message`-only. Optional session target for the fired turn.
-    /// `"trunk"` (the only accepted value) turns the job into a `Send`
-    /// action whose turn lands in the principal's forever-continuous
-    /// self session `root:self` instead of delivering a user-visible
-    /// notification (Phase 3, 2026-08-15). Invalid with `prompt`/`tool`
-    /// — SpawnTool jobs take no `target` param; their wake attribution
-    /// is fixed to `root:self` (Phase 3b).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-    /// Tool name to invoke at fire time. When provided, the job is a
-    /// `SpawnTool` job calling this tool with `params`. When omitted
-    /// and `prompt` is non-empty, defaults to `"Agent"`.
+    /// Tool name to invoke at fire time. Required.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
-    /// Tool-call parameters for `SpawnTool` jobs. Defaults to `{}`.
+    /// Tool-call parameters for the scheduled `tool` call. Defaults to `{}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
-    /// `SpawnTool`-only. Whether to post a steer message into the
-    /// principal's root inbox when the scheduled run completes
-    /// (default `false`).
+    /// Whether to post a steer message into the principal's root inbox
+    /// when the scheduled run completes (default `false`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_on_completion: Option<bool>,
     /// `SpawnTool`-only. Per-run timeout in seconds. Defaults to the
@@ -169,41 +143,28 @@ impl Tool for CronCreateTool {
     }
 
     fn description(&self) -> String {
-        "Create a scheduled job. Supports cron expressions, one-shot 'at' times, intervals, idle triggers, and event triggers. For user-facing reminders use `message`; for background work use `prompt` or `tool`. Jobs are stored and executed by the daemon.".to_string()
+        "Schedule a tool to run at a future time. The tool's parameters are passed verbatim at fire time. Supports cron expressions, one-shot 'at' times, intervals, idle triggers, and event triggers. Jobs are stored and executed by the daemon.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "REMINDERS / NOTIFICATIONS: use this for 'remind me …' requests. At fire time the message is delivered to the user as a labeled notification (visible in the next chat turn). For background work (research, edits, checks) use `prompt` or `tool` instead — those produce no user-visible output. Combine with target=\"trunk\" to fire the message as a turn in YOUR OWN trunk session (self-prompts, memory upkeep) instead of notifying the user."
-                },
-                "target": {
-                    "type": "string",
-                    "enum": ["trunk"],
-                    "description": "message-only: with target=\"trunk\" the message fires as an agent turn in the principal's forever-continuous self session root:self (no user notification). Omit for normal user-facing reminders. Invalid together with prompt/tool."
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Background task the job executes as an agent turn. Shorthand for tool=\"Agent\", params={ prompt }. Produces NO user-visible output — for reminders use `message`. Required unless `tool` or `message` is provided."
-                },
                 "tool": {
                     "type": "string",
-                    "description": "Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"Read\"). When provided, the job calls this tool with `params`."
+                    "description": "REQUIRED. Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"Read\", \"ChannelRead\"). The scheduled job calls this tool with `params` at every fire."
                 },
                 "params": {
                     "type": "object",
-                    "description": "Tool-call parameters passed to `tool` at fire time. Defaults to {} when omitted."
+                    "description": "REQUIRED. Tool-call parameters passed to `tool` at fire time. Defaults to {} when omitted."
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "SpawnTool-only: post a steer message into the principal's root inbox when the run completes. Defaults to false for cron-spawned runs."
+                    "description": "Whether to post a steer message into the principal's root inbox when the run completes. Defaults to false for cron-spawned runs."
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "SpawnTool-only: per-run timeout in seconds. Defaults to the executor's 7200s policy."
+                    "description": "Per-run timeout in seconds. Defaults to the executor's 7200s policy."
                 },
                 "label": {
                     "type": "string",
@@ -215,7 +176,7 @@ impl Tool for CronCreateTool {
                 },
                 "at": {
                     "type": "string",
-                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). One-shot by default — the job deletes itself after firing unless recurring=true is passed. The current date/time is in your system prompt. For 'in N units' style delays prefer `delay` — no timestamp arithmetic needed."
+                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). One-shot by default — the job deletes itself after firing. The current date/time is in your system prompt. For 'in N units' style delays prefer `delay` — no timestamp arithmetic needed."
                 },
                 "delay": {
                     "type": "string",
@@ -245,7 +206,8 @@ impl Tool for CronCreateTool {
                     "type": "object",
                     "description": "Optional filter for event-triggered jobs"
                 }
-            }
+            },
+            "required": ["tool", "params"]
         })
     }
 
@@ -286,53 +248,12 @@ impl Tool for CronCreateTool {
         let args: CronCreateArgs = serde_json::from_value(params.clone())
             .map_err(|e| anyhow::anyhow!("Invalid CronCreate arguments: {e}"))?;
 
-        let prompt = args
-            .prompt
+        let tool = args
+            .tool
             .clone()
-            .or_else(|| {
-                params
-                    .get("prompt")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-            });
+            .ok_or_else(|| anyhow::anyhow!("CronCreate requires `tool`"))?;
 
-        let message = args.message.clone().or_else(|| {
-            params
-                .get("message")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
-
-        // `target` is message-only (Phase 3): `"trunk"` upgrades the
-        // delivery into a `Send` turn in the principal's own trunk
-        // session. With `prompt`/`tool` it is a structured error —
-        // SpawnTool jobs take no `target` param; their wake attribution
-        // is fixed to `root:self` (Phase 3b).
-        let target = args.target.clone().or_else(|| {
-            params
-                .get("target")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
-        validate_send_target(&target)?;
-        if target.is_some() && message.is_none() {
-            anyhow::bail!("`target` is only valid together with `message`");
-        }
-
-        let tool = args.tool.clone().or_else(|| {
-            params
-                .get("tool")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
-
-        let tool_params = args.params.clone().unwrap_or_else(|| {
-            if tool.is_some() {
-                serde_json::json!({})
-            } else {
-                serde_json::Value::Null
-            }
-        });
+        let tool_params = args.params.clone().unwrap_or_else(|| serde_json::json!({}));
 
         let schedule = resolve_schedule(&args, &params)?;
         let delete_after_run = resolve_one_shot(&params, &schedule);
@@ -345,82 +266,18 @@ impl Tool for CronCreateTool {
         let job_id = format!("cron_{}", uuid::Uuid::new_v4().simple());
         let next_run = crate::tools::calculate_next_run(&schedule, chrono::Utc::now())?;
 
-        let job = if let Some(message_text) = message {
-            if let Some(target) = target {
-                // Trunk-targeted Send (Phase 3): the message fires as a
-                // real agent turn in the principal's self session
-                // `root:self` — the mechanism by which the principal
-                // schedules its own upkeep (memory organization, child
-                // supervision) without user visibility.
-                build_send_job(
-                    job_id,
-                    label,
-                    peko_subject::PrincipalId(principal_id.clone()),
-                    schedule,
-                    message_text,
-                    delete_after_run,
-                    next_run,
-                    Some(target),
-                )
-            } else {
-                // Notify path (reminders/notifications): pure delivery —
-                // the message text lands in the user's conversational
-                // session as a labeled note at fire time. No agent turn,
-                // no tokens spent (2026-08-08 unification).
-                build_notify_job(
-                    job_id,
-                    label,
-                    peko_subject::PrincipalId(principal_id.clone()),
-                    schedule,
-                    message_text,
-                    delete_after_run,
-                    next_run,
-                )
-            }
-        } else if let Some(tool_name) = tool {
-            // Explicit SpawnTool path.
-            let final_params = if prompt.is_some() && args.params.is_none() {
-                // When the caller omits `params` but supplies `prompt`,
-                // pass the prompt as a top-level `prompt` field —
-                // matches the `Agent` tool's contract.
-                let mut p = serde_json::Map::new();
-                if let Some(p_text) = &prompt {
-                    p.insert("prompt".to_string(), Value::String(p_text.clone()));
-                }
-                Value::Object(p)
-            } else {
-                tool_params
-            };
-            build_spawn_tool_job(
-                job_id,
-                label,
-                peko_subject::PrincipalId(principal_id.clone()),
-                schedule,
-                tool_name,
-                final_params,
-                delete_after_run,
-                next_run,
-                args.wake_on_completion,
-                args.timeout_secs,
-            )
-        } else {
-            // Shorthand: prompt → SpawnTool{ tool="Agent", params={ prompt } }.
-            let prompt_text = prompt.ok_or_else(|| {
-                anyhow::anyhow!("CronCreate requires `message`, `prompt`, or `tool`")
-            })?;
-            build_spawn_tool_job(
-                job_id,
-                label,
-                peko_subject::PrincipalId(principal_id.clone()),
-                schedule,
-                "Agent".to_string(),
-                serde_json::json!({ "prompt": prompt_text }),
-                delete_after_run,
-                next_run,
-                None,
-                None,
-            )
-        };
+        let job = build_spawn_tool_job(
+            job_id,
+            label,
+            peko_subject::PrincipalId(principal_id.clone()),
+            schedule,
+            tool,
+            tool_params,
+            delete_after_run,
+            next_run,
+            args.wake_on_completion,
+            args.timeout_secs,
+        );
         add_job_via_runtime(&runtime, job).await
     }
 }
@@ -440,39 +297,35 @@ mod tests {
         let tool = CronCreateTool::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
-        // The schema documents `prompt` and `tool` as optional; callers
-        // must supply at least one of them, but the JSON Schema stays
-        // open so the agent can omit both and recover from a missing
-        // `task` alias.
-        assert!(params.get("required").is_none());
+        // Sprint 7 Commit D: `tool` and `params` are now REQUIRED —
+        // CronCreate is a SpawnTool-only factory and there is no other
+        // valid shape.
+        assert_eq!(
+            params.get("required"),
+            Some(&serde_json::json!(["tool", "params"]))
+        );
         let props = params.get("properties").unwrap();
-        assert!(props.get("prompt").is_some());
         assert!(props.get("tool").is_some());
+        assert!(props.get("params").is_some());
         assert!(props.get("wake_on_completion").is_some());
         assert!(props.get("timeout_secs").is_some());
-        // Phase 3: `target` is exposed and constrained to "trunk".
-        let target = props.get("target").expect("target param");
-        assert_eq!(target["enum"], serde_json::json!(["trunk"]));
+        // Sprint 7 Commit C + D: dropped fields stay gone.
+        assert!(props.get("prompt").is_none());
+        assert!(props.get("message").is_none());
+        assert!(props.get("target").is_none());
+        assert!(props.get("description").is_none());
+        assert!(props.get("recurring").is_none());
+        assert!(props.get("durable").is_none());
+        assert!(props.get("task").is_none());
     }
 
-    /// Phase 3: `target` parses through the typed args struct, and the
-    /// value validator (shared with the DTO deserializer) rejects
-    /// unknown targets before any job is built.
-    #[test]
-    fn test_target_arg_parsing_and_validation() {
-        let args: CronCreateArgs =
-            serde_json::from_value(json!({"message": "m", "target": "trunk"})).unwrap();
-        assert_eq!(args.target.as_deref(), Some("trunk"));
-        validate_send_target(&args.target).unwrap();
-
-        let args: CronCreateArgs = serde_json::from_value(json!({"message": "m"})).unwrap();
-        assert_eq!(args.target, None);
-        validate_send_target(&args.target).unwrap();
-
-        let args: CronCreateArgs =
-            serde_json::from_value(json!({"message": "m", "target": "bogey"})).unwrap();
-        assert!(validate_send_target(&args.target).is_err());
-    }
+    /// Phase 3: `target` parsed through the typed args struct, and the
+    /// value validator (shared with the DTO deserializer) rejected
+    /// unknown targets before any job was built. **Removed in Sprint 7
+    /// Commit D** — `CronCreateArgs::target` is gone (and so is
+    /// `validate_send_target` from this module's imports). The CLI's
+    /// `peko cron add --target` continues to call `validate_send_target`
+    /// on the CLI side; see `peko-rs/cli/src/commands/cron.rs`.
 
     /// Round-4 verification finding (2026-08-08): `at` jobs must default
     /// to one-shot when the caller passes no recurrence hint — a fired
