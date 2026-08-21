@@ -202,18 +202,10 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             return;
         };
 
-        let cleanup_label = match event.cleanup {
-            SpawnCleanupPolicy::Keep => "keep",
-            SpawnCleanupPolicy::Delete => "delete",
-        };
-
         let details = serde_json::json!({
             "subagent_type": event.subagent_type,
             "principal_id": event.principal_id,
             "principal_name": event.principal_name,
-            "isolated": event.isolated,
-            "cleanup": cleanup_label,
-            "description": event.description,
             "parent_session_key": event.parent_session_key,
             "model_id": event.model_id,
             // Phase 3 of `feature/multi-model-subagents` — the
@@ -284,13 +276,15 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             .or_else(|| request.config.model_override.clone());
 
         // Translate the built-in's `ExecutionConfig` to the root's
-        // `ExecutionConfig`. Both are structurally identical (timeout,
-        // cleanup, label, max_depth, announce_completion); we project
-        // field-by-field to keep the type boundary explicit.
+        // `ExecutionConfig`. Sprint 7 Commit 3 collapsed the
+        // built-in `ExecutionConfig`'s `cleanup` / `label` fields —
+        // root-side always sees `Keep` / `None`. The remaining
+        // fields (timeout, announce_completion, max_depth,
+        // model_override) project verbatim.
         let root_config = crate::agents::subagent_executor::ExecutionConfig {
             timeout_seconds: request.config.timeout_seconds,
-            cleanup: request.config.cleanup,
-            label: request.config.label,
+            cleanup: SpawnCleanupPolicy::Keep,
+            label: None,
             announce_completion: request.config.announce_completion,
             max_depth: request.config.max_depth,
             model_override,
@@ -340,7 +334,12 @@ impl SubagentRuntime for SubagentExecutorRuntime {
                 .execute_and_wait(
                     &prompt,
                     None,
-                    request.isolated,
+                    // Sprint 7: the LLM-facing Agent tool no longer
+                    // exposes `isolated`. The executor's flag stays
+                    // (defense-in-depth; the tool never spawned
+                    // isolated sessions after the agent-session
+                    // paradigm landed) — we hardcode `false` here.
+                    false,
                     &parent_session_key,
                     root_config,
                     timeout_seconds,

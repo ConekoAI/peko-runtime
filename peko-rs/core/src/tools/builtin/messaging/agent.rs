@@ -260,15 +260,6 @@ impl AgentTool {
                 subagent_type: subagent_type.to_string(),
                 principal_id: principal_id.clone(),
                 principal_name: self.runtime.principal_name(),
-                // Sprint 7: the trimmed AgentArgs surface dropped
-                // `isolated`, `cleanup`, and `description`. The audit
-                // shape still carries them so the observability
-                // schema stays stable; the values are the
-                // round-7-final defaults (Commit 3 removes them
-                // from SpawnAuditEvent itself).
-                isolated: false,
-                cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
-                description: None,
                 parent_session_key: caller_session_key.clone().unwrap_or_default(),
                 // Phase 1: parent-driven model choice (when set).
                 // `None` means the child inherits the parent's
@@ -305,21 +296,9 @@ impl AgentTool {
             .execute_and_wait(SpawnRequest {
                 prompt: prompt.to_string(),
                 subagent_type: subagent_type.to_string(),
-                // Sprint 7: isolated is gone from AgentArgs; the
-                // SpawnRequest shape still carries the field until
-                // Commit 3 collapses it. Keep the default.
-                isolated: false,
                 parent_session_key: caller_session_key.clone().unwrap_or_default(),
                 config: crate::tools::builtin::messaging::dto::ExecutionConfig {
                     timeout_seconds,
-                    // Sprint 7: cleanup is gone from AgentArgs; the
-                    // ExecutionConfig shape still carries the field
-                    // until Commit 3 collapses it. Keep the default.
-                    cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
-                    // Sprint 7: description is gone from AgentArgs;
-                    // label defaults to None until Commit 3 collapses
-                    // it from ExecutionConfig.
-                    label: None,
                     announce_completion: true,
                     max_depth: self.runtime.max_depth(),
                     model_override: model.clone(),

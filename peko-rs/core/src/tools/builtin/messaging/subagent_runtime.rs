@@ -37,7 +37,7 @@ use serde::Serialize;
 use async_trait::async_trait;
 
 use crate::tools::builtin::messaging::dto::{
-    AgentConfig, ExecutionConfig, SpawnCleanupPolicy, SubagentRunView,
+    AgentConfig, ExecutionConfig, SubagentRunView,
 };
 use crate::tools::builtin::session::CompactRequestOutcome;
 
@@ -183,8 +183,6 @@ pub struct SpawnRequest {
     /// Subagent type identifier (passed for logging / observability
     /// only — `subagent_config` already carries the resolved name).
     pub subagent_type: String,
-    /// Whether to create an isolated session without parent context.
-    pub isolated: bool,
     /// Parent session key.
     pub parent_session_key: String,
     /// Per-run execution config (timeout, cleanup, label, etc.).
@@ -208,7 +206,6 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     /// Phase 5b: re-attach the run to an existing spawned session
     /// (persistent subagents) instead of spawning a fresh one.
-    /// Mutually exclusive with `isolated`.
     pub resume_session: Option<String>,
     /// The caller's own current session id (auto-detected by the
     /// tool from `ToolContext` / the session-key provider). Used by
@@ -229,6 +226,13 @@ pub struct SpawnRequest {
 ///
 /// Carries the structured details the production executor used to
 /// log under `SubagentSpawn`. Tests no-op this path.
+///
+/// Sprint 7 Commit 3: `isolated`, `cleanup`, and `description` were
+/// dropped — the LLM-facing `Agent` tool surface no longer exposes
+/// these knobs, so they were always the same value on every audit
+/// row. The audit JSON no longer carries `"isolated"`, `"cleanup"`,
+/// or `"description"` keys; operators using `peko audit tail` will
+/// see fewer fields per `SubagentSpawn` row.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpawnAuditEvent {
     /// Subagent type identifier.
@@ -237,13 +241,6 @@ pub struct SpawnAuditEvent {
     pub principal_id: String,
     /// The principal's display name (for the audit row).
     pub principal_name: Option<String>,
-    /// Whether the spawn was isolated (fresh session).
-    pub isolated: bool,
-    /// Whether the spawn should keep or delete the session on
-    /// completion. Serialised as `"keep"` / `"delete"`.
-    pub cleanup: SpawnCleanupPolicy,
-    /// Optional description label.
-    pub description: Option<String>,
     /// Parent session key.
     pub parent_session_key: String,
     /// Phase 1: catalog model id the parent picked for this
