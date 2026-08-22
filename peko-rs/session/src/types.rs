@@ -17,27 +17,30 @@ use std::fmt;
 ///
 /// Each variant represents a different communication medium that
 /// can have its own overlay with channel-specific state.
+/// Communication channel types
+///
+/// Each variant represents a different communication medium that
+/// can have its own overlay with channel-specific state.
+///
+/// Sprint 9 Commit 2: `Discord`, `Telegram`, `WhatsApp`, `Slack`,
+/// `Signal`, `Matrix` variants were retired. They were dead enum
+/// arms — no production code ever constructed them, no production
+/// code wrote them to session JSONL, no sibling repo depended on
+/// them. The chat-gateway adapter framework
+/// (`peko-rs/core/src/extensions/gateway/`) that would have wired
+/// them in was retired in Sprint 9 Commit 3. Only `Cli`, `Web`,
+/// and `Http` remain — production code constructs `Cli` (the CLI
+/// path) and `Http` (the daemon HTTP path, retired in Sprint 9
+/// Commit 4); `Web` survives in capability checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ChannelType {
     /// Command line interface
     #[default]
     Cli,
-    /// Discord messaging platform
-    Discord,
-    /// Telegram messaging platform
-    Telegram,
-    /// `WhatsApp` messaging platform
-    WhatsApp,
-    /// Slack messaging platform
-    Slack,
     /// Generic web interface
     Web,
     /// HTTP API interface
     Http,
-    /// Signal messaging platform
-    Signal,
-    /// Matrix messaging platform
-    Matrix,
 }
 
 impl ChannelType {
@@ -46,14 +49,8 @@ impl ChannelType {
     pub const fn as_str(&self) -> &'static str {
         match self {
             ChannelType::Cli => "cli",
-            ChannelType::Discord => "discord",
-            ChannelType::Telegram => "telegram",
-            ChannelType::WhatsApp => "whatsapp",
-            ChannelType::Slack => "slack",
             ChannelType::Web => "web",
             ChannelType::Http => "http",
-            ChannelType::Signal => "signal",
-            ChannelType::Matrix => "matrix",
         }
     }
 
@@ -62,14 +59,8 @@ impl ChannelType {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "cli" => Some(ChannelType::Cli),
-            "discord" => Some(ChannelType::Discord),
-            "telegram" => Some(ChannelType::Telegram),
-            "whatsapp" => Some(ChannelType::WhatsApp),
-            "slack" => Some(ChannelType::Slack),
             "web" => Some(ChannelType::Web),
             "http" => Some(ChannelType::Http),
-            "signal" => Some(ChannelType::Signal),
-            "matrix" => Some(ChannelType::Matrix),
             _ => None,
         }
     }
@@ -77,19 +68,17 @@ impl ChannelType {
     /// Check if this channel type supports rich formatting
     #[must_use]
     pub const fn supports_rich_formatting(&self) -> bool {
-        matches!(
-            self,
-            ChannelType::Discord | ChannelType::Slack | ChannelType::Web
-        )
+        matches!(self, ChannelType::Web)
     }
 
     /// Check if this channel type supports threaded conversations
     #[must_use]
     pub const fn supports_threads(&self) -> bool {
-        matches!(
-            self,
-            ChannelType::Discord | ChannelType::Slack | ChannelType::Telegram
-        )
+        // No active thread-capable channel remains; the dead
+        // Discord/Slack/Telegram arms were retired in Sprint 9
+        // Commit 2. Returns `false` until a new thread-capable
+        // channel is wired in.
+        false
     }
 }
 
@@ -248,39 +237,49 @@ mod tests {
 
     #[test]
     fn test_channel_type_as_str() {
+        // Sprint 9 Commit 2: Discord/Telegram/WhatsApp/Slack/Signal/Matrix
+        // variants were retired. Only Cli/Web/Http remain.
         assert_eq!(ChannelType::Cli.as_str(), "cli");
-        assert_eq!(ChannelType::Discord.as_str(), "discord");
-        assert_eq!(ChannelType::Telegram.as_str(), "telegram");
+        assert_eq!(ChannelType::Web.as_str(), "web");
+        assert_eq!(ChannelType::Http.as_str(), "http");
     }
 
     #[test]
     fn test_channel_type_from_str() {
         assert_eq!(ChannelType::from_str("cli"), Some(ChannelType::Cli));
         assert_eq!(ChannelType::from_str("CLI"), Some(ChannelType::Cli));
-        assert_eq!(ChannelType::from_str("discord"), Some(ChannelType::Discord));
+        // Sprint 9 Commit 2: retired chat-platform strings now return None
+        // (serde would error on deserialization too — see round-trip tests).
+        assert_eq!(ChannelType::from_str("discord"), None);
         assert_eq!(ChannelType::from_str("unknown"), None);
     }
 
     #[test]
     fn test_channel_type_capabilities() {
+        // Sprint 9 Commit 2: Discord/Slack/Telegram arms removed.
+        // Cli has no rich-formatting or thread support; Web still does.
         assert!(!ChannelType::Cli.supports_rich_formatting());
-        assert!(ChannelType::Discord.supports_rich_formatting());
+        assert!(ChannelType::Web.supports_rich_formatting());
 
+        // No active thread-capable channel remains; threads() returns
+        // false until a new thread-capable channel is wired in.
         assert!(!ChannelType::Cli.supports_threads());
-        assert!(ChannelType::Discord.supports_threads());
+        assert!(!ChannelType::Web.supports_threads());
     }
 
     #[test]
     fn test_channel_type_display() {
-        assert_eq!(format!("{}", ChannelType::Discord), "discord");
+        assert_eq!(format!("{}", ChannelType::Cli), "cli");
     }
 
     #[test]
     fn test_overlay_type() {
-        let ct = OverlayType::Channel(ChannelType::Discord);
+        // Sprint 9 Commit 2: Discord variant retired; use Cli as the
+        // channel-overlay fixture.
+        let ct = OverlayType::Channel(ChannelType::Cli);
         assert!(ct.is_channel());
         assert!(!ct.is_spawn());
-        assert_eq!(ct.channel_type(), Some(ChannelType::Discord));
+        assert_eq!(ct.channel_type(), Some(ChannelType::Cli));
         assert_eq!(ct.as_str(), "channel");
 
         let spawn = OverlayType::Spawn;
@@ -329,7 +328,8 @@ mod tests {
         let peer2: Subject = serde_json::from_str(&json).unwrap();
         assert_eq!(peer, peer2);
 
-        let channel = ChannelType::Discord;
+        // Sprint 9 Commit 2: Discord retired; Cli round-trips as expected.
+        let channel = ChannelType::Cli;
         let json = serde_json::to_string(&channel).unwrap();
         let channel2: ChannelType = serde_json::from_str(&json).unwrap();
         assert_eq!(channel, channel2);

@@ -71,15 +71,15 @@ pub enum ChatType {
 /// let key = derive_session_key("myagent", SessionScope::CliDefault, &ctx);
 /// assert_eq!(key, "agent:myagent:cli:default");
 ///
-/// // Discord DM
+/// // CLI per-sender key (post-Sprint-9 only Cli remains)
 /// let ctx = SessionKeyContext {
-///     channel: Some("discord".to_string()),
+///     channel: Some("cli".to_string()),
 ///     sender_id: Some("123456".to_string()),
 ///     chat_type: ChatType::Direct,
 ///     ..Default::default()
 /// };
 /// let key = derive_session_key("myagent", SessionScope::PerSender, &ctx);
-/// assert_eq!(key, "agent:myagent:discord:123456");
+/// assert_eq!(key, "agent:myagent:cli:123456");
 /// ```
 #[must_use]
 pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionKeyContext) -> String {
@@ -135,9 +135,9 @@ pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionKeyCont
 /// ```
 /// use peko_session::key::parse_session_key;
 ///
-/// let parts = parse_session_key("agent:myagent:discord:123456");
+/// let parts = parse_session_key("agent:myagent:cli:123456");
 /// assert_eq!(parts.agent, "myagent");
-/// assert_eq!(parts.context, "discord");
+/// assert_eq!(parts.context, "cli");
 /// assert_eq!(parts.identifier, "123456");
 /// ```
 #[must_use]
@@ -222,50 +222,30 @@ pub fn scope_from_key(key: &str) -> Option<SessionScope> {
         "global" => Some(SessionScope::Global),
         "cli" => Some(SessionScope::CliDefault),
         "web" => Some(SessionScope::WebToken),
-        "discord" | "telegram" | "whatsapp" | "slack" | "signal" | "imessage" => {
-            // Check if it's per-channel or per-sender based on structure
-            if parts.identifier.contains(":channel:") {
-                Some(SessionScope::PerChannel)
-            } else {
-                Some(SessionScope::PerSender)
-            }
-        }
+        // Sprint 9 Commit 2: the discord/telegram/whatsapp/slack/signal/imessage
+        // arm was retired — no production code constructed those session-key
+        // contexts after the chat-gateway adapter framework was removed.
+        // Unknown contexts now resolve to `None` and callers fall back to
+        // the peer-derived base key.
         _ => None,
     }
 }
 
-/// Build a Discord-specific session key
-#[must_use]
-pub fn discord_session_key(
-    agent: &str,
-    user_id: Option<&str>,
-    guild_id: Option<&str>,
-    channel_id: Option<&str>,
-    thread_id: Option<&str>,
-) -> String {
-    match (user_id, guild_id, channel_id, thread_id) {
-        // DM conversation
-        (Some(user), None, _, _) => {
-            let ctx = SessionKeyContext {
-                channel: Some("discord".to_string()),
-                sender_id: Some(user.to_string()),
-                chat_type: ChatType::Direct,
-                ..Default::default()
-            };
-            derive_session_key(agent, SessionScope::PerSender, &ctx)
-        }
-        // Thread in guild
-        (_, Some(guild), Some(channel), Some(thread)) => {
-            format!("agent:{agent}:discord:guild:{guild}:channel:{channel}:thread:{thread}")
-        }
-        // Channel in guild
-        (_, Some(guild), Some(channel), None) => {
-            format!("agent:{agent}:discord:guild:{guild}:channel:{channel}")
-        }
-        // Fallback to global
-        _ => format!("agent:{agent}:global"),
-    }
-}
+// Sprint 9 Commit 2: `discord_session_key` retired. The chat-gateway
+// adapter framework (the only caller) was deleted in Commit 3; the
+// platform-specific key shape no longer has a producer. Callers that
+// need a per-channel session key should build it directly via
+// `derive_session_key` + `SessionKeyContext { channel: "cli", .. }`.
+//
+// The original signature was kept as a tombstone comment so anyone
+// searching the docs finds the migration note.
+// pub fn discord_session_key(
+//     agent: &str,
+//     user_id: Option<&str>,
+//     guild_id: Option<&str>,
+//     channel_id: Option<&str>,
+//     thread_id: Option<&str>,
+// ) -> String { ... }
 
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
@@ -408,32 +388,40 @@ mod tests {
 
     #[test]
     fn test_per_sender_key() {
+        // Sprint 9 Commit 2: only "cli" remains as a meaningful
+        // PerSender channel string. Discord/Telegram/etc. no longer
+        // produce session keys.
         let ctx = SessionKeyContext {
-            channel: Some("discord".to_string()),
+            channel: Some("cli".to_string()),
             sender_id: Some("123456".to_string()),
             chat_type: ChatType::Direct,
             ..Default::default()
         };
         let key = derive_session_key("testagent", SessionScope::PerSender, &ctx);
-        assert_eq!(key, "agent:testagent:discord:123456");
+        assert_eq!(key, "agent:testagent:cli:123456");
     }
 
     #[test]
     fn test_per_channel_key() {
+        // Sprint 9 Commit 2: only "cli" remains.
         let ctx = SessionKeyContext {
-            channel: Some("discord".to_string()),
+            channel: Some("cli".to_string()),
             channel_id: Some("987654".to_string()),
             chat_type: ChatType::Channel,
             ..Default::default()
         };
         let key = derive_session_key("testagent", SessionScope::PerChannel, &ctx);
-        assert_eq!(key, "agent:testagent:discord:channel:987654");
+        assert_eq!(key, "agent:testagent:cli:channel:987654");
     }
 
     #[test]
     fn test_thread_key() {
+        // Sprint 9 Commit 2: only "cli" remains; thread shape preserved
+        // for forward-compat (the `ChannelType::supports_threads` API
+        // returned false after Commit 2, but the key-shape helper still
+        // works for any caller that supplies a thread_id).
         let ctx = SessionKeyContext {
-            channel: Some("discord".to_string()),
+            channel: Some("cli".to_string()),
             channel_id: Some("987654".to_string()),
             thread_id: Some("thread123".to_string()),
             chat_type: ChatType::Thread,
@@ -442,45 +430,55 @@ mod tests {
         let key = derive_session_key("testagent", SessionScope::PerChannel, &ctx);
         assert_eq!(
             key,
-            "agent:testagent:discord:channel:987654:thread:thread123"
+            "agent:testagent:cli:channel:987654:thread:thread123"
         );
     }
 
     #[test]
     fn test_parse_session_key() {
-        let parts = parse_session_key("agent:testagent:discord:123456");
+        // Sprint 9 Commit 2: parse test uses "cli" instead of "discord".
+        let parts = parse_session_key("agent:testagent:cli:123456");
         assert_eq!(parts.agent, "testagent");
-        assert_eq!(parts.context, "discord");
+        assert_eq!(parts.context, "cli");
         assert_eq!(parts.identifier, "123456");
     }
 
     #[test]
     fn test_parse_complex_key() {
-        let parts = parse_session_key("agent:testagent:discord:guild:111:channel:222:thread:333");
+        // Sprint 9 Commit 2: parse test uses "cli" instead of "discord".
+        let parts = parse_session_key("agent:testagent:cli:guild:111:channel:222:thread:333");
         assert_eq!(parts.agent, "testagent");
-        assert_eq!(parts.context, "discord");
+        assert_eq!(parts.context, "cli");
         assert_eq!(parts.identifier, "guild:111:channel:222:thread:333");
     }
 
     #[test]
-    fn test_discord_dm_key() {
-        let key = discord_session_key("testagent", Some("user123"), None, None, None);
-        assert_eq!(key, "agent:testagent:discord:user123");
+    fn test_cli_dm_key() {
+        // Sprint 9 Commit 2: discord_session_key was retired. Build the
+        // per-sender key via the canonical `derive_session_key` path.
+        let ctx = SessionKeyContext {
+            channel: Some("cli".to_string()),
+            sender_id: Some("user123".to_string()),
+            chat_type: ChatType::Direct,
+            ..Default::default()
+        };
+        let key = derive_session_key("testagent", SessionScope::PerSender, &ctx);
+        assert_eq!(key, "agent:testagent:cli:user123");
     }
 
     #[test]
-    fn test_discord_guild_channel_key() {
-        let key = discord_session_key(
-            "testagent",
-            None,
-            Some("guild456"),
-            Some("channel789"),
-            None,
-        );
-        assert_eq!(
-            key,
-            "agent:testagent:discord:guild:guild456:channel:channel789"
-        );
+    fn test_cli_channel_key() {
+        // Sprint 9 Commit 2: replaces the retired
+        // `test_discord_guild_channel_key`. CLI channel keys use the
+        // generic per-channel shape with "cli" as the channel name.
+        let ctx = SessionKeyContext {
+            channel: Some("cli".to_string()),
+            channel_id: Some("channel789".to_string()),
+            chat_type: ChatType::Channel,
+            ..Default::default()
+        };
+        let key = derive_session_key("testagent", SessionScope::PerChannel, &ctx);
+        assert_eq!(key, "agent:testagent:cli:channel:channel789");
     }
 
     #[test]
@@ -504,11 +502,12 @@ mod tests {
 
     #[test]
     fn test_derive_overlay_key() {
+        // Sprint 9 Commit 2: overlay_id uses "cli" channel prefix.
         let base = "agent:test:peer:user:alice";
-        let key = derive_overlay_key(base, "channel", "discord:guild123");
+        let key = derive_overlay_key(base, "channel", "cli:guild123");
         assert_eq!(
             key,
-            "agent:test:peer:user:alice:overlay:channel:discord:guild123"
+            "agent:test:peer:user:alice:overlay:channel:cli:guild123"
         );
     }
 
@@ -526,7 +525,8 @@ mod tests {
 
     #[test]
     fn test_parse_session_key_v2_overlay() {
-        let key = "agent:testagent:peer:user:alice:overlay:channel:discord:guild123";
+        // Sprint 9 Commit 2: overlay_id uses "cli" channel prefix.
+        let key = "agent:testagent:peer:user:alice:overlay:channel:cli:guild123";
         let parsed = parse_session_key_v2(key).unwrap();
 
         assert_eq!(parsed.agent, "testagent");
@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(parsed.peer_id, "alice");
         assert!(parsed.is_overlay);
         assert_eq!(parsed.overlay_type, Some("channel".to_string()));
-        assert_eq!(parsed.overlay_id, Some("discord:guild123".to_string()));
+        assert_eq!(parsed.overlay_id, Some("cli:guild123".to_string()));
     }
 
     #[test]
@@ -549,7 +549,8 @@ mod tests {
 
     #[test]
     fn test_base_key_from_overlay() {
-        let overlay = "agent:test:peer:user:alice:overlay:channel:discord:guild123";
+        // Sprint 9 Commit 2: overlay_id uses "cli" channel prefix.
+        let overlay = "agent:test:peer:user:alice:overlay:channel:cli:guild123";
         let base = base_key_from_overlay(overlay).unwrap();
         assert_eq!(base, "agent:test:peer:user:alice");
 
@@ -559,8 +560,10 @@ mod tests {
 
     #[test]
     fn test_legacy_key_returns_none() {
-        // Legacy format should not be parsed by v2 parser
-        let legacy = "agent:testagent:discord:123456";
+        // Legacy v1 channel prefix should not be parsed by v2 parser.
+        // Sprint 9 Commit 2: "cli" replaced "discord" as the fixture
+        // string — the v1 format is still unrecognized by v2.
+        let legacy = "agent:testagent:cli:123456";
         assert!(parse_session_key_v2(legacy).is_none());
     }
 }

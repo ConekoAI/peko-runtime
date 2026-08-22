@@ -295,13 +295,13 @@ mod tests {
         let overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
             Subject::User("alice".to_string()),
-            ChannelType::Discord,
+            ChannelType::Cli,
             "guild123",
         );
 
-        assert_eq!(overlay.overlay_id, "discord:guild123");
+        assert_eq!(overlay.overlay_id, "cli:guild123");
         assert_eq!(overlay.base_session_key, "agent:test:peer:user:alice");
-        assert_eq!(overlay.channel_type, ChannelType::Discord);
+        assert_eq!(overlay.channel_type, ChannelType::Cli);
         assert_eq!(overlay.channel_id, "guild123");
         assert!(overlay.state.is_empty());
         assert!(overlay.persist());
@@ -312,7 +312,7 @@ mod tests {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
             Subject::User("alice".to_string()),
-            ChannelType::Discord,
+            ChannelType::Cli,
             "guild123",
         );
 
@@ -360,7 +360,7 @@ mod tests {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
             Subject::User("alice".to_string()),
-            ChannelType::Discord,
+            ChannelType::Cli,
             "guild123",
         );
         overlay.set("key1", "value1");
@@ -368,7 +368,7 @@ mod tests {
         let json = overlay.to_json();
 
         assert_eq!(json["type"], "channel");
-        assert_eq!(json["overlay_id"], "discord:guild123");
+        assert_eq!(json["overlay_id"], "cli:guild123");
         assert_eq!(json["base_session_key"], "agent:test:peer:user:alice");
         // ChannelType serializes as enum variant name by default
         assert!(json["channel_type"].as_str().is_some());
@@ -381,7 +381,7 @@ mod tests {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
             Subject::User("alice".to_string()),
-            ChannelType::Discord,
+            ChannelType::Cli,
             "guild123",
         );
         overlay.set("test_key", "test_value");
@@ -404,13 +404,13 @@ mod tests {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
             Subject::User("alice".to_string()),
-            ChannelType::Discord,
+            ChannelType::Cli,
             "guild123",
         );
 
         // As ChannelContext
         let ctx: &dyn ChannelContext = &overlay;
-        assert_eq!(ctx.channel_type(), ChannelType::Discord);
+        assert_eq!(ctx.channel_type(), ChannelType::Cli);
         assert_eq!(ctx.channel_id(), "guild123");
 
         // Set via trait
@@ -454,13 +454,13 @@ mod tests {
         let overlay = ChannelOverlay::from_stored(
             "agent:test:peer:user:alice",
             Subject::User("alice".to_string()),
-            ChannelType::Discord,
+            ChannelType::Cli,
             "guild123",
             state,
             created,
         );
 
-        assert_eq!(overlay.overlay_id, "discord:guild123");
+        assert_eq!(overlay.overlay_id, "cli:guild123");
         assert_eq!(overlay.created_at, created);
         assert_eq!(
             overlay.get("key"),
