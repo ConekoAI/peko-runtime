@@ -31,6 +31,16 @@
 //! pure data (`CronJob` / `&str` / `Vec<CronJob>`). The adapter wires
 //! the trait methods through to `DaemonClient` calls.
 
+// Crate-wide `dead_code` allow is intentional: `CronScheduler` exposes
+// several type predicates (`is_send`/`is_spawn_tool`) and builder
+// helpers (`build_send_job`/`build_spawn_tool_job`/`calculate_next_run_for_job`/
+// `list_jobs_for_principal`/`resolve_prompt`) that lint flags as dead
+// from the crate's root because nothing in this crate's `lib.rs`
+// symbols references them directly — they are consumed only by tests
+// in `lib.rs::tests` + by `peko_core::daemon::cron_runtime` callers
+// through `pub use tools::{...}` re-exports. Keep the allow narrow
+// here; tighten at each helper's site if a future cleanup proves a
+// subset unreachable.
 #![allow(dead_code)]
 
 pub mod idle;

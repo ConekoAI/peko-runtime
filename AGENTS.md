@@ -393,6 +393,7 @@ domain size.
 | F4 | **Fold back partial `peko-tools-builtin`** (✅ merged 2026-07-25) | 30 prod files (~9500 LOC) → `peko-rs/core/src/tools/builtin/`; sat retained as cron-port-only sat (~1200 LOC) for cycle preservation (peko-cron re-exports DTOs; engine reaches `TOOL_SEARCH_TOOL_NAME`) |
 | F7 | **AGENTS.md + dep-graph updates for F2/F3/F4 foldbacks** (✅ merged 2026-07-25) | no root path breakage; doc + script updates |
 | 0.Z-E | **Delete `peko-tools-builtin`** (✅ merged 2026-07-25) | cron port + DTOs + 3 cron tools → `peko-cron/src/tools/`; `tool_search_metadata` → `peko-engine/src/tool_search_metadata.rs` (already canonical); `peko_cron::tools::{CronRuntime, set_global_runtime, global_runtime}` is the new home; `DaemonCronAdapter` stays in root (cycle prevention — depends on `DaemonClient`); 12 forbidden-edge entries + 1 header docstring removed from `check_workspace_deps.py` |
+| 19 | Doc + marker hygiene (PR B1) | `AGENTS.md:683` Notify doc-rot → `Send`; `cron/src/lib.rs:34` marker now annotated; `channel/src/subscription.rs:189` TODO removed; `channel/src/cost.rs:9-12` self-admitted "speculative" doc reframed as an active trait |
 
 #### Current crate layout (21 workspace members, 2026-08-19)
 
@@ -680,8 +681,8 @@ cargo test --all-features
     Subagents get the tool via `SubagentExecutor`'s
     `caller_principal_did` OnceLock, propagated by
     `Agent::with_caller_principal_did`. Cron `message` jobs are the
-    new `CronJobAction::Notify` (pure delivery, no agent turn);
-    `Send` keeps its deferred-`peko send` turn semantics.
+    new `CronJobAction::Send` (pure delivery, no agent turn when
+    `principal_send` is unwired; deferred-`peko send` turn otherwise).
   - **2026-08-09 agent-owned session management (coin model); revised
     2026-08-13 (round 7):** a **session** is a persisted conversation
     belonging to one agent; a **run** is a live agentic process

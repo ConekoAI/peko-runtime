@@ -6,11 +6,12 @@
 //! for event-observation audit (who saw what, when); per-spawn LLM cost
 //! rides on F39 `QuotaMeter` on `SubagentExecutor`, not here.
 //!
-//! The `ChannelMeter` trait is the seam a future quota consumer could
-//! attach to (F19 / PR #174 `peko_quota::QuotaScope`). Nothing in this
-//! crate meters quota today — if we ever need to, the trait shape is
-//! already correct. Until then `AuditChannelMeter` is the only
-//! non-default impl.
+//! The `ChannelMeter` trait is the seam quota consumers attach to
+//! when a per-channel attribution pass is wired in (the F19
+//! `peko_quota::QuotaScope` shape). Today `AuditChannelMeter` (PR-3c)
+//! is the active impl — every `ChannelSubscriber` constructed in
+//! production carries one via `Arc<dyn ChannelMeter>`. Quota work
+//! would slot in as an additional impl, not a re-shape of the trait.
 //!
 //! Design: traits live where they are CONSUMED (here), not where they
 //! are produced (`peko-quota`). Mirrors the trait-port discipline

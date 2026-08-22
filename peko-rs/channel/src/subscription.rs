@@ -185,8 +185,9 @@ impl ChannelSubscriber {
     }
 
     /// Spawn the subscription loop on the current tokio runtime.
-    /// Returns a `JoinHandle` for the background task; the task exits
-    /// when `stop` (TODO — not wired) signals cancellation.
+    /// Returns a `JoinHandle` for the background task; the task runs
+    /// until the channel is closed (the `port.subscribe_events`
+    /// broadcast returns `Closed`).
     ///
     /// The loop alternates between a tick and a `select!` wait on (a)
     /// the port's live-event broadcast — any append wakes an
