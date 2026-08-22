@@ -133,15 +133,19 @@ impl SessionManagerRuntime {
 
     /// Resolve a tool-supplied session reference to a session id.
     ///
-    /// Three accepted forms (see [`peko_session::path::resolve_reference`]):
+    /// Two accepted forms (see [`peko_session::path::resolve_reference`]):
     ///
     /// - `/a/b/c` — absolute slug path (anchored at the caller's
     ///   tree root, never a global root).
-    /// - `agent-c` — caller-relative slug, descends the caller's
-    ///   subtree via BFS; ambiguous matches error with all paths.
-    /// - Raw session ids (anything containing `:` or a bare UUID) —
-    ///   REFUSED with a structured message so the model learns to
-    ///   use the `path` field from `session list` instead.
+    /// - The caller's own session id — engine-internal self-reference
+    ///   shape; the engine passes its own `current_session_id`
+    ///   verbatim (UUIDs in production) so callers don't have to
+    ///   resolve a slug path before invoking the runtime.
+    ///
+    /// Raw session ids, caller-relative slugs, and the legacy
+    /// `root:<dim>:<name>` shapes are REFUSED with a structured
+    /// message so the model learns to use the `path` field from
+    /// `session list` instead.
     ///
     /// The ownership/scoping guards run AFTER this resolution, on
     /// the resolved id.
@@ -1872,7 +1876,8 @@ mod tests {
     // relative slug, raw id) into a strict two-form grammar (slug path
     // or self-reference) since engine-internal ids are opaque UUIDs.
     // The caller-relative slug tests from sprint 5 are gone — raw ids
-    // are uniformly refused with the actionable message below.
+    // and caller-relative slugs are uniformly refused with the
+    // actionable message below.
 
     /// Raw session ids — anything that isn't a `/`-prefixed path or the
     /// caller's own id — are REFUSED at the LLM-facing surface so the
@@ -1893,14 +1898,16 @@ mod tests {
             .get_status("spawn2:root:user:alice")
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
-        // UUID-shaped id: also refused.
+        assert!(err.to_string().contains("not a slug path"), "{err}");
+        // UUID-shaped id: now accepted by `resolve_reference` (engine-internal
+        // entrypoints hand the runtime raw UUIDs). The session simply
+        // doesn't exist — a different refusal.
         let err = h
             .runtime
             .get_status("550e8400-e29b-41d4-a716-446655440000")
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+        assert!(err.to_string().contains("not found"), "{err}");
 
         // The refusal is consistent across actions (history / rename /
         // delete all flow through `resolve_reference`).
@@ -1910,23 +1917,26 @@ mod tests {
             .await
             .unwrap_err();
         // "spawn2" isn't a `/`-prefixed path or the caller's own id,
-        // so it falls into the raw-id refusal arm.
+        // so it falls into the refusal arm.
         assert!(
-            err.to_string().contains("raw session ids are not accepted"),
+            err.to_string().contains("not a slug path"),
             "{err}"
         );
 
-        // Now use an actual raw id (UUID) — refused uniformly.
+        // Now use an actual raw id (UUID) — accepted by `resolve_reference`,
+        // refused by the per-action existence guard instead. `get_history`
+        // is lenient (returns `Ok(vec![])` for missing sessions), but
+        // `rename_session` / `delete_session` error on the existence guard.
         let raw_id = "550e8400-e29b-41d4-a716-446655440000";
-        let err = h.runtime.get_history(raw_id, 10, false).await.unwrap_err();
-        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+        let msgs = h.runtime.get_history(raw_id, 10, false).await.unwrap();
+        assert!(msgs.is_empty(), "missing session: empty history");
         let err = h
             .runtime
             .rename_session(raw_id, Some("renamed".to_string()), None)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+        assert!(err.to_string().contains("not found"), "{err}");
         let err = h.runtime.delete_session(raw_id, false).await.unwrap_err();
-        assert!(err.to_string().contains("raw session ids are not accepted"), "{err}");
+        assert!(err.to_string().contains("not found"), "{err}");
     }
 }

@@ -290,10 +290,12 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             // key == parent key) always passes.
             //
             // `validate_context_parent` resolves the LLM-facing
-            // reference (slug path, caller-relative slug, or raw id)
+            // reference (absolute slug path or the caller's own id)
             // to a canonical session id and returns it; we use the
             // resolved value downstream so the in-subtree check is
             // not the only thing that sees the resolved id.
+            // Caller-relative slugs and raw ids are refused by
+            // `resolve_reference` before the in-subtree check runs.
             let parent_session_key = if let Some(ref caller) = request.caller_session_key {
                 self.executor
                     .validate_context_parent(&parent_session_key, caller)

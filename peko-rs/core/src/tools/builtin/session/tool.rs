@@ -20,12 +20,17 @@
 //! Sprint 7 Commit G (2026-08-22): the LLM-facing target parameter
 //! is renamed from `session_key` to `path`, matching the Agent tool
 //! (which took the same rename in sprint 7 Commits 1-4). Both tools
-//! now describe their target the same way: a slug path (`/a/b/c` or
-//! caller-relative `b/c`), raw session ids refused at the runtime
-//! layer via `peko_session::path::resolve_reference`. The session
-//! tool's runtime already routed through `resolve_reference`; the
+//! now describe their target the same way: a slug path (`/a/b/c`),
+//! raw session ids refused at the runtime layer via
+//! `peko_session::path::resolve_reference`. The session tool's
+//! runtime already routed through `resolve_reference`; the
 //! tool-layer `validate_path` is the new early-fail point that
 //! mirrors `AgentArgs::validate_action_args`.
+//!
+//! The caller-relative branch (`b/c` without a leading `/`) is gone
+//! in sprint 7: it was promised in the tool surface but never wired
+//! into `resolve_reference`. Only `/`-prefixed slug paths and the
+//! caller's own id pass the runtime layer.
 //!
 //! Sprint 7 Commit H (2026-08-22): `copy` and `move` now share a
 //! single `target` field shaped like bash `cp src dst` / `mv src dst`
@@ -104,9 +109,9 @@ impl SessionTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "action \"{action}\" requires 'path' — a full ('/a/b/c') or \
-                     caller-relative ('b/c') slug path naming the target session \
-                     (no raw session ids; use the `path` field from `session list`)"
+                    "action \"{action}\" requires 'path' — an absolute slug path \
+                     ('/a/b/c') naming the target session (use the `path` field from \
+                     `session list`)"
                 )
             })?;
         if let Err(e) = peko_session::path::validate_path(path) {
@@ -122,8 +127,8 @@ impl SessionTool {
     /// slug (under the parent = everything before), mirroring bash
     /// `cp src dst` / `mv src dst`. Returns `(parent_str, slug)` —
     /// `parent_str` may be empty when the target is a single-segment
-    /// caller-relative slug (the new parent is the caller's tree
-    /// root); the caller passes `/` to the runtime in that case.
+    /// slug whose new parent is the caller's tree root; the caller
+    /// passes `/` to the runtime in that case.
     ///
     /// `target` is the unified destination field introduced in Sprint
     /// 7 Commit H (2026-08-22); it replaces the prior
@@ -138,10 +143,10 @@ impl SessionTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "action \"{action}\" requires 'target' — a slug path naming the \
-                     destination (full '/a/b/c' or caller-relative 'b/c'); the last \
-                     segment is the new slug, the rest is the destination parent. \
-                     Mirrors bash `cp src dst` / `mv src dst`."
+                    "action \"{action}\" requires 'target' — an absolute slug path \
+                     naming the destination ('/parent/new_slug'); the last segment is \
+                     the new slug, the rest is the destination parent. Mirrors bash \
+                     `cp src dst` / `mv src dst`."
                 )
             })?;
         peko_session::path::validate_path(target).map_err(|e| {
@@ -199,9 +204,9 @@ Per-action semantics (the action you choose determines which other params apply)
 - move: reparent a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
 - remove: delete a session (path required; recursive:true also deletes its descendants, children first)
 
-The `path` parameter is a slug path: full (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug) or caller-relative (`b/c`). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session).
+The `path` parameter is an absolute slug path (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session).
 
-The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is itself a full or caller-relative slug path and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
+The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
 Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it. Sessions are monotonically visible until `remove` (Sprint 7 Commit F: archive/unarchive retired; if you want it gone, remove it).
 
@@ -220,11 +225,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "path": {
                     "type": "string",
-                    "description": "Source session: a slug path — full ('/a/b/c', anchored at the root of your session tree) or caller-relative ('b/c'). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session). Match the Agent tool's `path` parameter."
+                    "description": "Source session: an absolute slug path ('/a/b/c', anchored at the root of your session tree). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session). Match the Agent tool's `path` parameter."
                 },
                 "target": {
                     "type": "string",
-                    "description": "Required for `copy` / `move`: destination slug path `<parent>/<new_slug>`. `<parent>` is the destination session's path (full or caller-relative, same addressing as `path`); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `copy`: where to place the new copy. For `move`: the new address — to rename in place, set `target` to `<current_parent>/<new_slug>`. Mirrors bash `cp src dst` / `mv src dst`. Raw session ids are refused at the runtime layer."
+                    "description": "Required for `copy` / `move`: destination slug path `<parent>/<new_slug>`. `<parent>` is an absolute slug path ('/a/b/c'); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `copy`: where to place the new copy. For `move`: the new address — to rename in place, set `target` to `<current_parent>/<new_slug>`. Mirrors bash `cp src dst` / `mv src dst`. Raw session ids and caller-relative slugs are refused at the runtime layer."
                 },
                 "query": {
                     "type": "string",

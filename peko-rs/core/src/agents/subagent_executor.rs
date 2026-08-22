@@ -747,7 +747,14 @@ impl SubagentExecutor {
                     return self
                         .resume_and_execute(
                             task,
-                            &child_id,
+                            // B2 fix: pass the slug path the model
+                            // would have supplied (`/<slug>`), not the
+                            // raw UUID. `resume_and_execute` resolves
+                            // via `resolve_reference` which refuses raw
+                            // UUIDs (the v5-derive fallback silently
+                            // misrouted pre-fix; see PR review
+                            // finding B2).
+                            &format!("/{slug}"),
                             parent_session_key,
                             config,
                             parent_cancel,
@@ -1054,18 +1061,23 @@ impl SubagentExecutor {
             (caller_context(parent_session_key, &metas), metas)
         };
 
-        // Sprint 6: the engine-internal entrypoint receives canonical UUIDs
-        // (the LLM-facing tool layer resolves slug paths via
-        // `resolve_reference` before handing off; the runtime hands
-        // back the canonical id it produced). No shape heuristic to
-        // apply — just canonicalize the input and let the per-call
-        // guards validate existence. `resolve_reference` is the strict
-        // LLM-facing variant; engine-internal code does not need it.
-        let _ = peko_session::SessionId::from(caller.current_session_id.as_str());
-        let canonical = peko_session::SessionId::from(resume_session_id);
-        let resume_session_id = canonical.as_str();
+        // Resolve the LLM-facing slug path to a canonical session id
+        // at the runtime boundary. `resolve_reference` accepts only
+        // `/`-prefixed paths and the caller's own id; raw UUIDs and
+        // caller-relative slugs are refused with a structured error
+        // (the tool layer also pre-validates shape via `validate_path`,
+        // but this is the authoritative resolution point — bypassing
+        // it via `SessionId::from`'s v5 fallback would silently
+        // misroute `/writer-1` to a deterministic UUID that doesn't
+        // match any metadata, see PR review finding B2).
+        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
+        let resolved = peko_session::path::resolve_reference(&metas, caller_id, resume_session_id)?;
+        let resume_session_id = resolved.as_str();
 
-        // Guard: target must exist.
+        // Guard: target must exist. Defense-in-depth — `resolve_reference`
+        // already walks the slug path against `metas`, but a stale
+        // metadata view between resolution and this lookup is theoretically
+        // possible and the per-call guards want to be self-contained.
         let target_meta = metas
             .iter()
             .find(|m| m.session_id.to_string() == resume_session_id)
@@ -1202,16 +1214,18 @@ impl SubagentExecutor {
             (caller_context(caller_session_key, &metas), metas)
         };
 
-        // Sprint 6: engine-internal entrypoint. The reference arrived via
-        // the runtime as a canonical UUID (the LLM-facing tool layer
-        // resolves slug paths through `resolve_reference` before
-        // handing off). Canonicalize via `SessionId::from` and let
-        // the per-call guards validate existence.
-        let _ = peko_session::SessionId::from(caller.current_session_id.as_str());
-        let canonical = peko_session::SessionId::from(target);
-        let target = canonical.as_str();
+        // Resolve the LLM-facing slug path to a canonical session id
+        // at the runtime boundary. Same rationale as
+        // `resume_preflight`: bypassing `resolve_reference` and using
+        // `SessionId::from`'s v5 fallback would silently misroute a
+        // slug path to a deterministic UUID that doesn't match any
+        // metadata (PR review finding B2).
+        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
+        let resolved = peko_session::path::resolve_reference(&metas, caller_id, target)?;
+        let target = resolved.as_str();
 
-        // Guard: target must exist.
+        // Guard: target must exist. Defense-in-depth — same rationale
+        // as in `resume_preflight`.
         let target_meta = metas
             .iter()
             .find(|m| m.session_id.to_string() == target)
@@ -1267,10 +1281,11 @@ impl SubagentExecutor {
     /// caller's own session (the auto-detected default) always passes;
     /// principal-level callers pass for any session.
     ///
-    /// Resolves the LLM-facing reference (slug path, caller-relative
-    /// slug, or raw id) to a canonical session id before the
+    /// Resolves the LLM-facing reference (absolute slug path or the
+    /// caller's own id) to a canonical session id before the
     /// in-subtree check. Returns the resolved id so the caller can
-    /// pass it forward without re-resolving.
+    /// pass it forward without re-resolving. Raw ids and
+    /// caller-relative slugs are refused via `resolve_reference`.
     pub async fn validate_context_parent(
         &self,
         context_parent: &str,
@@ -1281,25 +1296,27 @@ impl SubagentExecutor {
         let mut manager = self.session_manager.write().await;
         let metas = manager.list_all_sessions(false).await?;
 
-        // Sprint 6: engine-internal entrypoint. The reference arrived via
-        // the runtime as a canonical UUID; canonicalize via
-        // `SessionId::from` and let the in-subtree check validate
-        // ownership.
-        let _ = peko_session::SessionId::from(caller_session_key);
-        let context_parent = peko_session::SessionId::from(context_parent);
+        // Resolve the LLM-facing slug path to a canonical session id.
+        // Same rationale as `resume_preflight` / `request_compaction`:
+        // `SessionId::from`'s v5 fallback would silently misroute a
+        // slug path to a deterministic UUID that doesn't match any
+        // metadata (PR review finding B2).
+        let caller_id = peko_session::SessionId::from(caller_session_key);
+        let context_parent_id =
+            peko_session::path::resolve_reference(&metas, caller_id, context_parent)?;
 
-        if context_parent.to_string() == caller_session_key {
-            return Ok(context_parent.to_string());
+        if context_parent_id.to_string() == caller_session_key {
+            return Ok(context_parent_id.to_string());
         }
         let caller = caller_context(caller_session_key, &metas);
         if caller.is_base
             || caller.privileged
-            || in_subtree(&caller, &context_parent.as_str(), &metas)
+            || in_subtree(&caller, &context_parent_id.as_str(), &metas)
         {
-            return Ok(context_parent.to_string());
+            return Ok(context_parent_id.to_string());
         }
         Err(err_context_out_of_tree(
-            &context_parent.as_str(),
+            &context_parent_id.as_str(),
             caller_session_key,
         ))
     }

@@ -44,11 +44,11 @@ use crate::tools::builtin::messaging::subagent_runtime::{
 /// - `action` selects the mode (`new` / `resume`; `compact` stays
 ///   for now per the round-7 decision).
 /// - `path` is the slug path the target session lives at, or will
-///   live at on `new`. Required non-empty for `new` (the new
-///   session's address) and `resume` (the session to re-attach to).
-///   Full (`/local-user/daily-newsfeed`) and caller-relative
-///   (`daily-newsfeed`) paths are both accepted; raw UUIDs are
-///   refused at the runtime layer via `resolve_reference`.
+///   live at on `new`. Required non-empty for `new` (a single
+///   slug segment — the new session's address) and `resume` /
+///   `compact` (an absolute slug path `/a/b/c` naming the target).
+///   Raw UUIDs and caller-relative slugs are refused at the runtime
+///   layer via `resolve_reference`.
 /// - `prompt` is the task description.
 /// - `agent` names the agent template to load.
 /// - `model` is an optional override.
@@ -66,9 +66,11 @@ pub struct AgentArgs {
     #[serde(default = "default_action")]
     pub action: String,
     /// Path under which the target session lives (`resume`) or will
-    /// live (`new`). Full (`/a/b/c`) or caller-relative (`b/c`); never
-    /// a raw UUID. Required for `new` and `resume`; ignored for
-    /// `compact`.
+    /// live (`new`). For `new`: a single slug segment (the new
+    /// session's address — no `/`s, since intermediate segments are
+    /// not materialized). For `resume` and `compact`: an absolute
+    /// slug path (`/a/b/c`). Never a raw UUID or caller-relative
+    /// slug. Required for `new`, `resume`, and `compact`.
     #[serde(default)]
     pub path: String,
     /// Task description / prompt for the subagent (required for `new`
@@ -128,28 +130,31 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"new\" requires 'prompt' and 'agent'"
                 ));
             }
-            // The new session's address — and the address of every
-            // child of it — is its path; raw ids are refused at the
-            // runtime layer via `resolve_reference`. Validate the
-            // segment shape here so the model gets an actionable
+            // The new session's address is its path; raw ids and
+            // caller-relative slugs are refused at the runtime layer
+            // via `resolve_reference`. The new action's path must be a
+            // SINGLE slug segment — intermediate segments are not
+            // materialized, so a multi-segment path like
+            // `feature-b/task-1` would never be reachable. Validate
+            // the segment shape here so the model gets an actionable
             // error before the runtime touches state.
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"new\" requires 'path' — a full ('/a/b/c') or caller-relative \
-                     ('agent-c') slug path under which the new session will live (no raw UUIDs)"
+                    "action \"new\" requires 'path' — a single slug segment (1-64 chars, \
+                     no '/') naming the new session (no raw UUIDs)"
                 ));
             }
-            if let Err(e) = peko_session::path::validate_path(&args.path) {
+            if let Err(e) = peko_session::path::validate_slug(&args.path) {
                 return Err(anyhow::anyhow!(
-                    "action \"new\" 'path' is not a valid slug path: {e}"
+                    "action \"new\" 'path' is not a valid slug: {e}"
                 ));
             }
         }
         AgentAction::Resume => {
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"resume\" requires 'path' — a full ('/a/b/c') or caller-relative \
-                     ('agent-c') slug path naming the session to re-attach to (no raw UUIDs)"
+                    "action \"resume\" requires 'path' — an absolute slug path \
+                     ('/a/b/c') naming the session to re-attach to (no raw UUIDs)"
                 ));
             }
             if let Err(e) = peko_session::path::validate_path(&args.path) {
@@ -166,8 +171,13 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
         AgentAction::Compact => {
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"compact\" requires 'path' — a slug path naming the session to \
-                     flag for compaction"
+                    "action \"compact\" requires 'path' — an absolute slug path \
+                     ('/a/b/c') naming the session to flag for compaction"
+                ));
+            }
+            if let Err(e) = peko_session::path::validate_path(&args.path) {
+                return Err(anyhow::anyhow!(
+                    "action \"compact\" 'path' is not a valid slug path: {e}"
                 ));
             }
         }
@@ -499,16 +509,15 @@ impl Tool for AgentTool {
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Actions:
-- new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + agent + path. The `path` is the slug path under which the new session will live — full (`/local-user/daily-newsfeed`) or caller-relative (`daily-newsfeed`). The last segment is the new session's slug; intermediate segments describe where in the tree it lives. Raw UUIDs are REFUSED.
-- resume: Re-attach this run to an existing spawned session you own. `path` follows the same slug-path / caller-relative grammar as `session list`'s `path` field. Requires path + prompt + agent.
-- compact: Flag a session for engine-driven summarization. `path` follows the same slug-path / caller-relative grammar. Requires path only (prompt and agent are ignored if supplied). Returns immediately after flagging; the engine summarizes at the target's next run.
+- new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + agent + path. `path` is a SINGLE slug segment (no `/`s) — the new session's address. Raw UUIDs and caller-relative slugs are REFUSED.
+- resume: Re-attach this run to an existing spawned session you own. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + agent.
+- compact: Flag a session for engine-driven summarization. `path` is an absolute slug path (`/a/b/c`). Requires path only (prompt and agent are ignored if supplied). Returns immediately after flagging; the engine summarizes at the target's next run.
 
 Parameters:
 - action: "new" | "resume" | "compact" (default: "new")
 - prompt: Description of the task to execute (required for new and resume)
 - agent: Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for new and resume)
-- path: Target session (required for resume and compact) — a slug path ('/a/b/c') or a caller-relative slug ('agent-c') from the session tool's list (`path` field). Raw session ids are refused.
-  For new: the slug path under which the new session will live; the last segment is the new session's slug.
+- path: Target session (required for all actions) — for `new`: a single slug segment naming the new session; for `resume` and `compact`: an absolute slug path ('/a/b/c') from the session tool's list (`path` field). Raw session ids and caller-relative slugs are refused.
 - model: Optional model override for the subagent (matches Claude Code's Agent schema)
 
 Sessions you spawn have `parent_session_id` set to your session; the `session` tool's `list` action surfaces this. Use that field to find them. The session tool manages memory; this tool runs work.
@@ -557,7 +566,7 @@ Examples:
                 },
                 "path": {
                     "type": "string",
-                    "description": "Target session: an absolute slug path ('/a/b/c' from your tree root) or a caller-relative slug ('agent-c' matching one of your descendants). Raw session ids are refused. Required for resume and compact. For new: the slug path under which the new session will live (last segment is the new session's slug)."
+                    "description": "Target session. For `new`: a single slug segment (1-64 chars, no '/') naming the new session's address. For `resume` and `compact`: an absolute slug path ('/a/b/c' from your tree root) from the session tool's list (`path` field). Raw session ids and caller-relative slugs are refused. Required for all actions."
                 },
                 "model": {
                     "type": "string",
@@ -1379,7 +1388,7 @@ mod tests {
             .await
             .expect_err("':' in path must refuse");
         let msg = err.to_string();
-        assert!(msg.contains("valid slug path"), "{msg}");
+        assert!(msg.contains("valid slug"), "{msg}");
     }
 
     #[tokio::test]

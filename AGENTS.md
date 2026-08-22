@@ -755,18 +755,30 @@ cargo test --all-features
   - **2026-08-20 sprint 5 (slug-path addressing):** the LLM-facing
     addressing surface collapses to slug paths. The `session` tool's
     `status` / `history` / `copy` / `move` / `remove` actions accept
-    a slug path (`/a/b/c`), a caller-relative slug (`agent-c`), and
-    REFUSE raw session ids at the tool boundary
+    an absolute slug path (`/a/b/c`) and REFUSE raw session ids and
+    caller-relative slugs at the tool boundary
     (`peko_session::path::resolve_reference`).
     `session list` defaults to the **caller's subtree** (no longer
     the whole principal's tree); `scope: "principal"` widens for
     privileged trunk callers (non-privileged callers who ask get
     ownership-clamped to their subtree with a structured warning);
     `path: "/other/sub"` scopes further to any subtree the caller
-    has ownership access to. `Agent` `new` requires a `name` slug so
-    the spawned session is addressable as `/.../<name>`. The
-    validation lives in `validate_slug` and rejects `:` to keep the
-    grammar unambiguous (slugs can never look like raw ids).
+    has ownership access to. `Agent` `new` requires a single
+    `path` slug so the spawned session is addressable as
+    `/<parent>/<name>`; `resume` / `compact` require an absolute
+    slug path. The validation lives in `validate_slug` /
+    `validate_path` and rejects `:` to keep the grammar unambiguous
+    (slugs can never look like raw ids).
+    **[2026-08-22 sprint 7]** The caller-relative slug branch
+    (`agent-c` style without a leading `/`) was removed: it was
+    promised in the tool surface but never wired into
+    `resolve_reference` (the BFS-descent `resolve_relative`
+    function was dead code). The runtime layer
+    (`subagent_executor.rs::resume_preflight` /
+    `request_compaction` / `validate_context_parent`) now resolves
+    slug paths via `resolve_reference` at the entry point so a path
+    like `/writer-1` no longer v5-derives to a UUID that misses
+    every metadata entry.
   - **2026-08-18 sprint 3 Phase 10 (DM channels + push-wake):** every
     peer ingress path (`peko send` IPC, tunnel A2A `receive`/
     `receive_streaming`, Hub webchat, IPC Steer) funnels through
