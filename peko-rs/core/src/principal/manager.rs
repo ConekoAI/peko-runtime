@@ -917,11 +917,8 @@ impl PrincipalManager {
             // charges the per-cycle counter on every LLM call.
             // `QuotaMeter::unlimited()` returns an unlimited meter
             // when the principal has no quota configured, so passing
-            // it through unconditionally is safe. Peer metering is
-            // deferred to a follow-up (F20 plumbing, requires the
-            // peer registry to be reachable from this entrypoint).
+            // it through unconditionally is safe.
             quota_meter: Some(Arc::clone(&principal.quota_meter)),
-            peer_meter: None,
         })
     }
 

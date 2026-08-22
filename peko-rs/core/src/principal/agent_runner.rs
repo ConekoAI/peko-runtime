@@ -384,7 +384,33 @@ where
     // ADR-045 (self-modification gate): bind caller DID so the
     // `send_peer` tool is registered. `None` ⇒ tool is intentionally
     // omitted (no caller identity to attribute sends to).
-    .with_caller_principal_did(ctx.caller_principal_did().cloned());
+    .with_caller_principal_did(ctx.caller_principal_did().cloned())
+    // B4 (correctness, 2026-08-22): propagate the principal's
+    // quota meter onto `self.subagent_executor` so the lazy
+    // `init_builtins_async` re-registration of the `Agent` tool
+    // uses the metered executor instead of clobbering it with
+    // an unmetered default. Pre-B4 wiring (F39) chained the
+    // meter on a *separately-built* executor in the
+    // `subagent_executor = Arc::new(...)` block below and
+    // pre-registered the metered `AgentTool`; that worked for
+    // workspace scoping but the lazy re-register rebuilt an
+    // unmetered `AgentTool` from `self.subagent_executor` and
+    // `register_tool`'s idempotent re-register clobbered the
+    // metered tool. Net effect: every root-agent `Agent`-tool
+    // spawn ran with `QuotaMeter::unlimited()` regardless of
+    // the principal's `cost_per_call_max`. The separately-built
+    // executor + pre-registration below are retained as a
+    // belt-and-suspenders no-op: `register_tool` is idempotent
+    // and the second call now passes the same metered executor
+    // via `self.subagent_executor`.
+    //
+    // Note: peer attribution was removed (B5, 2026-08-22) — the
+    // F20 peer_meter was fundamentally broken for agents serving
+    // many peers simultaneously. Per-agent attribution (B5d adds
+    // `agent_meter`, B5e wires it into the LLM call path) replaces
+    // it. The principal's per-cycle consumption is the sum of
+    // every spawned agent's `agent_meter_usage()` snapshot.
+    .with_quota_meter(ctx.quota_meter().map(Arc::clone));
 
     // Phase 4 of `feature/multi-model-subagents`: bind the audit
     // sink + first-use lookup so the engine loop emits a
@@ -445,15 +471,13 @@ where
         // own seven `Plan*` tools.
         .with_principal_plan_port(Arc::clone(ctx.plan_port()))
         .with_observability(ctx.observability().cloned())
-        // F39: chain the principal's quota meters so subagent LLM
+        // F39: chain the principal's quota meter so subagent LLM
         // calls charge against the parent principal instead of
         // falling open to `QuotaMeter::unlimited()`. Pre-F39
-        // wiring left these `None`, so subagent LLM traffic was
-        // unattributed. `ctx.quota_meter()` / `ctx.peer_meter()`
-        // return `Option` — principals with no quota config keep
-        // the old behavior.
+        // wiring left this `None`, so subagent LLM traffic was
+        // unattributed. `ctx.quota_meter()` returns `Option` —
+        // principals with no quota config keep the old behavior.
         .with_quota_meter(ctx.quota_meter().map(Arc::clone))
-        .with_peer_meter(ctx.peer_meter().map(Arc::clone))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so the principal.toml path is
@@ -504,10 +528,8 @@ where
     // `RouterContext`). When unbound, fall through to `None` (which
     // `QuotaMeter::unlimited()` semantics) — the CLI one-shot
     // `stateless_service.rs:667` path stays `None` because it doesn't
-    // build a `PrincipalContext` at all. F20 peer metering remains
-    // `None` until the dispatcher populates `RouterContext::peer_meter`.
+    // build a `PrincipalContext` at all.
     let quota_meter = ctx.quota_meter().map(Arc::clone);
-    let peer_meter = ctx.peer_meter().map(Arc::clone);
     let result = agent
         .execute_streaming_with_session(
             &user_text,
@@ -518,7 +540,6 @@ where
             on_event,
             cancel,
             quota_meter,
-            peer_meter,
         )
         .await
         .context("root agent execution failed")?;

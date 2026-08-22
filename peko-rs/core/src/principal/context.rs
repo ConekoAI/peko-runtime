@@ -124,11 +124,6 @@ pub struct PrincipalContext {
     // and read by `agent_runner` to charge the per-cycle counter on
     // every LLM call (Bug A).
     quota_meter: OnceLock<Arc<peko_quota::QuotaMeter>>,
-    // F20 (deferred): peer_meter — same shape, but the peer registry
-    // isn't reachable from `RootRouter::build_context` yet. When set,
-    // subagent spawns will charge the peer counter on top of the
-    // principal counter.
-    peer_meter: OnceLock<Arc<peko_quota::QuotaMeter>>,
     // Phase 4 (`feature/multi-model-subagents`):
     // per-principal set of model ids the principal has called.
     // `mark_model_seen(model_id)` returns `true` on the first use of
@@ -199,7 +194,6 @@ impl PrincipalContext {
             observability: OnceLock::new(),
             active_extensions: OnceLock::new(),
             quota_meter: OnceLock::new(),
-            peer_meter: OnceLock::new(),
             seen_models: Arc::new(Mutex::new(initial_seen.models)),
         }
     }
@@ -311,22 +305,6 @@ impl PrincipalContext {
     #[must_use]
     pub fn quota_meter(&self) -> Option<&Arc<peko_quota::QuotaMeter>> {
         self.quota_meter.get()
-    }
-
-    /// Bind the peer-level quota meter (F20, deferred). When set,
-    /// subagent spawns charge the peer counter in addition to the
-    /// principal counter. Idempotent.
-    pub fn set_peer_meter(
-        &self,
-        meter: Arc<peko_quota::QuotaMeter>,
-    ) -> Result<(), Arc<peko_quota::QuotaMeter>> {
-        self.peer_meter.set(meter)
-    }
-
-    /// Bound peer quota meter, if any.
-    #[must_use]
-    pub fn peer_meter(&self) -> Option<&Arc<peko_quota::QuotaMeter>> {
-        self.peer_meter.get()
     }
 
     /// Phase 4 (`feature/multi-model-subagents`):

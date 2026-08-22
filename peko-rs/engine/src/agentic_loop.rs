@@ -114,16 +114,6 @@ pub struct AgenticLoop {
     /// that don't bind a meter) this is an unlimited meter — every
     /// charge succeeds without persistence.
     quota_meter: Arc<peko_quota::QuotaMeter>,
-    /// F20: per-peer quota meter (channel that triggered the LLM
-    /// call — pekohub user sub, API key id, "local"). `None` for
-    /// callers that don't have a peer attribution (legacy tests,
-    /// stat init paths). When `Some`, `run_inner` opens a nested
-    /// `QuotaScope::with(peer, ...)` INSIDE the principal scope, so
-    /// every LLM call charges BOTH meters via
-    /// [`StackedMeteredProvider`]. Peer trip fires first
-    /// (innermost-first); principal only sees a charge if peer
-    /// accepted.
-    peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
     /// F31b: per-iteration streaming retry budget. Mirrors codex
     /// `run_sampling_request`'s `stream_max_retries` (turn.rs:1123-1218).
     /// On a retryable mid-stream error (transient 5xx, timeout,
@@ -291,7 +281,6 @@ impl AgenticLoop {
             cap_diff_tracker: std::sync::Mutex::new(CapabilityDiffTracker::new()),
             cancel: None,
             quota_meter: Arc::new(peko_quota::QuotaMeter::unlimited()),
-            peer_meter: None,
             // F31b: default to 3 streaming retries per iteration,
             // matching the HTTP-layer `RetryPolicy::default()`.
             stream_max_retries: 3,
@@ -357,19 +346,6 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_quota_meter(mut self, meter: Arc<peko_quota::QuotaMeter>) -> Self {
         self.quota_meter = meter;
-        self
-    }
-
-    /// F20: bind a per-peer quota meter. When set, `run_inner` opens
-    /// a nested `QuotaScope::with(peer_meter, ...)` inside the
-    /// existing principal scope so every LLM call charges BOTH
-    /// meters. The inner (peer) trip fires first via
-    /// [`StackedMeteredProvider`]'s innermost-first charging.
-    /// Pass `None` (the default) for callers that don't have peer
-    /// attribution — the loop falls back to plain `MeteredProvider`.
-    #[must_use]
-    pub fn with_peer_meter(mut self, meter: Option<Arc<peko_quota::QuotaMeter>>) -> Self {
-        self.peer_meter = meter;
         self
     }
 
@@ -915,19 +891,19 @@ impl AgenticLoop {
     ) -> Result<AgenticResult> {
         // F19: open a `QuotaScope::with` so every LLM call inside this
         // run auto-charges `self.quota_meter` via `MeteredProvider`.
-        // F20: when `self.peer_meter` is `Some`, nest a second
-        // `QuotaScope::with(peer_meter, ...)` inside the principal
-        // scope and use `StackedMeteredProvider` so both meters charge
-        // every call (peer innermost, principal outermost — peer trip
-        // fires first). Without `peer_meter`, fall back to plain
-        // `MeteredProvider` — same behavior as F19.
+        //
+        // B5 (2026-08-22): the F20 peer-meter nesting was removed —
+        // peer attribution was broken for agents serving many peers
+        // simultaneously. Per-agent attribution (the `agent_meter` on
+        // `SubagentExecutor`) replaces it; the loop wraps every LLM
+        // call in a single `QuotaScope::with(principal_meter, ...)`
+        // and charges one meter per call.
         //
         // The metered provider is built here (inside the scope) so it
         // picks up the active task-local. We move the entire body into
         // the scope closure because nested async fns cannot capture
         // the scope by reference.
         let meter = Arc::clone(&self.quota_meter);
-        let peer_meter = self.peer_meter.clone();
         let provider_clone = Arc::clone(&self.provider);
         // Phase 1: `run_inner_with_meter` needs `&mut self` so the
         // per-iteration prompt rebuild can read (and advance) the
@@ -936,44 +912,25 @@ impl AgenticLoop {
         // outer scope returns. Move the tracker reads into the
         // body, where `self` is borrowed mutably via this method's
         // receiver.
-        if let Some(pm) = peer_meter {
-            // Stacked path: outer principal scope, inner peer scope.
-            // Body uses StackedMeteredProvider so both meters charge.
-            QuotaScope::with(meter, async move {
-                QuotaScope::with(pm, async move {
-                    let stacked = StackedMeteredProvider::from_current_scope(provider_clone);
-                    self.run_inner_with_meter(
-                        messages,
-                        session,
-                        on_event,
-                        run_id,
-                        streaming_config,
-                        stacked,
-                    )
-                    .await
-                })
-                .await
-            })
+        //
+        // `StackedMeteredProvider` with a 1-length stack is
+        // functionally equivalent to the pre-F20 `MeteredProvider`;
+        // we keep the stacked shape so the AgenticLoop API stays
+        // uniform with the B5e subagent wrapping
+        // (`subagent_executor.rs:2162-2174`, two-layer stack).
+        QuotaScope::with(meter, async move {
+            let stacked = StackedMeteredProvider::from_current_scope(provider_clone);
+            self.run_inner_with_meter(
+                messages,
+                session,
+                on_event,
+                run_id,
+                streaming_config,
+                stacked,
+            )
             .await
-        } else {
-            // Single-meter path: same as F19 (one-element stack charges
-            // the principal meter; `StackedMeteredProvider` with a
-            // 1-length stack is functionally equivalent to the old
-            // `MeteredProvider`).
-            QuotaScope::with(meter, async move {
-                let stacked = StackedMeteredProvider::from_current_scope(provider_clone);
-                self.run_inner_with_meter(
-                    messages,
-                    session,
-                    on_event,
-                    run_id,
-                    streaming_config,
-                    stacked,
-                )
-                .await
-            })
-            .await
-        }
+        })
+        .await
     }
 
     /// Inner run body. Identical to the pre-F19 body except it goes
@@ -1070,7 +1027,7 @@ impl AgenticLoop {
         // here with the loop's stored meters.
         let compactor_backend = self
             .compactor_factory
-            .build(Arc::clone(&self.quota_meter), self.peer_meter.clone());
+            .build(Arc::clone(&self.quota_meter));
         // Phase 9b.N.5b.9c: compaction config comes from the loop's
         // stored field (loaded by root at construction time and passed
         // in via the new `compaction_config` parameter). The loop no
@@ -1482,17 +1439,6 @@ impl AgenticLoop {
                 // `#[from]` on the variant feeds the outer
                 // `thiserror::Error` derive).
                 return Err(crate::AgenticError::from(existing_err).into());
-            }
-            if let Some(pm) = self.peer_meter.as_ref() {
-                pm.advance_if_needed(chrono::Utc::now());
-                if let Some(existing_err) = pm.check() {
-                    on_event(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Error,
-                        error: Some(existing_err.to_string()),
-                    });
-                    return Err(crate::AgenticError::from(existing_err).into());
-                }
             }
 
             // Obtain the stream of events from the provider.

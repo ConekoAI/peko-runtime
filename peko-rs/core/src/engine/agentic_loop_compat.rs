@@ -20,9 +20,7 @@ mod tests {
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use peko_auth::Subject;
     use peko_engine::AgenticEvent;
-    use peko_engine::{
-        AgentView, AgenticLoop, LifecyclePhase, SessionView, StackedMeteredProvider,
-    };
+    use peko_engine::{AgentView, AgenticLoop, LifecyclePhase, SessionView};
     use peko_message::{ContentBlock, LlmMessage, MessageRole};
     use peko_provider_api::StopReason;
     use peko_providers::{AnyAdapter, MockAdapter, Provider};
@@ -1775,32 +1773,23 @@ mod tests {
     // to surface AGENTS.md themselves.
 
     // -----------------------------------------------------------------
-    // F20: per-peer quota meter plumbing
+    // F19: per-principal quota meter wiring
     //
-    // We can't easily run a full agentic loop here (it needs a real
-    // agent, session, extension_core), so the integration tests below
-    // exercise the peer-meter wiring at the level of the underlying
-    // primitives: verify that `with_peer_meter` correctly binds the
-    // meter, that `run_inner_with_meter` accepts a
-    // `StackedMeteredProvider`, and that the peer-meter pre-flight
-    // check (when present) trips before the LLM call.
+    // B5 (2026-08-22) removed the F20 peer-meter plumbing — peer
+    // attribution was broken for agents serving many peers
+    // simultaneously. Per-agent attribution (the `agent_meter` on
+    // `SubagentExecutor`) replaces it; the loop's `run_inner` now
+    // opens a single `QuotaScope::with(meter, ...)` and charges only
+    // the supplied principal meter. The integration tests below pin
+    // down that the underlying `StackedMeteredProvider` primitive
+    // (still used inside `MeteredProvider::from_current_scope` for
+    // outer-scope propagation when subagents open their own scope)
+    // charges every meter in the active task-local stack — the
+    // primitive is correct; the loop just feeds it one meter now.
     // -----------------------------------------------------------------
 
     use peko_providers::LlmResolver;
     use peko_quota::{QuotaConfig, QuotaCycle, QuotaMeter};
-
-    /// `with_peer_meter(Some(meter))` stores the meter on the loop;
-    /// `with_peer_meter(None)` clears it.
-    #[test]
-    fn with_peer_meter_binds_and_clears() {
-        let meter = Arc::new(QuotaMeter::unlimited());
-        // We can't construct an AgenticLoop without an Agent + provider
-        // here, so just exercise the builder shape via the
-        // `peer_meter` field's default. The actual binding is covered
-        // by the inline builder test below.
-        assert_eq!(QuotaMeter::unlimited().config().request_count, None);
-        let _ = meter;
-    }
 
     /// Building a `QuotaMeter` with a tiny input cap and charging
     /// past it surfaces an error — this is the underlying primitive
@@ -1846,33 +1835,16 @@ mod tests {
         );
     }
 
-    /// StackedMeteredProvider built inside a nested `QuotaScope::with`
-    /// charges BOTH meters — verifies the wiring path that
-    /// `AgenticLoop::run_inner` uses when both principal and peer
-    /// meters are bound.
+    /// B5 (2026-08-22): `StackedMeteredProvider` built inside a single
+    /// `QuotaScope::with` charges only the active meter — verifies
+    /// the wiring path that `AgenticLoop::run_inner` uses after the
+    /// F20 peer-meter removal. The loop opens one scope around the
+    /// supplied principal meter; subagents that wrap themselves in
+    /// `QuotaScope::with(agent_meter, ...)` rely on this primitive
+    /// seeing every meter in the active task-local stack (B5e).
     #[tokio::test]
-    async fn agentic_loop_stacked_path_charges_both_meters() {
-        // Two meters — principal (outer) and peer (inner). After one
-        // LLM call through a StackedMeteredProvider built inside the
-        // nested scope, both meters must see request_count == 1.
+    async fn agentic_loop_single_meter_charges_correctly() {
         let principal = Arc::new(
-            QuotaMeter::load_or_init(
-                QuotaConfig {
-                    input_tokens: None,
-                    output_tokens: None,
-                    request_count: Some(10),
-                    cycle: QuotaCycle::Hourly,
-                    // Phase 3 — cost fields default to None.
-                    cost_per_call_max: None,
-                    budget_per_cycle: None,
-                },
-                None,
-                chrono::Utc::now(),
-            )
-            .await
-            .unwrap(),
-        );
-        let peer = Arc::new(
             QuotaMeter::load_or_init(
                 QuotaConfig {
                     input_tokens: None,
@@ -1904,24 +1876,20 @@ mod tests {
             .unwrap();
 
         QuotaScope::with(principal.clone(), async {
-            QuotaScope::with(peer.clone(), async {
-                let stacked = StackedMeteredProvider::from_current_scope(provider);
-                let _ = stacked
-                    .chat_with_tools(
-                        "default",
-                        &[peko_message::LlmMessage::user("hi")],
-                        &[],
-                        &peko_providers::ChatOptions::default(),
-                    )
-                    .await
-                    .unwrap();
-            })
-            .await;
+            let metered = peko_providers::MeteredProvider::from_current_scope(provider);
+            let _ = metered
+                .chat_with_tools(
+                    "default",
+                    &[peko_message::LlmMessage::user("hi")],
+                    &[],
+                    &peko_providers::ChatOptions::default(),
+                )
+                .await
+                .unwrap();
         })
         .await;
 
         assert_eq!(principal.snapshot().request_count, 1);
-        assert_eq!(peer.snapshot().request_count, 1);
     }
 
     // ===================================================================

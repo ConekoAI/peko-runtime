@@ -1,7 +1,7 @@
 //! Compatibility shim: implements `peko_engine::BackgroundCompactorFactory`
 //! via a thin adapter that captures the inner `Arc<Provider>` at factory
 //! construction time and rebuilds a `BackgroundCompactor` on every `build(...)`
-//! call with the loop's per-call `quota_meter` / `peer_meter`.
+//! call with the loop's per-call `quota_meter`.
 //!
 //! # Why a factory + adapter
 //!
@@ -13,18 +13,18 @@
 //! The factory impl captures the inner `Arc<Provider>` (root-only) at the
 //! point the factory is constructed by root code — typically the same call
 //! site that hands the `Provider` to the loop. Every subsequent
-//! `factory.build(meter, peer_meter)` call rebuilds a fresh
-//! `BackgroundCompactor` because the loop constructs a new compactor every
+//! `factory.build(meter)` call rebuilds a fresh `BackgroundCompactor`
+//! because the loop constructs a new compactor every
 //! `run_inner_with_meter` invocation (each run gets its own worker task).
 //!
 //! # Trait port rationale
 //!
 //! `BackgroundCompactorFactory` (defined at
-//! `peko_engine::compaction::factory`) takes the loop's two stored meters
-//! (F19 principal + F20 optional peer) and returns
-//! `Box<dyn CompactorBackend>`. The trait's parameters are workspace types
-//! (`peko_quota::QuotaMeter`), not root-only — so the trait definition in
-//! `peko-engine` doesn't depend on the root crate.
+//! `peko_engine::compaction::factory`) takes the loop's stored meter
+//! (F19 principal) and returns `Box<dyn CompactorBackend>`. The trait's
+//! parameter is a workspace type (`peko_quota::QuotaMeter`), not
+//! root-only — so the trait definition in `peko-engine` doesn't depend
+//! on the root crate.
 //!
 //! The impl lives here (not in `peko-engine`) because of the orphan rule:
 //! `peko_engine::BackgroundCompactorFactory` is a foreign trait, and the
@@ -41,6 +41,14 @@
 //! 9b.N.5b.7 `ProviderView` (sibling). The trait disappears when a later
 //! phase lifts `BackgroundCompactor` into `peko-engine` (blocked on the
 //! concrete `Provider` lift, deferred per Phase 6's note).
+//!
+//! # B5 peer_meter removal (2026-08-22)
+//!
+//! The F20 `peer_meter` second parameter was removed — peer
+//! attribution was broken for agents serving many peers
+//! simultaneously. Per-agent attribution (the `agent_meter` on
+//! `SubagentExecutor`) replaces it. Compactor LLM calls now only
+//! charge the principal meter via `factory.build(meter)`.
 //!
 //! Module location: rooted at `src/engine/background_compactor_factory_compat.rs`
 //! so `src/engine/mod.rs` declares it via `pub mod`, mirroring the
@@ -79,15 +87,7 @@ impl BackgroundCompactorFactoryAdapter {
 }
 
 impl BackgroundCompactorFactory for BackgroundCompactorFactoryAdapter {
-    fn build(
-        &self,
-        meter: Arc<QuotaMeter>,
-        peer_meter: Option<Arc<QuotaMeter>>,
-    ) -> Box<dyn CompactorBackend> {
-        Box::new(BackgroundCompactor::new(
-            Arc::clone(&self.provider),
-            meter,
-            peer_meter,
-        ))
+    fn build(&self, meter: Arc<QuotaMeter>) -> Box<dyn CompactorBackend> {
+        Box::new(BackgroundCompactor::new(Arc::clone(&self.provider), meter))
     }
 }

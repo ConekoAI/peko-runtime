@@ -24,23 +24,27 @@
 //! }).await
 //! ```
 //!
-//! ## Stacking (F20)
+//! ## Stacking (B5e)
 //!
 //! Multiple meters can be active simultaneously by nesting `with`
 //! calls. Each `with` appends to the active stack:
 //!
 //! ```ignore
 //! QuotaScope::with(principal_meter, async move {
-//!     QuotaScope::with(peer_meter, async move {
+//!     QuotaScope::with(agent_meter, async move {
 //!         let stacked = StackedMeteredProvider::from_current_scope(provider);
 //!         stacked.chat_with_tools(...).await  // charges BOTH meters
 //!     }).await
 //! }).await
 //! ```
 //!
+//! Single-meter callers see a stack of length 1 (the agentic loop
+//! opens exactly one scope per run). The principal's overall
+//! consumption is the sum of every spawned agent's meter; use
+//! `peko_quota::aggregate::sum_meters` to compute it.
+//!
 //! [`QuotaScope::current`] returns the innermost meter;
-//! [`QuotaScope::collect_stack`] returns the full vec. Single-dimension
-//! callers see a stack of length 1 and continue to work unchanged.
+//! [`QuotaScope::collect_stack`] returns the full vec.
 //!
 //! ## Cross-spawn propagation
 //!
@@ -59,9 +63,10 @@ tokio::task_local! {
     /// Stack of quota meters active in this task tree. Each
     /// [`QuotaScope::with`] call appends one meter; the innermost
     /// (most recently pushed) meter is the most specific one for the
-    /// current call site. Single-meter call sites see a stack of
-    /// length 1; nested call sites (F20: principal + peer) see a
-    /// stack of length ≥ 2.
+    /// current call site. Single-meter call sites (the agentic loop
+    /// opens exactly one scope per run) see a stack of length 1;
+    /// subagent call sites that nest an `agent_meter` inside the
+    /// inherited principal scope (B5e) see a stack of length 2.
     ///
     /// Read by:
     /// - [`MeteredProvider::from_current_scope`](crate::providers::MeteredProvider::from_current_scope)
@@ -78,13 +83,13 @@ tokio::task_local! {
 /// usage. No caller inside the scope has to remember to do anything
 /// — that's the whole point.
 ///
-/// # Nesting (F20)
+/// # Nesting (B5e)
 ///
 /// `with` appends to the active meter stack rather than replacing it.
 /// A call site that opens `QuotaScope::with(principal_meter, ...)`
-/// followed by `QuotaScope::with(peer_meter, ...)` produces a stack
-/// `[principal, peer]`. [`Self::current`] returns the innermost (peer),
-/// and [`Self::collect_stack`] returns the full vec.
+/// followed by `QuotaScope::with(agent_meter, ...)` produces a stack
+/// `[principal, agent]`. [`Self::current`] returns the innermost
+/// (agent), and [`Self::collect_stack`] returns the full vec.
 ///
 /// # Cross-spawn semantics
 ///

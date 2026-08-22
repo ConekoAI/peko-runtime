@@ -820,6 +820,36 @@ impl Agent {
         self
     }
 
+    /// Bind the spawning principal's `QuotaMeter` for this agent's
+    /// `Agent`-tool spawns.
+    ///
+    /// B4 (correctness, 2026-08-22): this builder propagates the
+    /// principal's quota meter onto the subagent executor so that
+    /// `init_builtins_async`'s `AgentTool` re-registration uses the
+    /// metered executor instead of the unmetered default. Pre-B4
+    /// wiring (F39) chained the meter on a *separately-built*
+    /// executor in `principal/agent_runner.rs` and pre-registered a
+    /// metered `AgentTool` ahead of the lazy
+    /// `init_builtins_async` call. The lazy call then rebuilt an
+    /// `AgentTool` from `self.subagent_executor` — which was the
+    /// internal default without meters — and `register_tool`'s
+    /// idempotent re-register clobbered the metered tool. Net
+    /// effect: every root-agent `Agent`-tool spawn ran with
+    /// `QuotaMeter::unlimited()` regardless of the principal's
+    /// `cost_per_call_max`.
+    ///
+    /// `None` keeps the unmetered default (CLI one-shot / test paths
+    /// with no quota config).
+    #[must_use]
+    pub fn with_quota_meter(
+        mut self,
+        meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
+    ) -> Self {
+        let executor = (*self.subagent_executor).clone().with_quota_meter(meter);
+        self.subagent_executor = Arc::new(executor);
+        self
+    }
+
     /// Bind the spawning principal's `peko_plan::PlanPort` for this
     /// agent.
     ///
@@ -1283,7 +1313,6 @@ impl Agent {
                 None,
                 None,
                 quota_meter,
-                None,
             )
             .await?;
 
@@ -1343,7 +1372,6 @@ impl Agent {
         cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: impl Fn(peko_engine::AgenticEvent) + Send + Sync + 'static,
         quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
-        peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
     ) -> Result<peko_engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
@@ -1377,6 +1405,11 @@ impl Agent {
         // F19: tunnel/pekohub path. Caller (agent_runner / IPC handler)
         // supplies the principal's quota meter via the optional
         // `quota_meter` parameter; default to unlimited when omitted.
+        //
+        // B5 (2026-08-22): the F20 `peer_meter` parameter was removed —
+        // peer attribution was broken for agents serving many peers
+        // simultaneously. Per-agent attribution (the `agent_meter` on
+        // `SubagentExecutor`) replaces it.
         let quota_meter =
             quota_meter.unwrap_or_else(|| Arc::new(peko_quota::QuotaMeter::unlimited()));
         let loop_ = self
@@ -1387,7 +1420,6 @@ impl Agent {
                 None,
                 cancel,
                 quota_meter,
-                peer_meter,
             )
             .await?;
 
@@ -1426,12 +1458,10 @@ impl Agent {
     /// auto-charges via `MeteredProvider`; when omitted, defaults to
     /// an unlimited meter (test / CLI paths).
     ///
-    /// F20: optional `peer_meter` is the per-peer quota meter
-    /// (channel that triggered the run). When `Some`, the agentic
-    /// loop opens a nested `QuotaScope::with(peer_meter, ...)` inside
-    /// the principal scope so both meters charge every LLM call. Pass
-    /// `None` for callers that don't have peer attribution (CLI
-    /// one-shots, legacy tests).
+    /// B5 (2026-08-22): the F20 `peer_meter` parameter was removed —
+    /// peer attribution was broken for agents serving many peers
+    /// simultaneously. Per-agent attribution (the `agent_meter` on
+    /// `SubagentExecutor`) replaces it.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_streaming_with_session<F>(
         &self,
@@ -1443,7 +1473,6 @@ impl Agent {
         on_event: F,
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
-        peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
     ) -> Result<peko_engine::AgenticResult>
     where
         F: Fn(peko_engine::AgenticEvent) + Send + Sync + 'static,
@@ -1491,7 +1520,6 @@ impl Agent {
                 caller_id,
                 cancel,
                 quota_meter,
-                peer_meter,
             )
             .await
         {
@@ -1563,7 +1591,6 @@ impl Agent {
                 caller_id,
                 None,
                 quota_meter,
-                None,
             )
             .await?;
 
@@ -1595,12 +1622,11 @@ impl Agent {
     /// auto-charges via `MeteredProvider`. Pass
     /// `Arc::new(QuotaMeter::unlimited())` for unquota'd / test paths.
     ///
-    /// F20: `peer_meter` is the per-peer quota meter. When `Some`,
-    /// the loop opens a nested `QuotaScope::with(peer_meter, ...)`
-    /// inside the principal scope so both meters charge every LLM
-    /// call (peer innermost, principal outermost — peer trip fires
-    /// first). `None` skips peer attribution (CLI one-shots, legacy
-    /// tests).
+    /// B5 (2026-08-22): the F20 `peer_meter` parameter was removed —
+    /// peer attribution was broken for agents serving many peers
+    /// simultaneously. Per-agent attribution (the `agent_meter` on
+    /// `SubagentExecutor`) replaces it; the loop's `QuotaScope::with`
+    /// now charges only the supplied principal meter.
     pub async fn build_agentic_loop(
         &self,
         agent_arc: Arc<Agent>,
@@ -1609,7 +1635,6 @@ impl Agent {
         caller_id: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Arc<peko_quota::QuotaMeter>,
-        peer_meter: Option<Arc<peko_quota::QuotaMeter>>,
     ) -> Result<peko_engine::agentic_loop::AgenticLoop> {
         let extension_core = self.extension_core();
 
@@ -1847,7 +1872,6 @@ impl Agent {
         .with_async_completion_queue(async_completion_queue)
         .with_caller_id(caller_id)
         .with_quota_meter(quota_meter)
-        .with_peer_meter(peer_meter)
         // Phase 4: forward the agent's bound audit sink so the
         // loop emits `model.selected` events on every successful
         // LLM call. Both fields default to `None` (CLI one-shot

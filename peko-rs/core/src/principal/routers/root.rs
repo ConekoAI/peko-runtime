@@ -242,13 +242,6 @@ impl RootRouter {
                 tracing::debug!("RootRouter::build_context: quota_meter already set");
             }
         }
-        // F20 (deferred): peer_meter — bound the same way when the
-        // dispatcher populates `RouterContext::peer_meter`.
-        if let Some(ref meter) = ctx.peer_meter {
-            if principal_ctx.set_peer_meter(Arc::clone(meter)).is_err() {
-                tracing::debug!("RootRouter::build_context: peer_meter already set");
-            }
-        }
         principal_ctx
     }
 }

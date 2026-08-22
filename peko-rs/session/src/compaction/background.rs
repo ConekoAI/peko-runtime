@@ -120,21 +120,21 @@ struct WorkerState {
 impl BackgroundCompactor {
     /// Create a new background compactor with the given provider.
     ///
-    /// F19: `meter` is the principal's quota meter. The spawned worker
-    /// task opens a [`QuotaScope::with`] around every LLM call so the
-    /// summarization call goes through a [`MeteredProvider`] and
-    /// auto-charges. Pass [`QuotaMeter::unlimited()`] for unquota'd
-    /// sessions (CLI / tests / legacy one-shots).
+    /// F19: `meter` is the principal's quota meter. The spawned
+    /// worker task opens a [`QuotaScope::with`] around every LLM
+    /// call so the summarization call goes through a
+    /// [`MeteredProvider`] and auto-charges. Pass
+    /// [`QuotaMeter::unlimited()`] for unquota'd sessions
+    /// (CLI / tests / legacy one-shots).
     ///
-    /// F20: `peer_meter` is an optional per-peer meter. When `Some`,
-    /// the worker task opens a nested `QuotaScope::with(peer_meter, ...)`
-    /// inside the principal scope so every summarization call charges
-    /// BOTH meters via [`StackedMeteredProvider`]. `None` falls back
-    /// to plain `MeteredProvider` (F19 behavior).
+    /// B5 (2026-08-22): the F20 `peer_meter` parameter was removed
+    /// — peer attribution was broken for agents serving many peers
+    /// simultaneously. Per-agent attribution (the `agent_meter` on
+    /// `SubagentExecutor`) replaces it; compactor LLM calls now only
+    /// charge the principal meter.
     pub fn new(
         provider: Arc<dyn ProviderView>,
         meter: Arc<QuotaMeter>,
-        peer_meter: Option<Arc<QuotaMeter>>,
     ) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<CompactionRequest>(4);
         let state = Arc::new(Mutex::new(WorkerState {
@@ -150,9 +150,6 @@ impl BackgroundCompactor {
         // Spawn background worker task. We wrap the loop body in
         // `QuotaScope::with` because `tokio::spawn` does NOT inherit
         // the parent task's task-local — see `quota::scope` docstring.
-        //
-        // F20: when peer_meter is `Some`, nest it inside the principal
-        // scope so the worker picks up both via `QuotaScope::collect_stack`.
         tokio::spawn(async move {
             let worker_body = async move {
                 debug!("Background compaction worker started");
@@ -162,11 +159,12 @@ impl BackgroundCompactor {
                     let state = state_clone.clone();
 
                     // Process compaction request — the inner
-                    // `Compactor::compact` builds a stacked metered
-                    // provider via `StackedMeteredProvider::from_current_scope`
-                    // so the summarization LLM call auto-charges every
-                    // meter in the active stack (peer innermost →
-                    // principal outermost, peer trip fires first).
+                    // `Compactor::compact` builds a
+                    // `MeteredProvider` via
+                    // `StackedMeteredProvider::from_current_scope`
+                    // so the summarization LLM call auto-charges
+                    // the principal meter in the active
+                    // task-local.
                     let result = process_compaction_request(request, provider, state).await;
 
                     if let Err(e) = result {
@@ -176,17 +174,7 @@ impl BackgroundCompactor {
 
                 debug!("Background compaction worker stopped");
             };
-            match peer_meter {
-                Some(pm) => {
-                    QuotaScope::with(meter_clone, async move {
-                        QuotaScope::with(pm, worker_body).await
-                    })
-                    .await;
-                }
-                None => {
-                    QuotaScope::with(meter_clone, worker_body).await;
-                }
-            }
+            QuotaScope::with(meter_clone, worker_body).await;
         });
 
         Self {
@@ -203,7 +191,6 @@ impl BackgroundCompactor {
         config: CompactionConfig,
         quota: CompactionQuota,
         meter: Arc<QuotaMeter>,
-        peer_meter: Option<Arc<QuotaMeter>>,
     ) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<CompactionRequest>(4);
         let state = Arc::new(Mutex::new(WorkerState {
@@ -218,7 +205,6 @@ impl BackgroundCompactor {
 
         // Spawn background worker task with custom config. Same
         // `QuotaScope::with` wrap as `new` — see comment there.
-        // F20: nest peer scope when peer_meter is `Some`.
         tokio::spawn(async move {
             let worker_body = async move {
                 debug!("Background compaction worker started (custom config)");
@@ -240,17 +226,7 @@ impl BackgroundCompactor {
 
                 debug!("Background compaction worker stopped");
             };
-            match peer_meter {
-                Some(pm) => {
-                    QuotaScope::with(meter_clone, async move {
-                        QuotaScope::with(pm, worker_body).await
-                    })
-                    .await;
-                }
-                None => {
-                    QuotaScope::with(meter_clone, worker_body).await;
-                }
-            }
+            QuotaScope::with(meter_clone, worker_body).await;
         });
 
         Self {
@@ -268,12 +244,11 @@ impl BackgroundCompactor {
         config: CompactionConfig,
         quota: CompactionQuota,
         meter: Arc<QuotaMeter>,
-        peer_meter: Option<Arc<QuotaMeter>>,
         _context_window: usize,
     ) -> Self {
         // For now, the context window is used by the caller when calling
         // should_request(). The compactor itself uses the config values.
-        Self::with_config(provider, config, quota, meter, peer_meter)
+        Self::with_config(provider, config, quota, meter)
     }
 
     /// Request compaction (non-blocking)
