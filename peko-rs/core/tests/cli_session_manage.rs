@@ -11,7 +11,7 @@
 //! |------|--------------|
 //! | `session_new_refused_live_id_stays_stable` | scripted `session new` returns the demoted-action refusal, writes no `chapters.json`, and the NEXT `peko send` keeps the same live `root:*` id with both turns stitched in one history |
 //! | `session_delete_current_session_refused` | `session delete` on the caller's own live session returns the structured refusal and the session survives |
-//! | `agent_spawn_list_resume_cleanup_delete` | spawn registers a `trigger=="spawn"` session; `action:"resume"` + `session_key` continues it with history; `cleanup:"delete"` routes through the guarded delete and removes it |
+//! | `agent_spawn_list_resume_with_history` | spawn registers a `trigger=="spawn"` session; `action:"resume"` + `path` continues it with history. Sprint 7 Commit 4 dropped the `cleanup` field on the Agent tool — auto-delete on resume is gone; the caller uses `session remove` explicitly |
 //!
 //! Each test drives MULTIPLE sequential `peko send` runs against one
 //! daemon, re-scripting the mock LLM between sends
@@ -302,10 +302,12 @@ async fn session_delete_current_session_refused() {
     // The tool returns the structured refusal as the tool result; the
     // parent then reports.
     // Sprint 7 Commit F (2026-08-21): `delete` → `remove` (bash-aligned).
+    // Sprint 7 Commit G (2026-08-22): `session_key` → `path`
+    // (matches the Agent tool's addressing surface).
     let script = serde_json::json!({
         second_needle: [
             { "tool_call": { "name": "session", "arguments":
-                serde_json::json!({ "action": "remove", "session_key": live_id }).to_string()
+                serde_json::json!({ "action": "remove", "path": live_id }).to_string()
             } },
             "REMOVE_REFUSED",
         ],
@@ -342,12 +344,13 @@ async fn session_delete_current_session_refused() {
 
 /// Full Agent-tool lifecycle on the coin model: spawn registers a
 /// `trigger == "spawn"` session → `action:"resume"` re-attaches with
-/// history → `cleanup: "delete"` removes it through the guarded
-/// delete.
+/// history. Sprint 7 Commit 4 dropped the `cleanup` field on the
+/// Agent tool — auto-delete on resume is gone; callers use
+/// `session remove` explicitly when they want deletion.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
-async fn agent_spawn_list_resume_cleanup_delete() {
+async fn agent_spawn_list_resume_with_history() {
     if mock_llm_url().is_none() {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
@@ -359,8 +362,6 @@ async fn agent_spawn_list_resume_cleanup_delete() {
     let c1 = "sessagent-c1-c2vd";
     let p2 = "sessagent-p2-c2vd";
     let c2 = "sessagent-c2-c2vd";
-    let p3 = "sessagent-p3-c2vd";
-    let c3 = "sessagent-c3-c2vd";
 
     let cli = PekoCli::new();
     create_mock_principal_with_tools(
@@ -414,13 +415,15 @@ async fn agent_spawn_list_resume_cleanup_delete() {
         .map(|(k, _)| k.clone())
         .unwrap_or_else(|| panic!("no spawned session in index: {index:?}"));
 
-    // ── Send #2: resume with history (cleanup keep) ─────────────────
+    // ── Send #2: resume with history ─────────────────
+    // Sprint 7 Commits 1-4 (AgentArgs trim): `session_key` → `path`
+    // (Commit 1); `cleanup` removed (Commit 4).
     let script = serde_json::json!({
         p2: [
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "action": "resume",
-                    "session_key": spawn_id,
+                    "path": spawn_id,
                     "prompt": format!("Do part two. Needle '{c2}'."),
                     "subagent_type": WORKER,
                 }).to_string()
@@ -454,54 +457,5 @@ async fn agent_spawn_list_resume_cleanup_delete() {
     assert!(
         transcript.contains("CHILD_ONE_DONE") && transcript.contains("CHILD_TWO_DONE"),
         "resumed session must keep its full prior history"
-    );
-
-    // ── Send #3: resume again with cleanup:"delete" ─────────────────
-    let script = serde_json::json!({
-        p3: [
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({
-                    "action": "resume",
-                    "session_key": spawn_id,
-                    "prompt": format!("Final part. Needle '{c3}'."),
-                    "subagent_type": WORKER,
-                    "cleanup": "delete",
-                }).to_string()
-            } },
-            "CLEANUP_DONE",
-        ],
-        c3: ["CHILD_THREE_DONE"],
-    })
-    .to_string();
-    configure_mock(&mock_url, &script).await;
-
-    let prompt = format!(
-        "Re-attach the same subagent session for one last task and delete the \
-         session afterwards (cleanup delete), then respond with CLEANUP_DONE. \
-         Use the needle '{p3}'."
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, &prompt, "--no-stream"],
-        Duration::from_secs(45),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("CLEANUP_DONE"),
-        "send #3 did not report CLEANUP_DONE: stdout={out} stderr={err}",
-    );
-
-    // cleanup:"delete" routed through the guarded delete: the session
-    // is gone from the index and the transcript is removed.
-    let index = sessions_index(&cli);
-    assert!(
-        !index.as_object().unwrap().contains_key(&spawn_id),
-        "deleted child session must leave the index: {index:?}"
-    );
-    assert!(
-        !sessions_dir(&cli)
-            .join(format!("{spawn_id}.jsonl"))
-            .exists(),
-        "deleted child session transcript must be removed"
     );
 }

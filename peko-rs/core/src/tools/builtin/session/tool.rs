@@ -17,6 +17,16 @@
 //! (title/slug without new_parent = rename in place). `branch`
 //! renamed to `copy`, `search` to `find`, `delete` to `remove`.
 //!
+//! Sprint 7 Commit G (2026-08-22): the LLM-facing target parameter
+//! is renamed from `session_key` to `path`, matching the Agent tool
+//! (which took the same rename in sprint 7 Commits 1-4). Both tools
+//! now describe their target the same way: a slug path (`/a/b/c` or
+//! caller-relative `b/c`), raw session ids refused at the runtime
+//! layer via `peko_session::path::resolve_reference`. The session
+//! tool's runtime already routed through `resolve_reference`; the
+//! tool-layer `validate_path` is the new early-fail point that
+//! mirrors `AgentArgs::validate_action_args`.
+//!
 //! `new` / `resume` / `compact` stay off this tool — they drive the
 //! LLM and live on the Agent tool instead. Speaks to the
 //! [`SessionRuntime`] port.
@@ -66,21 +76,61 @@ impl SessionTool {
         messages: Vec<HistoryMessage>,
     ) -> serde_json::Value {
         json!({
-            "session_key": session_key,
+            "path": session_key,
             "total_messages": messages.len(),
             "messages": messages,
         })
     }
 
-    /// Extract a required `session_key` param with an actionable error.
-    fn require_session_key<'a>(
+    /// Extract a required `path` param with an actionable error, and
+    /// validate the slug shape at the tool boundary (mirrors
+    /// `AgentArgs::validate_action_args`). Raw session ids and
+    /// malformed paths are rejected here so the model gets a clean
+    /// structured error before the runtime touches state.
+    fn require_path<'a>(
         params: &'a serde_json::Value,
         action: &str,
     ) -> anyhow::Result<&'a str> {
-        params
-            .get("session_key")
+        let path = params
+            .get("path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("'{action}' requires the 'session_key' parameter"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "action \"{action}\" requires 'path' — a full ('/a/b/c') or \
+                     caller-relative ('b/c') slug path naming the target session \
+                     (no raw session ids; use the `path` field from `session list`)"
+                )
+            })?;
+        if let Err(e) = peko_session::path::validate_path(path) {
+            return Err(anyhow::anyhow!(
+                "action \"{action}\" 'path' is not a valid slug path: {e}"
+            ));
+        }
+        Ok(path)
+    }
+
+    /// Extract and validate the `new_parent` slug path for `move`'s
+    /// reparent branch. Same shape rules as `path`; required when the
+    /// caller opts into a reparent.
+    fn require_parent<'a>(
+        params: &'a serde_json::Value,
+    ) -> anyhow::Result<&'a str> {
+        let parent = params
+            .get("new_parent")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "action \"move\" reparent requires 'new_parent' — a full \
+                     ('/a/b/c') or caller-relative ('b/c') slug path naming \
+                     the destination session (no raw session ids)"
+                )
+            })?;
+        if let Err(e) = peko_session::path::validate_path(parent) {
+            return Err(anyhow::anyhow!(
+                "action \"move\" 'new_parent' is not a valid slug path: {e}"
+            ));
+        }
+        Ok(parent)
     }
 }
 
@@ -113,15 +163,15 @@ impl Tool for SessionTool {
   status | list | history | find | copy | move | remove
 
 Per-action semantics (the action you choose determines which other params apply):
-- status: one session's metadata + token usage (session_key optional, defaults to current)
+- status: one session's metadata + token usage (path optional, defaults to current)
 - list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
-- history: messages of a session (session_key optional, defaults to current; include_tools)
+- history: messages of a session (path optional, defaults to current; include_tools)
 - find: case-insensitive text search across session transcripts (query required; optional peer filter)
-- copy: duplicate a session under a new id (session_key required; optional label) — the copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action. When the source has a slug, the copy derives one (`<slug>-copy`, uniquified)
-- move: reparent a session under a new parent OR rename it in place (session_key required + at least one of new_parent/title/slug). Just title/slug → rename in place (same parent, new label/path segment). Just new_parent → reparent. Both → reparent and apply title/slug at the destination. The slug is the per-parent-unique path segment used for /a/b addressing. Subtree moves with the session.
-- remove: delete a session (session_key required; recursive:true also deletes its descendants, children first)
+- copy: duplicate a session under a new id (path required; optional label) — the copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action. When the source has a slug, the copy derives one (`<slug>-copy`, uniquified)
+- move: reparent a session under a new parent OR rename it in place (path required + at least one of new_parent/title/slug). Just title/slug → rename in place (same parent, new label/path segment). Just new_parent → reparent. Both → reparent and apply title/slug at the destination. The slug is the per-parent-unique path segment used for /a/b addressing. Subtree moves with the session.
+- remove: delete a session (path required; recursive:true also deletes its descendants, children first)
 
-Every session_key / new_parent parameter also accepts an absolute path (`/a/b` — see list's `path` field), anchored at the root of YOUR session tree; each segment is a slug. Raw session ids keep working everywhere.
+The `path` parameter is a slug path: full (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug) or caller-relative (`b/c`). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session).
 
 Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it. Sessions are monotonically visible until `remove` (Sprint 7 Commit F: archive/unarchive retired; if you want it gone, remove it).
 
@@ -138,9 +188,9 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     "enum": ["status", "list", "history", "find", "copy", "move", "remove"],
                     "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage. To run work in a session, use the Agent tool (new/resume/compact)."
                 },
-                "session_key": {
+                "path": {
                     "type": "string",
-                    "description": "Target session: a raw session id or an absolute path ('/a/b' of slugs, anchored at the root of your session tree — see list's `path` field). Required for `copy`, `move`, `remove`. Optional for `status` and `history` (defaults to current session)."
+                    "description": "Target session: a slug path — full ('/a/b/c', anchored at the root of your session tree) or caller-relative ('b/c'). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session). Match the Agent tool's `path` parameter."
                 },
                 "query": {
                     "type": "string",
@@ -160,7 +210,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "new_parent": {
                     "type": "string",
-                    "description": "Required-for-reparent for 'move': the session to reparent under — a raw session id or an absolute path ('/a/b' of slugs). Must exist; must not be the target itself or one of its descendants (cycle refusal); must be inside your subtree when you are a spawned caller. The moved session's slug must be unique among the destination's children."
+                    "description": "Required-for-reparent for 'move': the destination session — a slug path (full '/a/b/c' or caller-relative 'b/c'), same addressing as `path`. Must exist; must not be the target itself or one of its descendants (cycle refusal); must be inside your subtree when you are a spawned caller. The moved session's slug must be unique among the destination's children. Raw session ids are refused at the runtime layer."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -214,12 +264,12 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
 
         match action {
             SessionAction::Status => {
-                let session_key = params.get("session_key").and_then(|v| v.as_str());
+                let path = params.get("path").and_then(|v| v.as_str());
                 let timezone = params.get("timezone").and_then(|v| v.as_str());
 
                 // A missing/unknown session is a real error — never
                 // fabricate a zeroed status for it.
-                let mut status = self.get_status_action(session_key).await?;
+                let mut status = self.get_status_action(path).await?;
 
                 // Add current timestamps
                 let now_utc = chrono::Utc::now();
@@ -275,7 +325,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
             }
             SessionAction::History => {
                 let session_key = params
-                    .get("session_key")
+                    .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.runtime.current_session_key())
                     .to_string();
@@ -316,7 +366,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 }))
             }
             SessionAction::Copy => {
-                let session_key = Self::require_session_key(&params, "copy")?;
+                let session_key = Self::require_path(&params, "copy")?;
                 let label = params
                     .get("label")
                     .and_then(|v| v.as_str())
@@ -331,7 +381,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 // At least one of new_parent/title/slug is required —
                 // refusing all-None matches the pre-merge `rename`
                 // guard and prevents a no-op call.
-                let session_key = Self::require_session_key(&params, "move")?;
+                let session_key = Self::require_path(&params, "move")?;
                 let new_parent = params
                     .get("new_parent")
                     .and_then(|v| v.as_str())
@@ -351,6 +401,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 }
 
                 if let Some(np) = new_parent {
+                    // Validate the destination slug shape at the tool
+                    // boundary (mirrors `require_path`). The runtime
+                    // would catch it too, but a structured tool-layer
+                    // error is better for the model.
+                    Self::require_parent(&params)?;
                     // Reparent (with optional title/slug applied at the
                     // destination — kept simple: apply rename after a
                     // successful move so the reparent's slug-uniqueness
@@ -364,12 +419,12 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     self.runtime.rename_session(session_key, title, slug).await?;
                 }
                 Ok(json!({
-                    "session_key": session_key,
+                    "path": session_key,
                     "modified": true,
                 }))
             }
             SessionAction::Remove => {
-                let session_key = Self::require_session_key(&params, "remove")?;
+                let session_key = Self::require_path(&params, "remove")?;
                 let recursive = params
                     .get("recursive")
                     .and_then(|v| v.as_bool())
@@ -537,7 +592,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "history", "session_key": "test-session", "limit": 10}))
+            .execute(json!({"action": "history", "path": "test-session", "limit": 10}))
             .await
             .unwrap();
 
@@ -552,7 +607,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "status", "session_key": "test-session"}))
+            .execute(json!({"action": "status", "path": "test-session"}))
             .await
             .unwrap();
 
@@ -627,7 +682,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "history", "session_key": "missing"}))
+            .execute(json!({"action": "history", "path": "missing"}))
             .await
             .unwrap();
 
@@ -642,7 +697,7 @@ mod tests {
         // The old fabricated zeroed status is gone: an unknown session
         // must surface the runtime's real error.
         let err = tool
-            .execute(json!({"action": "status", "session_key": "missing"}))
+            .execute(json!({"action": "status", "path": "missing"}))
             .await
             .expect_err("status on an unknown session must error, not fabricate");
         assert!(err.to_string().contains("missing"), "{err}");
@@ -902,7 +957,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "remove", "session_key": "test-session"}))
+            .execute(json!({"action": "remove", "path": "test-session"}))
             .await
             .unwrap();
         assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
@@ -915,8 +970,8 @@ mod tests {
         let err = tool
             .execute(json!({"action": "remove"}))
             .await
-            .expect_err("remove without session_key must error");
-        assert!(err.to_string().contains("session_key"), "{err}");
+            .expect_err("remove without path must error");
+        assert!(err.to_string().contains("path"), "{err}");
     }
 
     /// The LLM-driving actions (`new` / `resume` / `compact`) and the
@@ -954,7 +1009,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "copy", "session_key": "test-session", "label": "fork"}))
+            .execute(json!({"action": "copy", "path": "test-session", "label": "fork"}))
             .await
             .unwrap();
         let new_id = result["new_session_id"].as_str().unwrap();
@@ -975,17 +1030,17 @@ mod tests {
 
         // History is copied over.
         let history = tool
-            .execute(json!({"action": "history", "session_key": new_id}))
+            .execute(json!({"action": "history", "path": new_id}))
             .await
             .unwrap();
         assert_eq!(history["total_messages"], 2);
 
-        // Copy without session_key must error.
+        // Copy without path must error.
         let err = tool
             .execute(json!({"action": "copy"}))
             .await
-            .expect_err("copy without session_key must error");
-        assert!(err.to_string().contains("session_key"), "{err}");
+            .expect_err("copy without path must error");
+        assert!(err.to_string().contains("path"), "{err}");
     }
 
     #[tokio::test]
@@ -996,7 +1051,7 @@ mod tests {
         let err = tool
             .execute(json!({
                 "action": "status",
-                "session_key": "test-session",
+                "path": "test-session",
                 "timezone": "Not/AZone"
             }))
             .await
@@ -1006,7 +1061,7 @@ mod tests {
         // A valid IANA tz still works.
         tool.execute(json!({
             "action": "status",
-            "session_key": "test-session",
+            "path": "test-session",
             "timezone": "UTC"
         }))
         .await
@@ -1052,7 +1107,7 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "move",
-                "session_key": "test-session",
+                "path": "test-session",
                 "new_parent": "parent-s"
             }))
             .await
@@ -1061,23 +1116,23 @@ mod tests {
 
         // The reparent is visible on status.
         let status = tool
-            .execute(json!({"action": "status", "session_key": "test-session"}))
+            .execute(json!({"action": "status", "path": "test-session"}))
             .await
             .unwrap();
         assert_eq!(status["parent_session"], "parent-s");
 
-        // session_key is always required.
+        // path is always required.
         let err = tool
             .execute(json!({"action": "move", "new_parent": "parent-s"}))
             .await
-            .expect_err("move without session_key must error");
-        assert!(err.to_string().contains("session_key"), "{err}");
+            .expect_err("move without path must error");
+        assert!(err.to_string().contains("path"), "{err}");
 
         // Unknown endpoints error.
         let err = tool
             .execute(json!({
                 "action": "move",
-                "session_key": "missing",
+                "path": "missing",
                 "new_parent": "parent-s"
             }))
             .await
@@ -1094,7 +1149,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         // Slug only.
-        tool.execute(json!({"action": "move", "session_key": "test-session", "slug": "task-b"}))
+        tool.execute(json!({"action": "move", "path": "test-session", "slug": "task-b"}))
             .await
             .unwrap();
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
@@ -1104,7 +1159,7 @@ mod tests {
 
         // Title only (slug survives).
         tool.execute(
-            json!({"action": "move", "session_key": "test-session", "title": "New Title"}),
+            json!({"action": "move", "path": "test-session", "title": "New Title"}),
         )
         .await
         .unwrap();
@@ -1114,7 +1169,7 @@ mod tests {
 
         // Both at once.
         tool.execute(
-            json!({"action": "move", "session_key": "test-session", "title": "T", "slug": "s2"}),
+            json!({"action": "move", "path": "test-session", "title": "T", "slug": "s2"}),
         )
         .await
         .unwrap();
@@ -1132,11 +1187,97 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let err = tool
-            .execute(json!({"action": "move", "session_key": "test-session"}))
+            .execute(json!({"action": "move", "path": "test-session"}))
             .await
             .expect_err("move with no new_parent/title/slug must error");
         assert!(err.to_string().contains("new_parent"), "{err}");
         assert!(err.to_string().contains("title"), "{err}");
+        assert!(err.to_string().contains("slug"), "{err}");
+    }
+
+    /// Sprint 7 Commit G: tool-layer `validate_path` mirrors
+    /// `AgentArgs::validate_action_args`. Raw session ids (with the
+    /// reserved `:` that legacy ids carry) and malformed slug paths
+    /// are rejected with a structured error at the tool boundary,
+    /// before the runtime touches state.
+    #[tokio::test]
+    async fn test_session_path_validation_at_tool_boundary() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        // Legacy raw session id shape (contains `:` which slugs forbid).
+        let err = tool
+            .execute(json!({
+                "action": "copy",
+                "path": "root:user:alice",
+            }))
+            .await
+            .expect_err("raw session id shape must error at the boundary");
+        assert!(err.to_string().contains("path"), "{err}");
+        assert!(err.to_string().contains("slug"), "{err}");
+
+        // Empty path.
+        let err = tool
+            .execute(json!({"action": "copy", "path": ""}))
+            .await
+            .expect_err("empty path must error");
+        assert!(err.to_string().contains("path"), "{err}");
+
+        // Bare `/` (no segments) is refused (validate_path says supply
+        // at least one segment).
+        let err = tool
+            .execute(json!({"action": "copy", "path": "/"}))
+            .await
+            .expect_err("bare '/' path must error");
+        assert!(err.to_string().contains("path"), "{err}");
+
+        // Empty segment (`/a//b`).
+        let err = tool
+            .execute(json!({"action": "copy", "path": "/a//b"}))
+            .await
+            .expect_err("empty segment path must error");
+        assert!(err.to_string().contains("segment"), "{err}");
+
+        // Leading/trailing whitespace in a segment.
+        let err = tool
+            .execute(json!({"action": "copy", "path": "/ a/b"}))
+            .await
+            .expect_err("whitespace in segment must error");
+        assert!(err.to_string().contains("whitespace"), "{err}");
+
+        // Valid slug path passes through to the runtime (success on a
+        // known slug is not required here — we just need the
+        // validator to let it through, which we check by ensuring
+        // the error message does NOT mention path validation).
+        let res = tool
+            .execute(json!({"action": "copy", "path": "test-session"}))
+            .await;
+        // Either success (slug exists in cache) or a runtime-level
+        // error — but never a "path is not a valid slug path" error.
+        if let Err(e) = res {
+            assert!(
+                !e.to_string().contains("is not a valid slug path"),
+                "valid slug path should pass tool-layer validation, got: {e}"
+            );
+        }
+    }
+
+    /// `new_parent` is also a slug path — same shape rules as
+    /// `path`. Validate at the tool boundary.
+    #[tokio::test]
+    async fn test_session_move_new_parent_validates_at_tool_boundary() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let err = tool
+            .execute(json!({
+                "action": "move",
+                "path": "test-session",
+                "new_parent": "root:user:bob",
+            }))
+            .await
+            .expect_err("raw-id new_parent must error at the boundary");
+        assert!(err.to_string().contains("new_parent"), "{err}");
         assert!(err.to_string().contains("slug"), "{err}");
     }
 }
