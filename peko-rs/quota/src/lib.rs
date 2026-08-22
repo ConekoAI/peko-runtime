@@ -22,7 +22,18 @@
 //! [`peko_message::TokenUsage::accumulate`]. Callers
 //! should never re-implement that folding inline — `accumulate` is
 //! the single source of truth for "what counts toward quota".
+//!
+//! ## Aggregation (B5f)
+//!
+//! [`aggregate::sum_meters`] / [`aggregate::sum_states`] are the
+//! summation primitive used for per-principal audit reports: each
+//! spawned agent holds its own `Arc<QuotaMeter>`, and the
+//! principal's per-cycle consumption is the sum of every spawned
+//! agent's snapshot. Peer billing was removed (B5) because a single
+//! agent may serve many peers simultaneously, making peer
+//! attribution ambiguous.
 
+pub mod aggregate;
 pub mod config;
 pub mod error;
 pub mod meter;

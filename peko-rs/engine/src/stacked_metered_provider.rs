@@ -14,14 +14,14 @@
 //! reads the full nested-scope stack via
 //! [`QuotaScope::collect_stack`](peko_quota::QuotaScope::collect_stack)
 //! instead of just the innermost meter. Each LLM call charges every
-//! meter in the stack, innermost first (peer → principal → …) so a
+//! meter in the stack, innermost first (agent → principal → …) so a
 //! "more specific" meter trip fails fast.
 //!
 //! ## Use case
 //!
 //! ```ignore
 //! QuotaScope::with(principal_meter, async move {
-//!     QuotaScope::with(peer_meter, async move {
+//!     QuotaScope::with(agent_meter, async move {
 //!         let view: Arc<dyn ProviderView> = ...;
 //!         let stacked = StackedMeteredProvider::from_current_scope(view);
 //!         stacked.chat_with_tools(...).await  // charges BOTH meters
@@ -32,9 +32,11 @@
 //! ## Charge order: innermost first
 //!
 //! The innermost meter is the most specific one for the current call
-//! site (peer scope wraps principal scope). Failing fast on the most
-//! specific dimension is the right UX — the peer's quota status is
-//! the operator's most actionable signal.
+//! site (subagent's `agent_meter` scope wraps the principal's
+//! inherited scope — B5e). Failing fast on the most specific
+//! dimension is the right UX — the agent's quota status is the
+//! operator's most actionable signal when reading per-agent
+//! attribution.
 //!
 //! ## Streaming
 //!
@@ -64,8 +66,12 @@ use peko_quota::{QuotaMeter, QuotaScope};
 use crate::ProviderView;
 
 /// Auto-charging wrapper that charges every meter in the active
-/// `QuotaScope` stack. Used by F20 callers (agentic loop, compactor
-/// worker) that want per-principal + per-peer attribution.
+/// `QuotaScope` stack. Used by F19 callers that want per-principal
+/// + per-agent attribution: the agentic loop opens exactly one
+/// `principal_meter` scope, and `SubagentExecutor` (B5e) nests an
+/// `agent_meter` scope so a child run's LLM calls charge BOTH
+/// meters — principal as audit-attribution aggregate, agent as
+/// per-agent slice.
 ///
 /// Phase 9b.N.5b.8: wraps `Arc<dyn ProviderView>` (engine-facing trait
 /// port) instead of `Arc<crate::providers::Provider>` (root-only). The

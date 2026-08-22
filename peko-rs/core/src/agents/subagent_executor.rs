@@ -245,10 +245,17 @@ pub struct SubagentExecutor {
     /// `QuotaMeter::unlimited()` fallback so subagents of principals
     /// with no quota config still run (no behavior change vs F19).
     quota_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
-    /// F39: snapshot of the spawning principal's peer-attribution
-    /// `QuotaMeter`. Stacked inside `QuotaScope::with(parent_meter, ...)`
-    /// so both meters charge when nested. `None` skips peer attribution.
-    peer_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
+    /// B5d (per-agent attribution, 2026-08-22): per-agent
+    /// `QuotaMeter` constructed at executor `new` time. The agent
+    /// name is the audit label; the meter is `QuotaMeter::unlimited()`
+    /// by default so it never trips a cap, only accumulates counters
+    /// for read-back via [`agent_meter_usage`](Self::agent_meter_usage).
+    /// B5e wires the agent's loop to charge this meter on every
+    /// LLM call inside a second `QuotaScope::with` (alongside the
+    /// principal meter — both charge, neither trips the other).
+    /// The principal's per-cycle consumption is then the sum of
+    /// every agent's `agent_meter.snapshot()` for audit.
+    agent_meter: Arc<peko_quota::meter::QuotaMeter>,
     /// Snapshot of the spawning principal's plan DAG port. Propagated
     /// into the spawned `Agent` via
     /// `Agent::with_principal_plan_port` so the seven `Plan*` tools
@@ -313,7 +320,10 @@ impl SubagentExecutor {
             active_extensions: None,
             observability: None,
             quota_meter: None,
-            peer_meter: None,
+            // B5d: per-agent attribution meter. Audit-only by default;
+            // B5e wires it into the LLM call path alongside the
+            // principal meter.
+            agent_meter: Arc::new(peko_quota::meter::QuotaMeter::unlimited()),
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
@@ -362,20 +372,39 @@ impl SubagentExecutor {
         self.quota_meter.as_ref()
     }
 
-    /// F39: set the spawning principal's peer-attribution
-    /// `QuotaMeter`. Stacked inside the subagent's `QuotaScope::with`
-    /// along with the principal meter.
+    /// B5d: bind a per-agent `QuotaMeter`. Replaces the
+    /// `unlimited()` default constructed at `new` time. Use this
+    /// when a caller wants the agent meter to enforce a real cap
+    /// instead of accumulating audit-only counters. The audit-label
+    /// behavior (counters always readable via
+    /// [`agent_meter_usage`](Self::agent_meter_usage)) is unchanged.
     #[must_use]
-    pub fn with_peer_meter(mut self, meter: Option<Arc<peko_quota::meter::QuotaMeter>>) -> Self {
-        self.peer_meter = meter;
+    pub fn with_agent_meter(
+        mut self,
+        meter: Arc<peko_quota::meter::QuotaMeter>,
+    ) -> Self {
+        self.agent_meter = meter;
         self
     }
 
-    /// F39: get the spawning principal's peer-attribution
-    /// `QuotaMeter`, if set.
+    /// B5d: the per-agent `QuotaMeter`. Always `Some` (the
+    /// constructor seeds an unlimited fallback). Returned by
+    /// reference so the inner `Arc` can be cloned cheaply.
     #[must_use]
-    pub fn peer_meter(&self) -> Option<&Arc<peko_quota::meter::QuotaMeter>> {
-        self.peer_meter.as_ref()
+    pub fn agent_meter(&self) -> &Arc<peko_quota::meter::QuotaMeter> {
+        &self.agent_meter
+    }
+
+    /// B5d: snapshot the agent's accumulated usage (input /
+    /// output tokens, request count, cost) inside the current
+    /// quota window. Audit-only — the principal can sum every
+    /// agent's snapshot to compute its per-window consumption
+    /// (`sum(agent_meters)` for each agent ever spawned by the
+    /// principal). `QuotaMeter::unlimited()` meters still
+    /// accumulate counters; only `check()` is short-circuited.
+    #[must_use]
+    pub fn agent_meter_usage(&self) -> peko_quota::QuotaState {
+        self.agent_meter.snapshot()
     }
 
     /// Phase 3 of `feature/multi-model-subagents`: the bound
@@ -495,7 +524,10 @@ impl SubagentExecutor {
             active_extensions: None,
             observability: None,
             quota_meter: None,
-            peer_meter: None,
+            // B5d: per-agent attribution meter. Audit-only by default;
+            // B5e wires it into the LLM call path alongside the
+            // principal meter.
+            agent_meter: Arc::new(peko_quota::meter::QuotaMeter::unlimited()),
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
@@ -533,7 +565,10 @@ impl SubagentExecutor {
             active_extensions: None,
             observability: None,
             quota_meter: None,
-            peer_meter: None,
+            // B5d: per-agent attribution meter. Audit-only by default;
+            // B5e wires it into the LLM call path alongside the
+            // principal meter.
+            agent_meter: Arc::new(peko_quota::meter::QuotaMeter::unlimited()),
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
@@ -1337,11 +1372,10 @@ impl SubagentExecutor {
         let principal_capabilities_clone = self.principal_capabilities.clone();
         let active_extensions_clone = self.active_extensions.clone();
         let observability_clone = self.observability.clone();
-        // F39: clone the parent's quota meters so the spawned task
+        // F39: clone the parent's quota meter so the spawned task
         // can re-open `QuotaScope::with(...)` inside (task-locals don't
         // cross `tokio::spawn`).
         let parent_quota_meter_clone = self.quota_meter.clone();
-        let parent_peer_meter_clone = self.peer_meter.clone();
         // Propagate the caller principal DID so the child Agent (and,
         // via its executor, deeper descendants) registers `send_peer`
         // with the principal's attribution.
@@ -1370,6 +1404,18 @@ impl SubagentExecutor {
         // child session id). `None` keeps the per-call standalone
         // drain (tests / CLI one-shots).
         let inbox_registry_for_closure = self.inbox_registry.clone();
+        // B5e (per-agent attribution): clone the executor's
+        // per-agent meter into the spawned task so the run closure
+        // can re-open `QuotaScope::with(agent_meter, ...)` inside
+        // the spawned `tokio::task`. The AgenticLoop's
+        // `StackedMeteredProvider::from_current_scope` walks the
+        // full task-local stack via `QuotaScope::collect_stack()`,
+        // so the inner-most call sees BOTH the principal meter
+        // (outer scope) and the agent meter (this one). Both
+        // meters charge on every LLM call — the principal meter
+        // remains the hard cap; the agent meter accumulates audit
+        // counters readable via `agent_meter_usage()`.
+        let agent_meter_clone = Arc::clone(&self.agent_meter);
 
         self.unified_executor
             .execute_with_metadata(
@@ -1431,7 +1477,7 @@ impl SubagentExecutor {
                         observability_clone,
                         child_cancel_for_closure.clone(),
                         parent_quota_meter_clone,
-                        parent_peer_meter_clone,
+                        agent_meter_clone,
                         caller_principal_did_clone,
                         stream_events_for_closure,
                         inbox_registry_for_closure,
@@ -1945,11 +1991,16 @@ async fn execute_subagent_task(
     // parent principal. `None` falls open to
     // `QuotaMeter::unlimited()` (matches F19/F20 behavior).
     parent_quota_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
-    // F39: snapshot of the spawning principal's peer-attribution
-    // `QuotaMeter`. Stacked inside the subagent's `QuotaScope::with`
-    // along with `parent_quota_meter` so both meters charge when
-    // nested. `None` skips peer attribution.
-    parent_peer_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
+    // B5e: the executor's per-agent `QuotaMeter` (audit-only by
+    // default; see `SubagentExecutor::agent_meter`). The spawned
+    // `tokio::task` re-opens it as the innermost `QuotaScope::with`
+    // layer so the AgenticLoop's
+    // `StackedMeteredProvider::from_current_scope` walks both the
+    // principal meter (outer) AND the agent meter (this one) and
+    // charges each on every LLM call. The principal meter remains
+    // the hard cap; the agent meter accumulates audit counters
+    // readable via `SubagentExecutor::agent_meter_usage()`.
+    agent_meter: Arc<peko_quota::meter::QuotaMeter>,
     // The spawning principal's DID, bound onto the child Agent so
     // `send_peer` registers down the tree with correct attribution.
     caller_principal_did: Option<String>,
@@ -2032,16 +2083,15 @@ async fn execute_subagent_task(
     .with_principal_capabilities(principal_capabilities.clone())
     .with_active_extensions(active_extensions.clone())
     .with_observability(observability.clone())
-    // F39: nested sub-subagents must inherit the parent meters so
+    // F39: nested sub-subagents must inherit the parent meter so
     // they too charge against the spawning principal (not
-    // `unlimited()`). `parent_quota_meter` / `parent_peer_meter`
-    // come from the closure that spawned this task — they reflect
-    // the chain back to the root principal. When `None` (no
-    // quota config), subagent meter attribution falls open to
-    // `QuotaMeter::unlimited()` inside the nested
-    // `execute_subagent_task`, matching pre-F39 behavior.
-    .with_quota_meter(parent_quota_meter.clone())
-    .with_peer_meter(parent_peer_meter.clone());
+    // `unlimited()`). `parent_quota_meter` comes from the closure
+    // that spawned this task — it reflects the chain back to the
+    // root principal. When `None` (no quota config), subagent
+    // meter attribution falls open to `QuotaMeter::unlimited()`
+    // inside the nested `execute_subagent_task`, matching pre-F39
+    // behavior.
+    .with_quota_meter(parent_quota_meter.clone());
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
     }
@@ -2153,10 +2203,16 @@ async fn execute_subagent_task(
     // Fallback to `unlimited()` when no parent meter is set — matches
     // the pre-F39 behavior for principals with no quota config.
     //
-    // F20 peer_meter is stacked inside the same scope via the nested
-    // `QuotaScope::with(parent_peer_meter, ...)` (innermost). When the
-    // subagent constructs `MeteredProvider::from_current_scope`, both
-    // meters see the LLM call.
+    // B5e: also wrap in a second `QuotaScope::with(agent_meter, ...)`
+    // layer so the AgenticLoop's `StackedMeteredProvider::from_current_scope`
+    // walks BOTH meters (principal outer, agent inner) and charges
+    // each on every LLM call. Inner-most scope fires first (per the
+    // `StackedMeteredProvider` ordering); trip-first wins. The agent
+    // meter is unlimited by default — it accumulates audit counters
+    // without tripping, while the principal meter remains the hard
+    // cap. When the agent meter IS configured with a real cap
+    // (via `SubagentExecutor::with_agent_meter`), both meters can
+    // trip independently.
     //
     // F39: each `QuotaScope::with` layer is `Box::pin`-ed to avoid
     // compounding async stack frames — without this, the nested
@@ -2168,8 +2224,6 @@ async fn execute_subagent_task(
     // suggests at `commands/agents` and elsewhere.
     let parent_quota_meter =
         parent_quota_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
-    let parent_peer_meter =
-        parent_peer_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
     // Sprint 2 Phase 6: when a streaming sink is bound, run the child
     // through `execute_streaming_with_session`
     // (`OrchestratorConfig::live()`) so per-token `AssistantDelta`
@@ -2188,7 +2242,6 @@ async fn execute_subagent_task(
             move |event| sink(event),
             cancel,
             None, // explicit_meter override: None = use the task-local meter
-            None, // explicit_peer_meter override: None = use the task-local peer meter
         )),
         None => Box::pin(subagent.execute_with_session(
             &combined_prompt,
@@ -2200,14 +2253,13 @@ async fn execute_subagent_task(
                 // Non-streaming: ignore events
             },
             None, // explicit_meter override: None = use the task-local meter
-            None, // explicit_peer_meter override: None = use the task-local peer meter
         )),
     };
-    let inner_fut = Box::pin(peko_quota::scope::QuotaScope::with(
-        parent_peer_meter,
-        run_fut,
-    ));
-    let result = peko_quota::scope::QuotaScope::with(parent_quota_meter, inner_fut).await;
+    let result = peko_quota::scope::QuotaScope::with(
+        parent_quota_meter,
+        peko_quota::scope::QuotaScope::with(agent_meter, run_fut),
+    )
+    .await;
 
     match result {
         Ok(agentic_result) => {
@@ -2598,19 +2650,23 @@ mod tests {
         );
     }
 
-    /// F39 stacking: when both a principal meter and a peer meter
-    /// are open, the subagent's `StackedMeteredProvider` charges
-    /// BOTH on every LLM call (F20 stacking preserved through F39).
+    /// B5e stacking: when both a principal meter and a per-agent meter
+    /// are open (the production wrap in `execute_subagent_task`),
+    /// the subagent's `StackedMeteredProvider` charges BOTH on
+    /// every LLM call. The principal meter remains the hard cap;
+    /// the agent meter accumulates audit counters readable via
+    /// `SubagentExecutor::agent_meter_usage()`.
     ///
     /// Mirrors the production wrap at
-    /// `subagent_executor.rs:1142-1157`: outer
+    /// `subagent_executor.rs:2162-2174`: outer
     /// `QuotaScope::with(parent_meter, ...)` + inner
-    /// `QuotaScope::with(parent_peer_meter, ...)`. The
+    /// `QuotaScope::with(agent_meter, ...)`. The
     /// `StackedMeteredProvider::from_current_scope` call walks
     /// the full task-local stack via `QuotaScope::collect_stack()`
-    /// and charges every meter.
+    /// and charges every meter. Inner-most fires first (trip-first
+    /// wins).
     #[tokio::test]
-    async fn subagent_quota_stacks_principal_and_peer() {
+    async fn subagent_quota_stacks_principal_and_agent_meter() {
         let adapter = MockAdapter::new();
         adapter.queue_text("hi");
         let tmp = tempfile::tempdir().unwrap();
@@ -2637,7 +2693,7 @@ mod tests {
             .await
             .unwrap(),
         );
-        let peer = Arc::new(
+        let agent_meter = Arc::new(
             QuotaMeter::load_or_init(
                 QuotaConfig {
                     request_count: Some(10),
@@ -2651,12 +2707,13 @@ mod tests {
             .unwrap(),
         );
 
-        // Outer principal scope, inner peer scope — same nesting as
-        // `subagent_executor.rs:1142-1157`. The inner scope is
+        // Outer principal scope, inner agent scope — same nesting as
+        // the B5e production wrap at
+        // `subagent_executor.rs:2162-2174`. The inner scope is
         // `Box::pin`-ed in production but for this focused test
         // there is no large future underneath, so no pin needed.
         QuotaScope::with(principal.clone(), async {
-            QuotaScope::with(peer.clone(), async {
+            QuotaScope::with(agent_meter.clone(), async {
                 let stacked = StackedMeteredProvider::from_current_scope(provider);
                 let _ = stacked
                     .chat_with_tools(
@@ -2676,12 +2733,12 @@ mod tests {
         assert_eq!(
             principal.snapshot().request_count,
             1,
-            "principal meter should be charged through the F39 wrap (outer scope)"
+            "principal meter should be charged through the B5e wrap (outer scope)"
         );
         assert_eq!(
-            peer.snapshot().request_count,
+            agent_meter.snapshot().request_count,
             1,
-            "peer meter should be charged through the F39 wrap (inner scope, F20 stacking)"
+            "agent meter should be charged through the B5e wrap (inner scope, B5e stacking)"
         );
     }
 
@@ -2696,6 +2753,51 @@ mod tests {
         );
 
         assert_eq!(executor.agent_name, "test_agent");
+    }
+
+    /// B5d (per-agent attribution): the executor's agent_meter is
+    /// always populated (defaults to `QuotaMeter::unlimited()`); the
+    /// snapshot API starts at zero counters; and `with_agent_meter`
+    /// replaces the default. Audit-only behavior — no cap trips
+    /// because the default has no limits.
+    #[tokio::test]
+    async fn test_agent_meter_defaults_to_unlimited_and_charges_through_snapshot() {
+        let manager = Arc::new(RwLock::new(SessionManager::new()));
+        let executor = SubagentExecutor::new(
+            manager,
+            "test_agent",
+            5,
+            peko_subject::PrincipalId::generate(),
+        );
+
+        // Default-constructed agent_meter is an unlimited fallback.
+        let initial = executor.agent_meter_usage();
+        assert_eq!(initial.input_tokens, 0);
+        assert_eq!(initial.output_tokens, 0);
+        assert_eq!(initial.request_count, 0);
+        assert!(
+            executor.agent_meter().check().is_none(),
+            "unlimited default must not trip on a fresh state"
+        );
+
+        // `with_agent_meter` replaces the default — useful when a
+        // caller wants the agent meter to enforce a real cap.
+        let capped = Arc::new(
+            peko_quota::meter::QuotaMeter::new(
+                peko_quota::config::QuotaConfig {
+                    request_count: Some(2),
+                    cycle: peko_quota::config::QuotaCycle::Hourly,
+                    ..Default::default()
+                },
+                None,
+                chrono::Utc::now(),
+            ),
+        );
+        let executor = executor.with_agent_meter(capped.clone());
+        assert!(
+            Arc::ptr_eq(executor.agent_meter(), &capped),
+            "with_agent_meter must replace the unlimited default"
+        );
     }
 
     #[tokio::test]
