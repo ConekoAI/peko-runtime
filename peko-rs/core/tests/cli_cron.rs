@@ -1042,7 +1042,7 @@ async fn cron_agent_tool_schedules_and_lists_job() {
         needle: [
             { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","tool":"Agent","params":{{"prompt":"{task}","subagent_type":"general-purpose","path":"/tmp/e2e-cron-sched"}}}}"#
                 )
             } },
             { "tool_call": { "name": "CronList", "arguments":
@@ -1063,9 +1063,15 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     // substring matcher picks the script entry on every LLM call (the
     // mock extracts the FIRST user message, which is this prompt and
     // doesn't change between tool-result turns).
+    //
+    // Sprint 7 Commit D: CronCreate is now a SpawnTool-only factory —
+    // `prompt` / `message` / `target` were removed; `tool` + `params`
+    // are REQUIRED. The mock script schedules an Agent tool run that
+    // would deliver the task description.
     let prompt = format!(
         "You have access to CronCreate, CronList, and CronDelete. Schedule a one-time job \
-         using CronCreate with label \"{job_label}\" and prompt \"{task}\" at \"{at_time}\". \
+         using CronCreate with label \"{job_label}\", tool=\"Agent\", params={{prompt: \"{task}\", \
+         subagent_type: \"general-purpose\", path: \"/tmp/e2e-cron-sched\"}} at \"{at_time}\". \
          Then call CronList to verify. Respond with TOOL_SUCCESS if you see the job, \
          else TOOL_FAILED. ({needle})"
     );
@@ -1122,7 +1128,7 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
         needle: [
             { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","tool":"Agent","params":{{"prompt":"{task}","subagent_type":"general-purpose","path":"/tmp/e2e-cron-cancel"}}}}"#
                 )
             } },
             { "tool_call": { "name": "CronList", "arguments":
@@ -1143,10 +1149,11 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
     remove_jobs_with_prefix(&cli, job_label);
 
     let prompt = format!(
-        "Schedule a one-time cron job using CronCreate with label \"{job_label}\" and prompt \"{task}\" \
-         at \"{at_time}\". Then call CronList, then CronDelete by label \
-         \"{job_label}\". Then list again to confirm it's gone. Respond CANCEL_SUCCESS if the \
-         job was removed, CANCEL_FAILED otherwise. ({needle})"
+        "Schedule a one-time cron job using CronCreate with label \"{job_label}\", tool=\"Agent\", \
+         params={{prompt: \"{task}\", subagent_type: \"general-purpose\", \
+         path: \"/tmp/e2e-cron-cancel\"}} at \"{at_time}\". Then call CronList, then CronDelete \
+         by label \"{job_label}\". Then list again to confirm it's gone. Respond CANCEL_SUCCESS \
+         if the job was removed, CANCEL_FAILED otherwise. ({needle})"
     );
     let (out, err, status) = run(
         &cli,
