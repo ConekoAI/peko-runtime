@@ -180,40 +180,16 @@ pub enum HookPoint {
     /// Handlers return: `HookOutput::MessageVec` (replace final message list)
     SessionCompactionPost,
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // I/O LIFECYCLE
-    // ═══════════════════════════════════════════════════════════════════════════
-    /// Register input channels (CLI, Discord, etc.)
-    ///
-    /// Called during: Agent initialization
-    ///
-    /// Handlers receive: `HookInput::Unit`
-    /// Handlers return: `HookOutput::Json` (channel configuration)
-    ChannelInput,
-
-    /// Register output handlers (rendering, formatting)
-    ///
-    /// Called during: Agent initialization
-    ///
-    /// Handlers receive: `HookInput::Unit`
-    /// Handlers return: `HookOutput::Json` (output handler configuration)
-    ChannelOutput,
-
-    /// Transform outgoing messages
-    ///
-    /// Called during: Before sending message to channel
-    ///
-    /// Handlers receive: `HookInput::Message`
-    /// Handlers return: `HookOutput::Message` (modified message)
-    MessagePreSend,
-
-    /// Transform incoming messages
-    ///
-    /// Called during: After receiving message from channel
-    ///
-    /// Handlers receive: `HookInput::Message`
-    /// Handlers return: `HookOutput::Message` (modified message)
-    MessagePostReceive,
+    // Sprint 9 Commit 5: the I/O lifecycle hook variants
+    // (`ChannelInput`, `ChannelOutput`, `MessagePreSend`,
+    // `MessagePostReceive`) were retired. Their only production
+    // callers were the chat-gateway adapter framework (deleted in
+    // Commit 3) and `StatelessAgentService` (deleted in Commit 4).
+    // External ingress now flows through per-peer standing children
+    // via `Principal::Manager::receive_streaming` and is never
+    // reflected through a hook point. New "transform a message
+    // before send" use cases should land in the spawn / turn-driver
+    // pipeline rather than resurrecting these hooks.
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EVENT LIFECYCLE
@@ -320,11 +296,9 @@ impl HookPoint {
             | Self::SessionCompactionPost
             | Self::SessionStart => "session",
 
-            Self::ChannelInput
-            | Self::ChannelOutput
-            | Self::MessagePreSend
-            | Self::MessagePostReceive => "io",
-
+            // Sprint 9 Commit 5: the I/O category is gone along with
+            // its 4 hook variants.
+            //
             Self::EventSubscribe { .. } | Self::EventEmit => "event",
 
             Self::AgentInit
@@ -372,10 +346,7 @@ impl HookPoint {
             Self::SessionCompactionPost => "session.compaction_post".to_string(),
             Self::SessionStart => "session.start".to_string(),
 
-            Self::ChannelInput => "io.channel_input".to_string(),
-            Self::ChannelOutput => "io.channel_output".to_string(),
-            Self::MessagePreSend => "io.message_pre_send".to_string(),
-            Self::MessagePostReceive => "io.message_post_receive".to_string(),
+            // Sprint 9 Commit 5: I/O hook variant names removed.
 
             Self::EventSubscribe { topic_pattern } => {
                 format!("event.subscribe.{topic_pattern}")
@@ -621,17 +592,8 @@ pub mod common {
         HookPoint::ToolRegister
     }
 
-    /// Handle channel input
-    #[must_use]
-    pub fn channel_input() -> HookPoint {
-        HookPoint::ChannelInput
-    }
-
-    /// Handle channel output
-    #[must_use]
-    pub fn channel_output() -> HookPoint {
-        HookPoint::ChannelOutput
-    }
+    // Sprint 9 Commit 5: `channel_input()` / `channel_output()`
+    // builder factories retired along with the I/O hook variants.
 
     /// Subscribe to all events
     #[must_use]
@@ -667,7 +629,8 @@ mod tests {
 
         assert_eq!(HookPoint::ToolRegister.category(), "tool");
 
-        assert_eq!(HookPoint::ChannelInput.category(), "io");
+        // Sprint 9 Commit 5: ChannelInput removed; the I/O category
+        // is no longer asserted here.
     }
 
     #[test]
