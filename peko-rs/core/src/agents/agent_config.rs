@@ -57,7 +57,15 @@ pub struct AgentConfig {
     /// unambiguous. When `None` (legacy agents predating #28), callers
     /// fall back to `Subject::Principal(name)` within a single runtime —
     /// see `Subject::principal_wire_id` for the canonical resolution.
+    ///
+    /// **Sprint 8 Commit 5:** the spawn-path reader (`load_or_create_identity`)
+    /// was removed — `KeyStorage` is the authoritative identity source. The
+    /// gateway loop's `ConfigAuthority` continues to author this field in
+    /// TOML for cross-runtime identity references; `Agent::identity.did` is
+    /// the canonical reader. Sprint 8b migrates that consumer off
+    /// `AgentConfig` and deletes the field.
     #[serde(default)]
+    #[allow(dead_code)] // Sprint 8b: remove this field when ConfigAuthority migrates.
     pub agent_did: Option<String>,
 
     /// Whether the planning-todo family (`TaskCreate`/`TaskGet`/

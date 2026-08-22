@@ -608,30 +608,6 @@ impl Agent {
         // Load or create identity
         let identity = Self::load_or_create_identity(&config).await?;
 
-        // Issue #28: persist the resolved DID back into the on-disk
-        // config.toml so the tunnel dispatcher can announce it without
-        // re-running identity generation.
-        //
-        // Soft-fail: the agent_dir may not exist yet for a freshly-
-        // spawned subagent whose in-memory config hasn't been written.
-        let config_path = PathResolver::new().agent_config(&config.name);
-        if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
-            warn!("Could not backfill agent_did into config: {}", e);
-        }
-
-        if let Some(ref old_did) = config.agent_did {
-            if old_did != &identity.did {
-                warn!(
-                    "Agent '{}' DID rotated: {old_did} -> {new_did} \
-                     (previous identity file was missing; cross-runtime \
-                     grants and audit references to {old_did} are now orphaned \
-                     — issue #28 follow-up: DID rotation ADR pending).",
-                    config.name,
-                    new_did = identity.did,
-                );
-            }
-        }
-
         // Initialize provider if configured. `provider_hint` is the
         // principal's pinned configured model id, or `None` for tests /
         // non-principal callers. `message_override` is the per-message
@@ -1048,31 +1024,6 @@ impl Agent {
 
         let identity = Self::load_or_create_identity(&config).await?;
 
-        // Issue #28: persist the resolved DID back into config.toml. This
-        // path is reached for subagent execution where the parent's config
-        // may not yet carry agent_did — the first call backfills it.
-        //
-        // Review of #34 concern #5: the production `PathResolver::new()`
-        // resolves to `~/.peko` (or `PEKO_HOME` if set), so writing here
-        // is a real config mutation. In tests that bypass `new_for_test`
-        // and call this constructor directly against a tempdir-backed
-        // config, we'd otherwise silently mutate the developer's real
-        // `~/.peko`. The `is_path_under_temp_dir` guard catches that
-        // case — the in-memory identity is still valid, the backfill
-        // is just deferred to the first production-path call.
-        let config_path = PathResolver::new().agent_config(&config.name);
-        if !Self::is_path_under_temp_dir(&config_path) {
-            if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
-                warn!("Could not backfill agent_did into config: {}", e);
-            }
-        } else {
-            debug!(
-                "Skipping agent_did backfill for {}: config path {} is under the \
-                 system temp dir (test path — would mutate the developer's real config)",
-                config.name,
-                config_path.display()
-            );
-        }
         // Prefer the inherited provider so the child reuses the parent's
         // resolved provider instead of paying the resolver's catalog
         // lookup cost twice. Fall back to the v3 resolver path if the
@@ -2361,43 +2312,25 @@ impl Agent {
         let storage =
             KeyStorage::new(crate::identity_compat::default_identity_data_dir().as_ref())?;
 
-        // Issue #28: prefer lookup by `agent_did` (the on-disk filename is
-        // the DID, not the agent name). Pre-#28 configs stored identity
-        // under `{name}.json` which meant a fresh keypair was generated on
-        // every agent start — the fix keys the lookup by the stable DID
-        // and falls back to the legacy name-keyed path so existing agents
-        // still resolve.
-        if let Some(ref did) = config.agent_did {
-            if let Ok(identity) = storage.load(did) {
-                info!("Loaded identity by agent_did: {}", identity.did);
-                return Ok(identity);
-            }
-            // agent_did set but identity file missing — broken state.
-            // Review of #34: silent key rotation is a smell. Log the
-            // rotation at `info` level naming BOTH the old and new DIDs
-            // so an operator restoring from backup can correlate the
-            // event. The caller (`new_with_session_manager` /
-            // `new_with_shared_executor`) will overwrite `agent_did` in
-            // the config — see `persist_agent_did` for the targeted
-            // read-modify-write that doesn't clobber other fields.
-            //
-            // The follow-up ADR called out in #28 (DID rotation / key
-            // compromise recovery) is the right place to add a
-            // fail-closed mode and a `RecoveryClaim` event; for now we
-            // log loudly and continue.
-            warn!(
-                "agent_did '{}' in config does not resolve to a stored identity; \
-                 generating a replacement. Any cross-runtime grants or \
-                 audit references to the old DID will be orphaned \
-                 (issue #28 follow-up: DID rotation ADR pending).",
-                did
-            );
-        }
+        // Sprint 8 Commit 5: the `agent_did` lookup branch was dropped.
+        // The branch read `config.agent_did` from TOML and used it as
+        // the on-disk identity filename. After the spawn-path TOML
+        // fallback was retired (Commit 2), `config.agent_did` is set
+        // only by the gateway loop's `ConfigAuthority` (which itself
+        // goes away in Sprint 8b). The spawn path always passes a
+        // config without `agent_did` (constructed from the parent's
+        // own config or `AgentConfig::default()`), so the TOML lookup
+        // was dead on the spawn path.
+        //
+        // Identity resolution falls through to the legacy name-keyed
+        // path (pre-#28 fallback that still resolves existing
+        // identities keyed by `{name}.json`). For a fresh agent the
+        // bottom branch generates a new identity. `KeyStorage` is the
+        // authoritative source; `agent_did` on `AgentConfig` is no
+        // longer read on the spawn path.
 
-        // Legacy fallback: identity file may be keyed by agent name
-        // (pre-#28 — buggy but tolerated).
         if let Ok(identity) = storage.load(&config.name) {
-            info!("Loaded legacy name-keyed identity: {}", identity.did);
+            info!("Loaded name-keyed identity: {}", identity.did);
             return Ok(identity);
         }
 
@@ -2411,137 +2344,15 @@ impl Agent {
         Ok(identity)
     }
 
-    /// Persist the resolved agent_did back into the on-disk config.toml.
-    ///
-    /// Issue #28: the per-agent DID is generated lazily on first
-    /// `Agent::new()`; this call backfills it into `config.toml` so the
-    /// DID is stable across restarts and visible to the tunnel dispatcher
-    /// (which reads `agent_did` straight from the config file when
-    /// building `InstanceAnnouncePayload`).
-    ///
-    /// **Read-modify-write, not a full overwrite** (review of #34):
-    /// the previous version `toml::to_string_pretty(&config)`-ed the
-    /// entire `AgentConfig` and wrote it back, which would clobber any
-    /// hand-edited comments, key ordering, or concurrent writer's
-    /// changes. This version reads the existing TOML, sets just the
-    /// `agent_did` key on the parsed `toml::Value`, and re-serializes —
-    /// preserving other fields, comments, and key ordering as long as
-    /// the same TOML structure is used. Concurrent writers are still
-    /// vulnerable to a lost update (no file lock); the call site guards
-    /// against this by skipping the backfill if the in-memory
-    /// `config.agent_did` already matches.
-    ///
-    /// Best-effort: a write failure is logged but not propagated. The
-    /// in-memory identity is still valid; the next agent start will
-    /// retry the write. The caller is responsible for providing the
-    /// correct `config_path` — `PathResolver::agent_config(name)` is the
-    /// canonical location.
-    async fn backfill_agent_did(
-        config_path: &std::path::Path,
-        config: &AgentConfig,
-        agent_did: &str,
-    ) -> Result<()> {
-        if config.agent_did.as_deref() == Some(agent_did) {
-            return Ok(());
-        }
-
-        // Best-effort: if the on-disk config location doesn't exist yet
-        // (e.g. a Principal-only install where `~/.peko/agents/` was never
-        // created, or a freshly-spawned subagent whose parent hasn't written
-        // its config), there's nothing to backfill and the in-memory identity
-        // is already valid. Skip silently rather than spamming a warning
-        // every daemon tick.
-        let Some(parent) = config_path.parent() else {
-            return Ok(());
-        };
-        if !parent.exists() {
-            debug!(
-                "Skipping agent_did backfill for {:?}: parent dir {} does not exist \
-                 (Principal-only install or subagent without on-disk config)",
-                config_path,
-                parent.display()
-            );
-            return Ok(());
-        }
-
-        // Read the existing TOML so we preserve any fields we don't know
-        // about (forward-compat) and the existing key ordering / comments
-        // that the `toml` crate keeps when round-tripping a `Value`.
-        let mut root: toml::Value = match tokio::fs::read_to_string(config_path).await {
-            Ok(s) => toml::from_str(&s).with_context(|| {
-                format!(
-                    "Failed to parse existing config TOML at {}",
-                    config_path.display()
-                )
-            })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Config doesn't exist yet (e.g. subagent path) — write a
-                // fresh file with just the agent_did set. The caller
-                // path that triggers this is `new_with_shared_executor`
-                // in a test, where the config is in memory only.
-                toml::Value::Table(toml::map::Map::new())
-            }
-            Err(e) => {
-                return Err(e).with_context(|| {
-                    format!(
-                        "Failed to read existing config at {}",
-                        config_path.display()
-                    )
-                });
-            }
-        };
-
-        if let toml::Value::Table(ref mut tbl) = root {
-            tbl.insert(
-                "agent_did".to_string(),
-                toml::Value::String(agent_did.to_string()),
-            );
-        } else {
-            anyhow::bail!(
-                "Refusing to write agent_did: existing config at {} is not a TOML table",
-                config_path.display()
-            );
-        }
-
-        let toml_str =
-            toml::to_string_pretty(&root).context("Failed to serialize updated AgentConfig")?;
-
-        tokio::fs::write(config_path, toml_str)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to persist agent_did to {} (in-memory identity will still work this session)",
-                    config_path.display()
-                )
-            })?;
-
-        info!("Backfilled agent_did into config: {}", agent_did);
-        Ok(())
-    }
-
-    /// True if `path` lives under the system temp directory.
-    ///
-    /// Review of #34 concern #5: the `Agent::new_with_shared_executor`
-    /// path resolves its config path via `PathResolver::new()`, which
-    /// reads `PEKO_HOME` or defaults to the user's real `~/.peko`.
-    /// Tests that bypass `new_for_test` (e.g. exercises of the
-    /// subagent executor with a manually-constructed `AgentConfig`)
-    /// would otherwise mutate the developer's real config on
-    /// `cargo test`. The check is conservative: any path under
-    /// `std::env::temp_dir()` is treated as a test path and the
-    /// on-disk backfill is skipped — the in-memory identity is still
-    /// valid, the next production-path call (real `Agent::new`) will
-    /// do the real backfill.
-    fn is_path_under_temp_dir(path: &std::path::Path) -> bool {
-        let temp = std::env::temp_dir();
-        // Canonicalize where possible so a relative `target/debug/...`
-        // path still matches an absolute temp path. If canonicalize
-        // fails (path doesn't exist), fall back to lexical comparison
-        // on the original path.
-        let path_abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let temp_abs = temp.canonicalize().unwrap_or_else(|_| temp.clone());
-        path_abs.starts_with(&temp_abs)
-    }
+    // Sprint 8 Commit 5: `backfill_agent_did` and `is_path_under_temp_dir`
+    // were deleted. The spawn path no longer persists `agent_did` to
+    // TOML — `KeyStorage` is the authoritative identity source, and
+    // identity resolution now falls through to the name-keyed path
+    // (or generates a fresh one) regardless of what `agent_did` is on
+    // the in-memory config. The gateway loop's `ConfigAuthority`
+    // continues to author `agent_did` in TOML for cross-runtime
+    // identity references; Sprint 8b migrates that consumer off
+    // `AgentConfig` entirely.
 
     /// Resolve the agent's provider and the catalog id that produced it.
     ///
