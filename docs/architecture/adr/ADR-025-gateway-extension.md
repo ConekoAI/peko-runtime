@@ -1,12 +1,23 @@
 # ADR-025: Gateway Extension Architecture
 
-**Status**: Accepted — Implemented  
-**Date**: 2026-05-03  
-**Last Updated**: 2026-05-04  
-**Author**: Kimi Code CLI  
-**Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-024 (Unified Extension Manifest)  
+> **Status: Superseded by the [Agent Session Paradigm](../AGENT_SESSION_PARADIGM.md) — see Phase 7 (sprint 2) + Sprint 9 cleanup.**
+>
+> The chat-gateway adapter framework described here was retired in
+> Sprint 9 (commits 3–5). External ingress now lands in per-peer
+> standing children via `Principal::Manager::receive_streaming`,
+> and the `gateway` extension type is no longer accepted by
+> `peko ext install`. The `ChannelInput` / `ChannelOutput` /
+> `MessagePreSend` / `MessagePostReceive` hook variants that this
+> ADR introduced were retired in the same sweep.
+
+**Status**: Superseded — 2026-08-22
+**Date**: 2026-05-03
+**Last Updated**: 2026-05-04
+**Author**: Kimi Code CLI
+**Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-024 (Unified Extension Manifest)
 **Replaces / Supersedes**: `gateways/` workspace at project root (legacy plugin approach)
 **Superseded In Part By**: ADR-026 (Separate Extension Runtime Lifecycle from Access Control) — redefines the CLI semantics for `peko ext enable` / `disable` vs `start` / `stop`
+**Superseded In Full By**: Agent Session Paradigm (Phase 7 of sprint 2) + Sprint 9 cleanup (chat-gateway adapter framework + `StatelessAgentService` retirement).
 
 ---
 

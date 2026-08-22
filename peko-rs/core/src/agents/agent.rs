@@ -210,7 +210,7 @@ impl Agent {
             tracing::error!(
                 "Built-in tools not pre-registered on ExtensionCore. \
                  This indicates a startup ordering bug — AppState should initialize \
-                 ToolRuntime before StatelessAgentService."
+                 ToolRuntime before the StatelessAgentService path (Sprint 9 Commit 4)."
             );
         }
 
@@ -295,10 +295,10 @@ impl Agent {
         //
         // Sprint 8 Commit 3: the per-agent `enable_plan_tools` gate was
         // dropped — every reachable Agent defaults it to `true` and the
-        // read only added noise. The struct field stays until Sprint 8b
-        // (the gateway loop's `StatelessAgentService` still constructs
-        // `AgentConfig` literals and would otherwise need to be
-        // updated in lockstep).
+        // read only added noise. Sprint 9 Commit 4 retired the gateway
+        // loop's `StatelessAgentService` (which used to construct
+        // `AgentConfig` literals), so the lockstep-update reason is
+        // gone.
         if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
             use crate::tools::builtin::{
                 PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
@@ -1643,10 +1643,10 @@ impl Agent {
         //
         // Sprint 8 Commit 3: the per-agent `enable_async_tools` gate was
         // dropped — every reachable Agent defaults it to `true` and the
-        // read only added noise. The struct field stays until Sprint 8b
-        // (the gateway loop's `StatelessAgentService` still constructs
-        // `AgentConfig` literals and would otherwise need to be
-        // updated in lockstep).
+        // read only added noise. Sprint 9 Commit 4 retired the gateway
+        // loop's `StatelessAgentService` (which used to construct
+        // `AgentConfig` literals), so the lockstep-update reason is
+        // gone.
         let core_weak = Arc::downgrade(&extension_core);
         // F37: snapshot the spawning principal's capability grants.
         // `AsyncExecutorRuntime::spawn` builds the F37 canonical
@@ -2316,18 +2316,19 @@ impl Agent {
         // The branch read `config.agent_did` from TOML and used it as
         // the on-disk identity filename. After the spawn-path TOML
         // fallback was retired (Commit 2), `config.agent_did` is set
-        // only by the gateway loop's `ConfigAuthority` (which itself
-        // goes away in Sprint 8b). The spawn path always passes a
-        // config without `agent_did` (constructed from the parent's
-        // own config or `AgentConfig::default()`), so the TOML lookup
-        // was dead on the spawn path.
+        // only by the gateway loop's `ConfigAuthority` (retired in
+        // Sprint 9 Commit 4 along with `StatelessAgentService`). The
+        // spawn path always passes a config without `agent_did`
+        // (constructed from the parent's own config or
+        // `AgentConfig::default()`), so the TOML lookup was dead on
+        // the spawn path.
         //
         // Identity resolution falls through to the legacy name-keyed
         // path (pre-#28 fallback that still resolves existing
         // identities keyed by `{name}.json`). For a fresh agent the
         // bottom branch generates a new identity. `KeyStorage` is the
-        // authoritative source; `agent_did` on `AgentConfig` is no
-        // longer read on the spawn path.
+        // authoritative source; `agent_did` was retired from
+        // `AgentConfig` entirely in Sprint 9 Commit 1.
 
         if let Ok(identity) = storage.load(&config.name) {
             info!("Loaded name-keyed identity: {}", identity.did);
@@ -2349,10 +2350,10 @@ impl Agent {
     // TOML — `KeyStorage` is the authoritative identity source, and
     // identity resolution now falls through to the name-keyed path
     // (or generates a fresh one) regardless of what `agent_did` is on
-    // the in-memory config. The gateway loop's `ConfigAuthority`
-    // continues to author `agent_did` in TOML for cross-runtime
-    // identity references; Sprint 8b migrates that consumer off
-    // `AgentConfig` entirely.
+    // the in-memory config. Sprint 9 Commit 1 retired the
+    // `AgentConfig::agent_did` field entirely; cross-runtime identity
+    // references now read `Agent::identity.did` (from `KeyStorage`)
+    // directly.
 
     /// Resolve the agent's provider and the catalog id that produced it.
     ///

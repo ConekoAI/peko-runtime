@@ -56,27 +56,9 @@ impl HookBindingBuilder {
         }
     }
 
-    /// Create a channel input binding
-    pub fn channel_input<F>(factory: F) -> HookBinding
-    where
-        F: HookHandlerFactory + 'static,
-    {
-        HookBinding {
-            point: HookPoint::ChannelInput,
-            handler_factory: Box::new(factory),
-        }
-    }
-
-    /// Create a channel output binding
-    pub fn channel_output<F>(factory: F) -> HookBinding
-    where
-        F: HookHandlerFactory + 'static,
-    {
-        HookBinding {
-            point: HookPoint::ChannelOutput,
-            handler_factory: Box::new(factory),
-        }
-    }
+    // Sprint 9 Commit 5: `HookBinding::channel_input` and
+    // `HookBinding::channel_output` builder factories retired along
+    // with the `ChannelInput` / `ChannelOutput` hook variants.
 
     /// Create an event subscription binding
     pub fn event_subscribe<F>(topic_pattern: impl Into<String>, factory: F) -> HookBinding

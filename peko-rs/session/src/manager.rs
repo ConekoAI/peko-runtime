@@ -2746,7 +2746,7 @@ mod tests {
         let peer = Subject::User("alice".to_string());
 
         let handle = manager
-            .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
+            .create_channel_overlay("test_agent", &peer, ChannelType::Cli, "guild123")
             .await
             .unwrap();
 
@@ -2754,7 +2754,7 @@ mod tests {
         assert!(!handle.has_spawn_overlay());
 
         let channel_type = handle.channel_type().await;
-        assert_eq!(channel_type, Some(ChannelType::Discord));
+        assert_eq!(channel_type, Some(ChannelType::Cli));
 
         assert_eq!(manager.channel_overlay_count(), 1);
     }
@@ -2779,18 +2779,19 @@ mod tests {
             base.add_user("Hello from CLI").await.unwrap();
         }
 
-        // Create Discord session for same peer
-        let discord = manager
-            .get_session_for_channel("test_agent", &peer, ChannelType::Discord, "guild123")
+        // Create a second CLI session for same peer with a different
+        // channel id (post-Sprint-9 only Cli remains).
+        let second = manager
+            .get_session_for_channel("test_agent", &peer, ChannelType::Cli, "guild123")
             .await
             .unwrap();
 
         // Should share the same base session
-        assert!(Arc::ptr_eq(cli.base(), discord.base()));
+        assert!(Arc::ptr_eq(cli.base(), second.base()));
 
-        // Discord should see the message from CLI
+        // Second overlay should see the message from the first
         let history = {
-            let base = discord.base().read().await;
+            let base = second.base().read().await;
             base.load_history().await.unwrap()
         };
         assert!(!history.is_empty()); // At least the message we added
@@ -2925,7 +2926,7 @@ mod tests {
         let peer = Subject::User("alice".to_string());
 
         let handle = manager
-            .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
+            .create_channel_overlay("test_agent", &peer, ChannelType::Cli, "guild123")
             .await
             .unwrap();
 
@@ -2944,12 +2945,12 @@ mod tests {
         let peer = Subject::User("alice".to_string());
 
         let handle = manager
-            .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
+            .create_channel_overlay("test_agent", &peer, ChannelType::Cli, "guild123")
             .await
             .unwrap();
 
         let full_key = handle.full_session_key().await;
-        assert!(full_key.contains("overlay:channel:discord:guild123"));
+        assert!(full_key.contains("overlay:channel:cli:guild123"));
     }
 
     #[test]

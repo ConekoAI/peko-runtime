@@ -4,6 +4,60 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Sprint 9 — Retire chat-gateway adapter; converge ingress paths (2026-08-22)
+
+Removes the last holdout that bridged out-of-process children to the
+legacy `StatelessAgentService` ingress path. Under the new
+agent-session paradigm (Phase 7 of sprint 2), all external ingress
+already lands in per-peer standing children via
+`Principal::Manager::receive_streaming` — `peko send` IPC,
+tunnel/A2A, and bound channels were on this path; the chat-gateway
+adapter was the only remaining legacy producer.
+
+#### Removed
+- **Chat-gateway adapter framework** (`peko-rs/core/src/extensions/gateway/`,
+  ~2000 LOC + archived HTTP-basics fixture). The framework never shipped
+  a concrete integration; it only bridged to `StatelessAgentService`.
+- **`StatelessAgentService`** + the `PrincipalMessageService` trait
+  port (~1568 LOC). Their only production caller was the deleted
+  gateway router.
+- **Legacy IO hook points**: `HookPoint::ChannelInput`,
+  `HookPoint::ChannelOutput`, `HookPoint::MessagePreSend`,
+  `HookPoint::MessagePostReceive` — all four had exactly one production
+  caller each, both now deleted.
+- **Platform `ChannelType` variants**: `Discord`, `Telegram`,
+  `WhatsApp`, `Slack`, `Signal`, `Matrix`. Pure dead arms — no
+  production code ever constructed them, no production JSONL
+  contained them, no sibling repo depended on them.
+- **`AgentConfig::agent_did` field**: last reader was
+  `StatelessAgentService::load_config_fresh`. Old TOML files with
+  `agent_did = "..."` silently drop the key on deserialization
+  (forward-only migration).
+- **`discord_session_key` helper** + the chat-platform match arm in
+  `scope_from_key`. Per-channel keys now go through the generic
+  `derive_session_key` + `SessionKeyContext { channel: "cli", .. }`
+  path.
+- **`GatewayAdapter` + `GatewayRuntimeStarter` registrations** in
+  daemon, extension management service, and `peko ext init gateway`
+  scaffold.
+
+#### Changed
+- `peko ext install` no longer accepts `extension_type: "gateway"`
+  manifests; `is_valid_type` returns `false`.
+- `BuiltInAdapters::adapters()` count dropped from 7 to 6.
+- `StarterContext` no longer carries `principal_service` or
+  `gateway_router`; `ExtensionServices` no longer carries a
+  `principal_message_service` slot.
+- `ChannelType::supports_threads` now returns `false` (no active
+  thread-capable channel remains).
+
+#### Docs
+- **ADR-025 marked Superseded** with pointer to the Agent Session
+  Paradigm doc. Sprint 9 closes the chat-gateway architecture
+  described there.
+- **README** replaces Discord/Slack references with the current
+  ingress surface (CLI + tunnel + bound channels).
+
 ### PEKO sprint 3: DM-over-channel unification (2026-08-18)
 
 Re-founds all peer DM communication on the channel primitive: a peer

@@ -6,11 +6,13 @@
 use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
-use crate::extensions::gateway::runtime::{GatewayRouter, GatewayRuntimeStarter};
+// Sprint 9 Commit 3: chat-gateway adapter framework retired.
+// `GatewayRouter` and `GatewayRuntimeStarter` are gone — external
+// ingress flows exclusively through per-peer standing children under
+// the agent-session paradigm (Phase 7 of sprint 2).
 use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
-use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
 use crate::engine::tool_runtime::ToolRuntime;
@@ -89,9 +91,6 @@ pub(crate) struct AppState {
     /// Agent configuration service (unified)
     config_service: Arc<ConfigAuthorityImpl>,
 
-    /// Stateless agent execution service
-    principal_service: Arc<StatelessAgentService>,
-
     /// Shared LLM resolver. Re-read in place via
     /// `ModelCatalog::reload` after `peko model {add,remove}` so the
     /// long-running daemon observes CLI mutations without a restart.
@@ -158,14 +157,13 @@ pub(crate) struct AppState {
     /// from here at the top of every iteration.
     pub inbox_registry: Arc<InboxRegistry>,
 
-    /// Background runtime manager for MCP servers and gateways (ADR-025)
-    background_runtime_manager: Arc<BackgroundRuntimeManager>,
-
-    /// Gateway router for channel→agent mapping (ADR-025)
-    gateway_router: Arc<GatewayRouter>,
-
     /// Shared MCP client registry — populated by McpRuntimeAdapter (ADR-025)
     mcp_client_registry: Arc<McpClientRegistry>,
+
+    /// Background runtime manager for MCP servers (ADR-025).
+    /// Sprint 9 Commit 3 retired the gateway framework that previously
+    /// shared this manager; only MCP servers run under it now.
+    background_runtime_manager: Arc<BackgroundRuntimeManager>,
 
     /// Extension runtime starter registry — dispatches ext start/stop by type (ADR-025/026)
     runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
@@ -323,13 +321,11 @@ impl std::fmt::Debug for AppState {
             .field("host", &self.host)
             .field("config", &self.config)
             .field("config_service", &"<ConfigAuthorityImpl>")
-            .field("principal_service", &"<StatelessAgentService>")
             .field("principal_manager", &"<PrincipalManager>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("async_task_executor", &"<AsyncExecutor>")
             .field("inbox_registry", &"<InboxRegistry>")
             .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
-            .field("gateway_router", &"<GatewayRouter>")
             .field("mcp_client_registry", &"<McpClientRegistry>")
             .field(
                 "runtime_starter_registry",
@@ -605,22 +601,15 @@ impl AppState {
         }
         let resolver = Arc::new(resolver_builder);
 
-        let path_resolver_clone = path_resolver.clone();
-        let principal_service = Arc::new(
-            StatelessAgentService::new_with_resolver(
-                config_service.clone(),
-                Arc::new(peko_session::DefaultPathResolver::with_data_dir(
-                    path_resolver.data_dir().to_path_buf(),
-                )),
-                Some(resolver.clone()),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create agent service: {e}"))?,
-        );
-
+        // Sprint 9 Commit 4: `StatelessAgentService` retired. The
+        // chat-gateway adapter framework (its only production caller,
+        // deleted in Commit 3) is gone. The agent-session paradigm
+        // owns ingress now via `Principal::Manager::receive_streaming`,
+        // which routes through `PrincipalManager` directly — no
+        // separate principal-message service slot is needed.
         let lifecycle = Arc::new(LifecycleManager::new());
 
-        let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
+        let session_service = Arc::new(SessionService::new(path_resolver.clone()));
 
         // ADR-021: Initialize global ExtensionCore FIRST so ToolRuntime can register
         // tools with it, and Agent::new() can find them later.
@@ -629,12 +618,6 @@ impl AppState {
         // reuse it and register tools on that instance. Otherwise create a new one.
         // This prevents a race where main.rs sets an empty core and AppState's
         // tool-filled core gets discarded by the OnceLock.
-        //
-        // Trait-object clone for the framework (avoids a framework → agents
-        // dependency while keeping the concrete arc for other consumers).
-        let principal_service_dyn: Arc<
-            dyn crate::extensions::framework::principal_message::PrincipalMessageService,
-        > = principal_service.clone();
 
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
@@ -656,10 +639,7 @@ impl AppState {
             let router = AsyncExecutionRouter::with_transport(
                 create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
             );
-            let services = ExtensionServices::with_async_router_and_principal_message_service(
-                Arc::new(router),
-                Arc::clone(&principal_service_dyn),
-            );
+            let services = ExtensionServices::with_async_router(Arc::new(router));
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
         } else if let Some(existing) = crate::extensions::framework::core::global_core() {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
@@ -673,20 +653,11 @@ impl AppState {
             let router = AsyncExecutionRouter::with_transport(
                 create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
             );
-            let services = ExtensionServices::with_async_router_and_principal_message_service(
-                Arc::new(router),
-                Arc::clone(&principal_service_dyn),
-            );
+            let services = ExtensionServices::with_async_router(Arc::new(router));
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
             init_global_core(Arc::clone(&core));
             core
         };
-
-        // ADR-023: Ensure the principal message service is set on the ExtensionCore.
-        // If we reused an existing global core, it may not have the service yet.
-        global_core
-            .services()
-            .set_principal_message_service(Arc::clone(&principal_service_dyn));
 
         // Make the LLM resolver available to extension hooks (e.g. MCP sampling).
         global_core
@@ -748,7 +719,7 @@ impl AppState {
             .set_channel_port(channel_port.clone());
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core_and_channel_port(
-                path_resolver_clone.clone(),
+                path_resolver.clone(),
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 Arc::clone(&global_core),
                 channel_port.clone(),
@@ -768,9 +739,12 @@ impl AppState {
         let async_task_executor =
             Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 
-        // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
+        // ADR-025: Initialize BackgroundRuntimeManager.
+        // Sprint 9 Commit 3: the chat-gateway adapter framework was
+        // retired, so `GatewayRouter` + `GatewayRuntimeStarter` are gone
+        // — external ingress now flows exclusively through per-peer
+        // standing children under the agent-session paradigm.
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
-        let gateway_router = Arc::new(GatewayRouter::new(Arc::clone(&principal_service)));
 
         // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
         let mcp_client_registry = Arc::new(McpClientRegistry::new());
@@ -782,9 +756,9 @@ impl AppState {
         // the calling principal's quota meter. The MCP init is wired below
         // (after `principal_manager` is built) for this reason.
 
-        // ADR-025/026: Extension runtime starter registry
+        // ADR-025/026: Extension runtime starter registry.
+        // Sprint 9 Commit 3: only MCP starters register now.
         let mut runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
-        runtime_starter_registry.register(Box::new(GatewayRuntimeStarter::new()));
         runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
@@ -794,8 +768,9 @@ impl AppState {
                 .with_storage_dir(path_resolver.extensions_root()),
         );
 
-        // Register adapters (same as CLI create_manager_with_adapters)
-        use crate::extensions::gateway::GatewayAdapter;
+        // Register adapters (same as CLI create_manager_with_adapters).
+        // Sprint 9 Commit 3: `GatewayAdapter` removed — chat-gateway
+        // adapter framework retired.
         use crate::extensions::general::GeneralExtensionAdapter;
         use crate::extensions::mcp::McpAdapter;
         use crate::extensions::skill::SkillAdapter;
@@ -813,9 +788,6 @@ impl AppState {
             .await;
         extension_store
             .register_adapter(Box::new(UniversalToolAdapter::new()))
-            .await;
-        extension_store
-            .register_adapter(Box::new(GatewayAdapter::new(Arc::clone(&global_core))))
             .await;
         extension_store
             .register_adapter(Box::new(GeneralExtensionAdapter::new()))
@@ -1018,7 +990,6 @@ impl AppState {
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability,
             config_service,
-            principal_service,
             resolver,
             vault: Arc::clone(&vault),
             principal_manager,
@@ -1044,7 +1015,6 @@ impl AppState {
             async_task_executor,
             inbox_registry,
             background_runtime_manager,
-            gateway_router,
             mcp_client_registry,
             runtime_starter_registry,
             extension_store,
@@ -1272,17 +1242,16 @@ impl AppState {
         &self.config_service
     }
 
-    /// Get the principal message service
-    #[must_use]
-    pub fn principal_service(&self) -> &Arc<StatelessAgentService> {
-        &self.principal_service
-    }
-
     /// Get the principal manager
     #[must_use]
     pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
         &self.principal_manager
     }
+
+    // Sprint 9 Commit 4: `principal_service()` getter retired along
+    // with `StatelessAgentService`. The chat-gateway adapter framework
+    // (its only caller) was deleted in Commit 3; ingress now flows
+    // through `principal_manager()` under the agent-session paradigm.
 
     /// Phase 4 (agent-session paradigm sprint): the channel
     /// passive-binding supervisor (subscriber lifespan + bound-session
@@ -1311,12 +1280,6 @@ impl AppState {
     #[must_use]
     pub fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
         &self.background_runtime_manager
-    }
-
-    /// Get the gateway router (ADR-025)
-    #[must_use]
-    pub fn gateway_router(&self) -> &Arc<GatewayRouter> {
-        &self.gateway_router
     }
 
     /// Get the shared MCP client registry (ADR-025)
@@ -1380,8 +1343,6 @@ impl AppState {
     pub fn starter_context(&self) -> StarterContext {
         StarterContext {
             background_runtime_manager: Arc::clone(&self.background_runtime_manager),
-            principal_service: Arc::clone(&self.principal_service),
-            gateway_router: Arc::clone(&self.gateway_router),
             mcp_client_registry: Arc::clone(&self.mcp_client_registry),
             data_dir: self.data_dir.clone(),
             // Phase A: hand the typed resolver through so starters
