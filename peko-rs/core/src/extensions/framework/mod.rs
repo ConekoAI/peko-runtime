@@ -74,11 +74,11 @@ pub mod manager;
 /// on root).
 pub mod paths;
 
-/// Principal messaging service port trait + the
-/// `PrincipalMessageResponse` envelope. Sealed behind the trait
-/// port so `peko-engine`'s loop-firing calls can go through the
-/// funnel without an `&peko_core::AppState`.
-pub mod principal_message;
+// Sprint 9 Commit 4: the `principal_message` module was retired
+// along with `StatelessAgentService`. Its only consumer was the
+// chat-gateway adapter framework (deleted in Commit 3). The
+// agent-session paradigm owns principal dispatch via
+// `PrincipalManager::receive_streaming` directly.
 
 /// Shared protocol wire formats (request/response packet bodies)
 /// shared by the framework's IPC bridge.

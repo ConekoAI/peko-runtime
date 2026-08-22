@@ -48,13 +48,12 @@ pub struct ExtensionServices {
     /// into per-agent `ExtensionCore` instances.
     async_router: Arc<dyn AsyncExecutionRouter>,
 
-    /// Stateless principal message service (set by AppState after initialization).
-    /// Implements principal-to-principal message dispatch
-    /// ([`crate::extensions::framework::principal_message::PrincipalMessageService`]).
-    /// Held as a trait object to avoid a framework → agents dependency.
-    principal_message_service: std::sync::RwLock<
-        Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>>,
-    >,
+    // Sprint 9 Commit 4: `principal_message_service` slot retired.
+    // `StatelessAgentService` was the sole
+    // `PrincipalMessageService` impl; its only caller was the
+    // chat-gateway adapter framework deleted in Commit 3. Per-peer
+    // standing children (the agent-session paradigm) own principal
+    // dispatch directly via `PrincipalManager::receive_streaming`.
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
@@ -83,23 +82,18 @@ pub struct ExtensionServices {
 
 impl std::fmt::Debug for ExtensionServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Manual impl: `StatelessAgentService` no longer derives Debug
-        // (carries an `LlmResolver` Arc which has no Debug impl). All
-        // other fields are stable identifiers.
         f.debug_struct("ExtensionServices")
             .field("config", &self.config)
             .field("telemetry", &self.telemetry)
             .field("async_router", &"<dyn AsyncExecutionRouter>")
-            .field(
-                "principal_message_service",
-                &"<RwLock<Option<Arc<dyn PrincipalMessageService>>>>",
-            )
             .field(
                 "cross_runtime_a2a_ctx",
                 &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>",
             )
             .field("llm_resolver", &"<RwLock<Option<Arc<LlmResolver>>>>")
             .field("channel_port", &"<RwLock<Option<Arc<dyn ChannelPort>>>>")
+            // Sprint 9 Commit 4: `principal_message_service` field
+            // removed; Debug formatter no longer emits it.
             .finish_non_exhaustive()
     }
 }
@@ -120,20 +114,11 @@ impl ExtensionServices {
         Self::with_async_router(Arc::new(NoopAsyncExecutionRouter))
     }
 
-    /// Create with a custom async execution router and principal message service
-    #[must_use]
-    pub fn with_async_router_and_principal_message_service(
-        async_router: Arc<dyn AsyncExecutionRouter>,
-        principal_message_service: Arc<
-            dyn crate::extensions::framework::principal_message::PrincipalMessageService,
-        >,
-    ) -> Self {
-        let s = Self::with_async_router(async_router);
-        s.set_principal_message_service(principal_message_service);
-        s
-    }
-
-    /// Create with a custom async execution router (for custom transport)
+    /// Create with a custom async execution router (for custom transport).
+    ///
+    /// Sprint 9 Commit 4: the
+    /// `with_async_router_and_principal_message_service` constructor
+    /// was retired along with the `principal_message_service` slot.
     #[must_use]
     pub fn with_async_router(async_router: Arc<dyn AsyncExecutionRouter>) -> Self {
         Self {
@@ -142,7 +127,6 @@ impl ExtensionServices {
             tool_execution: Arc::new(()),
             reserved_params: Arc::new(()),
             async_router,
-            principal_message_service: std::sync::RwLock::new(None),
             // Issue #29: cross-runtime a2a ctx starts as None and
             // is filled in by the daemon-state after the tunnel
             // client is wired. Until then, every per-agent
@@ -176,27 +160,10 @@ impl ExtensionServices {
         &self.async_router
     }
 
-    /// Set the stateless principal message service
-    pub fn set_principal_message_service(
-        &self,
-        service: Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>,
-    ) {
-        if let Ok(mut guard) = self.principal_message_service.write() {
-            *guard = Some(service);
-        }
-    }
-
-    /// Get the stateless principal message service
-    #[must_use]
-    pub fn principal_message_service(
-        &self,
-    ) -> Option<Arc<dyn crate::extensions::framework::principal_message::PrincipalMessageService>>
-    {
-        self.principal_message_service
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
-    }
+    // Sprint 9 Commit 4: `set_principal_message_service` and
+    // `principal_message_service` getter retired along with the
+    // slot. Per-peer standing children (the agent-session paradigm)
+    // own principal dispatch via `PrincipalManager::receive_streaming`.
 
     /// Set the cross-runtime a2a dispatch context (issue #29). The
     /// daemon-state calls this after the tunnel client is built and

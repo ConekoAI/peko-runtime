@@ -210,7 +210,7 @@ impl Agent {
             tracing::error!(
                 "Built-in tools not pre-registered on ExtensionCore. \
                  This indicates a startup ordering bug — AppState should initialize \
-                 ToolRuntime before StatelessAgentService."
+                 ToolRuntime before the StatelessAgentService path (Sprint 9 Commit 4)."
             );
         }
 
@@ -295,10 +295,10 @@ impl Agent {
         //
         // Sprint 8 Commit 3: the per-agent `enable_plan_tools` gate was
         // dropped — every reachable Agent defaults it to `true` and the
-        // read only added noise. The struct field stays until Sprint 8b
-        // (the gateway loop's `StatelessAgentService` still constructs
-        // `AgentConfig` literals and would otherwise need to be
-        // updated in lockstep).
+        // read only added noise. Sprint 9 Commit 4 retired the gateway
+        // loop's `StatelessAgentService` (which used to construct
+        // `AgentConfig` literals), so the lockstep-update reason is
+        // gone.
         if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
             use crate::tools::builtin::{
                 PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
@@ -1643,10 +1643,10 @@ impl Agent {
         //
         // Sprint 8 Commit 3: the per-agent `enable_async_tools` gate was
         // dropped — every reachable Agent defaults it to `true` and the
-        // read only added noise. The struct field stays until Sprint 8b
-        // (the gateway loop's `StatelessAgentService` still constructs
-        // `AgentConfig` literals and would otherwise need to be
-        // updated in lockstep).
+        // read only added noise. Sprint 9 Commit 4 retired the gateway
+        // loop's `StatelessAgentService` (which used to construct
+        // `AgentConfig` literals), so the lockstep-update reason is
+        // gone.
         let core_weak = Arc::downgrade(&extension_core);
         // F37: snapshot the spawning principal's capability grants.
         // `AsyncExecutorRuntime::spawn` builds the F37 canonical

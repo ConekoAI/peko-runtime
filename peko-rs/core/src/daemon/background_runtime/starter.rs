@@ -13,7 +13,6 @@
 //! chat-gateway adapter framework. Only MCP starters register now.
 
 use super::manager::BackgroundRuntimeManager;
-use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::paths::PathResolver;
 use crate::extensions::mcp::runtime::McpClientRegistry;
 use std::path::PathBuf;
@@ -22,12 +21,14 @@ use std::sync::Arc;
 /// Context provided to a runtime starter when asked to start an extension.
 ///
 /// Contains all daemon-scoped services the starter may need.
+///
+/// Sprint 9 Commit 4: the `principal_service` field was retired along
+/// with `StatelessAgentService` + `PrincipalMessageService`. The
+/// chat-gateway adapter framework was its only consumer.
 #[derive(Clone)]
 pub struct StarterContext {
     /// Shared background runtime manager
     pub background_runtime_manager: Arc<BackgroundRuntimeManager>,
-    /// Principal message service for executing principal-to-principal messages
-    pub principal_service: Arc<StatelessAgentService>,
     /// Shared MCP client registry
     pub mcp_client_registry: Arc<McpClientRegistry>,
     /// Data directory where extensions are installed.
