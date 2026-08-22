@@ -395,9 +395,11 @@ impl SessionRuntime for SessionManagerRuntime {
             .collect())
     }
 
-    async fn branch_session(
+    async fn copy_session(
         &self,
         session_key: &str,
+        target_parent: String,
+        target_slug: String,
         label: Option<String>,
     ) -> anyhow::Result<BranchOutcome> {
         let mut manager = self.session_manager.write().await;
@@ -407,20 +409,51 @@ impl SessionRuntime for SessionManagerRuntime {
         let session_key = self.resolve_ref(&caller, &metas, session_key)?;
         self.guard_tree(&caller, &session_key, &metas)?;
 
-        // When the source has a slug, the branch derives
-        // `<source-slug>-branch` (uniquified among the source's
-        // children on conflict) so the copy stays path-addressable.
-        // The branch is a child of its source, so the pre-branch
-        // metadata slice is the right sibling set.
-        let source_id = peko_session::SessionId::from(session_key.as_str());
-        let derived_slug = peko_session::path::derive_branch_slug(&metas, source_id);
+        // Resolve the destination parent. The tool layer guarantees
+        // `target_parent` is a slug path; here we turn it into a session
+        // id (or refuse if it doesn't exist / is out of the caller's
+        // subtree).
+        let target_parent_id = self.resolve_ref(&caller, &metas, &target_parent)?;
+        self.guard_tree(&caller, &target_parent_id, &metas)?;
 
+        // Slug uniqueness pre-check against the destination's children
+        // (actionable error before we touch state; set_session_slug
+        // below re-checks authoritatively).
+        let source_id = peko_session::SessionId::from(session_key.as_str());
+        let target_parent_typed = peko_session::SessionId::from(target_parent_id.as_str());
+        if let Some(conflict) = peko_session::path::slug_conflict(
+            &metas,
+            Some(target_parent_typed),
+            &target_slug,
+            source_id,
+        ) {
+            return Err(self.refuse(peko_session::path::err_slug_conflict(
+                &target_slug,
+                conflict,
+                Some(target_parent_typed),
+            )));
+        }
+
+        // branch_session_by_id creates a child of source with the
+        // source's JSONL, peer, agent, and trigger="branch". We then
+        // reparent under target_parent (if it differs from source) and
+        // stamp the explicit slug. manager.move_session skips the
+        // runtime-level user-facing guards (self / trunk / cycle) —
+        // those guards operate on user-initiated mutations; for a
+        // copy's internal reparenting, the parent-validity check above
+        // is the right gate.
         let new_session_id = manager.branch_session_by_id(&session_key, label).await?;
-        if let Some(slug) = derived_slug {
+
+        if target_parent_id != session_key {
             manager
-                .set_session_slug(&new_session_id.as_str(), Some(slug))
+                .move_session(&new_session_id.as_str(), Some(target_parent_typed))
                 .await?;
         }
+
+        manager
+            .set_session_slug(&new_session_id.as_str(), Some(target_slug))
+            .await?;
+
         Ok(BranchOutcome {
             new_session_id: new_session_id.to_string(),
             parent_session_id: session_key,
@@ -587,7 +620,12 @@ impl SessionRuntime for SessionManagerRuntime {
         Ok(DeleteOutcome { deleted })
     }
 
-    async fn move_session(&self, session_key: &str, new_parent: String) -> anyhow::Result<()> {
+    async fn move_session(
+        &self,
+        session_key: &str,
+        new_parent: String,
+        new_slug: Option<String>,
+    ) -> anyhow::Result<()> {
         let mut manager = self.session_manager.write().await;
         let (caller, metas) = self.caller_and_metas(&mut manager).await?;
         let session_key = &self.resolve_ref(&caller, &metas, session_key)?;
@@ -626,14 +664,21 @@ impl SessionRuntime for SessionManagerRuntime {
             return Err(self.refuse(err_move_cycle(session_key, new_parent)));
         }
 
-        // Slug uniqueness re-check against the DESTINATION's siblings:
-        // a slug that was unique under the old parent may collide under
-        // the new one. Refusal names the conflicting session id.
-        let target_slug = metas
-            .iter()
-            .find(|m| m.session_id.as_str() == *session_key)
-            .and_then(|m| m.slug.as_deref());
-        if let Some(slug) = target_slug {
+        // Slug uniqueness re-check against the DESTINATION's siblings.
+        // Sprint 7 Commit H (2026-08-22): when `new_slug` is supplied,
+        // check THAT slug (it'll be applied after the reparent); when
+        // omitted, check the source's current slug (it'll be carried
+        // into the destination unchanged). The `exclude` arg is the
+        // source itself so a same-parent + same-slug move (no-op)
+        // isn't refused by the check.
+        let effective_slug: Option<&str> = match new_slug.as_deref() {
+            Some(s) => Some(s),
+            None => metas
+                .iter()
+                .find(|m| m.session_id.as_str() == *session_key)
+                .and_then(|m| m.slug.as_deref()),
+        };
+        if let Some(slug) = effective_slug {
             let new_parent_id = peko_session::SessionId::from(new_parent);
             let session_id_for_check = peko_session::SessionId::from(session_key);
             if let Some(conflict) = peko_session::path::slug_conflict(
@@ -683,7 +728,18 @@ impl SessionRuntime for SessionManagerRuntime {
                 session_key,
                 Some(peko_session::SessionId::from(new_parent)),
             )
-            .await
+            .await?;
+
+        // Apply the slug change (if any). The uniqueness check above
+        // used the post-reparent parent (`new_parent`), so applying
+        // the slug after reparent keeps the metadata consistent with
+        // the check. set_session_slug's per-parent-uniqueness check is
+        // authoritative.
+        if let Some(slug) = new_slug {
+            manager.set_session_slug(session_key, Some(slug)).await?;
+        }
+
+        Ok(())
     }
 
     async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome> {
@@ -964,11 +1020,18 @@ mod tests {
         assert!(err.to_string().contains("unarchive"), "{err}");
         h.runtime.set_archived("/c", false).await.unwrap();
         h.runtime.request_compaction("/c").await.unwrap();
-        let outcome = h.runtime.branch_session("/c", None).await.unwrap();
+        let outcome = h
+            .runtime
+            .copy_session("/c", "/".into(), "c-copy".into(), None)
+            .await
+            .unwrap();
         assert_eq!(outcome.parent_session_id, sid("spawn2"));
 
         // Branching the CURRENT session is allowed (lock-safe copy).
-        h.runtime.branch_session("/", None).await.unwrap();
+        h.runtime
+            .copy_session("/", "/".into(), "root-copy".into(), None)
+            .await
+            .unwrap();
 
         // Compacting the CURRENT session is allowed (fires next iteration).
         h.runtime.request_compaction("/").await.unwrap();
@@ -1183,7 +1246,11 @@ mod tests {
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
-        let err = h.runtime.branch_session("/c", None).await.unwrap_err();
+        let err = h
+            .runtime
+            .copy_session("/c", "/".into(), "c-copy".into(), None)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
@@ -1205,7 +1272,11 @@ mod tests {
         h.runtime.set_archived("/a/b", true).await.unwrap();
         h.runtime.set_archived("/a/b", false).await.unwrap();
         h.runtime.request_compaction("/a/b").await.unwrap();
-        let branch = h.runtime.branch_session("/a/b", None).await.unwrap();
+        let branch = h
+            .runtime
+            .copy_session("/a/b", "/a/b".into(), "b-copy".into(), None)
+            .await
+            .unwrap();
         h.runtime
             .rename_session("/a/b", Some("kid".to_string()), None)
             .await
@@ -1294,7 +1365,7 @@ mod tests {
         h.runtime.set_archived("/c", true).await.unwrap();
         h.runtime.set_archived("/c", false).await.unwrap();
         h.runtime
-            .move_session("/c", "/a".to_string())
+            .move_session("/c", "/a".to_string(), None)
             .await
             .unwrap();
         // After the move, spawn2 is under spawn1 (caller). Address it
@@ -1336,7 +1407,7 @@ mod tests {
         // Principal-level caller: move child1 (with its subtree) from
         // spawn1 to spawn2.
         h.runtime
-            .move_session("/a/b", "/c".to_string())
+            .move_session("/a/b", "/c".to_string(), None)
             .await
             .unwrap();
         // After move, child1 sits under spawn2 → path /c/b.
@@ -1360,7 +1431,7 @@ mod tests {
         // Moving UNDER a live root:* session is allowed. child1's
         // current path is /c/b (just moved under spawn2).
         h.runtime
-            .move_session("/c/b", "/".to_string())
+            .move_session("/c/b", "/".to_string(), None)
             .await
             .unwrap();
         // After this move, child1 sits directly under root:user:alice
@@ -1371,12 +1442,12 @@ mod tests {
         // Unknown endpoints error.
         assert!(h
             .runtime
-            .move_session("/ghost", "/c".to_string())
+            .move_session("/ghost", "/c".to_string(), None)
             .await
             .is_err());
         assert!(h
             .runtime
-            .move_session("/b", "/ghost".to_string())
+            .move_session("/b", "/ghost".to_string(), None)
             .await
             .is_err());
     }
@@ -1387,7 +1458,7 @@ mod tests {
         let h = tree_harness("spawn1").await;
         let err = h
             .runtime
-            .move_session("/a", "/c".to_string())
+            .move_session("/a", "/c".to_string(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
@@ -1396,7 +1467,7 @@ mod tests {
         let h = tree_harness("child1").await;
         let err = h
             .runtime
-            .move_session("/a", "/c".to_string())
+            .move_session("/a", "/c".to_string(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
@@ -1409,7 +1480,7 @@ mod tests {
         // Target outside the caller's subtree.
         let err = h
             .runtime
-            .move_session("/c", "/a/b".to_string())
+            .move_session("/c", "/a/b".to_string(), None)
             .await
             .unwrap_err();
         assert!(
@@ -1420,7 +1491,7 @@ mod tests {
         // Destination outside the caller's subtree.
         let err = h
             .runtime
-            .move_session("/a/b", "/c".to_string())
+            .move_session("/a/b", "/c".to_string(), None)
             .await
             .unwrap_err();
         assert!(
@@ -1432,7 +1503,7 @@ mod tests {
         h.create("grandchild1", Some(sid("child1").as_str())).await;
         h.set_slug("grandchild1", "g").await;
         h.runtime
-            .move_session("/a/b/g", "/a".to_string())
+            .move_session("/a/b/g", "/a".to_string(), None)
             .await
             .unwrap();
         let status = h.runtime.get_status("/a/g").await.unwrap();
@@ -1448,7 +1519,7 @@ mod tests {
         // silently on cycles, so this must be refused at move time.
         let err = h
             .runtime
-            .move_session("/a", "/a/b".to_string())
+            .move_session("/a", "/a/b".to_string(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cycle"), "{err}");
@@ -1456,7 +1527,7 @@ mod tests {
         // Moving a session under itself is the degenerate cycle.
         let err = h
             .runtime
-            .move_session("/a/b", "/a/b".to_string())
+            .move_session("/a/b", "/a/b".to_string(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cycle"), "{err}");
@@ -1474,7 +1545,7 @@ mod tests {
 
         let err = h
             .runtime
-            .move_session("/self", "/a".to_string())
+            .move_session("/self", "/a".to_string(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
@@ -1484,7 +1555,7 @@ mod tests {
         h.create("root:cron:alice", Some(sid("root:user:alice").as_str())).await;
         h.set_slug("root:cron:alice", "cron-alice").await;
         h.runtime
-            .move_session("/cron-alice", "/a".to_string())
+            .move_session("/cron-alice", "/a".to_string(), None)
             .await
             .unwrap();
     }
@@ -1499,14 +1570,14 @@ mod tests {
         let guard = h.registry.try_acquire_run(&sid("child1")).await.unwrap();
         let err = h
             .runtime
-            .move_session("/a/b", "/c".to_string())
+            .move_session("/a/b", "/c".to_string(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
 
         h.runtime
-            .move_session("/a/b", "/c".to_string())
+            .move_session("/a/b", "/c".to_string(), None)
             .await
             .unwrap();
         // After move, child1 sits under spawn2 → /c/b.
@@ -1527,14 +1598,14 @@ mod tests {
         let guard = h.registry.try_acquire_run(&sid("child1")).await.unwrap();
         let err = h
             .runtime
-            .move_session("/a", "/c".to_string())
+            .move_session("/a", "/c".to_string(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("active run"), "{err}");
         drop(guard);
 
         h.runtime
-            .move_session("/a", "/c".to_string())
+            .move_session("/a", "/c".to_string(), None)
             .await
             .unwrap();
     }
@@ -1642,7 +1713,7 @@ mod tests {
 
         // move accepts /paths for BOTH params.
         h.runtime
-            .move_session("/a/b2", "/c".to_string())
+            .move_session("/a/b2", "/c".to_string(), None)
             .await
             .unwrap();
         let status = h.runtime.get_status("/c/b2").await.unwrap();
@@ -1721,7 +1792,7 @@ mod tests {
 
         let err = h
             .runtime
-            .move_session("/a/b", "/c".to_string())
+            .move_session("/a/b", "/c".to_string(), None)
             .await
             .unwrap_err();
         // Sprint 6: the conflicting session is identified by its v5
@@ -1731,7 +1802,7 @@ mod tests {
 
         // Moving under a parent with no conflicting child slug works.
         h.runtime
-            .move_session("/a/b", "/".to_string())
+            .move_session("/a/b", "/".to_string(), None)
             .await
             .unwrap();
         let status = h.runtime.get_status("/b").await.unwrap();
@@ -1739,10 +1810,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn branch_derives_uniquified_slug() {
+    async fn copy_session_uses_caller_supplied_slug() {
+        // Sprint 7 Commit H: `copy_session` now takes an explicit
+        // target_slug (mirrors bash `cp src dst`). The old
+        // auto-derived "a-branch" / "a-branch-2" behavior is gone —
+        // the caller is responsible for picking a unique slug. This
+        // test pins the new contract: a fresh explicit slug lands as
+        // the new session's slug; a colliding slug is refused.
         let h = slug_tree_harness("root:user:alice").await;
 
-        let outcome = h.runtime.branch_session("/a", None).await.unwrap();
+        let outcome = h
+            .runtime
+            .copy_session("/a", "/".into(), "a-branch".into(), None)
+            .await
+            .unwrap();
         let meta = h
             .manager
             .write()
@@ -1752,21 +1833,14 @@ mod tests {
             .unwrap();
         assert_eq!(meta.slug.as_deref(), Some("a-branch"));
 
-        // Second branch of the same source uniquifies.
-        let outcome2 = h.runtime.branch_session("/a", None).await.unwrap();
-        let meta2 = h
-            .manager
-            .write()
+        // Second copy with the same explicit target_slug conflicts
+        // with the first's slug under the same parent — refused.
+        let err = h
+            .runtime
+            .copy_session("/a", "/".into(), "a-branch".into(), None)
             .await
-            .get_session_metadata(&outcome2.new_session_id)
-            .await
-            .unwrap();
-        assert_eq!(meta2.slug.as_deref(), Some("a-branch-2"));
-
-        // Sprint 5: slugless sources no longer exist (slug required at
-        // spawn — see commit 2). The branch-uniquification contract
-        // is fully covered by the previous assertions. The
-        // "slugless source → slugless branch" behavior is gone.
+            .unwrap_err();
+        assert!(err.to_string().contains("slug"), "{err}");
     }
 
     #[tokio::test]

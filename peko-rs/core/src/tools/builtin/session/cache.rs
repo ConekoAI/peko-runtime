@@ -231,11 +231,19 @@ impl SessionRuntime for SessionCache {
         Ok(hits)
     }
 
-    async fn branch_session(
+    async fn copy_session(
         &self,
         session_key: &str,
+        _target_parent: String,
+        _target_slug: String,
         label: Option<String>,
     ) -> anyhow::Result<BranchOutcome> {
+        // In-memory test impl: ignore target_parent/target_slug (the
+        // production adapter wires those into branch-then-reparent).
+        // The new key is still sourced from the source session so the
+        // existing tests can keep asserting on it. The cache layer
+        // does not enforce slug uniqueness; the production adapter
+        // does.
         let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
         let parent = sessions
             .get(session_key)
@@ -328,22 +336,35 @@ impl SessionRuntime for SessionCache {
         Ok(())
     }
 
-    async fn move_session(&self, session_key: &str, new_parent: String) -> anyhow::Result<()> {
-        // Plain in-memory reparent — no ownership/cycle guards (those
-        // are a production-adapter concern). Both endpoints must exist.
-        if !self
-            .statuses
-            .lock()
-            .expect("statuses mutex poisoned")
-            .contains_key(&new_parent)
+    async fn move_session(
+        &self,
+        session_key: &str,
+        new_parent: String,
+        new_slug: Option<String>,
+    ) -> anyhow::Result<()> {
+        // Plain in-memory reparent + slug application — no
+        // ownership/cycle guards (those are a production-adapter
+        // concern). The cache accepts any new_parent string (including
+        // "/" for caller-root or an arbitrary slug for a notional
+        // parent), letting tests exercise "rename in place" via
+        // `target = "/<new_slug>"` without having to seed every parent
+        // into the cache. The production adapter
+        // (`SessionManagerRuntime`) does the real existence + subtree
+        // + slug-uniqueness checks.
         {
-            return Err(anyhow::anyhow!("Session not found: {new_parent}"));
+            let mut statuses = self.statuses.lock().expect("statuses mutex poisoned");
+            let status = statuses
+                .get_mut(session_key)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+            status.parent_session = Some(new_parent);
         }
-        let mut statuses = self.statuses.lock().expect("statuses mutex poisoned");
-        let status = statuses
-            .get_mut(session_key)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
-        status.parent_session = Some(new_parent);
+        if let Some(slug) = new_slug {
+            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let info = sessions
+                .get_mut(session_key)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+            info.slug = Some(slug);
+        }
         Ok(())
     }
 
@@ -481,7 +502,10 @@ mod tests {
         parent.label = Some("parent".to_string());
         cache.add_session("p1".to_string(), parent, vec![], status("p1", None));
 
-        let outcome = cache.branch_session("p1", None).await.unwrap();
+        let outcome = cache
+            .copy_session("p1", "/".into(), "p1-copy".into(), None)
+            .await
+            .unwrap();
         assert_eq!(outcome.parent_session_id, "p1");
 
         let branch = cache.get_status(&outcome.new_session_id).await.unwrap();
@@ -500,7 +524,10 @@ mod tests {
         // Label inherited when not supplied.
         assert_eq!(branch_info.label, Some("parent".to_string()));
 
-        assert!(cache.branch_session("missing", None).await.is_err());
+        assert!(cache
+            .copy_session("missing", "/".into(), "x".into(), None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

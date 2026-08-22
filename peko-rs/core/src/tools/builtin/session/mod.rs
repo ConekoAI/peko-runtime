@@ -18,7 +18,7 @@
 //! [`SessionRuntime`] is the full surface the `SessionTool` needs:
 //! reads (`list_sessions` / `get_history` / `get_status` /
 //! `search_sessions` / `current_session_key`) and storage mutations
-//! (`branch_session` / `rename_session` / `set_archived` /
+//! (`copy_session` / `rename_session` / `set_archived` /
 //! `delete_session` / `move_session`). `request_compaction` rides
 //! the same trait but is engine-facing only — the model-facing
 //! `compact` affordance lives on the Agent tool. Production wiring
@@ -27,7 +27,7 @@
 //! [`SessionCache`] (in this module, an in-memory implementation).
 //!
 //! Note on `SessionRuntime` method names vs. tool-action names:
-//! the runtime methods are storage verbs (`branch_session`,
+//! the runtime methods are storage verbs (`copy_session`,
 //! `delete_session`, `rename_session`, `move_session`,
 //! `set_archived`); the model-facing tool actions are bash-aligned
 //! verbs (`copy`, `remove`, in-place `move`, no archive/unarchive).
@@ -37,6 +37,13 @@
 //! already carry `archived: true` are still readable via
 //! `list_sessions` with `include_archived: true`), but no model-facing
 //! action writes it. Sprint 7 Commit F (2026-08-21).
+//!
+//! Sprint 7 Commit H (2026-08-22): `copy_session` now takes an
+//! explicit `target_parent` + `target_slug` (mirrors bash
+//! `cp src dst` where `dst` is the full destination path) and
+//! `move_session` gained `new_slug`. The previous sibling-only
+//! `branch_session` shape (which derived the slug from the source)
+//! is gone — the caller picks the destination slug explicitly.
 
 pub mod cache;
 pub mod tool;
@@ -264,11 +271,19 @@ pub trait SessionRuntime: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<Vec<SessionSearchHit>>;
 
-    /// Branch a session (copy it under a new id, stored not running).
-    /// Returns the new session's id alongside the parent's.
-    async fn branch_session(
+    /// Copy a session into a new session under `target_parent` with
+    /// slug `target_slug` (mirrors bash `cp src dst` where `dst` is the
+    /// full destination path; the last segment is the new slug, the
+    /// rest is the destination parent). The source is unchanged. The
+    /// copy is NOT running — attach a run via `Agent(action:"resume")`.
+    /// Returns the new session's id alongside the source's. Sprint 7
+    /// Commit H (2026-08-22) replaces the previous sibling-only
+    /// `branch_session` shape with a free-form destination.
+    async fn copy_session(
         &self,
         session_key: &str,
+        target_parent: String,
+        target_slug: String,
         label: Option<String>,
     ) -> anyhow::Result<BranchOutcome>;
 
@@ -285,11 +300,19 @@ pub trait SessionRuntime: Send + Sync {
         slug: Option<String>,
     ) -> anyhow::Result<()>;
 
-    /// Move (reparent) a session — with its subtree — under a new
-    /// parent. Refused when the move would create a cycle, when the
-    /// target is the live trunk session (`root:self`), or when the
-    /// target or any descendant has an active run.
-    async fn move_session(&self, session_key: &str, new_parent: String) -> anyhow::Result<()>;
+    /// Move (reparent + optional slug change) a session — with its
+    /// subtree — under a new parent. Refused when the move would
+    /// create a cycle, when the source is the live trunk session
+    /// (`root:self`), or when the source or any descendant has an
+    /// active run. `new_slug = None` keeps the existing slug; `Some`
+    /// applies a new per-parent-unique slug at the destination.
+    /// Sprint 7 Commit H (2026-08-22): signature gained `new_slug`.
+    async fn move_session(
+        &self,
+        session_key: &str,
+        new_parent: String,
+        new_slug: Option<String>,
+    ) -> anyhow::Result<()>;
 
     /// Set or clear the archived flag on a session. Archived sessions
     /// are hidden from `list` (unless `include_archived: true`) and

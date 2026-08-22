@@ -5,16 +5,16 @@
 //! Replaces the legacy `session_status`, `sessions_list`,
 //! `sessions_history` tools (Issue 013). The verbs match the bash
 //! family where they overlap: `find` ≈ grep across transcripts, `copy`
-//! = `cp` (a duplicate session under a new id), `move` = `mv`
-//! (reparent under a new parent, or rename in place via title/slug,
-//! or both — at least one of new_parent/title/slug required),
-//! `remove` = `rm` (delete the session, optionally recursive).
+//! = `cp` (duplicate a session to a destination slug path), `move` =
+//! `mv` (reparent or rename in place — both via `target: <parent>/<slug>`,
+//! with `title` as an optional display-only rename), `remove` = `rm`
+//! (delete the session, optionally recursive).
 //!
 //! Sprint 7 Commit F (2026-08-21): trimmed from 10 → 7 actions.
 //! `archive` / `unarchive` removed (sessions are monotonically visible
 //! until `remove`; the `include_archived` filter stays for legacy
 //! records). `rename` removed — its semantics folded into `move`
-//! (title/slug without new_parent = rename in place). `branch`
+//! (slug without reparent = rename in place via `target`). `branch`
 //! renamed to `copy`, `search` to `find`, `delete` to `remove`.
 //!
 //! Sprint 7 Commit G (2026-08-22): the LLM-facing target parameter
@@ -26,6 +26,14 @@
 //! tool's runtime already routed through `resolve_reference`; the
 //! tool-layer `validate_path` is the new early-fail point that
 //! mirrors `AgentArgs::validate_action_args`.
+//!
+//! Sprint 7 Commit H (2026-08-22): `copy` and `move` now share a
+//! single `target` field shaped like bash `cp src dst` / `mv src dst`
+//! — `<parent>/<new_slug>`, last segment = new slug, before-last =
+//! new parent. Replaces the prior sibling-only `copy` shape and the
+//! prior `new_parent` + `title` + `slug` trio on `move`. `title`
+//! stays as a display-only rename knob on `move` (independent of
+//! `target`).
 //!
 //! `new` / `resume` / `compact` stay off this tool — they drive the
 //! LLM and live on the Agent tool instead. Speaks to the
@@ -109,28 +117,48 @@ impl SessionTool {
         Ok(path)
     }
 
-    /// Extract and validate the `new_parent` slug path for `move`'s
-    /// reparent branch. Same shape rules as `path`; required when the
-    /// caller opts into a reparent.
-    fn require_parent<'a>(
+    /// Extract and parse the bash-style `target` param for `copy` and
+    /// `move`. The target is a slug path: the last segment is the new
+    /// slug (under the parent = everything before), mirroring bash
+    /// `cp src dst` / `mv src dst`. Returns `(parent_str, slug)` —
+    /// `parent_str` may be empty when the target is a single-segment
+    /// caller-relative slug (the new parent is the caller's tree
+    /// root); the caller passes `/` to the runtime in that case.
+    ///
+    /// `target` is the unified destination field introduced in Sprint
+    /// 7 Commit H (2026-08-22); it replaces the prior
+    /// `new_parent`+`title`+`slug` combination on `move` and the
+    /// prior sibling-only placement on copy.
+    fn parse_target<'a>(
         params: &'a serde_json::Value,
-    ) -> anyhow::Result<&'a str> {
-        let parent = params
-            .get("new_parent")
+        action: &str,
+    ) -> anyhow::Result<(&'a str, &'a str)> {
+        let target = params
+            .get("target")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "action \"move\" reparent requires 'new_parent' — a full \
-                     ('/a/b/c') or caller-relative ('b/c') slug path naming \
-                     the destination session (no raw session ids)"
+                    "action \"{action}\" requires 'target' — a slug path naming the \
+                     destination (full '/a/b/c' or caller-relative 'b/c'); the last \
+                     segment is the new slug, the rest is the destination parent. \
+                     Mirrors bash `cp src dst` / `mv src dst`."
                 )
             })?;
-        if let Err(e) = peko_session::path::validate_path(parent) {
+        peko_session::path::validate_path(target).map_err(|e| {
+            anyhow::anyhow!("action \"{action}\" 'target' is not a valid slug path: {e}")
+        })?;
+        let (parent_str, slug) = target.rsplit_once('/').ok_or_else(|| {
+            anyhow::anyhow!(
+                "action \"{action}\" 'target' must include a parent path and a slug segment \
+                 (got '{target}')"
+            )
+        })?;
+        if slug.is_empty() {
             return Err(anyhow::anyhow!(
-                "action \"move\" 'new_parent' is not a valid slug path: {e}"
+                "action \"{action}\" 'target' slug segment is empty (got '{target}')"
             ));
         }
-        Ok(parent)
+        Ok((parent_str, slug))
     }
 }
 
@@ -167,11 +195,13 @@ Per-action semantics (the action you choose determines which other params apply)
 - list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
 - history: messages of a session (path optional, defaults to current; include_tools)
 - find: case-insensitive text search across session transcripts (query required; optional peer filter)
-- copy: duplicate a session under a new id (path required; optional label) — the copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action. When the source has a slug, the copy derives one (`<slug>-copy`, uniquified)
-- move: reparent a session under a new parent OR rename it in place (path required + at least one of new_parent/title/slug). Just title/slug → rename in place (same parent, new label/path segment). Just new_parent → reparent. Both → reparent and apply title/slug at the destination. The slug is the per-parent-unique path segment used for /a/b addressing. Subtree moves with the session.
+- copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
+- move: reparent a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
 - remove: delete a session (path required; recursive:true also deletes its descendants, children first)
 
 The `path` parameter is a slug path: full (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug) or caller-relative (`b/c`). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session).
+
+The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is itself a full or caller-relative slug path and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
 Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it. Sessions are monotonically visible until `remove` (Sprint 7 Commit F: archive/unarchive retired; if you want it gone, remove it).
 
@@ -190,7 +220,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "path": {
                     "type": "string",
-                    "description": "Target session: a slug path — full ('/a/b/c', anchored at the root of your session tree) or caller-relative ('b/c'). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session). Match the Agent tool's `path` parameter."
+                    "description": "Source session: a slug path — full ('/a/b/c', anchored at the root of your session tree) or caller-relative ('b/c'). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session). Match the Agent tool's `path` parameter."
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Required for `copy` / `move`: destination slug path `<parent>/<new_slug>`. `<parent>` is the destination session's path (full or caller-relative, same addressing as `path`); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `copy`: where to place the new copy. For `move`: the new address — to rename in place, set `target` to `<current_parent>/<new_slug>`. Mirrors bash `cp src dst` / `mv src dst`. Raw session ids are refused at the runtime layer."
                 },
                 "query": {
                     "type": "string",
@@ -198,19 +232,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "title": {
                     "type": "string",
-                    "description": "Optional for 'move' (in-place rename): new display title (free-form). At least one of new_parent/title/slug is required."
-                },
-                "slug": {
-                    "type": "string",
-                    "description": "Optional for 'move' (in-place rename or reparent): new slug — the per-parent-unique path segment used for /a/b addressing (1-64 chars, no '/', no leading/trailing whitespace; must be unique among the session's siblings). At least one of new_parent/title/slug is required."
+                    "description": "Optional for 'move': new display title (free-form label; does not affect addressing)."
                 },
                 "label": {
                     "type": "string",
                     "description": "Optional for 'copy': label/title for the new copy"
-                },
-                "new_parent": {
-                    "type": "string",
-                    "description": "Required-for-reparent for 'move': the destination session — a slug path (full '/a/b/c' or caller-relative 'b/c'), same addressing as `path`. Must exist; must not be the target itself or one of its descendants (cycle refusal); must be inside your subtree when you are a spawned caller. The moved session's slug must be unique among the destination's children. Raw session ids are refused at the runtime layer."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -367,56 +393,54 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
             }
             SessionAction::Copy => {
                 let session_key = Self::require_path(&params, "copy")?;
+                let (parent_str, slug) = Self::parse_target(&params, "copy")?;
+                let target_parent =
+                    if parent_str.is_empty() { "/".to_string() } else { parent_str.to_string() };
                 let label = params
                     .get("label")
                     .and_then(|v| v.as_str())
                     .map(String::from);
 
-                let outcome = self.runtime.branch_session(session_key, label).await?;
+                let outcome = self
+                    .runtime
+                    .copy_session(session_key, target_parent, slug.to_string(), label)
+                    .await?;
                 Ok(serde_json::to_value(outcome)?)
             }
             SessionAction::Move => {
                 // `move` subsumes both reparent (mv to a new dir) and
                 // in-place rename (mv to a new name in the same dir).
-                // At least one of new_parent/title/slug is required —
-                // refusing all-None matches the pre-merge `rename`
-                // guard and prevents a no-op call.
+                // The unified `target` field (Commit H, 2026-08-22)
+                // handles both cases — to rename in place, set `target`
+                // to `<current_parent>/<new_slug>`. `title` (optional)
+                // is a separate display-label change and is the only
+                // way to change the label without re-targeting.
                 let session_key = Self::require_path(&params, "move")?;
-                let new_parent = params
-                    .get("new_parent")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
                 let title = params
                     .get("title")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                let slug = params
-                    .get("slug")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                if new_parent.is_none() && title.is_none() && slug.is_none() {
+                if params.get("target").is_none() && title.is_none() {
                     return Err(anyhow::anyhow!(
-                        "'move' requires at least one of 'new_parent', 'title', or 'slug'"
+                        "'move' requires at least one of 'target' or 'title'"
                     ));
                 }
 
-                if let Some(np) = new_parent {
-                    // Validate the destination slug shape at the tool
-                    // boundary (mirrors `require_path`). The runtime
-                    // would catch it too, but a structured tool-layer
-                    // error is better for the model.
-                    Self::require_parent(&params)?;
-                    // Reparent (with optional title/slug applied at the
-                    // destination — kept simple: apply rename after a
-                    // successful move so the reparent's slug-uniqueness
-                    // check uses the OLD slug).
-                    self.runtime.move_session(session_key, np).await?;
-                    if title.is_some() || slug.is_some() {
-                        self.runtime.rename_session(session_key, title, slug).await?;
-                    }
-                } else {
-                    // Pure rename in place: title and/or slug, parent unchanged.
-                    self.runtime.rename_session(session_key, title, slug).await?;
+                if params.get("target").is_some() {
+                    let (parent_str, slug) = Self::parse_target(&params, "move")?;
+                    let new_parent = if parent_str.is_empty() {
+                        "/".to_string()
+                    } else {
+                        parent_str.to_string()
+                    };
+                    self.runtime
+                        .move_session(session_key, new_parent, Some(slug.to_string()))
+                        .await?;
+                }
+                if let Some(t) = title {
+                    self.runtime
+                        .rename_session(session_key, Some(t), None)
+                        .await?;
                 }
                 Ok(json!({
                     "path": session_key,
@@ -1009,7 +1033,12 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "copy", "path": "test-session", "label": "fork"}))
+            .execute(json!({
+                "action": "copy",
+                "path": "test-session",
+                "target": "test-session/fork",
+                "label": "fork",
+            }))
             .await
             .unwrap();
         let new_id = result["new_session_id"].as_str().unwrap();
@@ -1037,10 +1066,17 @@ mod tests {
 
         // Copy without path must error.
         let err = tool
-            .execute(json!({"action": "copy"}))
+            .execute(json!({"action": "copy", "target": "x/y"}))
             .await
             .expect_err("copy without path must error");
         assert!(err.to_string().contains("path"), "{err}");
+
+        // Copy without target must error.
+        let err = tool
+            .execute(json!({"action": "copy", "path": "test-session"}))
+            .await
+            .expect_err("copy without target must error");
+        assert!(err.to_string().contains("target"), "{err}");
     }
 
     #[tokio::test]
@@ -1108,7 +1144,7 @@ mod tests {
             .execute(json!({
                 "action": "move",
                 "path": "test-session",
-                "new_parent": "parent-s"
+                "target": "parent-s/task-b",
             }))
             .await
             .unwrap();
@@ -1123,7 +1159,7 @@ mod tests {
 
         // path is always required.
         let err = tool
-            .execute(json!({"action": "move", "new_parent": "parent-s"}))
+            .execute(json!({"action": "move", "target": "parent-s/x"}))
             .await
             .expect_err("move without path must error");
         assert!(err.to_string().contains("path"), "{err}");
@@ -1133,23 +1169,25 @@ mod tests {
             .execute(json!({
                 "action": "move",
                 "path": "missing",
-                "new_parent": "parent-s"
+                "target": "parent-s/x",
             }))
             .await
             .expect_err("move of an unknown session must error");
         assert!(err.to_string().contains("missing"), "{err}");
     }
 
-    /// Sprint 7 Commit F: `move` with NO new_parent + title/slug is
-    /// the bash `mv` rename-in-place case. Pre-merge this was the
-    /// `rename` action; Commit F subsumed it.
+    /// Sprint 7 Commit F: `move` with `target` set to
+    /// `<current_parent>/<new_slug>` is the bash `mv` rename-in-place
+    /// case. Pre-merge this was the `rename` action; Commit F subsumed
+    /// it, Commit H unified the addressing under `target`.
     #[tokio::test]
     async fn test_session_move_rename_in_place_with_slug_title_both() {
         let cache = create_test_cache();
         let tool = SessionTool::new(cache.as_shared());
 
-        // Slug only.
-        tool.execute(json!({"action": "move", "path": "test-session", "slug": "task-b"}))
+        // Slug only — rename in place at the root (test-session has
+        // no recorded parent in the cache).
+        tool.execute(json!({"action": "move", "path": "test-session", "target": "/task-b"}))
             .await
             .unwrap();
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
@@ -1157,9 +1195,10 @@ mod tests {
         // Title untouched by a slug-only rename.
         assert_eq!(list["sessions"][0]["label"], "Test Session");
 
-        // Title only (slug survives).
+        // Title only (slug survives) — target must be present even
+        // when only the display label changes.
         tool.execute(
-            json!({"action": "move", "path": "test-session", "title": "New Title"}),
+            json!({"action": "move", "path": "test-session", "target": "/task-b", "title": "New Title"}),
         )
         .await
         .unwrap();
@@ -1167,9 +1206,9 @@ mod tests {
         assert_eq!(list["sessions"][0]["label"], "New Title");
         assert_eq!(list["sessions"][0]["slug"], "task-b");
 
-        // Both at once.
+        // Both at once — different slug, new title.
         tool.execute(
-            json!({"action": "move", "path": "test-session", "title": "T", "slug": "s2"}),
+            json!({"action": "move", "path": "test-session", "target": "/s2", "title": "T"}),
         )
         .await
         .unwrap();
@@ -1178,9 +1217,9 @@ mod tests {
         assert_eq!(list["sessions"][0]["slug"], "s2");
     }
 
-    /// `move` with NOTHING (no new_parent, no title, no slug) is a
-    /// no-op — refuse it explicitly so the model can't accidentally
-    /// call move with all default params and get a false success.
+    /// `move` with NOTHING (no target, no title) is a no-op — refuse
+    /// it explicitly so the model can't accidentally call move with
+    /// all default params and get a false success.
     #[tokio::test]
     async fn test_session_move_all_none_params_errors() {
         let cache = create_test_cache();
@@ -1189,10 +1228,9 @@ mod tests {
         let err = tool
             .execute(json!({"action": "move", "path": "test-session"}))
             .await
-            .expect_err("move with no new_parent/title/slug must error");
-        assert!(err.to_string().contains("new_parent"), "{err}");
+            .expect_err("move with no target/title must error");
+        assert!(err.to_string().contains("target"), "{err}");
         assert!(err.to_string().contains("title"), "{err}");
-        assert!(err.to_string().contains("slug"), "{err}");
     }
 
     /// Sprint 7 Commit G: tool-layer `validate_path` mirrors
@@ -1262,10 +1300,10 @@ mod tests {
         }
     }
 
-    /// `new_parent` is also a slug path — same shape rules as
-    /// `path`. Validate at the tool boundary.
+    /// `target` is also a slug path — same shape rules as `path`.
+    /// Validate at the tool boundary.
     #[tokio::test]
-    async fn test_session_move_new_parent_validates_at_tool_boundary() {
+    async fn test_session_move_target_validates_at_tool_boundary() {
         let cache = create_test_cache();
         let tool = SessionTool::new(cache.as_shared());
 
@@ -1273,11 +1311,11 @@ mod tests {
             .execute(json!({
                 "action": "move",
                 "path": "test-session",
-                "new_parent": "root:user:bob",
+                "target": "root:user:bob/x",
             }))
             .await
-            .expect_err("raw-id new_parent must error at the boundary");
-        assert!(err.to_string().contains("new_parent"), "{err}");
+            .expect_err("raw-id target must error at the boundary");
+        assert!(err.to_string().contains("target"), "{err}");
         assert!(err.to_string().contains("slug"), "{err}");
     }
 }
