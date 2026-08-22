@@ -19,13 +19,12 @@ use crate::common::paths::PathResolver;
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
 use chrono::Utc;
-use peko_cron::events::SystemEvent;
 use peko_cron::IdleDetector;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
@@ -132,28 +131,17 @@ pub(crate) struct DaemonStatus {
 ///
 /// `pub` since Phase 11b so the `peko-daemon` binary artifact
 /// (`src/bin/peko-daemon.rs`) can call `Daemon::new(config)?` and
-/// `daemon.run().await`. Internal state (cron engine, status mutex,
-/// event channels) stays private to `Daemon::run`.
+/// `daemon.run().await`. Internal state (cron engine, status mutex)
+/// stays private to `Daemon::run`.
 pub struct Daemon {
     config: DaemonConfig,
     status: Arc<Mutex<DaemonStatus>>,
-    event_rx: Option<mpsc::Receiver<SystemEvent>>,
-    #[allow(dead_code)]
-    event_tx: Option<mpsc::Sender<SystemEvent>>,
     cron_engine: CronEngine,
 }
 
 impl Daemon {
     /// Create a new daemon
     pub fn new(config: DaemonConfig) -> Result<Self> {
-        Self::with_event_receiver(config, None)
-    }
-
-    /// Create a new daemon with event receiver for event-triggered jobs
-    pub fn with_event_receiver(
-        config: DaemonConfig,
-        event_rx: Option<mpsc::Receiver<SystemEvent>>,
-    ) -> Result<Self> {
         let status = Arc::new(Mutex::new(DaemonStatus {
             running: false,
             jobs_checked: 0,
@@ -199,69 +187,8 @@ impl Daemon {
         Ok(Self {
             config,
             status,
-            event_rx,
-            event_tx: None,
             cron_engine,
         })
-    }
-
-    /// Create a new daemon with an internal event channel.
-    /// Returns the daemon and the sender half so external code can publish events.
-    #[allow(dead_code)]
-    pub fn new_with_events(config: DaemonConfig) -> Result<(Self, mpsc::Sender<SystemEvent>)> {
-        let status = Arc::new(Mutex::new(DaemonStatus {
-            running: false,
-            jobs_checked: 0,
-            jobs_executed: 0,
-            last_check: None,
-        }));
-        let (event_tx, event_rx) = mpsc::channel(1024);
-
-        let cron_path_resolver = crate::common::paths::PathResolver::with_dirs(
-            config.config_dir.clone(),
-            config.data_dir.clone(),
-            dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
-        );
-        // ADR-046 trust + audit: extract the audit dir BEFORE moving
-        // the path resolver into the cron engine — JSONL audit
-        // events (cron.execute, cron.result, cron.write) flow
-        // through this observability instance and need a sink to land
-        // in.
-        let cron_audit_dir = cron_path_resolver.audit_dir();
-
-        let cron_engine = CronEngine::new(
-            cron_path_resolver,
-            std::sync::Arc::new(peko_cron::IdleDetector::new()),
-            std::sync::Arc::new(peko_observability::Observability::with_audit_dir(
-                "daemon",
-                cron_audit_dir,
-            )?),
-            None,
-            std::sync::Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-                ),
-            ),
-            std::sync::Weak::new(),
-        );
-
-        let daemon = Self {
-            config,
-            status,
-            event_rx: Some(event_rx),
-            event_tx: Some(event_tx.clone()),
-            cron_engine,
-        };
-
-        Ok((daemon, event_tx))
-    }
-
-    /// Publish a system event to the internal event channel.
-    #[allow(dead_code)]
-    pub async fn publish_event(&self, event: SystemEvent) {
-        if let Some(ref tx) = self.event_tx {
-            let _ = tx.send(event).await;
-        }
     }
 
     /// Run the daemon (blocks until shutdown)
@@ -509,9 +436,6 @@ impl Daemon {
 
         info!("✅ Daemon ready. Waiting for cron jobs...");
 
-        // Clone event receiver if present
-        let mut event_rx = self.event_rx.take();
-
         // Build path resolver for session maintenance
         let resolver = PathResolver::with_dirs(
             self.config.config_dir.clone(),
@@ -577,19 +501,6 @@ impl Daemon {
                         Ok(n) => info!("Cron janitor reconciled {n} previously-running runs"),
                         Err(e) => error!("Cron janitor reconciliation failed: {e}"),
                     }
-                }
-
-                // Handle system events (event-triggered jobs)
-                Some(event) = async {
-                    match &mut event_rx {
-                        Some(rx) => rx.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    if let Err(e) = self.cron_engine.handle_event(event).await {
-                        error!("Error handling system event: {}", e);
-                    }
-                    self.sync_cron_status().await;
                 }
 
                 // Handle shutdown signal from API

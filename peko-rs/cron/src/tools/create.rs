@@ -57,7 +57,7 @@ pub struct CronCreateArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Cron expression (5-field). Required unless `at`, `interval_ms`,
-    /// `idle_ms`, or `event_topic` is provided.
+    /// or `idle_ms` is provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cron: Option<String>,
     /// Relative delay for a one-shot job (e.g. "90s", "5m", "1h").
@@ -78,12 +78,6 @@ pub struct CronCreateArgs {
     /// Idle duration in milliseconds before triggering
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_ms: Option<u64>,
-    /// Event topic to subscribe to
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_topic: Option<String>,
-    /// Optional filter for event jobs
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_filter: Option<serde_json::Value>,
 }
 
 /// Derive `delete_after_run` from the caller's one-shot hints and the
@@ -115,10 +109,9 @@ fn resolve_schedule(
             || args.cron.is_some()
             || args.interval_ms.is_some()
             || args.idle_ms.is_some()
-            || args.event_topic.is_some()
         {
             anyhow::bail!(
-                "`delay` cannot be combined with `at`, `cron`, `interval_ms`, `idle_ms`, or `event_topic`"
+                "`delay` cannot be combined with `at`, `cron`, `interval_ms`, or `idle_ms`"
             );
         }
         let ms = crate::tools::parse_duration_ms(delay)?;
@@ -140,7 +133,7 @@ impl Tool for CronCreateTool {
     }
 
     fn description(&self) -> String {
-        "Schedule a tool to run at a future time. The tool's parameters are passed verbatim at fire time. Supports cron expressions, one-shot 'at' times, intervals, idle triggers, and event triggers. Jobs are stored and executed by the daemon.".to_string()
+        "Schedule a tool to run at a future time. The tool's parameters are passed verbatim at fire time. Supports cron expressions, one-shot 'at' times, intervals, and idle triggers. Jobs are stored and executed by the daemon.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -169,7 +162,7 @@ impl Tool for CronCreateTool {
                 },
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression (5-field). Required unless at, interval_ms, idle_ms, or event_topic is provided."
+                    "description": "Cron expression (5-field). Required unless at, interval_ms, or idle_ms is provided."
                 },
                 "at": {
                     "type": "string",
@@ -177,7 +170,7 @@ impl Tool for CronCreateTool {
                 },
                 "delay": {
                     "type": "string",
-                    "description": "PREFERRED for 'in N units' requests: relative delay for a one-shot job (e.g. \"90s\", \"5m\", \"1h\", \"1d\"). Resolved to an absolute timestamp at registration time — no clock arithmetic. Cannot be combined with at/cron/interval_ms/idle_ms/event_topic."
+                    "description": "PREFERRED for 'in N units' requests: relative delay for a one-shot job (e.g. \"90s\", \"5m\", \"1h\", \"1d\"). Resolved to an absolute timestamp at registration time — no clock arithmetic. Cannot be combined with at/cron/interval_ms/idle_ms."
                 },
                 "interval_ms": {
                     "type": "integer",
@@ -190,14 +183,6 @@ impl Tool for CronCreateTool {
                 "idle_ms": {
                     "type": "integer",
                     "description": "Idle duration in milliseconds before triggering"
-                },
-                "event_topic": {
-                    "type": "string",
-                    "description": "Event topic to subscribe to"
-                },
-                "event_filter": {
-                    "type": "object",
-                    "description": "Optional filter for event-triggered jobs"
                 }
             },
             "required": ["tool", "params"]

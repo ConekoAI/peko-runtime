@@ -147,11 +147,10 @@ job — the daemon asks the `AsyncExecutor` to run `tool_name` with
 ```
 
 **Peko extensions:** the schema does not require `cron` because peko
-supports multiple schedule kinds (`at`, `interval_ms`, event-triggered jobs
-via `event_topic`/`event_filter`). To schedule a classic cron job, supply
-`cron`; otherwise supply one of the extension fields. Extra fields:
-`label`, `at`, `interval_ms`, `timezone`, `idle_ms`,
-`event_topic`, `event_filter`.
+supports multiple schedule kinds (`at`, `interval_ms`, `idle_ms`). To
+schedule a classic cron job, supply `cron`; otherwise supply one of
+the extension fields. Extra fields:
+`label`, `at`, `interval_ms`, `timezone`, `idle_ms`.
 
 **Sprint 7 Commit D (2026-08-21)** restricted the tool to scheduling
 SpawnTool jobs only — `prompt` / `message` / `target` / `description` /

@@ -1,11 +1,10 @@
 //! Cron execution engine for the daemon
 //!
-//! Encapsulates job polling, idle detection, event-triggered execution,
-//! delivery, and audit logging. Keeps the daemon's main loop focused on
-//! lifecycle and shutdown.
+//! Encapsulates job polling, idle detection, delivery, and audit
+//! logging. Keeps the daemon's main loop focused on lifecycle and
+//! shutdown.
 
 use crate::common::authority::{RuntimeAuthority, TierPath};
-use crate::common::json_utils::json_subset;
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::async_exec::executor::{
     AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
@@ -17,7 +16,6 @@ use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
-use peko_cron::events::SystemEvent;
 use peko_cron::{
     CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, IdleDetector,
 };
@@ -310,91 +308,6 @@ impl CronEngine {
     }
 
     /// Handle a system event and trigger matching event-triggered jobs.
-    pub async fn handle_event(&self, event: SystemEvent) -> Result<()> {
-        use peko_cron::ScheduleKind;
-
-        let event_type = event.event_type().to_string();
-        debug!("Handling system event: {}", event_type);
-
-        let pairs = self.all_schedulers().await;
-        let mut event_jobs: Vec<CronJob> = Vec::new();
-        for (name, scheduler) in &pairs {
-            match scheduler.event_jobs(false) {
-                Ok(mut j) => event_jobs.append(&mut j),
-                Err(e) => warn!("cron event_jobs for {name} failed: {e}"),
-            }
-        }
-
-        for job in event_jobs {
-            // Match the schedule up-front and clone the bits we need
-            // for the `once` early-disable path so we can move `job`
-            // into the spawned execution task below.
-            let (job_id, principal_id, job_name, once) = match &job.schedule {
-                ScheduleKind::Event {
-                    event_type: job_event_type,
-                    once,
-                    ..
-                } => {
-                    if job_event_type != &event_type {
-                        continue;
-                    }
-
-                    // Event-filter check (clone-then-drop of the
-                    // borrow on `job.schedule`).
-                    let filter_match = match &job.schedule {
-                        ScheduleKind::Event {
-                            filter: Some(f), ..
-                        } => Self::event_matches_filter(&event, f),
-                        _ => true,
-                    };
-                    if !filter_match {
-                        continue;
-                    }
-
-                    info!(
-                        "📡 Event '{}' matches job '{}'",
-                        event_type, job.name
-                    );
-                    (
-                        job.id.clone(),
-                        job.principal_id.clone(),
-                        job.name.clone(),
-                        *once,
-                    )
-                }
-                _ => continue,
-            };
-
-            // Detach per-job execution (same rationale as
-            // `check_and_run`). For `once: true` event jobs the
-            // post-job disable happens inside `execute_job` (via
-            // the existing `delete_after_run` / one-shot path),
-            // so we don't need to disable it here.
-            let engine = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = engine.execute_job(job).await {
-                    error!("Failed to execute event-triggered job: {}", e);
-                }
-            });
-
-            if once {
-                // Best-effort early disable so re-firing the same
-                // event before the spawned task lands doesn't
-                // queue a second concurrent run. The disable is
-                // idempotent and harmless if the spawned task
-                // already disabled the job.
-                let scheduler = self.scheduler_for(&principal_id).await?;
-                if let Err(e) = scheduler.set_job_enabled(&job_id, false) {
-                    warn!("Failed to disable one-time job {}: {}", job_id, e);
-                } else {
-                    info!("🔄 Disabled one-time event job: {}", job_name);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     // ------------------------------------------------------------------
     // Job execution
     // ------------------------------------------------------------------
@@ -901,17 +814,6 @@ impl CronEngine {
             }
         }
         Ok(finalized)
-    }
-
-    // ------------------------------------------------------------------
-    // Event filtering
-    // ------------------------------------------------------------------
-
-    fn event_matches_filter(event: &SystemEvent, filter: &serde_json::Value) -> bool {
-        let Ok(event_json) = serde_json::to_value(event) else {
-            return false;
-        };
-        json_subset(&event_json, filter)
     }
 }
 
