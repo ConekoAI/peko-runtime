@@ -155,9 +155,9 @@ pub enum ExtCommands {
         /// For MCP: ship server.json instead of manifest.yaml wrapper
         #[arg(long)]
         bare: bool,
-        /// For gateway: the gateway type
-        #[arg(long)]
-        gateway_type: Option<String>,
+        // Sprint 9 Commit 3: `gateway_type` CLI flag retired with the chat-gateway
+        // adapter framework. `peko ext init gateway` now returns an error from
+        // `ScaffoldEngine::scaffold` (see `extensions/framework/scaffold/mod.rs`).
     },
 }
 
@@ -430,7 +430,6 @@ pub async fn handle_ext_command(
             output,
             lang,
             bare,
-            gateway_type,
         } => {
             let output_dir = output.unwrap_or_else(|| PathBuf::from(&name));
             let lang = lang
@@ -444,7 +443,6 @@ pub async fn handle_ext_command(
                 output_dir: output_dir.clone(),
                 lang,
                 bare_mcp: bare,
-                gateway_type,
             };
 
             let result = ScaffoldEngine::scaffold(&r#type, &options)?;
