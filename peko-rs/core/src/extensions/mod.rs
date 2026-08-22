@@ -20,7 +20,9 @@
 //! src/extensions/
 //! ├── framework/   # Generic framework: core, adapters, manager, types, transport, services, protocols, scaffold, async_exec
 //! ├── builtin/     # Built-in tool adapter
-//! ├── gateway/     # Gateway adapter, protocol, runtime
+//! ├── (gateway retired — Sprint 9 Commit 3: chat-gateway adapter
+//! │   framework removed; ingress is now exclusively through
+//! │   per-peer standing children under the agent-session paradigm)
 //! ├── general/     # General extension adapter
 //! ├── mcp/         # MCP adapter, protocol, runtime
 //! ├── skill/       # Skill adapter
@@ -44,8 +46,11 @@ pub mod framework;
 /// Built-in tool adapter — registers native Tool trait implementations with ExtensionCore.
 pub mod builtin;
 
-/// Gateway extension — platform gateway adapters (HTTP, WebSocket, pub/sub).
-pub mod gateway;
+/// Sprint 9 Commit 3: the gateway extension was retired. The
+/// chat-gateway adapter framework (HTTP/WebSocket bridges) never
+/// shipped a concrete integration and is no longer wired into the
+/// daemon. All external ingress lands in per-peer standing children
+/// under the agent-session paradigm (Phase 7 of sprint 2).
 
 /// General extension adapter — unconstrained access to all 22 hook points.
 pub mod general;
@@ -102,9 +107,6 @@ impl BuiltInAdapters {
             Box::new(slash::adapter::SlashAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),
             Box::new(mcp::adapter::McpAdapter::with_default_manager()),
-            Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(
-                crate::extensions::framework::core::ExtensionCore::new(),
-            ))),
             Box::new(general::adapter::GeneralExtensionAdapter::new()),
         ]
     }
@@ -133,11 +135,14 @@ pub mod extension_types {
     /// Universal tool extension type
     pub const UNIVERSAL_TOOL: &str = "universal-tool";
 
-    /// Gateway extension type
-    pub const GATEWAY: &str = "gateway";
-
     /// General extension type (full hook access; manifest-declarable via manifest.yaml)
     pub const GENERAL: &str = "general";
+
+    // Sprint 9 Commit 3: `GATEWAY` constant retired along with the
+    // chat-gateway adapter framework. Any historical "gateway"
+    // manifest bytes in users' `extensions/` directories will fail
+    // `is_valid_type` and surface as install errors, which is the
+    // intended forward-only behavior.
 
     /// Custom extension type prefix
     pub const CUSTOM_PREFIX: &str = "custom:";
@@ -150,14 +155,14 @@ pub mod extension_types {
     pub fn is_valid_type(ext_type: &str) -> bool {
         matches!(
             ext_type,
-            SKILL | AGENT | SLASH | MCP | UNIVERSAL_TOOL | GATEWAY | GENERAL
+            SKILL | AGENT | SLASH | MCP | UNIVERSAL_TOOL | GENERAL
         ) || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
     #[must_use]
     pub fn standard_types() -> Vec<&'static str> {
-        vec![SKILL, AGENT, SLASH, MCP, UNIVERSAL_TOOL, GATEWAY, GENERAL]
+        vec![SKILL, AGENT, SLASH, MCP, UNIVERSAL_TOOL, GENERAL]
     }
 }
 
@@ -167,40 +172,45 @@ mod tests {
 
     #[test]
     fn test_extension_type_constants() {
+        // Sprint 9 Commit 3: GATEWAY constant retired.
         assert_eq!(extension_types::SKILL, "skill");
         assert_eq!(extension_types::AGENT, "agent");
         assert_eq!(extension_types::SLASH, "slash");
         assert_eq!(extension_types::MCP, "mcp");
         assert_eq!(extension_types::UNIVERSAL_TOOL, "universal-tool");
-        assert_eq!(extension_types::GATEWAY, "gateway");
         assert_eq!(extension_types::GENERAL, "general");
     }
 
     #[test]
     fn test_extension_type_validation() {
+        // Sprint 9 Commit 3: "gateway" is no longer a valid type.
         assert!(extension_types::is_valid_type("skill"));
         assert!(extension_types::is_valid_type("agent"));
         assert!(extension_types::is_valid_type("slash"));
         assert!(extension_types::is_valid_type("mcp"));
         assert!(extension_types::is_valid_type("custom:internal"));
         assert!(!extension_types::is_valid_type("invalid"));
+        assert!(!extension_types::is_valid_type("gateway"));
     }
 
     #[test]
     fn test_standard_types() {
+        // Sprint 9 Commit 3: gateway retired from standard types.
         let types = extension_types::standard_types();
         assert!(types.contains(&"skill"));
         assert!(types.contains(&"agent"));
         assert!(types.contains(&"slash"));
         assert!(types.contains(&"mcp"));
-        assert!(types.contains(&"gateway"));
+        assert!(!types.contains(&"gateway"));
     }
 
     #[test]
     fn test_built_in_adapters() {
+        // Sprint 9 Commit 3: GatewayAdapter retired — adapter count
+        // dropped from 7 to 6.
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 7);
+        assert_eq!(adapters.len(), 6);
     }
 }

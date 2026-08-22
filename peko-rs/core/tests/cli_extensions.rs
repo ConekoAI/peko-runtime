@@ -13,7 +13,7 @@
 //! | `universal/python/simple/test.ps1` T2    | `ext_install_universal_python_simple_manifest_roundtrip`| L1    |
 //! | `universal/python/reserved_params/test.ps1` T2 | `ext_install_universal_python_reserved_params_manifest` | L1 |
 //! | `universal/node/custom.ps1` T1           | `ext_install_universal_node_manifest_parsed`           | L1    |
-//! | `gateway/http_basics/test.ps1` T1        | `ext_install_gateway_manifest_parsed`                  | L1    |
+//! | (Sprint 9 Commit 3 — gateway row retired; framework removed.)       |                                            |       |
 //! | (cross-cutting, all 9 PS scripts)        | `ext_install_uninstall_roundtrip`                       | L1    |
 //!
 //! ## Layered design (L1 / L2 / L3)
@@ -598,55 +598,11 @@ async fn ext_install_universal_node_manifest_parsed() {
     assert_ok(&out, &err, &status);
 }
 
-/// `gateway/http_basics/test.ps1` T1: install a gateway manifest
-/// (Tier 2 detection from `manifest.yaml` with `extension_type:
-/// gateway`). The test only validates the install / list / info
-/// round-trip; it does NOT actually start the gateway Node.js process
-/// (that's L2 — needs Node on the test host).
-#[tokio::test]
-#[ignore = "requires peko daemon"]
-async fn ext_install_gateway_manifest_parsed() {
-    let cli = PekoCli::new();
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let install_path = fixture_dir("gateway/http_basics");
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "ext",
-            "install",
-            &install_path.to_string_lossy(),
-            "--type",
-            "gateway",
-        ],
-        Duration::from_secs(15),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("http-gateway-ref"),
-        "install output should surface the extension id: stdout={out} stderr={err}",
-    );
-
-    // peko ext info confirms type "gateway".
-    let (info_out, err, status) = run(
-        &cli,
-        &["ext", "info", "http-gateway-ref"],
-        Duration::from_secs(10),
-    );
-    assert_ok(&info_out, &err, &status);
-    assert!(
-        info_out.contains("\"type\": \"gateway\""),
-        "info should report type=gateway: {info_out}",
-    );
-
-    // Cleanup.
-    let (out, err, status) = run(
-        &cli,
-        &["ext", "uninstall", "http-gateway-ref"],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
-}
+// Sprint 9 Commit 3: `ext_install_gateway_manifest_parsed` retired.
+// The chat-gateway adapter framework it exercised was removed; the
+// only fixture under `e2e_tests_archive/extensions/gateway/` is gone.
+// Per-peer standing children (the agent-session paradigm) own ingress
+// now, not a `peko ext install` of a Discord/Slack bridge.
 
 /// Cross-cutting (used in all 9 PS scripts as the install + verify +
 /// uninstall pattern): install calculator-skill, verify it appears in

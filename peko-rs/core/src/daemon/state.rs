@@ -6,7 +6,10 @@
 use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
-use crate::extensions::gateway::runtime::{GatewayRouter, GatewayRuntimeStarter};
+// Sprint 9 Commit 3: chat-gateway adapter framework retired.
+// `GatewayRouter` and `GatewayRuntimeStarter` are gone — external
+// ingress flows exclusively through per-peer standing children under
+// the agent-session paradigm (Phase 7 of sprint 2).
 use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
@@ -158,11 +161,9 @@ pub(crate) struct AppState {
     /// from here at the top of every iteration.
     pub inbox_registry: Arc<InboxRegistry>,
 
-    /// Background runtime manager for MCP servers and gateways (ADR-025)
+    /// Background runtime manager for MCP servers (ADR-025; gateways
+    /// retired in Sprint 9 Commit 3)
     background_runtime_manager: Arc<BackgroundRuntimeManager>,
-
-    /// Gateway router for channel→agent mapping (ADR-025)
-    gateway_router: Arc<GatewayRouter>,
 
     /// Shared MCP client registry — populated by McpRuntimeAdapter (ADR-025)
     mcp_client_registry: Arc<McpClientRegistry>,
@@ -329,7 +330,6 @@ impl std::fmt::Debug for AppState {
             .field("async_task_executor", &"<AsyncExecutor>")
             .field("inbox_registry", &"<InboxRegistry>")
             .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
-            .field("gateway_router", &"<GatewayRouter>")
             .field("mcp_client_registry", &"<McpClientRegistry>")
             .field(
                 "runtime_starter_registry",
@@ -768,9 +768,12 @@ impl AppState {
         let async_task_executor =
             Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 
-        // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
+        // ADR-025: Initialize BackgroundRuntimeManager.
+        // Sprint 9 Commit 3: the chat-gateway adapter framework was
+        // retired, so `GatewayRouter` + `GatewayRuntimeStarter` are gone
+        // — external ingress now flows exclusively through per-peer
+        // standing children under the agent-session paradigm.
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
-        let gateway_router = Arc::new(GatewayRouter::new(Arc::clone(&principal_service)));
 
         // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
         let mcp_client_registry = Arc::new(McpClientRegistry::new());
@@ -782,9 +785,9 @@ impl AppState {
         // the calling principal's quota meter. The MCP init is wired below
         // (after `principal_manager` is built) for this reason.
 
-        // ADR-025/026: Extension runtime starter registry
+        // ADR-025/026: Extension runtime starter registry.
+        // Sprint 9 Commit 3: only MCP starters register now.
         let mut runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
-        runtime_starter_registry.register(Box::new(GatewayRuntimeStarter::new()));
         runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
@@ -794,8 +797,9 @@ impl AppState {
                 .with_storage_dir(path_resolver.extensions_root()),
         );
 
-        // Register adapters (same as CLI create_manager_with_adapters)
-        use crate::extensions::gateway::GatewayAdapter;
+        // Register adapters (same as CLI create_manager_with_adapters).
+        // Sprint 9 Commit 3: `GatewayAdapter` removed — chat-gateway
+        // adapter framework retired.
         use crate::extensions::general::GeneralExtensionAdapter;
         use crate::extensions::mcp::McpAdapter;
         use crate::extensions::skill::SkillAdapter;
@@ -813,9 +817,6 @@ impl AppState {
             .await;
         extension_store
             .register_adapter(Box::new(UniversalToolAdapter::new()))
-            .await;
-        extension_store
-            .register_adapter(Box::new(GatewayAdapter::new(Arc::clone(&global_core))))
             .await;
         extension_store
             .register_adapter(Box::new(GeneralExtensionAdapter::new()))
@@ -1044,7 +1045,6 @@ impl AppState {
             async_task_executor,
             inbox_registry,
             background_runtime_manager,
-            gateway_router,
             mcp_client_registry,
             runtime_starter_registry,
             extension_store,
@@ -1313,12 +1313,6 @@ impl AppState {
         &self.background_runtime_manager
     }
 
-    /// Get the gateway router (ADR-025)
-    #[must_use]
-    pub fn gateway_router(&self) -> &Arc<GatewayRouter> {
-        &self.gateway_router
-    }
-
     /// Get the shared MCP client registry (ADR-025)
     #[must_use]
     pub fn mcp_client_registry(&self) -> &Arc<McpClientRegistry> {
@@ -1381,7 +1375,6 @@ impl AppState {
         StarterContext {
             background_runtime_manager: Arc::clone(&self.background_runtime_manager),
             principal_service: Arc::clone(&self.principal_service),
-            gateway_router: Arc::clone(&self.gateway_router),
             mcp_client_registry: Arc::clone(&self.mcp_client_registry),
             data_dir: self.data_dir.clone(),
             // Phase A: hand the typed resolver through so starters
