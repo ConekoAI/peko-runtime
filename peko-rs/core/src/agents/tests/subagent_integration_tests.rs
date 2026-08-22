@@ -1494,7 +1494,7 @@ async fn new_with_name_attaches_to_standing_child() {
             "root-sess",
             ExecutionConfig {
                 slug: Some("memory".to_string()),
-                subagent_type: Some("archivist".to_string()),
+                agent: Some("archivist".to_string()),
                 max_depth: 10,
                 ..Default::default()
             },
@@ -1674,7 +1674,7 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
             "root-sess",
             ExecutionConfig {
                 slug: Some("memory".to_string()),
-                subagent_type: Some("writer".to_string()),
+                agent: Some("writer".to_string()),
                 max_depth: 10,
                 ..Default::default()
             },
@@ -1698,7 +1698,7 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
             "root-sess",
             ExecutionConfig {
                 slug: Some("memory".to_string()),
-                subagent_type: Some("archivist".to_string()),
+                agent: Some("archivist".to_string()),
                 max_depth: 10,
                 ..Default::default()
             },

@@ -15,8 +15,8 @@
 //! **Principal model.** After the "Principal as the single actor" migration,
 //! `peko send <name>` targets a *Principal*, whose root agent
 //! (`principals/<name>/agents/root/AGENT.md` or `principals/<name>/agents/root.md`)
-//! is the parent that calls the `Agent` tool. The `Agent` tool's `subagent_type`
-//! resolves to a sibling subagent prompt at
+//! is the parent that calls the `Agent` tool. The `Agent` tool's `agent`
+//! argument resolves to a sibling subagent prompt at
 //! `principals/<name>/agents/<type>/AGENT.md` (see
 //! `AgentTool::resolve_subagent_config`). These tests therefore:
 //!   * create the Principal via [`create_mock_principal_with_tools`], granting
@@ -74,7 +74,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-/// The `subagent_type` every test spawns. Resolves to
+/// The `agent` template every test spawns. Resolves to
 /// `principals/<name>/agents/worker/AGENT.md`.
 const WORKER: &str = "worker";
 
@@ -159,12 +159,12 @@ fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
 
 /// Write a `worker` subagent prompt for the given Principal.
 ///
-/// `AgentTool::resolve_subagent_config` resolves a `subagent_type` to
-/// `<workspace>/agents/<type>/AGENT.md` (the directory form) or
-/// `<workspace>/agents/<type>.md` (the flat-file form), when a
+/// `AgentTool::resolve_subagent_config` resolves an `agent` template
+/// name to `<workspace>/agents/<type>/AGENT.md` (the directory form)
+/// or `<workspace>/agents/<type>.md` (the flat-file form), when a
 /// principal workspace is bound to the `Agent` tool. The root
 /// prompt `agents/root.md` created by `peko principal create` is a *file*
-/// and is NOT a valid `subagent_type`, so each test creates an explicit
+/// and is NOT a valid `agent` template, so each test creates an explicit
 /// `worker` subagent here. The subagent's tool whitelist comes from
 /// `ExtensionConfig::default()` (Agent/Write/Read/Bash/…), so the prompt body
 /// and frontmatter carry no tool grants — `AGENT.md` has no `tools` field.
@@ -256,7 +256,7 @@ async fn subagent_blocking_t1_write_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER, "path": "t1-write" }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "agent": WORKER, "path": "t1-write" }).to_string()
             } },
             "BLOCKING_SUCCESS",
         ],
@@ -335,7 +335,7 @@ async fn subagent_blocking_t2_isolated() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "subagent_type": WORKER,
+                    "agent": WORKER,
                     "path": "t2-iso",
                 }).to_string()
             } },
@@ -415,7 +415,7 @@ async fn subagent_blocking_t4_inline_read() {
             } },
             // Parent turn 2: spawn the child.
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER, "path": "t4-child" }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "agent": WORKER, "path": "t4-child" }).to_string()
             } },
             // Parent turn 3: report success. The child text was
             // `INLINE_RESULT_OK` and the parent's blocking tool
@@ -503,13 +503,13 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER, "path": "t1-child-a" }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "agent": WORKER, "path": "t1-child-a" }).to_string()
             } },
             "NESTING_SUCCESS",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER, "path": "t1-grandchild" }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "agent": WORKER, "path": "t1-grandchild" }).to_string()
             } },
             "CHILD_A_DONE",
         ],
@@ -597,19 +597,19 @@ async fn subagent_nesting_t2_depth_limit() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER, "path": "t2-child-a" }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "agent": WORKER, "path": "t2-child-a" }).to_string()
             } },
             "PARENT_DONE",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER, "path": "t2-grandchild" }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "agent": WORKER, "path": "t2-grandchild" }).to_string()
             } },
             "CHILD_A_DONE",
         ],
         grandchild_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": "would-be-depth-3-task", "subagent_type": WORKER, "path": "t2-depth-3" }).to_string()
+                serde_json::json!({ "prompt": "would-be-depth-3-task", "agent": WORKER, "path": "t2-depth-3" }).to_string()
             } },
             "GRANDCHILD_DONE",
         ],
@@ -673,7 +673,7 @@ async fn subagent_isolation_t1_shared_workspace() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "subagent_type": WORKER,
+                    "agent": WORKER,
                     "path": "t1-shared",
                 }).to_string()
             } },
@@ -742,7 +742,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "subagent_type": WORKER,
+                    "agent": WORKER,
                     "path": "t2-iso-file",
                 }).to_string()
             } },
@@ -787,7 +787,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
 
 /// Flat-file layout variant of `subagent_blocking_t1_write_file`.
 /// Verifies that a subagent prompt at `agents/worker.md` is discovered
-/// and can be spawned using the file stem as `subagent_type`.
+/// and can be spawned using the file stem as the `agent` argument.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
@@ -813,7 +813,7 @@ async fn subagent_blocking_t1_flat_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER, "path": "t1-flat" }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "agent": WORKER, "path": "t1-flat" }).to_string()
             } },
             "BLOCKING_SUCCESS",
         ],

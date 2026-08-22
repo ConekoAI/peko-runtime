@@ -181,7 +181,8 @@ impl Clone for RouterContext {
 
 #[derive(Debug, Clone)]
 pub struct AgentPromptSummary {
-    /// Canonical agent id used as `subagent_type` when spawning.
+    /// Canonical agent id used as the `Agent` tool's `agent` argument
+    /// when spawning.
     pub id: String,
     /// Human-readable display name from the frontmatter.
     pub name: String,

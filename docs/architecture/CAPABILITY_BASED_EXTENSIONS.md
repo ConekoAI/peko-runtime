@@ -194,13 +194,13 @@ Advanced users can opt out with `--no-starter-bundle`.
 
 ### 3.7 Subagents as Parent-Principal Threads
 
-When the root agent calls the `Agent` tool with `subagent_type = "researcher"`:
+When the root agent calls the `Agent` tool with `agent = "researcher"`:
 
 1. The runtime looks up the `researcher` extension manifest.
 2. The `CapabilityEvaluator` checks that `agent:researcher` is granted to the parent Principal.
 3. The subagent session starts under the **same** `PrincipalId` and with the **same** capability set as the parent.
 4. The subagent shares the parent’s memory and workspace context.
-5. Every action performed by the subagent is audited under the parent identity, with a `subagent_type` tag for lineage.
+5. Every action performed by the subagent is audited under the parent identity, with an `agent` tag for lineage.
 
 This keeps routing, identity, and cross-runtime messaging simple: there is only one Principal identity. The `agent:<id>` capability is a spawn gate, not a delegation boundary. If sandboxed delegation becomes a requirement later, child Principals can be introduced as an optional, advanced feature.
 
@@ -275,11 +275,11 @@ Copying `researcher.md` into `agents/` creates an `ExtensionRecord` with `trust 
 1. Agent requests tool `Read`.
 2. `CapabilityEvaluator` checks `tool:Read` is granted and the owning extension is active.
 3. Tool executes.
-4. Audit log records: principal, session, subagent_type if applicable, tool, arguments, result.
+4. Audit log records: principal, session, agent if applicable, tool, arguments, result.
 
 ### 4.3 Subagent Spawn
 
-1. Agent requests `Agent` tool with `subagent_type = "researcher"`.
+1. Agent requests `Agent` tool with `agent = "researcher"`.
 2. `CapabilityEvaluator` checks `agent:researcher` is granted.
 3. The runtime resolves the agent manifest/config.
 4. Subagent session starts under the parent `PrincipalId` with the parent’s capability set.

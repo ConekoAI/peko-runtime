@@ -19,6 +19,13 @@
 //!   then global (`{PEKO_HOME}/agents/<name>/config.toml`). Adapter
 //!   owns the `PathResolver` and `principal::agent_prompt` calls —
 //!   built-ins never touch root internals.
+//!
+//! Sprint 8: parameter names that took a `subagent_type: &str` are
+//! renamed to `agent: &str` to match the LLM-facing `AgentArgs::agent`
+//! field. The method names (`is_subagent_enabled`,
+//! `resolve_agent_config`) and the trait name (`SubagentRuntime`)
+//! keep their historical "subagent" framing — a subagent is what gets
+//! spawned, the `agent` value is its template name.
 //! - [`audit_spawn`](SubagentRuntime::audit_spawn) — observability hub
 //!   write. Adapter no-ops when no hub is attached.
 //! - [`execute_and_wait`](SubagentRuntime::execute_and_wait) — the actual
@@ -53,9 +60,9 @@ pub trait SubagentRuntime: Send + Sync {
     /// Capability check.
     ///
     /// Returns `true` only when the registered principal capability snapshot
-    /// grants `agent:<subagent_type>`. Missing context and missing grants are
+    /// grants `agent:<agent>`. Missing context and missing grants are
     /// both denied.
-    fn is_subagent_enabled(&self, subagent_type: &str) -> bool;
+    fn is_subagent_enabled(&self, agent: &str) -> bool;
 
     /// Resolve a subagent config from disk.
     ///
@@ -180,9 +187,9 @@ pub type SharedSubagentRuntime = Arc<dyn SubagentRuntime>;
 pub struct SpawnRequest {
     /// Task description / prompt for the subagent.
     pub prompt: String,
-    /// Subagent type identifier (passed for logging / observability
+    /// Agent template name (passed for logging / observability
     /// only — `subagent_config` already carries the resolved name).
-    pub subagent_type: String,
+    pub agent: String,
     /// Parent session key.
     pub parent_session_key: String,
     /// Per-run execution config (timeout, cleanup, label, etc.).
@@ -235,8 +242,9 @@ pub struct SpawnRequest {
 /// see fewer fields per `SubagentSpawn` row.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpawnAuditEvent {
-    /// Subagent type identifier.
-    pub subagent_type: String,
+    /// Agent template name (the value the LLM passed as `agent` on
+    /// the `Agent` tool call).
+    pub agent: String,
     /// The principal's runtime id (DID).
     pub principal_id: String,
     /// The principal's display name (for the audit row).

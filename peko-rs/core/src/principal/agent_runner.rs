@@ -353,7 +353,7 @@ where
     // `Agent::init_builtins_async` (run lazily at execution time, inside
     // `prepare_execution`) re-registers a globally-scoped `Agent` tool that
     // clobbers the principal-scoped one registered below — making every
-    // `subagent_type` resolve against the global `<home>/agents/...` path and
+    // `agent` argument resolve against the global `<home>/agents/...` path and
     // fail with "Subagent type '<name>' not found".
     .with_principal_workspace(ctx.workspace_path.clone())
     .with_principal_name(ctx.name().to_string())

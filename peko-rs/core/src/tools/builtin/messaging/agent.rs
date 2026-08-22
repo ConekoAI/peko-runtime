@@ -37,6 +37,11 @@ use crate::tools::builtin::messaging::subagent_runtime::{
 /// Trimmed surface (sprint 7, 2026-08-21): the LLM-facing tool takes
 /// only what the spawn actually needs.
 ///
+/// Sprint 8 rename: `subagent_type` → `agent`. The field always named
+/// the agent *template* (a single Markdown file under
+/// `<workspace>/agents/<agent>/AGENT.md`); the new name matches the
+/// semantic.
+///
 /// - `action` selects the mode (`new` / `resume`; `compact` stays
 ///   for now per the round-7 decision).
 /// - `path` is the slug path the target session lives at, or will
@@ -46,7 +51,7 @@ use crate::tools::builtin::messaging::subagent_runtime::{
 ///   (`daily-newsfeed`) paths are both accepted; raw UUIDs are
 ///   refused at the runtime layer via `resolve_reference`.
 /// - `prompt` is the task description.
-/// - `subagent_type` names the agent config to load.
+/// - `agent` names the agent template to load.
 /// - `model` is an optional override.
 ///
 /// Removed in this commit (vs the previous round-7 surface):
@@ -71,10 +76,13 @@ pub struct AgentArgs {
     /// and `resume`; ignored for `compact`).
     #[serde(default)]
     pub prompt: String,
-    /// Subagent type: name of the agent config under ~/.peko/agents/<subagent_type>/config.toml
-    /// (required for `new` and `resume`; ignored for `compact`).
+    /// Agent template: name of the agent definition under
+    /// `<workspace>/agents/<agent>/AGENT.md` (directory layout) or
+    /// `<workspace>/agents/<agent>.md` (flat layout). The agent
+    /// template supplies the spawned subagent's system prompt.
+    /// (Required for `new` and `resume`; ignored for `compact`.)
     #[serde(default)]
-    pub subagent_type: String,
+    pub agent: String,
     /// Optional model override for the subagent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -116,9 +124,9 @@ fn parse_action(raw: &str) -> anyhow::Result<AgentAction> {
 fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result<()> {
     match action {
         AgentAction::New => {
-            if args.prompt.is_empty() || args.subagent_type.is_empty() {
+            if args.prompt.is_empty() || args.agent.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"new\" requires 'prompt' and 'subagent_type'"
+                    "action \"new\" requires 'prompt' and 'agent'"
                 ));
             }
             // The new session's address — and the address of every
@@ -150,9 +158,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"resume\" 'path' is not a valid slug path: {e}"
                 ));
             }
-            if args.prompt.is_empty() || args.subagent_type.is_empty() {
+            if args.prompt.is_empty() || args.agent.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"resume\" requires 'prompt' and 'subagent_type'"
+                    "action \"resume\" requires 'prompt' and 'agent'"
                 ));
             }
         }
@@ -195,24 +203,24 @@ impl AgentTool {
         Self { runtime }
     }
 
-    /// Resolve subagent_type to an AgentConfig via the runtime port.
+    /// Resolve the agent template name to an AgentConfig via the runtime port.
     async fn resolve_subagent_config(
         &self,
-        subagent_type: &str,
+        agent: &str,
         model_override: Option<&str>,
     ) -> anyhow::Result<crate::tools::builtin::messaging::dto::AgentConfig> {
         // ADR-019/Track B: enforce the per-principal agent capability before
         // loading any on-disk config. Missing authorization context and missing
         // grants are both denied.
-        if !self.runtime.is_subagent_enabled(subagent_type) {
+        if !self.runtime.is_subagent_enabled(agent) {
             anyhow::bail!(
-                "Subagent '{subagent_type}' is not enabled for this principal. \
-                 Grant 'agent:{subagent_type}' and retry."
+                "Agent template '{agent}' is not enabled for this principal. \
+                 Grant 'agent:{agent}' and retry."
             );
         }
 
         self.runtime
-            .resolve_agent_config(subagent_type, self.runtime.workspace(), model_override)
+            .resolve_agent_config(agent, self.runtime.workspace(), model_override)
             .await
     }
 
@@ -234,7 +242,7 @@ impl AgentTool {
     async fn execute_spawn_blocking(
         &self,
         prompt: &str,
-        subagent_type: &str,
+        agent: &str,
         path: &str,
         model: Option<String>,
         resume_session: Option<String>,
@@ -248,7 +256,7 @@ impl AgentTool {
         // spawn is later blocked by a runtime error).
         let subagent_config = self
             .runtime
-            .resolve_agent_config(subagent_type, self.runtime.workspace(), model.as_deref())
+            .resolve_agent_config(agent, self.runtime.workspace(), model.as_deref())
             .await?;
 
         // Audit the spawn under the parent principal, if an observability hub
@@ -257,7 +265,7 @@ impl AgentTool {
         let principal_id = self.runtime.principal_id();
         self.runtime
             .audit_spawn(SpawnAuditEvent {
-                subagent_type: subagent_type.to_string(),
+                agent: agent.to_string(),
                 principal_id: principal_id.clone(),
                 principal_name: self.runtime.principal_name(),
                 parent_session_key: caller_session_key.clone().unwrap_or_default(),
@@ -295,7 +303,7 @@ impl AgentTool {
             .runtime
             .execute_and_wait(SpawnRequest {
                 prompt: prompt.to_string(),
-                subagent_type: subagent_type.to_string(),
+                agent: agent.to_string(),
                 parent_session_key: caller_session_key.clone().unwrap_or_default(),
                 config: crate::tools::builtin::messaging::dto::ExecutionConfig {
                     timeout_seconds,
@@ -325,7 +333,7 @@ impl AgentTool {
                     "run_id": run.run_id,
                     "child_session_key": run.child_session_key,
                     "success": success,
-                    "subagent_type": subagent_type,
+                    "agent": agent,
                     "timeout_seconds": timeout_seconds,
                 });
 
@@ -486,14 +494,14 @@ impl Tool for AgentTool {
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Actions:
-- new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + subagent_type + path. The `path` is the slug path under which the new session will live — full (`/local-user/daily-newsfeed`) or caller-relative (`daily-newsfeed`). The last segment is the new session's slug; intermediate segments describe where in the tree it lives. Raw UUIDs are REFUSED.
-- resume: Re-attach this run to an existing spawned session you own. `path` follows the same slug-path / caller-relative grammar as `session list`'s `path` field. Requires path + prompt + subagent_type.
-- compact: Flag a session for engine-driven summarization. `path` follows the same slug-path / caller-relative grammar. Requires path only (prompt and subagent_type are ignored if supplied). Returns immediately after flagging; the engine summarizes at the target's next run.
+- new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + agent + path. The `path` is the slug path under which the new session will live — full (`/local-user/daily-newsfeed`) or caller-relative (`daily-newsfeed`). The last segment is the new session's slug; intermediate segments describe where in the tree it lives. Raw UUIDs are REFUSED.
+- resume: Re-attach this run to an existing spawned session you own. `path` follows the same slug-path / caller-relative grammar as `session list`'s `path` field. Requires path + prompt + agent.
+- compact: Flag a session for engine-driven summarization. `path` follows the same slug-path / caller-relative grammar. Requires path only (prompt and agent are ignored if supplied). Returns immediately after flagging; the engine summarizes at the target's next run.
 
 Parameters:
 - action: "new" | "resume" | "compact" (default: "new")
 - prompt: Description of the task to execute (required for new and resume)
-- subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required for new and resume)
+- agent: Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for new and resume)
 - path: Target session (required for resume and compact) — a slug path ('/a/b/c') or a caller-relative slug ('agent-c') from the session tool's list (`path` field). Raw session ids are refused.
   For new: the slug path under which the new session will live; the last segment is the new session's slug.
 - model: Optional model override for the subagent (matches Claude Code's Agent schema)
@@ -514,10 +522,10 @@ Limits:
 
 Examples:
 // Blocking spawn - parent waits for result (auto-detaches on timeout)
-{"prompt": "Use Write to create report.txt with a summary", "subagent_type": "writer", "path": "writer-1"}
+{"prompt": "Use Write to create report.txt with a summary", "agent": "writer", "path": "writer-1"}
 
 // Persistent worker - continue a previous spawned session with its history
-{"action": "resume", "path": "/writer-1", "prompt": "Now update report.txt with the new numbers", "subagent_type": "writer"}
+{"action": "resume", "path": "/writer-1", "prompt": "Now update report.txt with the new numbers", "agent": "writer"}
 
 // Compact a long transcript before the next resume
 {"action": "compact", "path": "/writer-1"}"#
@@ -538,9 +546,9 @@ Examples:
                     "type": "string",
                     "description": "Description of the task to execute (required for new and resume; ignored for compact)"
                 },
-                "subagent_type": {
+                "agent": {
                     "type": "string",
-                    "description": "Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required for new and resume; ignored for compact)"
+                    "description": "Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for new and resume; ignored for compact)"
                 },
                 "path": {
                     "type": "string",
@@ -570,12 +578,12 @@ Examples:
             return self.execute_compact(&args, caller_session_key).await;
         }
 
-        // Resolve subagent_type to a concrete agent config and apply
+        // Resolve the agent template to a concrete agent config and apply
         // model override. This pre-validates the spawn's agent-side
         // shape (capability grant, on-disk config presence) so the
         // runtime can't be reached with a bad config.
         let _subagent_config = self
-            .resolve_subagent_config(&args.subagent_type, args.model.as_deref())
+            .resolve_subagent_config(&args.agent, args.model.as_deref())
             .await?;
 
         // For `new`, `path` is the new session's slug path (the last
@@ -590,7 +598,7 @@ Examples:
 
         self.execute_spawn_blocking(
             &args.prompt,
-            &args.subagent_type,
+            &args.agent,
             &args.path,
             args.model.clone(),
             resume_session,
@@ -631,7 +639,7 @@ Examples:
         }
 
         let _subagent_config = self
-            .resolve_subagent_config(&args.subagent_type, args.model.as_deref())
+            .resolve_subagent_config(&args.agent, args.model.as_deref())
             .await?;
 
         let resume_session = match action {
@@ -641,7 +649,7 @@ Examples:
 
         self.execute_spawn_blocking(
             &args.prompt,
-            &args.subagent_type,
+            &args.agent,
             &args.path,
             args.model.clone(),
             resume_session,
@@ -838,7 +846,7 @@ impl Default for TestSubagentRuntime {
 #[cfg(test)]
 #[async_trait]
 impl SubagentRuntime for TestSubagentRuntime {
-    fn is_subagent_enabled(&self, subagent_type: &str) -> bool {
+    fn is_subagent_enabled(&self, agent: &str) -> bool {
         let state = self
             .inner
             .lock()
@@ -846,7 +854,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         if state.grants.is_empty() {
             return false;
         }
-        let required = format!("agent:{subagent_type}");
+        let required = format!("agent:{agent}");
         state.grants.iter().any(|g| g == &required)
     }
 
@@ -1181,21 +1189,22 @@ mod tests {
 
     #[test]
     fn test_args_parsing_trimmed_surface() {
-        // Sprint 7 surface: only action, path, prompt, subagent_type,
+        // Sprint 7 surface: only action, path, prompt, agent,
         // model are accepted. Removed fields (description, isolated,
         // cleanup, parent_session_key, name, session_key) parse as
         // absent — serde-defaults take over (model is the only
         // optional-with-default field, so it appears as None).
+        // Sprint 8: `subagent_type` renamed to `agent`.
         let json = r#"{
             "prompt": "Do something",
-            "subagent_type": "writer",
+            "agent": "writer",
             "path": "task-b"
         }"#;
 
         let args: AgentArgs = serde_json::from_str(json).unwrap();
         assert_eq!(args.action, "new");
         assert_eq!(args.prompt, "Do something");
-        assert_eq!(args.subagent_type, "writer");
+        assert_eq!(args.agent, "writer");
         assert_eq!(args.path, "task-b");
         assert_eq!(args.model, None);
     }
@@ -1205,7 +1214,7 @@ mod tests {
         // The parent-driven `model` field round-trips through AgentArgs.
         let json = r#"{
             "prompt": "Do something",
-            "subagent_type": "writer",
+            "agent": "writer",
             "path": "task-b",
             "model": "claude-haiku-4-5"
         }"#;
@@ -1247,8 +1256,8 @@ mod tests {
             );
         }
         // The schema `required` list is empty by design — per-action
-        // requirements (new: path+prompt+subagent_type; resume:
-        // path+prompt+subagent_type; compact: path) are validated in
+        // requirements (new: path+prompt+agent; resume:
+        // path+prompt+agent; compact: path) are validated in
         // code.
         assert!(params.get("required").is_none());
         // Coin-model cross-reference in the description.
@@ -1265,7 +1274,7 @@ mod tests {
     #[test]
     fn test_action_defaults_to_new_when_omitted() {
         let args: AgentArgs =
-            serde_json::from_str(r#"{"prompt": "x", "subagent_type": "writer", "path": "task-b"}"#)
+            serde_json::from_str(r#"{"prompt": "x", "agent": "writer", "path": "task-b"}"#)
                 .unwrap();
         assert_eq!(args.action, "new");
     }
@@ -1278,7 +1287,7 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "purge",
                 "prompt": "x",
-                "subagent_type": "writer",
+                "agent": "writer",
                 "path": "task-b",
             }))
             .await
@@ -1296,7 +1305,7 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "new",
                 "prompt": "x",
-                "subagent_type": "writer",
+                "agent": "writer",
             }))
             .await
             .expect_err("new without path must refuse");
@@ -1311,7 +1320,7 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "resume",
                 "prompt": "x",
-                "subagent_type": "writer",
+                "agent": "writer",
             }))
             .await
             .expect_err("resume without path must refuse");
@@ -1319,11 +1328,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_new_requires_prompt_and_subagent_type() {
+    async fn test_new_requires_prompt_and_agent() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         let err = tool
-            .execute(serde_json::json!({ "path": "task-b", "subagent_type": "writer" }))
+            .execute(serde_json::json!({ "path": "task-b", "agent": "writer" }))
             .await
             .expect_err("new without prompt must refuse");
         assert!(err.to_string().contains("prompt"), "{err}");
@@ -1347,7 +1356,7 @@ mod tests {
         let err = tool
             .execute(serde_json::json!({
                 "prompt": "x",
-                "subagent_type": "writer",
+                "agent": "writer",
                 "path": "agent:writer:peer:user:alice",
             }))
             .await
@@ -1423,11 +1432,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["status"], "completed");
-        assert_eq!(result["subagent_type"], "writer");
+        assert_eq!(result["agent"], "writer");
 
         let audits = runtime.audits();
         assert_eq!(audits.len(), 1);
-        assert_eq!(audits[0].subagent_type, "writer");
+        assert_eq!(audits[0].agent, "writer");
         assert_eq!(audits[0].principal_id, "test-principal");
         assert_eq!(audits[0].parent_session_key, "caller:sess");
         // No model override in this test → audit row records
@@ -1509,7 +1518,7 @@ mod tests {
         let result = tool
             .execute(serde_json::json!({
                 "prompt": "x",
-                "subagent_type": "writer",
+                "agent": "writer",
                 "path": "task-b",
             }))
             .await
@@ -1547,7 +1556,7 @@ mod tests {
                 "action": "resume",
                 "path": "/writer-1",
                 "prompt": "x",
-                "subagent_type": "writer",
+                "agent": "writer",
             }))
             .await
             .expect("resume with path should succeed against the test runtime");

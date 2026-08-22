@@ -149,13 +149,13 @@ impl SubagentExecutorRuntime {
 
 #[async_trait]
 impl SubagentRuntime for SubagentExecutorRuntime {
-    fn is_subagent_enabled(&self, subagent_type: &str) -> bool {
+    fn is_subagent_enabled(&self, agent: &str) -> bool {
         // ADR-019/Track B: enforce the per-principal agent capability
         // before loading any on-disk config. Missing authorization context
         // is denied, matching the canonical tool-execution funnel.
         self.executor.principal_capabilities().is_some_and(|caps| {
             let required = crate::extensions::framework::types::Capability::new(format!(
-                "agent:{subagent_type}"
+                "agent:{agent}"
             ));
             caps.is_granted(&required)
         })
@@ -203,7 +203,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         };
 
         let details = serde_json::json!({
-            "subagent_type": event.subagent_type,
+            "agent": event.agent,
             "principal_id": event.principal_id,
             "principal_name": event.principal_name,
             "parent_session_key": event.parent_session_key,
@@ -292,9 +292,10 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             // `spawn_and_execute`; ignored on the resume path).
             slug: request.name.clone(),
             // Phase 2 (standing named children): threaded so the
-            // attach-by-name branch can check the requested type
-            // against the standing child's `[children]` declaration.
-            subagent_type: Some(request.subagent_type.clone()),
+            // attach-by-name branch can check the requested agent
+            // template against the standing child's `[children]`
+            // declaration.
+            agent: Some(request.agent.clone()),
         };
 
         let view = if let Some(ref resume_target) = request.resume_session {

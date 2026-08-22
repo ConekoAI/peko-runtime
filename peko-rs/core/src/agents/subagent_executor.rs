@@ -124,13 +124,13 @@ pub struct ExecutionConfig {
     /// session is created (the same index entry
     /// `stamp_spawn_parent_linkage` patches).
     pub slug: Option<String>,
-    /// The requested subagent type (Agent tool `subagent_type`
-    /// param), threaded by the runtime adapter for the standing-child
+    /// The requested agent template (Agent tool `agent` param),
+    /// threaded by the runtime adapter for the standing-child
     /// attach check: when `slug` matches a standing session that
     /// carries a `[children]` declaration, the requested type must
     /// match the declared one. `None` skips the check (callers that
     /// don't know the type).
-    pub subagent_type: Option<String>,
+    pub agent: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -143,7 +143,7 @@ impl Default for ExecutionConfig {
             max_depth: 1, // Default: no nested spawns
             model_override: None,
             slug: None,
-            subagent_type: None,
+            agent: None,
         }
     }
 }
@@ -683,11 +683,11 @@ impl SubagentExecutor {
                 if found.standing && found.trigger == "spawn" {
                     let child_id = found.session_id.to_string();
                     // When the session carries a `[children]`
-                    // declaration, the requested subagent type must
+                    // declaration, the requested agent template must
                     // match it. Unrecoverable declarations (no event /
                     // unreadable JSONL) skip the check — the param is
                     // required as usual.
-                    if let Some(ref requested) = config.subagent_type {
+                    if let Some(ref requested) = config.agent {
                         let sessions_dir =
                             self.session_manager.read().await.sessions_dir().cloned();
                         if let Some(dir) = sessions_dir {

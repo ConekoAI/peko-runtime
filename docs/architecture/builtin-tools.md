@@ -161,7 +161,7 @@ were deleted (they had only the message path as their writer). To
 schedule a "remind me in N minutes" job, use `tool="Agent"` with an
 explicit prompt (e.g.
 `tool="Agent", params={"prompt": "Deliver this message verbatim to
-the user: stand up and stretch.", "subagent_type": "...", "path": "..."}`).
+the user: stand up and stretch.", "agent": "...", "path": "..."}`).
 
 ### `CronDelete` 🔧
 
@@ -202,17 +202,25 @@ Spawn a subagent.
 
 ```json
 {
-  "prompt": "string (required)",
-  "subagent_type": "string (required)",
-  "description": "string?",
+  "action": "new | resume | compact (default new)",
+  "prompt": "string (required for new + resume)",
+  "agent": "string (required for new + resume) — agent template name",
+  "path": "string (required for new + resume + compact)",
   "model": "string?"
 }
 ```
 
-**Peko extensions:** `cleanup` (`keep` | `delete`), `parent_session_key`,
-`isolated`.
+**Peko extensions:** `action` (3-value enum: `new` | `resume` | `compact`),
+`path` (the slug path under the parent's tree; replaces the Claude Code
+`session_key` / `name` pair).
 
-`subagent_type` resolves to an agent directory under `~/.peko/agents/`.
+`agent` resolves to a Markdown file at
+`<workspace>/agents/<agent>/AGENT.md` (directory layout) or
+`<workspace>/agents/<agent>.md` (flat layout). The Markdown supplies the
+spawned subagent's system prompt body; the frontmatter supplies name +
+description. **Sprint 8** renamed the LLM-facing field from
+`subagent_type` to `agent` to match its semantic and retired the legacy
+global TOML fallback (`{PEKO_HOME}/agents/<name>/config.toml`).
 
 ## Planning todos
 

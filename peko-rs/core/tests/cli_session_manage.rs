@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-/// The `subagent_type` every Agent call spawns.
+/// The `agent` template every Agent call spawns.
 const WORKER: &str = "worker";
 
 // ---------------------------------------------------------------------------
@@ -377,7 +377,7 @@ async fn agent_spawn_list_resume_with_history() {
     let script = serde_json::json!({
         p1: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": format!("Do part one. Needle '{c1}'."), "subagent_type": WORKER }).to_string()
+                serde_json::json!({ "prompt": format!("Do part one. Needle '{c1}'."), "agent": WORKER }).to_string()
             } },
             { "tool_call": { "name": "session", "arguments":
                 serde_json::json!({ "action": "list" }).to_string()
@@ -425,7 +425,7 @@ async fn agent_spawn_list_resume_with_history() {
                     "action": "resume",
                     "path": spawn_id,
                     "prompt": format!("Do part two. Needle '{c2}'."),
-                    "subagent_type": WORKER,
+                    "agent": WORKER,
                 }).to_string()
             } },
             "RESUME_DONE",
