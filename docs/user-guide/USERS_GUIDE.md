@@ -308,9 +308,8 @@ surfaces so you always see everything scheduled against a Principal:
 
 1. **User cron (`peko cron`)** — a deferred `peko send`. Each fire
    delivers a user message to the Principal's owner root session. Built
-   via the CLI subcommands `add`, `at`, `every`, `add-idle`,
-   `add-event`. Use this when you want "send my Principal this prompt
-   on a schedule."
+   via the CLI subcommands `add`, `at`, `every`, `add-idle`. Use this
+   when you want "send my Principal this prompt on a schedule."
 
 2. **Agent cron (`CronCreate` tool)** — a deferred `AsyncSpawn`. Each
    fire asks the daemon's executor to invoke a tool on behalf of the

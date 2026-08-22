@@ -194,7 +194,7 @@ peko-rs/
 │   └── src/
 │       ├── commands/       # All `peko <subcommand>` handlers (lifted from root commands/)
 │       └── main.rs         # Binary entry point + `clap` parser
-├── cron/                   # Cron scheduler + idle + event-trigger (peko-cron, Phase 14.b)
+├── cron/                   # Cron scheduler + idle (peko-cron, Phase 14.b)
 │   ├── engine/             # Agentic loop core (peko-engine)
 ├── events/                 # Neutral agentic event contract (peko-events)
 ├── extension-api/          # Framework API contracts (peko-extension-api)
@@ -401,7 +401,7 @@ Already extracted (`peko-rs/):
 - `auth` — auth + DID helpers.
 - `channel` — multi-principal chat primitive (channels; `ChannelPort` + `ChannelStore` + `ChannelSubscriber`). Since sprint 3 Phases 10–13 the per-peer DM channels are also the consumer-visible conversation record `peko log` reads.
 - ~~`chat-log`~~ — **deleted in sprint 3 Phase 13** (2026-08-19). The peer DM channels replaced it as the conversation record; the `peko log` row DTO moved into root as `peko_core::ipc::packet::PrincipalLogMessage` (wire shape unchanged); the last writer (cron `Send` fired-prompt projection `record_cron_input`) was dropped.
-- `cron` — cron scheduler + idle detection + event-trigger (Phase 14.b).
+- `cron` — cron scheduler + idle detection (Phase 14.b).
 - `engine` — agentic loop core (Phase 9 series).
 - `events` — neutral agentic event contract.
 - `extension-api` — extension framework contracts (the trait-port surface; engine + provider-api reach through it).

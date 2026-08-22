@@ -29,9 +29,9 @@
 //!
 //! ## What stays in root
 //!
-//! `CronScheduler`, `CronDatabase`, `CronRun`, and the cron event
-//! trigger / idle detection submodules are daemon-internal state
-//! and stay in `src/cron/` / `src/daemon/cron_engine/`. Only the
+//! `CronScheduler`, `CronDatabase`, `CronRun`, and the idle
+//! detection submodule are daemon-internal state and stay in
+//! `src/cron/` / `src/daemon/cron_engine/`. Only the
 //! serialization-friendly DTOs and the tool surface lift to
 //! peko-tools-builtin.
 
@@ -92,9 +92,8 @@ where
 /// round-trip over the trunk's growing history. An `Every { every_ms
 /// }` schedule with no floor is a runaway token-burn anti-pattern
 /// (PEKO.md "Violates K"), so creation refuses intervals below this
-/// constant. One-shot `At`, `Cron` expressions, `Idle`, and `Event`
-/// schedules are exempt: their cadence is explicit or event-driven,
-/// not a bare self-poke loop.
+/// constant. One-shot `At`, `Cron` expressions, and `Idle` schedules
+/// are exempt: their cadence is explicit, not a bare self-poke loop.
 ///
 /// Phase 7 (2026-08-17): the trunk is the DEFAULT Send target
 /// (`target: None` and `Some("trunk")` are the same route), so the
@@ -147,14 +146,6 @@ pub enum ScheduleKind {
     Cron { expr: String, tz: Option<String> },
     /// Trigger when a Principal has been idle for N minutes.
     Idle { minutes: u64 },
-    /// Trigger when specific system event occurs.
-    Event {
-        event_type: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        filter: Option<serde_json::Value>,
-        #[serde(default)]
-        once: bool,
-    },
 }
 
 impl ScheduleKind {
@@ -182,15 +173,6 @@ impl ScheduleKind {
             }
             Self::Idle { minutes } => {
                 format!("idle {minutes}m")
-            }
-            Self::Event {
-                event_type,
-                filter,
-                once,
-            } => {
-                let filter_info = filter.as_ref().map_or("", |_| " [filtered]");
-                let once_info = if *once { " (once)" } else { "" };
-                format!("event '{event_type}'{filter_info}{once_info}")
             }
         }
     }
@@ -484,18 +466,8 @@ pub fn resolve_schedule_kind(params: &serde_json::Value) -> Result<ScheduleKind>
         });
     }
 
-    // 'event_topic'
-    if let Some(topic) = params.get("event_topic").and_then(|v| v.as_str()) {
-        let filter = params.get("event_filter").cloned();
-        return Ok(ScheduleKind::Event {
-            event_type: topic.to_string(),
-            filter,
-            once: false,
-        });
-    }
-
     Err(anyhow::anyhow!(
-        "No schedule provided. Supply one of: cron, at, interval_ms, idle_ms, event_topic."
+        "No schedule provided. Supply one of: cron, at, interval_ms, idle_ms."
     ))
 }
 
@@ -564,8 +536,8 @@ pub fn parse_duration_ms(input: &str) -> Result<u64> {
 /// - `Every { every_ms }` adds the interval to `after`.
 /// - `Cron { expr, tz }` uses the `cron` crate's next-occurrence logic,
 ///   with optional timezone resolution via `chrono-tz`.
-/// - `Idle` and `Event` return a sentinel far-future timestamp
-///   (100 years) so they don't get picked up by `due_jobs`.
+/// - `Idle` returns a sentinel far-future timestamp (100 years) so it
+///   doesn't get picked up by `due_jobs`.
 pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
     use std::str::FromStr;
 
@@ -576,7 +548,7 @@ pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Resu
             let dt_utc = dt.with_timezone(&Utc);
             // One-shot: if the at time has already passed, return the
             // far-future sentinel so the job does not re-fire on every
-            // poll tick. Matches the Idle/Event sentinel pattern.
+            // poll tick. Matches the Idle sentinel pattern.
             if dt_utc <= after {
                 Ok(after + chrono::Duration::days(365 * 100))
             } else {
@@ -608,7 +580,6 @@ pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Resu
             }
         }
         ScheduleKind::Idle { .. } => Ok(after + chrono::Duration::days(365 * 100)),
-        ScheduleKind::Event { .. } => Ok(after + chrono::Duration::days(365 * 100)),
     }
 }
 
@@ -649,7 +620,6 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                 ScheduleKind::Every { .. } => "every",
                 ScheduleKind::Cron { .. } => "cron",
                 ScheduleKind::Idle { .. } => "idle",
-                ScheduleKind::Event { .. } => "event",
             };
             let status = if j.enabled { "active" } else { "disabled" };
             let mut obj = serde_json::json!({
@@ -955,7 +925,7 @@ mod tests {
         )
         .unwrap();
 
-        // At / Cron / Idle / Event are exempt even for trunk targets.
+        // At / Cron / Idle are exempt even for trunk targets.
         validate_trunk_send_interval(
             &ScheduleKind::At {
                 at: "2099-01-01T00:00:00Z".into(),
@@ -972,15 +942,6 @@ mod tests {
         )
         .unwrap();
         validate_trunk_send_interval(&ScheduleKind::Idle { minutes: 1 }, &trunk).unwrap();
-        validate_trunk_send_interval(
-            &ScheduleKind::Event {
-                event_type: "t".into(),
-                filter: None,
-                once: false,
-            },
-            &trunk,
-        )
-        .unwrap();
     }
 
     /// PR-4b — `peko channel poll` cron recipe. A `SpawnTool` job

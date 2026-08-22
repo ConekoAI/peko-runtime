@@ -15,8 +15,7 @@
 //!   `CronListTool`).
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
-//! - [`events`], [`idle`] — scheduler-side submodules
-//!   (idle detection + event-based triggers).
+//! - [`idle`] — scheduler-side submodule for idle detection.
 //!
 //! ## Port (`CronRuntime`)
 //!
@@ -34,7 +33,6 @@
 
 #![allow(dead_code)]
 
-pub mod events;
 pub mod idle;
 pub mod tools;
 
@@ -481,15 +479,6 @@ impl CronScheduler {
             .collect())
     }
 
-    /// Get event-triggered jobs
-    pub fn event_jobs(&self, include_disabled: bool) -> Result<Vec<CronJob>> {
-        let jobs = self.list_jobs(include_disabled)?;
-        Ok(jobs
-            .into_iter()
-            .filter(|j| matches!(j.schedule, ScheduleKind::Event { .. }))
-            .collect())
-    }
-
     }
 
 #[cfg(test)]
@@ -845,9 +834,10 @@ mod tests {
     /// Phase 3b (2026-08-15): trunk-targeted Send jobs respect the
     /// keepalive interval floor at the `add_job` funnel (the path the
     /// CLI `--target trunk` and the `CronCreate` tool both flow
-    /// through). Sub-minute `Every` intervals are refused; explicit/
-    /// event-driven schedules are unchanged. Phase 7: the trunk is the
-    /// DEFAULT Send target, so `target: None` jobs are floored too.
+    /// through). Sub-minute `Every` intervals are refused; explicit
+    /// (`At`, `Cron`) and idle-triggered schedules are unchanged.
+    /// Phase 7: the trunk is the DEFAULT Send target, so
+    /// `target: None` jobs are floored too.
     #[test]
     fn test_add_job_trunk_interval_floor() {
         let tmp = TempDir::new().unwrap();

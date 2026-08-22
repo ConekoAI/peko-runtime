@@ -177,32 +177,6 @@ pub enum CronCommands {
         #[arg(long)]
         target: Option<String>,
     },
-
-    /// Add an event-triggered job (runs on system event)
-    AddEvent {
-        /// Job name
-        #[arg(short, long)]
-        name: String,
-        /// Event type to listen for (file, webhook, internal, timer)
-        #[arg(short, long)]
-        event_type: String,
-        /// JSON filter expression (e.g., '{"source": "github"}')
-        #[arg(short, long)]
-        filter: Option<String>,
-        /// Run only once then disable
-        #[arg(long)]
-        once: bool,
-        /// Principal to run the job as
-        #[arg(short, long)]
-        principal: String,
-        /// Message/prompt to execute
-        #[arg(short, long)]
-        message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`; the
-        /// default since Phase 7 — the flag is accepted for compatibility)
-        #[arg(long)]
-        target: Option<String>,
-    },
 }
 
 /// Connect to daemon or return a clear error
@@ -588,60 +562,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                     println!("✅ Added idle-triggered job {job_id}");
                     println!("   Principal: {principal}");
                     println!("   Idle threshold: {minutes} minutes");
-                    Ok(())
-                }
-                ResponsePacket::Error { message, .. } => {
-                    Err(anyhow::anyhow!("Failed to add job: {message}"))
-                }
-                other => Err(peko_core::ipc::unexpected_response(&other)),
-            }
-        }
-
-        CronCommands::AddEvent {
-            name,
-            event_type,
-            filter,
-            once,
-            principal,
-            message,
-            target,
-        } => {
-            let client = connect_daemon().await?;
-
-            let filter_val = filter.and_then(|f| serde_json::from_str(&f).ok());
-
-            let principal_id: PrincipalId = paths
-                .principal_id_for(&principal)
-                .ok_or_else(|| anyhow::anyhow!("Principal '{principal}' not found"))?;
-
-            let job = CronJob {
-                id: format!("cron_{}", Uuid::new_v4().simple()),
-                name,
-                principal_id,
-                schedule: ScheduleKind::Event {
-                    event_type,
-                    filter: filter_val,
-                    once,
-                },
-                action: CronJobAction::Send {
-                    message,
-                    target: resolve_send_target(target)?,
-                },
-                delete_after_run: once,
-                enabled: true,
-                created_at: Utc::now(),
-                next_run: Utc::now() + chrono::Duration::days(365 * 100),
-                last_run: None,
-                last_status: None,
-                run_count: 0,
-                consecutive_failures: 0,
-                max_retries: None,
-            };
-
-            match client.cron_add(job).await? {
-                ResponsePacket::CronAdded { job_id, .. } => {
-                    println!("✅ Added event-triggered job {job_id}");
-                    println!("   Principal: {principal}");
                     Ok(())
                 }
                 ResponsePacket::Error { message, .. } => {
