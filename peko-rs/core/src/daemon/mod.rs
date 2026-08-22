@@ -8,6 +8,7 @@
 //! - Graceful shutdown
 
 pub(crate) mod background_runtime;
+pub(crate) mod channel_binding;
 pub(crate) mod config_drift;
 pub(crate) mod cron_engine;
 pub(crate) mod cron_ops;
@@ -189,8 +190,7 @@ impl Daemon {
             // bound to the AppState's `InboxRegistry`.
             std::sync::Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
-                    ),
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
                 ),
             ),
             std::sync::Weak::new(),
@@ -239,8 +239,7 @@ impl Daemon {
             None,
             std::sync::Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
-                    ),
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
                 ),
             ),
             std::sync::Weak::new(),
@@ -345,20 +344,20 @@ impl Daemon {
             }
         }
 
-        // PR-3c / PR-5a: spawn a per-(principal, channel)
+        // PR-3c / PR-5a / Phase 4: spawn a per-(principal, channel)
         // `ChannelSubscriber` for every loaded principal's channels.
-        // The audit meter is the only thing the subscriber exercises
-        // in production — agents read channels actively via the
-        // `ChannelRead` tool (PR-4a), so there is no daemon-side
-        // responder to dispatch through. The `NoopChannelResponder`
-        // passed in is permanent (PR-5a deleted `EngineChannelResponder`).
+        // Every subscriber runs the audit meter; channels whose
+        // `meta.json` declares a `passive_binding` additionally get a
+        // `PassiveBindingResponder` that wakes the bound session on
+        // inbound posts (DM-tier, paradigm §3.1 type 1). Unbound
+        // channels keep the `NoopChannelResponder` — agents read them
+        // actively via the `ChannelRead` tool (PR-4a).
         // Spawn-and-forget so a subscriber crash doesn't block daemon
         // boot; the `ChannelSubscriber::spawn` loop handles transient
         // errors internally (logs and continues; only `NotFound` /
         // `NotMember` end the loop, which is the correct signal for
         // "channel deleted out from under us").
-        let channel_handles =
-            spawn_channel_subscribers(&app_state).await;
+        let channel_handles = spawn_channel_subscribers(&app_state).await;
         info!(
             "channel subscribers: spawned {} poll task(s)",
             channel_handles.len()
@@ -400,6 +399,10 @@ impl Daemon {
             cron_async_executor,
             cron_extension_core,
         );
+        // PR 2: hand the engine to AppState so the `CronRun` IPC
+        // handler can dispatch manual triggers through the same
+        // coalescing / spawn logic that scheduled fires use.
+        app_state.set_cron_engine(Arc::new(self.cron_engine.clone()));
 
         // Write our own PID file so stop commands can find us even if the parent is gone
         let pid_file = crate::ipc::default_pid_path();
@@ -475,8 +478,9 @@ impl Daemon {
                 std::sync::Arc::clone(app_state.principal_manager()),
                 std::sync::Arc::clone(&app_state.authority),
             ));
-            let adapter =
-                std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(cron_ops));
+            let adapter = std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(
+                cron_ops,
+            ));
             adapter.install_as_global();
             info!("🕓 Cron runtime port installed (DaemonCronAdapter, in-process)");
         }
@@ -695,72 +699,25 @@ mod e2e_tests;
 // ---------------------------------------------------------------------------
 
 /// Spawn one [`ChannelSubscriber`] per (loaded principal × channel the
-/// principal is a member of). Each subscriber runs the meter against
-/// the audit ring buffer via the `AuditChannelMeter` returned by
-/// `AppState::channel_meter`. The responder is the no-op impl
-/// permanently — agents read channels actively via the `ChannelRead`
-/// tool (PR-4a) rather than via a daemon-side responder. PR-5a deleted
-/// `EngineChannelResponder`. The lifespan task itself is small, lives
-/// once per daemon boot, and never blocks startup: a failure inside
-/// one subscriber's tick logs and continues; only `NotFound` /
-/// `NotMember` (channel vanished) ends the loop, which is the correct
-/// signal.
+/// principal is a member of). Delegates to the [`ChannelBindingSupervisor`]
+/// held on `AppState` (Phase 4, agent-session paradigm sprint): channels
+/// whose `meta.json` carries a `passive_binding` get a
+/// `PassiveBindingResponder` (DM-tier — inbound posts wake the bound
+/// session and the reply posts back); all others keep the
+/// `NoopChannelResponder` and behave exactly as before (meter-only,
+/// active reads via the `ChannelRead` tool). Post-boot channels (created
+/// or joined after this enumeration) are covered by the supervisor's
+/// `ensure_subscriber`, wired to the `ChannelHost::channel_created` /
+/// `kickoff_channel_read` hooks.
 ///
 /// `app_state` must already be constructed (drift check ran, principals
 /// are loaded). The function returns the `JoinHandle`s so a future
 /// shutdown hook can abort them; today's shutdown is a process kill,
 /// so callers are free to drop them.
+///
+/// [`ChannelBindingSupervisor`]: crate::daemon::channel_binding::ChannelBindingSupervisor
 async fn spawn_channel_subscribers(
     app_state: &crate::daemon::state::AppState,
 ) -> Vec<tokio::task::JoinHandle<()>> {
-    use peko_channel::responder::NoopChannelResponder;
-    use peko_channel::{ChannelSubscriber, SubscriptionConfig};
-
-    // Access `channel_port` / `channel_meter` through the
-    // `ChannelHost` trait — they're trait methods, not inherent
-    // methods. The handler module owns the trait definition
-    // (consumer-defined pattern, per F6/F7).
-    let host: &dyn crate::ipc::handlers::channel::ChannelHost = app_state;
-    let port: Arc<dyn peko_channel::ChannelPort> = host.channel_port();
-    let meter = host.channel_meter();
-    let runtime_dir = app_state.path_resolver.runtime_dir();
-    // `principal_manager()` returns `&Arc<PrincipalManager>` — always
-    // present on a fully-constructed `AppState`. The `principal_manager`
-    // field is private, so we go through the public accessor.
-    let principal_manager = app_state.principal_manager().clone();
-
-    let principals = principal_manager.list_all().await;
-    let mut handles = Vec::new();
-    let cfg = SubscriptionConfig::default();
-
-    for principal in principals {
-        let principal_id = principal.id.clone();
-        let channels = match port.list_for_principal(&principal_id).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(
-                    principal = %principal_id,
-                    ?e,
-                    "channel subscribers: list_for_principal failed; skipping"
-                );
-                continue;
-            }
-        };
-
-        for channel in channels {
-            let channel_dir = runtime_dir.join("channels").join(channel.as_str());
-            let sub = ChannelSubscriber::new(
-                channel.clone(),
-                principal_id.clone(),
-                channel_dir,
-                port.clone(),
-                Arc::new(NoopChannelResponder),
-                meter.clone(),
-                peko_channel::ChannelCursors::new(),
-                cfg.clone(),
-            );
-            handles.push(sub.spawn());
-        }
-    }
-    handles
+    app_state.channel_binding_supervisor().spawn_all().await
 }

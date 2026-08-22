@@ -1,9 +1,16 @@
 //! Per-member subscription loop.
 //!
-//! Each `ChannelSubscriber` polls a single channel for a single
-//! principal on a tokio interval. New events flow to a
-//! `ChannelResponder`; observed `TaskId`s are persisted to
-//! `ChannelCursors` so a re-tick doesn't redeliver.
+//! Each `ChannelSubscriber` watches a single channel for a single
+//! principal. The loop is **push-woken** (sprint 3 Phase 10): it
+//! `select!`s on the port's live-event broadcast
+//! ([`ChannelPort::subscribe_events`], fired by `ChannelStore`'s
+//! single append chokepoint on every durable append — local posts,
+//! membership events, AND cross-runtime mirror appends) and on a
+//! backstop interval tick. New events flow to a `ChannelResponder`;
+//! observed `TaskId`s are persisted to `ChannelCursors` so a re-tick
+//! doesn't redeliver. The broadcast is at-most-once wake-up only —
+//! the cursor walk is authoritative, so a missed or lagged
+//! notification is repaired by the next tick.
 //!
 //! ## Anti-loop inheritance (from `lexical-soaring-pretzel.md`)
 //!
@@ -40,15 +47,20 @@ use crate::responder::{ChannelResponder, RespondCtx};
 /// Static configuration for the subscription loop.
 #[derive(Debug, Clone)]
 pub struct SubscriptionConfig {
-    /// How long to sleep between ticks. Default 5s; configurable so
-    /// tests can crank it down and host code can tune per environment.
+    /// Backstop tick interval. Since sprint 3 Phase 10 the loop is
+    /// push-woken by the port's live-event broadcast, so this only
+    /// repairs missed notifications (lagged/closed broadcast,
+    /// adapters without a registry). Default 30s (raised from 5s
+    /// when push-wake landed — every tick re-reads the event log
+    /// tail); configurable so tests can crank it down and host code
+    /// can tune per environment.
     pub poll_interval: Duration,
 }
 
 impl Default for SubscriptionConfig {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_secs(5),
+            poll_interval: Duration::from_secs(30),
         }
     }
 }
@@ -142,16 +154,18 @@ impl ChannelSubscriber {
                 tracing::warn!(?e, "channel meter record_event failed");
             }
 
-            // Hand to the responder.
+            // Hand to the responder. `event_id` is the source line
+            // number so a responder reply can thread onto the
+            // triggering event (`PostMsg::reply`).
             let ctx = RespondCtx {
                 channel: self.channel.clone(),
                 principal: self.principal.clone(),
                 event: ev.clone(),
+                event_id: task_id,
                 now: std::time::SystemTime::now(),
             };
             self.responder.consider_response(ctx).await?;
 
-            let _ = task_id;
             delivered.push(ev);
         }
 
@@ -174,16 +188,29 @@ impl ChannelSubscriber {
     /// Returns a `JoinHandle` for the background task; the task exits
     /// when `stop` (TODO — not wired) signals cancellation.
     ///
+    /// The loop alternates between a tick and a `select!` wait on (a)
+    /// the port's live-event broadcast — any append wakes an
+    /// immediate tick — and (b) the backstop interval. A `Closed`
+    /// broadcast (adapters using the trait's default no-op
+    /// `subscribe_events`) permanently degrades the loop to
+    /// interval-only ticking; `Lagged` just triggers a tick (the
+    /// cursor walk picks up everything since the last one).
+    ///
     /// Callers can ignore the `JoinHandle` and let the loop run for
     /// the process lifetime. The integration test invokes `tick_once`
     /// directly and never calls `spawn`.
     pub fn spawn(mut self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let interval = self.cfg.poll_interval;
+            // Subscribe BEFORE the first tick: events appended after
+            // this point wake the loop, and anything earlier is
+            // covered by the first tick's from-cursor walk.
+            let mut wake = self.port.subscribe_events(&self.channel).await;
+            let mut wake_open = true;
             loop {
                 match self.tick_once().await {
                     Ok(_n) => {
-                        // success — sleep and poll again
+                        // success — wait for the next wake
                     }
                     Err(e) => match &e {
                         // Transient errors: keep looping. Catastrophic
@@ -198,7 +225,22 @@ impl ChannelSubscriber {
                         }
                     },
                 }
-                tokio::time::sleep(interval).await;
+                if !wake_open {
+                    tokio::time::sleep(interval).await;
+                    continue;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => {}
+                    ev = wake.recv() => {
+                        if matches!(ev, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                            // The port has no live registry (default
+                            // trait impl) — fall back to pure ticking.
+                            wake_open = false;
+                        }
+                        // Ok(_) or Lagged(_): an append landed — tick
+                        // immediately; the cursor walk is authoritative.
+                    }
+                }
             }
         })
     }
@@ -213,8 +255,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_poll_interval_is_5_seconds() {
+    fn default_poll_interval_is_30_seconds() {
         let cfg = SubscriptionConfig::default();
-        assert_eq!(cfg.poll_interval, Duration::from_secs(5));
+        assert_eq!(cfg.poll_interval, Duration::from_secs(30));
     }
 }

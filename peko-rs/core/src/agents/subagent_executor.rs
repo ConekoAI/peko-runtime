@@ -61,6 +61,37 @@ pub struct CompletedRun {
     pub announcement: String,
 }
 
+/// Shared streaming event sink for child turns (agent-session
+/// paradigm, sprint 2 Phase 6).
+///
+/// Carries the same `AgenticEvent` stream shape the IPC
+/// `principal_send` drain loop consumes (`AssistantDelta` /
+/// `AssistantText` / `Lifecycle` / `ToolStart` / `ToolEnd` / `Usage`)
+/// — a streaming child turn feeds the caller's sink directly instead
+/// of dropping events like the final-only resume path. `Arc`-shared
+/// so the sink can move into the spawned run task while the caller
+/// keeps no borrow.
+pub type AgenticEventSink = Arc<dyn Fn(peko_engine::AgenticEvent) + Send + Sync>;
+
+/// Completion summary of a streaming child turn
+/// ([`SubagentExecutor::resume_streaming`]).
+///
+/// `final_text` is the child session's final answer (what the IPC
+/// handler's `PrincipalSent`/`PrincipalSentDone` `content` carries
+/// today). `token_usage` is the `(input, output, total)` projection
+/// recorded on the run's `SubagentResult`; the per-call `Usage` event
+/// also flows through the event sink, so streaming callers that
+/// accumulate from events (the IPC drain loop) do not need this.
+#[derive(Debug, Clone)]
+pub struct StreamingResumeOutcome {
+    /// The registered run id (AsyncTaskRegistry key).
+    pub run_id: String,
+    /// The child agent's final answer.
+    pub final_text: String,
+    /// Token usage `(input, output, total)` accumulated over the run.
+    pub token_usage: Option<(usize, usize, usize)>,
+}
+
 /// Configuration for subagent execution
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
@@ -84,6 +115,22 @@ pub struct ExecutionConfig {
     /// "inherit the parent's model verbatim" (pre-Phase-1
     /// behavior).
     pub model_override: Option<String>,
+    /// Slug for the child's session metadata (Agent tool `name`
+    /// param) — the per-parent-unique path segment for `/a/b`
+    /// addressing. `None` leaves the child slugless (the historical
+    /// behavior). Validated + uniqueness-checked at spawn time in
+    /// `spawn_and_execute`; the write lands via
+    /// `SessionManager::set_session_slug` right after the spawn
+    /// session is created (the same index entry
+    /// `stamp_spawn_parent_linkage` patches).
+    pub slug: Option<String>,
+    /// The requested agent template (Agent tool `agent` param),
+    /// threaded by the runtime adapter for the standing-child
+    /// attach check: when `slug` matches a standing session that
+    /// carries a `[children]` declaration, the requested type must
+    /// match the declared one. `None` skips the check (callers that
+    /// don't know the type).
+    pub agent: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -95,6 +142,8 @@ impl Default for ExecutionConfig {
             announce_completion: true,
             max_depth: 1, // Default: no nested spawns
             model_override: None,
+            slug: None,
+            agent: None,
         }
     }
 }
@@ -120,6 +169,25 @@ struct SubagentRunSpec {
     child_depth: u32,
     config: ExecutionConfig,
     parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Streaming event sink (sprint 2 Phase 6). `Some` runs the child
+    /// agent via `Agent::execute_streaming_with_session`
+    /// (`OrchestratorConfig::live()`) and forwards every
+    /// `AgenticEvent` to the sink; `None` keeps the final-only
+    /// `execute_with_session` path (events dropped).
+    stream_events: Option<AgenticEventSink>,
+}
+
+/// The output of [`SubagentExecutor::resume_preflight`]: everything
+/// the registration step needs once the resume guard stack has
+/// passed. Shared by the final-only (`resume_and_execute`) and
+/// streaming (`resume_streaming`) resume paths.
+struct ResumePreflight {
+    run_id: String,
+    /// The path-resolved canonical target session id.
+    session_id: String,
+    /// The opened existing session (prior history attached).
+    child_base: Arc<RwLock<peko_session::Session>>,
+    child_depth: u32,
 }
 
 /// Executor for subagent tasks
@@ -486,12 +554,30 @@ impl SubagentExecutor {
         self
     }
 
+    /// The agent configuration snapshot child runs inherit, if bound.
+    /// `None` means [`execute_subagent_task`] falls back to a default
+    /// config with `prompt: None` (the pre-Phase-6 blank-persona gap).
+    #[must_use]
+    pub fn agent_config(&self) -> Option<&AgentConfig> {
+        self.agent_config.as_ref()
+    }
+
     /// Scope spawned subagents to a Principal workspace so nested delegation
     /// resolves subagents from `<workspace>/agents/<name>/AGENT.md`.
     #[must_use]
     pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
         self.principal_workspace = Some(workspace);
         self
+    }
+
+    /// Snapshot of the spawning principal's workspace, if bound.
+    /// Used by `SubagentExecutorRuntime::workspace()` so the
+    /// built-in `AgentTool` resolves subagent configs from the
+    /// principal's `<workspace>/agents/` directory before falling
+    /// back to the global layout.
+    #[must_use]
+    pub fn principal_workspace(&self) -> Option<&std::path::Path> {
+        self.principal_workspace.as_deref()
     }
 
     /// Set the spawning principal's plan DAG port. Propagated into the
@@ -566,6 +652,96 @@ impl SubagentExecutor {
         config: ExecutionConfig,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
+        // Standing-child attach (agent-session paradigm, Phase 2): a
+        // `name` (config.slug) that already matches a STANDING spawned
+        // session in the caller's subtree re-attaches to it via the
+        // resume path instead of minting a fresh session — the call's
+        // `task` drives the turn. A `name` colliding with a
+        // non-standing session is a structured refusal (rename
+        // semantics live in the session tool). This runs BEFORE the
+        // cost pre-flight and before anything is minted;
+        // `resume_and_execute` re-runs the full guard stack (cost
+        // pre-flight included) for the attach branch.
+        if let Some(ref slug) = config.slug {
+            use crate::session::ownership::{caller_context, descendants_of};
+            let (caller, metas) = {
+                let mut manager = self.session_manager.write().await;
+                let metas = manager.list_all_sessions(false).await?;
+                (caller_context(parent_session_key, &metas), metas)
+            };
+            // The caller's subtree = its own session + all descendants.
+            let subtree: std::collections::HashSet<String> =
+                descendants_of(&caller.current_session_id, &metas)
+                    .into_iter()
+                    .chain(std::iter::once(caller.current_session_id.clone()))
+                    .collect();
+            let found = metas.iter().find(|m| {
+                m.slug.as_deref() == Some(slug.as_str())
+                    && subtree.contains(&m.session_id.to_string())
+            });
+            if let Some(found) = found {
+                if found.standing && found.trigger == "spawn" {
+                    let child_id = found.session_id.to_string();
+                    // When the session carries a `[children]`
+                    // declaration, the requested agent template must
+                    // match it. Unrecoverable declarations (no event /
+                    // unreadable JSONL) skip the check — the param is
+                    // required as usual.
+                    if let Some(ref requested) = config.agent {
+                        let sessions_dir =
+                            self.session_manager.read().await.sessions_dir().cloned();
+                        if let Some(dir) = sessions_dir {
+                            if let Some(declared) =
+                                crate::session::standing::declared_subagent_type(&dir, &child_id)
+                                    .await
+                            {
+                                if declared != *requested {
+                                    return Err(
+                                        crate::session::standing::err_declared_type_mismatch(
+                                            slug, &child_id, &declared, requested,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    info!(
+                        "Attaching to standing child session: slug={} session={}",
+                        slug, child_id
+                    );
+                    return self
+                        .resume_and_execute(
+                            task,
+                            &child_id,
+                            parent_session_key,
+                            config,
+                            parent_cancel,
+                        )
+                        .await;
+                }
+                // Non-standing collision. A DIRECT sibling keeps the
+                // Phase 1b per-parent uniqueness refusal (identical to
+                // what the fresh-spawn pre-flight below would produce);
+                // a non-sibling subtree collision gets the
+                // standing-specific structured refusal.
+                let found_parent_str = found.parent_session_id.map(|id| id.to_string());
+                // Sprint 6: `parent_session_id` in metadata is the
+                // canonical v5 UUID form of the parent's session id;
+                // canonicalize the input here so the sibling-vs-foreign
+                // branch picks the right error.
+                let parent_key = peko_session::SessionId::from(parent_session_key).to_string();
+                return Err(if found_parent_str.as_deref() == Some(parent_key.as_str()) {
+                    peko_session::path::err_slug_conflict(
+                        slug,
+                        found.session_id,
+                        Some(peko_session::SessionId::from(parent_key.as_str())),
+                    )
+                } else {
+                    crate::session::standing::err_name_not_standing(slug, &found.session_id.as_str())
+                });
+            }
+        }
+
         // Phase 3 — spawn-time pre-flight against
         // `cost_per_call_max`. Conservative token projection
         // (4K input + 1K output) multiplied by the chosen
@@ -603,6 +779,35 @@ impl SubagentExecutor {
             }));
         }
 
+        // Slug pre-flight (Agent tool `name` param): validate the
+        // format and check per-parent uniqueness BEFORE spawning, so a
+        // conflict refuses before any session is created. Siblings are
+        // the existing children of the parent session. The production
+        // path passes the caller's session id as `parent_session_key`;
+        // when it doesn't resolve to a metadata entry (legacy session
+        // KEY shapes) the pre-check is skipped and the post-spawn
+        // `set_session_slug` below still enforces the invariant.
+        if let Some(ref slug) = config.slug {
+            peko_session::path::validate_slug(slug)?;
+            let mut manager = self.session_manager.write().await;
+            let metas = manager.list_all_sessions(false).await?;
+            if metas
+                .iter()
+                .any(|m| m.session_id.to_string() == parent_session_key)
+            {
+                let parent_id = peko_session::SessionId::from(parent_session_key);
+                if let Some(conflict) =
+                    peko_session::path::slug_conflict(&metas, Some(parent_id), slug, peko_session::SessionId::new())
+                {
+                    return Err(peko_session::path::err_slug_conflict(
+                        slug,
+                        conflict,
+                        Some(parent_id),
+                    ));
+                }
+            }
+        }
+
         // Generate run ID
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
@@ -627,6 +832,21 @@ impl SubagentExecutor {
         let child_session_id = spawn_resolved.context.session_id.clone();
         let child_base = spawn_resolved.handle.base().clone();
 
+        // Stamp the child's slug (Agent tool `name`) onto the same
+        // index entry `stamp_spawn_parent_linkage` just patched. The
+        // pre-flight above already validated format + uniqueness when
+        // the parent resolved; `set_session_slug` re-enforces both
+        // (closing the race with a concurrent same-name spawn) and a
+        // failure here refuses the spawn — the run is not yet
+        // registered, so no LLM traffic has happened.
+        if let Some(ref slug) = config.slug {
+            self.session_manager
+                .read()
+                .await
+                .set_session_slug(&child_session_id, Some(slug.clone()))
+                .await?;
+        }
+
         info!(
             "Spawned subagent: run_id={} depth={} isolated={}",
             run_id, child_depth, isolated
@@ -642,6 +862,7 @@ impl SubagentExecutor {
             child_depth,
             config,
             parent_cancel,
+            stream_events: None,
         })
         .await
     }
@@ -651,9 +872,11 @@ impl SubagentExecutor {
     ///
     /// Skips `spawn_session`: the target session is opened as-is, so
     /// the run continues with its full prior history. All D4 guards
-    /// from the shared ownership module apply (see inline comments).
-    /// The caller's current session is `parent_session_key` (the
-    /// caller's session id on the production path).
+    /// from the shared ownership module apply (enforced in
+    /// [`Self::resume_preflight`], shared with
+    /// [`Self::resume_streaming`]). The caller's current session is
+    /// `parent_session_key` (the caller's session id on the production
+    /// path).
     pub async fn resume_and_execute(
         &self,
         task: &str,
@@ -662,6 +885,121 @@ impl SubagentExecutor {
         config: ExecutionConfig,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
+        let pre = self
+            .resume_preflight(resume_session_id, parent_session_key, &config)
+            .await?;
+
+        info!(
+            "Resuming subagent session: run_id={} session={} depth={}",
+            pre.run_id, pre.session_id, pre.child_depth
+        );
+
+        self.register_subagent_run(SubagentRunSpec {
+            run_id: pre.run_id,
+            task: task.to_string(),
+            parent_session_key: parent_session_key.to_string(),
+            // No spawn overlay exists for a resumed session — register
+            // with the plain session id in both slots.
+            child_session_key: pre.session_id.clone(),
+            child_session_id: pre.session_id,
+            child_base: pre.child_base,
+            child_depth: pre.child_depth,
+            config,
+            parent_cancel,
+            stream_events: None,
+        })
+        .await
+    }
+
+    /// Streaming variant of [`Self::resume_and_execute`] (agent-session
+    /// paradigm, sprint 2 Phase 6): the same resume guard stack and
+    /// run registration, but the child agent runs via
+    /// `Agent::execute_streaming_with_session`
+    /// (`OrchestratorConfig::live()`), forwarding every
+    /// [`peko_engine::AgenticEvent`] to `on_event` — the exact stream
+    /// shape the IPC `principal_send` drain loop consumes — and this
+    /// call blocks until the run reaches a terminal state, returning
+    /// the final text + token usage.
+    ///
+    /// Built for the per-peer standing-child ingress paths (Phase 7
+    /// swaps `route_streaming` for this): the shared registry key is
+    /// load-bearing, so a streaming turn and a channel-driven or
+    /// Agent-tool turn on the same child can never double-run.
+    /// `parent_cancel` is observed by the child loop at iteration
+    /// boundaries; a cancelled run surfaces as an error here.
+    pub async fn resume_streaming(
+        &self,
+        task: &str,
+        resume_session_id: &str,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        on_event: AgenticEventSink,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<StreamingResumeOutcome> {
+        // Wait slack mirrors the channel driver's
+        // COMPLETION_WAIT_MARGIN_SECS: the run's own timeout fires
+        // inside the task, so the waiter gives it room to land its
+        // terminal status before declaring a wait timeout.
+        // `timeout_seconds == 0` means unlimited — the wait must not
+        // fire either.
+        let wait_secs = if config.timeout_seconds == 0 {
+            u64::MAX / 2
+        } else {
+            config.timeout_seconds + 30
+        };
+
+        let pre = self
+            .resume_preflight(resume_session_id, parent_session_key, &config)
+            .await?;
+
+        info!(
+            "Resuming subagent session (streaming): run_id={} session={} depth={}",
+            pre.run_id, pre.session_id, pre.child_depth
+        );
+
+        let run_id = self
+            .register_subagent_run(SubagentRunSpec {
+                run_id: pre.run_id,
+                task: task.to_string(),
+                parent_session_key: parent_session_key.to_string(),
+                // No spawn overlay exists for a resumed session —
+                // register with the plain session id in both slots.
+                child_session_key: pre.session_id.clone(),
+                child_session_id: pre.session_id,
+                child_base: pre.child_base,
+                child_depth: pre.child_depth,
+                config,
+                parent_cancel,
+                stream_events: Some(on_event),
+            })
+            .await?;
+
+        let view = self.wait_for_run(&run_id, wait_secs).await?;
+        let result = view.result.ok_or_else(|| {
+            anyhow::anyhow!("streaming child run {run_id} completed without a result")
+        })?;
+        Ok(StreamingResumeOutcome {
+            run_id,
+            final_text: result.output.unwrap_or_default(),
+            token_usage: result.token_usage,
+        })
+    }
+
+    /// The full resume guard stack + session open shared by
+    /// [`Self::resume_and_execute`] (final-only) and
+    /// [`Self::resume_streaming`] (live event stream) so the two can
+    /// never drift. Runs every D4 guard from the shared ownership
+    /// module (see inline comments) plus the spawn-time cost
+    /// pre-flight — a resume is still LLM traffic against the
+    /// principal's meter. The caller's current session is
+    /// `parent_session_key` (the caller's session id on the
+    /// production path).
+    async fn resume_preflight(
+        &self,
+        resume_session_id: &str,
+        parent_session_key: &str,
+        config: &ExecutionConfig,
+    ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
             caller_context, err_out_of_tree, err_resume_archived, err_resume_into_own_run,
             err_resume_not_spawned, err_run_active, in_subtree,
@@ -669,10 +1007,9 @@ impl SubagentExecutor {
 
         // Same spawn-time cost pre-flight as the spawn path — a resume
         // is still LLM traffic against the principal's meter.
-        if let Some(err) = pre_flight_cost_ceiling(
-            self.quota_meter.as_deref(),
-            self.provider.as_ref(),
-        ) {
+        if let Some(err) =
+            pre_flight_cost_ceiling(self.quota_meter.as_deref(), self.provider.as_ref())
+        {
             return Err(anyhow::anyhow!(err));
         }
 
@@ -682,39 +1019,54 @@ impl SubagentExecutor {
             (caller_context(parent_session_key, &metas), metas)
         };
 
+        // Sprint 6: the engine-internal entrypoint receives canonical UUIDs
+        // (the LLM-facing tool layer resolves slug paths via
+        // `resolve_reference` before handing off; the runtime hands
+        // back the canonical id it produced). No shape heuristic to
+        // apply — just canonicalize the input and let the per-call
+        // guards validate existence. `resolve_reference` is the strict
+        // LLM-facing variant; engine-internal code does not need it.
+        let _ = peko_session::SessionId::from(caller.current_session_id.as_str());
+        let canonical = peko_session::SessionId::from(resume_session_id);
+        let resume_session_id = canonical.as_str();
+
         // Guard: target must exist.
         let target_meta = metas
             .iter()
-            .find(|m| m.session_id == resume_session_id)
+            .find(|m| m.session_id.to_string() == resume_session_id)
             .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "session '{resume_session_id}' not found — pass a session id from the \
-                     session tool's list"
+                    "session '{resume_session_id}' not found — pass a slug path from the \
+                     session tool's list (`path` field)"
                 )
             })?;
         // Guard: cannot run inside the caller's own session or an
         // ancestor (would re-enter the caller's own run).
         if resume_session_id == caller.current_session_id
-            || caller.ancestors.iter().any(|a| a == resume_session_id)
+            || caller
+                .ancestors
+                .iter()
+                .any(|a| a.as_str() == resume_session_id)
         {
-            return Err(err_resume_into_own_run(resume_session_id));
+            return Err(err_resume_into_own_run(&resume_session_id));
         }
         // Guard: only spawned subagent sessions can be re-attached.
         if target_meta.trigger != "spawn" {
-            return Err(err_resume_not_spawned(resume_session_id));
+            return Err(err_resume_not_spawned(&resume_session_id));
         }
         // Guard: subtree callers stay inside their subtree (principal-
         // level callers pass automatically).
-        if !caller.is_base && !in_subtree(&caller, resume_session_id, &metas) {
+        if !caller.is_base && !caller.privileged && !in_subtree(&caller, &resume_session_id, &metas)
+        {
             return Err(err_out_of_tree(
-                resume_session_id,
+                &resume_session_id,
                 &caller.current_session_id,
             ));
         }
         // Guard: archived sessions have no business running.
         if target_meta.archived {
-            return Err(err_resume_archived(resume_session_id));
+            return Err(err_resume_archived(&resume_session_id));
         }
         // Guard: refuse while a run is in flight for the target.
         // Mechanism: subagent runs do NOT hold `InboxRegistry` run
@@ -725,8 +1077,8 @@ impl SubagentExecutor {
         // metadata.
         {
             let registry = self.registry().read().await;
-            if registry.has_active_subagent_run_for_child(resume_session_id) {
-                return Err(err_run_active(resume_session_id));
+            if registry.has_active_subagent_run_for_child(&resume_session_id) {
+                return Err(err_run_active(&resume_session_id));
             }
         }
 
@@ -737,13 +1089,13 @@ impl SubagentExecutor {
         // sub-tree below it even across daemon restarts and registry
         // GC (the registry-based `get_parent_depth` answer is lost
         // when run entries age out; the metadata chain is durable).
-        let child_depth = 1 + caller_context(resume_session_id, &metas)
+        let child_depth = 1 + caller_context(&resume_session_id, &metas)
             .ancestors
             .iter()
             .filter(|a| {
                 metas
                     .iter()
-                    .any(|m| &m.session_id == *a && m.trigger == "spawn")
+                    .any(|m| m.session_id.to_string() == a.as_str() && m.trigger == "spawn")
             })
             .count() as u32;
         if config.max_depth > 0 && child_depth > config.max_depth {
@@ -770,32 +1122,19 @@ impl SubagentExecutor {
         let child_base = {
             let mut manager = self.session_manager.write().await;
             manager
-                .open_session(resume_session_id)
+                .open_session(&resume_session_id)
                 .await?
                 .expect("metadata existed but session failed to open")
                 .base()
                 .clone()
         };
 
-        info!(
-            "Resuming subagent session: run_id={} session={} depth={}",
-            run_id, resume_session_id, child_depth
-        );
-
-        self.register_subagent_run(SubagentRunSpec {
+        Ok(ResumePreflight {
             run_id,
-            task: task.to_string(),
-            parent_session_key: parent_session_key.to_string(),
-            // No spawn overlay exists for a resumed session — register
-            // with the plain session id in both slots.
-            child_session_key: resume_session_id.to_string(),
-            child_session_id: resume_session_id.to_string(),
+            session_id: resume_session_id.clone(),
             child_base,
             child_depth,
-            config,
-            parent_cancel,
         })
-        .await
     }
 
     /// Flag a session for engine-driven compaction at its next run
@@ -828,48 +1167,59 @@ impl SubagentExecutor {
             (caller_context(caller_session_key, &metas), metas)
         };
 
+        // Sprint 6: engine-internal entrypoint. The reference arrived via
+        // the runtime as a canonical UUID (the LLM-facing tool layer
+        // resolves slug paths through `resolve_reference` before
+        // handing off). Canonicalize via `SessionId::from` and let
+        // the per-call guards validate existence.
+        let _ = peko_session::SessionId::from(caller.current_session_id.as_str());
+        let canonical = peko_session::SessionId::from(target);
+        let target = canonical.as_str();
+
         // Guard: target must exist.
         let target_meta = metas
             .iter()
-            .find(|m| m.session_id == target)
+            .find(|m| m.session_id.to_string() == target)
             .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "session '{target}' not found — pass a session id from the \
-                     session tool's list"
+                    "session '{target}' not found — pass a slug path from the session \
+                     tool's list (`path` field)"
                 )
             })?;
         // Guard: the caller's own session or an ancestor compacts
         // automatically — refuse.
-        if target == caller.current_session_id || caller.ancestors.iter().any(|a| a == target) {
-            return Err(err_compact_ancestor(target));
+        if target == caller.current_session_id
+            || caller.ancestors.iter().any(|a| a.as_str() == target)
+        {
+            return Err(err_compact_ancestor(&target));
         }
         // Guard: subtree callers stay inside their subtree (principal-
         // level callers pass automatically).
-        if !caller.is_base && !in_subtree(&caller, target, &metas) {
-            return Err(err_out_of_tree(target, &caller.current_session_id));
+        if !caller.is_base && !caller.privileged && !in_subtree(&caller, &target, &metas) {
+            return Err(err_out_of_tree(&target, &caller.current_session_id));
         }
         // Guard: archived sessions have no future run to consume the
         // request.
         if target_meta.archived {
-            return Err(err_compact_archived(target));
+            return Err(err_compact_archived(&target));
         }
         // Guard: refuse while a run is in flight for the target (same
         // registry source of truth as the resume path).
         {
             let registry = self.registry().read().await;
-            if registry.has_active_subagent_run_for_child(target) {
-                return Err(err_run_active(target));
+            if registry.has_active_subagent_run_for_child(&target) {
+                return Err(err_run_active(&target));
             }
         }
 
         self.session_manager
             .read()
             .await
-            .set_compact_requested(target, true)
+            .set_compact_requested(&target, true)
             .await?;
         Ok(crate::tools::builtin::session::CompactRequestOutcome {
-            session_id: target.to_string(),
+            session_id: target.clone(),
             message: "Compaction scheduled — the engine summarizes the session at its next \
                       run. There is no completion signal; the next resume reflects the \
                       compacted history."
@@ -881,23 +1231,42 @@ impl SubagentExecutor {
     /// context seeding) against the caller's ownership tree. The
     /// caller's own session (the auto-detected default) always passes;
     /// principal-level callers pass for any session.
+    ///
+    /// Resolves the LLM-facing reference (slug path, caller-relative
+    /// slug, or raw id) to a canonical session id before the
+    /// in-subtree check. Returns the resolved id so the caller can
+    /// pass it forward without re-resolving.
     pub async fn validate_context_parent(
         &self,
         context_parent: &str,
         caller_session_key: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         use crate::session::ownership::{caller_context, err_context_out_of_tree, in_subtree};
 
-        if context_parent == caller_session_key {
-            return Ok(());
-        }
         let mut manager = self.session_manager.write().await;
         let metas = manager.list_all_sessions(false).await?;
-        let caller = caller_context(caller_session_key, &metas);
-        if caller.is_base || in_subtree(&caller, context_parent, &metas) {
-            return Ok(());
+
+        // Sprint 6: engine-internal entrypoint. The reference arrived via
+        // the runtime as a canonical UUID; canonicalize via
+        // `SessionId::from` and let the in-subtree check validate
+        // ownership.
+        let _ = peko_session::SessionId::from(caller_session_key);
+        let context_parent = peko_session::SessionId::from(context_parent);
+
+        if context_parent.to_string() == caller_session_key {
+            return Ok(context_parent.to_string());
         }
-        Err(err_context_out_of_tree(context_parent, caller_session_key))
+        let caller = caller_context(caller_session_key, &metas);
+        if caller.is_base
+            || caller.privileged
+            || in_subtree(&caller, &context_parent.as_str(), &metas)
+        {
+            return Ok(context_parent.to_string());
+        }
+        Err(err_context_out_of_tree(
+            &context_parent.as_str(),
+            caller_session_key,
+        ))
     }
 
     /// Register and dispatch one subagent run on the unified executor.
@@ -916,6 +1285,7 @@ impl SubagentExecutor {
             child_depth,
             config,
             parent_cancel,
+            stream_events,
         } = spec;
 
         // Build the metadata extension that carries subagent-specific data
@@ -935,7 +1305,10 @@ impl SubagentExecutor {
         let async_config = AsyncToolConfig {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
-            timeout_secs: Some(config.timeout_seconds),
+            // `ExecutionConfig::timeout_seconds == 0` means UNLIMITED,
+            // but the AsyncExecutor treats `Some(0)` as an immediate
+            // timeout — map 0 to `None` so unlimited survives the hop.
+            timeout_secs: (config.timeout_seconds > 0).then_some(config.timeout_seconds),
             timeout_millis: None,
             cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
             label: config.label.clone(),
@@ -986,6 +1359,17 @@ impl SubagentExecutor {
         // `execute_subagent_task` (task-locals don't cross
         // `tokio::spawn`, but plain owned Strings do).
         let model_override_clone = config.model_override.clone();
+        // Sprint 2 Phase 6: the streaming resume path's event sink.
+        // Moved into the task closure; `None` keeps the final-only
+        // execution path.
+        let stream_events_for_closure = stream_events;
+        // Sprint 2 Phase 7: the daemon-shared inbox registry (when
+        // bound via `with_inbox_registry`) is handed to the child
+        // Agent so its agentic loop drains the SAME registry the
+        // principal ingress paths queue steering into (keyed by the
+        // child session id). `None` keeps the per-call standalone
+        // drain (tests / CLI one-shots).
+        let inbox_registry_for_closure = self.inbox_registry.clone();
 
         self.unified_executor
             .execute_with_metadata(
@@ -1049,6 +1433,8 @@ impl SubagentExecutor {
                         parent_quota_meter_clone,
                         parent_peer_meter_clone,
                         caller_principal_did_clone,
+                        stream_events_for_closure,
+                        inbox_registry_for_closure,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -1079,39 +1465,45 @@ impl SubagentExecutor {
                     let cancelled = child_cancel_for_closure
                         .as_ref()
                         .is_some_and(tokio_util::sync::CancellationToken::is_cancelled);
-                    let (status, output, error): (AsyncTaskStatus, Option<String>, Option<String>) =
-                        if cancelled {
-                            info!("Subagent cancelled by parent: run_id={}", run_id_clone);
-                            (AsyncTaskStatus::Cancelled, None, None)
-                        } else {
-                            match result {
-                                Ok(output) => {
-                                    info!(
-                                        "Subagent completed successfully: run_id={}",
-                                        run_id_clone
-                                    );
-                                    (
-                                        AsyncTaskStatus::Completed {
-                                            result: peko_tools_core::ToolResult::success(
-                                                serde_json::json!({"output": &output}),
-                                            ),
-                                        },
-                                        Some(output),
-                                        None,
-                                    )
-                                }
-                                Err(e) => {
-                                    error!("Subagent failed: run_id={} error={}", run_id_clone, e);
-                                    (
-                                        AsyncTaskStatus::Failed {
-                                            error: e.to_string(),
-                                        },
-                                        None,
-                                        Some(e.to_string()),
-                                    )
-                                }
+                    let (status, output, error, token_usage): (
+                        AsyncTaskStatus,
+                        Option<String>,
+                        Option<String>,
+                        Option<(usize, usize, usize)>,
+                    ) = if cancelled {
+                        info!("Subagent cancelled by parent: run_id={}", run_id_clone);
+                        (AsyncTaskStatus::Cancelled, None, None, None)
+                    } else {
+                        match result {
+                            Ok(task_output) => {
+                                info!(
+                                    "Subagent completed successfully: run_id={}",
+                                    run_id_clone
+                                );
+                                (
+                                    AsyncTaskStatus::Completed {
+                                        result: peko_tools_core::ToolResult::success(
+                                            serde_json::json!({"output": &task_output.final_answer}),
+                                        ),
+                                    },
+                                    Some(task_output.final_answer),
+                                    None,
+                                    task_output.token_usage,
+                                )
                             }
-                        };
+                            Err(e) => {
+                                error!("Subagent failed: run_id={} error={}", run_id_clone, e);
+                                (
+                                    AsyncTaskStatus::Failed {
+                                        error: e.to_string(),
+                                    },
+                                    None,
+                                    Some(e.to_string()),
+                                    None,
+                                )
+                            }
+                        }
+                    };
 
                     // Update the unified registry with the subagent result.
                     // This is the ONLY state update — no dual registry sync.
@@ -1137,7 +1529,7 @@ impl SubagentExecutor {
                                     status: status.clone(),
                                     output: output.clone(),
                                     error: error.clone(),
-                                    token_usage: None, // TODO: Track token usage
+                                    token_usage,
                                     completed_at: Utc::now(),
                                 });
                             }
@@ -1224,7 +1616,7 @@ impl SubagentExecutor {
                     Ok(serde_json::json!({
                         "output": output,
                         "error": error,
-                        "token_usage": null,
+                        "token_usage": token_usage,
                     }))
                 },
             )
@@ -1490,6 +1882,15 @@ impl SubagentExecutor {
     }
 }
 
+/// The outcome of [`execute_subagent_task`]: the child agent's final
+/// answer plus the token usage accumulated over the run (projected to
+/// the `(input, output, total)` tuple `SubagentResult::token_usage`
+/// carries).
+struct SubagentTaskOutput {
+    final_answer: String,
+    token_usage: Option<(usize, usize, usize)>,
+}
+
 /// Execute a subagent task
 ///
 /// This is the core execution function that runs in a background task.
@@ -1497,12 +1898,16 @@ impl SubagentExecutor {
 /// 1. Loads the child session
 /// 2. Creates a subagent Agent sharing the parent's session manager
 /// 3. Runs the full `AgenticLoop` via `Agent::execute_with_session`
-/// 4. Returns the assistant's final answer
+///    (final-only) or — when `stream_events` is `Some` —
+///    `Agent::execute_streaming_with_session` (live `AgenticEvent`
+///    stream; sprint 2 Phase 6)
+/// 4. Returns the assistant's final answer + token usage
 ///
 /// The child resolves tools from the daemon-global
 /// [`crate::extensions::framework::core::global_core`]. The parent's
 /// `principal_id` is propagated so the child's own `SubagentExecutor`
 /// and any descendant spawns carry the same identity.
+#[allow(clippy::too_many_arguments)]
 async fn execute_subagent_task(
     agent_name: &str,
     session_key: &str,
@@ -1548,7 +1953,18 @@ async fn execute_subagent_task(
     // The spawning principal's DID, bound onto the child Agent so
     // `send_peer` registers down the tree with correct attribution.
     caller_principal_did: Option<String>,
-) -> Result<String> {
+    // Sprint 2 Phase 6: streaming event sink. `Some` runs the child
+    // via `Agent::execute_streaming_with_session`
+    // (`OrchestratorConfig::live()`) and forwards every `AgenticEvent`
+    // to the sink (the IPC `principal_send` drain-loop shape); `None`
+    // keeps the final-only `execute_with_session` path.
+    stream_events: Option<AgenticEventSink>,
+    // Sprint 2 Phase 7: the daemon-shared inbox registry, bound onto
+    // the child Agent so its loop drains steering queued by the
+    // principal ingress serial-queue fallback (keyed by the child
+    // session id). `None` keeps the per-call standalone drain.
+    inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
+) -> Result<SubagentTaskOutput> {
     info!(
         "Executing subagent task: agent={} session={}",
         agent_name, session_key
@@ -1558,9 +1974,12 @@ async fn execute_subagent_task(
     let provider = match provider {
         Some(p) => p,
         None => {
-            return Ok(format!(
-                "# Subagent Task\n\n**Task:** {task_message}\n\n**Status:** Completed (no provider configured)\n\nThe subagent executed without an LLM provider."
-            ));
+            return Ok(SubagentTaskOutput {
+                final_answer: format!(
+                    "# Subagent Task\n\n**Task:** {task_message}\n\n**Status:** Completed (no provider configured)\n\nThe subagent executed without an LLM provider."
+                ),
+                token_usage: None,
+            });
         }
     };
 
@@ -1679,7 +2098,7 @@ async fn execute_subagent_task(
             &peko_provider_api::ChatOptions::default(),
         ) {
             return Err(SpawnError::SpecGateFailed {
-                model_id: provider.model_id().to_string(),
+                model_id: provider.model_id().clone(),
                 reason: gate_err.to_string(),
             }
             .into());
@@ -1696,6 +2115,12 @@ async fn execute_subagent_task(
     // child — and, via the executor propagation inside
     // `with_caller_principal_did`, for deeper descendants too.
     subagent = subagent.with_caller_principal_did(caller_principal_did);
+
+    // Sprint 2 Phase 7: bind the daemon-shared inbox registry so the
+    // child loop drains steering queued by ingress paths (the
+    // `PrincipalManager` / IPC serial-queue fallback) into this child
+    // session's inbox. `None` keeps the per-call standalone drain.
+    subagent = subagent.with_inbox_registry(inbox_registry);
 
     // Update the subagent's session key provider so nested spawns know their parent
     subagent.session_key_provider().set_session_key(session_key);
@@ -1745,9 +2170,27 @@ async fn execute_subagent_task(
         parent_quota_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
     let parent_peer_meter =
         parent_peer_meter.unwrap_or_else(|| Arc::new(peko_quota::meter::QuotaMeter::unlimited()));
-    let inner_fut = Box::pin(peko_quota::scope::QuotaScope::with(
-        parent_peer_meter,
-        subagent.execute_with_session(
+    // Sprint 2 Phase 6: when a streaming sink is bound, run the child
+    // through `execute_streaming_with_session`
+    // (`OrchestratorConfig::live()`) so per-token `AssistantDelta`
+    // events reach the caller; otherwise keep the final-only
+    // `execute_with_session` path. Both arms produce the same
+    // `AgenticResult`, boxed to a common future type.
+    let run_fut: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<peko_engine::AgenticResult>> + Send + '_>,
+    > = match stream_events {
+        Some(sink) => Box::pin(subagent.execute_streaming_with_session(
+            &combined_prompt,
+            Vec::new(), // subagents carry no recalled context
+            child_session,
+            None, // history: None => full system prompt (with tools) is prepended
+            None, // caller_id: child turns attribute at the principal boundary
+            move |event| sink(event),
+            cancel,
+            None, // explicit_meter override: None = use the task-local meter
+            None, // explicit_peer_meter override: None = use the task-local peer meter
+        )),
+        None => Box::pin(subagent.execute_with_session(
             &combined_prompt,
             Vec::new(), // subagents carry no recalled context
             child_session,
@@ -1758,12 +2201,21 @@ async fn execute_subagent_task(
             },
             None, // explicit_meter override: None = use the task-local meter
             None, // explicit_peer_meter override: None = use the task-local peer meter
-        ),
+        )),
+    };
+    let inner_fut = Box::pin(peko_quota::scope::QuotaScope::with(
+        parent_peer_meter,
+        run_fut,
     ));
     let result = peko_quota::scope::QuotaScope::with(parent_quota_meter, inner_fut).await;
 
     match result {
         Ok(agentic_result) => {
+            let token_usage = Some((
+                agentic_result.usage.input as usize,
+                agentic_result.usage.output as usize,
+                agentic_result.usage.total as usize,
+            ));
             let mut final_answer = agentic_result.final_answer;
 
             // If the final answer is empty, try to recover from the session history.
@@ -1789,7 +2241,10 @@ async fn execute_subagent_task(
                 agentic_result.iterations,
                 final_answer.len()
             );
-            Ok(final_answer)
+            Ok(SubagentTaskOutput {
+                final_answer,
+                token_usage,
+            })
         }
         Err(e) => {
             error!(

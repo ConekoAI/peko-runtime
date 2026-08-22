@@ -189,8 +189,9 @@ pub fn verify_channel_event(
 //
 // Sign/verify for `TunnelMessage::TunnelChannelInvite`. Pre-image:
 // `request_id || source_runtime_id || recipient_runtime_id ||
-// source_principal_did || channel_id || creator || name ||
-// JSON(initial_members)`.
+// source_principal_did || channel_id || creator || creator_did || name ||
+// passive_binding || JSON(initial_members)`. (`passive_binding` signs as
+// the empty string when the envelope carries `None` — Phase 12a.)
 //
 // Why a separate module (vs. sharing `sign_channel_event`):
 //
@@ -226,8 +227,18 @@ pub struct ChannelInviteSignedFields<'a> {
     /// time so the receiver can populate its local mirror without a
     /// follow-up `peek` round-trip.
     pub creator: &'a str,
+    /// The creator principal's stable DID (Phase 12a) — the receiver
+    /// names its peer child for the creator from this. Signed so a
+    /// hub cannot silently reattribute the DM to a different peer.
+    pub creator_did: &'a str,
     /// Human-readable channel name (`team`, `general`, etc.).
     pub name: &'a str,
+    /// DM marker (Phase 12a): the source channel's `passive_binding`,
+    /// or the EMPTY STRING when the channel is unbound. Only the
+    /// presence/absence is meaningful to the receiver (it derives its
+    /// own binding); the value is signed so a hub cannot strip or
+    /// forge the DM-ness of an invite.
+    pub passive_binding: &'a str,
     /// Pre-serialized bytes of the `initial_members` list. Caller
     /// is responsible for serializing via
     /// `serde_json::to_vec(&initial_members)` once and passing the
@@ -255,7 +266,9 @@ pub fn invite_canonical_pre_image(fields: ChannelInviteSignedFields<'_>) -> Vec<
             ),
             ("channel_id", fields.channel_id.as_bytes()),
             ("creator", fields.creator.as_bytes()),
+            ("creator_did", fields.creator_did.as_bytes()),
             ("name", fields.name.as_bytes()),
+            ("passive_binding", fields.passive_binding.as_bytes()),
             ("initial_members", fields.initial_members_bytes),
         ],
     )
@@ -531,7 +544,9 @@ mod tests {
             source_principal_did: "prin_alice",
             channel_id: "chan_abcdefgh",
             creator: "prin_alice",
+            creator_did: "did:peko:principal:alice",
             name: "team-chat",
+            passive_binding: "",
             initial_members_bytes: &members_bytes,
         };
         let signature = sign_channel_invite(signing_key, fields);
@@ -557,7 +572,9 @@ mod tests {
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 creator: "prin_alice",
+                creator_did: "did:peko:principal:alice",
                 name: "team-chat",
+                passive_binding: "",
                 initial_members_bytes: &members_bytes,
             },
         );
@@ -585,7 +602,9 @@ mod tests {
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 creator: "prin_alice",
+                creator_did: "did:peko:principal:alice",
                 name: "team-chat",
+                passive_binding: "",
                 initial_members_bytes: &tampered,
             },
             &signature,
@@ -618,7 +637,9 @@ mod tests {
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 creator: "prin_alice",
+                creator_did: "did:peko:principal:alice",
                 name: "team-chat",
+                passive_binding: "",
                 initial_members_bytes: &members_bytes,
             },
         );
@@ -633,7 +654,9 @@ mod tests {
                 // Different channel id → different pre-image.
                 channel_id: "chan_zzzzzzzz",
                 creator: "prin_alice",
+                creator_did: "did:peko:principal:alice",
                 name: "team-chat",
+                passive_binding: "",
                 initial_members_bytes: &members_bytes,
             },
             &signature,
@@ -661,7 +684,9 @@ mod tests {
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 creator: "prin_alice",
+                creator_did: "did:peko:principal:alice",
                 name: "team-chat",
+                passive_binding: "",
                 initial_members_bytes: &members_bytes,
             },
         );
@@ -674,7 +699,9 @@ mod tests {
                 source_principal_did: "prin_alice",
                 channel_id: "chan_abcdefgh",
                 creator: "prin_alice",
+                creator_did: "did:peko:principal:alice",
                 name: "team-chat",
+                passive_binding: "",
                 initial_members_bytes: &members_bytes,
             },
             &signature,

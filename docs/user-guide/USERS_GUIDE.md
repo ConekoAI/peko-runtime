@@ -208,6 +208,27 @@ description = "A helpful assistant"
 grants = ["tool:Bash", "tool:Read", "tool:Write"]
 ```
 
+#### Standing named children
+
+A Principal can declare **standing children** — named subagent sessions
+that persist for the Principal's lifetime and are resumed by name (e.g.
+`/memory`):
+
+```toml
+[children.memory]
+subagent_type = "archivist"        # required
+description = "Long-term memory"   # optional; used as the session title
+```
+
+Each table key is the child's name (1–64 chars, no `/`, no surrounding
+whitespace). At startup the runtime ensures each declared child exists as
+a session under the Principal's root — creating it without running any
+LLM turn if missing, or leaving it untouched when it already exists.
+Standing children are exempt from idle-session pruning. Inside the
+Principal, the `Agent` tool's `new` action with a matching `name`
+attaches to the standing session (keeping its full history) instead of
+spawning a fresh one; `subagent_type` must match the declaration.
+
 ### Environment Variables
 
 | Variable | Description |

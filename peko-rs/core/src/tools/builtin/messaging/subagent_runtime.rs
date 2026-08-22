@@ -14,11 +14,20 @@
 //!   gate. Returns `true` only when the per-principal capability snapshot
 //!   grants `agent:<name>`; missing authorization context is denied.
 //! - [`resolve_agent_config`](SubagentRuntime::resolve_agent_config) —
-//!   disk lookup. Workspace-scoped first
-//!   (`<workspace>/agents/<name>/AGENT.md` or `<workspace>/agents/<name>.md`),
-//!   then global (`{PEKO_HOME}/agents/<name>/config.toml`). Adapter
-//!   owns the `PathResolver` and `principal::agent_prompt` calls —
-//!   built-ins never touch root internals.
+//!   workspace Markdown lookup. Two layouts supported:
+//!   `<workspace>/agents/<name>/AGENT.md` (directory) or
+//!   `<workspace>/agents/<name>.md` (flat). The legacy global TOML
+//!   fallback (`{PEKO_HOME}/agents/<name>/config.toml`) was retired in
+//!   Sprint 8 Commit 2 — the workspace is the single source of truth.
+//!   Adapter owns the `PathResolver` and `principal::agent_prompt`
+//!   calls — built-ins never touch root internals.
+//!
+//! Sprint 8: parameter names that took a `subagent_type: &str` are
+//! renamed to `agent: &str` to match the LLM-facing `AgentArgs::agent`
+//! field. The method names (`is_subagent_enabled`,
+//! `resolve_agent_config`) and the trait name (`SubagentRuntime`)
+//! keep their historical "subagent" framing — a subagent is what gets
+//! spawned, the `agent` value is its template name.
 //! - [`audit_spawn`](SubagentRuntime::audit_spawn) — observability hub
 //!   write. Adapter no-ops when no hub is attached.
 //! - [`execute_and_wait`](SubagentRuntime::execute_and_wait) — the actual
@@ -36,9 +45,8 @@ use serde::Serialize;
 
 use async_trait::async_trait;
 
-use crate::tools::builtin::messaging::dto::{
-    AgentConfig, ExecutionConfig, SpawnCleanupPolicy, SubagentRunView,
-};
+use crate::agents::subagent_runtime_impl::AgentPrompt;
+use crate::tools::builtin::messaging::dto::{ExecutionConfig, SubagentRunView};
 use crate::tools::builtin::session::CompactRequestOutcome;
 
 /// Runtime port the `AgentTool` uses to talk to the subagent executor.
@@ -53,17 +61,26 @@ pub trait SubagentRuntime: Send + Sync {
     /// Capability check.
     ///
     /// Returns `true` only when the registered principal capability snapshot
-    /// grants `agent:<subagent_type>`. Missing context and missing grants are
+    /// grants `agent:<agent>`. Missing context and missing grants are
     /// both denied.
-    fn is_subagent_enabled(&self, subagent_type: &str) -> bool;
+    fn is_subagent_enabled(&self, agent: &str) -> bool;
 
-    /// Resolve a subagent config from disk.
+    /// Resolve a subagent config from the principal's workspace.
     ///
-    /// Resolution order:
-    /// 1. If `workspace` is `Some`, look up
-    ///    `<workspace>/agents/<name>/AGENT.md` (directory layout) or
-    ///    `<workspace>/agents/<name>.md` (flat layout).
-    /// 2. Fall back to the global `{PEKO_HOME}/agents/<name>/config.toml`.
+    /// Sprint 8 Commit 2: the workspace is the single source of truth.
+    /// `workspace` is required — the legacy global TOML fallback
+    /// (`{PEKO_HOME}/agents/<name>/config.toml`) was retired. Two layouts
+    /// are supported:
+    /// - `<workspace>/agents/<name>/AGENT.md` (directory)
+    /// - `<workspace>/agents/<name>.md` (flat)
+    ///
+    /// Sprint 8 Commit 4: returns `Arc<AgentPrompt>` — the workspace
+    /// Markdown IS the agent template (frontmatter name/description
+    /// + body). No `BuiltinAgentConfig` mirror DTO. The `AgentPrompt`
+    /// type lives at `crate::agents::subagent_runtime_impl` (the
+    /// production adapter); built-ins reference it through the
+    /// port trait without taking on adapter-internal types beyond
+    /// the value shape.
     ///
     /// `model_override` is accepted to preserve the current call shape
     /// but is currently a no-op — the runtime applies it at agent
@@ -74,7 +91,7 @@ pub trait SubagentRuntime: Send + Sync {
         name: &str,
         workspace: Option<&Path>,
         model_override: Option<&str>,
-    ) -> anyhow::Result<AgentConfig>;
+    ) -> anyhow::Result<Arc<AgentPrompt>>;
 
     /// Audit a spawn event under the parent principal.
     ///
@@ -128,6 +145,36 @@ pub trait SubagentRuntime: Send + Sync {
     fn principal_name(&self) -> Option<String> {
         None
     }
+
+    /// Maximum spawn depth the runtime enforces on incoming
+    /// `ExecutionConfig.max_depth` calls. The production adapter
+    /// reads this from the executor's principal config; test
+    /// fixtures override to assert the tool projects the value
+    /// onto the spawn request. Default `3` (the round-7
+    /// historical cap).
+    fn max_depth(&self) -> u32 {
+        3
+    }
+
+    /// The spawning principal's workspace (the `<workspace>/agents/`
+    /// resolution root). `None` means global agents only
+    /// (standalone / test paths). Default `None`; production
+    /// adapter overrides.
+    fn workspace(&self) -> Option<&Path> {
+        None
+    }
+
+    /// The calling run's own session id (the engine-side caller
+    /// of the `Agent` tool). The tool reads this in the
+    /// `Tool::execute` (no-`ToolContext`) path so non-engine
+    /// callers (tests, async_executor) can still supply a
+    /// session id. On the production `execute_with_context`
+    /// path, `ctx.session_id` is preferred and this accessor is
+    /// the fallback. Default `None`; production adapter
+    /// overrides.
+    fn session_id(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Type alias for the shared runtime handle threaded through every
@@ -150,11 +197,9 @@ pub type SharedSubagentRuntime = Arc<dyn SubagentRuntime>;
 pub struct SpawnRequest {
     /// Task description / prompt for the subagent.
     pub prompt: String,
-    /// Subagent type identifier (passed for logging / observability
+    /// Agent template name (passed for logging / observability
     /// only — `subagent_config` already carries the resolved name).
-    pub subagent_type: String,
-    /// Whether to create an isolated session without parent context.
-    pub isolated: bool,
+    pub agent: String,
     /// Parent session key.
     pub parent_session_key: String,
     /// Per-run execution config (timeout, cleanup, label, etc.).
@@ -168,7 +213,13 @@ pub struct SpawnRequest {
     pub parent_cancel: Option<tokio_util::sync::CancellationToken>,
     /// The resolved subagent config (from
     /// [`SubagentRuntime::resolve_agent_config`]).
-    pub subagent_config: AgentConfig,
+    ///
+    /// Sprint 8 Commit 4: now `Arc<AgentPrompt>` instead of the
+    /// mirror `BuiltinAgentConfig` DTO. The Markdown body and
+    /// frontmatter are the single source of truth; the downstream
+    /// adapter forwards name + description into the audit row
+    /// and uses the body for the spawned child's `AgentConfig`.
+    pub subagent_config: Arc<AgentPrompt>,
     /// Phase 1 of `feature/multi-model-subagents`: optional
     /// catalog model id the parent picked for this spawn. When
     /// `Some`, the subagent dispatches its LLM calls against this
@@ -178,13 +229,18 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     /// Phase 5b: re-attach the run to an existing spawned session
     /// (persistent subagents) instead of spawning a fresh one.
-    /// Mutually exclusive with `isolated`.
     pub resume_session: Option<String>,
     /// The caller's own current session id (auto-detected by the
     /// tool from `ToolContext` / the session-key provider). Used by
     /// the adapter to ownership-validate an explicit
     /// `parent_session_key`; `None` skips that check (test paths).
     pub caller_session_key: Option<String>,
+    /// Agent tool `name` param: slug for the child's session
+    /// metadata (the per-parent-unique path segment for `/a/b`
+    /// addressing). `None` leaves the child slugless. Ignored on the
+    /// resume path (the session already exists — rename it via the
+    /// session tool instead).
+    pub name: Option<String>,
 }
 
 // ─── SpawnAuditEvent (port input DTO) ─────────────────────────────
@@ -193,21 +249,22 @@ pub struct SpawnRequest {
 ///
 /// Carries the structured details the production executor used to
 /// log under `SubagentSpawn`. Tests no-op this path.
+///
+/// Sprint 7 Commit 3: `isolated`, `cleanup`, and `description` were
+/// dropped — the LLM-facing `Agent` tool surface no longer exposes
+/// these knobs, so they were always the same value on every audit
+/// row. The audit JSON no longer carries `"isolated"`, `"cleanup"`,
+/// or `"description"` keys; operators using `peko audit tail` will
+/// see fewer fields per `SubagentSpawn` row.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpawnAuditEvent {
-    /// Subagent type identifier.
-    pub subagent_type: String,
+    /// Agent template name (the value the LLM passed as `agent` on
+    /// the `Agent` tool call).
+    pub agent: String,
     /// The principal's runtime id (DID).
     pub principal_id: String,
     /// The principal's display name (for the audit row).
     pub principal_name: Option<String>,
-    /// Whether the spawn was isolated (fresh session).
-    pub isolated: bool,
-    /// Whether the spawn should keep or delete the session on
-    /// completion. Serialised as `"keep"` / `"delete"`.
-    pub cleanup: SpawnCleanupPolicy,
-    /// Optional description label.
-    pub description: Option<String>,
     /// Parent session key.
     pub parent_session_key: String,
     /// Phase 1: catalog model id the parent picked for this

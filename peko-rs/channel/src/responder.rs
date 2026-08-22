@@ -7,15 +7,18 @@
 //! - `peko-channel::ChannelSubscriber` consumes it via
 //!   `Arc<dyn ChannelResponder>`.
 //!
-//! Only the `Noop` impl ships. Agents read channels actively via the
-//! `ChannelRead` tool (peko-core / PR-4a), so there is no daemon-side
-//! responder to dispatch through. Future per-channel behaviour can
-//! land as additional impls without touching the trait.
+//! Only the `Noop` impl ships in this crate. The production passive
+//! responder (`PassiveBindingResponder`, Phase 4 of the agent-session
+//! paradigm sprint) lives in the root crate
+//! (`peko-rs/core/src/daemon/channel_binding.rs`) because driving a
+//! turn needs the subagent executor — a root-only dependency this leaf
+//! crate must not take.
 
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId};
 
+use crate::port::TaskId;
 use crate::Result;
 
 // ---------------------------------------------------------------------------
@@ -48,11 +51,20 @@ pub trait ChannelResponder: Send + Sync + 'static {
 /// `now` is the wall-clock instant at which the subscriber observed the
 /// event (NOT the event's own `at` field — clocks can drift between
 /// hosts and we want the responder to see its own time).
+///
+/// `event_id` is the triggering event's [`TaskId`] (its line number in
+/// the LOCAL `events.jsonl`). Responders that post a reply thread it
+/// via `PostMsg::reply(event_id, …)` so the anti-loop parent rule
+/// (`parent.is_none()` on the trigger side) can tell replies from root
+/// posts. Line numbers are runtime-local: a mirrored channel's line
+/// numbers diverge from the source runtime's, so a `parent` value is
+/// only meaningful in the log where the reply was written.
 #[derive(Debug, Clone)]
 pub struct RespondCtx {
     pub channel: ChannelId,
     pub principal: PrincipalId,
     pub event: ChannelEvent,
+    pub event_id: TaskId,
     pub now: std::time::SystemTime,
 }
 

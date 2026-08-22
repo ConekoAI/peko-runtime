@@ -843,11 +843,18 @@ pub enum RequestPacket {
     // `PrincipalId` via `ChannelHost::principal_manager`).
 
     /// Create a new channel owned by `creator_name`.
+    ///
+    /// `passive_binding` (Phase 4, agent-session paradigm sprint) is the
+    /// optional `--bind` value (session id or `/path`). Serde-defaulted
+    /// so pre-Phase-4 clients decode as `None` (unbound) and older
+    /// daemons silently ignore the field.
     #[serde(rename = "channel_create")]
     ChannelCreate {
         request_id: u64,
         creator_name: String,
         name: String,
+        #[serde(default)]
+        passive_binding: Option<String>,
     },
 
     /// Add `invitee_name` to `channel` (invited by `inviter_name`).
@@ -1124,6 +1131,46 @@ pub struct ToolErrorEntry {
     pub tool_name: Option<String>,
     #[serde(default)]
     pub error_message: String,
+}
+
+/// Schema version carried on every `PrincipalLogMessage` row.
+pub const PRINCIPAL_LOG_SCHEMA_VERSION: u8 = 1;
+
+/// One immutable, consumer-visible text message in a `PrincipalLog`
+/// page — the row type of `peko log`. Lives next to the packet that
+/// carries it; the dedicated chat-log store crate was retired in
+/// Phase 13 (the peer DM channels are the record now).
+///
+/// Wire shape is unchanged from the retired chat-log row type
+/// (camelCase field names, same defaults/skips).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrincipalLogMessage {
+    pub schema_version: u8,
+    pub id: String,
+    pub sender: peko_auth::Subject,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+}
+
+impl PrincipalLogMessage {
+    #[must_use]
+    pub fn new(
+        sender: peko_auth::Subject,
+        text: impl Into<String>,
+        correlation_id: Option<String>,
+    ) -> Self {
+        Self {
+            schema_version: PRINCIPAL_LOG_SCHEMA_VERSION,
+            id: format!("chat_{}", uuid::Uuid::new_v4().simple()),
+            sender,
+            timestamp: chrono::Utc::now(),
+            text: text.into(),
+            correlation_id,
+        }
+    }
 }
 
 /// Response sent from Daemon → CLI
@@ -1883,7 +1930,7 @@ pub enum ResponsePacket {
     },
 
     /// Response to a `PrincipalLog` request. Returns one bounded page of
-    /// the runtime-owned chat log for `(principal_did, peer)` —
+    /// the peer's DM-channel conversation for `(principal_did, peer)` —
     /// `messages` ordered oldest-to-newest, `next_cursor` opaque
     /// for paging older pages, and `has_more` true when more pages
     /// exist. Pre-launch clean cutover: no `session_id`, no
@@ -1895,7 +1942,7 @@ pub enum ResponsePacket {
         request_id: u64,
         name: String,
         peer: peko_auth::Subject,
-        messages: Vec<peko_chat_log::ChatLogMessage>,
+        messages: Vec<PrincipalLogMessage>,
         next_cursor: Option<String>,
         has_more: bool,
     },
@@ -3051,8 +3098,8 @@ mod tests {
             principal_id: PrincipalId("test-principal".to_string()),
             action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
+                target: None,
             },
-            delivery: peko_cron::DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),
@@ -3145,8 +3192,8 @@ mod tests {
             principal_id: PrincipalId("test-principal".to_string()),
             action: peko_cron::CronJobAction::Send {
                 message: "Hello cron".to_string(),
+                target: None,
             },
-            delivery: peko_cron::DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),
@@ -3276,8 +3323,8 @@ mod tests {
                 principal_id: PrincipalId("test-principal".to_string()),
                 action: peko_cron::CronJobAction::Send {
                     message: "m".to_string(),
+                    target: None,
                 },
-                delivery: peko_cron::DeliveryMode::None,
                 delete_after_run: false,
                 enabled: true,
                 created_at: chrono::Utc::now(),
@@ -5732,6 +5779,23 @@ mod tests {
     }
 
     #[test]
+    fn principal_log_message_round_trips_with_camel_case_metadata() {
+        let message = PrincipalLogMessage::new(
+            peko_auth::Subject::User("local".to_string()),
+            "hello",
+            Some("request-1".to_string()),
+        );
+
+        let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(value["schemaVersion"], PRINCIPAL_LOG_SCHEMA_VERSION);
+        assert_eq!(value["correlationId"], "request-1");
+        assert_eq!(
+            serde_json::from_value::<PrincipalLogMessage>(value).unwrap(),
+            message
+        );
+    }
+
+    #[test]
     fn test_principal_log_response_roundtrip() {
         // Response shape: resolved peer, messages array, next_cursor,
         // has_more. Pre-launch clean cutover from session_id/events/
@@ -5740,7 +5804,7 @@ mod tests {
             request_id: 6200,
             name: "helper".to_string(),
             peer: peko_auth::Subject::User("alice".to_string()),
-            messages: vec![peko_chat_log::ChatLogMessage::new(
+            messages: vec![PrincipalLogMessage::new(
                 peko_auth::Subject::User("alice".to_string()),
                 "hi",
                 None,

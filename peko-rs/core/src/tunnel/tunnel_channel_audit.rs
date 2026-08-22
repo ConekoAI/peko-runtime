@@ -1,6 +1,6 @@
 //! Cross-runtime channel-event audit. peko-channel cross-runtime PR-A.
 //!
-//! Mirrors [`crate::tunnel::a2a_audit`] in shape: structured
+//! Mirrors the retired `a2a_audit` module in shape: structured
 //! `tracing::info!` log lines carrying the fields an audit consumer
 //! needs to join an outbound `forwarded_outbound` row on the source
 //! runtime to each inbound `received_inbound` row on a remote
@@ -24,9 +24,9 @@
 
 use tracing::info;
 
-/// Preview length for `event_payload`. Mirrors `a2a_audit::preview`'s
-/// 200-char budget — kept consistent so audit consumers can use a
-/// single truncation heuristic across event kinds.
+/// Preview length for `event_payload`. A 200-char budget, kept
+/// consistent with the other audit previews so audit consumers can
+/// use a single truncation heuristic across event kinds.
 const PREVIEW_MAX: usize = 200;
 
 /// Truncate a free-form event JSON for the audit-log payload. Audit
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
 
     /// Short previews pass through unchanged. Mirrors the
-    /// `a2a_audit::preview` invariant so audit consumers can use a
+    /// preview invariant so audit consumers can use a
     /// single truncation heuristic across event kinds.
     #[test]
     fn test_preview_passes_short_through() {
@@ -112,8 +112,8 @@ mod tests {
     }
 
     /// Long previews truncate with an ellipsis on a UTF-8 char
-    /// boundary. The 200-char limit is the same as `a2a_audit`'s
-    /// `preview` so audit log heuristics stay uniform.
+    /// boundary. The 200-char limit matches the other audit previews
+    /// so audit log heuristics stay uniform.
     #[test]
     fn test_preview_truncates_with_ellipsis() {
         let long = "x".repeat(500);

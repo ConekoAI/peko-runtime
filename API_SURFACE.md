@@ -467,71 +467,24 @@ The actor identity attached to a session (peer, caller). Replaces the pre-ADR-03
 
 ## Module: `chat_log` (Runtime-Owned Consumer-Visible History)
 
-**Status:** ACTIVE  
+**Status:** RETIRED (sprint 3 Phase 13, 2026-08-19)  
 **ADRs:** ADR-042 (no external `session` concept in CLI/IPC surface)
 
-The chat log is the runtime-owned, append-only, consumer-visible
-record of the text messages an external participant actually
-exchanged with a Principal. It is **separate from the session
-JSONL** (see §`principal` and the data-model section §5½). The
-chat log is the only store the `principal_log` IPC, the desktop's
-chat page, and the `peko log` CLI read from. Internal execution
-detail (tool calls, thinking, compactions, model changes) never
-crosses into chat-log storage.
+The `peko-chat-log` crate (`ChatLogStore` / `ChatThreadKey` /
+`ChatLogMessage` / `ChatLogPage` / `ChatLogError`) was deleted from
+the workspace. Sprint 3 re-founded the consumer-visible conversation
+record on the per-peer **DM channels** (see the `channel` module):
+`peko log` and the `principal_log` IPC read the DM channel's
+`Posted` events. The cron `Send` fired-prompt projection
+(`PrincipalManager::record_cron_input`) — the store's last writer —
+was dropped; fired prompts live in the trunk session JSONL.
 
-### Public Types
+The `peko log` row DTO survives, moved and renamed:
 
-#### `chat_log::ChatLogStore` (ACTIVE)
-
-```rust
-pub struct ChatLogStore { ... }
-
-impl ChatLogStore {
-    pub fn new(root: PathBuf) -> Self;
-    pub async fn append_message(
-        &self,
-        key: &ChatThreadKey,
-        message: &ChatLogMessage,
-    ) -> Result<(), ChatLogError>;
-    pub async fn read_page(
-        &self,
-        key: &ChatThreadKey,
-        cursor: Option<&str>,
-        limit: usize,
-        since: Option<DateTime<Utc>>,
-    ) -> Result<ChatLogPage, ChatLogError>;
-    pub async fn remove_principal(&self, principal: &PrincipalDID)
-        -> Result<(), ChatLogError>;
-}
-```
-
-The runtime-owned chat-log store. Root path is resolved from
-`PathResolver::chat_logs_dir()` (`<data-dir>/chat_logs`) and
-shared via `AppState::chat_log_store` and
-`CrossRuntimeA2aCtx::chat_log_store`. The store is the only
-abstraction over chat-log shards — there is no in-memory
-representation, no global index, and no migration path from
-session JSONL to chat log.
-
-#### `chat_log::ChatThreadKey` (ACTIVE)
+#### `ipc::packet::PrincipalLogMessage` (ACTIVE)
 
 ```rust
-pub struct ChatThreadKey {
-    pub principal: PrincipalDID,
-    pub peer: Subject,
-}
-```
-
-Identifies one chat thread. `principal` is the **stable DID**
-(`PrincipalDID`), never the restart-local `PrincipalId`, so the
-same thread survives `peko` restarts and principal migrations.
-`peer` is the `Subject` that completes the pair (`User`,
-`Principal`, or `Public`).
-
-#### `chat_log::ChatLogMessage` (ACTIVE)
-
-```rust
-pub struct ChatLogMessage {
+pub struct PrincipalLogMessage {
     pub schema_version: u8,
     pub id: String,
     pub sender: Subject,
@@ -541,43 +494,11 @@ pub struct ChatLogMessage {
 }
 ```
 
-One immutable consumer-visible message. `correlation_id` pairs
-request/response lines for principal-to-principal exchanges;
-otherwise it's `None`.
-
-#### `chat_log::ChatLogPage` (ACTIVE)
-
-```rust
-pub struct ChatLogPage {
-    pub messages: Vec<ChatLogMessage>,
-    pub next_cursor: Option<String>,
-    pub has_more: bool,
-}
-```
-
-A bounded page of messages, ordered **oldest-to-newest**. Cursors
-are opaque, thread-bound, and remain stable across subsequent
-appends.
-
-#### `chat_log::ChatLogError` (ACTIVE)
-
-```rust
-pub enum ChatLogError {
-    Io(std::io::Error),
-    Serialization(serde_json::Error),
-    Lock(String),
-    Cursor(CursorError),
-    ThreadMismatch,
-    InvalidSender,
-    UnsupportedVersion(u8),
-    InvalidOffset { offset: u64, file_len: u64 },
-}
-```
-
-The full error surface for chat-log operations. `ThreadMismatch`
-fires when a shard's header doesn't match the hashed path the
-caller requested; `InvalidSender` fires when an append carries a
-sender that isn't one of the two participants of the thread.
+One immutable consumer-visible message — the row type of
+`ResponsePacket::PrincipalLog`. Wire shape is byte-identical to the
+retired `ChatLogMessage` (camelCase fields,
+`PRINCIPAL_LOG_SCHEMA_VERSION`); the daemon mints `chan_<line>` ids
+from the DM channel's line numbers.
 
 ### IPC: `RequestPacket::PrincipalLog` / `ResponsePacket::PrincipalLog`
 
@@ -857,6 +778,89 @@ oversized transcripts page in place. New/changed public items:
 | `SubagentRuntime::request_compaction` | `tools::builtin::messaging` | ✅ New | Agent tool compact-action port method |
 | `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `extensions::framework::async_exec::executor` | ✅ New | Subagent active-run detection |
 
+### Agent–Session Paradigm Sprint (2026-08-15)
+
+Branch `feat/agent-session-paradigm`; see
+`docs/architecture/AGENT_SESSION_PARADIGM.md`. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `SessionMetadata`/`SessionEntry` (+`standing`, +`slug`) | `peko_session::{metadata,index}` | ✅ Extended | Durability flag (prune exemption) + per-parent-unique path segment |
+| `MetadataController::{set_parent, set_slug, set_standing}` / `SessionManager::{move_session, set_session_slug, set_standing}` | `peko_session::{metadata_controller,manager}` | ✅ New | Reparent / slug / standing writers |
+| `peko_session::path` (`resolve_path`, `compute_path`, `validate_slug`, `derive_branch_slug`) | `peko_session::path` | ✅ New | `/a/b/c` path addressing over the session tree |
+| `SessionRuntime::move_session`; `rename_session` (+`slug`); `SessionInfo` (+`slug`, +`path`) | `tools::builtin::session` | ✅ Extended | Session tool 10th action + path-aware DTOs |
+| `ownership::{err_move_ancestor, err_move_cycle}` | `session::ownership` | ✅ New | Move guard refusals (incl. cycle prevention) |
+| `SpawnRequest.name` / `ExecutionConfig.{slug, subagent_type}` | `tools::builtin::messaging`, `agents` | ✅ Extended | Named spawns + standing-child attach |
+| `PrincipalConfig.children` / `ChildDeclaration` | `principal::config` | ✅ New | `[children]` standing-children declaration |
+| `principal::children::ensure_declared_children` / `session::standing` helpers | `principal::children`, `session::standing` | ✅ New | Ensure-declared + declaration recovery |
+| `trunk_session_id()` / `ChannelKind::Trunk` / `PrincipalManager::receive_trunk` | `principal::routers::root`, `principal::router`, `principal::manager` | ✅ New | Principal trunk session `root:self` (peer-less, cron-kept) |
+| `CronJobAction::Send` (+`target`); `SEND_TARGET_TRUNK` / `validate_send_target` | `peko_cron::tools` | ✅ Extended | `target = "trunk"` routes the turn into `root:self` |
+
+### PEKO Sprint 2 (2026-08-17) — external ingress off the root
+
+Breaking (prelaunch): per-peer `root:{peer}` / `root:cron:{owner}`
+sessions retired; all external ingress lands in per-peer standing
+children of the trunk. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `SessionMetadata`/`SessionEntry` (+`privileged`) | `peko_session::{metadata,index}` | ✅ Extended | Owner's child gets whole-store guard reach |
+| `CallerContext.privileged` | `session::ownership` | ✅ Extended | Privilege = guard reach, not tree membership |
+| `peer_child_slug` / `ensure_peer_child` | `principal::peer_children` | ✅ New | Spawn-on-contact per-peer children (`/local-user`, `/user-x`, `/principal-{did}`), trunk-anchored |
+| `PeerChildTurns` (`ensure_child`, `drive_turn{,_streaming}`) | `principal::child_turns` | ✅ New | Persona-inheriting child turn driver (shared with channel binding) |
+| `SubagentExecutor::resume_streaming` / `StreamingResumeOutcome` | `agents::subagent_executor` | ✅ New | Streaming child turns (same event shape as the root path) |
+| `PrincipalManager::record_peer_recall` | `principal::manager` | ✅ New | Per-peer recall artifact → peer-child session id |
+| ~~`PrincipalManager::receive`~~ / `receive_streaming` | `principal::manager` | ❌ Deleted / ⚠️ Changed | Peer channels route to peer children; Trunk/Cron → `receive_trunk`. The one-shot `receive` was deleted in sprint 3 Phase 12b (its only production callers were the retired A2A RPC paths) |
+
+### Sprint 4 (2026-08-19) — `send_peer` consolidated into `ChannelSend`
+
+Breaking (prelaunch): the parallel `send_peer` tool and the bare-post
+`ChannelSend` are folded into one tool — `ChannelSend` (registered
+per-agent with caller DID bound at construction). The LLM picks the
+dispatch branch by choosing the wire form of its `channel` parameter:
+
+| `channel` value        | Dispatch                                  |
+|------------------------|-------------------------------------------|
+| `chan_<8 base36>`      | Bare post (today's `ChannelSend`)         |
+| `principal:<did>`      | RPC: ensure_peer_child + await reply      |
+| `user:<id>`            | Peer messenger note (originating-user gate) |
+| `group:<slug>`         | Bare post to a group channel              |
+
+The runtime owns await / timeout / mirror / exposure-gate /
+originating-user-gate policies — no parallel state machine, no second
+tool name. Deleted/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `tunnel::principal_send_tool` (`SendPeerTool`, `SendPeerArgs`, `PrincipalSendResult`, `build_tool`) | `tunnel::principal_send_tool` | ❌ Deleted | Whole module retired (1775 lines); consolidated into `tools::builtin::channel::ChannelSendTool` with typed-prefix dispatch |
+| `ChannelSendTool::new` (single-arg constructor) | `tools::builtin::channel::channel_send` | ❌ Deleted | Replaced by `new_with_peer(port, did, ctx)` (per-agent, full principal / cross-runtime support) and `new_local_only(port, did)` (bare / group / user only). The global `Arc::new(ChannelSendTool::new(port))` registration in `engine/tool_runtime.rs` is removed — the tool is now per-agent only. |
+| `SendPeerArgs` / `PrincipalSendResult` | (renamed) | ⚠️ Renamed | `ChannelSendArgs` / `ChannelSendResult` in `tools::builtin::channel`. JSON wire shape `{ channel, text, parent?, label? }` — no `target` / `message` fields; the wire form of `channel` carries the routing identity. |
+| `tool:send_peer` capability grant | `peko-extension-api::capabilities` | ❌ Removed | Retired outright (no compat alias). `Capabilities::starter_bundle()` no longer includes the grant; `starter_bundle_does_not_grant_send_peer` pins the absence. Use `tool:ChannelSend` with a typed channel id. |
+| `ChannelSend` registration | `peko::runtime::builtin_tools` | ⚠️ Moved | Was in `GLOBAL_TOOL_NAMES` (singleton, no caller DID); now in `AGENT_SPECIFIC_TOOL_NAMES` (per-agent, caller DID bound at construction). `send_peer` removed. |
+| `ExtensionServices::channel_port()` / `set_channel_port` | `extensions::framework::core::config` | ✅ New | Lets the per-agent `ChannelSendTool` constructor find the file-backed `ChannelPort`. `daemon/state.rs` installs it on the same path as `set_cross_runtime_a2a_ctx`. |
+| `ChannelId` constructors | `peko_protocol::channel` | ✅ New | `ChannelId::for_principal(did)`, `for_user(id)`, `for_group(slug)`. `parse()` accepts any of the four wire forms; `kind()` returns the dispatch kind. |
+| `CreateOpts::id` | `peko_channel::port` | ✅ New | Pin the channel id on creation. Used by `peer_dm` for principal peers so the routing `ChannelId` is `principal:<did>` and `peko log` consumers and `ChannelSend`'s principal-branch agree without translation. |
+| `peko_channel::fs` (`channel_dir_name`, `channel_dir_name_inverse`, `id_needs_colon_normalization`) | `peko_channel::fs` | ✅ New | On-disk path normalizer: typed-prefix ids gain colons that are invalid in directory names on Windows / classic Unix filesystems; `.3A.` replaces `:` for the storage path only. Wire form unchanged. |
+| `ensure_peer_dm_channel` routing id | `principal::peer_dm` | ⚠️ Changed | Principal peers now route on `ChannelId::for_principal(did)` (`CreateOpts::id`). Display name stays `dm-<slug>` for `peko log` continuity (tests pin). User / public peers keep the slug-based routing id since the user-branch dispatch is messenger-port, not channel-port. |
+
+### Sprint 3 Phase 12b (2026-08-19) — principal DM over channels; A2A RPC stack retired
+
+Breaking (prelaunch): principal-to-principal messaging runs over the
+peer DM channels now. Deleted/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `TunnelMessage::{PrincipalToPrincipalRequest, PrincipalToPrincipalResponse}` | `tunnel::protocol` | ❌ Deleted | Signed RPC envelopes superseded by `TunnelChannelEvent`/`TunnelChannelInvite` fan-out |
+| `PendingA2aResponses` / `A2aResponsePayload` / `A2aWaitError`; `tunnel::a2a_audit` | `tunnel::{a2a_pending,a2a_audit}` | ❌ Deleted | Response correlation registry + audit helpers for the retired RPC stack |
+| `SignedFields` / `sign_request` / `verify_request` | `tunnel::a2a_signature` | ❌ Deleted | `build_pre_image` / `sign_pre_image` / `verify_pre_image` / `A2A_SIGNATURE_DOMAIN` remain (shared by `tunnel_channel_signature` + `invite_token`) |
+| `tunnel::direct` (server/client/manager/routing/handshake) | `tunnel::direct` | ❌ Deleted | Direct transport retired; `tls.rs` relocated to `tunnel::tls` (tunnel client still consumes `build_client_config`) |
+| `TunnelHost::pending_a2a_responses`; `AppState::{pending_a2a_responses, direct_manager, direct_*}`; `DirectHealth` | `tunnel::host`, `daemon::state` | ❌ Deleted | Host/state surface of the retired stack |
+| `CrossRuntimeA2aCtx` | `tunnel::cross_runtime` | ⚠️ Changed | Now `{ directory, caller_runtime_id, principal_manager, channel_port: Arc<TunnelChannelPort>, response_timeout }` |
+| `PeerMessenger::deliver_note` | `principal::messenger` | ⚠️ Changed | Note posts to the peer's DM channel (principal-authored root) instead of the chat log; child-JSONL append + trunk `[notify]` unchanged |
+| ~~`root_session_id`~~; `root_session_id_for_channel` (trunk-only) | `principal::routers::root` | ❌ Deleted / narrowed | Per-peer root routing retired |
+| Cron `Send` default target | `daemon::cron_engine`, `peko_cron` | ⚠️ Changed | Default = trunk; `TRUNK_MIN_INTERVAL_MS` covers `target: None` |
+| `TRUNK_MIN_INTERVAL_MS` / `validate_trunk_send_interval` | `peko_cron::tools` | ✅ New | Phase 3b: 60s floor for trunk-targeted `Every` keepalive (token-burn guard); SpawnTool wake posts to `root:self` |
+
 ### Type Aliases for Backward Compatibility
 
 ```rust
@@ -866,6 +870,85 @@ pub type SessionContext = ExecutionContext;
 // SessionContext (key module) → SessionKeyContext  
 pub type SessionContext = SessionKeyContext;
 ```
+
+### PEKO Sprint 5 (2026-08-20) — slug-path addressing on the LLM-facing surface
+
+Breaking (prelaunch): the LLM-facing addressing surface collapses to
+slug paths. Three commits land in order (`96d3e55a`, `89ca46d9`,
+then the doc sweep this section belongs to). Engine-internal call
+sites keep using raw session ids via `resolve_id_or_path`; the
+`SessionStoreBindingResolver` (channel binding) keeps its raw-id
+passthrough by design — bindings are config-authored, not
+LLM-authored. **Sprint 6 commit 2 collapsed the three-form grammar
+to two and retired the engine-internal `resolve_id_or_path`** — see
+the Sprint 6 section below.
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `peko_session::path::resolve_reference` | `peko_session::path` | ✅ New | Single LLM-facing entry point: `/a/b/c` → `resolve_path`, `agent-c` → `resolve_relative` (BFS), raw id → REFUSED. **Sprint 6 commit 2** collapsed to two arms (`/`-path or caller self-reference); see below |
+| `peko_session::path::resolve_id_or_path` | `peko_session::path` | ⚠️ Retired | Engine-internal entry point: same dispatch, raw ids pass through verbatim. Used by `resume_preflight`, `request_compaction`, `validate_context_parent` in `agents::subagent_executor.rs`. **Retired in sprint 6 commit 2** — engine sites now canonicalize via `SessionId::from` |
+| `peko_session::path::resolve_relative` | `peko_session::path` | ⚠️ Retired | BFS descent resolver: direct children first (unique-per-parent), then breadth-first. **Retired in sprint 6 commit 2** alongside the caller-relative slug arm |
+| `peko_session::path::looks_like_session_id` | `peko_session::path` | ⚠️ Retired | Shape heuristic for raw-id refusal: `:`-bearing values + 32+ char all-hex/dash blobs. **Retired in sprint 6 commit 2** — UUIDs lose discriminative power over legacy `:`-bearing shapes once engine ids are opaque |
+| `validate_slug` (+`:` arm) | `peko_session::path` | ✅ Extended | Rejects `:` so slugs cannot collide with raw ids by construction |
+| `Agent` `name` (REQUIRED for `action = "new"`) | `tools::builtin::messaging::agent` | ✅ Breaking | `validate_slug` runs upfront; old in-repo callers updated to pass `"writer"` |
+| `Agent` `session_key` (raw-id refusal) | `tools::builtin::messaging::agent` | ✅ Breaking | `Resume` / `Compact` errors cite the slug-path grammar instead of "pass a session id" |
+| `channel_binding::SessionStoreBindingResolver` (raw-id passthrough retained, doc-only) | `daemon::channel_binding` | ✅ Documented | Deliberate divergence — bindings come from `principals.toml` and never go through the tool surface |
+
+**Deferred to follow-ups (NOT in sprint 5; some closed in sprint 6):**
+
+- ✅ `peko_session::path::resolve_id_or_path` engine-internal helper — closed in sprint 6 commit 2 (engine sites canonicalize via `SessionId::from`).
+- ✅ `peko_session::path::resolve_relative` BFS helper — closed in sprint 6 commit 2 alongside the caller-relative slug arm.
+- ✅ `peko_session::path::looks_like_session_id` heuristic — closed in sprint 6 commit 2.
+- `SessionInfo` dropping `session_key` / `session_id` (keep only `path` / `slug`)
+- `SessionStatusResult` / `BranchOutcome` / `DeleteOutcome` / `CompactRequestOutcome` — replace raw `session_id` with computed `path`
+- `ListScope { root: Option<String>, principal: bool }` + `SessionRuntime::list_sessions(scope: ListScope)` signature change
+- `session list` default scope = caller's subtree (with `scope: "principal"` widening for privileged trunk callers and `path: "/other"` subtree scoping)
+- `SessionCache` (test impl) — path-resolution seam
+- Spawn response — replace `child_session_key` with `path` + `slug` (additive `child_path` on `SubagentMetadata` → `SubagentRunView`)
+
+### PEKO Sprint 6 (2026-08-20) — opaque UUID session ids, peer is a channel concern
+
+Breaking (prelaunch): the session layer takes back one job — storage
++ parent chain — and gives up peer routing, which has lived at the
+channel layer since sprint 3 phase 12b. Three commits land in order
+on `feat/agent-session-paradigm`:
+
+1. `feat(session)!: opaque UUID session ids + peer via parent walk` (`6bcfa9fa`)
+2. `refactor(session): collapse path resolver heuristics` (`2294f13e`)
+3. The doc sweep (this section).
+
+**Three-layer identity model:**
+
+| Layer | Id shape | Job |
+|---|---|---|
+| LLM surface (Agent + session tools) | slug path (`/a/b/c`) | Address by human-meaningful name |
+| Engine-internal session | opaque UUID | Storage key + parent-chain walk |
+| Peer / routing | channel id (`principal:<did>`, `user:<id>`, `chan_<8>`, `group:<slug>`) | Conversation surface + cross-runtime |
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `peko_session::SessionId` | `peko_session::id` | ✅ New | Newtype around `Uuid`, `#[serde(transparent)]`, `Copy`. Engine-internal `SessionMetadata.session_id` and `parent_session_id` are `SessionId`. `SessionId::from(s)` falls back to v5 UUID for non-UUID inputs so fixture-style literals round-trip without breakage |
+| `peko_session::ownership::find_trunk_session` | `peko_session::ownership` | ✅ New | Replaces `trunk_session_id()` magic string. Returns the session with `parent_session_id = None`, or `None` if no trunk exists. The anchor for engine-managed guards (`err_live_base_managed`), `ensure_declared_children`, `ensure_peer_child`, `principal::routers::root::root_session_id_for_channel` |
+| `peko_session::ownership::resolve_peer_via_parent_walk` | `peko_session::ownership` | ✅ New | Replaces `peer_from_session_key`. Walks `parent_session_id` from any leaf up to `parent_session_id = None`, reading stamped `peer_type` / `peer_id` on each ancestor; the trunk has no peer stamped so the walk terminates with `None`. Filter skips the `standing_*` / `spawn_*` placeholders |
+| `peko_session::path::resolve_reference` (collapsed) | `peko_session::path` | ✅ Breaking | Three-form grammar (sprint 5) → two-form. `/`-prefixed path → `resolve_path`; non-`/` non-self → REFUSED. Caller self-reference shortcut retained for engine `current_session` shape |
+| ❌ `trunk_session_id()` | `principal::routers::root` | ❌ Retired | Replaced by `find_trunk_session(metas)`. The legacy `root:self` magic-string id is gone |
+| ❌ `peer_from_session_key` | `principal::messenger` | ❌ Retired | Replaced by `resolve_peer_via_parent_walk` |
+| ❌ `parse_session_key_v2`, `parse_session_key` (v1), `base_key_from_overlay` | `peko_session::key` | ❌ Retired | The `agent:{a}:peer:{type}:{id}[:subagent:{uuid}][:overlay:{type}:{id}]` shape is gone. Peer identity comes from stamped metadata; agent identity from `meta.agent_name`; subagent / overlay identity from `parent_session_id` linking. JSONL filenames use `SessionId::as_str()` (UUIDs are filesystem-safe) |
+| ❌ `peko_session::path::looks_like_session_id` | `peko_session::path` | ❌ Retired | Engine-internal ids are opaque UUIDs, so the heuristic loses discriminative power; the LLM-facing refusal now keys on the strict two-form grammar instead |
+| ❌ `peko_session::path::resolve_id_or_path` | `peko_session::path` | ❌ Retired | Engine-internal callers in `agents::subagent_executor.rs` canonicalize via `SessionId::from` directly — no shape heuristic, no separate resolver |
+
+**Risk callouts (none materialized):**
+
+- **Subagent key shape change**: 15+ test files using `:peer:` / `:subagent:` / `:overlay:` literals migrated to UUID fixtures with parent-chain metadata. Mechanical sweep.
+- **`find_trunk_session` `Option` return**: sites that load the principal use `.expect("trunk exists")`; sites that handle the no-trunk case use `.unwrap_or_default()`. Both patterns verified.
+- **`child_session_key` → `child_session_id` DTO ripple**: DTOs are `serde(transparent)` over `SessionId`, so the wire shape stays a string. No IPC packet actually carries this field today.
+- **`live_root_id` integration test helper**: rewritten to walk `sessions.json` for the entry with `parent_session_id = None`.
+
+**Out of scope (deferred):**
+
+- Migrating pre-existing on-disk sessions — prelaunch posture, no on-disk sessions exist.
+- Multi-principal trunk lookup — today there's exactly one principal per runtime instance.
+- Hash-keyed map optimization (`HashMap<String, ...>` → `HashMap<Uuid, ...>`) — opportunistic, not audited.
 
 ---
 

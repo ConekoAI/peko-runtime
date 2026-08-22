@@ -4,30 +4,32 @@
 //! port into `peko_tools_builtin::messaging`. This file is now a thin
 //! shim that:
 //!
-//! 1. Re-exports the built-in's `AgentTool`, `SessionKeyProvider`,
-//!    `StaticSessionKeyProvider`, and `SharedSubagentRuntime` so
-//!    existing `crate::tools::builtin::messaging::AgentTool` import
-//!    paths keep working.
+//! 1. Re-exports the built-in's `AgentTool` and
+//!    `SharedSubagentRuntime` so existing
+//!    `crate::tools::builtin::messaging::AgentTool` import paths
+//!    keep working.
 //! 2. Re-exports the lifted DTOs (`AgentConfig`, `ExecutionConfig`,
 //!    `SpawnError`, `SubagentRunView`, `SpawnCleanupPolicy`,
 //!    `CompletedRun`, `SubagentResult`).
 //! 3. Defines [`DynamicSessionKeyProvider`] (root-only: the daemon
 //!    mutates the session key at runtime, which is a runtime concern
 //!    the built-in crate intentionally does not own).
-//! 4. Provides executor-typed constructor shims (`new`, `with_workspace`,
-//!    `with_session_provider`, `with_workspace_and_session`) that wrap
-//!    an `Arc<SubagentExecutor>` in a [`SubagentExecutorRuntime`]
-//!    adapter before handing it to the built-in `AgentTool`. This
-//!    preserves the existing call shape so existing call sites in
-//!    `src/agents/agent.rs` and `src/principal/agent_runner.rs`
-//!    compile unchanged.
+//! 4. Provides the executor-typed constructor shim [`new_agent_tool`]
+//!    that wraps an `Arc<SubagentExecutor>` in a
+//!    [`SubagentExecutorRuntime`] adapter before handing it to the
+//!    built-in `AgentTool`. Sprint 7 collapsed the previous
+//!    four-variant constructor (`new`, `with_workspace`,
+//!    `with_session_provider`, `with_workspace_and_session`) into
+//!    one — workspace lives on the runtime port now, and the caller's
+//!    session id is read from `ToolContext::session_id` on the
+//!    production path (the runtime port's `session_id()` accessor is
+//!    the fallback).
 
 use std::sync::Arc;
 
 pub use crate::tools::builtin::messaging::{
-    AgentArgs, AgentTool, CompletedRun, ExecutionConfig, SessionKeyProvider, SharedSubagentRuntime,
-    SpawnAuditEvent, SpawnCleanupPolicy, SpawnRequest, StaticSessionKeyProvider, SubagentResult,
-    SubagentRunView,
+    AgentArgs, AgentTool, CompletedRun, ExecutionConfig, SharedSubagentRuntime, SpawnAuditEvent,
+    SpawnCleanupPolicy, SpawnRequest, SubagentResult, SubagentRunView,
 };
 
 use crate::agents::subagent_executor::SubagentExecutor;
@@ -42,42 +44,20 @@ pub fn runtime_from_executor(executor: Arc<SubagentExecutor>) -> SharedSubagentR
     Arc::new(SubagentExecutorRuntime::new(executor))
 }
 
-// ─── Executor-typed constructor shims (preserves root API shape) ──
+// ─── Executor-typed constructor shim (preserves root API shape) ──
 
 /// Create an `AgentTool` with an executor-backed runtime.
+///
+/// Sprint 7: the previous constructor also accepted a `workspace`
+/// and a session-key provider; both have moved onto the runtime
+/// port (`SubagentRuntime::workspace` + `SubagentRuntime::session_id`)
+/// or are now read from `ToolContext::session_id` on the production
+/// `execute_with_context` path. The executor's
+/// `with_principal_workspace` builder still binds a workspace on
+/// the executor; the tool reads it via the runtime port.
 #[must_use]
 pub fn new_agent_tool(executor: Arc<SubagentExecutor>) -> AgentTool {
     AgentTool::new(runtime_from_executor(executor))
-}
-
-/// Create an `AgentTool` with a workspace and an executor-backed runtime.
-#[must_use]
-pub fn agent_tool_with_workspace(
-    executor: Arc<SubagentExecutor>,
-    workspace: Option<std::path::PathBuf>,
-) -> AgentTool {
-    AgentTool::with_workspace(runtime_from_executor(executor), workspace)
-}
-
-/// Create an `AgentTool` with a session-key provider and an
-/// executor-backed runtime.
-#[must_use]
-pub fn agent_tool_with_session_provider(
-    executor: Arc<SubagentExecutor>,
-    provider: Box<dyn SessionKeyProvider>,
-) -> AgentTool {
-    AgentTool::with_session_provider(runtime_from_executor(executor), provider)
-}
-
-/// Create an `AgentTool` with workspace, session-key provider, and an
-/// executor-backed runtime.
-#[must_use]
-pub fn agent_tool_with_workspace_and_session(
-    executor: Arc<SubagentExecutor>,
-    workspace: Option<std::path::PathBuf>,
-    provider: Box<dyn SessionKeyProvider>,
-) -> AgentTool {
-    AgentTool::with_workspace_and_session(runtime_from_executor(executor), workspace, provider)
 }
 
 // ─── DynamicSessionKeyProvider (root-only runtime concern) ────────
@@ -88,6 +68,14 @@ pub fn agent_tool_with_workspace_and_session(
 /// messages from different sessions. The built-in crate intentionally
 /// does not own this — it is one of the few runtime concerns that
 /// still legitimately belongs in root after the Phase 10e extraction.
+///
+/// Sprint 7: the `AgentTool` no longer reads session keys through this
+/// provider on the production path (`ToolContext::session_id` is the
+/// canonical source); the type is retained because
+/// `peko::agents::Agent` still tracks the "current session id" in
+/// one of these cells (via its `session_key_provider()` accessor)
+/// for orchestrator-level bookkeeping that survives a `ToolContext`
+/// roundtrip.
 #[derive(Clone)]
 pub struct DynamicSessionKeyProvider {
     session_key: Arc<std::sync::RwLock<String>>,
@@ -117,14 +105,3 @@ impl DynamicSessionKeyProvider {
             .unwrap_or_default()
     }
 }
-
-impl SessionKeyProvider for DynamicSessionKeyProvider {
-    fn current_session_key(&self) -> String {
-        self.get_session_key()
-    }
-}
-
-// (Note: `impl SessionKeyProvider for Arc<DynamicSessionKeyProvider>`
-// is provided in `peko_tools_builtin::messaging` as a blanket impl
-// over `Arc<T: SessionKeyProvider>` — the orphan rule forbids the
-// impl in this crate since `Arc` is foreign.)

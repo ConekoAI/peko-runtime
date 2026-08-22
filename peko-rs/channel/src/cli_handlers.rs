@@ -69,15 +69,20 @@ impl ChannelCliRouter {
 
     /// `peko channel create <name>` — create a channel owned by
     /// `creator`, with the given name. Returns the new channel id.
+    ///
+    /// `passive_binding` (Phase 4, agent-session paradigm sprint) is the
+    /// optional `--bind` value: a session id or `/path` in the creator's
+    /// session tree that inbound `Posted` events wake. `None` creates a
+    /// purely active (group-tier) channel — today's default.
     pub async fn handle_create(
         &self,
         creator: &PrincipalId,
         name: &str,
+        passive_binding: Option<String>,
     ) -> Result<CreateResponse> {
-        let channel = self
-            .port
-            .create(creator, CreateOpts::runtime(name))
-            .await?;
+        let mut opts = CreateOpts::runtime(name);
+        opts.passive_binding = passive_binding;
+        let channel = self.port.create(creator, opts).await?;
         Ok(CreateResponse { channel })
     }
 

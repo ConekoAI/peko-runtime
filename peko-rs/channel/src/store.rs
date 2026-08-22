@@ -7,14 +7,14 @@
 //! <runtime_dir>/
 //!   channels/
 //!     <chan_id>/
-//!       meta.json       # { creator, name, created_at, tier }
-//!       members.json    # { members: [String] }
+//!       meta.json       # { creator, name, created_at, tier, passive_binding? }
+//!       members.json    # { members: [String], remote_members: [RemoteMember] }
 //!       events.jsonl    # one ChannelEvent per line, append-only
 //! ```
 //!
-//! Symmetric with [`peko_chat_log::ChatLogStore`] — append-only JSONL
-//! with [`FileLock`] + [`append_bytes_durable`] for crash safety. The
-//! cursor is a count-based offset into `events.jsonl`.
+//! Append-only JSONL with [`FileLock`] + [`append_bytes_durable`]
+//! for crash safety (the pattern the retired chat-log store used).
+//! The cursor is a count-based offset into `events.jsonl`.
 //!
 //! ## Why no DAG
 //!
@@ -53,6 +53,7 @@ use crate::port::{
     ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TaskId,
     Tier,
 };
+use crate::fs::channel_dir_name;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,8 +79,9 @@ const MEMBERS_FILE: &str = "members.json";
 /// JSON-serialized with a trailing `\n`.
 const EVENTS_FILE: &str = "events.jsonl";
 
-/// Per-shard lock timeout for `events.jsonl` writes. Mirrors
-/// `peko_chat_log::store::CHAT_LOG_LOCK_TIMEOUT_MS`.
+/// Per-shard lock timeout for `events.jsonl` writes. Ten seconds —
+/// the same budget the retired chat-log store used; appends are
+/// single-line writes, so a holder past this is wedged, not slow.
 const CHANNEL_LOCK_TIMEOUT_MS: u64 = 10_000;
 
 // ---------------------------------------------------------------------------
@@ -114,13 +116,20 @@ impl ChannelConfig {
         self.shared_dir.as_ref().map(|d| d.join(CHANNELS_DIR))
     }
 
-    /// Pick the channel dir for the given tier.
+    /// Pick the channel dir for the given tier. The on-disk
+    /// directory name is the wire-form id with colons replaced by
+    /// `.3A.` (see [`crate::fs::channel_dir_name`]) so the typed
+    /// prefixes (`principal:<did>` / `user:<id>` / `group:<slug>`)
+    /// are filesystem-safe on Windows and classic Unix. Bare
+    /// `chan_<...>` ids have no colons, so the helper is a no-op for
+    /// them and the legacy on-disk layout is unchanged.
     fn channel_dir_for(&self, tier: Tier, channel: &ChannelId) -> Result<PathBuf> {
+        let on_disk = channel_dir_name(channel);
         match tier {
-            Tier::Runtime => Ok(self.channel_dir(channel)),
+            Tier::Runtime => Ok(self.channels_dir().join(on_disk)),
             Tier::Shared => self
                 .shared_channels_dir()
-                .map(|d| d.join(channel.as_str()))
+                .map(|d| d.join(on_disk))
                 .ok_or_else(|| {
                     ChannelError::Adapter(
                         "ChannelConfig::shared_dir is None; cannot resolve Shared tier"
@@ -131,8 +140,10 @@ impl ChannelConfig {
     }
 
     /// `<runtime_dir>/channels/<chan_id>/` — the per-channel sandbox.
+    /// Public on `ChannelStore` (via [`ChannelStore::channel_dir`])
+    /// but private on `ChannelConfig`; callers go through the store.
     fn channel_dir(&self, channel: &ChannelId) -> PathBuf {
-        self.channels_dir().join(channel.as_str())
+        self.channels_dir().join(channel_dir_name(channel))
     }
 }
 
@@ -153,6 +164,14 @@ pub struct MetaJson {
     /// Snapshotted at create-time so subsequent ops don't have to
     /// probe both Runtime and Shared roots.
     pub tier: Tier,
+    /// Phase 4 (agent-session paradigm sprint): optional passive
+    /// binding — a session id or `/path` in the creator's session
+    /// tree. `#[serde(default)]` so pre-Phase-4 `meta.json` files
+    /// deserialize as `None` without a migration; skipped on write
+    /// when `None` so unbound channels keep the legacy file shape
+    /// byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passive_binding: Option<String>,
 }
 
 impl MetaJson {
@@ -160,21 +179,23 @@ impl MetaJson {
         channel_dir.join(META_FILE)
     }
 
-    async fn load(channel_dir: &Path) -> Result<Self> {
+    /// Load `meta.json` for `channel`. The `channel_dir` is
+    /// pre-resolved by the caller (already normalized via
+    /// [`channel_dir_name`] for typed-prefix channels).
+    ///
+    /// `NotFound` reports the WIRE form of the channel id (the
+    /// caller passes it in) — not the on-disk file_name, which
+    /// would be `principal.3A.did.3A...` for a typed channel and
+    /// would surface confusing debug output.
+    async fn load(channel_dir: &Path, channel: &ChannelId) -> Result<Self> {
         let p = Self::path_in(channel_dir);
         match fs::read(&p).await {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
                 ChannelError::Adapter(format!("decode {}: {e}", p.display()))
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ChannelError::NotFound(
-                ChannelId(
-                    channel_dir
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("")
-                        .to_string(),
-                ),
-            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(ChannelError::NotFound(channel.clone()))
+            }
             Err(e) => Err(ChannelError::Adapter(format!("read {}: {e}", p.display()))),
         }
     }
@@ -305,10 +326,12 @@ impl ChannelStore {
     }
 
     /// PR-2b: fire `event` to every subscriber of `channel`. No-op
-    /// when nobody has subscribed. Called by the local append paths
-    /// (`post`, `append_remote_event`, `join_remote`) after a
-    /// successful write so the desktop's `ChannelEventsWatch` stream
-    /// picks up events in real time.
+    /// when nobody has subscribed. Called by [`Self::append_event`]
+    /// after every successful durable append so BOTH live consumers
+    /// pick events up in real time: the desktop's `ChannelEventsWatch`
+    /// stream and (sprint 3 Phase 10) the `ChannelSubscriber` poll
+    /// loop, whose `select!` wakes on this broadcast instead of
+    /// waiting out its backstop tick.
     fn notify_event(&self, channel: &ChannelId, event: &ChannelEvent) {
         let guard = self.notifiers.lock().expect("notifier mutex");
         if let Some(sender) = guard.get(channel) {
@@ -370,7 +393,7 @@ impl ChannelStore {
     /// surface `NotFound` cleanly via the directory load).
     async fn resolve_tier(&self, channel: &ChannelId) -> Result<Tier> {
         let chan_dir = self.cfg.channel_dir(channel);
-        let meta = MetaJson::load(&chan_dir).await?;
+        let meta = MetaJson::load(&chan_dir, channel).await?;
         Ok(meta.tier)
     }
 
@@ -382,6 +405,16 @@ impl ChannelStore {
     /// per-shard [`FileLock`] + uses [`append_bytes_durable`] for
     /// crash safety. Returns the line number (0-indexed) the event
     /// was assigned.
+    ///
+    /// This is the SINGLE disk-append chokepoint for the store —
+    /// `create`, `post_with_event`, `append_remote_event` (the
+    /// cross-runtime mirror path), `invite`, `leave`, and
+    /// `join_remote` all funnel through here — so the live-event
+    /// broadcast (`notify_event`) fires from this one spot and every
+    /// append wakes `subscribe_events` receivers regardless of which
+    /// `ChannelPort` face was used. Best-effort: a missed
+    /// notification just means a consumer polls for the event; the
+    /// on-disk log is the source of truth.
     async fn append_event(
         &self,
         tier: Tier,
@@ -423,6 +456,9 @@ impl ChannelStore {
         append_bytes_durable(&path, &bytes).await.map_err(|e| {
             ChannelError::Adapter(format!("append {}: {e}", path.display()))
         })?;
+        // Notify live subscribers only after the durable append
+        // succeeds (see the method docs — single chokepoint).
+        self.notify_event(channel, ev);
         Ok(line_number)
     }
 
@@ -495,7 +531,12 @@ impl ChannelStore {
     }
 
     /// Walk `<runtime_dir>/channels/` and return every `ChannelId` for
-    /// which `principal` is in `members.json`.
+    /// which `principal` is in `members.json`. Accepts both wire-form
+    /// directory names (bare `chan_<...>` ids — no colons) and
+    /// on-disk-normalized names (typed prefixes — colons replaced
+    /// with `.3A.` via [`crate::fs::channel_dir_name`]). The
+    /// reconstruction uses [`crate::fs::channel_dir_name_inverse`] so
+    /// the returned ids always carry the wire form.
     async fn list_channels_for_principal(
         &self,
         principal: &PrincipalId,
@@ -517,16 +558,23 @@ impl ChannelStore {
         })? {
             let name = entry.file_name();
             let Some(name_str) = name.to_str() else { continue };
-            if ChannelId::parse(name_str).is_none() {
+            // Try the wire form first (bare ids live under their own
+            // name on disk; typed ids live under the `.3A.`-encoded
+            // form).
+            let channel_id = if let Some(id) = ChannelId::parse(name_str) {
+                id
+            } else if let Some(id) = crate::fs::channel_dir_name_inverse(name_str) {
+                id
+            } else {
                 continue;
-            }
+            };
             let chan_dir = entry.path();
             let members = match MembersJson::load(&chan_dir).await {
                 Ok(m) => m,
                 Err(_) => continue, // skip corrupt / incomplete dirs
             };
             if members.members.iter().any(|m| m == &principal.to_string()) {
-                out.push(ChannelId(name_str.to_string()));
+                out.push(channel_id);
             }
         }
         Ok(out)
@@ -563,11 +611,6 @@ impl ChannelStore {
     ) -> Result<TaskId> {
         let tier = self.resolve_tier(channel).await?;
         let line = self.append_event(tier, channel, ev).await?;
-        // PR-2b: notify any `ChannelEventsWatch` subscribers after
-        // the durable append succeeds. Best-effort — a missed
-        // notification just means the desktop polls for the next
-        // event; the on-disk log is the source of truth.
-        self.notify_event(channel, ev);
         Ok(line.to_string())
     }
 
@@ -673,15 +716,44 @@ impl ChannelStore {
     /// Creates the channel directory under the runtime tier and
     /// writes:
     ///
-    /// - `meta.json` — `{ creator, name, created_at: now, tier: Runtime }`
-    /// - `members.json` — partitioned from `initial_members` (the
-    ///   creator is always local; rows with `runtime_id: None` are
-    ///   local; rows with `runtime_id: Some(id)` become
-    ///   `RemoteMember` rows)
+    /// - `meta.json` — `{ creator, name, created_at: now, tier: Runtime,
+    ///   passive_binding? }`. `creator` is the SOURCE-runtime-local
+    ///   creator string (display only); `passive_binding` is the
+    ///   receiver-LOCAL binding the caller derived from its own
+    ///   session tree (sprint 3 Phase 12a — the wire value is only a
+    ///   "this is a DM channel" marker: each side's binding names its
+    ///   OWN child for the other principal, and `-N` slug-collision
+    ///   suffixes are runtime-local, so the source's value can never
+    ///   be adopted verbatim).
+    /// - `members.json` — re-partitioned from the source's view to the
+    ///   receiver's (see below).
     /// - `events.jsonl` — pre-seeded with a synthetic
     ///   [`ChannelEvent::Created`] so the receiver's `peko-stream`
     ///   listener (PR-2b) fires on the desktop the same way it does
     ///   for a local channel create.
+    ///
+    /// ## Member re-partition (sprint 3 Phase 12a)
+    ///
+    /// `initial_members` is keyed to the SOURCE runtime's view (its
+    /// own rows carry `runtime_id: Some(source_runtime_id)`; the
+    /// invitee row addressed to the receiver carries `None`). The
+    /// mirror re-keys it:
+    ///
+    /// - `members` (local) is exactly `[self_principal]` — the
+    ///   receiver's own local principal id, which the caller resolved
+    ///   from the invitee row. This is what makes the mirror visible
+    ///   to `list_for_principal(self_principal)` (the boot sweep) and
+    ///   lets the receiver's own `post` pass `check_membership` — the
+    ///   source-side id forms (`prin_<uuid>` minted on another
+    ///   runtime, DID forms) never match the receiver's local id.
+    /// - `remote_members` is the creator (filed under
+    ///   `source_runtime_id`) plus every snapshot row that carries a
+    ///   `runtime_id`, deduped — so the receiver's own posts fan back
+    ///   out to the source runtime.
+    /// - Snapshot rows with `runtime_id: None` are invitee rows
+    ///   addressed to the receiver. They carry no receiver-local
+    ///   meaning once `self_principal` is resolved, so they are
+    ///   dropped here.
     ///
     /// **Idempotent.** If `meta.json` already exists, returns `Ok(())`
     /// without touching disk. This is the contract that makes the
@@ -702,12 +774,16 @@ impl ChannelStore {
     /// `members.json` or `events.jsonl` is written (the synthetic
     /// event append goes through `append_event`, which also fails
     /// fast on missing meta).
+    #[allow(clippy::too_many_arguments)]
     pub async fn join_remote(
         &self,
         channel: &ChannelId,
         creator: &str,
         name: &str,
         initial_members: &[peko_protocol::channel::InitialMember],
+        self_principal: &PrincipalId,
+        source_runtime_id: &str,
+        passive_binding: Option<String>,
     ) -> Result<()> {
         let chan_dir = self.cfg.channel_dir(channel);
         let meta_path = chan_dir.join(META_FILE);
@@ -723,28 +799,35 @@ impl ChannelStore {
             ChannelError::Adapter(format!("mkdir {}: {e}", chan_dir.display()))
         })?;
 
-        // Partition `initial_members` into local + remote. The creator
-        // is always local; de-dup so we don't list the same principal
-        // twice if the source runtime included them in the snapshot.
-        let mut local_members: Vec<String> = vec![creator.to_string()];
-        let mut remote_members: Vec<RemoteMember> = Vec::new();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        seen.insert(creator);
+        // Re-partition the source-keyed snapshot to the receiver's
+        // view (see the doc comment). The creator is filed as a remote
+        // row under `source_runtime_id`; dedup on the
+        // (runtime_id, principal_id) pair keeps a creator that also
+        // appears in the snapshot from landing twice.
+        let mut remote_members: Vec<RemoteMember> = vec![RemoteMember {
+            runtime_id: source_runtime_id.to_string(),
+            principal_id: creator.to_string(),
+        }];
+        let mut seen: std::collections::HashSet<(String, String)> = remote_members
+            .iter()
+            .map(|rm| (rm.runtime_id.clone(), rm.principal_id.clone()))
+            .collect();
         for m in initial_members {
-            if !seen.insert(m.principal_did.as_str()) {
+            let Some(rid) = &m.runtime_id else {
+                // Invitee row addressed to the receiver — represented
+                // by `self_principal` in the local member set.
                 continue;
-            }
-            match &m.runtime_id {
-                None => local_members.push(m.principal_did.clone()),
-                Some(rid) => remote_members.push(RemoteMember {
+            };
+            if seen.insert((rid.clone(), m.principal_did.clone())) {
+                remote_members.push(RemoteMember {
                     runtime_id: rid.clone(),
                     principal_id: m.principal_did.clone(),
-                }),
+                });
             }
         }
 
         let members = MembersJson {
-            members: local_members,
+            members: vec![self_principal.to_string()],
             remote_members,
         };
         members.save(&chan_dir).await?;
@@ -760,6 +843,10 @@ impl ChannelStore {
             name: name.to_string(),
             created_at: now,
             tier: Tier::Runtime,
+            // Sprint 3 Phase 12a: the receiver-LOCAL binding derived by
+            // the caller (the wire marker's value is never adopted
+            // verbatim — see the doc comment).
+            passive_binding,
         };
         meta.save(&chan_dir).await?;
 
@@ -799,6 +886,27 @@ impl ChannelStore {
         sender: &PrincipalId,
         msg: PostMsg,
     ) -> Result<(TaskId, ChannelEvent)> {
+        self.post_attributed_with_event(channel, sender, &sender.to_string(), msg)
+            .await
+    }
+
+    /// Like [`Self::post_with_event`] but writes an explicit `author`
+    /// string onto the event instead of deriving it from `sender`.
+    /// Membership + parent validation are still enforced against
+    /// `sender`; `author` is written verbatim (attribution only, not
+    /// an authority claim).
+    ///
+    /// Phase 11 (agent-session paradigm sprint): the peer-DM channels
+    /// use this to post the inbound message with `author =
+    /// peer.to_string()` while `sender = principal.id` remains the
+    /// member against which the write is authorized.
+    pub async fn post_attributed_with_event(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        author: &str,
+        msg: PostMsg,
+    ) -> Result<(TaskId, ChannelEvent)> {
         let tier = self.resolve_tier(channel).await?;
         if !self.check_membership(tier, channel, sender).await? {
             return Err(ChannelError::NotMember);
@@ -824,15 +932,12 @@ impl ChannelStore {
 
         let ev = ChannelEvent::Posted {
             channel: channel.clone(),
-            author: sender.to_string(),
+            author: author.to_string(),
             parent: msg.parent.clone(),
             text: msg.text,
             at: Utc::now().to_rfc3339(),
         };
         let line = self.append_event(tier, channel, &ev).await?;
-        // PR-2b: notify `ChannelEventsWatch` subscribers after the
-        // durable append so the desktop's live stream sees the post.
-        self.notify_event(channel, &ev);
         Ok((line.to_string(), ev))
     }
 }
@@ -848,8 +953,21 @@ impl ChannelPort for ChannelStore {
         creator: &PrincipalId,
         opts: CreateOpts,
     ) -> Result<ChannelId> {
-        let channel = ChannelId::generate();
+        // Sprint 4: honor `opts.id` (set by the peer-DM auto-provisioning
+        // path) when supplied; otherwise mint a fresh `chan_<8 base36>`
+        // as before. Both paths converge through the same
+        // `fs::create_dir_all` + collision check.
+        let channel = opts.id.clone().unwrap_or_else(ChannelId::generate);
         let chan_dir = self.cfg.channel_dir_for(opts.tier, &channel)?;
+        // Collision guard: if the resolved on-disk dir already exists
+        // (a previous create with the same id), refuse rather than
+        // silently clobber. Mirrors `join_remote`'s idempotency check
+        // at `:770-772`.
+        if chan_dir.exists() {
+            return Err(ChannelError::Adapter(format!(
+                "channel id collision: {channel}"
+            )));
+        }
         fs::create_dir_all(&chan_dir).await?;
 
         // Write the meta + members files BEFORE appending the event so
@@ -861,6 +979,7 @@ impl ChannelPort for ChannelStore {
             name: opts.name.clone(),
             created_at: now,
             tier: opts.tier,
+            passive_binding: opts.passive_binding.clone(),
         };
         meta.save(&chan_dir).await?;
 
@@ -877,12 +996,6 @@ impl ChannelPort for ChannelStore {
             at: now.to_rfc3339(),
         };
         self.append_event(opts.tier, &channel, &event).await?;
-        // PR-2b: notify any `ChannelEventsWatch` subscribers on the
-        // freshly-created channel. Crucial for the remote-bootstrap
-        // path — the receiver's `join_remote` synthesizes a `Created`
-        // event so the desktop's watch opens after the bootstrap
-        // can still see it.
-        self.notify_event(&channel, &event);
 
         Ok(channel)
     }
@@ -917,7 +1030,6 @@ impl ChannelPort for ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev).await?;
-        self.notify_event(channel, &ev);
         Ok(())
     }
 
@@ -929,6 +1041,21 @@ impl ChannelPort for ChannelStore {
     ) -> Result<TaskId> {
         let (_line, _ev) = self.post_with_event(channel, sender, msg).await?;
         Ok(_line)
+    }
+
+    /// Phase 11: attributed posts write `author` verbatim (see the
+    /// inherent [`Self::post_attributed_with_event`]).
+    async fn post_attributed(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        author: &str,
+        msg: PostMsg,
+    ) -> Result<TaskId> {
+        let (line, _ev) = self
+            .post_attributed_with_event(channel, sender, author, msg)
+            .await?;
+        Ok(line)
     }
 
     async fn peek(
@@ -948,6 +1075,26 @@ impl ChannelPort for ChannelStore {
     ) -> Result<Vec<(TaskId, ChannelEvent)>> {
         let tier = self.resolve_tier(channel).await?;
         self.read_events(tier, channel, since).await
+    }
+
+    /// Phase 4: read `meta.json`'s `passive_binding`. Probes the
+    /// Runtime-tier dir first (the common case), then the Shared dir
+    /// when configured — mirroring `resolve_tier`'s fallback so a
+    /// pinned-to-shared channel still reports its binding.
+    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
+        let runtime_dir = self.cfg.channel_dir(channel);
+        match MetaJson::load(&runtime_dir, channel).await {
+            Ok(meta) => Ok(meta.passive_binding),
+            Err(ChannelError::NotFound(_)) => match self.cfg.shared_channels_dir() {
+                Some(shared) => {
+                    let meta = MetaJson::load(&shared.join(channel_dir_name(channel)), channel)
+                        .await?;
+                    Ok(meta.passive_binding)
+                }
+                None => Err(ChannelError::NotFound(channel.clone())),
+            },
+            Err(e) => Err(e),
+        }
     }
 
     async fn leave(
@@ -972,7 +1119,6 @@ impl ChannelPort for ChannelStore {
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev).await?;
-        self.notify_event(channel, &ev);
         Ok(())
     }
 
@@ -1007,7 +1153,7 @@ impl ChannelPort for ChannelStore {
         let runtime_chan_dir = self.cfg.channel_dir(channel);
 
         // Defense-in-depth: source must exist.
-        let _ = MetaJson::load(&runtime_chan_dir).await?;
+        let _ = MetaJson::load(&runtime_chan_dir, channel).await?;
 
         if let Some(parent) = shared_chan_dir.parent() {
             fs::create_dir_all(parent).await?;
@@ -1110,6 +1256,75 @@ mod tests {
         let bytes = serde_json::to_vec(&m).unwrap();
         let parsed: MembersJson = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, m);
+    }
+
+    // -- passive_binding (Phase 4, agent-session paradigm sprint) ------
+
+    /// `CreateOpts::passive_binding` persists into `meta.json` and is
+    /// readable back through the `ChannelPort::passive_binding`
+    /// accessor. This is the DM-tier binding the daemon's
+    /// `PassiveBindingResponder` reads at subscriber-spawn time.
+    #[tokio::test]
+    async fn passive_binding_persists_through_create() {
+        let cfg = tmp_cfg("passive-binding");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let opts = CreateOpts::runtime("dm-user-a").with_passive_binding("/user-a");
+        let channel = store.create(&creator, opts).await.unwrap();
+
+        assert_eq!(
+            store.passive_binding(&channel).await.unwrap(),
+            Some("/user-a".to_string())
+        );
+    }
+
+    /// A channel created WITHOUT a binding reports `None` and its
+    /// `meta.json` omits the field entirely (`skip_serializing_if`),
+    /// so unbound channels keep the pre-Phase-4 file shape
+    /// byte-for-byte.
+    #[tokio::test]
+    async fn no_binding_leaves_meta_unchanged() {
+        let cfg = tmp_cfg("no-binding");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+
+        assert_eq!(store.passive_binding(&channel).await.unwrap(), None);
+        let raw = std::fs::read_to_string(cfg.channel_dir(&channel).join("meta.json")).unwrap();
+        assert!(
+            !raw.contains("passive_binding"),
+            "unbound meta.json must not carry the field; got {raw}"
+        );
+    }
+
+    /// A pre-Phase-4 `meta.json` (no `passive_binding` key) loads as
+    /// `None` — the `#[serde(default)]` back-compat invariant.
+    #[test]
+    fn meta_json_deserializes_legacy_files_without_binding() {
+        let legacy = r#"{"creator":"prin_alice","name":"team","created_at":"2026-08-05T12:00:00Z","tier":"Runtime"}"#;
+        let parsed: MetaJson = serde_json::from_str(legacy).expect("legacy must parse");
+        assert_eq!(parsed.passive_binding, None);
+    }
+
+    /// Full `MetaJson` round-trip with a binding set.
+    #[test]
+    fn meta_json_round_trips_with_binding() {
+        let m = MetaJson {
+            creator: "prin_alice".into(),
+            name: "dm".into(),
+            created_at: Utc::now(),
+            tier: Tier::Runtime,
+            passive_binding: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+        };
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let parsed: MetaJson = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            parsed.passive_binding.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
     }
 
     // -- list_remote_members / is_remote_member -------------------------
@@ -1364,7 +1579,217 @@ mod tests {
         );
     }
 
-    // -- join_remote (PR-3a commit 2) -----------------------------------
+    // -- attributed posts (sprint 3 Phase 11, peer-DM attribution) ----
+
+    /// `post_attributed` writes the caller-supplied `author` verbatim
+    /// onto the event instead of deriving it from `sender`. This is
+    /// the Phase 11 peer-DM inbound convention: `sender = principal.id`
+    /// (the member), `author = peer.to_string()` (the Subject wire
+    /// form) — the log reads as a two-party conversation.
+    #[tokio::test]
+    async fn post_attributed_writes_author_verbatim() {
+        let cfg = tmp_cfg("attributed-verbatim");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm-user-alice"))
+            .await
+            .unwrap();
+
+        let line = store
+            .post_attributed(
+                &channel,
+                &creator,
+                "user:alice",
+                PostMsg::root("hi from alice"),
+            )
+            .await
+            .unwrap();
+
+        let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
+        let posted: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { author, text, .. } => Some((author, text)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].0, "user:alice");
+        assert_eq!(posted[0].1, "hi from alice");
+        assert_eq!(line, "1", "Created is line 0; first post is line 1");
+    }
+
+    /// Membership is enforced against `sender`, not `author` — an
+    /// attribution string must not let a non-member write.
+    #[tokio::test]
+    async fn post_attributed_rejects_non_member_sender() {
+        let cfg = tmp_cfg("attributed-not-member");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+
+        let err = store
+            .post_attributed(
+                &channel,
+                &pid("prin_stranger"),
+                "user:alice",
+                PostMsg::root("must not land"),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ChannelError::NotMember)),
+            "non-member sender must still be rejected; got: {err:?}"
+        );
+    }
+
+    /// Parent validation is unchanged under attribution: a parent
+    /// pointing past the end of the log errors, a valid parent lands.
+    #[tokio::test]
+    async fn post_attributed_validates_parent() {
+        let cfg = tmp_cfg("attributed-parent");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+
+        let bad = store
+            .post_attributed(
+                &channel,
+                &creator,
+                "user:alice",
+                PostMsg::reply("9".to_string(), "bad parent"),
+            )
+            .await;
+        assert!(
+            matches!(bad, Err(ChannelError::Adapter(_))),
+            "missing parent line must error; got: {bad:?}"
+        );
+
+        // Line 1 is the first post (line 0 is Created).
+        store
+            .post_attributed(&channel, &creator, "user:alice", PostMsg::root("inbound"))
+            .await
+            .unwrap();
+        let events = store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        let first_post_line = events
+            .iter()
+            .find(|(_, ev)| matches!(ev, ChannelEvent::Posted { .. }))
+            .map(|(line, _)| line.clone())
+            .unwrap();
+        let reply = store
+            .post_attributed(
+                &channel,
+                &creator,
+                "user:alice",
+                PostMsg::reply(first_post_line, "follow-up"),
+            )
+            .await;
+        assert!(reply.is_ok(), "valid parent must land; got: {reply:?}");
+    }
+
+    /// Plain `post` delegates with `author = sender.to_string()` —
+    /// the two paths must agree byte-for-byte on the event shape.
+    #[tokio::test]
+    async fn post_with_event_delegates_with_sender_author() {
+        let cfg = tmp_cfg("delegate-author");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_self");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+
+        let (_line, ev) = store
+            .post_with_event(&channel, &creator, PostMsg::root("plain"))
+            .await
+            .unwrap();
+        match ev {
+            ChannelEvent::Posted { author, .. } => {
+                assert_eq!(author, "prin_self");
+            }
+            other => panic!("expected Posted event; got {other:?}"),
+        }
+    }
+
+    // -- live-event wake (sprint 3 Phase 10 push-wake) -----------------
+
+    /// Every append path fires the per-channel broadcast from the
+    /// single `append_event` chokepoint. A `subscribe_events` receiver
+    /// must observe a local `post` promptly — well under the
+    /// subscriber's backstop tick (30s default; the pre-Phase-10 loop
+    /// polled every 5s).
+    #[tokio::test]
+    async fn post_notifies_live_subscribers_promptly() {
+        let cfg = tmp_cfg("wake-post");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let mut rx = store.subscribe_events(&channel).await;
+        store
+            .post(&channel, &creator, PostMsg::root("wake up"))
+            .await
+            .unwrap();
+
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("post must wake a live subscriber well under the backstop tick")
+            .expect("broadcast must be open");
+        assert!(
+            matches!(observed, ChannelEvent::Posted { ref text, .. } if text == "wake up"),
+            "expected the Posted event, got {observed:?}"
+        );
+    }
+
+    /// The cross-runtime mirror append (`append_remote_event`) wakes
+    /// subscribers through the same chokepoint — the DM-tier responder
+    /// depends on this to react to relayed remote posts in real time.
+    #[tokio::test]
+    async fn remote_mirror_append_notifies_live_subscribers() {
+        let cfg = tmp_cfg("wake-remote");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let mut rx = store.subscribe_events(&channel).await;
+        let remote_event = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".to_string(),
+            parent: None,
+            text: "hello from B".to_string(),
+            at: "2026-08-18T00:00:00Z".to_string(),
+        };
+        store
+            .append_remote_event(&channel, &remote_event)
+            .await
+            .unwrap();
+
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("mirror append must wake a live subscriber")
+            .expect("broadcast must be open");
+        assert!(
+            matches!(observed, ChannelEvent::Posted { ref text, .. } if text == "hello from B"),
+            "expected the mirrored Posted event, got {observed:?}"
+        );
+    }
+
+    // -- join_remote (PR-3a commit 2; re-partitioned in Phase 12a) -----
 
     /// `join_remote` on an unknown channel id creates the directory,
     /// writes `meta.json` + `members.json`, and seeds `events.jsonl`
@@ -1373,26 +1798,45 @@ mod tests {
     /// bootstrap path: after a successful `join_remote`, `peek` and
     /// `list_members` work as if the channel had been `create`-d
     /// locally.
+    ///
+    /// Phase 12a member re-partition: the snapshot is keyed to the
+    /// SOURCE runtime (its own rows carry `Some(source_runtime_id)`;
+    /// the invitee row carries `None`). The mirror maps the receiver's
+    /// `self_principal` to the ONLY local row and files the creator +
+    /// every runtime-stamped row as `RemoteMember`s — so the receiver
+    /// can post (membership check passes), the mirror shows up in
+    /// `list_for_principal`, and the receiver's posts have a remote
+    /// row to fan back out to.
     #[tokio::test]
     async fn join_remote_creates_files_for_new_channel() {
         use peko_protocol::channel::InitialMember;
         let cfg = tmp_cfg("join-remote-new");
         let store = ChannelStore::new(cfg.clone());
         let channel = ChannelId::generate();
+        let receiver = pid("prin_self_local");
         let initial_members = vec![
-            // Creator is local to the source runtime.
+            // The source's own row — filed as remote on the mirror.
             InitialMember {
                 principal_did: "prin_alice".to_string(),
-                runtime_id: None,
+                runtime_id: Some("did:key:zRuntimeA".to_string()),
             },
-            // Bob lives on runtime B — must land in remote_members.
+            // The invitee row addressed to the receiver — dropped in
+            // favor of `self_principal`.
             InitialMember {
-                principal_did: "prin_bob".to_string(),
-                runtime_id: Some("did:key:zRuntimeB".to_string()),
+                principal_did: "did:peko:principal:self".to_string(),
+                runtime_id: None,
             },
         ];
         store
-            .join_remote(&channel, "prin_alice", "team-chat", &initial_members)
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "team-chat",
+                &initial_members,
+                &receiver,
+                "did:key:zRuntimeA",
+                Some("/principal-alice".to_string()),
+            )
             .await
             .expect("join_remote must succeed on a new channel");
 
@@ -1405,23 +1849,50 @@ mod tests {
             "events.jsonl must exist"
         );
 
-        // meta.json: creator + name + tier = Runtime.
-        let meta = MetaJson::load(&chan_dir).await.unwrap();
+        // meta.json: creator + name + tier = Runtime, and the
+        // receiver-local binding persists (Phase 12a).
+        let meta = MetaJson::load(&chan_dir, &channel).await.unwrap();
         assert_eq!(meta.creator, "prin_alice");
         assert_eq!(meta.name, "team-chat");
         assert_eq!(meta.tier, Tier::Runtime);
+        assert_eq!(meta.passive_binding.as_deref(), Some("/principal-alice"));
+        assert_eq!(
+            store.passive_binding(&channel).await.unwrap().as_deref(),
+            Some("/principal-alice"),
+            "the binding must read back through the port accessor"
+        );
 
-        // members.json: alice local (creator), bob remote on B.
+        // members.json: the receiver's local id is the ONLY local
+        // row; the creator (and any runtime-stamped row) is remote.
         let members = MembersJson::load(&chan_dir).await.unwrap();
-        assert_eq!(members.members, vec!["prin_alice".to_string()]);
-        assert_eq!(members.remote_members.len(), 1);
-        assert_eq!(members.remote_members[0].runtime_id, "did:key:zRuntimeB");
-        assert_eq!(members.remote_members[0].principal_id, "prin_bob");
+        assert_eq!(members.members, vec!["prin_self_local".to_string()]);
+        assert_eq!(
+            members.remote_members,
+            vec![fake_remote("did:key:zRuntimeA", "prin_alice")],
+            "creator dedups against the identical snapshot row"
+        );
+
+        // The receiver's own post passes the membership check.
+        store
+            .post(&channel, &receiver, PostMsg::root("receiver talking"))
+            .await
+            .expect("receiver must be able to post to its own mirror");
+
+        // The mirror is visible to the boot sweep's enumeration.
+        let listed = store.list_for_principal(&receiver).await.unwrap();
+        assert!(
+            listed.contains(&channel),
+            "list_for_principal must include the mirror; got {listed:?}"
+        );
 
         // events.jsonl: synthetic Created at line 0 — exactly the
         // shape PR-2b's peko-stream listener expects.
         let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
-        assert_eq!(events.len(), 1, "synthetic Created event lands at line 0");
+        assert_eq!(
+            events.len(),
+            2,
+            "synthetic Created at line 0 + the receiver's post at line 1"
+        );
         match &events[0] {
             ChannelEvent::Created { creator, name, .. } => {
                 assert_eq!(creator, "prin_alice");
@@ -1429,6 +1900,39 @@ mod tests {
             }
             other => panic!("expected Created, got {other:?}"),
         }
+    }
+
+    /// A non-DM invite (`passive_binding: None`) bootstraps an
+    /// unbound mirror: `meta.json` omits the field entirely (the
+    /// `skip_serializing_if` shape unbound channels have always had).
+    #[tokio::test]
+    async fn join_remote_without_binding_bootstraps_unbound_mirror() {
+        let cfg = tmp_cfg("join-remote-unbound");
+        let store = ChannelStore::new(cfg.clone());
+        let channel = ChannelId::generate();
+        store
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "team-chat",
+                &[],
+                &pid("prin_self_local"),
+                "did:key:zRuntimeA",
+                None,
+            )
+            .await
+            .expect("join_remote must succeed");
+
+        assert_eq!(store.passive_binding(&channel).await.unwrap(), None);
+        let raw = std::fs::read_to_string(cfg.channel_dir(&channel).join("meta.json")).unwrap();
+        assert!(
+            !raw.contains("passive_binding"),
+            "unbound mirror meta.json must not carry the field; got {raw}"
+        );
+        // Even with an empty snapshot, the creator row is filed as
+        // remote so the receiver's posts fan back out.
+        let remote = store.list_remote_members(&channel).await.unwrap();
+        assert_eq!(remote, vec![fake_remote("did:key:zRuntimeA", "prin_alice")]);
     }
 
     /// `join_remote` on a channel that already exists is a no-op:
@@ -1442,13 +1946,22 @@ mod tests {
         let cfg = tmp_cfg("join-remote-idem");
         let store = ChannelStore::new(cfg.clone());
         let channel = ChannelId::generate();
+        let receiver = pid("prin_self_local");
         let initial_members = vec![InitialMember {
-            principal_did: "prin_alice".to_string(),
+            principal_did: "did:peko:principal:self".to_string(),
             runtime_id: None,
         }];
         // First call creates the mirror.
         store
-            .join_remote(&channel, "prin_alice", "team-chat", &initial_members)
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "team-chat",
+                &initial_members,
+                &receiver,
+                "did:key:zRuntimeA",
+                Some("/principal-alice".to_string()),
+            )
             .await
             .expect("first join_remote must succeed");
         let first_meta_mtime = std::fs::metadata(cfg.channel_dir(&channel).join(META_FILE))
@@ -1467,10 +1980,19 @@ mod tests {
         // is portable because we just need any elapsed time).
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        // Second call with a different name must NOT clobber the
-        // first meta.json or append a second Created event.
+        // Second call with a different name + binding must NOT
+        // clobber the first meta.json or append a second Created
+        // event.
         store
-            .join_remote(&channel, "prin_alice", "different-name", &initial_members)
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "different-name",
+                &initial_members,
+                &receiver,
+                "did:key:zRuntimeA",
+                Some("/other-binding".to_string()),
+            )
             .await
             .expect("second join_remote must succeed (no-op)");
         let second_meta_mtime = std::fs::metadata(cfg.channel_dir(&channel).join(META_FILE))
@@ -1491,9 +2013,153 @@ mod tests {
             "no synthetic Created event on idempotent join"
         );
 
-        // The original name survives (the second call did not
-        // overwrite meta.json).
-        let meta = MetaJson::load(&cfg.channel_dir(&channel)).await.unwrap();
+        // The original name + binding survive (the second call did
+        // not overwrite meta.json).
+        let meta = MetaJson::load(&cfg.channel_dir(&channel), &channel).await.unwrap();
         assert_eq!(meta.name, "team-chat", "original name must survive");
+        assert_eq!(
+            meta.passive_binding.as_deref(),
+            Some("/principal-alice"),
+            "original binding must survive"
+        );
+    }
+
+    // -- Sprint 4 (sprint 4 phase 2): CreateOpts::id + on-disk normalizer
+    // -----
+
+    /// `CreateOpts::id` mints the channel under a specific id rather
+    /// than via `ChannelId::generate`. The store returns the caller's
+    /// id verbatim and the on-disk directory uses the normalized
+    /// form (colons replaced with `.3A.`). Used by the DM
+    /// auto-provisioning path so both sides of a peer exchange derive
+    /// the same id from the same DID.
+    #[tokio::test]
+    async fn create_with_explicit_id_succeeds() {
+        let cfg = tmp_cfg("explicit-id");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let explicit = ChannelId::for_principal("did:key:zBob");
+        let opts = CreateOpts::runtime("dm-bob").with_id(explicit.clone());
+        let returned = store.create(&creator, opts).await.unwrap();
+
+        assert_eq!(returned, explicit, "create must return the caller-supplied id");
+
+        // On-disk dir uses the .3A. normalizer, NOT the wire form.
+        let on_disk = cfg.channel_dir(&explicit);
+        assert!(
+            on_disk.exists(),
+            "expected {} to exist; list: {:?}",
+            on_disk.display(),
+            std::fs::read_dir(cfg.channels_dir()).unwrap().map(|e| e.unwrap().path()).collect::<Vec<_>>()
+        );
+        assert!(
+            !on_disk
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains(':'),
+            "filesystem dir names must not contain colons; got {:?}",
+            on_disk.file_name()
+        );
+    }
+
+    /// A duplicate `opts.id` returns `Adapter` rather than silently
+    /// clobbering the existing channel. Mirrors `join_remote`'s
+    /// idempotency check (`:770-772`).
+    #[tokio::test]
+    async fn create_with_duplicate_id_returns_adapter_error() {
+        let cfg = tmp_cfg("dup-id");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let explicit = ChannelId::for_principal("did:key:zBob");
+        let opts = CreateOpts::runtime("dm-bob").with_id(explicit.clone());
+        store.create(&creator, opts.clone()).await.unwrap();
+
+        let err = store.create(&creator, opts).await.unwrap_err();
+        assert!(
+            matches!(err, ChannelError::Adapter(ref msg) if msg.contains("channel id collision")),
+            "duplicate id must surface Adapter with 'collision' in the message; got: {err:?}"
+        );
+    }
+
+    /// `CreateOpts::id: None` preserves the pre-PR behavior: the
+    /// store mints a fresh `chan_<8 base36>` and the on-disk dir is
+    /// the bare id verbatim (no `.3A.` markers).
+    #[tokio::test]
+    async fn create_without_id_mints_fresh_chan_prefix_id() {
+        let cfg = tmp_cfg("fresh-id");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        assert!(
+            channel.as_str().starts_with(ChannelId::PREFIX),
+            "default id must be chan_<...>; got {channel}"
+        );
+        let on_disk = cfg.channel_dir(&channel);
+        assert_eq!(
+            on_disk.file_name().unwrap().to_str().unwrap(),
+            channel.as_str(),
+            "bare id is its own dir name; no normalization"
+        );
+    }
+
+    /// `list_channels_for_principal` walks the on-disk directory and
+    /// reconstructs the wire form for typed-prefix channels (the
+    /// `.3A.` marker is decoded). Without this, a typed channel would
+    /// silently disappear from the boot sweep's enumeration.
+    #[tokio::test]
+    async fn list_channels_for_principal_reconstructs_wire_form() {
+        let cfg = tmp_cfg("list-reconstruct");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let principal_id = ChannelId::for_principal("did:key:zBob");
+        let bare_id = ChannelId::generate();
+
+        // Create one typed + one bare.
+        store
+            .create(&creator, CreateOpts::runtime("dm").with_id(principal_id.clone()))
+            .await
+            .unwrap();
+        store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        assert_eq!(bare_id.as_str().is_empty(), false); // sanity
+
+        let listed = store.list_for_principal(&creator).await.unwrap();
+        assert!(
+            listed.contains(&principal_id),
+            "typed id must appear in wire form, not .3A. form; got {listed:?}"
+        );
+        assert!(
+            listed.iter().any(|id| id.as_str().starts_with(ChannelId::PREFIX)),
+            "bare id must appear; got {listed:?}"
+        );
+    }
+
+    /// `passive_binding` reports the wire form on `NotFound` rather
+    /// than the on-disk-normalized form. The previous impl used
+    /// `chan_dir.file_name()`, which for a typed channel produced
+    /// `principal.3A.did.3A...` and surfaced as confusing debug
+    /// output.
+    #[tokio::test]
+    async fn not_found_error_carries_wire_form() {
+        let cfg = tmp_cfg("not-found-wire");
+        let store = ChannelStore::new(cfg);
+        let bogus = ChannelId::for_principal("did:key:zMissing");
+        let result = store.passive_binding(&bogus).await;
+        match result {
+            Err(ChannelError::NotFound(id)) => {
+                assert_eq!(
+                    id, bogus,
+                    "NotFound must carry the wire-form id; got {id}"
+                );
+            }
+            other => panic!("expected NotFound; got {other:?}"),
+        }
     }
 }

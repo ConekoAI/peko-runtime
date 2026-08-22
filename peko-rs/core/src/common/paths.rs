@@ -821,22 +821,6 @@ impl PathResolver {
         self.data_dir.join("async_tasks")
     }
 
-    /// Runtime-owned chat-log root directory.
-    ///
-    /// Distinct from the principal-owned session JSONL: chat logs are
-    /// sharded by `(principal_did, peer)` and capture only the consumer-
-    /// visible message stream (user↔principal, principal↔principal).
-    /// They survive across session resets / compaction because they are
-    /// append-only and external to the principal's mutable working
-    /// memory. Deleting a principal deletes only that principal's own
-    /// chat-log shards.
-    ///
-    /// Path: `{data_dir}/chat_logs`
-    #[must_use]
-    pub fn chat_logs_dir(&self) -> PathBuf {
-        self.data_dir.join("chat_logs")
-    }
-
     // ====================================================================================
     // Utility Methods
     // ====================================================================================
@@ -853,7 +837,6 @@ impl PathResolver {
         std::fs::create_dir_all(&self.config_dir)?;
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.cache_dir)?;
-        std::fs::create_dir_all(self.chat_logs_dir())?;
         // Phase A: runtime-global bucket.
         let runtime = self.runtime_layout();
         std::fs::create_dir_all(&runtime.extensions_root)?;
@@ -939,6 +922,11 @@ mod tests {
     }
 
     #[test]
+    // Touches the process-global PEKO_HOME (removes + restores it) —
+    // serialize with the other env-mutating tests (2026-08-19 group
+    // unification; the SAFETY comment below's "tests don't run in
+    // parallel" claim is only true inside one serial group).
+    #[serial_test::serial]
     fn test_path_resolver_default() {
         // Some earlier tests (notably subagent_integration_tests) leak a
         // temp `PEKO_HOME` via `Box::leak`-ed fixtures, so by the time this

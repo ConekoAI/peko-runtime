@@ -6,6 +6,7 @@
 //! All metadata mutations go through the `MetadataController`, which is the
 //! sole authority for session metadata operations.
 
+use crate::id::SessionId;
 use crate::index::SessionEntry;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// To modify metadata, create a new instance and pass it to `MetadataController`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionMetadata {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub agent_name: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -37,7 +38,7 @@ pub struct SessionMetadata {
     pub model_context_limit: Option<usize>,
     pub transcript_file: String,
     pub title: Option<String>,
-    pub parent_session_id: Option<String>,
+    pub parent_session_id: Option<SessionId>,
     pub trigger: String,
     /// Subject type ("user" or "agent")
     pub peer_type: Option<String>,
@@ -49,12 +50,26 @@ pub struct SessionMetadata {
     /// Set when an agent requests compaction of this session; consumed
     /// by the compaction orchestrator at the session's next run.
     pub compact_requested: bool,
+    /// Standing sessions are exempt from maintenance pruning — their
+    /// transcripts are durable regardless of idle age.
+    pub standing: bool,
+    /// Privileged sessions give their caller whole-store reach in the
+    /// ownership guards (like a base caller) while keeping their parent
+    /// pointer and tree membership (sprint 2 peer-child provisioning —
+    /// set only for the principal owner's peer child).
+    pub privileged: bool,
+    /// Per-parent-unique path segment for `/slug/...` addressing
+    /// (see `crate::path`). `title` stays free-form display text;
+    /// the slug is the machine-stable segment. The trunk session
+    /// (sprint 6: `parent_session_id == None`) carries no slug —
+    /// it is addressable only as `/` from inside its own tree.
+    pub slug: Option<String>,
 }
 
 impl SessionMetadata {
     /// Create new metadata for a session
     pub fn new(
-        session_id: impl Into<String>,
+        session_id: impl Into<SessionId>,
         agent_name: impl Into<String>,
         transcript_file: impl Into<String>,
     ) -> Self {
@@ -82,15 +97,18 @@ impl SessionMetadata {
             peer_id: None,
             archived: false,
             compact_requested: false,
+            standing: false,
+            privileged: false,
+            slug: None,
         }
     }
 
     /// Create metadata with parent session (for branching)
     pub fn with_parent(
-        session_id: impl Into<String>,
+        session_id: impl Into<SessionId>,
         agent_name: impl Into<String>,
         transcript_file: impl Into<String>,
-        parent_session_id: impl Into<String>,
+        parent_session_id: impl Into<SessionId>,
     ) -> Self {
         let mut meta = Self::new(session_id, agent_name, transcript_file);
         meta.parent_session_id = Some(parent_session_id.into());
@@ -120,6 +138,9 @@ impl SessionMetadata {
             peer_id: entry.peer_id,
             archived: entry.archived,
             compact_requested: entry.compact_requested,
+            standing: entry.standing,
+            privileged: entry.privileged,
+            slug: entry.slug,
         }
     }
 
@@ -127,7 +148,7 @@ impl SessionMetadata {
     #[must_use]
     pub fn to_entry(&self) -> SessionEntry {
         SessionEntry {
-            session_id: self.session_id.clone(),
+            session_id: self.session_id,
             agent_name: self.agent_name.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -139,12 +160,15 @@ impl SessionMetadata {
             model_context_limit: self.model_context_limit,
             transcript_file: self.transcript_file.clone(),
             title: self.title.clone(),
-            parent_session_id: self.parent_session_id.clone(),
+            parent_session_id: self.parent_session_id,
             trigger: self.trigger.clone(),
             peer_type: self.peer_type.clone(),
             peer_id: self.peer_id.clone(),
             archived: self.archived,
             compact_requested: self.compact_requested,
+            standing: self.standing,
+            privileged: self.privileged,
+            slug: self.slug.clone(),
         }
     }
 
@@ -203,6 +227,17 @@ impl SessionMetadata {
     /// Set title
     pub fn set_title(&mut self, title: Option<impl Into<String>>) {
         self.title = title.map(Into::into);
+        self.touch();
+    }
+
+    /// Set the slug (per-parent-unique path segment).
+    ///
+    /// Raw write — format validation and per-parent uniqueness are
+    /// enforced by the callers (`crate::path::validate_slug` /
+    /// `crate::path::slug_conflict`, applied in
+    /// `MetadataController::set_slug` and the root-side adapters).
+    pub fn set_slug(&mut self, slug: Option<impl Into<String>>) {
+        self.slug = slug.map(Into::into);
         self.touch();
     }
 
@@ -270,8 +305,15 @@ mod tests {
 
     #[test]
     fn test_metadata_new() {
-        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
-        assert_eq!(meta.session_id, "sess_123");
+        let meta = SessionMetadata::new(
+            SessionId::parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+            "test_agent",
+            "sess_123.jsonl",
+        );
+        assert_eq!(
+            meta.session_id,
+            SessionId::parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap()
+        );
         assert_eq!(meta.agent_name, "test_agent");
         assert_eq!(meta.message_count, 0);
     }
@@ -325,19 +367,52 @@ mod tests {
         );
         entry.archived = true;
         entry.compact_requested = true;
+        entry.standing = true;
+        entry.privileged = true;
 
         let meta = SessionMetadata::from_entry(entry);
         assert!(meta.archived);
         assert!(meta.compact_requested);
+        assert!(meta.standing);
+        assert!(meta.privileged);
 
         let entry2 = meta.to_entry();
         assert!(entry2.archived);
         assert!(entry2.compact_requested);
+        assert!(entry2.standing);
+        assert!(entry2.privileged);
 
         // Defaults are false on construction.
         let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         assert!(!meta.archived);
         assert!(!meta.compact_requested);
+        assert!(!meta.standing);
+        assert!(!meta.privileged);
+    }
+
+    #[test]
+    fn test_slug_roundtrip() {
+        let mut entry = SessionEntry::new(
+            "sess_123".to_string(),
+            "test_agent".to_string(),
+            "sess_123.jsonl".to_string(),
+        );
+        assert_eq!(entry.slug, None);
+        entry.slug = Some("task-b".to_string());
+
+        let meta = SessionMetadata::from_entry(entry);
+        assert_eq!(meta.slug.as_deref(), Some("task-b"));
+
+        let entry2 = meta.to_entry();
+        assert_eq!(entry2.slug.as_deref(), Some("task-b"));
+
+        // Slug defaults to None on construction; set_slug mirrors set_title.
+        let mut meta = SessionMetadata::new("sess_456", "test_agent", "sess_456.jsonl");
+        assert_eq!(meta.slug, None);
+        meta.set_slug(Some("memory"));
+        assert_eq!(meta.slug.as_deref(), Some("memory"));
+        meta.set_slug(None::<String>);
+        assert_eq!(meta.slug, None);
     }
 
     #[test]

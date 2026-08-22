@@ -70,7 +70,7 @@ pub struct SessionInfo {
 impl From<SessionEntry> for SessionInfo {
     fn from(entry: SessionEntry) -> Self {
         Self {
-            id: entry.session_id,
+            id: entry.session_id.to_string(),
             agent_name: entry.agent_name,
             created_at: entry.created_at,
             updated_at: entry.updated_at,
@@ -80,7 +80,7 @@ impl From<SessionEntry> for SessionInfo {
             total_input_tokens: entry.total_input_tokens,
             total_output_tokens: entry.total_output_tokens,
             model_context_limit: entry.model_context_limit,
-            parent_session_id: entry.parent_session_id,
+            parent_session_id: entry.parent_session_id.map(|id| id.to_string()),
             title: entry.title,
             peer_type: entry.peer_type,
             peer_id: entry.peer_id,
@@ -109,9 +109,10 @@ impl From<SessionEntry> for SessionInfo {
 )]
 pub enum HistoryEvent {
     /// Session-start marker. Carries the session id (e.g.
-    /// `"root:user:local"`) and the wall-clock time the session was
-    /// created so the desktop Activity route can render a header row
-    /// without joining against the response envelope.
+    /// `"root:self"` for the principal's trunk) and the wall-clock
+    /// time the session was created so the desktop Activity route can
+    /// render a header row without joining against the response
+    /// envelope.
     Session {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -528,7 +529,7 @@ impl SessionService {
         );
 
         Ok(BranchResult {
-            new_session_id,
+            new_session_id: new_session_id.to_string(),
             parent_session_id: parent_session_id.to_string(),
             label,
         })
@@ -828,7 +829,7 @@ mod tests {
         );
 
         let info: SessionInfo = entry.into();
-        assert_eq!(info.id, "sess_123");
+        assert_eq!(info.id, peko_session::SessionId::from("sess_123").to_string());
         assert_eq!(info.agent_name, "myagent");
     }
 

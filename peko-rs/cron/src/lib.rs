@@ -9,10 +9,10 @@
 //!
 //! ## Layout
 //!
-//! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`,
-//!   `DeliveryMode`), the `CronRuntime` port trait + global registry, the
-//!   helper functions, and the 3 tool impls (`CronCreateTool`,
-//!   `CronDeleteTool`, `CronListTool`).
+//! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`),
+//!   the `CronRuntime` port trait + global registry, the helper functions,
+//!   and the 3 tool impls (`CronCreateTool`, `CronDeleteTool`,
+//!   `CronListTool`).
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
 //! - [`events`], [`idle`] — scheduler-side submodules
@@ -60,7 +60,7 @@ pub use tools::{
     build_send_job, build_spawn_tool_job, calculate_next_interval_anchored, calculate_next_run,
     global_runtime, normalize_cron_expr, render_job_list, resolve_delete_after_run, resolve_label,
     resolve_prompt, resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
-    CronJob, CronJobAction, CronListTool, CronRuntime, DeliveryMode, ScheduleKind,
+    CronJob, CronJobAction, CronListTool, CronRuntime, ScheduleKind,
     DEFAULT_MAX_RETRIES,
 };
 
@@ -177,16 +177,24 @@ impl CronScheduler {
         }
 
         // Validate the action shape. Send/Notify require a non-empty
-        // message; SpawnTool requires a non-empty tool name. Validation
-        // happens here so a malformed job never reaches the on-disk DB.
+        // message; SpawnTool requires a non-empty tool name; a Send
+        // `target` must be a known value (serde rejects unknown targets
+        // at JSON load, but in-process struct-literal construction
+        // bypasses that). A trunk-targeted Send additionally respects
+        // the keepalive interval floor (`TRUNK_MIN_INTERVAL_MS`) — a
+        // sub-minute self-poke loop is a runaway token-burn
+        // anti-pattern (Phase 3b). Validation happens here so a
+        // malformed job never reaches the on-disk DB.
         match &job.action {
-            CronJobAction::Send { message } | CronJobAction::Notify { message } => {
+            CronJobAction::Send { message, target } => {
                 if message.trim().is_empty() {
                     anyhow::bail!(
                         "CronJob {} action requires a non-empty 'message'",
                         job.action.kind_label()
                     );
                 }
+                crate::tools::validate_send_target(target)?;
+                crate::tools::validate_trunk_send_interval(&job.schedule, target)?;
             }
             CronJobAction::SpawnTool { tool_name, .. } => {
                 if tool_name.trim().is_empty() {
@@ -503,9 +511,9 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test message".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -544,9 +552,9 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -598,10 +606,8 @@ mod tests {
                 tool_params: serde_json::json!({"command": "true"}),
                 wake_on_completion: Some(false),
                 timeout_secs: Some(60),
-                description: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -668,9 +674,9 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - chrono::Duration::hours(1),
@@ -688,9 +694,9 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + chrono::Duration::hours(1),
@@ -742,9 +748,9 @@ mod tests {
             schedule: ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "x".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -836,6 +842,63 @@ mod tests {
         assert_eq!(job.run_count, 0); // set_job_last_status never bumps run_count
     }
 
+    /// Phase 3b (2026-08-15): trunk-targeted Send jobs respect the
+    /// keepalive interval floor at the `add_job` funnel (the path the
+    /// CLI `--target trunk` and the `CronCreate` tool both flow
+    /// through). Sub-minute `Every` intervals are refused; explicit/
+    /// event-driven schedules are unchanged. Phase 7: the trunk is the
+    /// DEFAULT Send target, so `target: None` jobs are floored too.
+    #[test]
+    fn test_add_job_trunk_interval_floor() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+
+        let mut job = make_job("trunk-fast", None);
+        job.action = CronJobAction::Send {
+            message: "keepalive".to_string(),
+            target: Some("trunk".to_string()),
+        };
+
+        // Every{30s} + trunk → refused with the floor in the message.
+        job.schedule = ScheduleKind::Every { every_ms: 30_000 };
+        let err = scheduler.add_job(&job).unwrap_err();
+        assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
+        assert!(scheduler.get_job("trunk-fast").unwrap().is_none());
+
+        // Every{300s} + trunk → accepted.
+        job.schedule = ScheduleKind::Every { every_ms: 300_000 };
+        scheduler.add_job(&job).unwrap();
+
+        // Default-target (None) Send + Every{30s} → refused: Phase 7
+        // made the trunk the default destination, so the floor holds.
+        let mut fast = make_job("conv-fast", None);
+        fast.schedule = ScheduleKind::Every { every_ms: 30_000 };
+        let err = scheduler.add_job(&fast).unwrap_err();
+        assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
+
+        // trunk + At (future) and trunk + Cron → exempt, accepted.
+        let mut at = make_job("trunk-at", None);
+        at.action = CronJobAction::Send {
+            message: "keepalive".to_string(),
+            target: Some("trunk".to_string()),
+        };
+        at.schedule = ScheduleKind::At {
+            at: (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+        };
+        scheduler.add_job(&at).unwrap();
+
+        let mut cron = make_job("trunk-cron", None);
+        cron.action = CronJobAction::Send {
+            message: "keepalive".to_string(),
+            target: Some("trunk".to_string()),
+        };
+        cron.schedule = ScheduleKind::Cron {
+            expr: "* * * * *".to_string(),
+            tz: None,
+        };
+        scheduler.add_job(&cron).unwrap();
+    }
+
     /// A past `at` must be rejected at creation, not silently parked on
     /// the 100-year sentinel (2026-08-07 field test, N2b).
     #[test]
@@ -851,9 +914,9 @@ mod tests {
             principal_id: PrincipalId("prin_test_principal".to_string()),
             action: CronJobAction::Send {
                 message: "Test".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -903,9 +966,9 @@ mod tests {
                 schedule: ScheduleKind::Every { every_ms: 60000 },
                 action: CronJobAction::Send {
                     message: "Hello".to_string(),
+                    target: None,
                 },
-                delivery: DeliveryMode::None,
-                delete_after_run: false,
+                                delete_after_run: false,
                 enabled: true,
                 created_at: Utc::now(),
                 next_run: Utc::now(),

@@ -1,9 +1,11 @@
-//! Shared TLS primitives for direct cross-runtime connections and the
-//! PekoHub tunnel.
+//! Shared TLS primitives for the PekoHub tunnel.
 //!
 //! This module exposes certificate/SPKI pinning, root-store construction,
-//! and rustls client/server config builders so both `tunnel::client` and
-//! `tunnel::direct` can reuse the same TLS logic.
+//! and rustls client/server config builders. It lived under
+//! `tunnel::direct` until sprint 3 Phase 12b retired the direct
+//! transport; `tunnel::client` (the PekoHub tunnel) is the remaining
+//! consumer. The server-side builders are retained for the tunnel's
+//! own test surface.
 
 use std::path::Path;
 use std::sync::Arc;

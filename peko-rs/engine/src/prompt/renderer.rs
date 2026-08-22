@@ -499,7 +499,7 @@ fn format_agents_section(text: &str) -> String {
     }
     format!(
         r"## Available Agents
-When delegating, choose the most appropriate agent from the list below. Each agent has a name you can pass to the `Agent` tool as `subagent_type`.
+When delegating, choose the most appropriate agent from the list below. Each agent has a name you can pass to the `Agent` tool as the `agent` argument.
 
 <available_agents>
 {text}

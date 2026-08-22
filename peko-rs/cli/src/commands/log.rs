@@ -13,14 +13,17 @@
 //!   This is the only user-facing way to inspect a principal's
 //!   consumer-visible conversation without running a turn.
 //!
-//! Internally the read path is the runtime-owned
-//! `ChatLogStore` (sharded by `(principal_did, peer)`), distinct
-//! from the principal's mutable session JSONL working memory.
+//! Internally the read path walks the peer's **DM channel** log
+//! (sprint 3 Phase 11 — `dm-<peer_child_slug>`, provisioned on first
+//! contact; `principal_log` IPC → `find_peer_dm_channel` →
+//! `peek_with_ids`, `Posted` events only), distinct from the
+//! principal's mutable session JSONL working memory. Pre-Phase-11
+//! chat-log history stays on disk but is no longer read here.
 
 use crate::commands::GlobalPaths;
 use anyhow::{Context, Result};
 use clap::Args;
-use peko_chat_log::ChatLogMessage;
+use peko_core::ipc::packet::PrincipalLogMessage;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use std::str::FromStr;
 
@@ -67,7 +70,7 @@ pub struct LogCommand {
     pub json: bool,
 }
 
-/// Handle the `peko log` command. Walks chat-log pages via
+/// Handle the `peko log` command. Walks log pages via
 /// `--cursor` until the caller has the slice they want. Recursion is
 /// bounded to a small number of pages so a runaway caller can't pin
 /// the daemon forever; in practice most callers use a single
@@ -99,7 +102,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
         .context("Daemon is not running. Start it with: peko daemon start")?;
 
     let mut cursor = cursor.filter(|c| !c.is_empty());
-    let mut accumulated: Vec<ChatLogMessage> = Vec::new();
+    let mut accumulated: Vec<PrincipalLogMessage> = Vec::new();
     let mut resolved_peer: Option<peko_auth::Subject> = None;
     const MAX_PAGES: usize = 25;
     for _ in 0..MAX_PAGES {
@@ -146,7 +149,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
             peer: &'a str,
             next_cursor: &'a Option<String>,
             has_more: bool,
-            messages: &'a [ChatLogMessage],
+            messages: &'a [PrincipalLogMessage],
         }
         let json = serde_json::to_string_pretty(&Out {
             principal: &principal,
@@ -204,8 +207,8 @@ fn parse_duration_secs(input: &str) -> Result<u64> {
     Ok(n.saturating_mul(multiplier))
 }
 
-/// Render one chat-log message to stdout in the default human view.
-fn render_chat_message(message: &ChatLogMessage) {
+/// Render one log message to stdout in the default human view.
+fn render_chat_message(message: &PrincipalLogMessage) {
     println!(
         "[{}] {}: {}",
         timestamp_short(&message.timestamp.to_rfc3339()),

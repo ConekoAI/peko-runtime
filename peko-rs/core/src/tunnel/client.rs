@@ -66,12 +66,6 @@ impl TunnelHandle {
         Self { tx }
     }
 
-    /// Create a new handle from a sender (internal use by transports).
-    #[must_use]
-    pub(crate) fn from_sender(tx: mpsc::Sender<TunnelMessage>) -> Self {
-        Self { tx }
-    }
-
     /// Send a message through the tunnel.
     ///
     /// Returns an error immediately if the outbound buffer is full or the
@@ -656,17 +650,6 @@ impl TunnelClient {
             | TunnelMessage::InstanceDeregister { .. }
             | TunnelMessage::ExposureUpdate { .. }
             | TunnelMessage::StatusUpdate { .. }
-            // Issue #29 (Slice A): cross-runtime a2a envelopes flow
-            // through the same handler seam as proxied requests.
-            // Slice C lands the actual `PrincipalToPrincipalRequest`
-            // dispatcher branch (signature verify → session attribute
-            // → local dispatch → `PrincipalToPrincipalResponse`); Slice B
-            // lands the `PrincipalToPrincipalResponse` correlation on the
-            // caller side. Until then the dispatcher will log a
-            // `debug!` and drop, which is the safe default — no
-            // surprise local dispatch, no silent send loop.
-            | TunnelMessage::PrincipalToPrincipalRequest { .. }
-            | TunnelMessage::PrincipalToPrincipalResponse { .. }
             // peko-channel cross-runtime PR-A: tunnel_channel_event
             // envelopes also flow through the request-handler seam.
             // Commit 2 lands the wire shape + signer/audit modules +
@@ -792,7 +775,7 @@ impl TunnelClient {
             return Ok(None);
         };
 
-        let config = crate::tunnel::direct::tls::build_client_config(
+        let config = crate::tunnel::tls::build_client_config(
             tls.ca_path.as_deref(),
             tls.cert_path.as_deref(),
             tls.key_path.as_deref(),

@@ -10,16 +10,31 @@
 //! `SessionManagerRuntime` adapter (session tool) and the
 //! `SubagentExecutor` / `AgentTool` path (Agent tool).
 //!
-//! The principal's root session (the live `root:*` slot) is
-//! **continuous**: the engine owns its lifecycle (paging +
-//! compaction), so `delete` / `archive` on it are refused via
-//! [`err_live_base_managed`]. Archived state is read directly from
-//! `SessionMetadata::archived`.
+//! The principal's trunk session (`root:self` — the only `root:*` id
+//! left after Phase 7 retired the per-peer `root:{peer}` /
+//! `root:cron:{peer}` sessions) is **continuous**: the engine owns its
+//! lifecycle (paging + compaction), so `delete` / `archive` on it are
+//! refused via [`err_live_base_managed`]. Archived state is read
+//! directly from `SessionMetadata::archived`.
 //!
 //! A session whose metadata is missing is treated as a tree root for
 //! *classification* (the walk ends there), but a dangling id in the
 //! caller's ancestor chain stays in `ancestors` so the delete-ancestor
 //! guard still blocks deleting it.
+//!
+//! ## Privileged callers (sprint 2 peer-child provisioning)
+//!
+//! A session whose metadata carries `privileged = true` gives its
+//! caller **whole-store reach** in the ownership guards — the guard
+//! sites read `caller.is_base || caller.privileged` where they used to
+//! read `caller.is_base` alone. Privilege affects guard reach ONLY:
+//! the session keeps its `parent_session_id` and stays in the trunk's
+//! tree, so path addressing, the ancestor guards (`err_delete_ancestor`,
+//! `err_move_ancestor`), the self-mutation guard, and the `root:*`
+//! family guards all still apply to it, and `descendants_of`
+//! supervision is unchanged. Only the principal owner's peer child
+//! (`/local-user`) is provisioned privileged; every other peer child
+//! stays subtree-scoped.
 
 use peko_session::SessionMetadata;
 
@@ -38,6 +53,15 @@ pub struct CallerContext {
     /// "missing = base" default was a privilege-escalation hole — see
     /// PR review 2026-08-10.
     pub is_base: bool,
+    /// True when the caller's session metadata carries the
+    /// `privileged` flag (sprint 2 peer-child provisioning): the
+    /// caller gets whole-store reach in the ownership guards, like a
+    /// base caller. Unlike `is_base`, this does NOT change tree
+    /// membership — the session keeps its parent pointer, so the
+    /// ancestor / self-mutation / `root:*` guards still apply.
+    /// Populated from the caller's own metadata, so a dangling caller
+    /// is never privileged.
+    pub privileged: bool,
     /// True when the caller's own session metadata is missing from
     /// `metas`. Guards treat dangling callers like subtree callers
     /// with an empty ancestor chain — every ownership check fails,
@@ -55,30 +79,44 @@ pub struct CallerContext {
 /// missing or has no parent. Cycle-safe.
 #[must_use]
 pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext {
-    let find = |id: &str| metas.iter().find(|m| m.session_id == id);
+    // Sprint 6: callers may pass either a canonical UUID or a
+    // fixture-style literal. Canonicalize the same way production
+    // callers do (`SessionId::from`) so the find below matches stored
+    // metadata.
+    let canonical = peko_session::SessionId::from(current).to_string();
+    let find = |id: &str| {
+        metas
+            .iter()
+            .find(|m| m.session_id.to_string() == id)
+    };
 
-    let current_meta = find(current);
+    let current_meta = find(&canonical);
     let dangling = current_meta.is_none();
     let first_parent = current_meta.and_then(|m| m.parent_session_id.clone());
     // is_base is true ONLY when the caller's metadata is present AND
     // has no parent recorded. A missing-metadata caller is dangling,
     // not base.
     let is_base = first_parent.is_none() && !dangling;
+    // Privilege comes from the caller's own metadata; a dangling
+    // caller (no metadata) is never privileged.
+    let privileged = current_meta.is_some_and(|m| m.privileged);
 
-    let mut ancestors = Vec::new();
+    let mut ancestors: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut cursor = first_parent;
     while let Some(id) = cursor {
-        if !seen.insert(id.clone()) {
+        let id_str = id.to_string();
+        if !seen.insert(id_str.clone()) {
             break; // corrupt chain with a cycle — stop, keep what we have
         }
-        ancestors.push(id.clone());
-        cursor = find(&id).and_then(|m| m.parent_session_id.clone());
+        ancestors.push(id_str.clone());
+        cursor = find(&id_str).and_then(|m| m.parent_session_id.clone());
     }
 
     CallerContext {
-        current_session_id: current.to_string(),
+        current_session_id: canonical,
         is_base,
+        privileged,
         dangling,
         ancestors,
     }
@@ -95,10 +133,11 @@ fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
 /// current session id).
 #[must_use]
 pub fn in_subtree(caller: &CallerContext, target: &str, metas: &[SessionMetadata]) -> bool {
-    if target == caller.current_session_id {
+    let target_canonical = peko_session::SessionId::from(target).to_string();
+    if target_canonical == caller.current_session_id {
         return true;
     }
-    ancestors_of(target, metas)
+    ancestors_of(&target_canonical, metas)
         .iter()
         .any(|a| a == &caller.current_session_id)
 }
@@ -112,33 +151,40 @@ pub fn in_subtree(caller: &CallerContext, target: &str, metas: &[SessionMetadata
 /// E <= N.
 #[must_use]
 pub fn descendants_of(target: &str, metas: &[SessionMetadata]) -> Vec<String> {
-    // Build parent -> direct-children adjacency map in one pass.
-    let mut children: std::collections::HashMap<&str, Vec<&str>> =
+    // Sprint 6: keys/values are owned `String`s rather than `&str`
+    // borrows of `SessionMetadata` (whose `session_id` /
+    // `parent_session_id` fields are now `SessionId` newtypes — the
+    // hashmap keys live longer than the closure that compares them).
+    let target_canonical = peko_session::SessionId::from(target).to_string();
+    let mut children: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::with_capacity(metas.len());
     for m in metas {
-        if let Some(parent) = m.parent_session_id.as_deref() {
-            children.entry(parent).or_default().push(&m.session_id);
+        if let Some(parent) = m.parent_session_id {
+            children
+                .entry(parent.to_string())
+                .or_default()
+                .push(m.session_id.to_string());
         }
     }
     // BFS down from `target`, collecting every reachable node.
     let mut out = Vec::new();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Seed `seen` with the target so a cycle back to it doesn't push
     // it into `out` and so the walk terminates.
-    seen.insert(target);
-    let mut stack: Vec<&str> = match children.get(target) {
-        Some(kids) => kids.iter().copied().collect(),
+    seen.insert(target_canonical.clone());
+    let mut stack: Vec<String> = match children.get(&target_canonical) {
+        Some(kids) => kids.clone(),
         None => Vec::new(),
     };
     while let Some(id) = stack.pop() {
-        if !seen.insert(id) {
+        if !seen.insert(id.clone()) {
             continue;
         }
-        out.push(id.to_string());
-        if let Some(kids) = children.get(id) {
+        out.push(id.clone());
+        if let Some(kids) = children.get(&id) {
             for k in kids {
-                if !seen.contains(*k) {
-                    stack.push(k);
+                if !seen.contains(k) {
+                    stack.push(k.clone());
                 }
             }
         }
@@ -167,6 +213,23 @@ pub fn err_delete_ancestor(target: &str) -> anyhow::Error {
     )
 }
 
+/// `move` on an ancestor of the caller's current session.
+pub fn err_move_ancestor(target: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot move session '{target}': it is an ancestor of the session you are running in"
+    )
+}
+
+/// `move` that would create a parent↔child cycle (`new_parent` is the
+/// target itself or one of its descendants). Cycles silently truncate
+/// ancestry walks, so they are refused at move time.
+pub fn err_move_cycle(target: &str, new_parent: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot move session '{target}' under '{new_parent}': the destination is the session \
+         itself or one of its descendants — the move would create a cycle"
+    )
+}
+
 /// A subtree (spawned) caller acting outside its subtree.
 pub fn err_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -175,12 +238,12 @@ pub fn err_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
     )
 }
 
-/// `delete` / `archive` on the principal's live `root:*` session.
+/// `delete` / `archive` / `move` on the principal's live `root:*` session.
 pub fn err_live_base_managed(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "session '{target}' is the principal's root session: it is continuous and managed by \
-         the engine — you cannot delete or archive it. To manage a different session, pass its \
-         session_id from `session list`."
+         the engine — you cannot delete, archive, or move it. To manage a different session, \
+         pass its session_id from `session list`."
     )
 }
 
@@ -211,8 +274,8 @@ pub fn err_resume_self(target: &str) -> anyhow::Error {
     anyhow::anyhow!("session '{target}' is already your current session")
 }
 
-/// `resume` across conversation families (different `root:{peer}` /
-/// `root:cron:{peer}` prefix).
+/// `resume` across conversation families (different peer-child
+/// subtree of the trunk).
 pub fn err_resume_cross_family(target: &str, cur: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot resume '{target}': it belongs to a different conversation family than your \
@@ -279,10 +342,12 @@ pub fn err_dangling(cur: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peko_session::SessionId;
 
     fn meta(id: &str, parent: Option<&str>) -> SessionMetadata {
-        let mut m = SessionMetadata::new(id, "agent", format!("{id}.jsonl"));
-        m.parent_session_id = parent.map(String::from);
+        let id = SessionId::from(id);
+        let mut m = SessionMetadata::new(id, "agent", format!("{}.jsonl", id));
+        m.parent_session_id = parent.map(SessionId::from);
         m
     }
 
@@ -299,20 +364,21 @@ mod tests {
 
     #[test]
     fn caller_context_base_session() {
-        let ctx = caller_context("root:user:alice", &tree());
+        let root = SessionId::from("root:user:alice").to_string();
+        let ctx = caller_context(&root, &tree());
         assert!(ctx.is_base);
         assert!(ctx.ancestors.is_empty());
-        assert_eq!(ctx.current_session_id, "root:user:alice");
+        assert_eq!(ctx.current_session_id, root);
     }
 
     #[test]
     fn caller_context_spawned_session() {
-        let ctx = caller_context("child1", &tree());
+        let child1 = SessionId::from("child1").to_string();
+        let spawn1 = SessionId::from("spawn1").to_string();
+        let root = SessionId::from("root:user:alice").to_string();
+        let ctx = caller_context(&child1, &tree());
         assert!(!ctx.is_base);
-        assert_eq!(
-            ctx.ancestors,
-            vec!["spawn1".to_string(), "root:user:alice".to_string()]
-        );
+        assert_eq!(ctx.ancestors, vec![spawn1, root]);
     }
 
     #[test]
@@ -327,79 +393,124 @@ mod tests {
     }
 
     #[test]
+    fn caller_context_privileged_from_metadata() {
+        // A spawned session flagged `privileged` keeps its parent
+        // pointer (is_base stays false, ancestors intact) — privilege
+        // affects guard reach only, not tree membership.
+        let mut metas = tree();
+        metas
+            .iter_mut()
+            .find(|m| m.session_id == SessionId::from("spawn1"))
+            .unwrap()
+            .privileged = true;
+        let spawn1 = SessionId::from("spawn1").to_string();
+        let spawn2 = SessionId::from("spawn2").to_string();
+        let ghost = SessionId::from("ghost").to_string();
+        let root = SessionId::from("root:user:alice").to_string();
+        let ctx = caller_context(&spawn1, &metas);
+        assert!(!ctx.is_base);
+        assert!(ctx.privileged);
+        assert!(!ctx.dangling);
+        assert_eq!(ctx.ancestors, vec![root.clone()]);
+        // in_subtree is unchanged: the root is still not in the
+        // privileged caller's subtree.
+        assert!(!in_subtree(&ctx, &root, &metas));
+
+        // Defaults to false for unflagged sessions, and a dangling
+        // caller is never privileged.
+        assert!(!caller_context(&spawn2, &metas).privileged);
+        assert!(!caller_context(&ghost, &metas).privileged);
+    }
+
+    #[test]
     fn dangling_ancestor_stays_in_chain() {
         // spawn1's parent metadata is absent: the id stays in the
         // ancestor chain (delete-ancestor guard) but the walk ends.
         let metas = vec![meta("child1", Some("spawn1"))];
-        let ctx = caller_context("child1", &metas);
+        let child1 = SessionId::from("child1").to_string();
+        let spawn1 = SessionId::from("spawn1").to_string();
+        let ctx = caller_context(&child1, &metas);
         assert!(!ctx.is_base);
-        assert_eq!(ctx.ancestors, vec!["spawn1".to_string()]);
+        assert_eq!(ctx.ancestors, vec![spawn1]);
     }
 
     #[test]
     fn caller_context_survives_cycles() {
         let mut a = meta("a", Some("b"));
         let b = meta("b", Some("a"));
-        a.parent_session_id = Some("b".to_string());
+        a.parent_session_id = Some(SessionId::from("b"));
         let metas = vec![a, b];
-        let ctx = caller_context("a", &metas);
-        assert_eq!(ctx.ancestors, vec!["b".to_string(), "a".to_string()]);
+        let a_id = SessionId::from("a").to_string();
+        let b_id = SessionId::from("b").to_string();
+        let ctx = caller_context(&a_id, &metas);
+        assert_eq!(ctx.ancestors, vec![b_id, a_id]);
     }
 
     #[test]
     fn in_subtree_covers_self_and_descendants_only() {
         let metas = tree();
-        let caller = caller_context("spawn1", &metas);
-        assert!(in_subtree(&caller, "spawn1", &metas));
-        assert!(in_subtree(&caller, "child1", &metas));
-        assert!(!in_subtree(&caller, "spawn2", &metas));
-        assert!(!in_subtree(&caller, "root:user:alice", &metas));
+        let spawn1 = SessionId::from("spawn1").to_string();
+        let child1 = SessionId::from("child1").to_string();
+        let spawn2 = SessionId::from("spawn2").to_string();
+        let root = SessionId::from("root:user:alice").to_string();
+        let caller = caller_context(&spawn1, &metas);
+        assert!(in_subtree(&caller, &spawn1, &metas));
+        assert!(in_subtree(&caller, &child1, &metas));
+        assert!(!in_subtree(&caller, &spawn2, &metas));
+        assert!(!in_subtree(&caller, &root, &metas));
     }
 
     #[test]
     fn descendants_of_collects_transitive_children() {
         let metas = tree();
-        let mut d = descendants_of("root:user:alice", &metas);
+        let root = SessionId::from("root:user:alice").to_string();
+        let mut d = descendants_of(&root, &metas);
         d.sort();
-        assert_eq!(
-            d,
-            vec![
-                "child1".to_string(),
-                "spawn1".to_string(),
-                "spawn2".to_string()
-            ]
-        );
-        assert_eq!(descendants_of("spawn2", &metas), Vec::<String>::new());
+        let child1 = SessionId::from("child1").to_string();
+        let spawn1 = SessionId::from("spawn1").to_string();
+        let spawn2 = SessionId::from("spawn2").to_string();
+        assert_eq!(d, vec![child1, spawn1, spawn2.clone()]);
+        assert_eq!(descendants_of(&spawn2, &metas), Vec::<String>::new());
     }
 
     #[test]
     fn descendants_of_handles_deep_and_dangling_chains() {
         // Reference implementation: the old O(N²) form, kept here as a
-        // parity oracle for the BFS rewrite.
+        // parity oracle for the BFS rewrite. Sprint 6: every lookup
+        // canonicalizes through `SessionId::from(...).to_string()` so
+        // fixture literals ("base", "a") match the UUID form stored in
+        // `SessionMetadata.session_id`.
         fn naive_descendants(target: &str, metas: &[SessionMetadata]) -> Vec<String> {
             fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
-                let find = |id: &str| metas.iter().find(|m| m.session_id == id);
+                let canonical = SessionId::from(id).to_string();
+                let find = |id: &str| {
+                    metas
+                        .iter()
+                        .find(|m| m.session_id.to_string() == id)
+                };
                 let mut chain = Vec::new();
                 let mut seen = std::collections::HashSet::new();
-                let mut cursor = find(id).and_then(|m| m.parent_session_id.clone());
+                let mut cursor = find(&canonical).and_then(|m| m.parent_session_id.clone());
                 while let Some(id) = cursor {
-                    if !seen.insert(id.clone()) {
+                    let id_str = id.to_string();
+                    if !seen.insert(id_str.clone()) {
                         break;
                     }
-                    chain.push(id.clone());
-                    cursor = find(&id).and_then(|m| m.parent_session_id.clone());
+                    chain.push(id_str.clone());
+                    cursor = find(&id_str).and_then(|m| m.parent_session_id.clone());
                 }
                 chain
             }
+            let target_canonical = SessionId::from(target).to_string();
             metas
                 .iter()
                 .filter(|m| {
-                    m.session_id != target
-                        && ancestors_of(&m.session_id, metas)
+                    m.session_id.to_string() != target_canonical
+                        && ancestors_of(&m.session_id.to_string(), metas)
                             .iter()
-                            .any(|a| a == target)
+                            .any(|a| a == &target_canonical)
                 })
-                .map(|m| m.session_id.clone())
+                .map(|m| m.session_id.to_string())
                 .collect()
         }
 
@@ -432,12 +543,14 @@ mod tests {
         // Cycle: x → y → x. Both must be returned when querying x OR y.
         let mut x = meta("x", Some("y"));
         let y = meta("y", Some("x"));
-        x.parent_session_id = Some("y".to_string());
+        x.parent_session_id = Some(SessionId::from("y"));
         metas.push(x);
         metas.push(y);
-        let mut x_desc = descendants_of("x", &metas);
+        let x_id = SessionId::from("x").to_string();
+        let y_id = SessionId::from("y").to_string();
+        let mut x_desc = descendants_of(&x_id, &metas);
         x_desc.sort();
-        assert_eq!(x_desc, vec!["y".to_string()]);
+        assert_eq!(x_desc, vec![y_id]);
     }
 
     #[test]
@@ -445,6 +558,8 @@ mod tests {
         for err in [
             err_self_mutation("s"),
             err_delete_ancestor("s"),
+            err_move_ancestor("s"),
+            err_move_cycle("s", "d"),
             err_out_of_tree("s", "c"),
             err_live_base_managed("s"),
             err_run_active("s"),

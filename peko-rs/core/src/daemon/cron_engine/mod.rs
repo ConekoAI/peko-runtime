@@ -12,14 +12,14 @@ use crate::extensions::framework::async_exec::executor::{
 };
 use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
+#[cfg(test)]
 use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
 use peko_cron::events::SystemEvent;
 use peko_cron::{
-    CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, DeliveryMode,
-    IdleDetector,
+    CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, IdleDetector,
 };
 use peko_observability::Observability;
 use peko_subject::PrincipalId;
@@ -39,6 +39,7 @@ pub struct CronStatus {
 }
 
 /// Self-contained cron subsystem.
+#[derive(Clone)]
 pub struct CronEngine {
     /// Per-principal scheduler map (Phase A, keyed by `PrincipalId`
     /// since Phase B). Each loaded principal's cron schedule file is
@@ -244,9 +245,17 @@ impl CronEngine {
         if !due_jobs.is_empty() {
             info!("⏰ Found {} job(s) due for execution", due_jobs.len());
             for job in due_jobs {
-                if let Err(e) = self.execute_job(job).await {
-                    error!("Failed to execute job: {}", e);
-                }
+                // Detach per-job execution so a slow `Send` job
+                // (which awaits the principal's LLM turn) does not
+                // block other due jobs in the same poll tick.
+                // `CronEngine` is cheaply cloneable (all fields are
+                // `Arc`); the spawned task owns its own clone.
+                let engine = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = engine.execute_job(job).await {
+                        error!("Failed to execute job: {}", e);
+                    }
+                });
             }
         }
         Ok(())
@@ -285,9 +294,14 @@ impl CronEngine {
                         "⏸️  Principal '{}' idle for {} minutes, executing job '{}'",
                         principal_name, minutes, job.name
                     );
-                    if let Err(e) = self.execute_job(job).await {
-                        error!("Failed to execute idle job: {}", e);
-                    }
+                    // Detach per-job execution (same rationale as
+                    // `check_and_run`).
+                    let engine = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = engine.execute_job(job).await {
+                            error!("Failed to execute idle job: {}", e);
+                        }
+                    });
                 }
             }
         }
@@ -312,35 +326,68 @@ impl CronEngine {
         }
 
         for job in event_jobs {
-            if let ScheduleKind::Event {
-                event_type: job_event_type,
-                filter,
-                once,
-            } = &job.schedule
-            {
-                if job_event_type != &event_type {
-                    continue;
-                }
-
-                if let Some(filter) = filter {
-                    if !Self::event_matches_filter(&event, filter) {
+            // Match the schedule up-front and clone the bits we need
+            // for the `once` early-disable path so we can move `job`
+            // into the spawned execution task below.
+            let (job_id, principal_id, job_name, once) = match &job.schedule {
+                ScheduleKind::Event {
+                    event_type: job_event_type,
+                    once,
+                    ..
+                } => {
+                    if job_event_type != &event_type {
                         continue;
                     }
-                }
 
-                info!("📡 Event '{}' matches job '{}'", event_type, job.name);
-                if let Err(e) = self.execute_job(job.clone()).await {
-                    error!("Failed to execute event-triggered job: {}", e);
-                    continue;
-                }
-
-                if *once {
-                    let scheduler = self.scheduler_for(&job.principal_id).await?;
-                    if let Err(e) = scheduler.set_job_enabled(&job.id, false) {
-                        warn!("Failed to disable one-time job {}: {}", job.id, e);
-                    } else {
-                        info!("🔄 Disabled one-time event job: {}", job.name);
+                    // Event-filter check (clone-then-drop of the
+                    // borrow on `job.schedule`).
+                    let filter_match = match &job.schedule {
+                        ScheduleKind::Event {
+                            filter: Some(f), ..
+                        } => Self::event_matches_filter(&event, f),
+                        _ => true,
+                    };
+                    if !filter_match {
+                        continue;
                     }
+
+                    info!(
+                        "📡 Event '{}' matches job '{}'",
+                        event_type, job.name
+                    );
+                    (
+                        job.id.clone(),
+                        job.principal_id.clone(),
+                        job.name.clone(),
+                        *once,
+                    )
+                }
+                _ => continue,
+            };
+
+            // Detach per-job execution (same rationale as
+            // `check_and_run`). For `once: true` event jobs the
+            // post-job disable happens inside `execute_job` (via
+            // the existing `delete_after_run` / one-shot path),
+            // so we don't need to disable it here.
+            let engine = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = engine.execute_job(job).await {
+                    error!("Failed to execute event-triggered job: {}", e);
+                }
+            });
+
+            if once {
+                // Best-effort early disable so re-firing the same
+                // event before the spawned task lands doesn't
+                // queue a second concurrent run. The disable is
+                // idempotent and harmless if the spawned task
+                // already disabled the job.
+                let scheduler = self.scheduler_for(&principal_id).await?;
+                if let Err(e) = scheduler.set_job_enabled(&job_id, false) {
+                    warn!("Failed to disable one-time job {}: {}", job_id, e);
+                } else {
+                    info!("🔄 Disabled one-time event job: {}", job_name);
                 }
             }
         }
@@ -351,6 +398,62 @@ impl CronEngine {
     // ------------------------------------------------------------------
     // Job execution
     // ------------------------------------------------------------------
+
+    /// Manually trigger a job by id, walking the loaded principals'
+    /// schedulers to find the owner. Returns the engine's `run_id`
+    /// on fire; coalesces with any in-flight run for the same job
+    /// (manual triggers and poll-cycle fires share the coalescing
+    /// rule — a manual trigger against a running job returns the
+    /// existing in-flight `run_id` and does NOT spawn a second
+    /// execution).
+    ///
+    /// Errors:
+    /// - `"job {id} not found"` if no loaded principal owns the job.
+    /// - `"cron lookup"` for low-level scheduler failures.
+    pub async fn execute_job_for_id(&self, job_id: &str) -> Result<String> {
+        // Walk loaded schedulers looking for the one that owns the
+        // job. Schedulers are keyed by principal_id (DID); the
+        // on-disk file is keyed by name. The walk is the canonical
+        // way to resolve a job_id → principal_id without a separate
+        // index.
+        let pairs = self.all_schedulers().await;
+        let mut found: Option<(PrincipalId, Arc<CronScheduler>, CronJob)> = None;
+        for (id, scheduler) in &pairs {
+            if let Ok(Some(job)) = scheduler.get_job(job_id) {
+                found = Some((id.clone(), scheduler.clone(), job));
+                break;
+            }
+        }
+        let Some((_principal_id, scheduler, job)) = found else {
+            return Err(anyhow::anyhow!("job {job_id} not found"));
+        };
+
+        // Coalesce: if there is an in-flight run for this job, return
+        // its run_id and do NOT spawn a duplicate execution.
+        let running = scheduler
+            .list_running_runs()
+            .map_err(|e| anyhow::anyhow!("cron lookup: {e}"))?;
+        if let Some(open) = running.into_iter().find(|r| r.job_id == job_id) {
+            info!(
+                "⏰ Job '{}' already running as run_id={}; coalescing manual trigger",
+                job.name, open.id
+            );
+            return Ok(open.id);
+        }
+
+        // Spawn the execution. Same rationale as `check_and_run`:
+        // a slow `Send` job must not block the IPC handler that
+        // queued the trigger.
+        let run_id = Uuid::new_v4().to_string();
+        let engine = self.clone();
+        let job_id_for_log = job.id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = engine.execute_job(job).await {
+                error!("manual-trigger job {job_id_for_log} failed: {e}");
+            }
+        });
+        Ok(run_id)
+    }
 
     async fn execute_job(&self, job: CronJob) -> Result<()> {
         info!("🔄 Executing job '{}' ({})", job.name, job.id);
@@ -388,7 +491,6 @@ impl CronEngine {
 
         let result = match &job.action {
             CronJobAction::Send { .. } => self.run_send_job(&job).await,
-            CronJobAction::Notify { .. } => self.run_notify_job(&job).await,
             CronJobAction::SpawnTool { .. } => self.run_spawn_tool_job(&job).await,
         };
 
@@ -477,9 +579,13 @@ impl CronEngine {
             }
         }
 
-        if let DeliveryMode::Announce { .. } = job.delivery {
-            self.handle_delivery(&job, &status).await?;
-        }
+        // Sprint 7 Commit B: `DeliveryMode::Announce` side-effect retired.
+        // The engine previously branched on `job.delivery` here, calling
+        // `handle_delivery` → `send_announcement`, which only wrote an
+        // unread JSON file to `{data_dir}/runtime/announcements/`. No
+        // reader existed; the `--announce` CLI flag is gone, the
+        // `CronJob.delivery` field is gone, and the engine's
+        // announce-related helpers are deleted below.
 
         // One-shot reaping keys on the FIRE, not the run outcome:
         // "fired" is the lifecycle fact that retires a one-shot job;
@@ -508,9 +614,27 @@ impl CronEngine {
     // Principal execution — Send path (CLI cron)
     // ------------------------------------------------------------------
 
-    /// Run a [`CronJobAction::Send`] job by delivering its message to
-    /// the Principal's owner root session. Equivalent to a deferred
-    /// `peko send` from the daemon.
+    /// Run a [`CronJobAction::Send`] job by firing its message into the
+    /// principal's TRUNK session `root:self` via
+    /// [`PrincipalManager::receive_trunk`]. Equivalent to a deferred
+    /// self-turn from the daemon.
+    ///
+    /// Phase 7 (sprint 2, 2026-08-17): the trunk is the DEFAULT (and
+    /// only) destination — `target: None` and `target = "trunk"` are
+    /// the same route; the per-owner `root:cron:{owner}` session is
+    /// retired.
+    ///
+    /// **Cron is silent to the user.** The agent (the trunk) is the
+    /// active entry point for any user-facing message — it talks back
+    /// via `ChannelSend`. The cron engine does NOT cross-post the
+    /// agent's reply into the owner's standing peer child or the
+    /// user's DM channel: doing so duplicates the agent's `ChannelSend`
+    /// and reads as either noise (when the agent already replied) or a
+    /// fake reply (when the agent failed). The agent is responsible
+    /// for communication; the cron engine's only audit trail is the
+    /// `CronRun` history (operator-facing, via `peko cron history`),
+    /// the trunk session JSONL (engine context), and the
+    /// `IdleDetector::record_activity` bump.
     async fn run_send_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
@@ -523,37 +647,41 @@ impl CronEngine {
             .await
             .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0))?;
 
-        let peer = {
-            let config = principal.config.read().await;
-            config.owner.clone()
-        };
-
-        let channel = ChannelContext {
-            kind: ChannelKind::Cron,
-            streaming: false,
-        };
+        // Validate the target. `None` (default) and "trunk" are the
+        // same destination since Phase 7; the DTO deserializer and
+        // `CronScheduler::add_job` both reject unknown targets, but a
+        // struct-literal construction could still slip one through —
+        // fail loudly rather than misroute.
+        match &job.action {
+            CronJobAction::Send { target, .. } => match target.as_deref() {
+                None | Some(peko_cron::tools::SEND_TARGET_TRUNK) => {}
+                Some(other) => {
+                    return Ok((
+                        "failed".to_string(),
+                        Some(format!(
+                            "invalid cron Send target '{other}': only \"{}\" is supported",
+                            peko_cron::tools::SEND_TARGET_TRUNK
+                        )),
+                    ));
+                }
+            },
+            // The dispatch in `execute_job` only routes Send here.
+            _ => {}
+        }
 
         match pm
-            .receive(
-                principal.id.clone(),
-                peer.clone(),
-                job.task_description(),
-                channel,
-                None,
-            )
+            .receive_trunk(principal.id.clone(), job.task_description(), None)
             .await
         {
             Ok(response) => {
                 self.idle_detector
                     .record_activity(&principal.name().await)
                     .await;
-                self.deliver_send_job_note(&principal, &peer, &job.name, &response.content)
-                    .await;
                 Ok(("success".to_string(), Some(response.content)))
             }
             Err(e) => Ok((
                 "failed".to_string(),
-                Some(format!("Principal execution error: {e}")),
+                Some(format!("Principal trunk execution error: {e}")),
             )),
         }
     }
@@ -570,102 +698,6 @@ impl CronEngine {
         })
     }
 
-    /// Run a [`CronJobAction::Notify`] job: pure delivery of the
-    /// message text into the owner's conversational session as a
-    /// labeled note. NO agent turn runs (unlike `Send`) — reminders
-    /// cost zero tokens and the note IS the message (2026-08-08
-    /// `send_peer` unification).
-    async fn run_notify_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
-        let CronJobAction::Notify { message } = &job.action else {
-            return Ok((
-                "failed".to_string(),
-                Some("run_notify_job called with non-Notify action".to_string()),
-            ));
-        };
-        let Some(pm) = self.principal_manager.as_ref() else {
-            return Ok((
-                "failed".to_string(),
-                Some("PrincipalManager not available".to_string()),
-            ));
-        };
-        let principal = resolve_principal(pm, &job.principal_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0))?;
-        let peer = {
-            let config = principal.config.read().await;
-            config.owner.clone()
-        };
-        let did = principal.did().await;
-        let Some(messenger) = self.messenger() else {
-            return Ok((
-                "failed".to_string(),
-                Some("peer messenger not available".to_string()),
-            ));
-        };
-        let note = format!("⏰ [cron job '{}' fired] {message}", job.name);
-        match messenger
-            .deliver_note(&did.0, &peer, &note, peko_session::events::MessageSource::Cron)
-            .await
-        {
-            Ok(true) => {
-                self.idle_detector
-                    .record_activity(&principal.name().await)
-                    .await;
-                Ok(("success".to_string(), Some(message.clone())))
-            }
-            // The owner has never chatted: the job fired fine, there
-            // is just nowhere to pin the note. Not a job failure (it
-            // must not burn the retry budget).
-            Ok(false) => Ok((
-                "success".to_string(),
-                Some(format!("{message} (note not delivered: no conversational session yet)")),
-            )),
-            Err(e) => Ok((
-                "failed".to_string(),
-                Some(format!("notify delivery error: {e}")),
-            )),
-        }
-    }
-
-    /// Append a fired Send job's outcome to the owner's CONVERSATIONAL
-    /// root session as a labeled note (2026-08-07 field test, F2).
-    ///
-    /// The cron turn itself runs in the isolated `root:cron:{peer}`
-    /// session; this note is the only thing that crosses into the
-    /// human's session. It never triggers a turn: if a turn is in
-    /// flight the note lands mid-history and is picked up (and
-    /// shape-repaired if needed) at the next load; if idle, it waits in
-    /// the JSONL for the user's next message. Tagged
-    /// `MessageSource::Cron` so consumers can distinguish it from human
-    /// input; user-role because the Anthropic-style adapter maps
-    /// system-role messages to the top-level system parameter
-    /// (last-one-wins), which would clobber the system prompt.
-    ///
-    /// Delivery goes through the peer-messenger port (2026-08-08
-    /// `send_peer` unification) — same mechanism the `send_peer`
-    /// tool's user branch uses.
-    async fn deliver_send_job_note(
-        &self,
-        principal: &Arc<crate::principal::Principal>,
-        peer: &peko_auth::Subject,
-        job_name: &str,
-        outcome: &str,
-    ) {
-        let excerpt: String = outcome.chars().take(500).collect();
-        let note = format!("⏰ [cron job '{job_name}' fired] {excerpt}");
-        let did = principal.did().await;
-        let Some(messenger) = self.messenger() else {
-            warn!("cron note: no peer messenger available for {job_name}");
-            return;
-        };
-        if let Err(e) = messenger
-            .deliver_note(&did.0, peer, &note, peko_session::events::MessageSource::Cron)
-            .await
-        {
-            warn!("cron note append failed for {job_name}: {e}");
-        }
-    }
-
     // ------------------------------------------------------------------
     // Async execution — SpawnTool path (agent cron)
     // ------------------------------------------------------------------
@@ -674,10 +706,11 @@ impl CronEngine {
     /// cron engine's `AsyncExecutor`. The executor:
     /// 1. resolves the tool instance via the daemon's `ExtensionCore`,
     /// 2. records an `AsyncTask` entry attributed to the principal's
-    ///    root session (so `AsyncOutput`/`AsyncStatus`/`AsyncStop`
+    ///    trunk session (so `AsyncOutput`/`AsyncStatus`/`AsyncStop`
     ///    remain scoped to that root), and
     /// 3. on completion, posts a `SteeringMessage` into the principal's
-    ///    root inbox when `wake_on_completion=true`.
+    ///    trunk inbox (`root:self`) when `wake_on_completion=true`
+    ///    (Phase 3b — see below).
     ///
     /// Returns `("running", Some(task_id))` immediately — the actual
     /// tool execution is async. The daemon's janitor loop reconciles
@@ -710,10 +743,21 @@ impl CronEngine {
             }
         };
 
-        // The executor's inbox key needs to be the principal's root
-        // session key so completion events and steer messages reach the
-        // principal's owner session — same shape as `peko send`. The
-        // owner subject is the same one `run_send_job` uses.
+        // The executor's inbox key is the principal's TRUNK session id
+        // (`root:self`) so completion events and steer messages reach
+        // the principal's own root — Phase 3b (2026-08-15). Pre-3b this
+        // was the owner's conversational root (`root:{owner}`), which
+        // gave one PEKO two "roots": cron Send with target="trunk" fired
+        // into `root:self` while SpawnTool wakes landed in the owner's
+        // human-facing thread. PEKO.md §K requires both to target the
+        // principal's root; the trunk is that root. The steer machinery
+        // is purely session-keyed (`InboxRegistry::get_or_create`
+        // creates the inbox on demand), so this is a key change only:
+        // when no trunk run is live the message waits in the registry
+        // and the trunk's next turn drains it at iteration start —
+        // identical semantics to the old key with no active run.
+        let trunk_session_key = crate::principal::routers::root::trunk_session_id();
+
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
                 "failed".to_string(),
@@ -729,10 +773,6 @@ impl CronEngine {
                 ));
             }
         };
-        let owner = {
-            let config = principal.config.read().await;
-            config.owner.clone()
-        };
         // Snapshot the principal's grants at fire time, then derive active
         // extensions from that same snapshot. Both values flow through the
         // canonical tool funnel so extension ownership requirements cannot be
@@ -747,7 +787,6 @@ impl CronEngine {
             .active_extensions_for(&principal, &capabilities)
             .await
             .to_vec();
-        let principal_root_session_key = format!("root:{owner}");
 
         let wake = wake_on_completion.unwrap_or(false);
         let timeout = timeout_secs.or(Some(7200));
@@ -755,7 +794,7 @@ impl CronEngine {
         let config = AsyncToolConfig {
             timeout_secs: timeout,
             wake_on_completion: wake,
-            principal_root_session_key: Some(principal_root_session_key.clone()),
+            principal_root_session_key: Some(trunk_session_key.clone()),
             label: Some(job.name.clone()),
             ..Default::default()
         };
@@ -776,7 +815,7 @@ impl CronEngine {
             crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
                 tool_name.clone(),
                 tool_params.clone(),
-                principal_root_session_key.clone(),
+                trunk_session_key.clone(),
             )
             .for_principal(snapshot_principal_id, snapshot_capabilities)
             .with_active_extensions(snapshot_active_extensions);
@@ -862,71 +901,6 @@ impl CronEngine {
             }
         }
         Ok(finalized)
-    }
-
-    async fn handle_delivery(&self, job: &CronJob, status: &str) -> Result<()> {
-        match &job.delivery {
-            DeliveryMode::Announce {
-                channel,
-                to,
-                best_effort,
-            } => {
-                info!("📢 Announcing job '{}' result: {}", job.name, status);
-
-                if *best_effort {
-                    if let Err(e) =
-                        self.send_announcement(job, status, channel.as_deref(), to.as_deref())
-                    {
-                        warn!("Failed to send announcement (best_effort=true): {}", e);
-                    }
-                } else {
-                    self.send_announcement(job, status, channel.as_deref(), to.as_deref())?;
-                }
-            }
-            DeliveryMode::None => {}
-        }
-        Ok(())
-    }
-
-    fn send_announcement(
-        &self,
-        job: &CronJob,
-        status: &str,
-        channel: Option<&str>,
-        to: Option<&str>,
-    ) -> Result<()> {
-        let announcement = serde_json::json!({
-            "type": "cron_announcement",
-            "job_id": job.id,
-            "job_name": job.name,
-            "status": status,
-            "message": job.task_description(),
-            "channel": channel,
-            "to": to,
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-
-        // Phase A: announcements live under the Runtime tier
-        // (`{data_dir}/runtime/announcements/`), not the bare data
-        // dir. The exact path is a deferred detail for a future
-        // Phase A.5; for now route through the typed resolver to
-        // get on the right bucket without re-introducing a hard
-        // join.
-        let announcements_dir = self
-            .path_resolver
-            .runtime_layout()
-            .runtime_dir
-            .join("announcements");
-        std::fs::create_dir_all(&announcements_dir)?;
-
-        let file_name = format!("{}_{}.json", job.id, Utc::now().timestamp());
-        let file_path = announcements_dir.join(&file_name);
-
-        let content = serde_json::to_string_pretty(&announcement)?;
-        std::fs::write(&file_path, content)?;
-
-        info!("📢 Announcement written to: {}", file_path.display());
-        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1122,6 +1096,7 @@ mod tests {
             preferred_model_id: Some("mock".to_string()),
             transport_preference: Default::default(),
             quota: None,
+            children: Default::default(),
         }
     }
 
@@ -1190,9 +1165,9 @@ mod tests {
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "Hello from cron".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1206,8 +1181,20 @@ mod tests {
 
         engine.check_and_run().await.unwrap();
 
-        let status = engine.status().await;
-        assert_eq!(status.jobs_executed, 1);
+        // PR 2: per-job execution is now detached onto a tokio task,
+        // so poll the status counter rather than asserting
+        // synchronously. 5s budget is more than enough for the
+        // in-process test setup.
+        let mut jobs_executed = 0;
+        for _ in 0..50 {
+            let status = engine.status().await;
+            jobs_executed = status.jobs_executed;
+            if jobs_executed >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(jobs_executed, 1);
 
         let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         let success = runs.iter().find(|r| r.status == "success");
@@ -1251,10 +1238,8 @@ mod tests {
                 tool_params: serde_json::json!({"prompt": "ping"}),
                 wake_on_completion: Some(false),
                 timeout_secs: Some(7200),
-                description: Some("ping description".to_string()),
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::minutes(5),
@@ -1379,10 +1364,8 @@ mod tests {
                 tool_params: serde_json::json!({}),
                 wake_on_completion: Some(false),
                 timeout_secs: Some(7200),
-                description: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::minutes(5),
@@ -1463,13 +1446,30 @@ mod tests {
         None
     }
 
-    /// F2 regression (2026-08-07 field test): a `Send` cron job must run
-    /// its turn in the isolated `root:cron:{peer}` session — never in the
-    /// human's conversational `root:{peer}` session — and must leave a
-    /// labeled note with the outcome in the conversational session so the
-    /// user actually sees the result.
+    /// Phase 7 helper: the owner peer's standing child session id
+    /// (the `/user-test-owner` child of the trunk), resolved find-only
+    /// from the principal's sessions dir.
+    async fn owner_child_id(
+        principal: &Arc<crate::principal::Principal>,
+        peer: &Subject,
+    ) -> Option<String> {
+        let mut mgr = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir().clone());
+        let metas = mgr.list_all_sessions(false).await.ok()?;
+        crate::principal::peer_children::find_peer_child(&metas, peer)
+    }
+
+    /// Phase 7 (sprint 2): a `Send` cron job (default target) fires its
+    /// turn into the principal's TRUNK session `root:self` — the
+    /// `root:cron:{owner}` session is retired. The cron engine is now
+    /// silent to the user (PR-B, 2026-08-21): the agent owns
+    /// user-facing communication via `ChannelSend`, and the cron
+    /// engine does NOT cross-post the reply into the owner's standing
+    /// peer child or the user's DM channel. The trunk JSONL still
+    /// carries the agent's full transcript (engine context), and the
+    /// run lands in `CronRun` history (operator-facing).
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_send_job_isolates_cron_session_and_delivers_note() {
+    async fn test_send_job_fires_into_trunk_and_is_silent_to_user() {
         let tmp = TempDir::new().unwrap();
 
         // Principal manager with a mock resolver; two queued texts:
@@ -1501,22 +1501,26 @@ mod tests {
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
-        // 1. A conversational (CLI) turn creates the human's root session.
+        let owner = Subject::User("test-owner".to_string());
+
+        // 1. A conversational (CLI) turn creates the owner's standing
+        //    peer child.
         manager
-            .receive(
+            .receive_streaming(
                 principal.id.clone(),
-                Subject::User("test-owner".to_string()),
+                owner.clone(),
                 "hello there".to_string(),
                 ChannelContext {
                     kind: ChannelKind::Cli,
                     streaming: false,
                 },
+                Box::new(|_| {}),
                 None,
             )
             .await
             .expect("conversational turn should succeed");
 
-        // 2. A due Send job fires a cron turn.
+        // 2. A due Send job (DEFAULT target) fires a trunk turn.
         let engine_resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
             tmp.path().join("data"),
@@ -1541,9 +1545,9 @@ mod tests {
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
             action: CronJobAction::Send {
                 message: "cron tick payload".to_string(),
+                target: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1557,42 +1561,254 @@ mod tests {
 
         engine.check_and_run().await.unwrap();
 
+        // PR 2: per-job execution is now detached onto a tokio task,
+        // so poll the run history until the row is finalized. 5s
+        // budget.
+        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
+        for _ in 0..50 {
+            runs = scheduler.get_run_history(&job.id, 10).unwrap();
+            if runs.len() >= 1 && runs[0].status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         // Exactly ONE run row, closed as success (F3: no duplicate
         // start/completion rows).
-        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
 
-        // The cron turn ran in the isolated cron session.
-        let cron_path = find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl")
-            .expect("cron session JSONL should exist");
-        let cron_jsonl = std::fs::read_to_string(&cron_path).unwrap();
+        // The cron turn ran in the TRUNK session.
+        let trunk_path = find_file_named(
+            tmp.path(),
+            &format!("{}.jsonl", peko_session::SessionId::from("root:self")),
+        )
+        .expect("trunk session JSONL should exist");
+        let trunk_jsonl = std::fs::read_to_string(&trunk_path).unwrap();
         assert!(
-            cron_jsonl.contains("cron tick payload"),
-            "cron session should contain the cron turn, got: {cron_jsonl}"
+            trunk_jsonl.contains("cron tick payload"),
+            "trunk session should contain the cron turn, got: {trunk_jsonl}"
+        );
+        assert!(
+            trunk_jsonl.contains("cron turn reply"),
+            "trunk session should contain the turn's reply, got: {trunk_jsonl}"
+        );
+        // PR-B: the cron engine no longer cross-posts anything — the
+        // dispatcher's `[notify]` self-view line is gone too (it was a
+        // side effect of `deliver_note` calling `messenger.deliver_note`,
+        // which is no longer invoked).
+        assert!(
+            !trunk_jsonl.contains("[notify]"),
+            "trunk session must NOT carry a cron note-delivery self-view line, got: {trunk_jsonl}"
         );
 
-        // The conversational session holds the human turn plus the
-        // labeled cron note — and NOT the raw cron message.
-        let conv_path = find_file_named(tmp.path(), "root:user:test-owner.jsonl")
-            .expect("conversational session JSONL should exist");
+        // The owner's peer child holds ONLY the human turn from the
+        // conversational reply — the cron engine's reply is silent
+        // (PR-B, 2026-08-21). The agent is responsible for any
+        // user-facing communication via `ChannelSend`.
+        let child_id = owner_child_id(&principal, &owner)
+            .await
+            .expect("owner peer child should exist");
+        let conv_path = find_file_named(tmp.path(), &format!("{child_id}.jsonl"))
+            .expect("owner child session JSONL should exist");
         let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
         assert!(
             conv_jsonl.contains("hello there"),
-            "conversational session should contain the human turn"
+            "owner child should contain the human turn"
         );
         assert!(
-            conv_jsonl.contains("⏰ [cron job 'test-job' fired]"),
-            "conversational session should contain the cron note, got: {conv_jsonl}"
+            !conv_jsonl.contains("⏰ [cron job 'test-job' fired]"),
+            "owner child must NOT contain a cron-fired note (PR-B silence), got: {conv_jsonl}"
         );
         assert!(
-            conv_jsonl.contains("cron turn reply"),
-            "note should carry the cron turn's outcome"
+            !conv_jsonl.contains("cron turn reply"),
+            "owner child must NOT contain the cron turn's reply text (PR-B silence), got: {conv_jsonl}"
         );
         assert!(
             !conv_jsonl.contains("cron tick payload"),
-            "cron message must NOT leak into the conversational session"
+            "cron message must NOT leak into the owner child session"
+        );
+
+        // Retired session ids are never created.
+        assert!(
+            find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
+            "the per-owner cron session is retired — it must never be created"
+        );
+        assert!(
+            find_file_named(tmp.path(), "root:user:test-owner.jsonl").is_none(),
+            "the per-peer root session is retired — it must never be created"
+        );
+
+        drop(principal);
+    }
+
+    /// Phase 7 (2026-08-17): `target = "trunk"` stays accepted and is
+    /// the SAME route as the default — the turn fires into the
+    /// principal's trunk session `root:self`. PR-B (2026-08-21) makes
+    /// the cron engine silent to the user, so unlike the previous
+    /// Phase-3 behavior the owner child does NOT receive a cross-post
+    /// note. The agent owns any user-facing communication via
+    /// `ChannelSend`.
+    ///
+    /// `#[serial]` because the principal-manager tests mutate the
+    /// process-global `PEKO_HOME` (identity key storage root); running
+    /// concurrently with them makes principal DID resolution fail
+    /// mid-test.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn test_send_job_explicit_trunk_target_matches_default() {
+        let tmp = TempDir::new().unwrap();
+
+        // Principal manager with a mock resolver; two queued texts:
+        // one for the conversational turn, one for the trunk turn.
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+        let catalog_path = tmp.path().join("models.toml");
+        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        adapter.queue_text("conversational reply");
+        adapter.queue_text("trunk turn reply");
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(resolver),
+        );
+
+        let workspace = tmp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+        let owner = Subject::User("test-owner".to_string());
+
+        // 1. A conversational (CLI) turn creates the owner's standing
+        //    peer child — so the note cross-post has somewhere to
+        //    land.
+        manager
+            .receive_streaming(
+                principal.id.clone(),
+                owner.clone(),
+                "hello there".to_string(),
+                ChannelContext {
+                    kind: ChannelKind::Cli,
+                    streaming: false,
+                },
+                Box::new(|_| {}),
+                None,
+            )
+            .await
+            .expect("conversational turn should succeed");
+
+        // 2. A due trunk-targeted Send job fires.
+        let engine_resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler =
+            Arc::new(CronScheduler::new(engine_resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            engine_resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+        let job = CronJob {
+            id: "job-trunk".to_string(),
+            name: "self-upkeep".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Send {
+                message: "organize your memory".to_string(),
+                target: Some("trunk".to_string()),
+            },
+                        delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        engine.check_and_run().await.unwrap();
+
+        // PR 2: poll until the detached per-job execution finalizes the
+        // run row. 5s budget.
+        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
+        for _ in 0..50 {
+            runs = scheduler.get_run_history(&job.id, 10).unwrap();
+            if runs.len() >= 1 && runs[0].status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
+        assert_eq!(runs[0].status, "success");
+        assert!(runs[0].finished_at.is_some());
+
+        // The turn ran in the trunk session.
+        let trunk_path = find_file_named(
+            tmp.path(),
+            &format!("{}.jsonl", peko_session::SessionId::from("root:self")),
+        )
+        .expect("trunk session JSONL should exist");
+        let trunk_jsonl = std::fs::read_to_string(&trunk_path).unwrap();
+        assert!(
+            trunk_jsonl.contains("organize your memory"),
+            "trunk session should contain the cron payload, got: {trunk_jsonl}"
+        );
+        assert!(
+            trunk_jsonl.contains("trunk turn reply"),
+            "trunk session should contain the turn's reply"
+        );
+
+        // No per-owner cron session was created.
+        assert!(
+            find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
+            "the per-owner cron session is retired — it must never be created"
+        );
+
+        // The owner's peer child holds ONLY the human turn — the cron
+        // engine is silent (PR-B, 2026-08-21). The agent is responsible
+        // for any user-facing communication via `ChannelSend`.
+        let child_id = owner_child_id(&principal, &owner)
+            .await
+            .expect("owner peer child should exist");
+        let conv_path = find_file_named(tmp.path(), &format!("{child_id}.jsonl"))
+            .expect("owner child session JSONL should exist");
+        let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
+        assert!(
+            conv_jsonl.contains("hello there"),
+            "owner child should contain the human turn"
+        );
+        assert!(
+            !conv_jsonl.contains("⏰ [cron job 'self-upkeep' fired]"),
+            "owner child must NOT contain a cron-fired note (PR-B silence), got: {conv_jsonl}"
+        );
+        assert!(
+            !conv_jsonl.contains("trunk turn reply"),
+            "owner child must NOT contain the cron turn's reply text (PR-B silence), got: {conv_jsonl}"
+        );
+        assert!(
+            !conv_jsonl.contains("organize your memory"),
+            "trunk payload must NOT leak into the owner child session"
         );
 
         drop(principal);
@@ -1642,10 +1858,8 @@ mod tests {
                 tool_params: serde_json::json!({"command": "true"}),
                 wake_on_completion: Some(false),
                 timeout_secs: Some(60),
-                description: None,
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: true,
+                        delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1665,8 +1879,19 @@ mod tests {
 
         engine.check_and_run().await.unwrap();
 
+        // PR 2: poll until the one-shot job is reaped. The deletion
+        // happens inside the spawned execution task, so we cannot
+        // assert synchronously anymore.
+        let mut reaped = false;
+        for _ in 0..50 {
+            if scheduler.get_job(&job.id).unwrap().is_none() {
+                reaped = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         assert!(
-            scheduler.get_job(&job.id).unwrap().is_none(),
+            reaped,
             "one-shot job must be reaped after its fire regardless of status"
         );
         let runs = scheduler.get_run_history(&job.id, 10).unwrap();
@@ -1675,29 +1900,51 @@ mod tests {
         assert!(runs[0].finished_at.is_some());
     }
 
-    /// Notify jobs (2026-08-08 `send_peer` unification): pure delivery
-    /// — the message text itself lands in the owner's conversational
-    /// session as a labeled note, NO agent turn runs (no LLM call, no
-    /// `root:cron:*` session).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_notify_job_delivers_note_without_turn() {
-        let tmp = TempDir::new().unwrap();
+    /// Minimal stub tool so `dispatch_tool` can resolve a tool instance
+    /// for the wake-attribution test below.
+    struct CronStubTool;
 
-        // Principal manager with a mock resolver; ONE queued text —
-        // the conversational turn that creates the human's session.
-        // The Notify fire must consume NOTHING from the queue.
+    #[async_trait::async_trait]
+    impl peko_tools_core::Tool for CronStubTool {
+        fn name(&self) -> &str {
+            "cron_stub"
+        }
+        fn description(&self) -> String {
+            "stub tool for cron wake-attribution tests".to_string()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    /// Phase 3b (2026-08-15): a SpawnTool job with
+    /// `wake_on_completion=true` posts its completion steer into the
+    /// principal's TRUNK inbox (`root:self`) — NOT the owner's
+    /// conversational root inbox (`root:{owner}`). PEKO.md §K: cron
+    /// Send (target="trunk") and SpawnTool wakes must both target the
+    /// principal's root; two "roots" for one PEKO is a contract
+    /// violation. The test principal has no live trunk run, which also
+    /// pins the no-active-run behavior: `InboxRegistry::get_or_create`
+    /// creates the inbox on demand and the message waits there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_spawn_tool_wake_posts_to_trunk_inbox() {
+        let tmp = TempDir::new().unwrap();
+        // Build the manager WITHOUT `init_global_core` (unlike
+        // `setup_principal_manager`): this test never runs an agentic
+        // turn — `run_spawn_tool_job` only reads the principal config
+        // and dispatches through the `ExtensionCore` passed to the
+        // engine — so it must not replace the process-wide core that
+        // parallel agentic-loop tests register hooks on (test-build
+        // `init_global_core` overwrites the global; pre-existing race
+        // surfaced in
+        // `after_agent_hook_fires_from_loop_with_agent_name_and_did`).
         let path_resolver = PathResolver::with_dirs(
             tmp.path().join("config"),
             tmp.path().join("data"),
             tmp.path().join("cache"),
         );
-        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
-            .await
-            .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
         let catalog_path = tmp.path().join("models.toml");
-        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
-        adapter.queue_text("conversational reply");
+        let (llm_resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         let manager = Arc::new(
             PrincipalManager::with_path_resolver(
                 path_resolver,
@@ -1705,56 +1952,268 @@ mod tests {
                 Arc::new(DefaultPrincipalRouterFactory),
                 crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
             )
-            .with_resolver(resolver),
+            .with_resolver(llm_resolver),
         );
-
         let workspace = tmp.path().join("principals");
-        tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
-        // A conversational turn creates the human's root session.
-        manager
-            .receive(
-                principal.id.clone(),
-                Subject::User("test-owner".to_string()),
-                "hello there".to_string(),
-                ChannelContext {
-                    kind: ChannelKind::Cli,
-                    streaming: false,
-                },
-                None,
-            )
-            .await
-            .expect("conversational turn should succeed");
+        // Executor wired to an inbox registry the test can inspect.
+        let registry =
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
+        let executor = Arc::new(AsyncExecutor::new(registry.clone()));
 
-        // A due Notify job fires.
-        let engine_resolver = crate::common::paths::PathResolver::with_dirs(
+        // ExtensionCore with the stub tool registered so the dispatch
+        // resolves an instance. The capability grant is irrelevant
+        // here: the wake steer fires on ANY terminal status (success or
+        // gate rejection), and this test pins the destination key only.
+        let core = Arc::new(ExtensionCore::new());
+        core.insert_tool_instance("cron_stub".to_string(), Arc::new(CronStubTool))
+            .await;
+
+        let resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
             tmp.path().join("data"),
             tmp.path().join("cache"),
         );
-        let scheduler =
-            Arc::new(CronScheduler::new(engine_resolver.cron_schedule("crony")).unwrap());
         let engine = CronEngine::new(
-            engine_resolver,
+            resolver,
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            executor,
+            Arc::downgrade(&core),
+        );
+
+        let job = CronJob {
+            id: "job-wake-trunk".to_string(),
+            name: "wake-trunk".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::SpawnTool {
+                tool_name: "cron_stub".to_string(),
+                tool_params: serde_json::json!({}),
+                wake_on_completion: Some(true),
+                timeout_secs: Some(60),
+            },
+                        delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+
+        let (status, receipt) = engine.run_spawn_tool_job(&job).await.unwrap();
+        assert_eq!(status, "running");
+        let task_id = receipt.expect("spawn receipt carries the task id");
+
+        // Poll up to 2s for the steer message to land in the trunk
+        // inbox (the closure runs in the background).
+        let trunk_key = crate::principal::routers::root::trunk_session_id();
+        for _ in 0..200 {
+            let trunk_inbox = registry.get_or_create(&trunk_key).await;
+            if !trunk_inbox.is_empty().await {
+                let items = trunk_inbox.drain_all().await;
+                assert_eq!(
+                    items.len(),
+                    1,
+                    "expected exactly one steer message in the trunk inbox"
+                );
+                match &items[0] {
+                    peko_extension_api::AsyncInboxItem::Steering(s) => {
+                        assert!(s.content.contains("wake-trunk"));
+                        assert!(s.content.contains(&task_id));
+                    }
+                    other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),
+                }
+
+                // The owner's peer-child inbox must stay empty —
+                // pre-3b the steer landed in the owner's
+                // conversational inbox instead of the trunk's. (No
+                // peer child exists in this test — nothing was ever
+                // sent — so any non-trunk inbox key stays empty; the
+                // trunk assertion above is the load-bearing one.)
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for steer message in {trunk_key} inbox");
+    }
+
+    /// PR 2: `execute_job_for_id` finds the owning principal's
+    /// scheduler, returns a fresh `run_id`, and actually fires the
+    /// job (a closed success row appears in the run history).
+    #[tokio::test]
+    async fn execute_job_for_id_fires_job_for_loaded_principal() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        let idle = Arc::new(IdleDetector::new());
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            idle,
+            obs,
             Some(manager.clone()),
             Arc::new(AsyncExecutor::new(
                 crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );
-        let job = CronJob {
-            id: "job-notify".to_string(),
-            name: "water-reminder".to_string(),
+        // No jobs registered yet — install the scheduler so the
+        // engine can find the job after the manual trigger.
+        engine
+            .install_scheduler_for_test(&PrincipalId::from_did(&principal.did().await), scheduler.clone())
+            .await;
+
+        let job = peko_cron::CronJob {
+            id: "job-abc".to_string(),
+            name: "manual-target".to_string(),
             principal_id: PrincipalId::from_did(&principal.did().await),
             schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
-            action: CronJobAction::Notify {
-                message: "💧 Time to drink water".to_string(),
+            action: CronJobAction::SpawnTool {
+                tool_name: "Bash".to_string(),
+                tool_params: serde_json::json!({"command": "true"}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(60),
             },
-            delivery: DeliveryMode::None,
-            delete_after_run: false,
+                        delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() + Duration::hours(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        // Manual trigger returns a non-empty run_id immediately.
+        let run_id = engine.execute_job_for_id("job-abc").await.unwrap();
+        assert!(!run_id.is_empty());
+
+        // And the work actually happens (poll until finalized).
+        // Sprint 7 Commit D: the original assertion was `status == "success"`
+        // (Notify was a no-tool-call delivery). SpawnTool jobs run through
+        // `AsyncExecutor` → `ExtensionCore` → `ToolRuntime` which this test
+        // intentionally does not bootstrap, so the job lands on `"failed"`.
+        // The plumbing being verified here is `execute_job_for_id` itself —
+        // any terminal status other than "running" proves the job fired.
+        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
+        for _ in 0..50 {
+            runs = scheduler.get_run_history("job-abc", 10).unwrap();
+            if runs.len() >= 1 && runs[0].status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            runs.len(),
+            1,
+            "manual trigger must produce exactly one run row, got: {runs:?}"
+        );
+        assert_ne!(
+            runs[0].status, "running",
+            "manual trigger must reach a terminal status, got: {runs:?}"
+        );
+        assert!(runs[0].finished_at.is_some());
+
+        drop(principal);
+    }
+
+    /// PR 2: `execute_job_for_id` errors when no principal owns the
+    /// job (id not present in any loaded scheduler).
+    #[tokio::test]
+    async fn execute_job_for_id_returns_error_for_unknown_job() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        let idle = Arc::new(IdleDetector::new());
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let _scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            idle,
+            obs,
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+
+        // No jobs registered — the lookup must fail.
+        let result = engine.execute_job_for_id("does-not-exist").await;
+        assert!(result.is_err(), "unknown job id must error, got: {result:?}");
+
+        drop(principal);
+    }
+
+    /// PR 2: `check_and_run` returns immediately even when one of the
+    /// due jobs is a slow Send — the per-job execution is detached
+    /// onto a `tokio::spawn`, so the poll tick is not blocked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_and_run_does_not_block_on_slow_send_job() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        let idle = Arc::new(IdleDetector::new());
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            idle,
+            obs,
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+            std::sync::Weak::new(),
+        );
+        engine
+            .install_scheduler_for_test(&PrincipalId::from_did(&principal.did().await), scheduler.clone())
+            .await;
+
+        // One job, due immediately. We can't easily inject a sleep
+        // inside `execute_job`, so the assertion is that
+        // `check_and_run()` returns promptly — the spawned task runs
+        // in the background.
+        let job = peko_cron::CronJob {
+            id: "job-quick".to_string(),
+            name: "quick-send".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Send {
+                message: "fast fire".to_string(),
+                target: None,
+            },
+                        delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1766,27 +2225,13 @@ mod tests {
         };
         scheduler.add_job(&job).unwrap();
 
+        // The poll tick itself must complete in well under a second.
+        let start = std::time::Instant::now();
         engine.check_and_run().await.unwrap();
-
-        // Single closed success row.
-        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
-        assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
-        assert_eq!(runs[0].status, "success");
-        assert!(runs[0].finished_at.is_some());
-
-        // The note IS the message text, in the conversational session.
-        let conv_path = find_file_named(tmp.path(), "root:user:test-owner.jsonl")
-            .expect("conversational session JSONL should exist");
-        let conv_jsonl = std::fs::read_to_string(&conv_path).unwrap();
+        let elapsed = start.elapsed();
         assert!(
-            conv_jsonl.contains("⏰ [cron job 'water-reminder' fired] 💧 Time to drink water"),
-            "conversational session should carry the message text as the note, got: {conv_jsonl}"
-        );
-
-        // No cron session was created — no turn ran.
-        assert!(
-            find_file_named(tmp.path(), "root:cron:user:test-owner.jsonl").is_none(),
-            "Notify must not create a cron session"
+            elapsed < std::time::Duration::from_millis(500),
+            "check_and_run must return promptly (per-job execution is detached), took: {elapsed:?}"
         );
 
         drop(principal);

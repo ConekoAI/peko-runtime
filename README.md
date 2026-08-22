@@ -257,7 +257,7 @@ peko completions powershell                       # PowerShell completions
 
 ## Unified Extension Architecture
 
-All capabilities — tools, skills, MCP servers, channels, and gateways — are implemented through a single, consistent hook-based system.
+All capabilities — tools, skills, MCP servers, and channels — are implemented through a single, consistent hook-based system.
 
 ### Extension Types
 
@@ -268,8 +268,12 @@ All capabilities — tools, skills, MCP servers, channels, and gateways — are 
 | **Universal Tools** | `manifest.json` | Executable command-line tools |
 | **Built-in Tools** | Native code | Core runtime tools |
 | **Channels** | `CHANNEL.toml` | I/O adapters (CLI, HTTP, etc.) |
-| **Gateways** | `GATEWAY.toml` | Platform integrations (Discord, Slack) |
 | **General Extensions** | `extension.yaml` | Multi-hook custom extensions |
+
+> **Sprint 9** retired the `gateway` extension type (chat-platform
+> adapters like Discord/Slack). External ingress now lands in per-peer
+> standing children via the agent-session paradigm; `peko ext install`
+> no longer accepts gateway manifests.
 
 ### Managing Extensions
 
@@ -277,14 +281,12 @@ All capabilities — tools, skills, MCP servers, channels, and gateways — are 
 # Install any extension type (auto-detected)
 peko ext install ./my-skill
 peko ext install ./mcp-server.json
-peko ext install ./discord-gateway
 
 # List all extensions
 peko ext list
 # ID           TYPE      STATUS   HOOKS
 # docker       skill     enabled  prompt:skills
 # filesystem   mcp       enabled  prompt:tools, tool:*
-# discord      gateway   enabled  channel:*, event:*
 
 # Enable/disable
 peko ext enable docker
@@ -391,7 +393,6 @@ src/
 ├── extensions/         # Extension framework + type implementations
 │   ├── framework/      # Generic extension framework (ADR-017)
 │   ├── builtin/        # Built-in tool adapter
-│   ├── gateway/        # Gateway adapter
 │   ├── general/        # General extension adapter
 │   ├── mcp/            # MCP adapter
 │   ├── skill/          # Skill adapter
@@ -460,6 +461,8 @@ MIT
 - [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, principals, extensions
 - [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Every `peko` command and flag
 - [Extension System](docs/architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
+- [PEKO Primitive](docs/architecture/PEKO.md) — Canonical term: Persistent Entity with Keepalive Orchestration
+- [Agent–Session Paradigm](docs/architecture/AGENT_SESSION_PARADIGM.md) — Full design rationale, gap audit, build order
 - [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-042
 - [MCP Overview](docs/mcp/MCP.md) — Model Context Protocol integration
 - [Agent Guide](AGENTS.md) — Build, test, code-style rules for contributors

@@ -227,3 +227,115 @@ fn send_no_message_and_no_file_stdin_fails() {
         "expected error mentioning 'required' or 'message' for missing input, got:\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 3 Phase 11: the peer conversation lands on the peer's DM channel
+// ---------------------------------------------------------------------------
+
+/// Recursively find every `channels/*/events.jsonl` under `root` (the
+/// daemon's data dir lives under the test's isolated HOME; walking the
+/// tree keeps this test agnostic of the exact platform layout).
+fn channel_event_logs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|n| n == "events.jsonl")
+                && path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .is_some_and(|gp| gp.file_name().is_some_and(|n| n == "channels"))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Parse the `Posted` events out of a channel `events.jsonl`,
+/// returning `(author, text)` rows oldest first.
+fn posted_rows(path: &std::path::Path) -> Vec<(String, String)> {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|v| v["kind"] == "posted")
+        .map(|v| {
+            (
+                v["author"].as_str().unwrap_or_default().to_string(),
+                v["text"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// After two successful `peko send`s, the peer's DM channel log
+/// carries both directions — inbound rows attributed to the peer
+/// (`user:*`, via `ChannelPort::post_attributed`), replies authored
+/// by the principal (`prin_*`) — with each message present exactly
+/// once (no double-posting across the two sends).
+#[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
+fn send_posts_both_directions_to_peer_dm_channel() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
+    let cli = PekoCli::new();
+    create_mock_principal(&cli, "dm-agent", &mock_url);
+
+    let _daemon = DaemonGuard::spawn(&cli);
+
+    let (stdout, stderr, status) = send(
+        &cli,
+        &["send", "dm-agent", "FIRST_DM_MESSAGE", "--no-stream"],
+    );
+    assert_send_ok(&stdout, &stderr, &status);
+    let (stdout, stderr, status) = send(
+        &cli,
+        &["send", "dm-agent", "SECOND_DM_MESSAGE", "--no-stream"],
+    );
+    assert_send_ok(&stdout, &stderr, &status);
+
+    let logs = channel_event_logs(cli.home());
+    assert_eq!(
+        logs.len(),
+        1,
+        "exactly one DM channel should exist after two sends to one peer; found: {logs:?}"
+    );
+
+    let rows = posted_rows(&logs[0]);
+    let inbound: Vec<&(String, String)> =
+        rows.iter().filter(|(author, _)| author.starts_with("user:")).collect();
+    let replies: Vec<&(String, String)> =
+        rows.iter().filter(|(author, _)| author.starts_with("prin_")).collect();
+
+    let inbound_texts: Vec<&str> = inbound.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(
+        inbound_texts
+            .iter()
+            .filter(|t| **t == "FIRST_DM_MESSAGE")
+            .count(),
+        1,
+        "FIRST_DM_MESSAGE must appear exactly once as a peer-authored row; rows: {rows:?}"
+    );
+    assert_eq!(
+        inbound_texts
+            .iter()
+            .filter(|t| **t == "SECOND_DM_MESSAGE")
+            .count(),
+        1,
+        "SECOND_DM_MESSAGE must appear exactly once as a peer-authored row; rows: {rows:?}"
+    );
+    assert!(
+        replies.len() >= 2,
+        "each send must post one principal-authored reply; rows: {rows:?}"
+    );
+}

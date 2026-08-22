@@ -29,16 +29,13 @@ impl Default for CronListTool {
 
 /// `CronList` tool arguments
 ///
-/// Accepts an empty object; optional filters are peko extensions.
+/// Accepts an empty object. Sprint 7 trim (Commit A): `status_filter` and
+/// `kind_filter` were declared + schema'd but the body never read them —
+/// pure no-op fields. The struct stays as a named token so the
+/// deserialization call site remains unchanged; future filters can land
+/// here when they have an actual consumer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CronListArgs {
-    /// Filter by job status (peko extension)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_filter: Option<String>,
-    /// Filter by sub-command / schedule kind (peko extension)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind_filter: Option<String>,
-}
+pub struct CronListArgs {}
 
 #[async_trait]
 impl Tool for CronListTool {
@@ -51,18 +48,13 @@ impl Tool for CronListTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // Sprint 7 Commit A: empty properties — `status_filter` and
+        // `kind_filter` were declared but never read in
+        // `execute_with_context`. Re-add a property here when an actual
+        // filter ships.
         json!({
             "type": "object",
-            "properties": {
-                "status_filter": {
-                    "type": "string",
-                    "description": "Optional filter by status (peko extension)"
-                },
-                "kind_filter": {
-                    "type": "string",
-                    "description": "Optional filter by schedule kind: at, every, cron, idle, event (peko extension)"
-                }
-            }
+            "properties": {}
         })
     }
 
@@ -115,7 +107,9 @@ mod tests {
     fn test_cron_list_tool_parameters() {
         let tool = CronListTool::new();
         let params = tool.parameters();
-        assert!(params.get("properties").is_some());
+        // Sprint 7 Commit A: empty properties block (status_filter /
+        // kind_filter were dropped — they had no consumer).
+        assert_eq!(params["properties"], serde_json::json!({}));
         assert!(params.get("required").is_none());
     }
 }

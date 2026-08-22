@@ -10,16 +10,22 @@
 //! Peko uses a minimal core (~500KB-1MB) with on-demand loaded extensions:
 //!
 //! - **Core**: Principal runtime, root-agent routing, tool registry
-//! - **Extensions**: Unified extension system (skills, tools, MCP, gateways,
+//! - **Extensions**: Unified extension system (skills, tools, MCP,
 //!   and the thin agent prompts that Principals delegate to)
-//! - **Gateways**: Messaging platform adapters (Discord, Slack, etc.) as extensions
+//!
+//! ## Ingress (post Sprint 9)
+//!
+//! All external ingress — CLI, IPC `peko send`, tunnel/A2A,
+//! bound channels — lands in per-peer standing children via
+//! `Principal::Manager::receive_streaming` under the
+//! agent-session paradigm. Sprint 9 retired the chat-gateway
+//! adapter framework (Discord/Slack/Telegram bridges) that
+//! previously owned the gateway ingress path; see the
+//! AGENT_SESSION_PARADIGM doc for the current model.
 //!
 //! ## Quick Start
 //!
 //! ```bash,ignore
-//! # Install a gateway extension
-//! peko ext install ./discord-gateway
-//!
 //! # Create a principal and send a message
 //! peko principal create alice
 //! peko send alice "hello"
@@ -36,14 +42,12 @@
 //! use peko::extensions::framework::{
 //!     ExtensionStore, ExtensionManifest,
 //! };
-//! use peko::extensions::gateway::adapter::GatewayAdapter;
 //!
 //! async fn example() {
 //!     let store = ExtensionStore::new();
-//!     store.register_adapter(Box::new(GatewayAdapter::new(core))).await;
-//!
-//!     // Install a gateway extension
-//!     store.install("./discord-gateway").await.unwrap();
+//!     // Sprint 9 Commit 3: the gateway adapter framework was retired.
+//!     // Skills / MCP / universal tools remain.
+//!     store.install("./my-skill").await.unwrap();
 //! }
 //! ```
 //!
@@ -240,11 +244,11 @@ pub mod principal;
 // engine-side `AuditEventView` to `peko_observability`.
 pub mod observability;
 
-// ============================================================================
-// Append-only runtime surfaces
-// ============================================================================
-
-// [extract:phase-5] peko-chat-log — moved to peko-rs/chat-log/
+// [extract:phase-5] chat-log crate — RETIRED (sprint 3 Phase 13,
+// 2026-08-19): the crate was deleted from the workspace once its last
+// writer (the cron `Send` fired-prompt projection) was dropped. The
+// `peko log` row DTO lives on as `ipc::packet::PrincipalLogMessage`;
+// the peer DM channels are the conversation record.
 
 // ============================================================================
 // Infrastructure

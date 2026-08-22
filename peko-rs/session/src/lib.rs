@@ -62,6 +62,7 @@ pub mod default_path_resolver;
 pub use default_path_resolver::DefaultPathResolver;
 pub mod directory;
 pub mod events;
+pub mod id;
 pub mod inbox_registry;
 pub mod index;
 pub mod jsonl;
@@ -74,6 +75,7 @@ pub mod message_conversion;
 pub mod metadata;
 pub mod metadata_controller;
 pub mod overlay;
+pub mod path;
 pub mod recovery;
 pub mod session_core;
 pub mod session_core_impl;
@@ -92,6 +94,7 @@ pub use events::{
     SessionCreatedEvent, SessionEndedEvent, SessionEvent, SessionMessage, SessionTrigger,
     SystemEvent,
 };
+pub use id::SessionId;
 pub use inbox_registry::{InboxFactory, InboxRegistry, RunPermitGuard};
 pub use index::{SessionEntry, SessionIndex};
 pub use jsonl::{
@@ -99,9 +102,8 @@ pub use jsonl::{
 };
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
-    discord_session_key, parse_session_key, parse_session_key_v2, safe_filename_component,
-    sanitize_key_component, scope_from_key, ChatType, ParsedSessionKeyV2, SessionKeyContext,
-    SessionKeyParts, SessionScope,
+    parse_session_key, parse_session_key_v2, safe_filename_component, sanitize_key_component,
+    scope_from_key, ChatType, ParsedSessionKeyV2, SessionKeyContext, SessionKeyParts, SessionScope,
 };
 pub use lock_utils::into_anyhow;
 pub use lock_utils::{
@@ -140,7 +142,9 @@ mod tests {
 
     #[test]
     fn test_channel_type_re_export() {
-        assert_eq!(ChannelType::Discord.as_str(), "discord");
+        // Sprint 9 Commit 2: Discord variant retired; pin Cli as the
+        // re-export fixture.
+        assert_eq!(ChannelType::Cli.as_str(), "cli");
     }
 
     #[test]

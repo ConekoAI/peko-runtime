@@ -13,11 +13,11 @@
 //! ## What stays in `peko-tools-builtin`
 //!
 //! - `cron` — `CronRuntime` port trait + 3 cron tool impls (create /
-//!   delete / list) + the DTOs (`ScheduleKind`, `DeliveryMode`,
-//!   `CronJob`, `CronJobAction`). Stays because `peko-cron` re-exports
-//!   the DTOs and `peko_core::daemon::cron_runtime` implements the
-//!   port trait; lifting the trait into root would reverse the
-//!   leaf-crate dep direction.
+//!   delete / list) + the DTOs (`ScheduleKind`, `CronJob`,
+//!   `CronJobAction`). Stays because `peko-cron` re-exports the DTOs
+//!   and `peko_core::daemon::cron_runtime` implements the port trait;
+//!   lifting the trait into root would reverse the leaf-crate dep
+//!   direction.
 //! - `tool_search_metadata` — pure-data helpers for the
 //!   `__tool_search` stub. Engine reaches these via
 //!   `peko_tools_builtin::tool_search_metadata::*` so it doesn't have
@@ -54,8 +54,8 @@ pub use bash::BashTool;
 pub use channel::{ChannelReadTool, ChannelSendTool};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
-    AgentTool, DynamicSessionKeyProvider, SessionKeyProvider, SharedSubagentRuntime,
-    SpawnAuditEvent, SpawnRequest, StaticSessionKeyProvider, SubagentRuntime,
+    AgentTool, DynamicSessionKeyProvider, SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest,
+    SubagentRuntime,
 };
 pub use plan::{
     PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool,

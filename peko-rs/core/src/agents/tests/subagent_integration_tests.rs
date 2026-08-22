@@ -21,6 +21,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 
+/// Sprint 6: convert a fixture literal to the v5-derived UUID form the
+/// runtime stamps on `SessionMetadata.session_id` and returns over the wire.
+fn sid(literal: &str) -> String {
+    peko_session::SessionId::from(literal).to_string()
+}
+
 /// Per-test agent-name counter so each subagent integration test gets its own
 /// global async-task registry. Without this, every test shares one registry
 /// (keyed by "test_agent" in `get_or_create_registry_for_agent`) and
@@ -1395,6 +1401,320 @@ async fn resume_happy_path_preserves_history() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 (standing named children): `Agent` `new` with `name` attaches to
+// an existing standing child instead of minting a fresh session.
+// ---------------------------------------------------------------------------
+
+/// Create a standing child session (trigger "spawn", standing, slug)
+/// under `parent_id`, optionally recording a `[children]` declaration
+/// event in its JSONL.
+async fn create_standing_child(
+    session_manager: &Arc<RwLock<SessionManager>>,
+    agent_name: &str,
+    id: &str,
+    parent_id: &str,
+    slug: &str,
+    declared_type: Option<&str>,
+) {
+    create_linked_session(session_manager, agent_name, id, Some(parent_id), "spawn").await;
+    // Sprint 6: the canonical session id is the v5 UUID form of the
+    // fixture literal. Re-derive it here so the standing flag and the
+    // declaration event both key on the same id as the JSONL filename
+    // (`{sessions_dir}/{v5_uuid}.jsonl`).
+    let canonical_id = peko_session::SessionId::from(id).to_string();
+    {
+        let mgr = session_manager.read().await;
+        mgr.set_session_slug(&canonical_id, Some(slug.to_string()))
+            .await
+            .unwrap();
+        mgr.set_standing(&canonical_id, true).await.unwrap();
+    }
+    if let Some(declared) = declared_type {
+        let dir = session_manager
+            .read()
+            .await
+            .sessions_dir()
+            .cloned()
+            .unwrap();
+        crate::session::standing::record_declared_child(&dir, &canonical_id, slug, declared, None)
+            .await
+            .unwrap();
+    }
+}
+
+/// Read the registered run's child session id from the task metadata.
+async fn run_child_session_id(
+    registry: &SharedAsyncTaskRegistry,
+    run_id: &String,
+) -> Option<String> {
+    let guard = registry.read().await;
+    let entry = guard.get(run_id)?;
+    match &entry.metadata {
+        crate::extensions::framework::async_exec::executor::TaskMetadata::Subagent(meta) => {
+            meta.child_session_id.clone()
+        }
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn new_with_name_attaches_to_standing_child() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_standing_child(
+        &session_manager,
+        &agent_name,
+        "child-memory",
+        "root-sess",
+        "memory",
+        Some("archivist"),
+    )
+    .await;
+
+    let session_count_before = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .len();
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let run_id = executor
+        .spawn_and_execute(
+            "summarize what you remember",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("memory".to_string()),
+                agent: Some("archivist".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id.starts_with("run_"));
+
+    // Attach: the run targets the EXISTING standing child, and no new
+    // session was minted. Sprint 6: child_session_id is the v5 UUID
+    // form of the fixture literal.
+    assert_eq!(
+        run_child_session_id(&registry, &run_id).await.as_deref(),
+        Some(sid("child-memory").as_str()),
+        "name matching a standing child must attach to it"
+    );
+    let session_count_after = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .len();
+    assert_eq!(session_count_before, session_count_after);
+
+    // The turn runs (no provider → stub success path; the point is the
+    // run executes against the attached session).
+    sleep(Duration::from_millis(500)).await;
+    let guard = registry.read().await;
+    let entry = guard.get(&run_id).unwrap();
+    assert!(
+        entry.status.is_terminal(),
+        "attached run should complete: {:?}",
+        entry.status
+    );
+}
+
+#[tokio::test]
+async fn new_with_fresh_name_spawns_new_session() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_standing_child(
+        &session_manager,
+        &agent_name,
+        "child-memory",
+        "root-sess",
+        "memory",
+        None,
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let run_id = executor
+        .spawn_and_execute(
+            "fresh task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("about-user".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    // A fresh session was minted — NOT the standing "memory" child —
+    // and it carries the requested slug.
+    let child_id = run_child_session_id(&registry, &run_id)
+        .await
+        .expect("run has a child session id");
+    assert_ne!(child_id, "child-memory");
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let fresh = metas
+        .iter()
+        .find(|m| m.session_id.to_string() == child_id)
+        .expect("fresh child metadata exists");
+    assert_eq!(fresh.slug.as_deref(), Some("about-user"));
+    assert!(!fresh.standing, "fresh spawns are not standing");
+}
+
+#[tokio::test]
+async fn new_with_name_colliding_non_standing_errors() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    // A NON-standing session deeper in the caller's subtree already
+    // owns the slug "notes". (A direct-sibling collision keeps the
+    // Phase 1b "unique per parent" refusal — see
+    // `spawn_with_name_stamps_child_slug`.)
+    create_linked_session(&session_manager, &agent_name, "mid-spawn", Some("root-sess"), "spawn")
+        .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "plain-notes",
+        Some("mid-spawn"),
+        "spawn",
+    )
+    .await;
+    session_manager
+        .read()
+        .await
+        .set_session_slug("plain-notes", Some("notes".to_string()))
+        .await
+        .unwrap();
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let err = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("notes".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not a standing child"), "{msg}");
+    // Sprint 6: the colliding session id appears as its v5 UUID form.
+    assert!(msg.contains(&sid("plain-notes")), "{msg}");
+}
+
+#[tokio::test]
+async fn new_with_name_attach_checks_declared_subagent_type() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_standing_child(
+        &session_manager,
+        &agent_name,
+        "child-memory",
+        "root-sess",
+        "memory",
+        Some("archivist"),
+    )
+    .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    // The standing child was declared with `archivist`; requesting
+    // `writer` is a structured refusal before anything runs.
+    let err = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("memory".to_string()),
+                agent: Some("writer".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("declared with subagent_type 'archivist'"),
+        "{msg}"
+    );
+    assert!(msg.contains("'writer'"), "{msg}");
+
+    // A matching type attaches cleanly (same session id).
+    let run_id = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            false,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("memory".to_string()),
+                agent: Some("archivist".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    // Sprint 6: child_session_id is the v5 UUID form of the fixture
+    // literal (`sid("child-memory")`).
+    assert_eq!(
+        run_child_session_id(&registry, &run_id).await.as_deref(),
+        Some(sid("child-memory").as_str())
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Round 7: `request_compaction` (Agent tool `action = "compact"`) — guards
 // + happy path. Returns immediately after flagging; no LLM call.
 // ---------------------------------------------------------------------------
@@ -1513,7 +1833,9 @@ async fn compact_happy_path_flags_session_without_trigger_requirement() {
         .request_compaction("branch-a", "root-sess")
         .await
         .unwrap();
-    assert_eq!(outcome.session_id, "branch-a");
+    // Sprint 6: request_compaction resolves the target through
+    // `SessionId::from`, so the returned id is the v5 UUID form.
+    assert_eq!(outcome.session_id, sid("branch-a"));
     assert!(
         outcome.message.contains("no completion signal") || outcome.message.contains("next run"),
         "outcome must be honest about deferred semantics: {}",
@@ -1528,7 +1850,7 @@ async fn compact_happy_path_flags_session_without_trigger_requirement() {
         .unwrap();
     let target = metas
         .iter()
-        .find(|m| m.session_id == "branch-a")
+        .find(|m| m.session_id.to_string() == sid("branch-a"))
         .expect("target metadata present");
     assert!(
         target.compact_requested,
@@ -1597,4 +1919,639 @@ async fn validate_context_parent_ownership() {
         .validate_context_parent("grandchild", "spawn-a")
         .await
         .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1b: slugs + path addressing. Agent tool `new`'s `name` param
+// lands on `ExecutionConfig.slug` and is stamped onto the child's
+// session metadata at spawn; `resume` / `compact` accept `/`-rooted
+// session paths (resolved against the caller's tree before guards).
+// ---------------------------------------------------------------------------
+
+/// Set a slug on a linked session (mirrors what the session tool's
+/// rename does through the production adapter).
+async fn set_slug(session_manager: &Arc<RwLock<SessionManager>>, id: &str, slug: &str) {
+    session_manager
+        .read()
+        .await
+        .set_session_slug(id, Some(slug.to_string()))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn spawn_with_name_stamps_child_slug() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    let run_id = executor
+        .spawn_and_execute(
+            "task",
+            None,
+            true,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("task-b".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id.starts_with("run_"));
+
+    // The child session's metadata carries the slug.
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let child = metas
+        .iter()
+        .find(|m| m.parent_session_id.map(|id| id.to_string()).as_deref() == Some(peko_session::SessionId::from("root-sess").to_string().as_str()))
+        .expect("spawned child present");
+    assert_eq!(child.slug.as_deref(), Some("task-b"));
+    assert_eq!(child.trigger, "spawn");
+
+    // Uniqueness: a second spawn with the same name under the same
+    // parent refuses BEFORE the run registers, naming the conflict.
+    let err = executor
+        .spawn_and_execute(
+            "task 2",
+            None,
+            true,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("task-b".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unique per parent"), "{err}");
+    assert!(err.to_string().contains(&child.session_id.to_string()), "{err}");
+
+    // Invalid slug format refuses at spawn too.
+    let err = executor
+        .spawn_and_execute(
+            "task 3",
+            None,
+            true,
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("has/slash".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("invalid slug"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 2 Phase 6: `resume_streaming` — the streaming child-turn driver
+// the per-peer standing-child ingress paths (Phase 7) will use. Same
+// resume guard stack + registry registration as `resume_and_execute`,
+// but the child runs via `execute_streaming_with_session`
+// (`OrchestratorConfig::live()`) and every `AgenticEvent` reaches the
+// caller's sink.
+// ---------------------------------------------------------------------------
+
+/// Ensure the daemon-global ExtensionCore exists for tests that build
+/// real `Agent`s through the executor path.
+fn ensure_global_core() {
+    if crate::extensions::framework::core::global_core().is_none() {
+        crate::extensions::framework::core::init_global_core(Arc::new(
+            crate::extensions::framework::core::ExtensionCore::new(),
+        ));
+    }
+}
+
+/// Build a `MockAdapter`-backed `Provider` (mirrors the engine tests'
+/// `mock_provider` fixture).
+fn mock_provider() -> (Arc<peko_providers::Provider>, peko_providers::MockAdapter) {
+    use peko_providers::core::ProviderRuntimeOptions;
+
+    let adapter = peko_providers::MockAdapter::new();
+    let any = peko_providers::AnyAdapter::Mock(adapter.clone());
+    let options = ProviderRuntimeOptions {
+        default_model_id: "mock-model".to_string(),
+        context_window: None,
+        timeout_seconds: 300,
+        max_retries: 3,
+        retry_delay_ms: 1000,
+        ..Default::default()
+    };
+    let provider = peko_providers::Provider::new(any, "mock_key", options).unwrap();
+    (Arc::new(provider), adapter)
+}
+
+/// Collect the streamed `AgenticEvent`s into a shared vec.
+fn event_collector() -> (
+    crate::agents::subagent_executor::AgenticEventSink,
+    Arc<std::sync::Mutex<Vec<peko_engine::AgenticEvent>>>,
+) {
+    let events: Arc<std::sync::Mutex<Vec<peko_engine::AgenticEvent>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&events);
+    let sink: crate::agents::subagent_executor::AgenticEventSink =
+        Arc::new(move |ev| sink_events.lock().unwrap().push(ev));
+    (sink, events)
+}
+
+/// Short-turn config for streaming tests: a real timeout (so a wedged
+/// run can't hang the suite for the 300s default) with depth/cleanup
+/// defaults.
+fn streaming_test_config() -> ExecutionConfig {
+    ExecutionConfig {
+        timeout_seconds: 30,
+        announce_completion: false,
+        ..Default::default()
+    }
+}
+
+/// Happy path: a mock-provider turn in a spawned child session emits
+/// the IPC drain-loop event shape (lifecycle + assistant deltas),
+/// returns the final text + token usage, and runs with the persona
+/// carried on the executor's `AgentConfig`.
+#[tokio::test(flavor = "multi_thread")]
+async fn streaming_resume_happy_path_streams_and_returns_final_text() {
+    peko_identity::init_test_env();
+    ensure_global_core();
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    let (provider, mock) = mock_provider();
+    mock.queue_text("streamed child reply");
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    )
+    .with_provider(provider)
+    // Persona: the child agent must run with the caller-provided
+    // prompt (production: the principal's root prompt).
+    .with_agent_config(crate::agents::agent_config::AgentConfig {
+        name: "root".to_string(),
+        prompt: Some("You are PERSONA_MARKER.".to_string()),
+        ..Default::default()
+    });
+
+    let (sink, events) = event_collector();
+    let outcome = executor
+        .resume_streaming(
+            "hello child",
+            "spawn-a",
+            "root-sess",
+            streaming_test_config(),
+            sink,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.final_text, "streamed child reply");
+    assert!(
+        outcome.token_usage.is_some(),
+        "a completed run reports its token usage projection"
+    );
+
+    // The event stream matches the shape the IPC `principal_send`
+    // drain loop consumes: per-iteration lifecycle + live text deltas.
+    let emitted = events.lock().unwrap();
+    assert!(
+        emitted.iter().any(|e| matches!(
+            e,
+            peko_engine::AgenticEvent::Lifecycle {
+                phase: peko_engine::LifecyclePhase::Running,
+                ..
+            }
+        )),
+        "streaming turn should emit Lifecycle::Running events"
+    );
+    assert!(
+        emitted
+            .iter()
+            .any(|e| matches!(e, peko_engine::AgenticEvent::AssistantDelta { .. })),
+        "live mode should emit AssistantDelta events"
+    );
+    drop(emitted);
+
+    // Persona reached the wire: the child agent's system prompt is the
+    // executor's AgentConfig prompt.
+    let recorded = mock.recorded_requests();
+    assert!(!recorded.is_empty(), "mock should have seen the LLM call");
+    let system_text: String = recorded[0]
+        .messages
+        .iter()
+        .filter(|m| m.role == peko_message::MessageRole::System)
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            peko_message::ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        system_text.contains("PERSONA_MARKER"),
+        "child agent must run the persona prompt; system was: {system_text}"
+    );
+}
+
+/// Run registration: while a streaming turn is in flight the shared
+/// registry reports the child as active (the `session list`
+/// `run_active` + delete/move guard source of truth), and the run id
+/// lands in the outcome.
+#[tokio::test(flavor = "multi_thread")]
+async fn streaming_resume_registers_active_run_in_registry() {
+    peko_identity::init_test_env();
+    ensure_global_core();
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    let (provider, mock) = mock_provider();
+    mock.queue_text("reply");
+    let executor = Arc::new(
+        SubagentExecutor::with_registry(
+            registry.clone(),
+            session_manager.clone(),
+            agent_name,
+            5,
+            peko_subject::PrincipalId::generate(),
+        )
+        .with_provider(provider),
+    );
+
+    let (sink, _events) = event_collector();
+    let exec = Arc::clone(&executor);
+    let turn = tokio::spawn(async move {
+        exec.resume_streaming(
+            "hi",
+            "spawn-a",
+            "root-sess",
+            streaming_test_config(),
+            sink,
+            None,
+        )
+        .await
+    });
+
+    // Poll until the run shows active (agent construction takes
+    // non-zero time, so the active window is observable).
+    let mut observed_active = false;
+    for _ in 0..400 {
+        if registry
+            .read()
+            .await
+            .has_active_subagent_run_for_child(sid("spawn-a").as_str())
+        {
+            observed_active = true;
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        observed_active,
+        "an in-flight streaming turn must be visible as an active subagent run"
+    );
+
+    let outcome = turn.await.unwrap().unwrap();
+    assert!(outcome.run_id.starts_with("run_"));
+
+    // Terminal bookkeeping landed on the shared registry entry.
+    let guard = registry.read().await;
+    let entry = guard.get(&outcome.run_id).unwrap();
+    assert!(entry.status.is_terminal());
+    drop(guard);
+
+    // Once the turn is done the child is free again — a follow-up
+    // turn on the same session is NOT refused.
+    assert!(!registry
+        .read()
+        .await
+        .has_active_subagent_run_for_child(sid("spawn-a").as_str()));
+}
+
+/// Cancellation: a cancelled parent token surfaces as a refused
+/// (cancelled) run rather than a completed one. The token is flipped
+/// BEFORE the call — a child token derived from a cancelled parent is
+/// born cancelled, so the closure's post-execution check deterministi-
+/// cally writes `AsyncTaskStatus::Cancelled`.
+#[tokio::test(flavor = "multi_thread")]
+async fn streaming_resume_cancellation_stops_the_run() {
+    peko_identity::init_test_env();
+    ensure_global_core();
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    let (provider, mock) = mock_provider();
+    mock.queue_text("should not be returned");
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    )
+    .with_provider(provider);
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+    let (sink, _events) = event_collector();
+    let err = executor
+        .resume_streaming(
+            "hi",
+            "spawn-a",
+            "root-sess",
+            streaming_test_config(),
+            sink,
+            Some(cancel),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("cancelled"),
+        "cancelled streaming turn should surface as cancelled: {err}"
+    );
+}
+
+/// Guard stack: the streaming path enforces the same resume refusals
+/// as the final-only path (they share `resume_preflight`).
+#[tokio::test(flavor = "multi_thread")]
+async fn streaming_resume_enforces_guard_stack() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "plain-sess",
+        Some("root-sess"),
+        "user",
+    )
+    .await;
+    session_manager
+        .write()
+        .await
+        .set_archived("spawn-a", true)
+        .await
+        .unwrap();
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    // Archived target.
+    let (sink, _e) = event_collector();
+    let err = executor
+        .resume_streaming(
+            "t",
+            "spawn-a",
+            "root-sess",
+            ExecutionConfig::default(),
+            sink,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unarchive"), "{err}");
+
+    // Non-spawn target.
+    let (sink, _e) = event_collector();
+    let err = executor
+        .resume_streaming(
+            "t",
+            "plain-sess",
+            "root-sess",
+            ExecutionConfig::default(),
+            sink,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("only spawned"), "{err}");
+
+    // Nonexistent target.
+    let (sink, _e) = event_collector();
+    let err = executor
+        .resume_streaming(
+            "t",
+            "no-such-session",
+            "root-sess",
+            ExecutionConfig::default(),
+            sink,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+}
+
+/// Cross-driver double-run refusal: a run registered through one
+/// executor (the channel driver's final-only path in production) is
+/// seen by a SECOND executor sharing the registry key, and its
+/// streaming turn on the same child is refused — the
+/// `has_active_subagent_run_for_child` cross-guard that keeps a
+/// channel turn and a peko-send turn from double-running one session
+/// JSONL. The in-flight run is synthesized as a registry entry so the
+/// test is deterministic (no LLM timing involved).
+#[tokio::test(flavor = "multi_thread")]
+async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
+    use crate::extensions::framework::async_exec::executor::{
+        AsyncTaskEntry, AsyncToolConfig, SubagentMetadata, TaskMetadata,
+    };
+
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    // The "channel driver" run: an active subagent entry for the
+    // child, exactly the metadata shape `register_subagent_run`
+    // writes. Sprint 6: the registry stores the canonical v5 UUID form
+    // of the child session id, not the literal `spawn-a` — production
+    // sets this via `SessionId::from(...)` in `register_subagent_run`,
+    // and the lookup in `has_active_subagent_run_for_child` matches
+    // against the same canonical form.
+    let mut entry = AsyncTaskEntry::with_metadata(
+        "run_channel_turn".to_string(),
+        "Agent".to_string(),
+        serde_json::json!({"task": "channel turn"}),
+        "root-sess".to_string(),
+        AsyncToolConfig::default(),
+        TaskMetadata::Subagent(SubagentMetadata {
+            child_session_key: sid("spawn-a"),
+            child_session_id: Some(sid("spawn-a")),
+            cleanup: SpawnCleanupPolicy::Keep,
+            depth: 1,
+            announce_completion: false,
+            subagent_result: None,
+        }),
+    );
+    entry.status = AsyncTaskStatus::Running;
+    registry.write().await.register(entry);
+
+    // A different executor over the SAME shared registry — in
+    // production the channel driver and the Phase 7 streaming driver
+    // share the `default_root_prompt().name` registry key.
+    let streaming_executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        format!("{agent_name}-streaming"),
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    let (sink, _e) = event_collector();
+    let err = streaming_executor
+        .resume_streaming(
+            "concurrent turn",
+            "spawn-a",
+            "root-sess",
+            ExecutionConfig::default(),
+            sink,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("has an active run in flight"),
+        "second driver on the same child must be refused: {err}"
+    );
+
+    // No second run was registered for the child.
+    let guard = registry.read().await;
+    let runs_for_child = guard
+        .list_tasks(None)
+        .into_iter()
+        .filter(|e| {
+            matches!(&e.metadata, TaskMetadata::Subagent(m)
+                if m.child_session_id.as_deref() == Some(sid("spawn-a").as_str()))
+        })
+        .count();
+    assert_eq!(runs_for_child, 1, "no double-run may be registered");
+}
+
+/// Sequential turns: after a streaming turn completes, the next turn
+/// on the same child runs with the prior turn's history intact (the
+/// standing child is the peer's permanent conversation).
+#[tokio::test(flavor = "multi_thread")]
+async fn streaming_resume_sequential_turns_keep_history() {
+    peko_identity::init_test_env();
+    ensure_global_core();
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "spawn-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+
+    let (provider, mock) = mock_provider();
+    mock.queue_text("first reply");
+    mock.queue_text("second reply");
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    )
+    .with_provider(provider);
+
+    let (sink, _e) = event_collector();
+    let first = executor
+        .resume_streaming(
+            "first message",
+            "spawn-a",
+            "root-sess",
+            streaming_test_config(),
+            sink,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.final_text, "first reply");
+
+    let (sink, _e) = event_collector();
+    let second = executor
+        .resume_streaming(
+            "second message",
+            "spawn-a",
+            "root-sess",
+            streaming_test_config(),
+            sink,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.final_text, "second reply");
+
+    // The child session kept both turns.
+    let mut manager = session_manager.write().await;
+    let handle = manager.open_session(sid("spawn-a").as_str()).await.unwrap().unwrap();
+    let history = handle.load_history().await.unwrap();
+    for needle in ["first message", "second message"] {
+        assert!(
+            history.iter().any(|m| m.content.iter().any(
+                |b| matches!(b, peko_message::ContentBlock::Text { text } if text.contains(needle))
+            )),
+            "child session history must contain '{needle}'"
+        );
+    }
 }

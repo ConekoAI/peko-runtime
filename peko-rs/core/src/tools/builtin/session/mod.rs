@@ -18,12 +18,32 @@
 //! [`SessionRuntime`] is the full surface the `SessionTool` needs:
 //! reads (`list_sessions` / `get_history` / `get_status` /
 //! `search_sessions` / `current_session_key`) and storage mutations
-//! (`branch_session` / `rename_session` / `set_archived` /
-//! `delete_session`). `request_compaction` rides the same trait but is
-//! engine-facing only — the model-facing `compact` affordance lives on
-//! the Agent tool. Production wiring uses the `SessionManagerRuntime`
-//! adapter in `src/session/session_runtime_impl.rs`; tests construct a
+//! (`copy_session` / `rename_session` / `set_archived` /
+//! `delete_session` / `move_session`). `request_compaction` rides
+//! the same trait but is engine-facing only — the model-facing
+//! `compact` affordance lives on the Agent tool. Production wiring
+//! uses the `SessionManagerRuntime` adapter in
+//! `src/session/session_runtime_impl.rs`; tests construct a
 //! [`SessionCache`] (in this module, an in-memory implementation).
+//!
+//! Note on `SessionRuntime` method names vs. tool-action names:
+//! the runtime methods are storage verbs (`copy_session`,
+//! `delete_session`, `rename_session`, `move_session`,
+//! `set_archived`); the model-facing tool actions are bash-aligned
+//! verbs (`copy`, `remove`, in-place `move`, no archive/unarchive).
+//! The tool layer is the only place that bridges between the two —
+//! see `tool.rs::SessionTool::execute` for the dispatch. `set_archived`
+//! stays on the trait for legacy record compatibility (records that
+//! already carry `archived: true` are still readable via
+//! `list_sessions` with `include_archived: true`), but no model-facing
+//! action writes it. Sprint 7 Commit F (2026-08-21).
+//!
+//! Sprint 7 Commit H (2026-08-22): `copy_session` now takes an
+//! explicit `target_parent` + `target_slug` (mirrors bash
+//! `cp src dst` where `dst` is the full destination path) and
+//! `move_session` gained `new_slug`. The previous sibling-only
+//! `branch_session` shape (which derived the slug from the source)
+//! is gone — the caller picks the destination slug explicitly.
 
 pub mod cache;
 pub mod tool;
@@ -65,6 +85,15 @@ pub struct SessionInfo {
     /// archived, or re-attached while true).
     #[serde(default)]
     pub run_active: bool,
+    /// Per-parent-unique path segment (see `peko_session::path`).
+    /// `None` for sessions that were never given a slug.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Absolute display path (`/a/b` — slug segments, slugless
+    /// ancestors skipped, slugless target falling back to its raw id
+    /// as the last segment). Computed view only; ids stay canonical.
+    #[serde(default)]
+    pub path: String,
 }
 
 /// Message in session history
@@ -242,16 +271,48 @@ pub trait SessionRuntime: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<Vec<SessionSearchHit>>;
 
-    /// Branch a session (copy it under a new id, stored not running).
-    /// Returns the new session's id alongside the parent's.
-    async fn branch_session(
+    /// Copy a session into a new session under `target_parent` with
+    /// slug `target_slug` (mirrors bash `cp src dst` where `dst` is the
+    /// full destination path; the last segment is the new slug, the
+    /// rest is the destination parent). The source is unchanged. The
+    /// copy is NOT running — attach a run via `Agent(action:"resume")`.
+    /// Returns the new session's id alongside the source's. Sprint 7
+    /// Commit H (2026-08-22) replaces the previous sibling-only
+    /// `branch_session` shape with a free-form destination.
+    async fn copy_session(
         &self,
         session_key: &str,
+        target_parent: String,
+        target_slug: String,
         label: Option<String>,
     ) -> anyhow::Result<BranchOutcome>;
 
-    /// Rename (retitle) a session.
-    async fn rename_session(&self, session_key: &str, title: String) -> anyhow::Result<()>;
+    /// Rename (retitle) a session and/or set its slug (the
+    /// per-parent-unique path segment used for `/a/b` addressing).
+    /// At least one of `title` / `slug` is supplied (enforced by the
+    /// tool layer). A `Some` slug is validated and must be unique
+    /// among the session's siblings; a conflict is a structured error
+    /// naming the conflicting session id.
+    async fn rename_session(
+        &self,
+        session_key: &str,
+        title: Option<String>,
+        slug: Option<String>,
+    ) -> anyhow::Result<()>;
+
+    /// Move (reparent + optional slug change) a session — with its
+    /// subtree — under a new parent. Refused when the move would
+    /// create a cycle, when the source is the live trunk session
+    /// (`root:self`), or when the source or any descendant has an
+    /// active run. `new_slug = None` keeps the existing slug; `Some`
+    /// applies a new per-parent-unique slug at the destination.
+    /// Sprint 7 Commit H (2026-08-22): signature gained `new_slug`.
+    async fn move_session(
+        &self,
+        session_key: &str,
+        new_parent: String,
+        new_slug: Option<String>,
+    ) -> anyhow::Result<()>;
 
     /// Set or clear the archived flag on a session. Archived sessions
     /// are hidden from `list` (unless `include_archived: true`) and
@@ -306,6 +367,8 @@ mod tests {
             peer_id: Some("alice".into()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["session_key"], "alice-1");
@@ -341,6 +404,34 @@ mod tests {
         let back: SessionInfo = serde_json::from_value(legacy).unwrap();
         assert!(!back.archived);
         assert!(!back.run_active);
+        // slug/path were added later still; legacy payloads default them.
+        assert_eq!(back.slug, None);
+        assert_eq!(back.path, "");
+    }
+
+    #[test]
+    fn session_info_slug_and_path_roundtrip() {
+        let info = SessionInfo {
+            session_key: "s1".into(),
+            session_id: "s1".into(),
+            agent_id: None,
+            label: None,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            last_activity: "2024-01-01T01:00:00Z".into(),
+            message_count: 0,
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            run_active: false,
+            slug: Some("task-b".into()),
+            path: "/memory/task-b".into(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["slug"], "task-b");
+        assert_eq!(json["path"], "/memory/task-b");
+        let back: SessionInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(back.slug.as_deref(), Some("task-b"));
+        assert_eq!(back.path, "/memory/task-b");
     }
 
     #[test]
@@ -406,6 +497,8 @@ mod tests {
             peer_id: None,
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let json = serde_json::to_value(&info).unwrap();
         let obj = json.as_object().unwrap();

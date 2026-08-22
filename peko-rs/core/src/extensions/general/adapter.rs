@@ -62,12 +62,6 @@
 //! - `session.context_build` - Modify context window
 //! - `session.start` - Bootstrap context at session start
 //!
-//! ## I/O Lifecycle
-//! - `io.channel_input` - Register input channels
-//! - `io.channel_output` - Register output handlers
-//! - `io.message_pre_send` - Transform outgoing messages
-//! - `io.message_post_receive` - Transform incoming messages
-//!
 //! ## Event Lifecycle
 //! - `event.subscribe` - Subscribe to system events (params: `topic_pattern`)
 //! - `event.emit` - Emit custom events
@@ -178,10 +172,11 @@ impl GeneralExtensionAdapter {
             "session.start" => Some(HookPoint::SessionStart),
 
             // I/O lifecycle
-            "io.channel_input" => Some(HookPoint::ChannelInput),
-            "io.channel_output" => Some(HookPoint::ChannelOutput),
-            "io.message_pre_send" => Some(HookPoint::MessagePreSend),
-            "io.message_post_receive" => Some(HookPoint::MessagePostReceive),
+            // Sprint 9 Commit 5: the io.channel_input,
+            // io.channel_output, io.message_pre_send, and
+            // io.message_post_receive hook strings are no longer
+            // mapped. Manifests declaring them will fail validation
+            // with a clear "no such hook" error.
 
             // Event lifecycle
             "event.subscribe" => {

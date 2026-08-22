@@ -210,7 +210,7 @@ impl Agent {
             tracing::error!(
                 "Built-in tools not pre-registered on ExtensionCore. \
                  This indicates a startup ordering bug — AppState should initialize \
-                 ToolRuntime before StatelessAgentService."
+                 ToolRuntime before the StatelessAgentService path (Sprint 9 Commit 4)."
             );
         }
 
@@ -237,50 +237,45 @@ impl Agent {
         )));
 
         // Add Agent tool with executor and session provider. When this agent
-        // runs as a Principal root agent, scope the tool to the principal
-        // workspace so subagents resolve from
-        // `<workspace>/agents/<name>/AGENT.md`. Otherwise the `Agent` tool
-        // resolves from the global agent registry only.
-        let workspace = self.principal_workspace.clone();
+        // Sprint 7: the Agent tool reads its workspace from the runtime
+        // port (`SubagentExecutorRuntime::workspace()`), which reads
+        // it from `SubagentExecutor::principal_workspace`. The
+        // session-key provider is no longer threaded through the
+        // constructor — the canonical caller session id comes from
+        // `ToolContext::session_id`.
         tools.push(Arc::new(
-            crate::tools::builtin::messaging::agent_tool_with_workspace_and_session(
-                self.subagent_executor.clone(),
-                workspace,
-                Box::new(self.session_key_provider.clone()),
-            ),
+            crate::tools::builtin::messaging::new_agent_tool(self.subagent_executor.clone()),
         ));
 
         // Add planning todo (Task*) tools backed by the agent's session storage.
         // Phase 10d: the tools now speak to a `TodoRuntime` port trait; the
         // adapter is constructed here so the built-in crate stays free of
         // root-only deps.
-        if self.config.enable_task_tools {
-            if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
-                let todo_storage = Arc::new(peko_session::todos::TodoStorage::new(sessions_dir));
-                let runtime = std::sync::Arc::new(
-                    crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
-                );
-                tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(
-                    runtime.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(
-                    runtime.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(
-                    runtime.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(
-                    runtime,
-                )));
-            } else {
-                tracing::warn!(
-                    "Session storage directory not available for agent '{}'; Task* tools will not be registered",
-                    self.config.name
-                );
-            }
+        //
+        // Sprint 8 Commit 3: the per-agent `enable_task_tools` gate was
+        // dropped — every reachable Agent defaults it to `true` and the
+        // read only added noise. Without a session-storage dir we still
+        // warn and skip (defensive).
+        if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
+            let todo_storage = Arc::new(peko_session::todos::TodoStorage::new(sessions_dir));
+            let runtime = std::sync::Arc::new(
+                crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
+            );
+            tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(
+                runtime.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(
+                runtime.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(
+                runtime.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(
+                runtime,
+            )));
         } else {
-            tracing::debug!(
-                "Task* tools disabled by config for agent '{}'",
+            tracing::warn!(
+                "Session storage directory not available for agent '{}'; Task* tools will not be registered",
                 self.config.name
             );
         }
@@ -296,75 +291,93 @@ impl Agent {
         // `Agent::with_principal_plan_port`. Without that binding the
         // tools are intentionally not registered — test-only
         // `Agent::new` callers hit this path. Mirrors the Task* shape:
-        // config-gated first, runtime-handle-gated second, otherwise
-        // warn-level skip.
-        if self.config.enable_plan_tools {
-            if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
-                use crate::tools::builtin::{
-                    PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
-                    PlanListTool, PlanMarkStepTool, PlanRecordEvidenceTool,
-                };
-                tools.push(Arc::new(PlanCreateTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanListTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanGetTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanMarkStepTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanRecordEvidenceTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanAddStepTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanCloseTool::new(plan_port)));
-            } else {
-                tracing::warn!(
-                    "Plan tools enabled by config for agent '{}' but no principal_plan_port \
-                     was bound — Plan* tools will not be registered",
-                    self.config.name
-                );
-            }
+        // runtime-handle-gated, otherwise warn-level skip.
+        //
+        // Sprint 8 Commit 3: the per-agent `enable_plan_tools` gate was
+        // dropped — every reachable Agent defaults it to `true` and the
+        // read only added noise. Sprint 9 Commit 4 retired the gateway
+        // loop's `StatelessAgentService` (which used to construct
+        // `AgentConfig` literals), so the lockstep-update reason is
+        // gone.
+        if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
+            use crate::tools::builtin::{
+                PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
+                PlanListTool, PlanMarkStepTool, PlanRecordEvidenceTool,
+            };
+            tools.push(Arc::new(PlanCreateTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanListTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanGetTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanMarkStepTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanRecordEvidenceTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanAddStepTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanCloseTool::new(plan_port)));
         } else {
-            tracing::debug!(
-                "Plan tools disabled by config for agent '{}'",
+            tracing::warn!(
+                "No principal_plan_port bound for agent '{}' — Plan* tools will not be registered",
                 self.config.name
             );
         }
 
-        // Add the send_peer tool (peer messaging: user notes +
-        // principal-to-principal cross-runtime RPC). Replaces the
-        // legacy `a2a_send` tool (ADR-023 + root-agent unification):
-        // the principal-branch target is a Principal DID (not an agent
-        // name on a target runtime), and dispatch flows through the
-        // tunnel even when caller and target share a daemon.
+        // Add the consolidated `ChannelSend` tool — sprint 4
+        // unification: this single tool replaces both the bare-post
+        // `ChannelSend` AND the per-agent `send_peer`. The dispatch
+        // branch (`Bare` / `Principal` / `User` / `Group`) is
+        // selected by the wire form of the `channel` parameter the
+        // LLM passes; see `tools/builtin/channel/channel_send.rs` for
+        // the dispatch table.
         //
-        // Registration needs only the caller's principal DID. The
-        // cross-runtime ctx is pulled from extension services (set by
-        // the daemon-state after `start_tunnel`); when it is absent
-        // (tunnel down, test harnesses) the tool still registers in
-        // local-only mode — the user branch works, principal targets
-        // return a structured error.
+        // Per-agent construction carries the caller's principal DID —
+        // the F37 funnel's `ToolContext` does NOT carry the caller
+        // DID, so the tool needs it bound at registration. When the
+        // cross-runtime ctx is absent (tunnel down, test harnesses)
+        // the tool still registers in local-only mode — the bare /
+        // group / user branches work; principal targets return a
+        // structured error.
         if let Some(caller_did) = self.caller_principal_did.as_ref() {
             let cross_ctx = self
                 .extension_core
                 .services()
                 .cross_runtime_a2a_ctx()
                 .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());
-            let tool = match cross_ctx {
-                Some(ctx) => crate::tunnel::principal_send_tool::build_tool(
-                    caller_did.clone(),
-                    ctx,
-                ),
-                None => {
+            let port = self
+                .extension_core
+                .services()
+                .channel_port();
+            match (port, cross_ctx) {
+                (Some(port), Some(ctx)) => {
+                    tools.push(std::sync::Arc::new(
+                        crate::tools::builtin::channel::ChannelSendTool::new_with_peer(
+                            port,
+                            caller_did.clone(),
+                            ctx,
+                        ),
+                    ) as std::sync::Arc<dyn peko_tools_core::Tool>);
+                }
+                (Some(port), None) => {
                     tracing::debug!(
                         "CrossRuntimeA2aCtx not available on ExtensionCore — \
-                         send_peer registers local-only (user branch) for agent {}",
+                         ChannelSend registers local-only (no principal branch) for agent {}",
                         self.config.name
                     );
-                    std::sync::Arc::new(crate::tunnel::principal_send_tool::SendPeerTool::new_local_only(
-                        caller_did.clone(),
-                    )) as std::sync::Arc<dyn peko_tools_core::Tool>
+                    tools.push(std::sync::Arc::new(
+                        crate::tools::builtin::channel::ChannelSendTool::new_local_only(
+                            port,
+                            caller_did.clone(),
+                        ),
+                    ) as std::sync::Arc<dyn peko_tools_core::Tool>);
                 }
-            };
-            tools.push(tool);
+                (None, _) => {
+                    tracing::warn!(
+                        "No ChannelPort on ExtensionCore services — \
+                         ChannelSend will not be registered for agent {}",
+                        self.config.name
+                    );
+                }
+            }
         } else {
             tracing::debug!(
                 "Caller identity not bound on agent {} — \
-                 send_peer tool will not be registered",
+                 ChannelSend tool will not be registered",
                 self.config.name
             );
         }
@@ -595,30 +608,6 @@ impl Agent {
         // Load or create identity
         let identity = Self::load_or_create_identity(&config).await?;
 
-        // Issue #28: persist the resolved DID back into the on-disk
-        // config.toml so the tunnel dispatcher can announce it without
-        // re-running identity generation.
-        //
-        // Soft-fail: the agent_dir may not exist yet for a freshly-
-        // spawned subagent whose in-memory config hasn't been written.
-        let config_path = PathResolver::new().agent_config(&config.name);
-        if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
-            warn!("Could not backfill agent_did into config: {}", e);
-        }
-
-        if let Some(ref old_did) = config.agent_did {
-            if old_did != &identity.did {
-                warn!(
-                    "Agent '{}' DID rotated: {old_did} -> {new_did} \
-                     (previous identity file was missing; cross-runtime \
-                     grants and audit references to {old_did} are now orphaned \
-                     — issue #28 follow-up: DID rotation ADR pending).",
-                    config.name,
-                    new_did = identity.did,
-                );
-            }
-        }
-
         // Initialize provider if configured. `provider_hint` is the
         // principal's pinned configured model id, or `None` for tests /
         // non-principal callers. `message_override` is the per-message
@@ -730,6 +719,23 @@ impl Agent {
             .with_principal_workspace(workspace.clone());
         self.subagent_executor = Arc::new(executor);
         self.principal_workspace = Some(workspace);
+        self
+    }
+
+    /// Bind an external inbox registry post-construction.
+    ///
+    /// Sprint 2 Phase 7 (peer-child ingress): a peer-child turn runs
+    /// through `SubagentExecutor::resume_streaming`, whose child Agent
+    /// is built by `new_with_shared_executor_with_model_override` with
+    /// `inbox_registry: None` — its loop would drain a per-call
+    /// standalone registry, and steering queued by the
+    /// `PrincipalManager` / IPC serial-queue fallback into the SHARED
+    /// registry (keyed by the child session id) would never be
+    /// consumed. Binding the shared registry here makes the child
+    /// loop's per-iteration drain see those steering messages.
+    #[must_use]
+    pub fn with_inbox_registry(mut self, registry: Option<Arc<InboxRegistry>>) -> Self {
+        self.inbox_registry = registry;
         self
     }
 
@@ -1018,31 +1024,6 @@ impl Agent {
 
         let identity = Self::load_or_create_identity(&config).await?;
 
-        // Issue #28: persist the resolved DID back into config.toml. This
-        // path is reached for subagent execution where the parent's config
-        // may not yet carry agent_did — the first call backfills it.
-        //
-        // Review of #34 concern #5: the production `PathResolver::new()`
-        // resolves to `~/.peko` (or `PEKO_HOME` if set), so writing here
-        // is a real config mutation. In tests that bypass `new_for_test`
-        // and call this constructor directly against a tempdir-backed
-        // config, we'd otherwise silently mutate the developer's real
-        // `~/.peko`. The `is_path_under_temp_dir` guard catches that
-        // case — the in-memory identity is still valid, the backfill
-        // is just deferred to the first production-path call.
-        let config_path = PathResolver::new().agent_config(&config.name);
-        if !Self::is_path_under_temp_dir(&config_path) {
-            if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
-                warn!("Could not backfill agent_did into config: {}", e);
-            }
-        } else {
-            debug!(
-                "Skipping agent_did backfill for {}: config path {} is under the \
-                 system temp dir (test path — would mutate the developer's real config)",
-                config.name,
-                config_path.display()
-            );
-        }
         // Prefer the inherited provider so the child reuses the parent's
         // resolved provider instead of paying the resolver's catalog
         // lookup cost twice. Fall back to the v3 resolver path if the
@@ -1659,113 +1640,113 @@ impl Agent {
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
         //    core. Uses Weak so the tools do not extend the core's lifetime
         //    past the core itself.
-        if self.config.enable_async_tools {
-            let core_weak = Arc::downgrade(&extension_core);
-            // F37: snapshot the spawning principal's capability grants.
-            // `AsyncExecutorRuntime::spawn` builds the F37 canonical
-            // funnel closure (`execute_tool_via_hook` with
-            // `ToolDispatchContext::for_principal(...)`) and dispatches
-            // it via `AsyncExecutor::dispatch_tool`. The capability gate
-            // at `registry.rs:260-277` evaluates against these snapshotted
-            // grants. Pre-F37, the gate was bypassed entirely.
-            let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
-                self.principal_capabilities
-                    .as_ref()
-                    .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
-                    .unwrap_or_default(),
-            );
-            let snapshot_active_extensions: Arc<Vec<String>> = Arc::new(
-                self.principal_active_extensions
-                    .as_ref()
-                    .map(|active| active.to_vec())
-                    .unwrap_or_default(),
-            );
-            // Phase 10c: `AsyncExecutorRuntime` is the framework-host
-            // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
-            // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
-            // principal_id + capabilities snapshot, so each Async* tool
-            // can take just an `Arc<dyn AsyncRuntime>` rather than
-            // reaching into the framework itself.
-            let runtime = Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
-                    async_executor,
-                    core_weak,
-                    Some(self.identity.did.clone()),
-                    self.principal_id.clone(),
-                    snapshot_capabilities,
-                    snapshot_active_extensions,
-                ),
-            );
-            let runtime_handle = runtime.as_shared();
-            let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
-                runtime_handle.clone(),
-            ));
-            let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(
-                runtime_handle.clone(),
-            ));
+        //
+        // Sprint 8 Commit 3: the per-agent `enable_async_tools` gate was
+        // dropped — every reachable Agent defaults it to `true` and the
+        // read only added noise. Sprint 9 Commit 4 retired the gateway
+        // loop's `StatelessAgentService` (which used to construct
+        // `AgentConfig` literals), so the lockstep-update reason is
+        // gone.
+        let core_weak = Arc::downgrade(&extension_core);
+        // F37: snapshot the spawning principal's capability grants.
+        // `AsyncExecutorRuntime::spawn` builds the F37 canonical
+        // funnel closure (`execute_tool_via_hook` with
+        // `ToolDispatchContext::for_principal(...)`) and dispatches
+        // it via `AsyncExecutor::dispatch_tool`. The capability gate
+        // at `registry.rs:260-277` evaluates against these snapshotted
+        // grants. Pre-F37, the gate was bypassed entirely.
+        let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
+            self.principal_capabilities
+                .as_ref()
+                .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
+                .unwrap_or_default(),
+        );
+        let snapshot_active_extensions: Arc<Vec<String>> = Arc::new(
+            self.principal_active_extensions
+                .as_ref()
+                .map(|active| active.to_vec())
+                .unwrap_or_default(),
+        );
+        // Phase 10c: `AsyncExecutorRuntime` is the framework-host
+        // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
+        // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
+        // principal_id + capabilities snapshot, so each Async* tool
+        // can take just an `Arc<dyn AsyncRuntime>` rather than
+        // reaching into the framework itself.
+        let runtime = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
+                async_executor,
+                core_weak,
+                Some(self.identity.did.clone()),
+                self.principal_id.clone(),
+                snapshot_capabilities,
+                snapshot_active_extensions,
+            ),
+        );
+        let runtime_handle = runtime.as_shared();
+        let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+            runtime_handle.clone(),
+        ));
+        let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(
+            runtime_handle.clone(),
+        ));
 
-            // 4. Re-register the per-agent async tools (overwrites any prior
-            //    instance). register_tool is idempotent — unregisters first.
-            //    Per-agent async tools are scoped to the owning principal.
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
-                    &extension_core,
-                    spawn_tool,
-                    &self.principal_id,
-                )
-                .await
-            {
-                warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
-            }
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
-                    &extension_core,
-                    output_tool,
-                    &self.principal_id,
-                )
-                .await
-            {
-                warn!("Failed to register per-agent AsyncOutputTool: {}", e);
-            }
+        // 4. Re-register the per-agent async tools (overwrites any prior
+        //    instance). register_tool is idempotent — unregisters first.
+        //    Per-agent async tools are scoped to the owning principal.
+        if let Err(e) =
+            crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
+                &extension_core,
+                spawn_tool,
+                &self.principal_id,
+            )
+            .await
+        {
+            warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
+        }
+        if let Err(e) =
+            crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
+                &extension_core,
+                output_tool,
+                &self.principal_id,
+            )
+            .await
+        {
+            warn!("Failed to register per-agent AsyncOutputTool: {}", e);
+        }
 
-            // Register the per-agent introspection trio so this agent only sees
-            // its own async tasks. `register_tool` is idempotent — it unregisters
-            // any prior instance with the same name first.
-            for (tool_name, tool) in [
-                (
-                    "AsyncStatus",
-                    Arc::new(crate::tools::builtin::AsyncStatusTool::new(
-                        runtime_handle.clone(),
-                    )) as Arc<dyn Tool>,
-                ),
-                (
-                    "AsyncList",
-                    Arc::new(crate::tools::builtin::AsyncListTool::new(
-                        runtime_handle.clone(),
-                    )),
-                ),
-                (
-                    "AsyncStop",
-                    Arc::new(crate::tools::builtin::AsyncStopTool::new(
-                        runtime_handle.clone(),
-                    )),
-                ),
-            ] {
-                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-                    &extension_core,
-                    tool,
-                    &self.principal_id,
-                )
-                .await
-                {
-                    warn!("Failed to register per-agent {tool_name}Tool: {e}");
-                }
+        // Register the per-agent introspection trio so this agent only sees
+        // its own async tasks. `register_tool` is idempotent — it unregisters
+        // any prior instance with the same name first.
+        for (tool_name, tool) in [
+            (
+                "AsyncStatus",
+                Arc::new(crate::tools::builtin::AsyncStatusTool::new(
+                    runtime_handle.clone(),
+                )) as Arc<dyn Tool>,
+            ),
+            (
+                "AsyncList",
+                Arc::new(crate::tools::builtin::AsyncListTool::new(
+                    runtime_handle.clone(),
+                )),
+            ),
+            (
+                "AsyncStop",
+                Arc::new(crate::tools::builtin::AsyncStopTool::new(
+                    runtime_handle.clone(),
+                )),
+            ),
+        ] {
+            if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+                &extension_core,
+                tool,
+                &self.principal_id,
+            )
+            .await
+            {
+                warn!("Failed to register per-agent {tool_name}Tool: {e}");
             }
-        } else {
-            tracing::debug!(
-                "Async tools disabled by config for agent '{}'",
-                self.config.name
-            );
         }
 
         // F35 — register the synthetic `__tool_search` stub if the agent
@@ -2111,15 +2092,17 @@ impl Agent {
         let mut output = String::from("📁 Sessions:\n\n");
 
         for (i, session) in sessions.iter().enumerate() {
-            let is_active = active_id.is_some_and(|id| id == session.session_id);
+            let is_active = active_id.is_some_and(|id| id == session.session_id.as_str());
             let marker = if is_active { "●" } else { "○" };
             let label = session.title.as_deref().unwrap_or("unnamed");
-            let short_id = &session.session_id[..8];
+            let short_id = &session.session_id.as_str()[..8];
 
             output.push_str(&format!("{} {}. {} ({})", marker, i + 1, label, short_id));
 
-            if let Some(ref parent) = session.parent_session_id {
-                output.push_str(&format!(" [branched from {}]", &parent[..8]));
+            if let Some(parent) = session.parent_session_id {
+                let parent_str = parent.as_str();
+                let parent_short = &parent_str[..8];
+                output.push_str(&format!(" [branched from {}]", parent_short));
             }
 
             if is_active {
@@ -2185,7 +2168,7 @@ impl Agent {
                     let target_lower = target.to_lowercase();
                     sessions
                         .iter()
-                        .find(|s| s.session_id.to_lowercase().starts_with(&target_lower))
+                        .find(|s| s.session_id.as_str().to_lowercase().starts_with(&target_lower))
                         .map(|s| s.session_id.clone())
                         .ok_or_else(|| {
                             anyhow::anyhow!(
@@ -2193,11 +2176,12 @@ impl Agent {
                             )
                         })?
                 };
+                let session_id_str = session_id.as_str().clone();
 
-                self.session_switch(peer, &session_id).await?;
+                self.session_switch(peer, &session_id_str).await?;
                 Ok((true, format!(
                     "↔️  Switched to session {}\n\nPrevious messages are now from the selected session context.",
-                    &session_id[..8]
+                    &session_id_str[..8]
                 )))
             }
             "/sessions" => {
@@ -2208,7 +2192,7 @@ impl Agent {
                         Some(s.session_id.as_str())
                             == sessions.first().map(|f| f.session_id.as_str())
                     })
-                    .map(|s| s.session_id.clone());
+                    .map(|s| s.session_id.to_string());
                 let output = self.format_session_list(&sessions, active_id.as_deref());
                 Ok((true, output))
             }
@@ -2328,43 +2312,26 @@ impl Agent {
         let storage =
             KeyStorage::new(crate::identity_compat::default_identity_data_dir().as_ref())?;
 
-        // Issue #28: prefer lookup by `agent_did` (the on-disk filename is
-        // the DID, not the agent name). Pre-#28 configs stored identity
-        // under `{name}.json` which meant a fresh keypair was generated on
-        // every agent start — the fix keys the lookup by the stable DID
-        // and falls back to the legacy name-keyed path so existing agents
-        // still resolve.
-        if let Some(ref did) = config.agent_did {
-            if let Ok(identity) = storage.load(did) {
-                info!("Loaded identity by agent_did: {}", identity.did);
-                return Ok(identity);
-            }
-            // agent_did set but identity file missing — broken state.
-            // Review of #34: silent key rotation is a smell. Log the
-            // rotation at `info` level naming BOTH the old and new DIDs
-            // so an operator restoring from backup can correlate the
-            // event. The caller (`new_with_session_manager` /
-            // `new_with_shared_executor`) will overwrite `agent_did` in
-            // the config — see `persist_agent_did` for the targeted
-            // read-modify-write that doesn't clobber other fields.
-            //
-            // The follow-up ADR called out in #28 (DID rotation / key
-            // compromise recovery) is the right place to add a
-            // fail-closed mode and a `RecoveryClaim` event; for now we
-            // log loudly and continue.
-            warn!(
-                "agent_did '{}' in config does not resolve to a stored identity; \
-                 generating a replacement. Any cross-runtime grants or \
-                 audit references to the old DID will be orphaned \
-                 (issue #28 follow-up: DID rotation ADR pending).",
-                did
-            );
-        }
+        // Sprint 8 Commit 5: the `agent_did` lookup branch was dropped.
+        // The branch read `config.agent_did` from TOML and used it as
+        // the on-disk identity filename. After the spawn-path TOML
+        // fallback was retired (Commit 2), `config.agent_did` is set
+        // only by the gateway loop's `ConfigAuthority` (retired in
+        // Sprint 9 Commit 4 along with `StatelessAgentService`). The
+        // spawn path always passes a config without `agent_did`
+        // (constructed from the parent's own config or
+        // `AgentConfig::default()`), so the TOML lookup was dead on
+        // the spawn path.
+        //
+        // Identity resolution falls through to the legacy name-keyed
+        // path (pre-#28 fallback that still resolves existing
+        // identities keyed by `{name}.json`). For a fresh agent the
+        // bottom branch generates a new identity. `KeyStorage` is the
+        // authoritative source; `agent_did` was retired from
+        // `AgentConfig` entirely in Sprint 9 Commit 1.
 
-        // Legacy fallback: identity file may be keyed by agent name
-        // (pre-#28 — buggy but tolerated).
         if let Ok(identity) = storage.load(&config.name) {
-            info!("Loaded legacy name-keyed identity: {}", identity.did);
+            info!("Loaded name-keyed identity: {}", identity.did);
             return Ok(identity);
         }
 
@@ -2378,137 +2345,15 @@ impl Agent {
         Ok(identity)
     }
 
-    /// Persist the resolved agent_did back into the on-disk config.toml.
-    ///
-    /// Issue #28: the per-agent DID is generated lazily on first
-    /// `Agent::new()`; this call backfills it into `config.toml` so the
-    /// DID is stable across restarts and visible to the tunnel dispatcher
-    /// (which reads `agent_did` straight from the config file when
-    /// building `InstanceAnnouncePayload`).
-    ///
-    /// **Read-modify-write, not a full overwrite** (review of #34):
-    /// the previous version `toml::to_string_pretty(&config)`-ed the
-    /// entire `AgentConfig` and wrote it back, which would clobber any
-    /// hand-edited comments, key ordering, or concurrent writer's
-    /// changes. This version reads the existing TOML, sets just the
-    /// `agent_did` key on the parsed `toml::Value`, and re-serializes —
-    /// preserving other fields, comments, and key ordering as long as
-    /// the same TOML structure is used. Concurrent writers are still
-    /// vulnerable to a lost update (no file lock); the call site guards
-    /// against this by skipping the backfill if the in-memory
-    /// `config.agent_did` already matches.
-    ///
-    /// Best-effort: a write failure is logged but not propagated. The
-    /// in-memory identity is still valid; the next agent start will
-    /// retry the write. The caller is responsible for providing the
-    /// correct `config_path` — `PathResolver::agent_config(name)` is the
-    /// canonical location.
-    async fn backfill_agent_did(
-        config_path: &std::path::Path,
-        config: &AgentConfig,
-        agent_did: &str,
-    ) -> Result<()> {
-        if config.agent_did.as_deref() == Some(agent_did) {
-            return Ok(());
-        }
-
-        // Best-effort: if the on-disk config location doesn't exist yet
-        // (e.g. a Principal-only install where `~/.peko/agents/` was never
-        // created, or a freshly-spawned subagent whose parent hasn't written
-        // its config), there's nothing to backfill and the in-memory identity
-        // is already valid. Skip silently rather than spamming a warning
-        // every daemon tick.
-        let Some(parent) = config_path.parent() else {
-            return Ok(());
-        };
-        if !parent.exists() {
-            debug!(
-                "Skipping agent_did backfill for {:?}: parent dir {} does not exist \
-                 (Principal-only install or subagent without on-disk config)",
-                config_path,
-                parent.display()
-            );
-            return Ok(());
-        }
-
-        // Read the existing TOML so we preserve any fields we don't know
-        // about (forward-compat) and the existing key ordering / comments
-        // that the `toml` crate keeps when round-tripping a `Value`.
-        let mut root: toml::Value = match tokio::fs::read_to_string(config_path).await {
-            Ok(s) => toml::from_str(&s).with_context(|| {
-                format!(
-                    "Failed to parse existing config TOML at {}",
-                    config_path.display()
-                )
-            })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Config doesn't exist yet (e.g. subagent path) — write a
-                // fresh file with just the agent_did set. The caller
-                // path that triggers this is `new_with_shared_executor`
-                // in a test, where the config is in memory only.
-                toml::Value::Table(toml::map::Map::new())
-            }
-            Err(e) => {
-                return Err(e).with_context(|| {
-                    format!(
-                        "Failed to read existing config at {}",
-                        config_path.display()
-                    )
-                });
-            }
-        };
-
-        if let toml::Value::Table(ref mut tbl) = root {
-            tbl.insert(
-                "agent_did".to_string(),
-                toml::Value::String(agent_did.to_string()),
-            );
-        } else {
-            anyhow::bail!(
-                "Refusing to write agent_did: existing config at {} is not a TOML table",
-                config_path.display()
-            );
-        }
-
-        let toml_str =
-            toml::to_string_pretty(&root).context("Failed to serialize updated AgentConfig")?;
-
-        tokio::fs::write(config_path, toml_str)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to persist agent_did to {} (in-memory identity will still work this session)",
-                    config_path.display()
-                )
-            })?;
-
-        info!("Backfilled agent_did into config: {}", agent_did);
-        Ok(())
-    }
-
-    /// True if `path` lives under the system temp directory.
-    ///
-    /// Review of #34 concern #5: the `Agent::new_with_shared_executor`
-    /// path resolves its config path via `PathResolver::new()`, which
-    /// reads `PEKO_HOME` or defaults to the user's real `~/.peko`.
-    /// Tests that bypass `new_for_test` (e.g. exercises of the
-    /// subagent executor with a manually-constructed `AgentConfig`)
-    /// would otherwise mutate the developer's real config on
-    /// `cargo test`. The check is conservative: any path under
-    /// `std::env::temp_dir()` is treated as a test path and the
-    /// on-disk backfill is skipped — the in-memory identity is still
-    /// valid, the next production-path call (real `Agent::new`) will
-    /// do the real backfill.
-    fn is_path_under_temp_dir(path: &std::path::Path) -> bool {
-        let temp = std::env::temp_dir();
-        // Canonicalize where possible so a relative `target/debug/...`
-        // path still matches an absolute temp path. If canonicalize
-        // fails (path doesn't exist), fall back to lexical comparison
-        // on the original path.
-        let path_abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let temp_abs = temp.canonicalize().unwrap_or_else(|_| temp.clone());
-        path_abs.starts_with(&temp_abs)
-    }
+    // Sprint 8 Commit 5: `backfill_agent_did` and `is_path_under_temp_dir`
+    // were deleted. The spawn path no longer persists `agent_did` to
+    // TOML — `KeyStorage` is the authoritative identity source, and
+    // identity resolution now falls through to the name-keyed path
+    // (or generates a fresh one) regardless of what `agent_did` is on
+    // the in-memory config. Sprint 9 Commit 1 retired the
+    // `AgentConfig::agent_did` field entirely; cross-runtime identity
+    // references now read `Agent::identity.did` (from `KeyStorage`)
+    // directly.
 
     /// Resolve the agent's provider and the catalog id that produced it.
     ///

@@ -9,13 +9,21 @@
 //!
 //! ## DTOs
 //!
-//! [`AgentConfig`], [`SpawnError`], [`ExecutionConfig`],
+//! [`SpawnError`], [`ExecutionConfig`],
 //! [`CompletedRun`], [`SubagentResult`], and [`SubagentRunView`] are
 //! the canonical DTOs the port traffics in. Root re-exports each via
 //! `pub use crate::tools::builtin::messaging::...` for backwards
 //! compatibility. [`SpawnCleanupPolicy`] is re-exported from
 //! `peko_extension_host` (Phase 8 commit 2) so consumers of this
 //! module only need one import path.
+//!
+//! Sprint 8 Commit 4 removed the `AgentConfig` mirror DTO — the
+//! spawn path now uses `Arc<crate::agents::subagent_runtime_impl::AgentPrompt>`
+//! directly (workspace Markdown as the single source of truth).
+//! Root's canonical `crate::agents::agent_config::AgentConfig` is
+//! still re-exported from `agent_compat` for the gateway loop
+//! (`StatelessAgentService`) until Sprint 8b migrates that
+//! consumer.
 //!
 //! ## Port
 //!
@@ -30,24 +38,23 @@ pub mod agent_compat;
 pub mod dto;
 pub mod subagent_runtime;
 
-pub use agent::{AgentArgs, AgentTool, SessionKeyProvider, StaticSessionKeyProvider};
+pub use agent::{AgentArgs, AgentTool};
 pub use dto::{
-    AgentConfig, CompletedRun, ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult,
+    CompletedRun, ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult,
     SubagentRunView,
 };
 pub use subagent_runtime::{SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime};
 
 // Phase F4: `agent_compat` exposes the root-only types the lifted
 // `peko-tools-builtin` sat intentionally does not own:
-// `DynamicSessionKeyProvider` (daemon mutates session keys at runtime)
-// + the executor-typed constructor shims `new_agent_tool` /
-// `agent_tool_with_workspace` / `agent_tool_with_session_provider` /
-// `agent_tool_with_workspace_and_session` that wrap an
-// `Arc<SubagentExecutor>` in a `SubagentExecutorRuntime` adapter.
-// Re-export them so `crate::tools::builtin::messaging::X` keeps
-// working unchanged.
-pub use agent_compat::{
-    agent_tool_with_session_provider, agent_tool_with_workspace,
-    agent_tool_with_workspace_and_session, new_agent_tool, runtime_from_executor,
-    DynamicSessionKeyProvider,
-};
+// `DynamicSessionKeyProvider` (daemon mutates session keys at
+// runtime) + the executor-typed constructor shim `new_agent_tool`
+// that wraps an `Arc<SubagentExecutor>` in a
+// `SubagentExecutorRuntime` adapter. Sprint 7 collapsed the four
+// `agent_tool_with_*` variants into a single `new_agent_tool` —
+// workspace moved onto the runtime port (`SubagentRuntime::workspace`)
+// and the session-key provider moved onto the runtime port's
+// `session_id()` accessor (with `ToolContext::session_id` as the
+// canonical production source). Re-export them so
+// `crate::tools::builtin::messaging::X` keeps working.
+pub use agent_compat::{new_agent_tool, runtime_from_executor, DynamicSessionKeyProvider};

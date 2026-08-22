@@ -11,7 +11,7 @@ use chrono::Utc;
 use clap::Subcommand;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_cron::tools::parse_duration_ms;
-use peko_cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
+use peko_cron::{CronJob, CronJobAction, ScheduleKind};
 use peko_subject::PrincipalId;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -68,9 +68,11 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Announce results
+        /// Session target for the fired turn. Since Phase 7 the trunk
+        /// (`root:self`) is the default and only destination; "trunk" is
+        /// accepted for compatibility and changes nothing
         #[arg(long)]
-        announce: bool,
+        target: Option<String>,
         /// Delete after successful run (one-shot)
         #[arg(long)]
         delete_after_run: bool,
@@ -91,9 +93,10 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Announce results
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
-        announce: bool,
+        target: Option<String>,
     },
 
     /// Add a recurring interval job
@@ -114,9 +117,10 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Announce results
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
-        announce: bool,
+        target: Option<String>,
     },
 
     /// Remove a cron job
@@ -168,9 +172,10 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short = 'm', long)]
         message: String,
-        /// Announce results
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
-        announce: bool,
+        target: Option<String>,
     },
 
     /// Add an event-triggered job (runs on system event)
@@ -193,9 +198,10 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Announce results
+        /// Session target for the fired turn ("trunk" → `root:self`; the
+        /// default since Phase 7 — the flag is accepted for compatibility)
         #[arg(long)]
-        announce: bool,
+        target: Option<String>,
     },
 }
 
@@ -204,6 +210,15 @@ async fn connect_daemon() -> Result<DaemonClient> {
     DaemonClient::connect()
         .await
         .context("Daemon is not running. Start it with: peko daemon start")
+}
+
+/// Validate a `--target` flag value against the cron DTO rule (only
+/// `"trunk"` is accepted) before the job leaves the CLI — the daemon
+/// re-validates at `CronScheduler::add_job`, but failing here gives the
+/// operator the error without a daemon round-trip.
+fn resolve_send_target(target: Option<String>) -> Result<Option<String>> {
+    peko_cron::tools::validate_send_target(&target)?;
+    Ok(target)
 }
 
 /// Handle cron commands
@@ -266,7 +281,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             timezone,
             principal,
             message,
-            announce,
+            target,
             delete_after_run,
         } => {
             let client = connect_daemon().await?;
@@ -279,16 +294,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             let schedule_kind = ScheduleKind::Cron {
                 expr: schedule.clone(),
                 tz: timezone.clone(),
-            };
-
-            let delivery = if announce {
-                DeliveryMode::Announce {
-                    channel: None,
-                    to: None,
-                    best_effort: true,
-                }
-            } else {
-                DeliveryMode::None
             };
 
             // Compute next run
@@ -308,8 +313,10 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 name,
                 principal_id,
                 schedule: schedule_kind,
-                action: CronJobAction::Send { message },
-                delivery,
+                action: CronJobAction::Send {
+                    message,
+                    target: resolve_send_target(target)?,
+                },
                 delete_after_run,
                 enabled: true,
                 created_at: Utc::now(),
@@ -342,21 +349,11 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             at,
             principal,
             message,
-            announce,
+            target,
         } => {
             let client = connect_daemon().await?;
 
             let at_time = parse_at_time(&at)?;
-
-            let delivery = if announce {
-                DeliveryMode::Announce {
-                    channel: None,
-                    to: None,
-                    best_effort: true,
-                }
-            } else {
-                DeliveryMode::None
-            };
 
             let principal_id: PrincipalId = paths
                 .principal_id_for(&principal)
@@ -369,8 +366,10 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 schedule: ScheduleKind::At {
                     at: at_time.to_rfc3339(),
                 },
-                action: CronJobAction::Send { message },
-                delivery,
+                action: CronJobAction::Send {
+                    message,
+                    target: resolve_send_target(target)?,
+                },
                 delete_after_run: true,
                 enabled: true,
                 created_at: Utc::now(),
@@ -403,7 +402,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             interval,
             principal,
             message,
-            announce,
+            target,
         } => {
             let client = connect_daemon().await?;
 
@@ -414,16 +413,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                     anyhow::bail!("either --interval-ms or --interval is required")
                 }
                 (Some(_), Some(_)) => unreachable!("clap enforces conflicts_with"),
-            };
-
-            let delivery = if announce {
-                DeliveryMode::Announce {
-                    channel: None,
-                    to: None,
-                    best_effort: true,
-                }
-            } else {
-                DeliveryMode::None
             };
 
             let schedule_kind = ScheduleKind::Every {
@@ -440,8 +429,10 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 name,
                 principal_id,
                 schedule: schedule_kind,
-                action: CronJobAction::Send { message },
-                delivery,
+                action: CronJobAction::Send {
+                    message,
+                    target: resolve_send_target(target)?,
+                },
                 delete_after_run: false,
                 enabled: true,
                 created_at: Utc::now(),
@@ -508,7 +499,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                     ..
                 } => {
                     println!("▶️  Triggered job '{run_job_id}' (run_id: {run_id})");
-                    println!("   The daemon will execute it on the next poll cycle.");
+                    println!("   The daemon is firing it now.");
                     Ok(())
                 }
                 ResponsePacket::Error { message, .. } => {
@@ -564,19 +555,9 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             minutes,
             principal,
             message,
-            announce,
+            target,
         } => {
             let client = connect_daemon().await?;
-
-            let delivery = if announce {
-                DeliveryMode::Announce {
-                    channel: None,
-                    to: None,
-                    best_effort: true,
-                }
-            } else {
-                DeliveryMode::None
-            };
 
             let principal_id: PrincipalId = paths
                 .principal_id_for(&principal)
@@ -587,8 +568,10 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 name,
                 principal_id,
                 schedule: ScheduleKind::Idle { minutes },
-                action: CronJobAction::Send { message },
-                delivery,
+                action: CronJobAction::Send {
+                    message,
+                    target: resolve_send_target(target)?,
+                },
                 delete_after_run: false,
                 enabled: true,
                 created_at: Utc::now(),
@@ -621,21 +604,11 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             once,
             principal,
             message,
-            announce,
+            target,
         } => {
             let client = connect_daemon().await?;
 
             let filter_val = filter.and_then(|f| serde_json::from_str(&f).ok());
-
-            let delivery = if announce {
-                DeliveryMode::Announce {
-                    channel: None,
-                    to: None,
-                    best_effort: true,
-                }
-            } else {
-                DeliveryMode::None
-            };
 
             let principal_id: PrincipalId = paths
                 .principal_id_for(&principal)
@@ -650,8 +623,10 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                     filter: filter_val,
                     once,
                 },
-                action: CronJobAction::Send { message },
-                delivery,
+                action: CronJobAction::Send {
+                    message,
+                    target: resolve_send_target(target)?,
+                },
                 delete_after_run: once,
                 enabled: true,
                 created_at: Utc::now(),

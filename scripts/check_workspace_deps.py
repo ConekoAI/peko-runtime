@@ -472,11 +472,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     (
         "peko-fs-persistence",
-        "peko-chat-log",
-        "fs-persistence is leaf-utility; no peko-* deps allowed.",
-    ),
-    (
-        "peko-fs-persistence",
         "peko-peko-daemon",
         "fs-persistence is leaf-utility; no peko-* deps allowed.",
     ),
@@ -490,78 +485,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-fs-persistence",
         "peko",
         "fs-persistence is leaf-utility; no peko-* deps allowed.",
-    ),
-    # peko-chat-log depends only on peko-subject + peko-fs-persistence (Phase 5)
-    (
-        "peko-chat-log",
-        "peko-message",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-tools-core",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-extension-api",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-extension-host",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-protocol",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-engine",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-events",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-quota",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-identity",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-auth",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-provider-api",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko-peko-daemon",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    # Phase 0.Z-B
-    (
-        "peko-chat-log",
-        "peko-peko-cli",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-chat-log",
-        "peko",
-        "chat-log is a leaf storage crate; only peko-subject + peko-fs-persistence allowed.",
     ),
     # peko-plan is a leaf domain crate (Phase X).
     # Allowed deps: peko-subject (PrincipalId), peko-fs-persistence (FileLock).
@@ -638,11 +561,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-plan",
         "peko-peko-cli",
-        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-plan",
-        "peko-chat-log",
         "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
     ),
     (

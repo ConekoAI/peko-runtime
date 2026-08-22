@@ -28,16 +28,22 @@ pub const GLOBAL_TOOL_NAMES: &[&str] = &[
     // loop calls this on demand; principal boundary preserved
     // because the principal invokes the tool itself.
     "ChannelRead",
-    // PR-5c — symmetric channel send. `ctx.principal_id` becomes
-    // the `post` sender, so membership + audit attribution stay
-    // correct end-to-end.
-    "ChannelSend",
+    // Sprint 4: `ChannelSend` is per-agent (see
+    // `AGENT_SPECIFIC_TOOL_NAMES` below) because the tool needs the
+    // caller's principal DID bound at construction — global
+    // registration can't supply that. The pre-sprint 4 `ChannelSend`
+    // bare-post path is the global one; the principal / user / group
+    // branches need the bound DID and live per-agent.
 ];
 
 /// Tools registered per-agent in `Agent::init_builtins_async()`.
 pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &[
     "Agent",
-    "send_peer",
+    // Sprint 4: unified channel send (was `send_peer` + the bare-post
+    // `ChannelSend`). The dispatch branch is selected by the wire
+    // form of the LLM-supplied `channel` parameter (`chan_*` /
+    // `principal:<did>` / `user:<id>` / `group:<slug>`).
+    "ChannelSend",
     "AsyncSpawn",
     "AsyncOutput",
     "TaskCreate",

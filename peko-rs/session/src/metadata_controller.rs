@@ -6,6 +6,7 @@
 //! - Single point of truth for metadata
 //! - Centralized caching and reconciliation
 
+use crate::id::SessionId;
 use crate::index::{MaintenanceConfig, MaintenanceReport, SessionEntry, SessionIndex};
 use crate::jsonl::SessionStorage;
 use crate::metadata::{ReconciliationResult, SessionMetadata};
@@ -73,7 +74,7 @@ impl MetadataController {
     /// This is the ONLY way to create session metadata.
     /// Accepts `SessionMetadata` for backward compatibility but stores as `SessionEntry` internally.
     pub async fn create_metadata(&mut self, metadata: SessionMetadata) -> Result<()> {
-        let session_id = metadata.session_id.clone();
+        let session_id = metadata.session_id;
         debug!("Creating metadata for session {}", session_id);
 
         // Convert to entry for internal storage
@@ -84,7 +85,7 @@ impl MetadataController {
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache.write().await.insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.to_string(), entry);
 
         info!("Created metadata for session {}", session_id);
         Ok(())
@@ -94,7 +95,7 @@ impl MetadataController {
     ///
     /// This method accepts `SessionEntry` directly for internal operations.
     pub async fn create_entry(&mut self, entry: SessionEntry) -> Result<()> {
-        let session_id = entry.session_id.clone();
+        let session_id = entry.session_id;
         debug!("Creating entry for session {}", session_id);
 
         // Insert into index
@@ -102,7 +103,7 @@ impl MetadataController {
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache.write().await.insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.to_string(), entry);
 
         info!("Created entry for session {}", session_id);
         Ok(())
@@ -117,16 +118,22 @@ impl MetadataController {
         session_id: &str,
         sync_from_jsonl: bool,
     ) -> Result<Option<SessionEntry>> {
+        // Canonicalize the input to the SessionId form so test fixtures
+        // can pass either the legacy literal ("sess_123") or a UUID
+        // string and get the same entry. `SessionId::from` accepts both
+        // — canonical UUIDs parse directly, anything else derives a
+        // stable v5 UUID so the lookup is deterministic.
+        let key = SessionId::from(session_id).to_string();
         // Check cache first (only if not syncing)
         if !sync_from_jsonl {
-            if let Some(cached) = self.cache.read().await.get(session_id).cloned() {
+            if let Some(cached) = self.cache.read().await.get(&key).cloned() {
                 debug!("Cache hit for session {}", session_id);
                 return Ok(Some(cached));
             }
         }
 
         // Load from index
-        let mut entry = match self.index.get(session_id).await? {
+        let mut entry = match self.index.get(&key).await? {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -209,7 +216,7 @@ impl MetadataController {
     ///
     /// Accepts `SessionMetadata` for backward compatibility but stores as `SessionEntry` internally.
     pub async fn update_metadata(&mut self, metadata: SessionMetadata) -> Result<()> {
-        let session_id = metadata.session_id.clone();
+        let session_id = metadata.session_id;
         debug!("Updating metadata for session {}", session_id);
 
         // Convert to entry for internal storage
@@ -220,7 +227,7 @@ impl MetadataController {
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache.write().await.insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.to_string(), entry);
 
         debug!("Updated metadata for session {}", session_id);
         Ok(())
@@ -230,7 +237,7 @@ impl MetadataController {
     ///
     /// This method accepts `SessionEntry` directly for internal operations.
     pub async fn update_entry(&mut self, entry: SessionEntry) -> Result<()> {
-        let session_id = entry.session_id.clone();
+        let session_id = entry.session_id;
         debug!("Updating entry for session {}", session_id);
 
         // Update index
@@ -238,7 +245,7 @@ impl MetadataController {
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache.write().await.insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.to_string(), entry);
 
         debug!("Updated entry for session {}", session_id);
         Ok(())
@@ -263,6 +270,132 @@ impl MetadataController {
         }
 
         info!("Set archived={} for session {}", archived, session_id);
+        Ok(())
+    }
+
+    /// Set the parent session id on a session (reparent).
+    ///
+    /// Same update pattern as [`Self::set_archived`]: load the entry,
+    /// mutate the field, and write it back through the delta-merge-safe
+    /// index save. Errors when the session does not exist. This is a
+    /// raw write — the ownership / cycle / live-run guards live in the
+    /// caller (root's `SessionManagerRuntime::move_session`).
+    pub async fn set_parent(
+        &mut self,
+        session_id: &str,
+        new_parent: Option<SessionId>,
+    ) -> Result<()> {
+        debug!(
+            "Setting parent_session_id={:?} for session {}",
+            new_parent, session_id
+        );
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set parent for non-existent session {session_id}")
+        })?;
+
+        if entry.parent_session_id != new_parent {
+            entry.parent_session_id = new_parent;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set parent_session_id for session {}", session_id);
+        Ok(())
+    }
+
+    /// Set the slug on a session (per-parent-unique path segment).
+    ///
+    /// Unlike [`Self::set_parent`] this is NOT a raw write: the slug
+    /// format is validated (`crate::path::validate_slug`) and
+    /// per-parent uniqueness is enforced by scanning the session's
+    /// siblings (`crate::path::slug_conflict`) — a conflict is a
+    /// structured error naming the conflicting session id. Passing
+    /// `None` clears the slug without checks. Errors when the session
+    /// does not exist.
+    pub async fn set_slug(&mut self, session_id: &str, slug: Option<String>) -> Result<()> {
+        debug!("Setting slug={:?} for session {}", slug, session_id);
+
+        let entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set slug for non-existent session {session_id}")
+        })?;
+
+        if let Some(ref slug) = slug {
+            crate::path::validate_slug(slug)?;
+            let siblings = self.list_metadata(false).await?;
+            if let Some(conflict) = crate::path::slug_conflict(
+                &siblings,
+                entry.parent_session_id,
+                slug,
+                SessionId::from(session_id),
+            ) {
+                return Err(crate::path::err_slug_conflict(
+                    slug,
+                    conflict,
+                    entry.parent_session_id,
+                ));
+            }
+        }
+
+        if entry.slug != slug {
+            let mut entry = entry;
+            entry.slug = slug;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set slug for session {}", session_id);
+        Ok(())
+    }
+
+    /// Set the standing flag on a session.
+    ///
+    /// Same update pattern as [`Self::set_archived`]: load the entry,
+    /// mutate the flag, and write it back through the delta-merge-safe
+    /// index save. Standing sessions are exempt from maintenance
+    /// pruning (`SessionIndex::maintenance`). Errors when the session
+    /// does not exist.
+    pub async fn set_standing(&mut self, session_id: &str, standing: bool) -> Result<()> {
+        debug!("Setting standing={} for session {}", standing, session_id);
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set standing for non-existent session {session_id}")
+        })?;
+
+        if entry.standing != standing {
+            entry.standing = standing;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set standing={} for session {}", standing, session_id);
+        Ok(())
+    }
+
+    /// Set the privileged flag on a session.
+    ///
+    /// Same update pattern as [`Self::set_standing`]: load the entry,
+    /// mutate the flag, and write it back through the delta-merge-safe
+    /// index save. A privileged session's caller gets whole-store
+    /// reach in the ownership guards (sprint 2 peer-child
+    /// provisioning). Errors when the session does not exist.
+    pub async fn set_privileged(&mut self, session_id: &str, privileged: bool) -> Result<()> {
+        debug!(
+            "Setting privileged={} for session {}",
+            privileged, session_id
+        );
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set privileged for non-existent session {session_id}")
+        })?;
+
+        if entry.privileged != privileged {
+            entry.privileged = privileged;
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        info!("Set privileged={} for session {}", privileged, session_id);
         Ok(())
     }
 
@@ -361,14 +494,17 @@ impl MetadataController {
     pub async fn delete_metadata(&mut self, session_id: &str) -> Result<bool> {
         debug!("Deleting metadata for session {}", session_id);
 
+        // Canonicalize so test fixtures can pass either a literal or
+        // a UUID — both go through the same key derivation.
+        let key = SessionId::from(session_id).to_string();
         // Remove from index
-        let removed = self.index.remove(session_id).await?.is_some();
+        let removed = self.index.remove(&key).await?.is_some();
         if removed {
             self.index.save().await?;
         }
 
         // Remove from cache
-        self.cache.write().await.remove(session_id);
+        self.cache.write().await.remove(&key);
 
         if removed {
             info!("Deleted metadata for session {}", session_id);
@@ -499,10 +635,10 @@ impl MetadataController {
 
         if sync_from_jsonl {
             for entry in &mut entries {
-                let session_id = entry.session_id.clone();
+                let session_id = entry.session_id;
 
                 // Sync message count
-                match self.count_messages_from_jsonl(&session_id).await {
+                match self.count_messages_from_jsonl(&session_id.to_string()).await {
                     Ok(actual_count) => {
                         if entry.message_count != actual_count {
                             debug!(
@@ -518,7 +654,7 @@ impl MetadataController {
                 }
 
                 // Sync token usage
-                if let Err(e) = self.sync_token_metrics_to_entry(&session_id, entry).await {
+                if let Err(e) = self.sync_token_metrics_to_entry(&session_id.to_string(), entry).await {
                     warn!("Failed to sync token metrics for {}: {}", session_id, e);
                 }
             }
@@ -564,8 +700,8 @@ impl MetadataController {
 
         if sync_from_jsonl {
             for entry in &mut entries {
-                let session_id = entry.session_id.clone();
-                match self.count_messages_from_jsonl(&session_id).await {
+                let session_id = entry.session_id;
+                match self.count_messages_from_jsonl(&session_id.to_string()).await {
                     Ok(actual_count) => {
                         if entry.message_count != actual_count {
                             debug!(
@@ -786,20 +922,20 @@ impl MetadataController {
         let mut results = Vec::new();
 
         for entry in entries {
-            let session_id = entry.session_id.clone();
+            let session_id = entry.session_id;
             let old_count = entry.message_count;
 
-            match self.sync_from_jsonl(&session_id).await {
+            match self.sync_from_jsonl(&session_id.to_string()).await {
                 Ok(new_count) => {
                     if new_count == old_count {
-                        results.push(ReconciliationResult::new(&session_id));
+                        results.push(ReconciliationResult::new(session_id.to_string()));
                     } else {
                         info!(
                             "Synced session {}: {} -> {}",
                             session_id, old_count, new_count
                         );
                         results.push(
-                            ReconciliationResult::new(&session_id)
+                            ReconciliationResult::new(session_id.to_string())
                                 .with_discrepancy("message_count", old_count, new_count)
                                 .reconciled(old_count, new_count),
                         );
@@ -807,7 +943,7 @@ impl MetadataController {
                 }
                 Err(e) => {
                     warn!("Failed to sync session {}: {}", session_id, e);
-                    results.push(ReconciliationResult::new(&session_id));
+                    results.push(ReconciliationResult::new(session_id.to_string()));
                 }
             }
         }
@@ -944,7 +1080,7 @@ mod tests {
 
         let retrieved = controller.get_metadata_fast("sess_123").await.unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().session_id, "sess_123");
+        assert_eq!(retrieved.unwrap().session_id, SessionId::from("sess_123"));
     }
 
     #[tokio::test]
@@ -1041,6 +1177,231 @@ mod tests {
             .is_err());
     }
 
+    #[tokio::test]
+    async fn test_set_parent_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let mut controller = MetadataController::new(&dir);
+        let metadata = SessionMetadata::new(
+            SessionId::from("sess_123"),
+            "test_agent",
+            "sess_123.jsonl",
+        );
+        controller.create_metadata(metadata).await.unwrap();
+
+        controller
+            .set_parent(
+                &SessionId::from("sess_123").to_string(),
+                Some(SessionId::from("sess_parent")),
+            )
+            .await
+            .unwrap();
+
+        // Reload through a fresh controller (fresh index + cache) to
+        // prove the reparent survived the save/reload round trip.
+        let mut reloaded = MetadataController::new(&dir);
+        let meta = reloaded
+            .get_metadata_fast("sess_123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            meta.parent_session_id,
+            Some(SessionId::from("sess_parent"))
+        );
+
+        // Clearing the parent persists too.
+        reloaded
+            .set_parent(&SessionId::from("sess_123").to_string(), None)
+            .await
+            .unwrap();
+        let mut third = MetadataController::new(&dir);
+        let meta = third.get_metadata_fast("sess_123").await.unwrap().unwrap();
+        assert_eq!(meta.parent_session_id, None);
+
+        // Errors on a non-existent session.
+        assert!(third
+            .set_parent(
+                &SessionId::from("sess_nope").to_string(),
+                Some(SessionId::from("p")),
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_slug_validation_uniqueness_and_persistence() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let mut controller = MetadataController::new(&dir);
+        // root ── a (slug "task")
+        //     └── b
+        //         └── c (slug "task" — same slug, different parent: OK)
+        let mut a = SessionMetadata::new(SessionId::from("sess_a"), "test_agent", "sess_a.jsonl");
+        a.parent_session_id = Some(SessionId::from("root"));
+        let mut b = SessionMetadata::new(SessionId::from("sess_b"), "test_agent", "sess_b.jsonl");
+        b.parent_session_id = Some(SessionId::from("root"));
+        let mut c = SessionMetadata::new(SessionId::from("sess_c"), "test_agent", "sess_c.jsonl");
+        c.parent_session_id = Some(SessionId::from("sess_b"));
+        for m in [a, b, c] {
+            controller.create_metadata(m).await.unwrap();
+        }
+
+        // Format validation: structured error.
+        for bad in ["", "a/b", " lead", "trail "] {
+            let err = controller
+                .set_slug("sess_a", Some(bad.to_string()))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("invalid slug"), "{err}");
+        }
+
+        // Set + persist (reload through a fresh controller).
+        controller
+            .set_slug("sess_a", Some("task".to_string()))
+            .await
+            .unwrap();
+        controller
+            .set_slug("sess_c", Some("task".to_string()))
+            .await
+            .unwrap();
+        let mut reloaded = MetadataController::new(&dir);
+        assert_eq!(
+            reloaded
+                .get_metadata_fast("sess_a")
+                .await
+                .unwrap()
+                .unwrap()
+                .slug
+                .as_deref(),
+            Some("task")
+        );
+
+        // Sibling conflict: names the conflicting session id.
+        let err = controller
+            .set_slug("sess_b", Some("task".to_string()))
+            .await
+            .unwrap_err();
+        let sess_a_uuid = SessionId::from("sess_a").to_string();
+        assert!(err.to_string().contains(&sess_a_uuid), "{err}");
+        assert!(err.to_string().contains("unique per parent"), "{err}");
+
+        // Keeping your own slug is not a conflict (self excluded).
+        controller
+            .set_slug("sess_a", Some("task".to_string()))
+            .await
+            .unwrap();
+
+        // Clearing is always allowed; non-existent sessions error.
+        controller.set_slug("sess_a", None).await.unwrap();
+        assert!(controller
+            .set_slug("sess_nope", Some("x".to_string()))
+            .await
+            .is_err());
+    }
+
+    /// `set_standing` round-trips the flag through the index and
+    /// errors on a non-existent session (same contract as
+    /// `set_archived`).
+    #[tokio::test]
+    async fn test_set_standing() {
+        let (mut controller, _temp) = setup_controller().await;
+        let peer = Subject::User("alice".to_string());
+        let peer_key = derive_base_session_key("test_agent", &peer);
+        let entry = SessionEntry::with_peer(
+            "sess_a".to_string(),
+            "test_agent".to_string(),
+            "sess_a.jsonl".to_string(),
+            "user",
+            "alice",
+        );
+        controller.create_for_peer(entry, &peer_key).await.unwrap();
+        controller.save_index().await.unwrap();
+
+        assert!(
+            !controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .standing
+        );
+        controller.set_standing("sess_a", true).await.unwrap();
+        assert!(
+            controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .standing
+        );
+        // Idempotent + reversible.
+        controller.set_standing("sess_a", true).await.unwrap();
+        controller.set_standing("sess_a", false).await.unwrap();
+        assert!(
+            !controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .standing
+        );
+        // Non-existent session errors.
+        assert!(controller.set_standing("sess_nope", true).await.is_err());
+    }
+
+    /// `set_privileged` round-trips the flag through the index and
+    /// errors on a non-existent session (same contract as
+    /// `set_standing`).
+    #[tokio::test]
+    async fn test_set_privileged() {
+        let (mut controller, _temp) = setup_controller().await;
+        let peer = Subject::User("alice".to_string());
+        let peer_key = derive_base_session_key("test_agent", &peer);
+        let entry = SessionEntry::with_peer(
+            "sess_a".to_string(),
+            "test_agent".to_string(),
+            "sess_a.jsonl".to_string(),
+            "user",
+            "alice",
+        );
+        controller.create_for_peer(entry, &peer_key).await.unwrap();
+        controller.save_index().await.unwrap();
+
+        assert!(
+            !controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .privileged
+        );
+        controller.set_privileged("sess_a", true).await.unwrap();
+        assert!(
+            controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .privileged
+        );
+        // Idempotent + reversible.
+        controller.set_privileged("sess_a", true).await.unwrap();
+        controller.set_privileged("sess_a", false).await.unwrap();
+        assert!(
+            !controller
+                .get_entry("sess_a", false)
+                .await
+                .unwrap()
+                .unwrap()
+                .privileged
+        );
+        // Non-existent session errors.
+        assert!(controller.set_privileged("sess_nope", true).await.is_err());
+    }
+
     /// Deleting a session scrubs its id from the peer's `session_ids`
     /// (not just the active pointer); the peer's other sessions stay
     /// listable/routable, and the peer entry only disappears once its
@@ -1053,7 +1414,7 @@ mod tests {
 
         for id in ["sess_a", "sess_b"] {
             let entry = SessionEntry::with_peer(
-                id.to_string(),
+                SessionId::from(id),
                 "test_agent".to_string(),
                 format!("{id}.jsonl"),
                 "user",
@@ -1066,12 +1427,12 @@ mod tests {
         // Sanity: two sessions routed, the second one active.
         assert_eq!(
             controller.get_active_session_id(&peer_key).await.unwrap(),
-            Some("sess_b".to_string())
+            Some(SessionId::from("sess_b").to_string())
         );
 
         // Delete the ACTIVE session: the active pointer is cleared but
         // sess_a remains listable/routable under the same peer.
-        controller.delete_session("sess_b").await.unwrap();
+        controller.delete_session(&SessionId::from("sess_b").to_string()).await.unwrap();
         assert_eq!(
             controller.get_active_session_id(&peer_key).await.unwrap(),
             None
@@ -1081,10 +1442,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].session_id, "sess_a");
+        assert_eq!(remaining[0].session_id, SessionId::from("sess_a"));
 
         // Delete the last session: the peer entry disappears entirely.
-        controller.delete_session("sess_a").await.unwrap();
+        controller.delete_session(&SessionId::from("sess_a").to_string()).await.unwrap();
         assert!(controller
             .list_for_peer_from_index(&peer_key)
             .await

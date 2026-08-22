@@ -18,6 +18,8 @@
 pub mod agent_prompt;
 pub mod agent_runner;
 pub mod capability_evaluator;
+pub(crate) mod child_turns;
+pub mod children;
 pub mod config;
 pub mod context;
 pub mod extension_store;
@@ -26,6 +28,8 @@ pub mod manager;
 pub mod memory;
 pub mod messenger;
 pub mod peer;
+pub mod peer_children;
+pub(crate) mod peer_dm;
 pub mod router;
 pub mod routers;
 pub mod runtime;
@@ -107,8 +111,7 @@ pub struct Principal {
     /// `path_resolver.principal_layout(name).local.plans_dir`.
     ///
     /// Reached via `principal.plan_port`; no separate `AppState`
-    /// plumbing needed (plans are per-principal, not runtime-global
-    /// like `chat_log_store`).
+    /// plumbing needed (plans are per-principal, not runtime-global).
     pub plan_port: Arc<dyn peko_plan::PlanPort>,
 }
 

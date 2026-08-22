@@ -548,7 +548,15 @@ impl RuntimeAuthority {
     /// `CronHistory`, mirroring [`local_cron_schedule_write_for_name`].
     /// The actor + capability gate is identical; the layout is
     /// resolved directly from the validated principal name.
-    pub fn local_cron_history_write_for_name(
+    ///
+    /// **Capability invariant (PR #339):** the read of `peko cron
+    /// history` is intentionally gated by `principal:write_cron_history`
+    /// because there is no separate read cap for cron history. The
+    /// capability string is reused; the accessor name reflects that
+    /// the gate sees both kinds of callers. New callers should NOT
+    /// introduce a separate `read_cron_history` cap without also
+    /// splitting the audit / starter-bundle grants.
+    pub fn local_cron_history_gate_for_name(
         &self,
         principal_name: &str,
         caps: Option<&Capabilities>,

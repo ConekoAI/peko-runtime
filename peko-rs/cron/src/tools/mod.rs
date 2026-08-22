@@ -9,15 +9,17 @@
 //!
 //! ## DTOs
 //!
-//! [`ScheduleKind`], [`DeliveryMode`], [`CronJobAction`], and
-//! [`CronJob`] are serialization-friendly types shared between the
-//! tool side (peko-tools-builtin) and the daemon side (root's
+//! [`ScheduleKind`], [`CronJobAction`], and [`CronJob`] are
+//! serialization-friendly types shared between the tool side
+//! (peko-tools-builtin) and the daemon side (root's
 //! `src/cron/mod.rs`). For Phase 10b the daemon side keeps its own
-//! copy and re-exports these four from peko-tools-builtin via
-//! `pub use peko_tools_builtin::cron::{ScheduleKind, DeliveryMode,
-//! CronJobAction, CronJob};` — single source of truth going forward.
-//! A compile-time JSON-roundtrip test pins the two sides' shapes
-//! together.
+//! copy and re-exports these three from peko-tools-builtin via
+//! `pub use peko_tools_builtin::cron::{ScheduleKind, CronJobAction,
+//! CronJob};` — single source of truth going forward. A
+//! compile-time JSON-roundtrip test pins the two sides' shapes
+//! together. (Sprint 7 Commit B dropped the `DeliveryMode` enum and
+//! `CronJob.delivery` field — the engine's `Announce` side-effect
+//! was unread.)
 //!
 //! ## Port
 //!
@@ -47,6 +49,89 @@ use uuid::Uuid;
 /// after this many consecutive failed runs. `None` on the job means
 /// unlimited and preserves the legacy retry-forever behavior.
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
+
+/// The only accepted value for [`CronJobAction::Send`]'s `target`
+/// field: route the fired turn into the principal's trunk session
+/// `root:self` instead of the default per-owner cron session
+/// `root:cron:{owner}` (Phase 3, 2026-08-15).
+pub const SEND_TARGET_TRUNK: &str = "trunk";
+
+/// Validate a [`CronJobAction::Send`] `target` value supplied by a
+/// caller (CLI flag, tool param). `None` (default routing) and
+/// `"trunk"` are accepted; anything else is a structured error. The
+/// serde deserializer below applies the same rule at JSON load time;
+/// this helper covers the struct-literal construction paths that
+/// bypass serde.
+pub fn validate_send_target(target: &Option<String>) -> Result<()> {
+    match target.as_deref() {
+        None | Some(SEND_TARGET_TRUNK) => Ok(()),
+        Some(other) => anyhow::bail!(
+            "invalid cron Send target '{other}': only \"{SEND_TARGET_TRUNK}\" is supported"
+        ),
+    }
+}
+
+/// Serde field deserializer for [`CronJobAction::Send`]'s `target`:
+/// applies [`validate_send_target`] at load time so a hand-edited
+/// `cron.json` with an unknown target fails loudly instead of silently
+/// misrouting a turn.
+fn deserialize_send_target<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    validate_send_target(&value).map_err(serde::de::Error::custom)?;
+    Ok(value)
+}
+
+/// Minimum interval for a trunk-targeted keepalive Send job: 60s
+/// (Phase 3b, 2026-08-15).
+///
+/// A `Send` job fires a real agent turn in the principal's trunk
+/// session `root:self` on every tick — each tick is a full LLM
+/// round-trip over the trunk's growing history. An `Every { every_ms
+/// }` schedule with no floor is a runaway token-burn anti-pattern
+/// (PEKO.md "Violates K"), so creation refuses intervals below this
+/// constant. One-shot `At`, `Cron` expressions, `Idle`, and `Event`
+/// schedules are exempt: their cadence is explicit or event-driven,
+/// not a bare self-poke loop.
+///
+/// Phase 7 (2026-08-17): the trunk is the DEFAULT Send target
+/// (`target: None` and `Some("trunk")` are the same route), so the
+/// floor applies to both.
+pub const TRUNK_MIN_INTERVAL_MS: u64 = 60_000;
+
+/// Enforce [`TRUNK_MIN_INTERVAL_MS`] on trunk-bound Send jobs with
+/// an `Every` schedule. Since Phase 7 every Send job is trunk-bound
+/// (`None` and `"trunk"` are the same destination); other actions and
+/// schedule kinds pass through unchanged. Called from
+/// `CronScheduler::add_job` so every creation surface (CLI `peko cron
+/// add`, the `CronCreate` tool, in-process construction) funnels
+/// through it.
+pub fn validate_trunk_send_interval(
+    schedule: &ScheduleKind,
+    target: &Option<String>,
+) -> Result<()> {
+    if let Some(t) = target.as_deref() {
+        if t != SEND_TARGET_TRUNK {
+            // Unknown targets are rejected by `validate_send_target`;
+            // the floor only concerns trunk-bound jobs.
+            return Ok(());
+        }
+    }
+    if let ScheduleKind::Every { every_ms } = schedule {
+        if *every_ms < TRUNK_MIN_INTERVAL_MS {
+            anyhow::bail!(
+                "cron Send (trunk target) with an interval schedule requires \
+                 every_ms >= {TRUNK_MIN_INTERVAL_MS} ({}s); got {every_ms}ms. \
+                 A faster self-targeted keepalive burns tokens on every tick with no external \
+                 input — use a cron expression or a one-shot 'at' for sub-minute timing.",
+                TRUNK_MIN_INTERVAL_MS / 1000,
+            );
+        }
+    }
+    Ok(())
+}
 
 // ─── DTOs (canonical home; root re-exports these) ─────────────────
 
@@ -111,43 +196,38 @@ impl ScheduleKind {
     }
 }
 
-/// Delivery configuration for job results.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryMode {
-    /// No delivery, silent execution.
-    #[default]
-    None,
-    /// Announce results to channel.
-    Announce {
-        channel: Option<String>,
-        to: Option<String>,
-        best_effort: bool,
-    },
-}
-
 /// What a cron job does when it fires.
 ///
-/// Three shapes:
+/// Two shapes:
 /// - CLI cron (`peko cron add …`) writes a [`Self::Send`] job — at fire
 ///   time the daemon delivers `message` to the Principal's owner root
 ///   session as a user-message, exactly like a deferred `peko send`.
-/// - Agent cron (`CronCreate` tool) with `message` writes a
-///   [`Self::Notify`] job — pure delivery, no agent turn.
-/// - Agent cron (`CronCreate` tool) with `prompt`/`tool` writes a
-///   [`Self::SpawnTool`] job — at fire time the daemon asks the
-///   `AsyncExecutor` to run `tool_name` with `tool_params`.
+/// - Agent cron (`CronCreate` tool) writes a [`Self::SpawnTool`] job —
+///   at fire time the daemon asks the `AsyncExecutor` to run
+///   `tool_name` with `tool_params`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CronJobAction {
     /// Deliver a user-message to the Principal's owner root session.
-    Send { message: String },
-    /// Pure notification delivery (2026-08-08): the message text is
-    /// appended to the owner's conversational session as a labeled
-    /// note — NO agent turn runs (unlike [`Self::Send`], which is a
-    /// deferred `peko send`). Zero tokens, instant; what the
-    /// `CronCreate` tool's `message` arg builds.
-    Notify { message: String },
+    ///
+    /// `target` (Phase 3, 2026-08-15) selects the destination session:
+    /// `None` (the default — and the only value pre-Phase-3 jobs can
+    /// carry) preserves the legacy behavior exactly: the turn lands in
+    /// the per-owner cron session `root:cron:{owner}` and the outcome
+    /// is cross-posted as a note to `root:{owner}`. `"trunk"` routes
+    /// the turn into the principal's forever-continuous self session
+    /// `root:self` (no separate conversation projection — the turn
+    /// already IS in the principal's own session). No other value
+    /// is accepted (see [`validate_send_target`]).
+    Send {
+        message: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_send_target"
+        )]
+        target: Option<String>,
+    },
     /// Schedule an async tool run attributed to the Principal's root.
     SpawnTool {
         tool_name: String,
@@ -157,8 +237,6 @@ pub enum CronJobAction {
         wake_on_completion: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
     },
 }
 
@@ -168,7 +246,6 @@ impl CronJobAction {
     pub fn kind_label(&self) -> &'static str {
         match self {
             Self::Send { .. } => "send",
-            Self::Notify { .. } => "notify",
             Self::SpawnTool { .. } => "spawn_tool",
         }
     }
@@ -177,12 +254,6 @@ impl CronJobAction {
     #[must_use]
     pub fn is_send(&self) -> bool {
         matches!(self, Self::Send { .. })
-    }
-
-    /// Whether the action is a [`Self::Notify`].
-    #[must_use]
-    pub fn is_notify(&self) -> bool {
-        matches!(self, Self::Notify { .. })
     }
 
     /// Whether the action is a [`Self::SpawnTool`].
@@ -211,7 +282,6 @@ pub struct CronJob {
     pub schedule: ScheduleKind,
     #[serde(flatten)]
     pub action: CronJobAction,
-    pub delivery: DeliveryMode,
     pub delete_after_run: bool,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -251,14 +321,7 @@ impl CronJob {
     #[must_use]
     pub fn task_description(&self) -> String {
         match &self.action {
-            CronJobAction::Send { message } | CronJobAction::Notify { message }
-                if !message.is_empty() =>
-            {
-                message.clone()
-            }
-            CronJobAction::SpawnTool { description, .. } if description.is_some() => {
-                description.clone().unwrap()
-            }
+            CronJobAction::Send { message, .. } if !message.is_empty() => message.clone(),
             _ => format!("scheduled job '{}'", self.name),
         }
     }
@@ -308,7 +371,10 @@ pub fn normalize_cron_expr(expr: &str) -> String {
 ///
 /// `next_run` is precomputed by the caller (the cron engine will
 /// re-evaluate on its own clock, but the initial schedule fires
-/// from this value).
+/// from this value). `target` is the optional session target — see
+/// [`CronJobAction::Send`]; the daemon-side `CronScheduler::add_job`
+/// validation ([`validate_send_target`]) rejects unknown values even
+/// for in-process construction paths that bypass serde.
 #[allow(clippy::too_many_arguments)]
 pub fn build_send_job(
     id: String,
@@ -316,50 +382,16 @@ pub fn build_send_job(
     principal_id: PrincipalId,
     schedule: ScheduleKind,
     message: String,
-    delivery: DeliveryMode,
     delete_after_run: bool,
     next_run: DateTime<Utc>,
+    target: Option<String>,
 ) -> CronJob {
     CronJob {
         id,
         name,
         principal_id,
         schedule,
-        action: CronJobAction::Send { message },
-        delivery,
-        delete_after_run,
-        enabled: true,
-        created_at: Utc::now(),
-        next_run,
-        last_run: None,
-        last_status: None,
-        run_count: 0,
-        consecutive_failures: 0,
-        max_retries: None,
-    }
-}
-
-/// Build a `Notify`-action [`CronJob`] from caller parameters.
-/// Mirrors [`build_send_job`] but pure-delivery: no agent turn runs
-/// at fire time.
-#[allow(clippy::too_many_arguments)]
-pub fn build_notify_job(
-    id: String,
-    name: String,
-    principal_id: PrincipalId,
-    schedule: ScheduleKind,
-    message: String,
-    delivery: DeliveryMode,
-    delete_after_run: bool,
-    next_run: DateTime<Utc>,
-) -> CronJob {
-    CronJob {
-        id,
-        name,
-        principal_id,
-        schedule,
-        action: CronJobAction::Notify { message },
-        delivery,
+        action: CronJobAction::Send { message, target },
         delete_after_run,
         enabled: true,
         created_at: Utc::now(),
@@ -381,12 +413,10 @@ pub fn build_spawn_tool_job(
     schedule: ScheduleKind,
     tool_name: String,
     tool_params: serde_json::Value,
-    delivery: DeliveryMode,
     delete_after_run: bool,
     next_run: DateTime<Utc>,
     wake_on_completion: Option<bool>,
     timeout_secs: Option<u64>,
-    description: Option<String>,
 ) -> CronJob {
     CronJob {
         id,
@@ -398,9 +428,7 @@ pub fn build_spawn_tool_job(
             tool_params,
             wake_on_completion,
             timeout_secs,
-            description,
         },
-        delivery,
         delete_after_run,
         enabled: true,
         created_at: Utc::now(),
@@ -636,18 +664,20 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
             });
             let map = obj.as_object_mut().expect("object literal above");
             match &j.action {
-                CronJobAction::Send { message } | CronJobAction::Notify { message } => {
+                CronJobAction::Send { message, target } => {
                     map.insert(
                         "task".to_string(),
                         serde_json::Value::String(message.clone()),
                     );
+                    if let Some(t) = target {
+                        map.insert("target".to_string(), serde_json::Value::String(t.clone()));
+                    }
                 }
                 CronJobAction::SpawnTool {
                     tool_name,
                     tool_params,
                     wake_on_completion,
                     timeout_secs,
-                    description,
                 } => {
                     map.insert(
                         "tool".to_string(),
@@ -664,12 +694,6 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                         map.insert(
                             "timeout_secs".to_string(),
                             serde_json::Value::Number((*t).into()),
-                        );
-                    }
-                    if let Some(d) = description {
-                        map.insert(
-                            "description".to_string(),
-                            serde_json::Value::String(d.clone()),
                         );
                     }
                 }
@@ -827,9 +851,7 @@ mod tests {
                 tool_params: serde_json::json!({"path": "/tmp/x"}),
                 wake_on_completion: Some(true),
                 timeout_secs: Some(3600),
-                description: Some("read file".into()),
             },
-            delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),
@@ -843,6 +865,122 @@ mod tests {
         let json = serde_json::to_string(&job).unwrap();
         let back: CronJob = serde_json::from_str(&json).unwrap();
         assert_eq!(format!("{:?}", job), format!("{:?}", back));
+    }
+
+    /// Phase 3 (2026-08-15): legacy Send jobs (written before the
+    /// `target` field existed) must deserialize with `target: None` —
+    /// the wire change is backward-compatible by serde default.
+    #[test]
+    fn send_target_defaults_to_none_on_legacy_json() {
+        let legacy = serde_json::json!({"kind": "send", "message": "hello"});
+        let action: CronJobAction = serde_json::from_value(legacy).unwrap();
+        let CronJobAction::Send { message, target } = action else {
+            panic!("expected Send action");
+        };
+        assert_eq!(message, "hello");
+        assert_eq!(target, None);
+
+        // `None` is skipped on serialize, so a legacy job re-written by
+        // a new binary stays byte-compatible with the old shape.
+        let json = serde_json::to_value(&CronJobAction::Send {
+            message: "hello".into(),
+            target: None,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "send", "message": "hello"})
+        );
+    }
+
+    /// `"trunk"` is the only accepted target; anything else is a
+    /// structured error at BOTH the serde boundary and the explicit
+    /// validator (struct-literal construction bypasses serde).
+    #[test]
+    fn send_target_validation() {
+        let ok: CronJobAction = serde_json::from_value(
+            serde_json::json!({"kind": "send", "message": "m", "target": "trunk"}),
+        )
+        .unwrap();
+        let CronJobAction::Send { target, .. } = &ok else {
+            panic!("expected Send action");
+        };
+        assert_eq!(target.as_deref(), Some(SEND_TARGET_TRUNK));
+
+        let err = serde_json::from_value::<CronJobAction>(
+            serde_json::json!({"kind": "send", "message": "m", "target": "bogey"}),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid cron Send target 'bogey'"),
+            "got: {err}"
+        );
+
+        assert!(validate_send_target(&None).is_ok());
+        assert!(validate_send_target(&Some("trunk".to_string())).is_ok());
+        let err = validate_send_target(&Some("bogey".to_string())).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid cron Send target 'bogey'"),
+            "got: {err}"
+        );
+    }
+
+    /// Phase 3b (2026-08-15): trunk-targeted Send jobs with an `Every`
+    /// schedule below [`TRUNK_MIN_INTERVAL_MS`] are refused (token-burn
+    /// guard); everything else passes. Phase 7: the trunk is the
+    /// DEFAULT target, so `None` is held to the same floor.
+    #[test]
+    fn trunk_send_interval_floor() {
+        let trunk = Some(SEND_TARGET_TRUNK.to_string());
+
+        // Below the floor → structured error naming the floor.
+        let err = validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 30_000 }, &trunk)
+            .unwrap_err();
+        assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
+        // Phase 7: the DEFAULT target is the trunk — same floor.
+        let err = validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 30_000 }, &None)
+            .unwrap_err();
+        assert!(err.to_string().contains("every_ms >= 60000"), "got: {err}");
+
+        // At and above the floor → accepted.
+        validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 60_000 }, &trunk).unwrap();
+        validate_trunk_send_interval(&ScheduleKind::Every { every_ms: 300_000 }, &trunk).unwrap();
+
+        // Unknown targets pass through here (rejected by
+        // `validate_send_target` instead) — the floor only concerns
+        // trunk-bound jobs.
+        validate_trunk_send_interval(
+            &ScheduleKind::Every { every_ms: 30_000 },
+            &Some("bogey".to_string()),
+        )
+        .unwrap();
+
+        // At / Cron / Idle / Event are exempt even for trunk targets.
+        validate_trunk_send_interval(
+            &ScheduleKind::At {
+                at: "2099-01-01T00:00:00Z".into(),
+            },
+            &trunk,
+        )
+        .unwrap();
+        validate_trunk_send_interval(
+            &ScheduleKind::Cron {
+                expr: "* * * * *".into(),
+                tz: None,
+            },
+            &trunk,
+        )
+        .unwrap();
+        validate_trunk_send_interval(&ScheduleKind::Idle { minutes: 1 }, &trunk).unwrap();
+        validate_trunk_send_interval(
+            &ScheduleKind::Event {
+                event_type: "t".into(),
+                filter: None,
+                once: false,
+            },
+            &trunk,
+        )
+        .unwrap();
     }
 
     /// PR-4b — `peko channel poll` cron recipe. A `SpawnTool` job
@@ -869,9 +1007,7 @@ mod tests {
                 }),
                 wake_on_completion: Some(true),
                 timeout_secs: None,
-                description: Some("poll chan_a1b2c3d4 for new events".into()),
             },
-            delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
             created_at: chrono::Utc::now(),

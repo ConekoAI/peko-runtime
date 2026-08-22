@@ -288,12 +288,15 @@ impl Capabilities {
             "tool:CronCreate",
             "tool:CronList",
             "tool:CronDelete",
-            // Peer messaging (2026-08-08 `send_peer` unification).
-            // The user branch (notes to the originating human) and the
-            // principal branch (the legacy `principal_send` RPC) share
-            // one tool; without the grant the capability filter drops
-            // it from the LLM's toolset at `init_builtins_async`.
-            "tool:send_peer",
+            // Sprint 4: `tool:send_peer` is retired outright — the consolidated
+            // `ChannelSend` tool (registered per-agent with the
+            // caller's DID bound at construction) replaces both the
+            // bare-post ChannelSend and the principal/user RPC.
+            // Without the grant, the bare-branch ChannelSend lives on
+            // `tool:ChannelSend` (see below); the principal branch
+            // picks up the same grant. No compatibility alias —
+            // prelaunch, no live consumers.
+            //
             // Session management (PR #351 agent-owned session mgmt;
             // round-7 2026-08-13 surface). The unified `session` tool
             // exposes 9 storage actions (status / list / history /
@@ -307,6 +310,17 @@ impl Capabilities {
             // 2026-08-11 field test (scripts/e2e/reports/2026-08-11-
             // non-technical-user-subagent-session.md, F1).
             "tool:session",
+            // Channel messaging (2026-08-18 reviewer finding, same
+            // shape as the F351 session-tool bug PR #351). The
+            // ChannelRead / ChannelSend tools are registered globally
+            // by `ToolRuntime::register_builtins` against the
+            // daemon-installed `ChannelPort`; without these `tool:`
+            // grants the capability filter (`is_tool_enabled` in
+            // tool_registry.rs) drops them from a default-created
+            // principal's toolset even though the tools are wired in,
+            // so the principal can never read or post to channels.
+            "tool:ChannelRead",
+            "tool:ChannelSend",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -472,6 +486,43 @@ mod tests {
         assert!(
             caps.is_granted(&Capability::new("tool:session")),
             "starter_bundle must include tool:session"
+        );
+    }
+
+    /// Auto-grant the ChannelRead / ChannelSend tools so a fresh
+    /// principal can actually read and post to channels. The tools
+    /// are registered globally by `ToolRuntime::register_builtins`
+    /// against the daemon-installed `ChannelPort`; without these
+    /// grants `is_tool_enabled` filters them out of the LLM's
+    /// available_tools list despite the tools being wired in —
+    /// the same shape as the F351 session-tool bug (PR #351).
+    /// Surfaced by reviewer 2026-08-18.
+    #[test]
+    fn starter_bundle_includes_channel_tools() {
+        let caps = Capabilities::starter_bundle();
+        for tool in ["ChannelRead", "ChannelSend"] {
+            assert!(
+                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
+                "starter_bundle must include tool:{tool}"
+            );
+        }
+    }
+
+    /// Sprint 4 regression: `tool:send_peer` is retired outright (no
+    /// compat alias). The unified `ChannelSend` (per-agent, caller-DID
+    /// bound at construction) covers both the bare-post and the
+    /// principal / user / group branches; principals with the legacy
+    /// grant lose it post-cutover. Pin here so a future accidental
+    /// re-add surfaces in CI rather than silently restoring the
+    /// parallel tool surface.
+    #[test]
+    fn starter_bundle_does_not_grant_send_peer() {
+        let caps = Capabilities::starter_bundle();
+        assert!(
+            !caps.is_granted(&Capability::new("tool:send_peer")),
+            "starter_bundle must NOT grant tool:send_peer — that tool is retired; \
+             use tool:ChannelSend with a typed channel id (chan_* / principal:<did> / \
+             user:<id> / group:<slug>) to dispatch"
         );
     }
 }

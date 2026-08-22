@@ -16,7 +16,7 @@
 //! | Port method                                | Executor entry point                                                                                              |
 //! |--------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
 //! | [`is_subagent_enabled`]                    | `principal_capabilities` snapshot → `Capability::is_granted("agent:<name>")`; fail-closed when no snapshot is registered |
-//! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat), then global `agents/<n>/config.toml`    |
+//! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat). Workspace is required: the global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`) was retired in Sprint 8 Commit 2 |
 //! | [`audit_spawn`]                            | `observability.audit("SubagentSpawn", ...)` — no-op when no hub is attached                                        |
 //! | [`execute_and_wait`]                       | `SubagentExecutor::execute_and_wait` — returns the projected `SubagentRunView`                                     |
 //! | [`request_compaction`]                     | `SubagentExecutor::request_compaction` — flags the target for engine-driven compaction, returns immediately        |
@@ -28,14 +28,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::common::identifiers::parse_agent_name;
-use crate::common::paths::PathResolver;
 use crate::extensions::framework::subagent::SpawnCleanupPolicy;
 use crate::tools::builtin::messaging::{
-    AgentConfig as BuiltinAgentConfig, SpawnAuditEvent, SpawnRequest, SubagentRunView,
-    SubagentRuntime,
+    SpawnAuditEvent, SpawnRequest, SubagentRunView, SubagentRuntime,
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -79,10 +75,14 @@ impl SubagentExecutorRuntime {
     /// workspace root + a hand-rolled `"agents"` join.
     ///
     /// Errors if neither exists.
-    fn resolve_principal_agent(
-        name: &str,
-        agents_dir: &Path,
-    ) -> anyhow::Result<BuiltinAgentConfig> {
+    ///
+    /// Sprint 8 Commit 4: returns the resolved `Arc<AgentPrompt>`
+    /// directly — no more `BuiltinAgentConfig` wrapping. The
+    /// frontmatter's `name` and `description`, and the Markdown
+    /// body, are surfaced through the `AgentPrompt` struct; the
+    /// spawn path constructs the child `Agent`'s `AgentConfig`
+    /// from them as needed.
+    fn resolve_principal_agent(name: &str, agents_dir: &Path) -> anyhow::Result<Arc<AgentPrompt>> {
         let dir_layout = agents_dir.join(name).join("AGENT.md");
         let flat_layout = agents_dir.join(format!("{name}.md"));
 
@@ -101,61 +101,28 @@ impl SubagentExecutorRuntime {
         let prompt = load_agent_prompt(&agent_md)
             .with_context(|| format!("Failed to load principal agent prompt '{name}'"))?;
 
-        Ok(BuiltinAgentConfig {
-            name: prompt.name,
-            description: prompt.frontmatter.description,
-            prompt: Some(prompt.body),
-            ..BuiltinAgentConfig::default()
-        })
+        Ok(Arc::new(prompt))
     }
 
-    /// Load an agent config from the global `{PEKO_HOME}/agents/<n>/config.toml`.
-    async fn resolve_global_agent(name: &str) -> anyhow::Result<BuiltinAgentConfig> {
-        let agent_name = parse_agent_name(name)?;
-        let resolver = PathResolver::new();
-        let config_path = resolver.agent_config(agent_name);
-        if !config_path.exists() {
-            anyhow::bail!("Subagent type '{name}' not found at {config_path:?}");
-        }
-        let content = tokio::fs::read_to_string(&config_path).await?;
-        toml::from_str(&content)
-            .with_context(|| format!("Failed to parse agent config for '{name}'"))
-    }
-
-    /// Bridge from root's `AgentConfig` to the built-in's
-    /// `BuiltinAgentConfig`. We carry both types across the port
-    /// boundary; the built-in sees the projected shape only.
-    #[allow(dead_code)]
-    fn project_agent_config(config: &AgentConfig) -> BuiltinAgentConfig {
-        BuiltinAgentConfig {
-            name: config.name.clone(),
-            description: config.description.clone(),
-            prompt: config.prompt.clone(),
-            agent_did: config.agent_did.clone(),
-            enable_task_tools: config.enable_task_tools,
-            enable_async_tools: config.enable_async_tools,
-            enable_tool_search: config.enable_tool_search,
-            // Phase 2 of `feature/multi-model-subagents`: project
-            // the `enable_model_list` flag so the builtin's view of
-            // the config matches the canonical `AgentConfig`.
-            enable_model_list: config.enable_model_list,
-            channel: config.channel.clone(),
-            thinking_level: config.thinking_level.clone(),
-            sandbox_enabled: config.sandbox_enabled,
-            model_aliases: config.model_aliases.clone(),
-        }
-    }
+    // `resolve_global_agent` (the legacy `{PEKO_HOME}/agents/<n>/config.toml`
+    // loader) was deleted in Sprint 8 Commit 2 — the workspace Markdown is
+    // the only spawn path. `project_agent_config` (root `AgentConfig` →
+    // built-in `BuiltinAgentConfig` bridge) was deleted in the same
+    // commit: dead after the workspace-only path. Both were the last
+    // consumers of the canonical `AgentConfig`'s `enable_*` fields on the
+    // spawn path; the gateway loop (`StatelessAgentService` +
+    // `ConfigAuthority`) keeps `AgentConfig` alive until Sprint 8b.
 }
 
 #[async_trait]
 impl SubagentRuntime for SubagentExecutorRuntime {
-    fn is_subagent_enabled(&self, subagent_type: &str) -> bool {
+    fn is_subagent_enabled(&self, agent: &str) -> bool {
         // ADR-019/Track B: enforce the per-principal agent capability
         // before loading any on-disk config. Missing authorization context
         // is denied, matching the canonical tool-execution funnel.
         self.executor.principal_capabilities().is_some_and(|caps| {
             let required = crate::extensions::framework::types::Capability::new(format!(
-                "agent:{subagent_type}"
+                "agent:{agent}"
             ));
             caps.is_granted(&required)
         })
@@ -172,29 +139,32 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         // `resolve_agent_config` only carries the requested model
         // id for the agent-side `model_aliases` resolution.
         _model_override: Option<&str>,
-    ) -> anyhow::Result<BuiltinAgentConfig> {
-        // Prefer a principal-scoped AGENT.md when a workspace is bound;
-        // fall through to the global agents/ registry on miss.
-        let config = if let Some(workspace) = workspace {
-            // Phase A: derive the typed agents dir from the
-            // Shared root.
-            let agents_dir = workspace.join("agents");
-            match Self::resolve_principal_agent(name, &agents_dir) {
-                Ok(config) => config,
-                Err(e) => {
-                    tracing::debug!(
-                        "Principal agent '{name}' not found in agents dir '{}': {e}; falling back to global agent",
-                        agents_dir.display()
-                    );
-                    Self::resolve_global_agent(name).await?
-                }
-            }
-        } else {
-            // Standalone / test path: resolve from the global layout only.
-            Self::resolve_global_agent(name).await?
-        };
+    ) -> anyhow::Result<Arc<AgentPrompt>> {
+        // Sprint 8 Commit 2: the workspace is the single source of
+        // truth. The global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`)
+        // was dead — every reachable spawn was workspace-scoped. Refuse
+        // when no workspace is bound rather than silently producing an
+        // empty agent.
+        //
+        // Sprint 8 Commit 4: returns `Arc<AgentPrompt>` directly —
+        // the workspace Markdown IS the agent template (no
+        // `BuiltinAgentConfig` projection). The downstream
+        // `execute_and_wait` adapter reads `request.subagent_config`
+        // for observability + naming.
+        let workspace = workspace.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Agent '{name}' cannot be resolved without a workspace — \
+                 the legacy global TOML fallback was retired in Sprint 8."
+            )
+        })?;
 
-        Ok(config)
+        let agents_dir = workspace.join("agents");
+        Self::resolve_principal_agent(name, &agents_dir).with_context(|| {
+            format!(
+                "Agent '{name}' not found under {agents_dir:?} \
+                 (looked for <agents>/<name>/AGENT.md and <agents>/<name>.md)"
+            )
+        })
     }
 
     async fn audit_spawn(&self, event: SpawnAuditEvent) {
@@ -202,18 +172,10 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             return;
         };
 
-        let cleanup_label = match event.cleanup {
-            SpawnCleanupPolicy::Keep => "keep",
-            SpawnCleanupPolicy::Delete => "delete",
-        };
-
         let details = serde_json::json!({
-            "subagent_type": event.subagent_type,
+            "agent": event.agent,
             "principal_id": event.principal_id,
             "principal_name": event.principal_name,
-            "isolated": event.isolated,
-            "cleanup": cleanup_label,
-            "description": event.description,
             "parent_session_key": event.parent_session_key,
             "model_id": event.model_id,
             // Phase 3 of `feature/multi-model-subagents` — the
@@ -284,16 +246,26 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             .or_else(|| request.config.model_override.clone());
 
         // Translate the built-in's `ExecutionConfig` to the root's
-        // `ExecutionConfig`. Both are structurally identical (timeout,
-        // cleanup, label, max_depth, announce_completion); we project
-        // field-by-field to keep the type boundary explicit.
+        // `ExecutionConfig`. Sprint 7 Commit 3 collapsed the
+        // built-in `ExecutionConfig`'s `cleanup` / `label` fields —
+        // root-side always sees `Keep` / `None`. The remaining
+        // fields (timeout, announce_completion, max_depth,
+        // model_override) project verbatim.
         let root_config = crate::agents::subagent_executor::ExecutionConfig {
             timeout_seconds: request.config.timeout_seconds,
-            cleanup: request.config.cleanup,
-            label: request.config.label,
+            cleanup: SpawnCleanupPolicy::Keep,
+            label: None,
             announce_completion: request.config.announce_completion,
             max_depth: request.config.max_depth,
             model_override,
+            // Agent tool `name` → the child session's slug (stamped by
+            // `spawn_and_execute`; ignored on the resume path).
+            slug: request.name.clone(),
+            // Phase 2 (standing named children): threaded so the
+            // attach-by-name branch can check the requested agent
+            // template against the standing child's `[children]`
+            // declaration.
+            agent: Some(request.agent.clone()),
         };
 
         let view = if let Some(ref resume_target) = request.resume_session {
@@ -316,16 +288,29 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             // (context seeding) must be the caller's own session or
             // inside its subtree. The auto-detected default (caller
             // key == parent key) always passes.
-            if let Some(ref caller) = request.caller_session_key {
+            //
+            // `validate_context_parent` resolves the LLM-facing
+            // reference (slug path, caller-relative slug, or raw id)
+            // to a canonical session id and returns it; we use the
+            // resolved value downstream so the in-subtree check is
+            // not the only thing that sees the resolved id.
+            let parent_session_key = if let Some(ref caller) = request.caller_session_key {
                 self.executor
                     .validate_context_parent(&parent_session_key, caller)
-                    .await?;
-            }
+                    .await?
+            } else {
+                parent_session_key
+            };
             self.executor
                 .execute_and_wait(
                     &prompt,
                     None,
-                    request.isolated,
+                    // Sprint 7: the LLM-facing Agent tool no longer
+                    // exposes `isolated`. The executor's flag stays
+                    // (defense-in-depth; the tool never spawned
+                    // isolated sessions after the agent-session
+                    // paradigm landed) — we hardcode `false` here.
+                    false,
                     &parent_session_key,
                     root_config,
                     timeout_seconds,
@@ -384,6 +369,16 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     fn principal_name(&self) -> Option<String> {
         self.executor.principal_name().map(str::to_owned)
     }
+
+    fn workspace(&self) -> Option<&Path> {
+        // Forward the principal's bound workspace (set via
+        // `SubagentExecutor::with_principal_workspace`) so the
+        // built-in `AgentTool` resolves `<workspace>/agents/<name>/`
+        // before falling back to the global layout. Sprint 7
+        // collapsed the tool's own `workspace` field onto the
+        // runtime port — this accessor is the canonical owner.
+        self.executor.principal_workspace()
+    }
 }
 
 // ─── Agent-prompt parsing (inlined to keep `agents/` free of `principal/` import) ─
@@ -396,20 +391,26 @@ impl SubagentRuntime for SubagentExecutorRuntime {
 // future phase will lift agent-prompt parsing into a shared module.
 
 // A thin Markdown prompt file with an optional YAML frontmatter.
+//
+// Sprint 8 Commit 4: `pub` so the `SubagentRuntime` port trait
+// (defined in `tools/builtin/messaging/subagent_runtime.rs`) can
+// name `Arc<AgentPrompt>` as the resolved-config return type. The
+// canonical `principal::agent_prompt::AgentPrompt` retains the
+// same field shape — when the F-series lift lands, both call sites
+// collapse onto one definition.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // path kept for upcoming F-series prompt-parser move
-struct AgentPrompt {
-    name: String,
-    path: PathBuf,
-    frontmatter: AgentPromptFrontmatter,
-    body: String,
+pub struct AgentPrompt {
+    pub name: String,
+    pub path: PathBuf,
+    pub frontmatter: AgentPromptFrontmatter,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct AgentPromptFrontmatter {
-    name: Option<String>,
-    description: Option<String>,
-    color: Option<String>,
+pub struct AgentPromptFrontmatter {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<String>,
 }
 
 fn load_agent_prompt(path: &PathBuf) -> anyhow::Result<AgentPrompt> {

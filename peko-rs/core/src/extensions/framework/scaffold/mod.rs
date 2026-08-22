@@ -25,8 +25,6 @@ pub struct ScaffoldOptions {
     pub lang: ScaffoldLang,
     /// For MCP: create bare server.json instead of manifest.yaml wrapper
     pub bare_mcp: bool,
-    /// For gateway: the gateway type
-    pub gateway_type: Option<String>,
 }
 
 /// Supported languages for stub code
@@ -79,10 +77,14 @@ impl ScaffoldEngine {
             "skill" => Self::scaffold_skill(output, options),
             "mcp" => Self::scaffold_mcp(output, options),
             "universal-tool" | "tool" => Self::scaffold_universal_tool(output, options),
-            "gateway" => Self::scaffold_gateway(output, options),
             "general" => Self::scaffold_general(output, options),
+            // Sprint 9 Commit 3: gateway scaffold retired.
+            "gateway" => anyhow::bail!(
+                "Extension type 'gateway' was retired in Sprint 9 Commit 3; \
+                 chat-gateway adapter framework removed."
+            ),
             other => anyhow::bail!(
-                "Unknown extension type '{}'. Supported: skill, mcp, universal-tool, gateway, general",
+                "Unknown extension type '{}'. Supported: skill, mcp, universal-tool, general",
                 other
             ),
         }
@@ -142,23 +144,6 @@ impl ScaffoldEngine {
         Ok(output.to_path_buf())
     }
 
-    fn scaffold_gateway(output: &Path, options: &ScaffoldOptions) -> anyhow::Result<PathBuf> {
-        let gateway_type = options
-            .gateway_type
-            .clone()
-            .unwrap_or_else(|| "out-of-process".to_string());
-        std::fs::create_dir_all(output)?;
-        std::fs::write(
-            output.join("manifest.yaml"),
-            format!("id: {}\ngateway_type: \"{}\"\n", options.id, gateway_type),
-        )?;
-        let handler_file = format!("gateway.{}", options.lang.handler_extension());
-        std::fs::write(output.join(&handler_file), format!("# {}\n", options.name))?;
-        std::fs::write(output.join("README.md"), format!("# {}\n", options.name))?;
-        std::fs::write(output.join(".gitignore"), "*.pyc\n")?;
-        Ok(output.to_path_buf())
-    }
-
     fn scaffold_general(output: &Path, options: &ScaffoldOptions) -> anyhow::Result<PathBuf> {
         std::fs::create_dir_all(output)?;
         std::fs::write(
@@ -176,7 +161,8 @@ impl ScaffoldEngine {
 
 /// List supported extension types for scaffolding
 pub fn supported_types() -> Vec<&'static str> {
-    vec!["skill", "mcp", "universal-tool", "gateway", "general"]
+    // Sprint 9 Commit 3: gateway retired.
+    vec!["skill", "mcp", "universal-tool", "general"]
 }
 
 #[cfg(test)]
@@ -192,18 +178,18 @@ mod tests {
             output_dir: std::path::PathBuf::from("."),
             lang: ScaffoldLang::Python,
             bare_mcp: false,
-            gateway_type: None,
         }
     }
 
     #[test]
     fn test_supported_types() {
+        // Sprint 9 Commit 3: gateway retired.
         let types = supported_types();
         assert!(types.contains(&"skill"));
         assert!(types.contains(&"mcp"));
         assert!(types.contains(&"universal-tool"));
-        assert!(types.contains(&"gateway"));
         assert!(types.contains(&"general"));
+        assert!(!types.contains(&"gateway"));
     }
 
     #[test]
@@ -254,21 +240,25 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_gateway() {
+    fn test_scaffold_gateway_retired() {
+        // Sprint 9 Commit 3: the gateway scaffold was retired. The
+        // scaffold engine now rejects "gateway" with a clear error
+        // pointing at the chat-gateway adapter framework retirement.
         let temp = TempDir::new().unwrap();
+        let opts = test_options("my-gateway", "gateway");
+        let _ = opts.output_dir.clone();
+        let _opts = ScaffoldOptions {
+            output_dir: temp.path().join("my-gateway"),
+            ..opts
+        };
+
         let mut opts = test_options("my-gateway", "gateway");
         opts.output_dir = temp.path().join("my-gateway");
-        opts.lang = ScaffoldLang::Python;
-        opts.gateway_type = Some("out-of-process".to_string());
-
-        let result = ScaffoldEngine::scaffold("gateway", &opts);
-        assert!(result.is_ok());
-
-        assert!(opts.output_dir.join("manifest.yaml").exists());
-        assert!(opts.output_dir.join("gateway.py").exists());
-
-        let manifest = std::fs::read_to_string(opts.output_dir.join("manifest.yaml")).unwrap();
-        assert!(manifest.contains("gateway_type: \"out-of-process\""));
+        let err = ScaffoldEngine::scaffold("gateway", &opts).unwrap_err();
+        assert!(
+            err.to_string().contains("retired"),
+            "expected retirement error, got: {err}"
+        );
     }
 
     #[test]

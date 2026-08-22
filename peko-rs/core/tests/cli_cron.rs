@@ -6,8 +6,8 @@
 //! | PS script             | Rust tests                                                                 |
 //! |-----------------------|----------------------------------------------------------------------------|
 //! | `cron_basics.ps1`     | `cron_*_persists`, `cron_list_*`, `cron_remove_*`, `cron_history_*`         |
-//! | `cron_execution.ps1`  | `cron_run_triggers_due_job`, `cron_announce_writes_file_on_run`            |
-//! | `cron_agent_tool.ps1` | `cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job`, `cron_agent_tool_create_message_makes_notify_job` |
+//! | `cron_execution.ps1`  | `cron_run_triggers_due_job`                                                 |
+//! | `cron_agent_tool.ps1` | `cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job` |
 //! | `cron_idle_event.ps1` | `cron_add_idle_does_not_panic`, `cron_add_event_does_not_panic`            |
 //!
 //! Each test:
@@ -856,72 +856,11 @@ fn cron_run_triggers_due_job() {
     );
 }
 
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn cron_announce_writes_file_on_run() {
-    if skip_if_no_mock().is_none() {
-        return;
-    }
-    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
-    let _daemon = CronDaemonGuard::spawn(&cli);
-    remove_jobs_with_prefix(&cli, "e2e-cron-announce-");
-
-    // Announcements land at `<data_dir>/runtime/announcements/<job_id>_<ts>.json`
-    // (Phase A: announcements live under the Runtime tier
-    // (`{data_dir}/runtime/announcements/`), not the bare data dir).
-    // `PekoCli` sets `PEKO_HOME=peko_dir`, but `default_data_dir()` (in
-    // `src/common/paths.rs:65`) appends `/data` to PEKO_HOME, so the
-    // daemon's `data_dir` resolves to `<peko_dir>/data`, not `<peko_dir>`.
-    // Announcements therefore live at `<peko_dir>/data/runtime/announcements/`.
-    let announce_dir = cli.peko_dir().join("data").join("runtime").join("announcements");
-    // Clean any leftovers from a prior failed run.
-    if announce_dir.exists() {
-        let _ = std::fs::remove_dir_all(&announce_dir);
-    }
-
-    // 2s in the future; with --announce the engine writes a JSON file on completion.
-    let near_future = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
-    let name = "e2e-cron-announce-target";
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "cron",
-            "at",
-            "--principal",
-            TEST_PRINCIPAL,
-            "--name",
-            name,
-            "--at",
-            &near_future,
-            "--message",
-            "announce me",
-            "--announce",
-        ],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
-
-    // Wait for the daemon's poll + run + announce write. 8s budget.
-    let mut wrote = false;
-    for _ in 0..8 {
-        std::thread::sleep(Duration::from_secs(1));
-        if announce_dir.exists()
-            && std::fs::read_dir(&announce_dir)
-                .map(|it| it.filter_map(|e| e.ok()).count() > 0)
-                .unwrap_or(false)
-        {
-            wrote = true;
-            break;
-        }
-    }
-    assert!(
-        wrote,
-        "no announcement file appeared in {} within 8s",
-        announce_dir.display()
-    );
-}
+// Sprint 7 Commit B: `cron_announce_writes_file_on_run` removed.
+// The `--announce` flag and the engine's `handle_delivery` /
+// `send_announcement` (which wrote `{data_dir}/runtime/announcements/
+// <job_id>_<ts>.json`) are gone. No reader ever consumed the file; the
+// side-effect was functionally dead.
 
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
@@ -1103,7 +1042,7 @@ async fn cron_agent_tool_schedules_and_lists_job() {
         needle: [
             { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","tool":"Agent","params":{{"prompt":"{task}","agent":"general-purpose","path":"/tmp/e2e-cron-sched"}}}}"#
                 )
             } },
             { "tool_call": { "name": "CronList", "arguments":
@@ -1124,9 +1063,15 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     // substring matcher picks the script entry on every LLM call (the
     // mock extracts the FIRST user message, which is this prompt and
     // doesn't change between tool-result turns).
+    //
+    // Sprint 7 Commit D: CronCreate is now a SpawnTool-only factory —
+    // `prompt` / `message` / `target` were removed; `tool` + `params`
+    // are REQUIRED. The mock script schedules an Agent tool run that
+    // would deliver the task description.
     let prompt = format!(
         "You have access to CronCreate, CronList, and CronDelete. Schedule a one-time job \
-         using CronCreate with label \"{job_label}\" and prompt \"{task}\" at \"{at_time}\". \
+         using CronCreate with label \"{job_label}\", tool=\"Agent\", params={{prompt: \"{task}\", \
+         agent: \"general-purpose\", path: \"/tmp/e2e-cron-sched\"}} at \"{at_time}\". \
          Then call CronList to verify. Respond with TOOL_SUCCESS if you see the job, \
          else TOOL_FAILED. ({needle})"
     );
@@ -1183,7 +1128,7 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
         needle: [
             { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","tool":"Agent","params":{{"prompt":"{task}","agent":"general-purpose","path":"/tmp/e2e-cron-cancel"}}}}"#
                 )
             } },
             { "tool_call": { "name": "CronList", "arguments":
@@ -1204,10 +1149,11 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
     remove_jobs_with_prefix(&cli, job_label);
 
     let prompt = format!(
-        "Schedule a one-time cron job using CronCreate with label \"{job_label}\" and prompt \"{task}\" \
-         at \"{at_time}\". Then call CronList, then CronDelete by label \
-         \"{job_label}\". Then list again to confirm it's gone. Respond CANCEL_SUCCESS if the \
-         job was removed, CANCEL_FAILED otherwise. ({needle})"
+        "Schedule a one-time cron job using CronCreate with label \"{job_label}\", tool=\"Agent\", \
+         params={{prompt: \"{task}\", agent: \"general-purpose\", \
+         path: \"/tmp/e2e-cron-cancel\"}} at \"{at_time}\". Then call CronList, then CronDelete \
+         by label \"{job_label}\". Then list again to confirm it's gone. Respond CANCEL_SUCCESS \
+         if the job was removed, CANCEL_FAILED otherwise. ({needle})"
     );
     let (out, err, status) = run(
         &cli,
@@ -1230,84 +1176,5 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
         "expected {job_label:?} to be cancelled, but daemon cron DB still has it: {jobs:?}\n\
          (agent stdout: {out})\n\
          (agent stderr: {err})"
-    );
-}
-
-/// Agent uses CronCreate's `message` arg (F4, 2026-08-07 field test) to
-/// schedule a user-facing reminder. Before `message` existed the tool
-/// could only build SpawnTool jobs, so "remind me …" requests produced
-/// no user-visible output. The daemon-side assertion checks the stored
-/// job is a `Notify` action carrying the reminder text (pure delivery,
-/// no agent turn — 2026-08-08 `send_peer` unification).
-#[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-#[serial]
-async fn cron_agent_tool_create_message_makes_notify_job() {
-    if skip_if_no_mock().is_none() {
-        return;
-    }
-    let mock_url = std::env::var("MOCK_LLM_URL").expect("MOCK_LLM_URL set");
-
-    let needle = "cron-tool-flow-msg-3";
-    let job_label = "agent-reminder-test";
-    let principal_name = "cron_tool_principal_msg";
-    let reminder = "stand up and stretch";
-
-    let script = serde_json::json!({
-        needle: [
-            { "tool_call": { "name": "CronCreate", "arguments":
-                format!(
-                    r#"{{"interval_ms":3600000,"label":"{job_label}","message":"{reminder}"}}"#
-                )
-            } },
-            "REMINDER_OK",
-        ]
-    })
-    .to_string();
-    configure_mock(&mock_url, &script).await;
-
-    let cli = PekoCli::new();
-    create_cron_principal(&cli, principal_name, &mock_url);
-    let _daemon = CronDaemonGuard::spawn(&cli);
-    remove_jobs_with_prefix(&cli, job_label);
-
-    let prompt = format!(
-        "Schedule a recurring reminder using CronCreate with label \"{job_label}\", \
-         interval_ms 3600000, and message \"{reminder}\". Respond REMINDER_OK once \
-         the job is created, REMINDER_FAILED otherwise. ({needle})"
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal_name, &prompt, "--no-stream"],
-        Duration::from_secs(30),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("REMINDER_OK"),
-        "agent did not report success after scheduling: stdout={out} stderr={err}"
-    );
-
-    // Daemon-side verification: the job exists and is a Notify action
-    // carrying the reminder text (pure delivery — not a SpawnTool job,
-    // not a turn-running Send job).
-    let jobs = list_jobs_json(&cli);
-    let scheduled = jobs
-        .iter()
-        .find(|j| j.get("name").and_then(|n| n.as_str()) == Some(job_label));
-    let Some(job) = scheduled else {
-        panic!("expected daemon cron DB to contain {job_label:?}, got jobs={jobs:?}");
-    };
-    // `CronJobAction` is `#[serde(flatten)]`ed onto `CronJob`, so the
-    // serialized job carries `kind` and `message` at the top level rather
-    // than nested under an `action` key.
-    assert_eq!(
-        job.get("kind").and_then(|k| k.as_str()),
-        Some("notify"),
-        "message-based CronCreate must store a notify action, got: {job}"
-    );
-    assert_eq!(
-        job.get("message").and_then(|m| m.as_str()),
-        Some(reminder),
-        "notify action must carry the reminder text, got: {job}"
     );
 }

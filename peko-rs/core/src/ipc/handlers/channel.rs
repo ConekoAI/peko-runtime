@@ -47,15 +47,6 @@ pub(crate) trait ChannelHost: Send + Sync {
     /// Channel port for all `ChannelPort` operations.
     fn channel_port(&self) -> Arc<dyn ChannelPort>;
 
-    /// Per-event channel meter (PR-3c). Default returns the no-op
-    /// meter so test hosts don't need to override. Production hosts
-    /// (`AppState`) override to return an `AuditChannelMeter` wired
-    /// to the daemon's `Observability` so `peko audit list --type
-    /// channel.` shows channel observation history.
-    fn channel_meter(&self) -> Arc<dyn peko_channel::ChannelMeter> {
-        peko_channel::cost::noop_meter()
-    }
-
     /// Principal manager (optional — defaults to `None`). When
     /// `None`, principal-name resolution fails for every variant
     /// that carries one.
@@ -81,6 +72,20 @@ pub(crate) trait ChannelHost: Send + Sync {
         _channel: &ChannelId,
     ) {
     }
+
+    /// Phase 4 (agent-session paradigm sprint): post-create hook. The
+    /// handler calls this from the `ChannelCreate` success arm so the
+    /// production host (`AppState`) can spawn the new channel's
+    /// subscriber immediately — boot-time enumeration
+    /// (`spawn_channel_subscribers`) only sees channels that existed at
+    /// boot. The responder choice (passive-binding vs no-op) is made
+    /// from the freshly written `meta.json`.
+    ///
+    /// **Default impl is no-op.** Test hosts don't need to override.
+    /// Sync + `()` return, same contract as
+    /// [`Self::kickoff_channel_read`]: the IPC arm never blocks on it
+    /// and create must not depend on subscriber-spawn success.
+    fn channel_created(&self, _creator: &PrincipalId, _channel: &ChannelId) {}
 }
 
 /// `channel` domain request handler. Constructed with an `Arc<dyn
@@ -152,6 +157,7 @@ impl RequestHandler for ChannelHandler {
                 request_id,
                 creator_name,
                 name,
+                passive_binding,
             } => {
                 let Some(creator) = self.resolve_principal(&creator_name) else {
                     let response = ResponsePacket::Error {
@@ -161,13 +167,23 @@ impl RequestHandler for ChannelHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 };
-                match self.router().handle_create(&creator, &name).await {
+                match self
+                    .router()
+                    .handle_create(&creator, &name, passive_binding)
+                    .await
+                {
                     Ok(resp) => {
                         let response = ResponsePacket::ChannelCreated {
                             request_id,
-                            channel: resp.channel,
+                            channel: resp.channel.clone(),
                         };
                         send_response(sink, response).await?;
+                        // Phase 4 (agent-session paradigm sprint): a
+                        // channel created after daemon boot needs its
+                        // subscriber spawned now — boot-time enumeration
+                        // already ran. Same sync, log-and-swallow
+                        // contract as the invite kickoff below.
+                        self.host.channel_created(&creator, &resp.channel);
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
@@ -855,6 +871,7 @@ mod tests {
             request_id: 1,
             creator_name: "p".into(),
             name: "n".into(),
+            passive_binding: None,
         }));
         assert!(handler.matches(&RequestPacket::ChannelPeek {
             request_id: 1,
@@ -885,6 +902,7 @@ mod tests {
             request_id: 7,
             creator_name: "ghost".into(),
             name: "n".into(),
+            passive_binding: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
         let sink: &dyn crate::ipc::response_sink::ResponseSink =

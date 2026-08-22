@@ -174,7 +174,7 @@ fn digit_run_isolated(prefix: &str, numeric_start: usize, _numeric_end: usize) -
     prefix[..numeric_start]
         .chars()
         .next_back()
-        .map_or(true, |c: char| !c.is_ascii_digit())
+        .is_none_or(|c: char| !c.is_ascii_digit())
 }
 
 /// Format a `Duration` as the canonical `(retry_after=Ns)` token that

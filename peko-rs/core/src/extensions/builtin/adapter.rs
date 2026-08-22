@@ -718,10 +718,12 @@ mod tests {
         assert!(BuiltinToolAdapter::is_builtin("AsyncStop"));
         // Agent-specific tools
         assert!(BuiltinToolAdapter::is_builtin("Agent"));
-        assert!(BuiltinToolAdapter::is_builtin("send_peer"));
+        // Sprint 4: `ChannelSend` replaces both `send_peer` and the
+        // bare-post `ChannelSend` (pre-sprint 4 was global).
+        assert!(BuiltinToolAdapter::is_builtin("ChannelSend"));
         assert!(BuiltinToolAdapter::is_builtin("AsyncSpawn"));
         assert!(BuiltinToolAdapter::is_builtin("AsyncOutput"));
-        assert!(BuiltinToolAdapter::is_builtin("SEND_PEER")); // case insensitive
+        assert!(BuiltinToolAdapter::is_builtin("CHANNELSEND")); // case insensitive
                                                                    // Unknown
         assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
     }
@@ -732,7 +734,7 @@ mod tests {
         assert!(names.contains(&"Bash"));
         assert!(names.contains(&"Read"));
         assert!(names.contains(&"Agent"));
-        assert!(names.contains(&"send_peer"));
+        assert!(names.contains(&"ChannelSend"));
         assert!(names.contains(&"AsyncSpawn"));
         assert!(names.contains(&"AsyncOutput"));
         assert!(names.contains(&"AsyncStatus"));
@@ -750,14 +752,17 @@ mod tests {
         assert!(!names.contains(&"AsyncSpawn")); // agent-specific, not global
         assert!(!names.contains(&"AsyncOutput")); // agent-specific, not global
         assert!(!names.contains(&"Agent")); // agent-specific, not global
-        assert!(!names.contains(&"send_peer")); // agent-specific, not global
+        // Sprint 4: ChannelSend is per-agent (needs caller DID bound).
+        assert!(!names.contains(&"ChannelSend"));
+        // send_peer is retired outright — no compatibility alias.
+        assert!(!names.contains(&"send_peer"));
     }
 
     #[test]
     fn test_agent_specific_tool_names() {
         let names = BuiltinToolAdapter::agent_specific_tool_names();
         assert!(names.contains(&"Agent"));
-        assert!(names.contains(&"send_peer"));
+        assert!(names.contains(&"ChannelSend"));
         assert!(names.contains(&"AsyncSpawn"));
         assert!(names.contains(&"AsyncOutput"));
         assert!(!names.contains(&"Bash")); // global, not agent-specific
@@ -767,12 +772,16 @@ mod tests {
     fn test_is_agent_specific_builtin() {
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("Agent"));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin(
-            "send_peer"
+            "ChannelSend"
         ));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT")); // case insensitive
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("unknown"));
+        // send_peer is retired outright — no compatibility alias.
+        assert!(!BuiltinToolAdapter::is_agent_specific_builtin(
+            "send_peer"
+        ));
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use peko_auth::host::PrincipalResourceView;
@@ -130,6 +131,61 @@ pub struct PrincipalConfig {
     /// unquota'd and every call is free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaConfig>,
+
+    /// Standing named children (agent-session paradigm, Phase 2).
+    ///
+    /// On disk: `[children.<name>]` tables. Each `<name>` is the
+    /// child's slug (per-parent-unique path segment, validated at
+    /// load) and maps to `{ subagent_type, description? }`. The
+    /// runtime ensures each declared child exists as a `standing`
+    /// session under the principal's owner root session at root-agent
+    /// run setup (`principal::children::ensure_declared_children`);
+    /// the `Agent` tool's `new` action with a matching `name`
+    /// attaches to the standing session instead of spawning fresh.
+    ///
+    /// `BTreeMap` keeps the serialized form stable (sorted by name).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_children"
+    )]
+    pub children: BTreeMap<String, ChildDeclaration>,
+}
+
+/// A standing named child declared under `[children]` in
+/// `principal.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildDeclaration {
+    /// Agent type the child runs as when attached/resumed (required;
+    /// must be nonempty).
+    pub subagent_type: String,
+    /// Optional human-readable description; becomes the session title
+    /// when the child is created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Deserialize + validate the `[children]` table: every key must pass
+/// slug validation (`peko_session::path::validate_slug`) and every
+/// entry needs a nonempty `subagent_type`. A missing `subagent_type`
+/// key is refused by serde itself (`missing field` error); the checks
+/// here cover the key shape and blank values.
+fn deserialize_children<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, ChildDeclaration>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let map = BTreeMap::<String, ChildDeclaration>::deserialize(deserializer)?;
+    for (name, decl) in &map {
+        peko_session::path::validate_slug(name).map_err(serde::de::Error::custom)?;
+        if decl.subagent_type.trim().is_empty() {
+            return Err(serde::de::Error::custom(format!(
+                "children.{name}: subagent_type must not be empty"
+            )));
+        }
+    }
+    Ok(map)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -339,6 +395,7 @@ mod tests {
             preferred_model_id: None,
             transport_preference: super::TransportPreference::Tunnel,
             quota: None,
+            children: Default::default(),
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -373,6 +430,7 @@ mod tests {
             preferred_model_id: Some("ollama-llama3.1".into()),
             transport_preference: super::TransportPreference::Direct,
             quota: None,
+            children: Default::default(),
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -413,6 +471,7 @@ mod tests {
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,
+            children: Default::default(),
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -440,6 +499,7 @@ mod tests {
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,
+            children: Default::default(),
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -491,6 +551,7 @@ mod tests {
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,
+            children: Default::default(),
         };
         assert!(cfg.capabilities.is_granted(&"tool:Read".into()));
         assert!(cfg
@@ -541,6 +602,7 @@ mod tests {
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,
+            children: Default::default(),
         };
         let view: &dyn peko_auth::host::PrincipalResourceView = &cfg;
         assert_eq!(view.permissions().len(), 0);
@@ -595,6 +657,109 @@ mod tests {
             preferred_model_id: None,
             transport_preference: Default::default(),
             quota: None,
+            children: Default::default(),
         }
+    }
+
+    // ─── [children] standing named children (Phase 2) ───────────────
+
+    /// `[children]` parses into the map; absent table ⇒ empty map
+    /// (and the key is not emitted on serialize).
+    #[test]
+    fn children_table_parses_and_defaults_empty() {
+        let toml = r#"
+            name = "kids"
+            exposure = "private"
+
+            [children.memory]
+            subagent_type = "archivist"
+            description = "Long-term memory curator"
+
+            [children.about-user]
+            subagent_type = "profiler"
+        "#;
+        let cfg: PrincipalConfig = toml::from_str(toml).expect("children TOML must parse");
+        assert_eq!(cfg.children.len(), 2);
+        let memory = &cfg.children["memory"];
+        assert_eq!(memory.subagent_type, "archivist");
+        assert_eq!(
+            memory.description.as_deref(),
+            Some("Long-term memory curator")
+        );
+        let about = &cfg.children["about-user"];
+        assert_eq!(about.subagent_type, "profiler");
+        assert_eq!(about.description, None);
+
+        // Absent table ⇒ empty map.
+        let cfg: PrincipalConfig = toml::from_str("name = \"plain\"").unwrap();
+        assert!(cfg.children.is_empty());
+        // …and an empty map is not emitted on serialize.
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            !serialized.contains("[children]"),
+            "absent children leaked into TOML: {serialized}"
+        );
+    }
+
+    /// A `[children]` key that fails slug validation is a structured
+    /// load error (no silent acceptance of unusable names).
+    #[test]
+    fn children_rejects_invalid_names() {
+        // Quoted TOML keys so `/` and whitespace survive to the
+        // validator (a bare `with/slash` would be a TOML syntax error
+        // before our check runs).
+        for bad_key in [
+            r#"children."with/slash""#,
+            "children.' leading'",
+            "children.'trailing '",
+        ] {
+            let toml = format!("name = \"x\"\n\n[{bad_key}]\nsubagent_type = \"t\"\n");
+            let err = toml::from_str::<PrincipalConfig>(&toml).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid slug"),
+                "key {bad_key}: {err}"
+            );
+        }
+    }
+
+    /// `subagent_type` is required (missing key ⇒ serde `missing
+    /// field`) and must not be blank.
+    #[test]
+    fn children_requires_nonempty_subagent_type() {
+        let missing = "name = \"x\"\n\n[children.memory]\ndescription = \"d\"\n";
+        let err = toml::from_str::<PrincipalConfig>(missing).unwrap_err();
+        assert!(err.to_string().contains("subagent_type"), "missing: {err}");
+
+        let blank = "name = \"x\"\n\n[children.memory]\nsubagent_type = \"  \"\n";
+        let err = toml::from_str::<PrincipalConfig>(blank).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "blank: {err}"
+        );
+    }
+
+    /// The `[children]` table round-trips losslessly so config
+    /// rewrites (e.g. `peko principal set-model`) don't drop it.
+    #[test]
+    fn children_roundtrip() {
+        let mut cfg = make_test_config("rt", peko_auth::Subject::User("user:a".into()));
+        cfg.children.insert(
+            "memory".to_string(),
+            ChildDeclaration {
+                subagent_type: "archivist".to_string(),
+                description: Some("curator".to_string()),
+            },
+        );
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            serialized.contains("[children.memory]"),
+            "got: {serialized}"
+        );
+        let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(back.children["memory"].subagent_type, "archivist");
+        assert_eq!(
+            back.children["memory"].description.as_deref(),
+            Some("curator")
+        );
     }
 }

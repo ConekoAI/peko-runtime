@@ -1,5 +1,5 @@
-//! Subagent DTOs lifted from root (`src/agents/{agent_config,
-//! subagent_error, subagent_executor, subagent_types}.rs` and
+//! Subagent DTOs lifted from root (`src/agents/{subagent_error,
+//! subagent_executor, subagent_types}.rs` and
 //! `src/extensions/framework/async_exec/executor/registry.rs`).
 //!
 //! Phase 10e hoists the **shapes** AgentTool needs through its
@@ -9,87 +9,32 @@
 //! that aren't built-in-tool territory. The DTOs are pure data;
 //! they can live alongside the tool.
 //!
+//! Sprint 8 Commit 4: the `AgentConfig` mirror DTO was deleted —
+//! `SubagentRuntime::resolve_agent_config` now returns
+//! `Arc<crate::agents::subagent_runtime_impl::AgentPrompt>` and
+//! `SpawnRequest.subagent_config` carries the same. The workspace
+//! Markdown is the single source of truth; `enable_*_tools` reads
+//! were dropped in Commit 3.
+//!
 //! Root re-exports each type via `pub use crate::tools::builtin::messaging::...;`
 //! so existing `crate::agents::agent_config::AgentConfig`,
 //! `crate::agents::subagent_error::SpawnError`, and
 //! `crate::agents::subagent_types::SubagentRunView` paths keep working.
 
-// ─── AgentConfig (lifted from src/agents/agent_config.rs) ──────────
-
 use serde::{Deserialize, Serialize};
-
-/// Agent configuration
-///
-/// Mirrors root's `crate::agents::agent_config::AgentConfig`.
-/// `subject_wire_id` (the helper that returned the principal wire ID)
-/// moved into a root-side free function (`root_agent_wire_id`) because
-/// it depends on `crate::auth::Subject::principal_wire_id` — root-only.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    /// Unique identifier (DID will be generated from this)
-    pub name: String,
-    /// Human-readable description
-    pub description: Option<String>,
-    /// The agent's system prompt template (Markdown).
-    pub prompt: Option<String>,
-    /// Per-agent stable identifier (DID).
-    #[serde(default)]
-    pub agent_did: Option<String>,
-    /// Whether the planning-todo family is enabled.
-    #[serde(default = "default_true")]
-    pub enable_task_tools: bool,
-    /// Whether the async execution family is enabled.
-    #[serde(default = "default_true")]
-    pub enable_async_tools: bool,
-    /// F35 — whether the synthetic `__tool_search` stub is registered.
-    #[serde(default)]
-    pub enable_tool_search: bool,
-    /// Phase 2 of `feature/multi-model-subagents`: whether the
-    /// `model_list` builtin is registered. Mirrors
-    /// `crate::agents::agent_config::AgentConfig::enable_model_list`.
-    #[serde(default = "default_true")]
-    pub enable_model_list: bool,
-    /// Channel that triggered this agent's LLM calls.
-    #[serde(default)]
-    pub channel: Option<String>,
-    /// Thinking level for the model.
-    #[serde(default)]
-    pub thinking_level: Option<String>,
-    /// Whether this agent runs inside an isolated sandbox.
-    #[serde(default)]
-    pub sandbox_enabled: bool,
-    /// Configured model aliases.
-    #[serde(default)]
-    pub model_aliases: Vec<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            name: "unnamed-agent".to_string(),
-            description: None,
-            prompt: None,
-            agent_did: None,
-            enable_task_tools: true,
-            enable_async_tools: true,
-            enable_tool_search: false,
-            enable_model_list: true,
-            channel: None,
-            thinking_level: None,
-            sandbox_enabled: false,
-            model_aliases: Vec::new(),
-        }
-    }
-}
 
 // ─── SpawnError (lifted from src/agents/subagent_error.rs) ─────────
 
 /// Errors that can occur when spawning a subagent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Sprint 7 Commit 4: the built-in `SpawnError` enum mirrors the
+/// root-side enum (`crate::agents::subagent_error::SpawnError`) 1:1
+/// so the `AgentTool::format_error_response` typed walk covers every
+/// pre-flight refusal without falling through to string parsing.
+/// `Eq` is removed from the derive because `CostCeilingExceeded`
+/// carries `f64` fields (which don't implement `Eq`) — callers
+/// compare fields individually.
+#[derive(Debug, Clone, PartialEq)]
 pub enum SpawnError {
     /// The spawn depth limit was exceeded.
     DepthLimitExceeded { current: u32, max: u32 },
@@ -99,6 +44,28 @@ pub enum SpawnError {
     Timeout { seconds: u64 },
     /// The subagent execution failed with an error message.
     ExecutionFailed(String),
+    /// Phase 3 of `feature/multi-model-subagents` — the
+    /// spawn-time pre-flight estimated cost for the call exceeds
+    /// the principal's `cost_per_call_max`.
+    CostCeilingExceeded {
+        /// Estimated cost in USD (positive).
+        estimated: f64,
+        /// Per-call ceiling in USD (positive).
+        ceiling: f64,
+        /// Model id of the chosen provider — for the error message.
+        model_id: String,
+    },
+    /// Phase 1 of `feature/multi-model-subagents` — the chosen
+    /// model's `ModelSpec` cannot serve the subagent the parent
+    /// asked for (e.g. text-only model picked for a tool-using
+    /// subagent).
+    SpecGateFailed {
+        /// Model id of the chosen provider — for the error message.
+        model_id: String,
+        /// Human-readable reason from the spec gate (e.g.
+        /// "model lacks tool support").
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for SpawnError {
@@ -118,6 +85,23 @@ impl std::fmt::Display for SpawnError {
             }
             SpawnError::ExecutionFailed(msg) => {
                 write!(f, "Subagent execution failed: {msg}")
+            }
+            SpawnError::CostCeilingExceeded {
+                estimated,
+                ceiling,
+                model_id,
+            } => {
+                write!(
+                    f,
+                    "Per-spawn cost ceiling exceeded: ${:.4} estimated > ${:.4} ceiling for model '{}'",
+                    estimated, ceiling, model_id
+                )
+            }
+            SpawnError::SpecGateFailed { model_id, reason } => {
+                write!(
+                    f,
+                    "Model '{model_id}' cannot serve this subagent: {reason}"
+                )
             }
         }
     }
@@ -140,14 +124,17 @@ pub use peko_extension_api::SpawnCleanupPolicy;
 // ─── ExecutionConfig (lifted from src/agents/subagent_executor.rs) ─
 
 /// Configuration for subagent execution.
+///
+/// Sprint 7 Commit 3: `cleanup` and `label` were dropped — every
+/// caller always passed the default (`Keep` / `None`). The
+/// projection onto root-side `subagent_executor::ExecutionConfig`
+/// in `agents/subagent_runtime_impl.rs` now hardcodes the default
+/// for those two, since the root-side type keeps them for its own
+/// `SubagentRunView` consumers (`subagent_announce::format_announcement`).
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
     /// Maximum execution time in seconds (0 = unlimited)
     pub timeout_seconds: u64,
-    /// Cleanup policy for the session
-    pub cleanup: SpawnCleanupPolicy,
-    /// Optional label for the run
-    pub label: Option<String>,
     /// Whether to announce completion to parent
     pub announce_completion: bool,
     /// Maximum spawn depth (0 = unlimited)
@@ -164,8 +151,6 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             timeout_seconds: 300,
-            cleanup: SpawnCleanupPolicy::Keep,
-            label: None,
             announce_completion: true,
             max_depth: 1,
             model_override: None,

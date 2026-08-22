@@ -190,7 +190,6 @@ contracts and binaries live under `peko-rs/. Final workspace members:
 
 ```text
 peko-rs/
-├── chat-log/               # Append-only chat-log storage (peko-chat-log, Phase 5)
 ├── cli/                    # CLI binary (`peko` bin, Phase 0.Z-B — extracted from `peko-rs/core/`)
 │   └── src/
 │       ├── commands/       # All `peko <subcommand>` handlers (lifted from root commands/)
@@ -337,8 +336,8 @@ Big root-only domains remain: `src/providers/` (~12k lines),
 `src/daemon/` (~6k lines), `src/agents/` (~8k lines),
 `src/tunnel/` (~11k lines), `src/ipc/` (~16k lines),
 `src/principal/` (~6k lines), `src/registry/` (~7k lines),
-`src/auth/` (~2k lines), `src/identity/` (~3k lines),
-`src/chat_log/` (~700 lines). Deferred tool extractions:
+`src/auth/` (~2k lines), `src/identity/` (~3k lines).
+Deferred tool extractions:
 `BashTool`, `ToolSearchTool`, `AgentCatalog`, `ToolRuntime`.
 
 The cleanup goal is **codex-rs-like cleanliness**: no top-level
@@ -355,7 +354,7 @@ domain size.
 | 2 | Consolidate duplicate `CompletionEvent` (engine vs extension-host) | `peko::extensions::framework::async_exec::executor::completion_queue::CompletionEvent` |
 | 3 | Extract `peko-identity` | `peko::identity::*` |
 | 4 | Extract `peko-auth` | `peko::auth::*` |
-| 5 | Extract `peko-chat-log` | `peko::chat_log::*` |
+| 5 | Extract `peko-chat-log` | `peko::chat_log::*` (crate later retired in sprint 3 Phase 13, 2026-08-19) |
 | 6 | Extract `peko-providers` | `peko::providers::*` |
 | 7 | Extract `peko-session` (incl. `InboxRegistry`) | `peko::session::*` |
 | 8 | Bulk-move extension host implementation into `peko-extension-host` | `peko::extensions::framework::*` |
@@ -395,12 +394,13 @@ domain size.
 | F7 | **AGENTS.md + dep-graph updates for F2/F3/F4 foldbacks** (✅ merged 2026-07-25) | no root path breakage; doc + script updates |
 | 0.Z-E | **Delete `peko-tools-builtin`** (✅ merged 2026-07-25) | cron port + DTOs + 3 cron tools → `peko-cron/src/tools/`; `tool_search_metadata` → `peko-engine/src/tool_search_metadata.rs` (already canonical); `peko_cron::tools::{CronRuntime, set_global_runtime, global_runtime}` is the new home; `DaemonCronAdapter` stays in root (cycle prevention — depends on `DaemonClient`); 12 forbidden-edge entries + 1 header docstring removed from `check_workspace_deps.py` |
 
-#### Current crate layout (20 workspace members, 2026-07-25)
+#### Current crate layout (21 workspace members, 2026-08-19)
 
 Already extracted (`peko-rs/):
 
 - `auth` — auth + DID helpers.
-- `chat-log` — append-only chat-log storage.
+- `channel` — multi-principal chat primitive (channels; `ChannelPort` + `ChannelStore` + `ChannelSubscriber`). Since sprint 3 Phases 10–13 the per-peer DM channels are also the consumer-visible conversation record `peko log` reads.
+- ~~`chat-log`~~ — **deleted in sprint 3 Phase 13** (2026-08-19). The peer DM channels replaced it as the conversation record; the `peko log` row DTO moved into root as `peko_core::ipc::packet::PrincipalLogMessage` (wire shape unchanged); the last writer (cron `Send` fired-prompt projection `record_cron_input`) was dropped.
 - `cron` — cron scheduler + idle detection + event-trigger (Phase 14.b).
 - `engine` — agentic loop core (Phase 9 series).
 - `events` — neutral agentic event contract.
@@ -651,16 +651,31 @@ cargo test --all-features
     `Cargo.toml` deps from the cron-tools migration: `chrono-tz` was
     already lifted in F4; `uuid` + `async-trait` joined `peko-cron`'s
     direct deps.
-  - **2026-08-08 `send_peer` unification:** `principal_send` was
-    renamed `send_peer` and gained a user branch (fire-and-forget
-    notes to a human peer's conversational session) alongside the
-    principal branch (the legacy sync RPC; wire/IPC names unchanged).
-    Delivery goes through the `PeerMessenger` port
+  - **2026-08-19 `ChannelSend` consolidation (sprint 4):**
+    `send_peer` and the bare-post `ChannelSend` are folded into one
+    tool — `ChannelSend` (registered per-agent with caller DID bound
+    at construction). The LLM picks the dispatch branch by choosing
+    the wire form of its `channel` parameter:
+
+      - `chan_<8 base36>` (Bare) — plain fire-and-forget post.
+      - `principal:<did>` (Principal) — RPC: ensure_peer_child +
+        await reply up to 1 minute, mirror onto the caller's own
+        DM channel.
+      - `user:<id>` (User) — peer messenger note, gated to the
+        originating user of the run.
+      - `group:<slug>` (Group) — plain fire-and-forget post to a
+        group channel.
+
+    `tool:send_peer` is retired outright (no compat alias — prelaunch).
+    The dispatch replaces the legacy `principal_send` (re-founded on
+    peer DM channels in sprint 3 Phase 12b). Delivery of the user
+    branch still goes through the `PeerMessenger` port
     (`peko-rs/core/src/principal/messenger.rs` — trait + global
     registry mirroring the `CronRuntime` pattern, installed by the
     daemon at startup). Originating-peer resolution derives from the
-    calling session id (`root:{peer}` / v2 keys / subagent-suffix
-    stripping / spawn-overlay `parent_session_id` walk) — NOT from
+    calling session's stamped `peer_type`/`peer_id` + the spawn
+    `parent_session_id` walk (the `root:{peer}` key parsing was
+    retired in sprint 2 phase 7) — NOT from
     `ToolContext.peer_id`, which is never populated in production.
     Subagents get the tool via `SubagentExecutor`'s
     `caller_principal_did` OnceLock, propagated by
@@ -679,18 +694,42 @@ cargo test --all-features
     `<id>.jsonl`) and readers (`load_events`/`load_normalized`)
     stitch pages 1..N + the current page transparently. Legacy
     `#`-suffixed JSONLs stay inert on disk. The `session` tool is the
-    *persist* side (9 storage actions: `status`, `list`, `history`,
-    `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`);
+    *persist* side (7 storage actions, bash-aligned: `status`,
+    `list`, `history`, `find`, `copy`, `move`, `remove` —
+    Sprint 7 Commit F 2026-08-21 trimmed from 10: `search`→`find`,
+    `branch`→`copy`, `delete`→`remove`, `rename` folded into
+    `move` (in-place title/slug), `archive`/`unarchive` dropped
+    (sessions are monotonically visible until `remove`));
     the `Agent` tool is the *generate* side (3 LLM-driving actions via
-    the `action` param, default `new`: `new` spawns, `resume`
-    re-attaches a run to an existing spawned session — the old
-    `resume_session` tool param is gone — `compact` flags the session
-    and returns immediately; the engine summarizes at the target's
-    next run, no completion signal). The principal's root session
-    (`root:*`) is continuous and engine-managed: delete/archive on it
-    are refused, and no caller may mutate the session it is running
-    in. Ownership: a caller in a base session manages the whole store;
-    a spawned (subtree) caller manages only its own subtree —
+    the `action` param, default `new`: `new` spawns and now REQUIRES
+    a `name` slug (1-64 chars, no `/`, no `:`, no outer whitespace;
+    unique among the caller's children) so the spawned session is
+    addressable later as `/.../<name>` — `resume` re-attaches a run
+    to an existing spawned session — `session_key` accepts a slug
+    path (`/a/b/c`) or the caller's own session id (engine
+    self-reference); non-`/`, non-self raw session ids are REFUSED
+    at the tool layer with a structured error (engine-internal sites
+    canonicalize via `peko_session::SessionId::from` directly —
+    `peko_session::path::resolve_id_or_path` retired in sprint 6
+    commit 2) — `compact` flags the session and returns immediately;
+    the engine summarizes at the target's next run, no completion
+    signal). The principal's trunk session is the ONLY root-family
+    session (since sprint 2, 2026-08-17; sprint 6 retired the
+    `root:self` magic-string id on 2026-08-20): it is the session
+    with `parent_session_id = None`, looked up via
+    `peko_session::ownership::find_trunk_session(metas)`. Continuous,
+    engine-managed, cron-only — external ingress (CLI send / A2A /
+    Hub) lands in per-peer standing children (`/local-user`,
+    `/user-x`, `/principal-{did}`) provisioned by
+    `principal/peer_children.rs` and driven by
+    `principal/child_turns.rs`; bound DM channels wake their bound
+    child (`daemon/channel_binding.rs`). The per-peer `root:{peer}` /
+    `root:cron:{owner}` sessions are retired. Delete/archive/move on
+    the trunk are refused, and no caller may mutate the session it
+    is running in. Ownership: a caller in a base session — or a
+    `privileged` one (the owner's `/local-user` child) — manages the
+    whole store; a spawned (subtree) caller manages only its own
+    subtree —
     classification + refusal constructors live in
     `peko-rs/core/src/session/ownership.rs`, shared by the
     `SessionManagerRuntime` adapter (session tool) and the
@@ -713,9 +752,231 @@ cargo test --all-features
     `agents/subagent_executor.rs` branches on `trigger == "spawn"`.
     The prompt's `SessionSnapshot` carries the real session id
     (`TurnPromptContext.session_id`).
+  - **2026-08-20 sprint 5 (slug-path addressing):** the LLM-facing
+    addressing surface collapses to slug paths. The `session` tool's
+    `status` / `history` / `copy` / `move` / `remove` actions accept
+    a slug path (`/a/b/c`), a caller-relative slug (`agent-c`), and
+    REFUSE raw session ids at the tool boundary
+    (`peko_session::path::resolve_reference`).
+    `session list` defaults to the **caller's subtree** (no longer
+    the whole principal's tree); `scope: "principal"` widens for
+    privileged trunk callers (non-privileged callers who ask get
+    ownership-clamped to their subtree with a structured warning);
+    `path: "/other/sub"` scopes further to any subtree the caller
+    has ownership access to. `Agent` `new` requires a `name` slug so
+    the spawned session is addressable as `/.../<name>`. The
+    validation lives in `validate_slug` and rejects `:` to keep the
+    grammar unambiguous (slugs can never look like raw ids).
+  - **2026-08-18 sprint 3 Phase 10 (DM channels + push-wake):** every
+    peer ingress path (`peko send` IPC, tunnel A2A `receive`/
+    `receive_streaming`, Hub webchat, IPC Steer) funnels through
+    `PeerChildTurns::ensure_child`, which now also find-or-creates the
+    peer's **DM channel** — `dm-<peer_child_slug>` with
+    `passive_binding = "/<slug>"` (path form, matching the
+    `PassiveBindingResponder` fixtures) and the principal as
+    creator/member — via `principal/peer_dm.rs::ensure_peer_dm_channel`.
+    Find-or-create matches on the *binding* (not the display name) and
+    is serialized per principal by the manager's
+    `session_creation_lock`; the port is threaded
+    `AppState → PrincipalManager::with_channel_port → PeerChildTurns`
+    (explicit, not the process global; `None` = standalone/test skips
+    provisioning). A freshly created DM channel fires the
+    `dm_subscriber_hook` the daemon installs post-supervisor-build
+    (`PrincipalManager::set_dm_subscriber_hook` →
+    `ChannelBindingSupervisor::ensure_subscriber`), so it gets its
+    `PassiveBindingResponder` subscriber WITHOUT a restart. Remote
+    (`principal:<did>`) peers got the LOCAL channel only at Phase 10 —
+    the cross-runtime invite/`join_remote` fan-out landed in Phase
+    12a/12b. Bound
+    channels are also **push-woken** now: `ChannelStore::append_event`
+    is the single disk-append chokepoint and fires the per-channel
+    broadcast on EVERY append (local posts, membership events, and
+    cross-runtime mirror appends via `append_remote_event`;
+    `TunnelChannelPort` delegates to the same store), and
+    `ChannelSubscriber::spawn` `select!`s on that broadcast + a
+    backstop tick (`SubscriptionConfig::default` raised 5s → 30s; a
+    `Closed` broadcast degrades to pure ticking). No `ChannelPort`
+    trait signature changed (`subscribe_events` already existed with a
+    no-op default).
+  - **2026-08-18 sprint 3 Phase 11 (DM channels become the
+    conversation):** the local peer ingress paths now WRITE the
+    conversation onto the Phase-10 DM channels instead of the chat
+    log. Every ingress funnels through
+    `PeerChildTurns::ensure_child_ingress` (returns the child session
+    id + the DM channel). The inbound message is posted with
+    `ChannelPort::post_attributed` (new trait method; `sender =
+    principal.id` for membership, `author = peer.to_string()` — the
+    Subject wire form) BEFORE the run permit is acquired (drive and
+    queue branches both covered); the reply / failure trace is posted
+    back via plain `post` (principal-authored). Chat-log projections
+    on these paths (`record_chat_input` / `record_chat_response` /
+    `record_input` / `record_response` / `is_peer_chat_channel`) are
+    deleted; `record_cron_input` and the peer messenger's user-branch
+    notes keep the crate alive until Phase 13. Accepted behavior
+    changes: manager-path slash responses are no longer persisted;
+    `Queued…` notices no longer appear in the conversation log;
+    port-less contexts (tests/standalone) record nothing. The
+    `PassiveBindingResponder` never double-drives these turns:
+    `response_trigger` now skips any `Posted` event whose author
+    parses as a Subject wire form
+    (`daemon/channel_binding.rs` — the author-based turn-ownership
+    partition; responder-owned posts are exactly raw-principal-id
+    posts from other principals). `peko log`
+    (`read_principal_log`) reads the DM channel log
+    (`find_peer_dm_channel` → `peek_with_ids`, `Posted` events only,
+    in-memory limit/cursor paging, `since` cutoff on the event's
+    `at`); pre-Phase-11 chat-log history stays on disk unread (Phase
+    13 decides migration). A2A got local DM posting as a side effect
+    of the shared manager funnel; Phase 12b switched the principal
+    branch of `ChannelSend` itself onto the channels (await-reply over
+    the channel broadcast, invite/fan-out for cross-runtime).
+  - **2026-08-19 sprint 3 Phase 12a (cross-runtime DM channel
+    lifecycle + anti-loop rule):** the additive plumbing for
+    principal-to-principal DM over channels. Nothing user-facing
+    switches over yet — `ChannelSend`/messenger/cron and the old A2A
+    RPC stack are untouched (12b rewires them); `peer_dm.rs` still
+    provisions only the LOCAL channel for `principal:<did>` peers.
+    - **Wire** (`tunnel/protocol.rs`): `TunnelChannelInvite` gains
+      `creator_did` (the creator principal's stable DID — the
+      receiver names its peer child from it; `creator` and
+      `source_principal_did` are source-local ids) and
+      `passive_binding` (DM marker; the VALUE is ignored by the
+      receiver — each side's binding names its OWN child for the
+      other principal, and `-N` slug suffixes are runtime-local).
+      Both fields join the signed pre-image
+      (`ChannelInviteSignedFields`; `passive_binding` signs as the
+      empty string when `None`).
+    - **Outbound** (`tunnel/tunnel_channel_port.rs`): `invite` routes
+      through the new `fanout_dm_invite`, which records the invitee
+      as a `RemoteMember` on the SOURCE **before** sending (unwiring
+      the previously dead `add_remote_member` — without it
+      `fanout_event` saw no remote members and posts stayed
+      local-only) and re-keys the membership snapshot to the
+      receiver's view: source-local rows go out with
+      `runtime_id: Some(caller_runtime_id)`, pre-existing remote rows
+      keep their runtime, and the single `runtime_id: None` row is
+      the invitee ("addressed to you") carrying the invited
+      principal's DID. The bare `ChannelPort::invite` trait surface
+      has no DID resolver, so it passes the inviter's local id as
+      `creator_did`; the DM provisioning path (12b) calls
+      `fanout_dm_invite` directly with the real DID.
+    - **Mirror bootstrap**: `ChannelStore::join_remote` gained
+      `self_principal` / `source_runtime_id` / `passive_binding`
+      params and re-partitions membership (see DATA_MODEL §5¾.3).
+      Inbound envelopes now go through the new
+      `TunnelHost::dm_channel_mirror_bootstrap` (AppState impl in
+      `daemon/state.rs`): resolve the invited local principal from
+      the invitee row's DID (`PrincipalManager::find_by_did`; unknown
+      DID ⇒ log + skip); for DM invites, CHILD-ONLY ensure the peer
+      child for `principal:<creator_did>` (`ensure_peer_child` — NOT
+      `ensure_child_ingress`, which would provision a second
+      local-only DM channel), derive `/<slug>` from the child's real
+      slug (`peer_dm::peer_child_slug_readback`, factored out of
+      `ensure_peer_dm_channel`; the session-manager construction is
+      `child_turns::peer_child_session_manager`, factored out of
+      `PeerChildTurns::build`), then `join_remote`, then
+      `ChannelBindingSupervisor::ensure_subscriber` — closing the
+      Phase 10 live-hook gap (mirrors get their
+      `PassiveBindingResponder` immediately; unbound mirrors get the
+      meter-only Noop subscriber, matching the boot sweep).
+    - **Anti-loop** (`daemon/channel_binding.rs`): responder replies
+      are threaded — `RespondCtx.event_id` (new; the subscriber
+      populates it from `peek_with_ids`'s line id) flows into
+      `PostMsg::reply(event_id, …)`, and `response_trigger` now
+      requires `parent.is_none()`, so no responder ever reacts to a
+      reply and cross-runtime ping-pong is structurally impossible
+      (mirror line numbers diverge between runtimes, so
+      correlation-based dedup can't work — the parent-presence bit
+      is all the rule needs; `append_remote_event` skips parent
+      validation, so dangling remote parents are fine). Accepted
+      trade-off: a threaded human reply (`PostMsg::reply` via
+      `ChannelSend`) no longer wakes a bound session — root posts
+      only; local ingress reply projections (`post_peer_dm_reply`)
+      stay root posts (self-authored + self-skipped anyway).
+  - **2026-08-19 sprint 3 Phase 12b (principal DM switches to
+    channels; the A2A RPC stack retires):** `ChannelSend`'s
+    principal branch (sprint 4: this used to be `send_peer`'s
+    principal branch; sprint 4 unifies both tools) now runs over the
+    peer DM channels and the old request/response stack is deleted. **Remote target:** the caller's
+    own DM channel for the peer is ensured
+    (`ensure_peer_child_ingress`), first contact is detected by the
+    absence of a remote-member row for the target's runtime
+    (`TunnelChannelPort::local().list_remote_members`) and fires
+    `fanout_dm_invite` DIRECTLY with the caller's real DID (the bare
+    `ChannelPort::invite` trait path has no DID resolver), the tool
+    subscribes the channel broadcast BEFORE posting, root-posts the
+    message as the caller's raw id (self-skipped locally, fires the
+    remote responder), and awaits the mirrored reply under
+    `response_timeout` (60s): on each broadcast wake (and on `Lagged`
+    repair) it re-reads `peek_with_ids(Checkpoint(L))` and takes the
+    first `Posted { parent: Some(_), author, .. }` with author ≠ the
+    caller's raw/DID forms and not a `user:*`/`public` form — `parent`
+    can't be matched exactly because mirror line numbers diverge.
+    Overlapping awaits to the same target are serialized by a
+    per-tool-instance mutex map (no wire correlation id exists; the
+    remote responder's turn lock already serializes replies).
+    **Local target** (same runtime — one store, so no mirror trick;
+    two-channel design): the caller is invited into the TARGET's DM
+    channel for the caller peer, the root post lands there (author =
+    caller raw id ⇒ the target's responder fires), the reply is
+    awaited on that channel with exact matching (`parent.is_some() &&
+    author == target.id`), and the exchange is mirrored onto the
+    caller's own DM channel for `peko log` — outbound as a
+    self-authored root, the reply via `post_attributed(author =
+    target.id, PostMsg::reply(L_own, …))` (parent set ⇒ the caller's
+    responder skips it; `L_own` exists so the parent validates).
+    Accepted behavior change: the per-target Chat permission check the
+    retired `PrincipalManager::receive` applied is gone — the
+    directory/exposure gates are the boundary now. The `session_id`
+    tool arg is DROPPED (channel continuity replaces session
+    resumption); `PrincipalSendResult.session_id` now returns the
+    caller's standing child id. **Retired:** the
+    `PrincipalToPrincipalRequest`/`PrincipalToPrincipalResponse` wire
+    variants + dispatcher arms + `handle_inbound_principal_to_principal_*`
+    + `send_hub_error`, `tunnel/a2a_pending.rs` and
+    `tunnel/a2a_audit.rs` (whole modules), `SignedFields` /
+    `sign_request` / `verify_request` from `a2a_signature.rs`
+    (`build_pre_image` / `sign_pre_image` / `verify_pre_image` /
+    `A2A_SIGNATURE_DOMAIN` stay — `tunnel_channel_signature` and
+    `invite_token` reuse them), the whole `tunnel/direct/` transport
+    (server/client/manager/routing/handshake; `tls.rs` relocated to
+    `tunnel/tls.rs` — `tunnel::client` still uses
+    `build_client_config`), `AppState::{pending_a2a_responses,
+    direct_manager, direct_*, DirectHealth}` + the direct-server
+    startup, `TunnelHost::pending_a2a_responses`, and
+    `PrincipalManager::receive` (its only production callers were the
+    two retired paths; test callers migrated to `receive_streaming`).
+    `CrossRuntimeA2aCtx` is now `{ directory, caller_runtime_id,
+    principal_manager, channel_port: Arc<TunnelChannelPort> (concrete —
+    the tool needs `fanout_dm_invite` + `list_remote_members`),
+    response_timeout }`. The `PeerMessenger` port survives:
+    `deliver_note` keeps the child-JSONL append (notes have no turn),
+    posts the note to the peer's DM channel as a principal-authored
+    root (replacing the chat-log projection; find-only posture
+    unchanged), and keeps the trunk `[notify]` self-view. `peko log`
+    needs no change — it already reads the DM channels (Phase 11).
+  - **2026-08-19 sprint 3 Phase 13 (`peko-chat-log` retired):** with
+    the conversation record re-founded on the peer DM channels
+    (Phases 10–12b), the crate had one writer left — the cron `Send`
+    fired-prompt projection (`PrincipalManager::record_cron_input`)
+    — and zero readers. The projection is dropped (a fired prompt
+    already lives in the trunk session JSONL; the outcome note lands
+    on the owner's DM channel via `deliver_note`), the
+    `chat_log_store` plumbing is gone from `PrincipalManager` /
+    `AppState` (and `PathResolver::chat_logs_dir` with it), and the
+    `peko-rs/chat-log/` crate is deleted from the workspace (22 → 21
+    members). The `peko log` row DTO survives, moved and renamed to
+    `peko_core::ipc::packet::PrincipalLogMessage` +
+    `PRINCIPAL_LOG_SCHEMA_VERSION` (wire shape byte-identical to the
+    old `ChatLogMessage`; the daemon still mints `chan_<line>` ids
+    from the DM channel's line numbers). `ChatThreadKey` /
+    `ChatLogPage` / `ChatLogStore` / `ChatLogError` died with the
+    store. Pre-Phase-11 shards under `<data-dir>/chat_logs/` stay on
+    disk unread. 17 forbidden-edge entries removed from
+    `check_workspace_deps.py`.
   - `peko-rs/cli/src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `peko_core::registry::packaging::`, `peko_core::common::services::config_authority::`, `peko_core::identity::storage::`, `peko_core::session::jsonl::`, `peko_core::session::metadata_controller::`). After Phase 0.Z-B the `commands/` module lives in the `peko-cli` binary satellite; imports from `crate::X` inside CLI files become `peko_core::X`. `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.
 
-- **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 71-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
+- **Workspace dependency rules (Phase 12b):** the path-grep `check_module_boundaries.sh` covers in-`src/` rules. For crate-level edges — `peko-provider-api` MUST NOT depend on `peko-engine`, `peko-protocol` is `serde`+`serde_json` only, the leaf crates (`peko-message` / `peko-subject` / `peko-tools-core` / `peko-events`) MUST NOT depend on any other `peko-*`, etc. — `scripts/check_workspace_deps.py` reads every `peko-rs/*/Cargo.toml` and asserts a 97-entry forbidden-edge table derived from the workspace-migration plan. Run locally with `python3 scripts/check_workspace_deps.py` (add `--print-graph` to see the actual edges). The script fires automatically in the `lint-workspace` CI job whenever `peko-rs/**`, root `Cargo.toml`, `Cargo.lock`, or the script itself change. New forbidden edges surface here before a PR can land; adding a rule is one line in `FORBIDDEN_EDGES` with a doc comment explaining the rationale.
 
 ---
 
@@ -775,6 +1036,8 @@ peko principal push my-principal:v1.0 custom.registry.com/peko/principals/my-pri
 ## Related Documentation
 
 - `README.md` — Human-facing quick start and feature overview
+- `docs/architecture/PEKO.md` — **The PEKO primitive** (Persistent Entity with Keepalive Orchestration): canonical term + contract for the agent–session paradigm
+- `docs/architecture/AGENT_SESSION_PARADIGM.md` — Full paradigm rationale, gap audit, sprint build order
 - `API_SURFACE.md` — Public Rust API surface
 - `DATA_MODEL.md` — On-disk and in-memory data formats
 - `CHANGELOG.md` — Version history

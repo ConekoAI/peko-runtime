@@ -7,8 +7,7 @@
 //!   to the responder, no spurious calls on re-tick.
 //!
 //! Tests run against the file-backed `ChannelStore` rooted in a
-//! `tempfile::TempDir` so the storage layer is exercised end-to-end
-//! (matches `peko-rs/chat-log/src/store.rs:392-495` style).
+//! `tempfile::TempDir` so the storage layer is exercised end-to-end.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -252,6 +251,84 @@ async fn subscriber_calls_responder_for_each_new_event() {
 }
 
 // ---------------------------------------------------------------------------
+// Test C: push-wake (sprint 3 Phase 10)
+// ---------------------------------------------------------------------------
+
+/// A spawned subscriber with a LONG backstop interval must still
+/// process a fresh post promptly: the store's append-time broadcast
+/// wakes the loop's `select!` instead of the post sitting unseen
+/// until the next tick. This is the end-to-end contract the DM-tier
+/// `PassiveBindingResponder` relies on for real-time bound-channel
+/// wake-ups.
+#[tokio::test(flavor = "multi_thread")]
+async fn spawned_subscriber_wakes_on_append_without_waiting_for_tick() {
+    let (tmp, adapter) = adapter_in_tempdir();
+    let port: Arc<dyn ChannelPort> = as_port(adapter.clone());
+
+    let alice = PrincipalId::generate();
+    let chan = port
+        .create(&alice, CreateOpts::runtime("wake-test"))
+        .await
+        .expect("create");
+
+    // Bob joins + subscribes with a counter responder and a backstop
+    // interval far beyond the test's patience — if the wake-up ever
+    // regresses to pure polling, the assertions below time out.
+    let bob = PrincipalId::generate();
+    port.invite(&chan, &alice, &bob).await.expect("invite bob");
+
+    let responder = Arc::new(CountResponder::default());
+    let counters = responder.clone();
+    let chan_dir = tmp.path().join("channels").join(chan.as_str());
+    let sub = peko_channel::ChannelSubscriber::new(
+        chan.clone(),
+        bob.clone(),
+        chan_dir,
+        port.clone(),
+        responder,
+        peko_channel::cost::noop_meter(),
+        ChannelCursors::new(),
+        SubscriptionConfig {
+            poll_interval: Duration::from_secs(3600),
+        },
+    );
+    let handle = sub.spawn();
+
+    // First tick processes the backlog (Created + MemberJoined)
+    // before we post — wait for it so the post is the ONLY new event.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while counters.count.load(Ordering::Relaxed) < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "first tick must deliver the 2 backlog events promptly"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    port.post(&chan, &alice, PostMsg::root("ping"))
+        .await
+        .expect("post ping");
+
+    // The append broadcast must wake the loop well under any polling
+    // interval — allow 2s for scheduling slack on loaded CI.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while counters.count.load(Ordering::Relaxed) < 3 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "post must be delivered via push-wake, not the 1h backstop tick"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        counters.count.load(Ordering::Relaxed),
+        3,
+        "exactly one responder call for the pushed post"
+    );
+
+    handle.abort();
+}
+
+// ---------------------------------------------------------------------------
 // Bonus test: CLI router thin-handler sanity
 // ---------------------------------------------------------------------------
 
@@ -264,7 +341,10 @@ async fn cli_router_round_trip() {
     let alice = PrincipalId::generate();
     let bob = PrincipalId::generate();
 
-    let created = router.handle_create(&alice, "demo").await.expect("create");
+    let created = router
+        .handle_create(&alice, "demo", None)
+        .await
+        .expect("create");
     router
         .handle_invite(&created.channel, &alice, &bob)
         .await
@@ -338,6 +418,8 @@ async fn tier_rule_rejects_non_runtime_in_pr1() {
     let opts = CreateOpts {
         name: "future-shared".into(),
         tier: Tier::Runtime, // PR-1 only allows Runtime; this stays
+        id: None,            // sprint 4: explicit id (None = mint fresh)
+        passive_binding: None,
     };
     let _ = opts; // sanity: Tier::Runtime is the only valid option
     let _ = port.create(&alice, CreateOpts::runtime("ok")).await;

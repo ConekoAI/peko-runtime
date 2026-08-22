@@ -57,6 +57,34 @@ pub trait ChannelPort: Send + Sync + 'static {
         msg: PostMsg,
     ) -> Result<TaskId>;
 
+    /// Phase 11 (agent-session paradigm sprint): like [`Self::post`]
+    /// but writes an explicit `author` string onto the event instead
+    /// of deriving it from `sender`. Membership + parent validation
+    /// are still enforced against `sender` — `author` is a display
+    /// attribution, not an authority claim.
+    ///
+    /// Used by the per-peer DM channels: the inbound message is posted
+    /// with `sender = principal.id` (the channel's creator/member —
+    /// the human peer is deliberately not added to membership) and
+    /// `author = peer.to_string()` (the Subject wire form, e.g.
+    /// `user:alice` or `principal:did:...`), so the channel log reads
+    /// as a natural two-party conversation.
+    ///
+    /// The default impl degrades to a plain `sender`-authored
+    /// [`Self::post`], so adapters that don't distinguish attribution
+    /// (`NoopChannelPort`, in-memory test ports) don't need to
+    /// override.
+    async fn post_attributed(
+        &self,
+        channel: &ChannelId,
+        sender: &PrincipalId,
+        author: &str,
+        msg: PostMsg,
+    ) -> Result<TaskId> {
+        let _ = author;
+        self.post(channel, sender, msg).await
+    }
+
     /// Walk the channel's event log starting from `since`, returning
     /// every event keyed at a strictly later `TaskId`. An empty
     /// `Checkpoint` (default) returns the entire log.
@@ -177,6 +205,18 @@ pub trait ChannelPort: Send + Sync + 'static {
         channel: &ChannelId,
     ) -> Result<std::path::PathBuf>;
 
+    /// Phase 4 (agent-session paradigm sprint): the channel's passive
+    /// binding — a session id or `/path` declared at create time
+    /// (`CreateOpts::passive_binding`), persisted in `meta.json`.
+    /// `None` means the channel is unbound and behaves exactly as
+    /// before (active polling via the `channel read` tool only). The
+    /// default impl returns `None` so adapters without binding support
+    /// (`NoopChannelPort`, in-memory tests) don't need to override.
+    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
+        let _ = channel;
+        Ok(None)
+    }
+
     /// PR-2b: subscribe to live events for `channel`. The returned
     /// receiver yields every event appended to the channel after this
     /// call (events appended before subscription are NOT replayed —
@@ -231,19 +271,67 @@ impl PostMsg {
 pub struct CreateOpts {
     pub name: String,
     pub tier: Tier,
+    /// Sprint 4 (`feat!`: consolidate `send_peer` into `ChannelSend`):
+    /// optional explicit [`ChannelId`]. When `Some`, the store uses
+    /// this id verbatim (after `parse`) instead of minting a fresh
+    /// `chan_<8 base36>` via [`ChannelId::generate`]. Used by the
+    /// peer-DM auto-provisioning path
+    /// (`peko-rs/core/src/principal/peer_dm.rs`) to mint a
+    /// deterministic `principal:<did>` channel id — both sides of a
+    /// DM exchange derive the same id from the same DID.
+    ///
+    /// Collisions surface as [`ChannelError::Adapter`] (mirrors the
+    /// idempotency check at `ChannelStore::join_remote`). The default
+    /// `None` preserves the pre-PR `ChannelId::generate()` behavior.
+    pub id: Option<ChannelId>,
+    /// Phase 4 (agent-session paradigm sprint): optional **passive
+    /// binding** — a session id or `/path` in the creator principal's
+    /// session tree. When set, the daemon's `PassiveBindingResponder`
+    /// wakes the bound session on every inbound `Posted` event from
+    /// another member and posts the reply back (DM-tier semantics,
+    /// paradigm §3.1 type 1). `None` keeps the channel purely active
+    /// (group tier, paradigm §3.1 type 2). Persisted to `meta.json`;
+    /// immutable after create.
+    pub passive_binding: Option<String>,
 }
 
 impl CreateOpts {
     /// Construct a Runtime-tier `CreateOpts` (PR-1 default).
     pub fn runtime(name: impl Into<String>) -> Self {
-        Self { name: name.into(), tier: Tier::Runtime }
+        Self {
+            name: name.into(),
+            tier: Tier::Runtime,
+            id: None,
+            passive_binding: None,
+        }
     }
 
     /// Construct a Shared-tier `CreateOpts` (PR-3d). The caller is
     /// responsible for the authority gate — the CLI does this via the
     /// Phase B `RuntimeAuthority::write_shared_channels` check.
     pub fn shared(name: impl Into<String>) -> Self {
-        Self { name: name.into(), tier: Tier::Shared }
+        Self {
+            name: name.into(),
+            tier: Tier::Shared,
+            id: None,
+            passive_binding: None,
+        }
+    }
+
+    /// Attach a passive binding (session id or `/path`). See
+    /// [`Self::passive_binding`].
+    pub fn with_passive_binding(mut self, binding: impl Into<String>) -> Self {
+        self.passive_binding = Some(binding.into());
+        self
+    }
+
+    /// Sprint 4: pin a specific [`ChannelId`] for `create` to use.
+    /// The id is validated at the store layer (parsed via
+    /// `ChannelId::parse`); an invalid wire form surfaces as
+    /// [`ChannelError::Adapter`].
+    pub fn with_id(mut self, id: ChannelId) -> Self {
+        self.id = Some(id);
+        self
     }
 }
 
@@ -462,5 +550,52 @@ impl ChannelPort for NoopChannelPort {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Global registry (mirrors `peko_cron::tools::set_global_runtime`)
+// ---------------------------------------------------------------------------
+
+static GLOBAL_CHANNEL_PORT: std::sync::OnceLock<std::sync::Arc<dyn ChannelPort>> =
+    std::sync::OnceLock::new();
+
+/// Install the process-wide channel port. Called once by the daemon at
+/// startup (right after it builds the real file-backed port); later
+/// calls are silently ignored (same semantics as the cron runtime
+/// port). Principal-side tool-bag installs
+/// (`PrincipalContext::core()`) read the port back through
+/// [`global_channel_port`] so a late re-registration of the global
+/// `ChannelRead` / `ChannelSend` tools keeps the real adapter instead
+/// of clobbering it with a [`NoopChannelPort`].
+pub fn set_global_channel_port(port: std::sync::Arc<dyn ChannelPort>) {
+    let _ = GLOBAL_CHANNEL_PORT.set(port);
+}
+
+/// The installed channel port, if the daemon has started.
+#[must_use]
+pub fn global_channel_port() -> Option<std::sync::Arc<dyn ChannelPort>> {
+    GLOBAL_CHANNEL_PORT.get().cloned()
+}
+
+#[cfg(test)]
+mod global_registry_tests {
+    use super::*;
+
+    /// Set-once registry: `set_global_channel_port` installs the port
+    /// and `global_channel_port` hands the same `Arc` back. Single
+    /// test by design — the `OnceLock` is process-global, so no other
+    /// test in this crate binary may call `set_global_channel_port`.
+    #[test]
+    fn set_then_get_returns_installed_port() {
+        let port: std::sync::Arc<dyn ChannelPort> = std::sync::Arc::new(NoopChannelPort);
+        set_global_channel_port(std::sync::Arc::clone(&port));
+        let got = global_channel_port().expect("port was just installed");
+        assert!(std::sync::Arc::ptr_eq(&got, &port));
+        // Second install is silently ignored (set-once semantics).
+        let other: std::sync::Arc<dyn ChannelPort> = std::sync::Arc::new(NoopChannelPort);
+        set_global_channel_port(other);
+        let got = global_channel_port().expect("port remains installed");
+        assert!(std::sync::Arc::ptr_eq(&got, &port));
     }
 }

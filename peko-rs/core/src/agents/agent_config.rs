@@ -43,28 +43,19 @@ pub struct AgentConfig {
     ///   runner loads the markdown and the body ends up here.
     pub prompt: Option<String>,
 
-    /// Per-agent stable identifier (DID) — issue #28.
-    ///
-    /// Persisted from the agent's `Identity` (generated and stored under
-    /// `KeyStorage` at `peko_home/identities/` on first agent start).
-    /// Two agents with the same `name` on different runtimes will have
-    /// different `agent_did` values because the keypair is generated
-    /// independently per `peko_home` root.
-    ///
-    /// **Wire contract:** `Subject::Principal(agent_did)` is used on the
-    /// tunnel/audit/permission IPC paths so cross-runtime references
-    /// (`principal_send`, `PermissionGrant.subject`, PekoHub instance row) are
-    /// unambiguous. When `None` (legacy agents predating #28), callers
-    /// fall back to `Subject::Principal(name)` within a single runtime —
-    /// see `Subject::principal_wire_id` for the canonical resolution.
-    #[serde(default)]
-    pub agent_did: Option<String>,
-
     /// Whether the planning-todo family (`TaskCreate`/`TaskGet`/
     /// `TaskList`/`TaskUpdate`) is enabled for this agent. Defaults to
     /// `true`. The factory- and registrar-level `enable_task_tools`
     /// flag is a separate global default that propagates here.
+    ///
+    /// Sprint 8 Commit 3: the spawn-path read of this field was
+    /// dropped (every reachable Agent defaults it to `true` and the
+    /// gate was unconditional in practice). The field stays so the
+    /// gateway loop (`StatelessAgentService`) can keep authoring
+    /// `AgentConfig` literals without churn — Sprint 8b removes both
+    /// the field and the gateway-loop reference.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
     pub enable_task_tools: bool,
 
     /// Whether the peko_plan DAG family (`PlanCreate`/`PlanList`/
@@ -76,13 +67,23 @@ pub struct AgentConfig {
     /// `Agent::with_principal_plan_port` — without that binding the
     /// plan tools are intentionally not registered regardless of this
     /// flag (test-only `Agent::new` callers hit this path).
+    ///
+    /// Sprint 8 Commit 3: the spawn-path read of this field was
+    /// dropped for the same reason as `enable_task_tools` /
+    /// `enable_async_tools`. Retained for Sprint 8b.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
     pub enable_plan_tools: bool,
 
     /// Whether the async execution family (`AsyncSpawn`/`AsyncOutput`/
     /// `AsyncStatus`/`AsyncList`/`AsyncStop`) is enabled for this agent.
     /// Defaults to `true`.
+    ///
+    /// Sprint 8 Commit 3: the spawn-path read of this field was
+    /// dropped for the same reason as `enable_task_tools`. Retained
+    /// for Sprint 8b.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
     pub enable_async_tools: bool,
 
     /// F35 — whether the synthetic `__tool_search` stub is registered
@@ -152,23 +153,20 @@ fn default_true() -> bool {
 impl AgentConfig {
     /// Wire-side identifier for this agent (issue #28).
     ///
-    /// Returns the agent's `agent_did` if it has been backfilled into
-    /// the config (post-#28), otherwise the local `name` as a
-    /// within-runtime fallback. **Within a single runtime, the two are
-    /// interchangeable on the wire**; cross-runtime references (`principal_send`,
-    /// `PermissionGrant.subject`, PekoHub instance row) require a live
-    /// `agent_did` — the runtime-local fallback is forgeable across
-    /// runtimes by design.
+    /// Returns the local `name` as the within-runtime wire id.
+    /// Cross-runtime references (`principal_send`, `PermissionGrant.subject`,
+    /// PekoHub instance row) are resolved through `Agent::identity.did`
+    /// — `KeyStorage` is the authoritative identity source, not this
+    /// config struct.
     ///
-    /// Review of #34 concern #3: this is a thin shim over
-    /// `Subject::principal_wire_id` (the single source of truth for the
-    /// resolution) and inherits its empty-DID guard. Returns an owned
-    /// `String` because the unified helper takes an owned `String` —
-    /// if a hot caller surfaces, a `&str` variant can be added without
-    /// changing semantics.
+    /// Sprint 9 Commit 1: this was previously a thin shim over
+    /// `Subject::principal_wire_id(self.agent_did.as_deref(), &self.name)`.
+    /// The `agent_did` field was dropped (its only TOML writer was
+    /// `StatelessAgentService::load_config_fresh`, retired in commit 4);
+    /// cross-runtime callers now read `Agent::identity.did` directly.
     #[must_use]
     pub fn wire_agent_id(&self) -> String {
-        Subject::principal_wire_id(self.agent_did.as_deref(), &self.name)
+        Subject::principal_wire_id(None, &self.name)
     }
 }
 
@@ -178,8 +176,6 @@ impl Default for AgentConfig {
             name: "unnamed-agent".to_string(),
             description: None,
             prompt: None,
-            // Issue #28: back-filled on first `Agent::new()`.
-            agent_did: None,
             enable_task_tools: true,
             enable_plan_tools: true,
             enable_async_tools: true,
@@ -223,64 +219,18 @@ mod tests {
         // Phase 2 — `model_list` defaults on so the parent agent can
         // discover the catalog before picking a child model.
         assert!(config.enable_model_list);
-        // Issue #28: `agent_did` is `None` by default — back-filled on
-        // first `Agent::new()` and persisted into config.toml.
-        assert!(config.agent_did.is_none());
     }
 
-    /// Issue #28: `wire_agent_id` must return the DID when present
-    /// (cross-runtime wire) and the local name as a fallback
-    /// (single-runtime back-compat). The empty-DID guard is
-    /// inherited from `Subject::principal_wire_id` (review of #34
-    /// concern #3) and is pinned here so the shim doesn't drift.
+    /// Sprint 9 Commit 1: `wire_agent_id` is now a single-arg shim over
+    /// `Subject::principal_wire_id(None, &self.name)` — the `agent_did`
+    /// field was dropped (issue #28's per-runtime DID is now read from
+    /// `Agent::identity.did` via `KeyStorage`, not from this config).
+    /// Within-runtime wire compatibility is preserved (returns `name`).
     #[test]
-    fn test_wire_agent_id_prefers_did_over_name() {
+    fn test_wire_agent_id_returns_name() {
         let mut config = super::AgentConfig::default();
         config.name = "helper".to_string();
-        config.agent_did = Some("did:peko:local:abc123".to_string());
-        assert_eq!(config.wire_agent_id(), "did:peko:local:abc123");
-    }
-
-    #[test]
-    fn test_wire_agent_id_falls_back_to_name_when_did_missing() {
-        let mut config = super::AgentConfig::default();
-        config.name = "helper".to_string();
-        config.agent_did = None;
         assert_eq!(config.wire_agent_id(), "helper");
-    }
-
-    #[test]
-    fn test_wire_agent_id_treats_empty_did_as_missing() {
-        // Pin the empty-DID defense: a hand-edited config that left
-        // `agent_did = ""` must NOT surface an empty string as the
-        // wire id (would serialize as `agentDid: ""` over the
-        // tunnel, breaking PekoHub's lookup).
-        let mut config = super::AgentConfig::default();
-        config.name = "helper".to_string();
-        config.agent_did = Some(String::new());
-        assert_eq!(config.wire_agent_id(), "helper");
-    }
-
-    #[test]
-    fn test_agent_did_toml_round_trip() {
-        // An empty `agent_did` round-trips as `None` (legacy config).
-        let legacy = super::AgentConfig {
-            name: "legacy-agent".to_string(),
-            ..Default::default()
-        };
-        let toml = toml::to_string_pretty(&legacy).expect("serialize legacy");
-        let parsed: super::AgentConfig = toml::from_str(&toml).expect("parse legacy");
-        assert!(parsed.agent_did.is_none());
-        assert_eq!(parsed.name, "legacy-agent");
-
-        // A populated `agent_did` round-trips verbatim.
-        let mut modern = super::AgentConfig::default();
-        modern.name = "modern-agent".to_string();
-        modern.agent_did = Some("did:peko:local:deadbeef".to_string());
-        let toml = toml::to_string_pretty(&modern).expect("serialize modern");
-        let parsed: super::AgentConfig = toml::from_str(&toml).expect("parse modern");
-        assert_eq!(parsed.agent_did.as_deref(), Some("did:peko:local:deadbeef"));
-        assert_eq!(parsed.name, "modern-agent");
     }
 
     /// Phase 2: `AgentConfig::default()` returns the back-compat inert

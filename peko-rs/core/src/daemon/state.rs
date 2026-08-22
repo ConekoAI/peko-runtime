@@ -6,11 +6,13 @@
 use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
-use crate::extensions::gateway::runtime::{GatewayRouter, GatewayRuntimeStarter};
+// Sprint 9 Commit 3: chat-gateway adapter framework retired.
+// `GatewayRouter` and `GatewayRuntimeStarter` are gone — external
+// ingress flows exclusively through per-peer standing children under
+// the agent-session paradigm (Phase 7 of sprint 2).
 use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
-use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
 use crate::engine::tool_runtime::ToolRuntime;
@@ -89,9 +91,6 @@ pub(crate) struct AppState {
     /// Agent configuration service (unified)
     config_service: Arc<ConfigAuthorityImpl>,
 
-    /// Stateless agent execution service
-    principal_service: Arc<StatelessAgentService>,
-
     /// Shared LLM resolver. Re-read in place via
     /// `ModelCatalog::reload` after `peko model {add,remove}` so the
     /// long-running daemon observes CLI mutations without a restart.
@@ -114,6 +113,13 @@ pub(crate) struct AppState {
     /// path resolver's `runtime_dir()`.
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 
+    /// Phase 4 (agent-session paradigm sprint): owns the
+    /// per-(principal, channel) `ChannelSubscriber` lifespan — boot
+    /// enumeration plus the post-boot create/invite hooks — and the
+    /// per-principal bound-session turn drivers. See
+    /// `daemon/channel_binding.rs`.
+    channel_binding_supervisor: Arc<crate::daemon::channel_binding::ChannelBindingSupervisor>,
+
     /// peko-channel cross-runtime PR-B commit 2: the concrete
     /// `TunnelChannelPort` that wraps `channel_port`'s local store.
     /// The tunnel dispatcher reaches this through
@@ -123,12 +129,6 @@ pub(crate) struct AppState {
     /// above stays the trait surface for IPC handlers / tool
     /// runtime; this field is the cross-runtime-typed accessor.
     tunnel_channel_port: Arc<crate::tunnel::TunnelChannelPort>,
-
-    /// Runtime-owned, append-only chat-log store. Each principal
-    /// boundary message that passes authorization is persisted here
-    /// alongside its authoritative response. Distinct from the
-    /// principal-owned session JSONL (mutable working memory).
-    chat_log_store: Arc<peko_chat_log::ChatLogStore>,
 
     /// F20: peer quota registry. `Some` after daemon startup loads
     /// `<runtime>/peers/` and materializes each peer's meter. The
@@ -157,14 +157,13 @@ pub(crate) struct AppState {
     /// from here at the top of every iteration.
     pub inbox_registry: Arc<InboxRegistry>,
 
-    /// Background runtime manager for MCP servers and gateways (ADR-025)
-    background_runtime_manager: Arc<BackgroundRuntimeManager>,
-
-    /// Gateway router for channel→agent mapping (ADR-025)
-    gateway_router: Arc<GatewayRouter>,
-
     /// Shared MCP client registry — populated by McpRuntimeAdapter (ADR-025)
     mcp_client_registry: Arc<McpClientRegistry>,
+
+    /// Background runtime manager for MCP servers (ADR-025).
+    /// Sprint 9 Commit 3 retired the gateway framework that previously
+    /// shared this manager; only MCP servers run under it now.
+    background_runtime_manager: Arc<BackgroundRuntimeManager>,
 
     /// Extension runtime starter registry — dispatches ext start/stop by type (ADR-025/026)
     runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
@@ -197,24 +196,21 @@ pub(crate) struct AppState {
     /// handler) share the same view.
     pub invite_revocation_set: Arc<crate::tunnel::InviteRevocationSet>,
 
-    /// Loaded peko configuration (network.direct used by direct transport).
+    /// Loaded peko configuration (`network.direct.advertise_endpoint`
+    /// is still announced to the hub directory; the direct transport
+    /// itself retired in sprint 3 Phase 12b).
     pub peko_config: PekoConfig,
-
-    /// Direct connection manager for outbound direct transport.
-    pub direct_manager: Arc<crate::tunnel::direct::DirectConnectionManager>,
-
-    /// Direct server bound address, if started.
-    pub direct_bound_addr: Arc<RwLock<Option<std::net::SocketAddr>>>,
-
-    /// Direct server cancellation token.
-    pub direct_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
-
-    /// Last direct server error, if any.
-    pub direct_last_error: Arc<RwLock<Option<String>>>,
 
     /// Shared idle detector used by the cron engine and IPC server to
     /// track Principal activity for idle-triggered jobs.
     idle_detector: Option<Arc<IdleDetector>>,
+
+    /// Cron engine used by the `CronRun` IPC handler to dispatch
+    /// manual triggers (`peko cron run <id>`). Cloned into the
+    /// daemon's own `CronEngine` so the IPC handler can spawn
+    /// executions without borrowing `Daemon`. Set once at startup
+    /// via [`AppState::set_cron_engine`].
+    cron_engine: Option<Arc<crate::daemon::cron_engine::CronEngine>>,
 
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
@@ -255,15 +251,6 @@ pub(crate) struct AppState {
     /// to surface the `disconnected` state with a non-zero attempt count.
     tunnel_attempts: Arc<RwLock<u32>>,
 
-    /// Cross-runtime a2a response correlation registry. Issue #29.
-    /// Shared between the outbound `PrincipalSendTool` path (which
-    /// registers a oneshot under `request_id`) and the inbound
-    /// tunnel dispatcher arm (which completes the oneshot when the
-    /// matching `PrincipalToPrincipalResponse` arrives). Initialized lazily
-    /// (a fresh `PendingA2aResponses`) so the registry exists even
-    /// before the tunnel connects.
-    pending_a2a_responses: Arc<crate::tunnel::PendingA2aResponses>,
-
     /// In-flight principal-send runs, keyed by the original
     /// `request_id`. Both IPC variants — `RequestPacket::PrincipalSend`
     /// and `RequestPacket::PrincipalSendStream` — register here, so
@@ -275,9 +262,8 @@ pub(crate) struct AppState {
     /// here to issue soft-interrupt or push a steering message into
     /// the run's session inbox.
     ///
-    /// `std::sync::Mutex` matches the `PendingA2aResponses` pattern:
-    /// every operation is hash-map-only, no `.await` is held across
-    /// the lock. See `src/tunnel/a2a_pending.rs:53-55`.
+    /// `std::sync::Mutex` (not the tokio one): every operation is
+    /// hash-map-only, no `.await` is held across the lock.
     streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>>,
 
     /// Slot for the live outbound tunnel handle. The
@@ -307,7 +293,7 @@ pub(crate) struct AppState {
 /// mode) or push a steering message into its session inbox (Steer
 /// mode). See `src/ipc/server.rs` for the streaming handler and the
 /// `PrincipalSendControl` IPC handler.
-#[allow(dead_code)] // field-by-field — see DirectHealth note. Kept as public-ish surface for tests.
+#[allow(dead_code)] // field-by-field — kept as public-ish surface for tests.
 pub(crate) struct StreamingRunHandle {
     /// Principal name — diagnostic only, included in control responses.
     pub principal_name: String,
@@ -335,13 +321,11 @@ impl std::fmt::Debug for AppState {
             .field("host", &self.host)
             .field("config", &self.config)
             .field("config_service", &"<ConfigAuthorityImpl>")
-            .field("principal_service", &"<StatelessAgentService>")
             .field("principal_manager", &"<PrincipalManager>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("async_task_executor", &"<AsyncExecutor>")
             .field("inbox_registry", &"<InboxRegistry>")
             .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
-            .field("gateway_router", &"<GatewayRouter>")
             .field("mcp_client_registry", &"<McpClientRegistry>")
             .field(
                 "runtime_starter_registry",
@@ -558,7 +542,6 @@ impl AppState {
         // tunnel client, direct connection manager, and direct server.
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
         let peko_config = load_peko_config(&config_dir);
-        let pending_a2a_responses = Arc::new(crate::tunnel::PendingA2aResponses::new());
         let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
         // peko-channel cross-runtime PR-B commit 2: the concrete
         // `TunnelChannelPort` field on `AppState` is populated during
@@ -571,13 +554,6 @@ impl AppState {
         let mut tunnel_channel_port: Option<Arc<crate::tunnel::TunnelChannelPort>> = None;
         let streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let direct_manager = Arc::new(crate::tunnel::direct::DirectConnectionManager::new(
-            runtime_signing_key.clone(),
-            runtime_identity.runtime_did.clone(),
-            peko_config.network.direct.tls_required,
-            pending_a2a_responses.clone(),
-        ));
-
         let trust_store = crate::registry::packaging::TrustStore::load_or_create(&path_resolver)?;
         let trust_store = std::sync::Arc::new(tokio::sync::RwLock::new(trust_store));
 
@@ -625,22 +601,15 @@ impl AppState {
         }
         let resolver = Arc::new(resolver_builder);
 
-        let path_resolver_clone = path_resolver.clone();
-        let principal_service = Arc::new(
-            StatelessAgentService::new_with_resolver(
-                config_service.clone(),
-                Arc::new(peko_session::DefaultPathResolver::with_data_dir(
-                    path_resolver.data_dir().to_path_buf(),
-                )),
-                Some(resolver.clone()),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create agent service: {e}"))?,
-        );
-
+        // Sprint 9 Commit 4: `StatelessAgentService` retired. The
+        // chat-gateway adapter framework (its only production caller,
+        // deleted in Commit 3) is gone. The agent-session paradigm
+        // owns ingress now via `Principal::Manager::receive_streaming`,
+        // which routes through `PrincipalManager` directly — no
+        // separate principal-message service slot is needed.
         let lifecycle = Arc::new(LifecycleManager::new());
 
-        let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
+        let session_service = Arc::new(SessionService::new(path_resolver.clone()));
 
         // ADR-021: Initialize global ExtensionCore FIRST so ToolRuntime can register
         // tools with it, and Agent::new() can find them later.
@@ -649,12 +618,6 @@ impl AppState {
         // reuse it and register tools on that instance. Otherwise create a new one.
         // This prevents a race where main.rs sets an empty core and AppState's
         // tool-filled core gets discarded by the OnceLock.
-        //
-        // Trait-object clone for the framework (avoids a framework → agents
-        // dependency while keeping the concrete arc for other consumers).
-        let principal_service_dyn: Arc<
-            dyn crate::extensions::framework::principal_message::PrincipalMessageService,
-        > = principal_service.clone();
 
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
@@ -676,10 +639,7 @@ impl AppState {
             let router = AsyncExecutionRouter::with_transport(
                 create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
             );
-            let services = ExtensionServices::with_async_router_and_principal_message_service(
-                Arc::new(router),
-                Arc::clone(&principal_service_dyn),
-            );
+            let services = ExtensionServices::with_async_router(Arc::new(router));
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
         } else if let Some(existing) = crate::extensions::framework::core::global_core() {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
@@ -693,20 +653,11 @@ impl AppState {
             let router = AsyncExecutionRouter::with_transport(
                 create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
             );
-            let services = ExtensionServices::with_async_router_and_principal_message_service(
-                Arc::new(router),
-                Arc::clone(&principal_service_dyn),
-            );
+            let services = ExtensionServices::with_async_router(Arc::new(router));
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
             init_global_core(Arc::clone(&core));
             core
         };
-
-        // ADR-023: Ensure the principal message service is set on the ExtensionCore.
-        // If we reused an existing global core, it may not have the service yet.
-        global_core
-            .services()
-            .set_principal_message_service(Arc::clone(&principal_service_dyn));
 
         // Make the LLM resolver available to extension hooks (e.g. MCP sampling).
         global_core
@@ -749,9 +700,26 @@ impl AppState {
             tunnel_channel_port = Some(Arc::new(tcp.clone()));
             Arc::new(tcp) as Arc<dyn peko_channel::ChannelPort>
         };
+        // Install the real port process-wide so a later
+        // `PrincipalContext::core()` tool-bag re-registration resolves
+        // the same adapter via `peko_channel::global_channel_port()`
+        // instead of clobbering the global-core `ChannelRead` /
+        // `ChannelSend` instances with a `NoopChannelPort`
+        // (2026-08-18 reviewer finding). Set-once; silently ignored
+        // if a previous daemon init in this process already set it.
+        peko_channel::set_global_channel_port(channel_port.clone());
+        // Sprint 4: install the channel port on the ExtensionServices
+        // so the per-agent `ChannelSendTool` constructor in `agent.rs`
+        // can find it (mirrors `set_cross_runtime_a2a_ctx` /
+        // `set_llm_resolver` above). Without this the per-agent
+        // registration falls through to the `No ChannelPort` branch
+        // and ChannelSend is skipped entirely.
+        global_core
+            .services()
+            .set_channel_port(channel_port.clone());
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core_and_channel_port(
-                path_resolver_clone.clone(),
+                path_resolver.clone(),
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 Arc::clone(&global_core),
                 channel_port.clone(),
@@ -771,9 +739,12 @@ impl AppState {
         let async_task_executor =
             Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 
-        // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
+        // ADR-025: Initialize BackgroundRuntimeManager.
+        // Sprint 9 Commit 3: the chat-gateway adapter framework was
+        // retired, so `GatewayRouter` + `GatewayRuntimeStarter` are gone
+        // — external ingress now flows exclusively through per-peer
+        // standing children under the agent-session paradigm.
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
-        let gateway_router = Arc::new(GatewayRouter::new(Arc::clone(&principal_service)));
 
         // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
         let mcp_client_registry = Arc::new(McpClientRegistry::new());
@@ -785,9 +756,9 @@ impl AppState {
         // the calling principal's quota meter. The MCP init is wired below
         // (after `principal_manager` is built) for this reason.
 
-        // ADR-025/026: Extension runtime starter registry
+        // ADR-025/026: Extension runtime starter registry.
+        // Sprint 9 Commit 3: only MCP starters register now.
         let mut runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
-        runtime_starter_registry.register(Box::new(GatewayRuntimeStarter::new()));
         runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
@@ -797,8 +768,9 @@ impl AppState {
                 .with_storage_dir(path_resolver.extensions_root()),
         );
 
-        // Register adapters (same as CLI create_manager_with_adapters)
-        use crate::extensions::gateway::GatewayAdapter;
+        // Register adapters (same as CLI create_manager_with_adapters).
+        // Sprint 9 Commit 3: `GatewayAdapter` removed — chat-gateway
+        // adapter framework retired.
         use crate::extensions::general::GeneralExtensionAdapter;
         use crate::extensions::mcp::McpAdapter;
         use crate::extensions::skill::SkillAdapter;
@@ -816,9 +788,6 @@ impl AppState {
             .await;
         extension_store
             .register_adapter(Box::new(UniversalToolAdapter::new()))
-            .await;
-        extension_store
-            .register_adapter(Box::new(GatewayAdapter::new(Arc::clone(&global_core))))
             .await;
         extension_store
             .register_adapter(Box::new(GeneralExtensionAdapter::new()))
@@ -854,15 +823,6 @@ impl AppState {
             Arc::clone(&extension_store),
             Arc::clone(&extension_services),
         ));
-        // Runtime-owned, append-only chat-log store. Constructed
-        // before the PrincipalManager so the manager builder captures
-        // the same `Arc` and can record boundary messages from
-        // `receive` / `receive_streaming`. The store is independent of
-        // any principal's session JSONL — deleting a principal deletes
-        // only that principal's chat-log shards.
-        let chat_log_store = Arc::new(peko_chat_log::ChatLogStore::new(
-            path_resolver.chat_logs_dir(),
-        ));
         let principal_manager = {
             let root = path_resolver.principals_root_dir();
             let _ = std::fs::create_dir_all(&root);
@@ -878,7 +838,9 @@ impl AppState {
             .with_slash_dispatcher(slash_dispatcher)
             .with_extension_store(Arc::clone(&extension_store))
             .with_observability(Arc::clone(&observability))
-            .with_chat_log_store(Arc::clone(&chat_log_store));
+            // Sprint 3 Phase 10: peer ingress auto-provisions the
+            // peer's DM channel through the daemon-global port.
+            .with_channel_port(channel_port.clone());
 
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
@@ -969,6 +931,41 @@ impl AppState {
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
+        // Phase 4 (agent-session paradigm sprint): the channel
+        // passive-binding supervisor. Owns subscriber spawning (boot +
+        // post-boot hooks) and per-principal bound-session turn
+        // drivers. Built here (not lazily) so the `ChannelHost` hooks
+        // on `AppState` can reach it from the first IPC call. The meter
+        // is one `AuditChannelMeter` over the observability hub
+        // (`peko audit list --type channel.` surfaces channel
+        // observation history); the supervisor clones the `Arc` into
+        // each subscriber — the meter is a stateless wrapper, so one
+        // shared instance is equivalent to the pre-Phase-4 per-call
+        // construction.
+        let channel_binding_supervisor = Arc::new(
+            crate::daemon::channel_binding::ChannelBindingSupervisor::new(
+                channel_port.clone(),
+                Arc::new(peko_channel::AuditChannelMeter::new(observability.clone())),
+                path_resolver.runtime_dir(),
+                Arc::clone(&principal_manager),
+                Arc::clone(&resolver),
+                Arc::clone(&observability),
+            ),
+        );
+
+        // Sprint 3 Phase 10: peer ingress (`PeerChildTurns::ensure_child`
+        // via `PrincipalManager`) fires this hook when it freshly
+        // creates a peer's DM channel, so the channel gets its
+        // subscriber — including the `PassiveBindingResponder` — without
+        // waiting for the next boot sweep. Installed post-construction
+        // because the supervisor itself needs the manager's `Arc`.
+        {
+            let supervisor = Arc::clone(&channel_binding_supervisor);
+            principal_manager.set_dm_subscriber_hook(Arc::new(move |principal, channel| {
+                supervisor.ensure_subscriber(principal, channel);
+            }));
+        }
+
         Ok(Self {
             started_at: SystemTime::now(),
             workspace_path,
@@ -993,15 +990,14 @@ impl AppState {
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability,
             config_service,
-            principal_service,
             resolver,
             vault: Arc::clone(&vault),
             principal_manager,
-            chat_log_store,
             // PR-2c: instantiate the file-backed channel port against
             // the typed path resolver's runtime dir. PR-1 only ships
             // Runtime-tier; PR-3 may add a Shared-tier sibling adapter.
             channel_port: channel_port.clone(),
+            channel_binding_supervisor,
             // peko-channel cross-runtime PR-B commit 2: the concrete
             // `TunnelChannelPort` accessor. Built by the
             // channel_port construction block above (line ~706); the
@@ -1019,7 +1015,6 @@ impl AppState {
             async_task_executor,
             inbox_registry,
             background_runtime_manager,
-            gateway_router,
             mcp_client_registry,
             runtime_starter_registry,
             extension_store,
@@ -1030,11 +1025,8 @@ impl AppState {
             runtime_signing_key,
             invite_revocation_set,
             peko_config,
-            direct_manager,
-            direct_bound_addr: Arc::new(RwLock::new(None)),
-            direct_cancel: Arc::new(RwLock::new(None)),
-            direct_last_error: Arc::new(RwLock::new(None)),
             idle_detector: None,
+            cron_engine: None,
             runtime_metadata,
             known_runtimes,
             trust_store,
@@ -1049,12 +1041,9 @@ impl AppState {
             tunnel_attempts: Arc::new(RwLock::new(0)),
             tunnel_last_error: Arc::new(RwLock::new(None)),
             tunnel_degraded: Arc::new(RwLock::new(false)),
-            // Issue #29: cross-runtime a2a response correlation
-            // registry + outbound tunnel handle slot. Initialized
-            // eagerly so the registry exists before the tunnel
-            // connects; the slot starts as `None` and is filled by
-            // the dispatcher's handle-publisher on every reconnect.
-            pending_a2a_responses,
+            // Issue #29: outbound tunnel handle slot. Starts as
+            // `None` and is filled by the dispatcher's
+            // handle-publisher on every reconnect.
             streaming_runs,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         })
@@ -1112,6 +1101,15 @@ impl AppState {
     /// Attach the shared idle detector used by the cron engine.
     pub fn set_idle_detector(&mut self, detector: Arc<IdleDetector>) {
         self.idle_detector = Some(detector);
+    }
+
+    /// Attach the daemon-owned cron engine used by the `CronRun` IPC
+    /// handler. Called once at startup after the engine is wired to
+    /// the real `PrincipalManager` (the placeholder made before
+    /// `AppState` exists is replaced by the daemon and re-attached
+    /// here so the IPC handler can dispatch manual triggers).
+    pub fn set_cron_engine(&mut self, engine: Arc<crate::daemon::cron_engine::CronEngine>) {
+        self.cron_engine = Some(engine);
     }
 
     /// Record activity for a Principal so idle-triggered cron jobs do not
@@ -1244,24 +1242,25 @@ impl AppState {
         &self.config_service
     }
 
-    /// Get the principal message service
-    #[must_use]
-    pub fn principal_service(&self) -> &Arc<StatelessAgentService> {
-        &self.principal_service
-    }
-
     /// Get the principal manager
     #[must_use]
     pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
         &self.principal_manager
     }
 
-    /// Runtime-owned chat-log store. Always present after daemon
-    /// startup (the daemon builds it before `principal_manager` so
-    /// the manager builder captures the same `Arc`).
-    #[must_use]
-    pub fn chat_log_store(&self) -> &Arc<peko_chat_log::ChatLogStore> {
-        &self.chat_log_store
+    // Sprint 9 Commit 4: `principal_service()` getter retired along
+    // with `StatelessAgentService`. The chat-gateway adapter framework
+    // (its only caller) was deleted in Commit 3; ingress now flows
+    // through `principal_manager()` under the agent-session paradigm.
+
+    /// Phase 4 (agent-session paradigm sprint): the channel
+    /// passive-binding supervisor (subscriber lifespan + bound-session
+    /// turn drivers). Cloned `Arc` — callers (`daemon::run`'s boot
+    /// spawn, the `ChannelHost` hooks) share the one instance.
+    pub(crate) fn channel_binding_supervisor(
+        &self,
+    ) -> Arc<crate::daemon::channel_binding::ChannelBindingSupervisor> {
+        Arc::clone(&self.channel_binding_supervisor)
     }
 
     /// F20: get the peer quota registry. `None` when the daemon
@@ -1281,12 +1280,6 @@ impl AppState {
     #[must_use]
     pub fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
         &self.background_runtime_manager
-    }
-
-    /// Get the gateway router (ADR-025)
-    #[must_use]
-    pub fn gateway_router(&self) -> &Arc<GatewayRouter> {
-        &self.gateway_router
     }
 
     /// Get the shared MCP client registry (ADR-025)
@@ -1350,8 +1343,6 @@ impl AppState {
     pub fn starter_context(&self) -> StarterContext {
         StarterContext {
             background_runtime_manager: Arc::clone(&self.background_runtime_manager),
-            principal_service: Arc::clone(&self.principal_service),
-            gateway_router: Arc::clone(&self.gateway_router),
             mcp_client_registry: Arc::clone(&self.mcp_client_registry),
             data_dir: self.data_dir.clone(),
             // Phase A: hand the typed resolver through so starters
@@ -1436,65 +1427,14 @@ impl AppState {
 
         let dispatcher = TunnelDispatcher::new(Arc::new(self.clone()));
 
-        // If direct cross-runtime connections are enabled, start the
-        // inbound direct server now. It shares the same dispatcher
-        // callback as the tunnel so inbound A2A traffic is handled
-        // identically regardless of transport.
-        if self.peko_config.network.direct.enabled {
-            let direct_cancel = tokio_util::sync::CancellationToken::new();
-            {
-                let mut dc = self.direct_cancel.write().await;
-                *dc = Some(direct_cancel.clone());
-            }
-            let direct_config = self.peko_config.network.direct.clone();
-            let direct_runtime_id = self.runtime_identity.runtime_did.clone();
-            let direct_signing_key = self.runtime_signing_key.clone();
-            let direct_known_runtimes = self.known_runtimes.clone();
-            let direct_dispatcher = dispatcher.clone();
-            let direct_handler: crate::tunnel::direct::DirectMessageHandler = Arc::new(
-                move |msg: crate::tunnel::TunnelMessage, handle: crate::tunnel::TunnelHandle| {
-                    let d = direct_dispatcher.clone();
-                    Box::pin(async move { d.handle_message(msg, handle).await })
-                        as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                },
-            );
-            let direct_server = crate::tunnel::direct::DirectServer::new(
-                direct_config,
-                direct_signing_key,
-                direct_runtime_id,
-                direct_known_runtimes,
-                direct_handler,
-            );
-            let direct_bound_addr = self.direct_bound_addr.clone();
-            let direct_last_error = self.direct_last_error.clone();
-            tokio::spawn(async move {
-                match direct_server.start(direct_cancel).await {
-                    Ok(addr) => {
-                        tracing::info!("Direct server bound to {addr}");
-                        if let Ok(mut g) = direct_bound_addr.try_write() {
-                            *g = Some(addr);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Direct server failed to start: {e}");
-                        if let Ok(mut g) = direct_last_error.try_write() {
-                            *g = Some(e.to_string());
-                        }
-                    }
-                }
-            });
-        }
-
-        // Issue #29: build the cross-runtime a2a dispatch ctx
-        // (Slice B + Slice C bootstrap). Wires the
-        // `HubAgentDirectoryClient` (HTTP client to the hub's
-        // agent directory API) + the runtime's signing key + the
-        // pending registry + the tunnel handle slot into a single
-        // `Arc<CrossRuntimeA2aCtx>` and registers it on the
-        // `ExtensionServices` so every per-agent `PrincipalSendTool`
-        // gets the ctx injected (via `agent.rs`).
+        // Build the cross-runtime dispatch ctx for `ChannelSend`'s principal
+        // branch (sprint 4: this used to live in `send_peer`; sprint 4
+        // unifies both surfaces — directory + caller runtime id +
+        // principal manager + the concrete `TunnelChannelPort`) and
+        // register it on the `ExtensionServices` so every per-agent
+        // `ChannelSendTool` gets the ctx injected (via `agent.rs`).
         //
-        // If the directory client or signing-key build fails, log
+        // If the directory client build fails, log
         // a warning and skip the registration — the local a2a path
         // still works, and the operator can debug the directory
         // config without losing tunnel connectivity.
@@ -1621,15 +1561,6 @@ impl AppState {
         *connected
     }
 
-    /// Cross-runtime a2a response correlation registry (issue #29).
-    /// Shared with the `CrossRuntimeA2aCtx` on every `PrincipalSendTool`
-    /// and the inbound `PrincipalToPrincipalResponse` arm of the
-    /// `TunnelDispatcher`. Returns a clone of the inner `Arc`, so
-    /// call sites hold a cheap reference.
-    pub fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
-        self.pending_a2a_responses.clone()
-    }
-
     /// In-flight `PrincipalSendStream` run registry. Looked up by the
     /// `PrincipalSendControl` IPC handler for soft-interrupt and
     /// steer operations. Returns a clone of the inner `Arc<Mutex>`
@@ -1647,11 +1578,22 @@ impl AppState {
         self.tunnel_handle_slot.clone()
     }
 
-    /// Install the cross-runtime a2a dispatch context on the
-    /// `ExtensionServices` so every per-agent `PrincipalSendTool` is
-    /// built with the ctx (issue #29, Slice B + Slice C
-    /// bootstrap). Called by `start_tunnel` after the dispatcher
-    /// is built but before the tunnel client starts.
+    /// Install the cross-runtime dispatch context for the `ChannelSend`
+    /// tool's principal branch on the `ExtensionServices` so every
+    /// per-agent `ChannelSendTool` is built with it. Called by
+    /// `start_tunnel` after the dispatcher is built but before the
+    /// tunnel client starts.
+    ///
+    /// Sprint 3 Phase 12b: the ctx slimmed down to what the
+    /// channel-based principal DM path needs — the directory (target
+    /// runtime resolution), the caller runtime id, the principal
+    /// manager (peer-child + DM-channel provisioning), and the
+    /// concrete `TunnelChannelPort` (posts, reply subscription, and
+    /// the DM invite fan-out). The retired RPC stack's signing key,
+    /// pending-response registry, tunnel handle slot, direct
+    /// manager, known-runtimes registry, and chat-log store are
+    /// gone from this ctx (the channel ctx carries the first four
+    /// for its own envelope fan-out).
     ///
     /// The default response timeout is 60s — long enough to absorb
     /// a hub round-trip and a target-runtime dispatch without
@@ -1666,38 +1608,31 @@ impl AppState {
         use crate::tunnel::CrossRuntimeA2aCtx;
         use std::time::Duration;
 
-        // 1. Shared directory + signing key + runtime_id. Same
-        //    components the channel ctx consumes; factored out so the
-        //    two install paths cannot drift on credential decoding
-        //    (`peko-channel` cross-runtime PR-B commit 3).
-        let (directory, signing_key, caller_runtime_id) =
+        // Shared directory + runtime_id. Same components the channel
+        // ctx consumes; factored out so the two install paths cannot
+        // drift on credential decoding (`peko-channel` cross-runtime
+        // PR-B commit 3). The signing key is the channel ctx's
+        // concern now — the `ChannelSend` principal branch signs
+        // nothing (the channel envelopes it triggers are signed
+        // inside `TunnelChannelPort`).
+        let (directory, _signing_key, caller_runtime_id) =
             self.build_cross_runtime_ctx_parts(cred, vault)?;
 
-        // 2. Build the ctx. The handle slot is shared with the
-        //    `TunnelDispatcher` so the outbound path sees the
-        //    freshest handle on every reconnect. The direct manager
-        //    and known-runtimes registry enable per-peer transport
-        //    selection.
         let ctx = Arc::new(CrossRuntimeA2aCtx {
             directory,
-            pending: self.pending_a2a_responses(),
-            signing_key,
             caller_runtime_id,
-            tunnel: self.tunnel_handle_slot(),
-            direct_manager: self.direct_manager.clone(),
-            known_runtimes: self.known_runtimes.clone(),
             principal_manager: self.principal_manager().clone(),
-            chat_log_store: self.chat_log_store.clone(),
+            channel_port: Arc::clone(&self.tunnel_channel_port),
             response_timeout: Duration::from_mins(1),
         });
         // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
         // to avoid a framework → tunnel dependency.
         let ctx: Arc<dyn std::any::Any + Send + Sync + 'static> = ctx;
 
-        // 4. Register on the `ExtensionServices`. The per-agent
-        //    `PrincipalSendTool` constructor in `agent.rs` consults
-        //    `services().cross_runtime_a2a_ctx()` and calls
-        //    `with_cross_runtime(ctx)` if present.
+        // Register on the `ExtensionServices`. The per-agent
+        //    `ChannelSendTool` constructor in `agent.rs` consults
+        //    `services().cross_runtime_a2a_ctx()` and builds with the
+        //    ctx if present.
         //
         //    `tool_runtime.extension_core().services()` returns
         //    `Arc<ExtensionServices>`; we set the ctx on the
@@ -1859,42 +1794,6 @@ impl AppState {
         self.tunnel_last_error.read().await.clone()
     }
 
-    /// Stop the inbound direct server, if it is running.
-    pub async fn stop_direct_server(&self) {
-        let mut dc = self.direct_cancel.write().await;
-        if let Some(ref cancel) = *dc {
-            cancel.cancel();
-        }
-        *dc = None;
-        let mut addr = self.direct_bound_addr.write().await;
-        *addr = None;
-        let mut err = self.direct_last_error.write().await;
-        *err = None;
-    }
-
-    /// Get the bound address of the direct server, if started.
-    pub async fn direct_bound_addr(&self) -> Option<std::net::SocketAddr> {
-        *self.direct_bound_addr.read().await
-    }
-
-    /// High-level direct server health snapshot.
-    pub async fn direct_health(&self) -> DirectHealth {
-        let enabled = self.peko_config.network.direct.enabled;
-        let bound = self.direct_bound_addr.read().await.clone();
-        let error = self.direct_last_error.read().await.clone();
-
-        if !enabled {
-            return DirectHealth::Disabled;
-        }
-        if let Some(err) = error {
-            return DirectHealth::Error(err);
-        }
-        match bound {
-            Some(addr) => DirectHealth::Listening(addr),
-            None => DirectHealth::Starting,
-        }
-    }
-
     /// Compute a high-level `TunnelHealth` snapshot used by
     /// `peko daemon status --json` (issue #8).
     ///
@@ -1976,55 +1875,6 @@ impl TunnelHealth {
             Self::Disabled | Self::Connected => None,
             Self::Disconnected { last_error, .. } => last_error.as_deref(),
             Self::Degraded { last_error, .. } => Some(last_error.as_str()),
-        }
-    }
-}
-
-/// High-level snapshot of direct inbound server health.
-#[derive(Debug, Clone, PartialEq, Eq)]
-// Same explanation as `impl AppState` above: this is genuine API surface
-// for tests and the inline e2e harness; cargo build's dead-code pass
-// doesn't see those callers after the F9 narrowing to `pub(crate)`.
-#[allow(dead_code)]
-pub(crate) enum DirectHealth {
-    /// Direct inbound connections are disabled in configuration.
-    Disabled,
-    /// Server is starting but has not bound a port yet.
-    Starting,
-    /// Server is listening on the given address.
-    Listening(std::net::SocketAddr),
-    /// Server failed to start or crashed.
-    Error(String),
-}
-
-#[allow(dead_code)] // JSON formatting helpers — used by IPC handler serialisation; not reachable from cargo build's graph.
-impl DirectHealth {
-    /// String discriminator used in JSON output (`direct.state`).
-    #[must_use]
-    pub fn state_str(&self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::Starting => "starting",
-            Self::Listening(_) => "listening",
-            Self::Error(_) => "error",
-        }
-    }
-
-    /// Bound socket address, if listening.
-    #[must_use]
-    pub fn bound_addr(&self) -> Option<std::net::SocketAddr> {
-        match self {
-            Self::Listening(addr) => Some(*addr),
-            _ => None,
-        }
-    }
-
-    /// Last error string, if any.
-    #[must_use]
-    pub fn last_error(&self) -> Option<&str> {
-        match self {
-            Self::Error(e) => Some(e.as_str()),
-            _ => None,
         }
     }
 }
@@ -2137,6 +1987,7 @@ impl Default for DaemonConfigSnapshot {
 // F5: AppState is the only type that knows both `daemon` and `tunnel`, so it
 // implements the tunnel's narrow host port here. The dispatcher holds an
 // `Arc<dyn TunnelHost>` and never names `AppState` (boundary rule 9).
+#[async_trait::async_trait]
 impl crate::tunnel::TunnelHost for AppState {
     fn principal_manager(&self) -> Arc<PrincipalManager> {
         Arc::clone(&self.principal_manager)
@@ -2156,10 +2007,6 @@ impl crate::tunnel::TunnelHost for AppState {
 
     fn jwt_validator(&self) -> Option<peko_auth::jwt::JwtValidator> {
         self.jwt_validator.clone()
-    }
-
-    fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
-        self.pending_a2a_responses.clone()
     }
 
     fn observability(&self) -> Arc<Observability> {
@@ -2185,6 +2032,110 @@ impl crate::tunnel::TunnelHost for AppState {
     /// verifying the envelope signature.
     fn tunnel_channel_port(&self) -> Arc<crate::tunnel::TunnelChannelPort> {
         Arc::clone(&self.tunnel_channel_port)
+    }
+
+    /// Sprint 3 Phase 12a: cross-runtime DM mirror bootstrap. The
+    /// dispatcher calls this after the invite signature verifies (see
+    /// the trait docs for the contract).
+    async fn dm_channel_mirror_bootstrap(
+        &self,
+        invite: crate::tunnel::DmChannelInviteBootstrap,
+    ) -> anyhow::Result<()> {
+        // 1. WHICH local principal was invited: the invitee row (the
+        //    one with `runtime_id: None` — "addressed to you")
+        //    carries the invited principal's DID.
+        let Some(invitee_did) = invite
+            .initial_members
+            .iter()
+            .find(|m| m.runtime_id.is_none())
+            .map(|m| m.principal_did.clone())
+        else {
+            tracing::warn!(
+                channel = %invite.channel_id,
+                "DM mirror bootstrap: invite carries no invitee row; skipping"
+            );
+            return Ok(());
+        };
+        let Some(principal) = self.principal_manager.find_by_did(&invitee_did).await else {
+            tracing::warn!(
+                channel = %invite.channel_id,
+                invitee_did = %invitee_did,
+                "DM mirror bootstrap: invitee DID matches no loaded principal; skipping"
+            );
+            return Ok(());
+        };
+
+        // 2. DM invites (binding marker present): CHILD-ONLY ensure
+        //    of the receiver's peer child for the creator and derive
+        //    the receiver-local binding from the child's real slug.
+        //    Deliberately NOT `ensure_child_ingress` — that would also
+        //    provision a local-only DM channel (a second, unmirrored
+        //    channel for the same peer). The wire binding VALUE is
+        //    ignored: each side's binding names its own child, and
+        //    `-N` slug suffixes are runtime-local.
+        let binding = match invite.passive_binding.as_ref() {
+            Some(_) => {
+                let peer = peko_auth::Subject::Principal(peko_subject::PrincipalDID(
+                    invite.creator_did.clone(),
+                ));
+                let (owner, agent_name) = {
+                    let config = principal.config.read().await;
+                    (
+                        config.owner.clone(),
+                        crate::principal::child_turns::peer_child_agent_config(
+                            &config,
+                            &principal.workspace_path,
+                        )
+                        .name,
+                    )
+                };
+                let session_manager = crate::principal::child_turns::peer_child_session_manager(
+                    &principal,
+                    &agent_name,
+                    &owner,
+                );
+                let child_id = crate::principal::peer_children::ensure_peer_child(
+                    &agent_name,
+                    &owner,
+                    &peer,
+                    &session_manager,
+                )
+                .await?;
+                let slug = crate::principal::peer_dm::peer_child_slug_readback(
+                    &session_manager,
+                    &child_id,
+                    &peer,
+                )
+                .await?;
+                Some(format!("/{slug}"))
+            }
+            None => None,
+        };
+
+        // 3. Bootstrap the mirror. `join_remote` is idempotent on the
+        //    meta.json-existence check, so a duplicate envelope is a
+        //    no-op (the subscriber ensure below is deduped too).
+        let channel = peko_channel::ChannelId(invite.channel_id.clone());
+        self.tunnel_channel_port
+            .join_remote(
+                &channel,
+                &invite.creator,
+                &invite.name,
+                &invite.initial_members,
+                &principal.id,
+                &invite.source_runtime_id,
+                binding,
+            )
+            .await?;
+
+        // 4. Live subscriber — closes the Phase 10 live-hook gap:
+        //    bound mirrors get their `PassiveBindingResponder`
+        //    immediately; unbound mirrors get the meter-only `Noop`
+        //    responder, matching the boot sweep's treatment of
+        //    unbound channels (`select_responder`).
+        self.channel_binding_supervisor()
+            .ensure_subscriber(principal.id.clone(), channel);
+        Ok(())
     }
 }
 
@@ -2361,6 +2312,18 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
     fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
         &self.authority
     }
+
+    /// Cron engine for manual fire dispatch (`peko cron run <id>`).
+    /// The daemon attaches the engine at startup (after `AppState`
+    /// exists); the `expect` arms a programmer-error panic if the
+    /// IPC `CronRun` packet arrives before the engine is wired up.
+    /// `CronEngine` is cheaply cloneable (all internal state is
+    /// `Arc`), so callers get an owned handle without a borrow.
+    fn cron_engine(&self) -> Arc<crate::daemon::cron_engine::CronEngine> {
+        self.cron_engine
+            .clone()
+            .expect("CronHost::cron_engine called before AppState::set_cron_engine")
+    }
 }
 
 impl crate::ipc::handlers::channel::ChannelHost for AppState {
@@ -2370,20 +2333,6 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
 
     fn channel_port(&self) -> Arc<dyn peko_channel::ChannelPort> {
         self.channel_port.clone()
-    }
-
-    fn channel_meter(&self) -> Arc<dyn peko_channel::ChannelMeter> {
-        // PR-3c / PR-5a: production daemon wires the audit ring
-        // buffer so `peko audit list --type channel.` surfaces channel
-        // observation history. The meter is created once at AppState
-        // construction; the subscription loops clone the Arc into
-        // each per-(principal, channel) ChannelSubscriber. The
-        // companion `ChannelResponder` passed to those subscribers is
-        // permanently `NoopChannelResponder` — agents read actively via
-        // the `ChannelRead` tool (PR-4a).
-        Arc::new(peko_channel::AuditChannelMeter::new(
-            self.observability.clone(),
-        ))
     }
 
     fn principal_manager(
@@ -2397,14 +2346,14 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
     /// operators can distinguish "joined" from "kickoff observed" at
     /// join time, not just at read time.
     ///
-    /// Deliberately **does not** dispatch an `AsyncSpawn` of
-    /// `ChannelRead` to wake the invitee's session. That would
-    /// require per-invitee session-key resolution + F37 funnel
-    /// plumbing (per-agent `AsyncExecutorRuntime` + capabilities
-    /// snapshot) which is a meaningfully larger feature than this
-    /// PR warrants and which the principal boundary model would need
-    /// to absorb carefully. Operators who want session wake-up use
-    /// the cron-poll recipe (PR-4b) instead.
+    /// Phase 4 (agent-session paradigm sprint): additionally ensures a
+    /// subscriber exists for the (invitee, channel) pair — channels
+    /// joined after daemon boot otherwise get none until the next
+    /// restart. This is a *subscriber* spawn (meter +, for bound
+    /// channels, the passive responder), still NOT an `AsyncSpawn` of
+    /// `ChannelRead`: waking a session on join remains the passive
+    /// binding's job, driven by inbound events rather than the join
+    /// itself.
     fn kickoff_channel_read(
         &self,
         invitee: &peko_subject::PrincipalId,
@@ -2413,18 +2362,30 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
         tracing::info!(
             invitee = %invitee.0,
             channel = %channel.as_str(),
-            "channel invite kickoff observed (PR-4c); no session dispatch"
+            "channel invite kickoff observed (PR-4c); ensuring subscriber (Phase 4)"
         );
-        // The audit entry below records the join trigger distinct
-        // from a read event. The meter writes are async; we don't
-        // `await` because the trait method is sync — `peko_observability`
-        // internally buffers and the record is best-effort.
-        let meter = self.channel_meter();
-        // No-op meter behavior on test paths; production paths get
-        // an `AuditChannelMeter` (PR-3c) that buffers into the audit
-        // ring buffer. The trait surface is intentionally narrow —
-        // future PRs can extend this with a real spawn path.
-        let _ = meter; // explicit hold so the binding is observable.
+        self.channel_binding_supervisor()
+            .ensure_subscriber(invitee.clone(), channel.clone());
+    }
+
+    /// Phase 4 (agent-session paradigm sprint): post-create hook.
+    /// Ensures a subscriber exists for the (creator, channel) pair so
+    /// a channel created after boot gets its responder — including the
+    /// `PassiveBindingResponder` when `create --bind` set
+    /// `meta.json`'s `passive_binding` — without waiting for a daemon
+    /// restart.
+    fn channel_created(
+        &self,
+        creator: &peko_subject::PrincipalId,
+        channel: &peko_channel::ChannelId,
+    ) {
+        tracing::info!(
+            creator = %creator.0,
+            channel = %channel.as_str(),
+            "channel created (Phase 4); ensuring subscriber"
+        );
+        self.channel_binding_supervisor()
+            .ensure_subscriber(creator.clone(), channel.clone());
     }
 }
 
@@ -3260,10 +3221,6 @@ impl crate::ipc::handlers::credential::BindingHost for AppState {
 impl crate::ipc::handlers::principal::PrincipalHost for AppState {
     fn principal_manager(&self) -> &Arc<PrincipalManager> {
         AppState::principal_manager(self)
-    }
-
-    fn chat_log_store(&self) -> &Arc<peko_chat_log::ChatLogStore> {
-        AppState::chat_log_store(self)
     }
 
     fn streaming_runs(

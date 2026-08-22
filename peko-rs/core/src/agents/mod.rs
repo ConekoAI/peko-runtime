@@ -1,7 +1,4 @@
-//! Single-agent execution runtime (Stateless Architecture)
-//!
-//! This module provides:
-//! Single-agent execution runtime (Stateless Architecture)
+//! Single-agent execution runtime
 //!
 //! This module provides:
 //! - Single agent runtime (`Agent` struct) — the core execution engine
@@ -12,18 +9,16 @@
 //! "agent" concept that survives at the user-facing boundary is a
 //! Principal; `Agent` here is the in-process execution primitive
 //! that turns an `AGENT.md` prompt into a chat completion.
-//! - Stateless execution service (StatelessAgentService)
 //! - Subagent spawning and management
+//!
+//! Sprint 9 Commit 4: `stateless_service` module retired. The
+//! `StatelessAgentService` it provided was the sole
+//! `PrincipalMessageService` impl; its only production caller was
+//! the chat-gateway adapter framework deleted in Commit 3.
 
 // Single agent runtime
 mod agent;
 pub use agent::Agent;
-
-// Stateless execution service
-pub mod stateless_service;
-pub use stateless_service::{
-    ExecutionContext, ExecutionRequest, ExecutionResult, StatelessAgentService,
-};
 
 // Lifecycle management (tracks active executions only)
 pub mod lifecycle;

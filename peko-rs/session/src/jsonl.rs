@@ -497,7 +497,7 @@ impl SessionStorage {
     /// safety; in-process callers serialize via `Mutex` if needed.
     /// Delegates to `common::persistence::append_bytes_durable`, which
     /// owns the `O_APPEND` + `fsync` + directory-sync semantics shared
-    /// with the chat-log shard writes.
+    /// with the channel event-log writes.
     async fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         append_bytes_durable(path, bytes)
             .await

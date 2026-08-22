@@ -1,14 +1,42 @@
 //! Unified `session` tool — single storage entry point that dispatches
-//! by `action` over 9 operations (`status` / `list` / `history` /
-//! `search` / `rename` / `delete` / `branch` / `archive` / `unarchive`).
+//! by `action` over 7 operations (`status` / `list` / `history` /
+//! `find` / `copy` / `move` / `remove`).
 //!
 //! Replaces the legacy `session_status`, `sessions_list`,
-//! `sessions_history` tools (Issue 013, expanded by PR #351 with the
-//! lifecycle operations). PR #353 (WS4, implicit session management)
-//! demoted the lifecycle verbs; round 7 (2026-08-13) restored the
-//! storage-only three (`branch` / `archive` / `unarchive`) — always
-//! valid for sessions the caller owns. `new` / `resume` / `compact`
-//! drive the LLM and live on the Agent tool instead. Speaks to the
+//! `sessions_history` tools (Issue 013). The verbs match the bash
+//! family where they overlap: `find` ≈ grep across transcripts, `copy`
+//! = `cp` (duplicate a session to a destination slug path), `move` =
+//! `mv` (reparent or rename in place — both via `target: <parent>/<slug>`,
+//! with `title` as an optional display-only rename), `remove` = `rm`
+//! (delete the session, optionally recursive).
+//!
+//! Sprint 7 Commit F (2026-08-21): trimmed from 10 → 7 actions.
+//! `archive` / `unarchive` removed (sessions are monotonically visible
+//! until `remove`; the `include_archived` filter stays for legacy
+//! records). `rename` removed — its semantics folded into `move`
+//! (slug without reparent = rename in place via `target`). `branch`
+//! renamed to `copy`, `search` to `find`, `delete` to `remove`.
+//!
+//! Sprint 7 Commit G (2026-08-22): the LLM-facing target parameter
+//! is renamed from `session_key` to `path`, matching the Agent tool
+//! (which took the same rename in sprint 7 Commits 1-4). Both tools
+//! now describe their target the same way: a slug path (`/a/b/c` or
+//! caller-relative `b/c`), raw session ids refused at the runtime
+//! layer via `peko_session::path::resolve_reference`. The session
+//! tool's runtime already routed through `resolve_reference`; the
+//! tool-layer `validate_path` is the new early-fail point that
+//! mirrors `AgentArgs::validate_action_args`.
+//!
+//! Sprint 7 Commit H (2026-08-22): `copy` and `move` now share a
+//! single `target` field shaped like bash `cp src dst` / `mv src dst`
+//! — `<parent>/<new_slug>`, last segment = new slug, before-last =
+//! new parent. Replaces the prior sibling-only `copy` shape and the
+//! prior `new_parent` + `title` + `slug` trio on `move`. `title`
+//! stays as a display-only rename knob on `move` (independent of
+//! `target`).
+//!
+//! `new` / `resume` / `compact` stay off this tool — they drive the
+//! LLM and live on the Agent tool instead. Speaks to the
 //! [`SessionRuntime`] port.
 
 use async_trait::async_trait;
@@ -56,43 +84,99 @@ impl SessionTool {
         messages: Vec<HistoryMessage>,
     ) -> serde_json::Value {
         json!({
-            "session_key": session_key,
+            "path": session_key,
             "total_messages": messages.len(),
             "messages": messages,
         })
     }
 
-    /// Extract a required `session_key` param with an actionable error.
-    fn require_session_key<'a>(
+    /// Extract a required `path` param with an actionable error, and
+    /// validate the slug shape at the tool boundary (mirrors
+    /// `AgentArgs::validate_action_args`). Raw session ids and
+    /// malformed paths are rejected here so the model gets a clean
+    /// structured error before the runtime touches state.
+    fn require_path<'a>(
         params: &'a serde_json::Value,
         action: &str,
     ) -> anyhow::Result<&'a str> {
-        params
-            .get("session_key")
+        let path = params
+            .get("path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("'{action}' requires the 'session_key' parameter"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "action \"{action}\" requires 'path' — a full ('/a/b/c') or \
+                     caller-relative ('b/c') slug path naming the target session \
+                     (no raw session ids; use the `path` field from `session list`)"
+                )
+            })?;
+        if let Err(e) = peko_session::path::validate_path(path) {
+            return Err(anyhow::anyhow!(
+                "action \"{action}\" 'path' is not a valid slug path: {e}"
+            ));
+        }
+        Ok(path)
+    }
+
+    /// Extract and parse the bash-style `target` param for `copy` and
+    /// `move`. The target is a slug path: the last segment is the new
+    /// slug (under the parent = everything before), mirroring bash
+    /// `cp src dst` / `mv src dst`. Returns `(parent_str, slug)` —
+    /// `parent_str` may be empty when the target is a single-segment
+    /// caller-relative slug (the new parent is the caller's tree
+    /// root); the caller passes `/` to the runtime in that case.
+    ///
+    /// `target` is the unified destination field introduced in Sprint
+    /// 7 Commit H (2026-08-22); it replaces the prior
+    /// `new_parent`+`title`+`slug` combination on `move` and the
+    /// prior sibling-only placement on copy.
+    fn parse_target<'a>(
+        params: &'a serde_json::Value,
+        action: &str,
+    ) -> anyhow::Result<(&'a str, &'a str)> {
+        let target = params
+            .get("target")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "action \"{action}\" requires 'target' — a slug path naming the \
+                     destination (full '/a/b/c' or caller-relative 'b/c'); the last \
+                     segment is the new slug, the rest is the destination parent. \
+                     Mirrors bash `cp src dst` / `mv src dst`."
+                )
+            })?;
+        peko_session::path::validate_path(target).map_err(|e| {
+            anyhow::anyhow!("action \"{action}\" 'target' is not a valid slug path: {e}")
+        })?;
+        let (parent_str, slug) = target.rsplit_once('/').ok_or_else(|| {
+            anyhow::anyhow!(
+                "action \"{action}\" 'target' must include a parent path and a slug segment \
+                 (got '{target}')"
+            )
+        })?;
+        if slug.is_empty() {
+            return Err(anyhow::anyhow!(
+                "action \"{action}\" 'target' slug segment is empty (got '{target}')"
+            ));
+        }
+        Ok((parent_str, slug))
     }
 }
 
 /// Actions supported by the `session` tool.
 ///
-/// PR #353 (WS4, implicit session management) hid the 6 lifecycle
-/// actions PR #351 had surfaced; round 7 (2026-08-13) restored the
-/// storage-only three (`branch` / `archive` / `unarchive`). `new` /
-/// `resume` / `compact` stay off this tool — they drive the LLM and
-/// live on the Agent tool.
+/// Sprint 7 Commit F (2026-08-21): 7 actions, bash-aligned.
+/// `new` / `resume` / `compact` stay off this tool — they drive the
+/// LLM and live on the Agent tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SessionAction {
     Status,
     List,
     History,
-    Search,
-    Rename,
-    Delete,
-    Branch,
-    Archive,
-    Unarchive,
+    Find,
+    Copy,
+    Move,
+    Remove,
 }
 
 #[async_trait]
@@ -102,22 +186,24 @@ impl Tool for SessionTool {
     }
 
     fn description(&self) -> String {
-        r"Single tool with **9 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
+        r"Single tool with **7 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
 
-  status | list | history | search | rename | delete | branch | archive | unarchive
+  status | list | history | find | copy | move | remove
 
 Per-action semantics (the action you choose determines which other params apply):
-- status: one session's metadata + token usage (session_key optional, defaults to current)
+- status: one session's metadata + token usage (path optional, defaults to current)
 - list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
-- history: messages of a session (session_key optional, defaults to current; include_tools)
-- search: case-insensitive text search across session transcripts (query required; optional peer filter)
-- rename: retitle a session (session_key + title required)
-- delete: remove a session (session_key required; recursive:true also deletes its descendants, children first)
-- branch: copy a session under a new id (session_key required; optional label) — the copy is NOT running; attach a run to it via the Agent tool's resume action
-- archive: hide a session from list/search (session_key required; still visible with include_archived:true)
-- unarchive: restore an archived session to normal visibility (session_key required)
+- history: messages of a session (path optional, defaults to current; include_tools)
+- find: case-insensitive text search across session transcripts (query required; optional peer filter)
+- copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
+- move: reparent a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
+- remove: delete a session (path required; recursive:true also deletes its descendants, children first)
 
-Refusals: the principal's root session (ids starting with `root:`) is continuous and managed by the engine — delete/archive on it are refused. You cannot delete, archive, or rename the session you are currently running in. Sessions with an active run refuse delete/archive. A caller in a spawned session manages only its own subtree.
+The `path` parameter is a slug path: full (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug) or caller-relative (`b/c`). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session).
+
+The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is itself a full or caller-relative slug path and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
+
+Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it. Sessions are monotonically visible until `remove` (Sprint 7 Commit F: archive/unarchive retired; if you want it gone, remove it).
 
 To RUN work in a session, use the Agent tool instead — its three actions (new / resume / compact) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session_id` set (visible on status)."
             .to_string()
@@ -129,38 +215,42 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "list", "history", "search", "rename", "delete", "branch", "archive", "unarchive"],
-                    "description": "What to do: status/list/history read; search finds text; rename/delete/branch/archive/unarchive manage a session's storage. To run work in a session, use the Agent tool (new/resume/compact)."
+                    "enum": ["status", "list", "history", "find", "copy", "move", "remove"],
+                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage. To run work in a session, use the Agent tool (new/resume/compact)."
                 },
-                "session_key": {
+                "path": {
                     "type": "string",
-                    "description": "Target session. Required for `rename`, `delete`, `branch`, `archive`, `unarchive`. Optional for `status` and `history` (defaults to current session)."
+                    "description": "Source session: a slug path — full ('/a/b/c', anchored at the root of your session tree) or caller-relative ('b/c'). Use the `path` field returned by `list`. Raw session ids are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session). Match the Agent tool's `path` parameter."
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Required for `copy` / `move`: destination slug path `<parent>/<new_slug>`. `<parent>` is the destination session's path (full or caller-relative, same addressing as `path`); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `copy`: where to place the new copy. For `move`: the new address — to rename in place, set `target` to `<current_parent>/<new_slug>`. Mirrors bash `cp src dst` / `mv src dst`. Raw session ids are refused at the runtime layer."
                 },
                 "query": {
                     "type": "string",
-                    "description": "Required for 'search': case-insensitive substring to find in transcripts"
+                    "description": "Required for 'find': case-insensitive substring to find in transcripts"
                 },
                 "title": {
                     "type": "string",
-                    "description": "Required for 'rename'"
+                    "description": "Optional for 'move': new display title (free-form label; does not affect addressing)."
                 },
                 "label": {
                     "type": "string",
-                    "description": "Optional for 'branch': label/title for the new branch"
+                    "description": "Optional for 'copy': label/title for the new copy"
                 },
                 "recursive": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Optional for 'delete': also delete the session's descendants (children first)"
+                    "description": "Optional for 'remove': also delete the session's descendants (children first)"
                 },
                 "include_archived": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Optional for 'list': include archived sessions (hidden by default)"
+                    "description": "Optional for 'list': include archived sessions (hidden by default). Sprint 7 Commit F retired archive/unarchive actions; this filter remains for legacy records that already carry the flag."
                 },
                 "peer": {
                     "type": "string",
-                    "description": "Optional filter for 'list' and 'search': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
+                    "description": "Optional filter for 'list' and 'find': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
                 },
                 "agent_id": {
                     "type": "string",
@@ -169,7 +259,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 "limit": {
                     "type": "integer",
                     "default": 100,
-                    "description": "Max results for 'list', 'history', or 'search'"
+                    "description": "Max results for 'list', 'history', or 'find'"
                 },
                 "active_minutes": {
                     "type": "integer",
@@ -200,12 +290,12 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
 
         match action {
             SessionAction::Status => {
-                let session_key = params.get("session_key").and_then(|v| v.as_str());
+                let path = params.get("path").and_then(|v| v.as_str());
                 let timezone = params.get("timezone").and_then(|v| v.as_str());
 
                 // A missing/unknown session is a real error — never
                 // fabricate a zeroed status for it.
-                let mut status = self.get_status_action(session_key).await?;
+                let mut status = self.get_status_action(path).await?;
 
                 // Add current timestamps
                 let now_utc = chrono::Utc::now();
@@ -261,7 +351,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
             }
             SessionAction::History => {
                 let session_key = params
-                    .get("session_key")
+                    .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.runtime.current_session_key())
                     .to_string();
@@ -277,11 +367,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     .await?;
                 Ok(Self::build_history_response(&session_key, messages))
             }
-            SessionAction::Search => {
+            SessionAction::Find => {
                 let query = params
                     .get("query")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("'search' requires the 'query' parameter"))?;
+                    .ok_or_else(|| anyhow::anyhow!("'find' requires the 'query' parameter"))?;
                 let peer_str = params.get("peer").and_then(|v| v.as_str());
                 let peer = match peer_str {
                     Some(s) => Some(
@@ -301,19 +391,64 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     "hits": hits,
                 }))
             }
-            SessionAction::Rename => {
-                let session_key = Self::require_session_key(&params, "rename")?;
+            SessionAction::Copy => {
+                let session_key = Self::require_path(&params, "copy")?;
+                let (parent_str, slug) = Self::parse_target(&params, "copy")?;
+                let target_parent =
+                    if parent_str.is_empty() { "/".to_string() } else { parent_str.to_string() };
+                let label = params
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                let outcome = self
+                    .runtime
+                    .copy_session(session_key, target_parent, slug.to_string(), label)
+                    .await?;
+                Ok(serde_json::to_value(outcome)?)
+            }
+            SessionAction::Move => {
+                // `move` subsumes both reparent (mv to a new dir) and
+                // in-place rename (mv to a new name in the same dir).
+                // The unified `target` field (Commit H, 2026-08-22)
+                // handles both cases — to rename in place, set `target`
+                // to `<current_parent>/<new_slug>`. `title` (optional)
+                // is a separate display-label change and is the only
+                // way to change the label without re-targeting.
+                let session_key = Self::require_path(&params, "move")?;
                 let title = params
                     .get("title")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("'rename' requires the 'title' parameter"))?
-                    .to_string();
+                    .map(String::from);
+                if params.get("target").is_none() && title.is_none() {
+                    return Err(anyhow::anyhow!(
+                        "'move' requires at least one of 'target' or 'title'"
+                    ));
+                }
 
-                self.runtime.rename_session(session_key, title).await?;
-                Ok(json!({ "renamed": session_key }))
+                if params.get("target").is_some() {
+                    let (parent_str, slug) = Self::parse_target(&params, "move")?;
+                    let new_parent = if parent_str.is_empty() {
+                        "/".to_string()
+                    } else {
+                        parent_str.to_string()
+                    };
+                    self.runtime
+                        .move_session(session_key, new_parent, Some(slug.to_string()))
+                        .await?;
+                }
+                if let Some(t) = title {
+                    self.runtime
+                        .rename_session(session_key, Some(t), None)
+                        .await?;
+                }
+                Ok(json!({
+                    "path": session_key,
+                    "modified": true,
+                }))
             }
-            SessionAction::Delete => {
-                let session_key = Self::require_session_key(&params, "delete")?;
+            SessionAction::Remove => {
+                let session_key = Self::require_path(&params, "remove")?;
                 let recursive = params
                     .get("recursive")
                     .and_then(|v| v.as_bool())
@@ -321,27 +456,6 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
 
                 let outcome = self.runtime.delete_session(session_key, recursive).await?;
                 Ok(serde_json::to_value(outcome)?)
-            }
-            SessionAction::Branch => {
-                let session_key = Self::require_session_key(&params, "branch")?;
-                let label = params
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-
-                let outcome = self.runtime.branch_session(session_key, label).await?;
-                Ok(serde_json::to_value(outcome)?)
-            }
-            SessionAction::Archive | SessionAction::Unarchive => {
-                let archived = action == SessionAction::Archive;
-                let verb = if archived { "archive" } else { "unarchive" };
-                let session_key = Self::require_session_key(&params, verb)?;
-
-                self.runtime.set_archived(session_key, archived).await?;
-                Ok(json!({
-                    "session_key": session_key,
-                    "archived": archived,
-                }))
             }
         }
     }
@@ -358,36 +472,35 @@ mod tests {
 
     /// F5 (2026-08-11 field test, Addendum 3) + round 7 (2026-08-13):
     /// the model was anchoring on the legacy 3 actions (`status` /
-    /// `list` / `history`) and refusing to call the lifecycle
-    /// operations. WS4 demoted all 6 lifecycle operations; round 7
-    /// restored the storage-only three (`branch` / `archive` /
-    /// `unarchive`), bringing the surface to 9 actions. Pin the
-    /// description here so any future edit that drops one of the 9
-    /// action names fails the test — defense-in-depth against the
-    /// "register without surfacing in description" omission pattern.
+    /// `list` / `history`) and refused to call the lifecycle
+    /// operations. The history: WS4 demoted all 6 lifecycle
+    /// operations; round 7 restored the storage-only three
+    /// (`branch` / `archive` / `unarchive`), bringing the surface to
+    /// 9 actions; `move` (reparent) brought it to 10. Sprint 7
+    /// Commit F (2026-08-21) trimmed to 7 bash-aligned verbs
+    /// (`status` / `list` / `history` / `find` / `copy` / `move` /
+    /// `remove`) — `rename` folded into `move` (title/slug without
+    /// new_parent), `archive` / `unarchive` dropped (sessions are
+    /// monotonically visible until `remove`), `search` → `find`,
+    /// `branch` → `copy`, `delete` → `remove`. Pin the description
+    /// here so any future edit that drops one of the 7 action names
+    /// fails the test — defense-in-depth against the "register
+    /// without surfacing in description" omission pattern (F5).
     #[test]
-    fn description_names_all_9_actions() {
+    fn description_names_all_7_actions() {
         let cache = SessionCache::new("test");
         let tool = SessionTool::new(Arc::new(cache).as_shared());
         let desc = tool.description();
 
-        // The 9 actions, in the order they appear in `SessionAction`.
+        // The 7 actions, in the order they appear in `SessionAction`.
         // If `SessionAction` ever grows, bump this list in lockstep.
         let expected_actions = [
-            "status",
-            "list",
-            "history",
-            "search",
-            "rename",
-            "delete",
-            "branch",
-            "archive",
-            "unarchive",
+            "status", "list", "history", "find", "copy", "move", "remove",
         ];
         assert_eq!(
             expected_actions.len(),
-            9,
-            "test bug: expected_actions must have 9 entries"
+            7,
+            "test bug: expected_actions must have 7 entries"
         );
 
         for action in expected_actions {
@@ -399,12 +512,28 @@ mod tests {
         }
 
         // Lead-with-count: the description must advertise the action
-        // count up front so the model sees all 9 before any per-action
-        // bullet (defeats primacy bias on the legacy 3).
+        // count up front so the model sees all 7 before any
+        // per-action bullet (defeats primacy bias on the legacy 3).
         assert!(
-            desc.contains("9 operations") || desc.contains("9 actions") || desc.contains("9 op"),
+            desc.contains("7 operations") || desc.contains("7 actions") || desc.contains("7 op"),
             "session description must lead with the action count (F5: defeats primacy bias)"
         );
+
+        // The retired verbs MUST NOT appear as standalone per-action
+        // bullets (the format is `<verb>: ...` — the same shape the
+        // model anchors on). We only flag the dangerous prefix
+        // pattern, not the prose, because the description legitimately
+        // mentions the old verbs in sentences like "rename it in
+        // place" or "delete a session" to disambiguate. A naive
+        // substring check on those words would falsely fail.
+        for retired in ["rename", "delete", "branch", "archive", "unarchive"] {
+            let bullet_prefix = format!("- {retired}:");
+            assert!(
+                !desc.contains(&bullet_prefix),
+                "session description must not list `{retired}` as a per-action bullet \
+                 (Sprint 7 Commit F retired it; the new 7 actions are status/list/history/find/copy/move/remove)"
+            );
+        }
     }
 
     fn create_test_cache() -> Arc<SessionCache> {
@@ -422,6 +551,8 @@ mod tests {
             peer_id: Some("alice".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
 
         let history = vec![
@@ -485,7 +616,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "history", "session_key": "test-session", "limit": 10}))
+            .execute(json!({"action": "history", "path": "test-session", "limit": 10}))
             .await
             .unwrap();
 
@@ -500,7 +631,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "status", "session_key": "test-session"}))
+            .execute(json!({"action": "status", "path": "test-session"}))
             .await
             .unwrap();
 
@@ -547,6 +678,8 @@ mod tests {
             peer_id: None,
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
 
         cache.add_session("current-session".to_string(), session, vec![], status);
@@ -573,7 +706,7 @@ mod tests {
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "history", "session_key": "missing"}))
+            .execute(json!({"action": "history", "path": "missing"}))
             .await
             .unwrap();
 
@@ -588,7 +721,7 @@ mod tests {
         // The old fabricated zeroed status is gone: an unknown session
         // must surface the runtime's real error.
         let err = tool
-            .execute(json!({"action": "status", "session_key": "missing"}))
+            .execute(json!({"action": "status", "path": "missing"}))
             .await
             .expect_err("status on an unknown session must error, not fabricate");
         assert!(err.to_string().contains("missing"), "{err}");
@@ -612,6 +745,8 @@ mod tests {
             peer_id: Some("alice".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let alice_other = SessionInfo {
             session_key: "alice-2".to_string(),
@@ -625,6 +760,8 @@ mod tests {
             peer_id: Some("alice".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let bob_main = SessionInfo {
             session_key: "bob-1".to_string(),
@@ -638,6 +775,8 @@ mod tests {
             peer_id: Some("bob".to_string()),
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
 
         cache.add_session(
@@ -784,13 +923,13 @@ mod tests {
     }
 
     // ====================================================================================
-    // Tests: mutation actions (search/rename/delete/branch/archive/
-    // unarchive). `new` / `resume` / `compact` stay refused on this
-    // tool — they drive the LLM and live on the Agent tool.
+    // Tests: mutation actions (find/copy/move/remove). `new` /
+    // `resume` / `compact` stay refused on this tool — they drive
+    // the LLM and live on the Agent tool.
     // ====================================================================================
 
     #[tokio::test]
-    async fn test_session_search_happy_path_and_missing_query() {
+    async fn test_session_find_happy_path_and_missing_query() {
         let cache = SessionCache::new("main");
         let session = SessionInfo {
             session_key: "s1".to_string(),
@@ -804,6 +943,8 @@ mod tests {
             peer_id: None,
             archived: false,
             run_active: false,
+            slug: None,
+            path: String::new(),
         };
         let history = vec![HistoryMessage {
             role: "user".to_string(),
@@ -816,7 +957,7 @@ mod tests {
         let tool = SessionTool::new(Arc::new(cache).as_shared());
 
         let result = tool
-            .execute(json!({"action": "search", "query": "FRAMBULATOR"}))
+            .execute(json!({"action": "find", "query": "FRAMBULATOR"}))
             .await
             .unwrap();
         assert_eq!(result["total"], 1);
@@ -828,43 +969,19 @@ mod tests {
             .contains("frambulator"));
 
         let err = tool
-            .execute(json!({"action": "search"}))
+            .execute(json!({"action": "find"}))
             .await
-            .expect_err("search without query must error");
+            .expect_err("find without query must error");
         assert!(err.to_string().contains("query"), "{err}");
     }
 
     #[tokio::test]
-    async fn test_session_rename_and_missing_title() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        tool.execute(
-            json!({"action": "rename", "session_key": "test-session", "title": "Renamed"}),
-        )
-        .await
-        .unwrap();
-
-        let result = tool
-            .execute(json!({"action": "status", "session_key": "test-session"}))
-            .await
-            .unwrap();
-        assert_eq!(result["label"], "Renamed");
-
-        let err = tool
-            .execute(json!({"action": "rename", "session_key": "test-session"}))
-            .await
-            .expect_err("rename without title must error");
-        assert!(err.to_string().contains("title"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_session_delete_happy_and_missing_key() {
+    async fn test_session_remove_happy_and_missing_key() {
         let cache = create_test_cache();
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "delete", "session_key": "test-session"}))
+            .execute(json!({"action": "remove", "path": "test-session"}))
             .await
             .unwrap();
         assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
@@ -875,23 +992,28 @@ mod tests {
         assert_eq!(list["total"], 0);
 
         let err = tool
-            .execute(json!({"action": "delete"}))
+            .execute(json!({"action": "remove"}))
             .await
-            .expect_err("delete without session_key must error");
-        assert!(err.to_string().contains("session_key"), "{err}");
+            .expect_err("remove without path must error");
+        assert!(err.to_string().contains("path"), "{err}");
     }
 
-    /// The LLM-driving actions (`new` / `resume` / `compact`) must be
-    /// rejected by the schema validation on this tool, not silently
-    /// routed to a dead match arm — they live on the Agent tool.
-    /// (`branch` / `archive` / `unarchive` were restored to this tool
-    /// in round 7 and are covered by the dedicated tests below.)
+    /// The LLM-driving actions (`new` / `resume` / `compact`) and the
+    /// Sprint 7 Commit F-retired actions (`search` / `rename` /
+    /// `delete` / `branch` / `archive` / `unarchive`) must all be
+    /// rejected by the schema validation on this tool — they live on
+    /// the Agent tool or were retired, respectively.
     #[tokio::test]
     async fn test_demoted_actions_rejected_with_clear_validation_error() {
         let cache = create_test_cache();
         let tool = SessionTool::new(cache.as_shared());
 
-        for demoted in ["new", "resume", "compact"] {
+        for demoted in [
+            // Agent-tool-only (drive the LLM).
+            "new", "resume", "compact",
+            // Sprint 7 Commit F retired (bash-aligned verb replaced them).
+            "search", "rename", "delete", "branch", "archive", "unarchive",
+        ] {
             let exec_err = tool
                 .execute(json!({"action": demoted}))
                 .await
@@ -906,12 +1028,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_branch_creates_stored_copy_not_running() {
+    async fn test_session_copy_creates_stored_copy_not_running() {
         let cache = create_test_cache();
         let tool = SessionTool::new(cache.as_shared());
 
         let result = tool
-            .execute(json!({"action": "branch", "session_key": "test-session", "label": "fork"}))
+            .execute(json!({
+                "action": "copy",
+                "path": "test-session",
+                "target": "test-session/fork",
+                "label": "fork",
+            }))
             .await
             .unwrap();
         let new_id = result["new_session_id"].as_str().unwrap();
@@ -919,61 +1046,37 @@ mod tests {
         assert_ne!(new_id, "test-session");
 
         // The copy is stored (listed) but NOT running, and carries the
-        // branch label.
+        // copy label.
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        let branch = list["sessions"]
+        let copy = list["sessions"]
             .as_array()
             .unwrap()
             .iter()
             .find(|s| s["session_key"] == new_id)
-            .expect("branch must appear in list");
-        assert_eq!(branch["run_active"], false);
-        assert_eq!(branch["label"], "fork");
+            .expect("copy must appear in list");
+        assert_eq!(copy["run_active"], false);
+        assert_eq!(copy["label"], "fork");
 
         // History is copied over.
         let history = tool
-            .execute(json!({"action": "history", "session_key": new_id}))
+            .execute(json!({"action": "history", "path": new_id}))
             .await
             .unwrap();
         assert_eq!(history["total_messages"], 2);
 
-        // Branch without session_key must error.
+        // Copy without path must error.
         let err = tool
-            .execute(json!({"action": "branch"}))
+            .execute(json!({"action": "copy", "target": "x/y"}))
             .await
-            .expect_err("branch without session_key must error");
-        assert!(err.to_string().contains("session_key"), "{err}");
-    }
+            .expect_err("copy without path must error");
+        assert!(err.to_string().contains("path"), "{err}");
 
-    #[tokio::test]
-    async fn test_session_archive_unarchive_toggle_list_visibility() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({"action": "archive", "session_key": "test-session"}))
+        // Copy without target must error.
+        let err = tool
+            .execute(json!({"action": "copy", "path": "test-session"}))
             .await
-            .unwrap();
-        assert_eq!(result["archived"], true);
-
-        // Hidden by default, visible with include_archived:true.
-        let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["total"], 0);
-        let list = tool
-            .execute(json!({"action": "list", "include_archived": true}))
-            .await
-            .unwrap();
-        assert_eq!(list["total"], 1);
-        assert_eq!(list["sessions"][0]["archived"], true);
-
-        let result = tool
-            .execute(json!({"action": "unarchive", "session_key": "test-session"}))
-            .await
-            .unwrap();
-        assert_eq!(result["archived"], false);
-        let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["total"], 1);
-        assert_eq!(list["sessions"][0]["archived"], false);
+            .expect_err("copy without target must error");
+        assert!(err.to_string().contains("target"), "{err}");
     }
 
     #[tokio::test]
@@ -984,7 +1087,7 @@ mod tests {
         let err = tool
             .execute(json!({
                 "action": "status",
-                "session_key": "test-session",
+                "path": "test-session",
                 "timezone": "Not/AZone"
             }))
             .await
@@ -994,7 +1097,7 @@ mod tests {
         // A valid IANA tz still works.
         tool.execute(json!({
             "action": "status",
-            "session_key": "test-session",
+            "path": "test-session",
             "timezone": "UTC"
         }))
         .await
@@ -1010,5 +1113,209 @@ mod tests {
         let tool = SessionTool::new(Arc::new(cache).as_shared());
         let schema = tool.parameters();
         assert_eq!(schema["properties"]["limit"]["default"], 100);
+    }
+
+    #[tokio::test]
+    async fn test_session_move_reparent_happy_and_unknown_session() {
+        let cache = create_test_cache();
+        cache.add_session(
+            "parent-s".to_string(),
+            SessionInfo {
+                session_key: "parent-s".to_string(),
+                session_id: "parent-s".to_string(),
+                agent_id: Some("test-agent".to_string()),
+                label: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                last_activity: "2024-01-01T01:00:00Z".to_string(),
+                message_count: 0,
+                peer_type: None,
+                peer_id: None,
+                archived: false,
+                run_active: false,
+                slug: None,
+                path: String::new(),
+            },
+            vec![],
+            dummy_status("parent-s"),
+        );
+        let tool = SessionTool::new(cache.as_shared());
+
+        let result = tool
+            .execute(json!({
+                "action": "move",
+                "path": "test-session",
+                "target": "parent-s/task-b",
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["modified"], true);
+
+        // The reparent is visible on status.
+        let status = tool
+            .execute(json!({"action": "status", "path": "test-session"}))
+            .await
+            .unwrap();
+        assert_eq!(status["parent_session"], "parent-s");
+
+        // path is always required.
+        let err = tool
+            .execute(json!({"action": "move", "target": "parent-s/x"}))
+            .await
+            .expect_err("move without path must error");
+        assert!(err.to_string().contains("path"), "{err}");
+
+        // Unknown endpoints error.
+        let err = tool
+            .execute(json!({
+                "action": "move",
+                "path": "missing",
+                "target": "parent-s/x",
+            }))
+            .await
+            .expect_err("move of an unknown session must error");
+        assert!(err.to_string().contains("missing"), "{err}");
+    }
+
+    /// Sprint 7 Commit F: `move` with `target` set to
+    /// `<current_parent>/<new_slug>` is the bash `mv` rename-in-place
+    /// case. Pre-merge this was the `rename` action; Commit F subsumed
+    /// it, Commit H unified the addressing under `target`.
+    #[tokio::test]
+    async fn test_session_move_rename_in_place_with_slug_title_both() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        // Slug only — rename in place at the root (test-session has
+        // no recorded parent in the cache).
+        tool.execute(json!({"action": "move", "path": "test-session", "target": "/task-b"}))
+            .await
+            .unwrap();
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["sessions"][0]["slug"], "task-b");
+        // Title untouched by a slug-only rename.
+        assert_eq!(list["sessions"][0]["label"], "Test Session");
+
+        // Title only (slug survives) — target must be present even
+        // when only the display label changes.
+        tool.execute(
+            json!({"action": "move", "path": "test-session", "target": "/task-b", "title": "New Title"}),
+        )
+        .await
+        .unwrap();
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["sessions"][0]["label"], "New Title");
+        assert_eq!(list["sessions"][0]["slug"], "task-b");
+
+        // Both at once — different slug, new title.
+        tool.execute(
+            json!({"action": "move", "path": "test-session", "target": "/s2", "title": "T"}),
+        )
+        .await
+        .unwrap();
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(list["sessions"][0]["label"], "T");
+        assert_eq!(list["sessions"][0]["slug"], "s2");
+    }
+
+    /// `move` with NOTHING (no target, no title) is a no-op — refuse
+    /// it explicitly so the model can't accidentally call move with
+    /// all default params and get a false success.
+    #[tokio::test]
+    async fn test_session_move_all_none_params_errors() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let err = tool
+            .execute(json!({"action": "move", "path": "test-session"}))
+            .await
+            .expect_err("move with no target/title must error");
+        assert!(err.to_string().contains("target"), "{err}");
+        assert!(err.to_string().contains("title"), "{err}");
+    }
+
+    /// Sprint 7 Commit G: tool-layer `validate_path` mirrors
+    /// `AgentArgs::validate_action_args`. Raw session ids (with the
+    /// reserved `:` that legacy ids carry) and malformed slug paths
+    /// are rejected with a structured error at the tool boundary,
+    /// before the runtime touches state.
+    #[tokio::test]
+    async fn test_session_path_validation_at_tool_boundary() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        // Legacy raw session id shape (contains `:` which slugs forbid).
+        let err = tool
+            .execute(json!({
+                "action": "copy",
+                "path": "root:user:alice",
+            }))
+            .await
+            .expect_err("raw session id shape must error at the boundary");
+        assert!(err.to_string().contains("path"), "{err}");
+        assert!(err.to_string().contains("slug"), "{err}");
+
+        // Empty path.
+        let err = tool
+            .execute(json!({"action": "copy", "path": ""}))
+            .await
+            .expect_err("empty path must error");
+        assert!(err.to_string().contains("path"), "{err}");
+
+        // Bare `/` (no segments) is refused (validate_path says supply
+        // at least one segment).
+        let err = tool
+            .execute(json!({"action": "copy", "path": "/"}))
+            .await
+            .expect_err("bare '/' path must error");
+        assert!(err.to_string().contains("path"), "{err}");
+
+        // Empty segment (`/a//b`).
+        let err = tool
+            .execute(json!({"action": "copy", "path": "/a//b"}))
+            .await
+            .expect_err("empty segment path must error");
+        assert!(err.to_string().contains("segment"), "{err}");
+
+        // Leading/trailing whitespace in a segment.
+        let err = tool
+            .execute(json!({"action": "copy", "path": "/ a/b"}))
+            .await
+            .expect_err("whitespace in segment must error");
+        assert!(err.to_string().contains("whitespace"), "{err}");
+
+        // Valid slug path passes through to the runtime (success on a
+        // known slug is not required here — we just need the
+        // validator to let it through, which we check by ensuring
+        // the error message does NOT mention path validation).
+        let res = tool
+            .execute(json!({"action": "copy", "path": "test-session"}))
+            .await;
+        // Either success (slug exists in cache) or a runtime-level
+        // error — but never a "path is not a valid slug path" error.
+        if let Err(e) = res {
+            assert!(
+                !e.to_string().contains("is not a valid slug path"),
+                "valid slug path should pass tool-layer validation, got: {e}"
+            );
+        }
+    }
+
+    /// `target` is also a slug path — same shape rules as `path`.
+    /// Validate at the tool boundary.
+    #[tokio::test]
+    async fn test_session_move_target_validates_at_tool_boundary() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        let err = tool
+            .execute(json!({
+                "action": "move",
+                "path": "test-session",
+                "target": "root:user:bob/x",
+            }))
+            .await
+            .expect_err("raw-id target must error at the boundary");
+        assert!(err.to_string().contains("target"), "{err}");
+        assert!(err.to_string().contains("slug"), "{err}");
     }
 }
