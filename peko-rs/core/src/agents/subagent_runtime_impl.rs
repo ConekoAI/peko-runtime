@@ -16,7 +16,7 @@
 //! | Port method                                | Executor entry point                                                                                              |
 //! |--------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
 //! | [`is_subagent_enabled`]                    | `principal_capabilities` snapshot → `Capability::is_granted("agent:<name>")`; fail-closed when no snapshot is registered |
-//! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat), then global `agents/<n>/config.toml`    |
+//! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat). Workspace is required: the global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`) was retired in Sprint 8 Commit 2 |
 //! | [`audit_spawn`]                            | `observability.audit("SubagentSpawn", ...)` — no-op when no hub is attached                                        |
 //! | [`execute_and_wait`]                       | `SubagentExecutor::execute_and_wait` — returns the projected `SubagentRunView`                                     |
 //! | [`request_compaction`]                     | `SubagentExecutor::request_compaction` — flags the target for engine-driven compaction, returns immediately        |
@@ -28,10 +28,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::common::identifiers::parse_agent_name;
-use crate::common::paths::PathResolver;
 use crate::extensions::framework::subagent::SpawnCleanupPolicy;
 use crate::tools::builtin::messaging::{
     AgentConfig as BuiltinAgentConfig, SpawnAuditEvent, SpawnRequest, SubagentRunView,
@@ -109,42 +106,14 @@ impl SubagentExecutorRuntime {
         })
     }
 
-    /// Load an agent config from the global `{PEKO_HOME}/agents/<n>/config.toml`.
-    async fn resolve_global_agent(name: &str) -> anyhow::Result<BuiltinAgentConfig> {
-        let agent_name = parse_agent_name(name)?;
-        let resolver = PathResolver::new();
-        let config_path = resolver.agent_config(agent_name);
-        if !config_path.exists() {
-            anyhow::bail!("Subagent type '{name}' not found at {config_path:?}");
-        }
-        let content = tokio::fs::read_to_string(&config_path).await?;
-        toml::from_str(&content)
-            .with_context(|| format!("Failed to parse agent config for '{name}'"))
-    }
-
-    /// Bridge from root's `AgentConfig` to the built-in's
-    /// `BuiltinAgentConfig`. We carry both types across the port
-    /// boundary; the built-in sees the projected shape only.
-    #[allow(dead_code)]
-    fn project_agent_config(config: &AgentConfig) -> BuiltinAgentConfig {
-        BuiltinAgentConfig {
-            name: config.name.clone(),
-            description: config.description.clone(),
-            prompt: config.prompt.clone(),
-            agent_did: config.agent_did.clone(),
-            enable_task_tools: config.enable_task_tools,
-            enable_async_tools: config.enable_async_tools,
-            enable_tool_search: config.enable_tool_search,
-            // Phase 2 of `feature/multi-model-subagents`: project
-            // the `enable_model_list` flag so the builtin's view of
-            // the config matches the canonical `AgentConfig`.
-            enable_model_list: config.enable_model_list,
-            channel: config.channel.clone(),
-            thinking_level: config.thinking_level.clone(),
-            sandbox_enabled: config.sandbox_enabled,
-            model_aliases: config.model_aliases.clone(),
-        }
-    }
+    // `resolve_global_agent` (the legacy `{PEKO_HOME}/agents/<n>/config.toml`
+    // loader) was deleted in Sprint 8 Commit 2 — the workspace Markdown is
+    // the only spawn path. `project_agent_config` (root `AgentConfig` →
+    // built-in `BuiltinAgentConfig` bridge) was deleted in the same
+    // commit: dead after the workspace-only path. Both were the last
+    // consumers of the canonical `AgentConfig`'s `enable_*` fields on the
+    // spawn path; the gateway loop (`StatelessAgentService` +
+    // `ConfigAuthority`) keeps `AgentConfig` alive until Sprint 8b.
 }
 
 #[async_trait]
@@ -173,28 +142,25 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         // id for the agent-side `model_aliases` resolution.
         _model_override: Option<&str>,
     ) -> anyhow::Result<BuiltinAgentConfig> {
-        // Prefer a principal-scoped AGENT.md when a workspace is bound;
-        // fall through to the global agents/ registry on miss.
-        let config = if let Some(workspace) = workspace {
-            // Phase A: derive the typed agents dir from the
-            // Shared root.
-            let agents_dir = workspace.join("agents");
-            match Self::resolve_principal_agent(name, &agents_dir) {
-                Ok(config) => config,
-                Err(e) => {
-                    tracing::debug!(
-                        "Principal agent '{name}' not found in agents dir '{}': {e}; falling back to global agent",
-                        agents_dir.display()
-                    );
-                    Self::resolve_global_agent(name).await?
-                }
-            }
-        } else {
-            // Standalone / test path: resolve from the global layout only.
-            Self::resolve_global_agent(name).await?
-        };
+        // Sprint 8 Commit 2: the workspace is the single source of
+        // truth. The global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`)
+        // was dead — every reachable spawn was workspace-scoped. Refuse
+        // when no workspace is bound rather than silently producing an
+        // empty agent.
+        let workspace = workspace.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Agent '{name}' cannot be resolved without a workspace — \
+                 the legacy global TOML fallback was retired in Sprint 8."
+            )
+        })?;
 
-        Ok(config)
+        let agents_dir = workspace.join("agents");
+        Self::resolve_principal_agent(name, &agents_dir).with_context(|| {
+            format!(
+                "Agent '{name}' not found under {agents_dir:?} \
+                 (looked for <agents>/<name>/AGENT.md and <agents>/<name>.md)"
+            )
+        })
     }
 
     async fn audit_spawn(&self, event: SpawnAuditEvent) {

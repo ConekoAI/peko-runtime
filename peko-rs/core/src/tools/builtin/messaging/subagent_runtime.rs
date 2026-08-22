@@ -14,11 +14,13 @@
 //!   gate. Returns `true` only when the per-principal capability snapshot
 //!   grants `agent:<name>`; missing authorization context is denied.
 //! - [`resolve_agent_config`](SubagentRuntime::resolve_agent_config) —
-//!   disk lookup. Workspace-scoped first
-//!   (`<workspace>/agents/<name>/AGENT.md` or `<workspace>/agents/<name>.md`),
-//!   then global (`{PEKO_HOME}/agents/<name>/config.toml`). Adapter
-//!   owns the `PathResolver` and `principal::agent_prompt` calls —
-//!   built-ins never touch root internals.
+//!   workspace Markdown lookup. Two layouts supported:
+//!   `<workspace>/agents/<name>/AGENT.md` (directory) or
+//!   `<workspace>/agents/<name>.md` (flat). The legacy global TOML
+//!   fallback (`{PEKO_HOME}/agents/<name>/config.toml`) was retired in
+//!   Sprint 8 Commit 2 — the workspace is the single source of truth.
+//!   Adapter owns the `PathResolver` and `principal::agent_prompt`
+//!   calls — built-ins never touch root internals.
 //!
 //! Sprint 8: parameter names that took a `subagent_type: &str` are
 //! renamed to `agent: &str` to match the LLM-facing `AgentArgs::agent`
@@ -64,13 +66,14 @@ pub trait SubagentRuntime: Send + Sync {
     /// both denied.
     fn is_subagent_enabled(&self, agent: &str) -> bool;
 
-    /// Resolve a subagent config from disk.
+    /// Resolve a subagent config from the principal's workspace.
     ///
-    /// Resolution order:
-    /// 1. If `workspace` is `Some`, look up
-    ///    `<workspace>/agents/<name>/AGENT.md` (directory layout) or
-    ///    `<workspace>/agents/<name>.md` (flat layout).
-    /// 2. Fall back to the global `{PEKO_HOME}/agents/<name>/config.toml`.
+    /// Sprint 8 Commit 2: the workspace is the single source of truth.
+    /// `workspace` is required — the legacy global TOML fallback
+    /// (`{PEKO_HOME}/agents/<name>/config.toml`) was retired. Two layouts
+    /// are supported:
+    /// - `<workspace>/agents/<name>/AGENT.md` (directory)
+    /// - `<workspace>/agents/<name>.md` (flat)
     ///
     /// `model_override` is accepted to preserve the current call shape
     /// but is currently a no-op — the runtime applies it at agent
