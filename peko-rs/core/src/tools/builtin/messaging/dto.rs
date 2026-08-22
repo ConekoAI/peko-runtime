@@ -36,10 +36,20 @@ pub struct AgentConfig {
     #[serde(default)]
     pub agent_did: Option<String>,
     /// Whether the planning-todo family is enabled.
+    ///
+    /// Sprint 8 Commit 3: the spawn-path read of this field was
+    /// dropped on the root side (every reachable Agent defaults it
+    /// to `true` and the read only added noise). Retained here for
+    /// fixture shape parity with root's `AgentConfig`; Commit 4
+    /// deletes this whole DTO in favor of `Arc<AgentPrompt>`.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // fixture-shape parity with root AgentConfig; deleted in Commit 4
     pub enable_task_tools: bool,
     /// Whether the async execution family is enabled.
+    ///
+    /// Sprint 8 Commit 3: same as `enable_task_tools` above.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // fixture-shape parity with root AgentConfig; deleted in Commit 4
     pub enable_async_tools: bool,
     /// F35 — whether the synthetic `__tool_search` stub is registered.
     #[serde(default)]

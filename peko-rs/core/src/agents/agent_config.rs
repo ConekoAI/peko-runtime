@@ -64,7 +64,15 @@ pub struct AgentConfig {
     /// `TaskList`/`TaskUpdate`) is enabled for this agent. Defaults to
     /// `true`. The factory- and registrar-level `enable_task_tools`
     /// flag is a separate global default that propagates here.
+    ///
+    /// Sprint 8 Commit 3: the spawn-path read of this field was
+    /// dropped (every reachable Agent defaults it to `true` and the
+    /// gate was unconditional in practice). The field stays so the
+    /// gateway loop (`StatelessAgentService`) can keep authoring
+    /// `AgentConfig` literals without churn — Sprint 8b removes both
+    /// the field and the gateway-loop reference.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
     pub enable_task_tools: bool,
 
     /// Whether the peko_plan DAG family (`PlanCreate`/`PlanList`/
@@ -76,13 +84,23 @@ pub struct AgentConfig {
     /// `Agent::with_principal_plan_port` — without that binding the
     /// plan tools are intentionally not registered regardless of this
     /// flag (test-only `Agent::new` callers hit this path).
+    ///
+    /// Sprint 8 Commit 3: the spawn-path read of this field was
+    /// dropped for the same reason as `enable_task_tools` /
+    /// `enable_async_tools`. Retained for Sprint 8b.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
     pub enable_plan_tools: bool,
 
     /// Whether the async execution family (`AsyncSpawn`/`AsyncOutput`/
     /// `AsyncStatus`/`AsyncList`/`AsyncStop`) is enabled for this agent.
     /// Defaults to `true`.
+    ///
+    /// Sprint 8 Commit 3: the spawn-path read of this field was
+    /// dropped for the same reason as `enable_task_tools`. Retained
+    /// for Sprint 8b.
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
     pub enable_async_tools: bool,
 
     /// F35 — whether the synthetic `__tool_search` stub is registered

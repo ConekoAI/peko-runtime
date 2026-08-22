@@ -251,33 +251,31 @@ impl Agent {
         // Phase 10d: the tools now speak to a `TodoRuntime` port trait; the
         // adapter is constructed here so the built-in crate stays free of
         // root-only deps.
-        if self.config.enable_task_tools {
-            if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
-                let todo_storage = Arc::new(peko_session::todos::TodoStorage::new(sessions_dir));
-                let runtime = std::sync::Arc::new(
-                    crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
-                );
-                tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(
-                    runtime.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(
-                    runtime.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(
-                    runtime.clone(),
-                )));
-                tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(
-                    runtime,
-                )));
-            } else {
-                tracing::warn!(
-                    "Session storage directory not available for agent '{}'; Task* tools will not be registered",
-                    self.config.name
-                );
-            }
+        //
+        // Sprint 8 Commit 3: the per-agent `enable_task_tools` gate was
+        // dropped — every reachable Agent defaults it to `true` and the
+        // read only added noise. Without a session-storage dir we still
+        // warn and skip (defensive).
+        if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
+            let todo_storage = Arc::new(peko_session::todos::TodoStorage::new(sessions_dir));
+            let runtime = std::sync::Arc::new(
+                crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
+            );
+            tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(
+                runtime.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(
+                runtime.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(
+                runtime.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(
+                runtime,
+            )));
         } else {
-            tracing::debug!(
-                "Task* tools disabled by config for agent '{}'",
+            tracing::warn!(
+                "Session storage directory not available for agent '{}'; Task* tools will not be registered",
                 self.config.name
             );
         }
@@ -293,31 +291,29 @@ impl Agent {
         // `Agent::with_principal_plan_port`. Without that binding the
         // tools are intentionally not registered — test-only
         // `Agent::new` callers hit this path. Mirrors the Task* shape:
-        // config-gated first, runtime-handle-gated second, otherwise
-        // warn-level skip.
-        if self.config.enable_plan_tools {
-            if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
-                use crate::tools::builtin::{
-                    PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
-                    PlanListTool, PlanMarkStepTool, PlanRecordEvidenceTool,
-                };
-                tools.push(Arc::new(PlanCreateTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanListTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanGetTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanMarkStepTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanRecordEvidenceTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanAddStepTool::new(plan_port.clone())));
-                tools.push(Arc::new(PlanCloseTool::new(plan_port)));
-            } else {
-                tracing::warn!(
-                    "Plan tools enabled by config for agent '{}' but no principal_plan_port \
-                     was bound — Plan* tools will not be registered",
-                    self.config.name
-                );
-            }
+        // runtime-handle-gated, otherwise warn-level skip.
+        //
+        // Sprint 8 Commit 3: the per-agent `enable_plan_tools` gate was
+        // dropped — every reachable Agent defaults it to `true` and the
+        // read only added noise. The struct field stays until Sprint 8b
+        // (the gateway loop's `StatelessAgentService` still constructs
+        // `AgentConfig` literals and would otherwise need to be
+        // updated in lockstep).
+        if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
+            use crate::tools::builtin::{
+                PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
+                PlanListTool, PlanMarkStepTool, PlanRecordEvidenceTool,
+            };
+            tools.push(Arc::new(PlanCreateTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanListTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanGetTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanMarkStepTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanRecordEvidenceTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanAddStepTool::new(plan_port.clone())));
+            tools.push(Arc::new(PlanCloseTool::new(plan_port)));
         } else {
-            tracing::debug!(
-                "Plan tools disabled by config for agent '{}'",
+            tracing::warn!(
+                "No principal_plan_port bound for agent '{}' — Plan* tools will not be registered",
                 self.config.name
             );
         }
@@ -1693,113 +1689,113 @@ impl Agent {
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
         //    core. Uses Weak so the tools do not extend the core's lifetime
         //    past the core itself.
-        if self.config.enable_async_tools {
-            let core_weak = Arc::downgrade(&extension_core);
-            // F37: snapshot the spawning principal's capability grants.
-            // `AsyncExecutorRuntime::spawn` builds the F37 canonical
-            // funnel closure (`execute_tool_via_hook` with
-            // `ToolDispatchContext::for_principal(...)`) and dispatches
-            // it via `AsyncExecutor::dispatch_tool`. The capability gate
-            // at `registry.rs:260-277` evaluates against these snapshotted
-            // grants. Pre-F37, the gate was bypassed entirely.
-            let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
-                self.principal_capabilities
-                    .as_ref()
-                    .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
-                    .unwrap_or_default(),
-            );
-            let snapshot_active_extensions: Arc<Vec<String>> = Arc::new(
-                self.principal_active_extensions
-                    .as_ref()
-                    .map(|active| active.to_vec())
-                    .unwrap_or_default(),
-            );
-            // Phase 10c: `AsyncExecutorRuntime` is the framework-host
-            // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
-            // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
-            // principal_id + capabilities snapshot, so each Async* tool
-            // can take just an `Arc<dyn AsyncRuntime>` rather than
-            // reaching into the framework itself.
-            let runtime = Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
-                    async_executor,
-                    core_weak,
-                    Some(self.identity.did.clone()),
-                    self.principal_id.clone(),
-                    snapshot_capabilities,
-                    snapshot_active_extensions,
-                ),
-            );
-            let runtime_handle = runtime.as_shared();
-            let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
-                runtime_handle.clone(),
-            ));
-            let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(
-                runtime_handle.clone(),
-            ));
+        //
+        // Sprint 8 Commit 3: the per-agent `enable_async_tools` gate was
+        // dropped — every reachable Agent defaults it to `true` and the
+        // read only added noise. The struct field stays until Sprint 8b
+        // (the gateway loop's `StatelessAgentService` still constructs
+        // `AgentConfig` literals and would otherwise need to be
+        // updated in lockstep).
+        let core_weak = Arc::downgrade(&extension_core);
+        // F37: snapshot the spawning principal's capability grants.
+        // `AsyncExecutorRuntime::spawn` builds the F37 canonical
+        // funnel closure (`execute_tool_via_hook` with
+        // `ToolDispatchContext::for_principal(...)`) and dispatches
+        // it via `AsyncExecutor::dispatch_tool`. The capability gate
+        // at `registry.rs:260-277` evaluates against these snapshotted
+        // grants. Pre-F37, the gate was bypassed entirely.
+        let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
+            self.principal_capabilities
+                .as_ref()
+                .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
+                .unwrap_or_default(),
+        );
+        let snapshot_active_extensions: Arc<Vec<String>> = Arc::new(
+            self.principal_active_extensions
+                .as_ref()
+                .map(|active| active.to_vec())
+                .unwrap_or_default(),
+        );
+        // Phase 10c: `AsyncExecutorRuntime` is the framework-host
+        // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
+        // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
+        // principal_id + capabilities snapshot, so each Async* tool
+        // can take just an `Arc<dyn AsyncRuntime>` rather than
+        // reaching into the framework itself.
+        let runtime = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
+                async_executor,
+                core_weak,
+                Some(self.identity.did.clone()),
+                self.principal_id.clone(),
+                snapshot_capabilities,
+                snapshot_active_extensions,
+            ),
+        );
+        let runtime_handle = runtime.as_shared();
+        let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+            runtime_handle.clone(),
+        ));
+        let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(
+            runtime_handle.clone(),
+        ));
 
-            // 4. Re-register the per-agent async tools (overwrites any prior
-            //    instance). register_tool is idempotent — unregisters first.
-            //    Per-agent async tools are scoped to the owning principal.
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
-                    &extension_core,
-                    spawn_tool,
-                    &self.principal_id,
-                )
-                .await
-            {
-                warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
-            }
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
-                    &extension_core,
-                    output_tool,
-                    &self.principal_id,
-                )
-                .await
-            {
-                warn!("Failed to register per-agent AsyncOutputTool: {}", e);
-            }
+        // 4. Re-register the per-agent async tools (overwrites any prior
+        //    instance). register_tool is idempotent — unregisters first.
+        //    Per-agent async tools are scoped to the owning principal.
+        if let Err(e) =
+            crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
+                &extension_core,
+                spawn_tool,
+                &self.principal_id,
+            )
+            .await
+        {
+            warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
+        }
+        if let Err(e) =
+            crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
+                &extension_core,
+                output_tool,
+                &self.principal_id,
+            )
+            .await
+        {
+            warn!("Failed to register per-agent AsyncOutputTool: {}", e);
+        }
 
-            // Register the per-agent introspection trio so this agent only sees
-            // its own async tasks. `register_tool` is idempotent — it unregisters
-            // any prior instance with the same name first.
-            for (tool_name, tool) in [
-                (
-                    "AsyncStatus",
-                    Arc::new(crate::tools::builtin::AsyncStatusTool::new(
-                        runtime_handle.clone(),
-                    )) as Arc<dyn Tool>,
-                ),
-                (
-                    "AsyncList",
-                    Arc::new(crate::tools::builtin::AsyncListTool::new(
-                        runtime_handle.clone(),
-                    )),
-                ),
-                (
-                    "AsyncStop",
-                    Arc::new(crate::tools::builtin::AsyncStopTool::new(
-                        runtime_handle.clone(),
-                    )),
-                ),
-            ] {
-                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-                    &extension_core,
-                    tool,
-                    &self.principal_id,
-                )
-                .await
-                {
-                    warn!("Failed to register per-agent {tool_name}Tool: {e}");
-                }
+        // Register the per-agent introspection trio so this agent only sees
+        // its own async tasks. `register_tool` is idempotent — it unregisters
+        // any prior instance with the same name first.
+        for (tool_name, tool) in [
+            (
+                "AsyncStatus",
+                Arc::new(crate::tools::builtin::AsyncStatusTool::new(
+                    runtime_handle.clone(),
+                )) as Arc<dyn Tool>,
+            ),
+            (
+                "AsyncList",
+                Arc::new(crate::tools::builtin::AsyncListTool::new(
+                    runtime_handle.clone(),
+                )),
+            ),
+            (
+                "AsyncStop",
+                Arc::new(crate::tools::builtin::AsyncStopTool::new(
+                    runtime_handle.clone(),
+                )),
+            ),
+        ] {
+            if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+                &extension_core,
+                tool,
+                &self.principal_id,
+            )
+            .await
+            {
+                warn!("Failed to register per-agent {tool_name}Tool: {e}");
             }
-        } else {
-            tracing::debug!(
-                "Async tools disabled by config for agent '{}'",
-                self.config.name
-            );
         }
 
         // F35 — register the synthetic `__tool_search` stub if the agent
