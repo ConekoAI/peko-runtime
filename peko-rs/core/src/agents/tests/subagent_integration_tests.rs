@@ -27,6 +27,23 @@ fn sid(literal: &str) -> String {
     peko_session::SessionId::from(literal).to_string()
 }
 
+/// Sprint 7: wrap a fixture literal as the absolute slug path the
+/// runtime resolves via `peko_session::path::resolve_reference`.
+/// `create_linked_session` (and `create_standing_child`) stamp the
+/// literal as the session's slug, so `/<literal>` resolves back to
+/// the v5-derived session id.
+///
+/// Implemented as a `macro_rules!` (not a `fn`) so the result is a
+/// `&'static str` — the runtime entry points (`resume_and_execute`,
+/// `request_compaction`, `validate_context_parent`, ...) take
+/// `&str` and the v5-derive + path-prefix work is fully evaluated
+/// at compile time.
+macro_rules! path {
+    ($literal:expr) => {
+        concat!("/", $literal)
+    };
+}
+
 /// Per-test agent-name counter so each subagent integration test gets its own
 /// global async-task registry. Without this, every test shares one registry
 /// (keyed by "test_agent" in `get_or_create_registry_for_agent`) and
@@ -1165,7 +1182,10 @@ async fn test_max_concurrent_limit() {
 
 /// Create a session with explicit id/parent/trigger linkage via the
 /// manager (mirrors what `spawn_session` stamps for real spawns:
-/// `trigger == "spawn"` + `parent_session_id`).
+/// `trigger == "spawn"` + `parent_session_id`). Stamps the fixture
+/// literal as the session's slug so the test can address it via
+/// `/<literal>` (Sprint 7: `peko_session::path::resolve_reference`
+/// walks absolute slug paths at the runtime entry point).
 async fn create_linked_session(
     session_manager: &Arc<RwLock<SessionManager>>,
     agent_name: &str,
@@ -1187,6 +1207,20 @@ async fn create_linked_session(
         .create_session(agent_name, &peer, options)
         .await
         .unwrap();
+    // Stamp the fixture literal as the session's slug so absolute
+    // slug paths like `/spawn-a` resolve back to this session via
+    // `peko_session::path::resolve_reference`. Skipped for the
+    // trunk (`parent_id == None`) which carries no slug in the
+    // production shape either.
+    if parent_id.is_some() {
+        let canonical = sid(id);
+        session_manager
+            .write()
+            .await
+            .set_session_slug(&canonical, Some(id.to_string()))
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -1204,14 +1238,18 @@ async fn resume_refuses_nonexistent_target() {
     let err = executor
         .resume_and_execute(
             "task",
-            "no-such-session",
-            "root-sess",
+            path!("no-such-session"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             None,
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("not found"), "{err}");
+    assert!(
+        err.to_string().contains("no child of")
+            || err.to_string().contains("not found"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -1238,8 +1276,8 @@ async fn resume_refuses_non_spawn_target() {
     let err = executor
         .resume_and_execute(
             "task",
-            "plain-sess",
-            "root-sess",
+            path!("plain-sess"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             None,
         )
@@ -1273,8 +1311,8 @@ async fn resume_refuses_self_and_ancestor() {
     let err = executor
         .resume_and_execute(
             "task",
-            "spawn-a",
-            "spawn-a",
+            path!("spawn-a"),
+            &sid("spawn-a"),
             ExecutionConfig::default(),
             None,
         )
@@ -1282,12 +1320,17 @@ async fn resume_refuses_self_and_ancestor() {
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
 
-    // Ancestor: root-sess is spawn-a's parent.
+    // Ancestor: `/` resolves to root-sess (the tree root), which is
+    // spawn-a's parent. Pre-B2-fix this test passed the literal
+    // `"root-sess"` and relied on `SessionId::from`'s v5 fallback to
+    // route the resume to root-sess's UUID; B2 now requires a slug
+    // path, and `/` is the only path that resolves to the trunk
+    // (root-sess carries no slug in the canonical shape).
     let err = executor
         .resume_and_execute(
             "task",
-            "root-sess",
-            "spawn-a",
+            "/",
+            &sid("spawn-a"),
             ExecutionConfig::default(),
             None,
         )
@@ -1325,8 +1368,8 @@ async fn resume_refuses_archived_target() {
     let err = executor
         .resume_and_execute(
             "task",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             None,
         )
@@ -1368,8 +1411,8 @@ async fn resume_happy_path_preserves_history() {
     let run_id = executor
         .resume_and_execute(
             "continue the task",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             None,
         )
@@ -1707,7 +1750,7 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
         .await
         .unwrap();
     // Sprint 6: child_session_id is the v5 UUID form of the fixture
-    // literal (`sid("child-memory")`).
+    // literal (`&sid("child-memory")`).
     assert_eq!(
         run_child_session_id(&registry, &run_id).await.as_deref(),
         Some(sid("child-memory").as_str())
@@ -1732,10 +1775,14 @@ async fn compact_refuses_nonexistent_target() {
         peko_subject::PrincipalId::generate(),
     );
     let err = executor
-        .request_compaction("no-such-session", "root-sess")
+        .request_compaction(path!("no-such-session"), &sid("root-sess"))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("not found"), "{err}");
+    assert!(
+        err.to_string().contains("no child of")
+            || err.to_string().contains("not found"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -1761,14 +1808,19 @@ async fn compact_refuses_self_and_ancestor() {
 
     // Self: the engine compacts the caller's own session automatically.
     let err = executor
-        .request_compaction("spawn-a", "spawn-a")
+        .request_compaction(path!("spawn-a"), &sid("spawn-a"))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
 
-    // Ancestor: root-sess is spawn-a's parent.
+    // Ancestor: `/` resolves to root-sess (the tree root), which is
+    // spawn-a's parent. Pre-B2-fix this test passed `path!("root-sess")`
+    // and relied on `SessionId::from`'s v5 fallback to route to
+    // root-sess's UUID; B2 now requires a slug path, and `/` is the
+    // only path that resolves to the trunk (root-sess carries no
+    // slug in the canonical shape).
     let err = executor
-        .request_compaction("root-sess", "spawn-a")
+        .request_compaction("/", &sid("spawn-a"))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
@@ -1801,7 +1853,7 @@ async fn compact_refuses_archived_target() {
         peko_subject::PrincipalId::generate(),
     );
     let err = executor
-        .request_compaction("spawn-a", "root-sess")
+        .request_compaction(path!("spawn-a"), &sid("root-sess"))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("unarchive"), "{err}");
@@ -1830,7 +1882,7 @@ async fn compact_happy_path_flags_session_without_trigger_requirement() {
         peko_subject::PrincipalId::generate(),
     );
     let outcome = executor
-        .request_compaction("branch-a", "root-sess")
+        .request_compaction(path!("branch-a"), &sid("root-sess"))
         .await
         .unwrap();
     // Sprint 6: request_compaction resolves the target through
@@ -1889,17 +1941,17 @@ async fn validate_context_parent_ownership() {
 
     // Default path: caller's own session always passes.
     executor
-        .validate_context_parent("spawn-a", "spawn-a")
+        .validate_context_parent(path!("spawn-a"), &sid("spawn-a"))
         .await
         .unwrap();
     // Principal-level caller (base session) passes for any target.
     executor
-        .validate_context_parent("spawn-b", "root-sess")
+        .validate_context_parent(path!("spawn-b"), &sid("root-sess"))
         .await
         .unwrap();
     // Subtree caller seeding from a sibling subtree → refused.
     let err = executor
-        .validate_context_parent("spawn-b", "spawn-a")
+        .validate_context_parent(path!("spawn-b"), &sid("spawn-a"))
         .await
         .unwrap_err();
     assert!(
@@ -1916,7 +1968,7 @@ async fn validate_context_parent_ownership() {
     )
     .await;
     executor
-        .validate_context_parent("grandchild", "spawn-a")
+        .validate_context_parent(path!("spawn-a/grandchild"), &sid("spawn-a"))
         .await
         .unwrap();
 }
@@ -2121,8 +2173,8 @@ async fn streaming_resume_happy_path_streams_and_returns_final_text() {
     let outcome = executor
         .resume_streaming(
             "hello child",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             streaming_test_config(),
             sink,
             None,
@@ -2214,8 +2266,8 @@ async fn streaming_resume_registers_active_run_in_registry() {
     let turn = tokio::spawn(async move {
         exec.resume_streaming(
             "hi",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             streaming_test_config(),
             sink,
             None,
@@ -2230,7 +2282,7 @@ async fn streaming_resume_registers_active_run_in_registry() {
         if registry
             .read()
             .await
-            .has_active_subagent_run_for_child(sid("spawn-a").as_str())
+            .has_active_subagent_run_for_child(&sid("spawn-a").as_str())
         {
             observed_active = true;
             break;
@@ -2256,7 +2308,7 @@ async fn streaming_resume_registers_active_run_in_registry() {
     assert!(!registry
         .read()
         .await
-        .has_active_subagent_run_for_child(sid("spawn-a").as_str()));
+        .has_active_subagent_run_for_child(&sid("spawn-a").as_str()));
 }
 
 /// Cancellation: a cancelled parent token surfaces as a refused
@@ -2296,8 +2348,8 @@ async fn streaming_resume_cancellation_stops_the_run() {
     let err = executor
         .resume_streaming(
             "hi",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             streaming_test_config(),
             sink,
             Some(cancel),
@@ -2352,8 +2404,8 @@ async fn streaming_resume_enforces_guard_stack() {
     let err = executor
         .resume_streaming(
             "t",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             sink,
             None,
@@ -2367,8 +2419,8 @@ async fn streaming_resume_enforces_guard_stack() {
     let err = executor
         .resume_streaming(
             "t",
-            "plain-sess",
-            "root-sess",
+            path!("plain-sess"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             sink,
             None,
@@ -2382,15 +2434,19 @@ async fn streaming_resume_enforces_guard_stack() {
     let err = executor
         .resume_streaming(
             "t",
-            "no-such-session",
-            "root-sess",
+            path!("no-such-session"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             sink,
             None,
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("not found"), "{err}");
+    assert!(
+        err.to_string().contains("no child of")
+            || err.to_string().contains("not found"),
+        "{err}"
+    );
 }
 
 /// Cross-driver double-run refusal: a run registered through one
@@ -2458,8 +2514,8 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
     let err = streaming_executor
         .resume_streaming(
             "concurrent turn",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             ExecutionConfig::default(),
             sink,
             None,
@@ -2478,7 +2534,7 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
         .into_iter()
         .filter(|e| {
             matches!(&e.metadata, TaskMetadata::Subagent(m)
-                if m.child_session_id.as_deref() == Some(sid("spawn-a").as_str()))
+                if m.child_session_id.as_deref() == Some(&sid("spawn-a").as_str()))
         })
         .count();
     assert_eq!(runs_for_child, 1, "no double-run may be registered");
@@ -2518,8 +2574,8 @@ async fn streaming_resume_sequential_turns_keep_history() {
     let first = executor
         .resume_streaming(
             "first message",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             streaming_test_config(),
             sink,
             None,
@@ -2532,8 +2588,8 @@ async fn streaming_resume_sequential_turns_keep_history() {
     let second = executor
         .resume_streaming(
             "second message",
-            "spawn-a",
-            "root-sess",
+            path!("spawn-a"),
+            &sid("root-sess"),
             streaming_test_config(),
             sink,
             None,
@@ -2544,7 +2600,7 @@ async fn streaming_resume_sequential_turns_keep_history() {
 
     // The child session kept both turns.
     let mut manager = session_manager.write().await;
-    let handle = manager.open_session(sid("spawn-a").as_str()).await.unwrap().unwrap();
+    let handle = manager.open_session(&sid("spawn-a").as_str()).await.unwrap().unwrap();
     let history = handle.load_history().await.unwrap();
     for needle in ["first message", "second message"] {
         assert!(
