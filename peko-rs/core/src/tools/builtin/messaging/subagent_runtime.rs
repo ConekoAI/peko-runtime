@@ -45,9 +45,8 @@ use serde::Serialize;
 
 use async_trait::async_trait;
 
-use crate::tools::builtin::messaging::dto::{
-    AgentConfig, ExecutionConfig, SubagentRunView,
-};
+use crate::agents::subagent_runtime_impl::AgentPrompt;
+use crate::tools::builtin::messaging::dto::{ExecutionConfig, SubagentRunView};
 use crate::tools::builtin::session::CompactRequestOutcome;
 
 /// Runtime port the `AgentTool` uses to talk to the subagent executor.
@@ -75,6 +74,14 @@ pub trait SubagentRuntime: Send + Sync {
     /// - `<workspace>/agents/<name>/AGENT.md` (directory)
     /// - `<workspace>/agents/<name>.md` (flat)
     ///
+    /// Sprint 8 Commit 4: returns `Arc<AgentPrompt>` — the workspace
+    /// Markdown IS the agent template (frontmatter name/description
+    /// + body). No `BuiltinAgentConfig` mirror DTO. The `AgentPrompt`
+    /// type lives at `crate::agents::subagent_runtime_impl` (the
+    /// production adapter); built-ins reference it through the
+    /// port trait without taking on adapter-internal types beyond
+    /// the value shape.
+    ///
     /// `model_override` is accepted to preserve the current call shape
     /// but is currently a no-op — the runtime applies it at agent
     /// construction time via `Agent::init_provider`'s
@@ -84,7 +91,7 @@ pub trait SubagentRuntime: Send + Sync {
         name: &str,
         workspace: Option<&Path>,
         model_override: Option<&str>,
-    ) -> anyhow::Result<AgentConfig>;
+    ) -> anyhow::Result<Arc<AgentPrompt>>;
 
     /// Audit a spawn event under the parent principal.
     ///
@@ -206,7 +213,13 @@ pub struct SpawnRequest {
     pub parent_cancel: Option<tokio_util::sync::CancellationToken>,
     /// The resolved subagent config (from
     /// [`SubagentRuntime::resolve_agent_config`]).
-    pub subagent_config: AgentConfig,
+    ///
+    /// Sprint 8 Commit 4: now `Arc<AgentPrompt>` instead of the
+    /// mirror `BuiltinAgentConfig` DTO. The Markdown body and
+    /// frontmatter are the single source of truth; the downstream
+    /// adapter forwards name + description into the audit row
+    /// and uses the body for the spawned child's `AgentConfig`.
+    pub subagent_config: Arc<AgentPrompt>,
     /// Phase 1 of `feature/multi-model-subagents`: optional
     /// catalog model id the parent picked for this spawn. When
     /// `Some`, the subagent dispatches its LLM calls against this

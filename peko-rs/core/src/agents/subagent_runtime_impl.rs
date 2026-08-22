@@ -31,8 +31,7 @@ use async_trait::async_trait;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::extensions::framework::subagent::SpawnCleanupPolicy;
 use crate::tools::builtin::messaging::{
-    AgentConfig as BuiltinAgentConfig, SpawnAuditEvent, SpawnRequest, SubagentRunView,
-    SubagentRuntime,
+    SpawnAuditEvent, SpawnRequest, SubagentRunView, SubagentRuntime,
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -76,10 +75,14 @@ impl SubagentExecutorRuntime {
     /// workspace root + a hand-rolled `"agents"` join.
     ///
     /// Errors if neither exists.
-    fn resolve_principal_agent(
-        name: &str,
-        agents_dir: &Path,
-    ) -> anyhow::Result<BuiltinAgentConfig> {
+    ///
+    /// Sprint 8 Commit 4: returns the resolved `Arc<AgentPrompt>`
+    /// directly — no more `BuiltinAgentConfig` wrapping. The
+    /// frontmatter's `name` and `description`, and the Markdown
+    /// body, are surfaced through the `AgentPrompt` struct; the
+    /// spawn path constructs the child `Agent`'s `AgentConfig`
+    /// from them as needed.
+    fn resolve_principal_agent(name: &str, agents_dir: &Path) -> anyhow::Result<Arc<AgentPrompt>> {
         let dir_layout = agents_dir.join(name).join("AGENT.md");
         let flat_layout = agents_dir.join(format!("{name}.md"));
 
@@ -98,12 +101,7 @@ impl SubagentExecutorRuntime {
         let prompt = load_agent_prompt(&agent_md)
             .with_context(|| format!("Failed to load principal agent prompt '{name}'"))?;
 
-        Ok(BuiltinAgentConfig {
-            name: prompt.name,
-            description: prompt.frontmatter.description,
-            prompt: Some(prompt.body),
-            ..BuiltinAgentConfig::default()
-        })
+        Ok(Arc::new(prompt))
     }
 
     // `resolve_global_agent` (the legacy `{PEKO_HOME}/agents/<n>/config.toml`
@@ -141,12 +139,18 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         // `resolve_agent_config` only carries the requested model
         // id for the agent-side `model_aliases` resolution.
         _model_override: Option<&str>,
-    ) -> anyhow::Result<BuiltinAgentConfig> {
+    ) -> anyhow::Result<Arc<AgentPrompt>> {
         // Sprint 8 Commit 2: the workspace is the single source of
         // truth. The global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`)
         // was dead — every reachable spawn was workspace-scoped. Refuse
         // when no workspace is bound rather than silently producing an
         // empty agent.
+        //
+        // Sprint 8 Commit 4: returns `Arc<AgentPrompt>` directly —
+        // the workspace Markdown IS the agent template (no
+        // `BuiltinAgentConfig` projection). The downstream
+        // `execute_and_wait` adapter reads `request.subagent_config`
+        // for observability + naming.
         let workspace = workspace.ok_or_else(|| {
             anyhow::anyhow!(
                 "Agent '{name}' cannot be resolved without a workspace — \
@@ -387,20 +391,26 @@ impl SubagentRuntime for SubagentExecutorRuntime {
 // future phase will lift agent-prompt parsing into a shared module.
 
 // A thin Markdown prompt file with an optional YAML frontmatter.
+//
+// Sprint 8 Commit 4: `pub` so the `SubagentRuntime` port trait
+// (defined in `tools/builtin/messaging/subagent_runtime.rs`) can
+// name `Arc<AgentPrompt>` as the resolved-config return type. The
+// canonical `principal::agent_prompt::AgentPrompt` retains the
+// same field shape — when the F-series lift lands, both call sites
+// collapse onto one definition.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // path kept for upcoming F-series prompt-parser move
-struct AgentPrompt {
-    name: String,
-    path: PathBuf,
-    frontmatter: AgentPromptFrontmatter,
-    body: String,
+pub struct AgentPrompt {
+    pub name: String,
+    pub path: PathBuf,
+    pub frontmatter: AgentPromptFrontmatter,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct AgentPromptFrontmatter {
-    name: Option<String>,
-    description: Option<String>,
-    color: Option<String>,
+pub struct AgentPromptFrontmatter {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<String>,
 }
 
 fn load_agent_prompt(path: &PathBuf) -> anyhow::Result<AgentPrompt> {

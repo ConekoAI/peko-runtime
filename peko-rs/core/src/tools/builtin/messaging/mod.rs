@@ -9,13 +9,21 @@
 //!
 //! ## DTOs
 //!
-//! [`AgentConfig`], [`SpawnError`], [`ExecutionConfig`],
+//! [`SpawnError`], [`ExecutionConfig`],
 //! [`CompletedRun`], [`SubagentResult`], and [`SubagentRunView`] are
 //! the canonical DTOs the port traffics in. Root re-exports each via
 //! `pub use crate::tools::builtin::messaging::...` for backwards
 //! compatibility. [`SpawnCleanupPolicy`] is re-exported from
 //! `peko_extension_host` (Phase 8 commit 2) so consumers of this
 //! module only need one import path.
+//!
+//! Sprint 8 Commit 4 removed the `AgentConfig` mirror DTO — the
+//! spawn path now uses `Arc<crate::agents::subagent_runtime_impl::AgentPrompt>`
+//! directly (workspace Markdown as the single source of truth).
+//! Root's canonical `crate::agents::agent_config::AgentConfig` is
+//! still re-exported from `agent_compat` for the gateway loop
+//! (`StatelessAgentService`) until Sprint 8b migrates that
+//! consumer.
 //!
 //! ## Port
 //!
@@ -32,7 +40,7 @@ pub mod subagent_runtime;
 
 pub use agent::{AgentArgs, AgentTool};
 pub use dto::{
-    AgentConfig, CompletedRun, ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult,
+    CompletedRun, ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult,
     SubagentRunView,
 };
 pub use subagent_runtime::{SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime};

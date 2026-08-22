@@ -17,10 +17,9 @@ use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 #[cfg(test)]
 use std::path::Path;
-#[cfg(test)]
-use std::sync::Arc;
 
 #[cfg(test)]
 use crate::tools::builtin::messaging::subagent_runtime::SubagentRuntime;
@@ -203,12 +202,18 @@ impl AgentTool {
         Self { runtime }
     }
 
-    /// Resolve the agent template name to an AgentConfig via the runtime port.
+    /// Resolve the agent template name to an `Arc<AgentPrompt>` via the runtime port.
+    ///
+    /// Sprint 8 Commit 4: returns the workspace-loaded `AgentPrompt`
+    /// directly. The pre-validation is for early-fail visibility
+    /// (capability grant + on-disk presence); the spawn path calls
+    /// `runtime.resolve_agent_config` again in `execute_spawn_blocking`
+    /// to thread the resolved prompt through `SpawnRequest`.
     async fn resolve_subagent_config(
         &self,
         agent: &str,
         model_override: Option<&str>,
-    ) -> anyhow::Result<crate::tools::builtin::messaging::dto::AgentConfig> {
+    ) -> anyhow::Result<Arc<crate::agents::subagent_runtime_impl::AgentPrompt>> {
         // ADR-019/Track B: enforce the per-principal agent capability before
         // loading any on-disk config. Missing authorization context and missing
         // grants are both denied.
@@ -675,8 +680,10 @@ pub struct TestSubagentRuntime {
 struct TestSubagentState {
     /// Capability grants (mirrors `Capabilities::with_grants`).
     grants: Vec<String>,
-    /// Registered agent configs by name.
-    configs: std::collections::HashMap<String, crate::tools::builtin::messaging::dto::AgentConfig>,
+    /// Registered agent prompts by name. Sprint 8 Commit 4 switched
+    /// from the mirror `BuiltinAgentConfig` DTO to `Arc<AgentPrompt>`
+    /// (the workspace Markdown becomes the single source of truth).
+    configs: std::collections::HashMap<String, Arc<crate::agents::subagent_runtime_impl::AgentPrompt>>,
     /// Audit log of spawn events.
     audits: Vec<SpawnAuditEvent>,
     /// Phase 1: every `model_override` seen in
@@ -739,11 +746,13 @@ impl TestSubagentRuntime {
             .push(capability.into());
     }
 
-    /// Register an agent config (keyed by name).
+    /// Register an agent prompt (keyed by name). Sprint 8 Commit 4:
+    /// stores the workspace-loaded `Arc<AgentPrompt>` directly — no
+    /// `BuiltinAgentConfig` wrapping.
     pub fn register_agent(
         &self,
         name: impl Into<String>,
-        config: crate::tools::builtin::messaging::dto::AgentConfig,
+        config: Arc<crate::agents::subagent_runtime_impl::AgentPrompt>,
     ) {
         self.inner
             .lock()
@@ -863,7 +872,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         name: &str,
         _workspace: Option<&Path>,
         model_override: Option<&str>,
-    ) -> anyhow::Result<crate::tools::builtin::messaging::dto::AgentConfig> {
+    ) -> anyhow::Result<Arc<crate::agents::subagent_runtime_impl::AgentPrompt>> {
         let mut state = self
             .inner
             .lock()
@@ -877,7 +886,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             .configs
             .get(name)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Subagent type '{name}' not registered"))
+            .ok_or_else(|| anyhow::anyhow!("Agent template '{name}' not registered"))
     }
 
     async fn audit_spawn(&self, event: SpawnAuditEvent) {
@@ -966,7 +975,25 @@ impl SubagentRuntime for TestSubagentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::messaging::dto::AgentConfig;
+    // Sprint 8 Commit 4: tests build `Arc<AgentPrompt>` directly via
+    // the local helper, replacing the deleted `dto::AgentConfig`
+    // fixture shape. Body content is irrelevant to the test
+    // assertions; an empty body suffices.
+    use crate::agents::subagent_runtime_impl::{AgentPrompt, AgentPromptFrontmatter};
+    use std::path::PathBuf;
+
+    fn make_test_prompt(name: &str, description: Option<&str>) -> Arc<AgentPrompt> {
+        Arc::new(AgentPrompt {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/tmp/agents/{name}/AGENT.md")),
+            frontmatter: AgentPromptFrontmatter {
+                name: Some(name.to_string()),
+                description: description.map(str::to_string),
+                color: None,
+            },
+            body: format!("You are {name}."),
+        })
+    }
 
     #[tokio::test]
     async fn test_agent_state_registry_allows_enabled_subagent() {
@@ -974,11 +1001,7 @@ mod tests {
         runtime.grant("agent:writer");
         runtime.register_agent(
             "writer",
-            AgentConfig {
-                name: "writer".into(),
-                description: Some("writer agent".into()),
-                ..Default::default()
-            },
+            make_test_prompt("writer", Some("writer agent")),
         );
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
@@ -1013,10 +1036,7 @@ mod tests {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.register_agent(
             "writer",
-            AgentConfig {
-                name: "writer".into(),
-                ..Default::default()
-            },
+            make_test_prompt("writer", None),
         );
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
@@ -1344,10 +1364,7 @@ mod tests {
         runtime.grant("agent:writer");
         runtime.register_agent(
             "writer",
-            AgentConfig {
-                name: "writer".into(),
-                ..Default::default()
-            },
+            make_test_prompt("writer", None),
         );
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         // `:` is reserved for raw session ids — slugs refuse it
@@ -1409,10 +1426,7 @@ mod tests {
         runtime.grant("agent:writer");
         runtime.register_agent(
             "writer",
-            AgentConfig {
-                name: "writer".into(),
-                ..Default::default()
-            },
+            make_test_prompt("writer", None),
         );
         runtime.set_principal_id("test-principal");
 
@@ -1450,10 +1464,7 @@ mod tests {
         runtime.grant("agent:writer");
         runtime.register_agent(
             "writer",
-            AgentConfig {
-                name: "writer".into(),
-                ..Default::default()
-            },
+            make_test_prompt("writer", None),
         );
         runtime.set_principal_id("test-principal");
 
@@ -1507,10 +1518,7 @@ mod tests {
         runtime.grant("agent:writer");
         runtime.register_agent(
             "writer",
-            AgentConfig {
-                name: "writer".into(),
-                ..Default::default()
-            },
+            make_test_prompt("writer", None),
         );
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
@@ -1543,10 +1551,7 @@ mod tests {
         runtime.grant("agent:writer");
         runtime.register_agent(
             "writer",
-            AgentConfig {
-                name: "writer".into(),
-                ..Default::default()
-            },
+            make_test_prompt("writer", None),
         );
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);

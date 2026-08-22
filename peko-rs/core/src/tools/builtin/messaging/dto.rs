@@ -1,5 +1,5 @@
-//! Subagent DTOs lifted from root (`src/agents/{agent_config,
-//! subagent_error, subagent_executor, subagent_types}.rs` and
+//! Subagent DTOs lifted from root (`src/agents/{subagent_error,
+//! subagent_executor, subagent_types}.rs` and
 //! `src/extensions/framework/async_exec/executor/registry.rs`).
 //!
 //! Phase 10e hoists the **shapes** AgentTool needs through its
@@ -9,92 +9,19 @@
 //! that aren't built-in-tool territory. The DTOs are pure data;
 //! they can live alongside the tool.
 //!
+//! Sprint 8 Commit 4: the `AgentConfig` mirror DTO was deleted —
+//! `SubagentRuntime::resolve_agent_config` now returns
+//! `Arc<crate::agents::subagent_runtime_impl::AgentPrompt>` and
+//! `SpawnRequest.subagent_config` carries the same. The workspace
+//! Markdown is the single source of truth; `enable_*_tools` reads
+//! were dropped in Commit 3.
+//!
 //! Root re-exports each type via `pub use crate::tools::builtin::messaging::...;`
 //! so existing `crate::agents::agent_config::AgentConfig`,
 //! `crate::agents::subagent_error::SpawnError`, and
 //! `crate::agents::subagent_types::SubagentRunView` paths keep working.
 
-// ─── AgentConfig (lifted from src/agents/agent_config.rs) ──────────
-
 use serde::{Deserialize, Serialize};
-
-/// Agent configuration
-///
-/// Mirrors root's `crate::agents::agent_config::AgentConfig`.
-/// `subject_wire_id` (the helper that returned the principal wire ID)
-/// moved into a root-side free function (`root_agent_wire_id`) because
-/// it depends on `crate::auth::Subject::principal_wire_id` — root-only.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    /// Unique identifier (DID will be generated from this)
-    pub name: String,
-    /// Human-readable description
-    pub description: Option<String>,
-    /// The agent's system prompt template (Markdown).
-    pub prompt: Option<String>,
-    /// Per-agent stable identifier (DID).
-    #[serde(default)]
-    pub agent_did: Option<String>,
-    /// Whether the planning-todo family is enabled.
-    ///
-    /// Sprint 8 Commit 3: the spawn-path read of this field was
-    /// dropped on the root side (every reachable Agent defaults it
-    /// to `true` and the read only added noise). Retained here for
-    /// fixture shape parity with root's `AgentConfig`; Commit 4
-    /// deletes this whole DTO in favor of `Arc<AgentPrompt>`.
-    #[serde(default = "default_true")]
-    #[allow(dead_code)] // fixture-shape parity with root AgentConfig; deleted in Commit 4
-    pub enable_task_tools: bool,
-    /// Whether the async execution family is enabled.
-    ///
-    /// Sprint 8 Commit 3: same as `enable_task_tools` above.
-    #[serde(default = "default_true")]
-    #[allow(dead_code)] // fixture-shape parity with root AgentConfig; deleted in Commit 4
-    pub enable_async_tools: bool,
-    /// F35 — whether the synthetic `__tool_search` stub is registered.
-    #[serde(default)]
-    pub enable_tool_search: bool,
-    /// Phase 2 of `feature/multi-model-subagents`: whether the
-    /// `model_list` builtin is registered. Mirrors
-    /// `crate::agents::agent_config::AgentConfig::enable_model_list`.
-    #[serde(default = "default_true")]
-    pub enable_model_list: bool,
-    /// Channel that triggered this agent's LLM calls.
-    #[serde(default)]
-    pub channel: Option<String>,
-    /// Thinking level for the model.
-    #[serde(default)]
-    pub thinking_level: Option<String>,
-    /// Whether this agent runs inside an isolated sandbox.
-    #[serde(default)]
-    pub sandbox_enabled: bool,
-    /// Configured model aliases.
-    #[serde(default)]
-    pub model_aliases: Vec<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            name: "unnamed-agent".to_string(),
-            description: None,
-            prompt: None,
-            agent_did: None,
-            enable_task_tools: true,
-            enable_async_tools: true,
-            enable_tool_search: false,
-            enable_model_list: true,
-            channel: None,
-            thinking_level: None,
-            sandbox_enabled: false,
-            model_aliases: Vec::new(),
-        }
-    }
-}
 
 // ─── SpawnError (lifted from src/agents/subagent_error.rs) ─────────
 
