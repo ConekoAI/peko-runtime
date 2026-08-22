@@ -60,7 +60,7 @@ impl std::fmt::Debug for StarterContext {
 /// and launch its background runtime via BackgroundRuntimeManager.
 #[async_trait::async_trait]
 pub trait ExtensionRuntimeStarter: Send + Sync + std::fmt::Debug {
-    /// The extension type this starter handles (e.g., "gateway", "mcp")
+    /// The extension type this starter handles (e.g., "mcp")
     fn extension_type(&self) -> &'static str;
 
     /// Start the background runtime for the given extension.
