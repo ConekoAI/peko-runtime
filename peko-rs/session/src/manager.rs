@@ -1010,18 +1010,6 @@ impl SessionManager {
             .await
     }
 
-    /// Route to a specific agent
-    pub async fn route_to_agent(
-        &mut self,
-        agent: &str,
-        _peer: &Subject,
-        channel_type: ChannelType,
-        channel_id: &str,
-    ) -> Result<ResolvedSession> {
-        self.resolve_session(agent, channel_type, channel_id, None, false)
-            .await
-    }
-
     /// Create a spawn session
     pub async fn spawn_session(
         &mut self,

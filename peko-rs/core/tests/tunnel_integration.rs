@@ -358,7 +358,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
             transport_preference: None,
-            runtime_direct_endpoint: None,
+            // B5: `runtime_direct_endpoint` field dropped from payload.
         },
     };
     write
@@ -586,7 +586,7 @@ async fn test_instance_announce_publishes_transport_fields() {
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
             transport_preference: Some(TransportPreference::Direct),
-            runtime_direct_endpoint: Some("wss://example.com:11436".to_string()),
+            // B5: `runtime_direct_endpoint` field dropped from payload.
         },
     };
     write

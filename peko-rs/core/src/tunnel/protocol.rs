@@ -112,13 +112,11 @@ pub struct InstanceAnnouncePayload {
     /// it from directory resolution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_preference: Option<crate::tunnel::known_runtimes::TransportPreference>,
-    /// Runtime-level advertised direct endpoint for inbound direct
-    /// cross-runtime connections (e.g. `wss://203.0.113.4:11436`).
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        rename = "runtimeDirectEndpoint"
-    )]
-    pub runtime_direct_endpoint: Option<String>,
+    // B5 cleanup: `runtime_direct_endpoint` was retired — direct
+    // cross-runtime transport was removed (all cross-runtime traffic
+    // flows through the tunnel relay, not a direct endpoint). Field
+    // dropped from the struct, host accessor dropped, and announce
+    // sites stopped reading it.
 }
 
 /// Payload for `instance_heartbeat` messages.
@@ -128,13 +126,6 @@ pub struct InstanceHeartbeatPayload {
     pub id: String,
     pub status: InstanceStatus,
     pub timestamp: String,
-}
-
-/// Payload for `instance_deregister` messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstanceDeregisterPayload {
-    pub id: String,
 }
 
 /// Payload for `exposure_update` messages.
@@ -269,10 +260,6 @@ pub enum TunnelMessage {
     /// Instance heartbeat
     #[serde(rename = "instance_heartbeat")]
     InstanceHeartbeat { payload: InstanceHeartbeatPayload },
-
-    /// Instance deregistration
-    #[serde(rename = "instance_deregister")]
-    InstanceDeregister { payload: InstanceDeregisterPayload },
 
     /// Exposure update
     #[serde(rename = "exposure_update")]
@@ -602,7 +589,7 @@ mod tests {
                 transport_preference: Some(
                     crate::tunnel::known_runtimes::TransportPreference::Direct,
                 ),
-                runtime_direct_endpoint: Some("wss://203.0.113.4:11436".to_string()),
+                // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -627,11 +614,6 @@ mod tests {
             "Expected transportPreference in wire form, got: {}",
             json
         );
-        assert!(
-            json.contains("\"runtimeDirectEndpoint\":\"wss://203.0.113.4:11436\""),
-            "Expected runtimeDirectEndpoint in wire form, got: {}",
-            json
-        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
@@ -641,10 +623,6 @@ mod tests {
                 assert_eq!(
                     payload.transport_preference,
                     Some(crate::tunnel::known_runtimes::TransportPreference::Direct)
-                );
-                assert_eq!(
-                    payload.runtime_direct_endpoint,
-                    Some("wss://203.0.113.4:11436".to_string())
                 );
             }
             _ => panic!("Expected InstanceAnnounce"),
@@ -668,7 +646,7 @@ mod tests {
                 capabilities: None,
                 metadata: None,
                 transport_preference: None,
-                runtime_direct_endpoint: None,
+                // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -678,16 +656,11 @@ mod tests {
             !json.contains("transportPreference"),
             "None transport_preference should be skipped"
         );
-        assert!(
-            !json.contains("runtimeDirectEndpoint"),
-            "None runtime_direct_endpoint should be skipped"
-        );
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
             TunnelMessage::InstanceAnnounce { payload } => {
                 assert_eq!(payload.bundle_ref, None);
                 assert_eq!(payload.transport_preference, None);
-                assert_eq!(payload.runtime_direct_endpoint, None);
             }
             _ => panic!("Expected InstanceAnnounce"),
         }
@@ -714,7 +687,7 @@ mod tests {
                 capabilities: None,
                 metadata: None,
                 transport_preference: None,
-                runtime_direct_endpoint: None,
+                // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -756,7 +729,7 @@ mod tests {
                 capabilities: None,
                 metadata: None,
                 transport_preference: None,
-                runtime_direct_endpoint: None,
+                // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
         let bytes = msg.to_bytes().unwrap();

@@ -394,7 +394,7 @@ impl TunnelDispatcher {
                 capabilities: None,
                 metadata: None,
                 transport_preference: Some(transport_preference),
-                runtime_direct_endpoint: self.host.runtime_direct_endpoint(),
+                // B5: `runtime_direct_endpoint` field dropped from payload.
             };
 
             // Seed local instance state cache with default Online status and the
@@ -475,7 +475,7 @@ impl TunnelDispatcher {
             capabilities: None,
             metadata: None,
             transport_preference: Some(transport_preference),
-            runtime_direct_endpoint: self.host.runtime_direct_endpoint(),
+            // B5: `runtime_direct_endpoint` field dropped from payload.
         };
 
         // Seed local instance state cache
@@ -1139,7 +1139,7 @@ impl TunnelDispatcher {
                         capabilities: None,
                         metadata: None,
                         transport_preference: Some(transport_preference),
-                        runtime_direct_endpoint: self.host.runtime_direct_endpoint(),
+                        // B5: `runtime_direct_endpoint` field dropped from payload.
                     };
                     if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce {
                         payload: announce_payload,

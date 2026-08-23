@@ -194,13 +194,8 @@ pub struct ChannelContext {
 #[derive(Debug, Clone, Copy)]
 pub enum ChannelKind {
     Cli,
-    Http,
     Hub,
-    A2a,
-    P2p, // principal-to-principal
-    Webhook,
     Cron,
-    FileWatch,
     /// Principal-self trunk turn (Phase 3, 2026-08-15): no external
     /// peer exists — the turn runs in the principal's forever-continuous
     /// self session `root:self` (see `routers::root::trunk_session_id`).

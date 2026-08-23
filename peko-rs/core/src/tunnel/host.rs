@@ -71,8 +71,10 @@ pub trait TunnelHost: Send + Sync {
     /// Human-readable runtime display name for announce payloads.
     fn runtime_display_name(&self) -> String;
 
-    /// Advertised direct endpoint, if one is configured and trusted.
-    fn runtime_direct_endpoint(&self) -> Option<String>;
+    // B5 cleanup: `runtime_direct_endpoint` was retired — direct
+    // cross-runtime transport was removed (all cross-runtime traffic
+    // flows through the tunnel relay). The trait accessor and all
+    // impls are deleted.
 
     /// JWT validator for verifying PekoHub-proxied caller identity.
     fn jwt_validator(&self) -> Option<JwtValidator>;

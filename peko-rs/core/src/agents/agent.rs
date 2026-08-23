@@ -1996,14 +1996,19 @@ impl Agent {
         Arc::clone(&self.session_manager)
     }
 
-    /// Resolve a session for a peer and channel
+    /// Resolve a session for a peer through the legacy `ChannelType` +
+    /// `route` indirection. Production paths now flow through
+    /// `PrincipalManager::receive_*` with `ChannelKind` (see
+    /// `principal/router.rs`); `Agent::resolve_session` /
+    /// `resolve_default_session` are kept alive only because the
+    /// test suite uses them as scaffolding (12+ sites in
+    /// `agents/tests/subagent_integration_tests.rs`).
     ///
-    /// This is the primary method for channels to get a session.
-    /// It ensures cross-channel context sharing for the same peer.
-    ///
-    /// Returns a `ResolvedSession` containing both the metadata DTO (`context`)
-    /// and the operations handle (`handle`). Use `context` for read-only metadata
-    /// and `handle` for all session operations.
+    /// B5 cleanup note: `ChannelType` and `SessionManager::route` were
+    /// scoped out of this PR — they are embedded in
+    /// `OverlayType::Channel(ChannelType)` and `SessionContext.channel_type`
+    /// and removing them requires a coordinated refactor of those
+    /// types. Tracked for a follow-up.
     pub async fn resolve_session(
         &self,
         peer: &Subject,

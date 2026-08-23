@@ -2587,7 +2587,7 @@ mod tests {
 
         let peer = Subject::Principal("did:key:z6MkA2aPeerExample".to_string().into());
         let channel = ChannelContext {
-            kind: ChannelKind::A2a,
+            kind: ChannelKind::Cli,
             streaming: false,
         };
         let response = manager
