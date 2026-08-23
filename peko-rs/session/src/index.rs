@@ -670,30 +670,6 @@ impl SessionIndex {
         Ok(())
     }
 
-    /// All peer keys whose routing entry currently references
-    /// `session_id` (in `session_ids` or as `active_session_id`). Used
-    /// by `SessionManager::set_archived` so an archived session is
-    /// scrubbed from every peer that knew about it.
-    #[must_use]
-    pub async fn peer_keys_with_session(&mut self, session_id: &str) -> Vec<String> {
-        let Ok(peers) = self.load_peers().await else {
-            return Vec::new();
-        };
-        peers
-            .peers
-            .iter()
-            .filter_map(|(k, p)| {
-                let in_list = p.session_ids.iter().any(|s| s == session_id);
-                let is_active = p.active_session_id.as_deref() == Some(session_id);
-                if in_list || is_active {
-                    Some(k.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     /// Create new session for peer (O(1))
     pub async fn create_for_peer(&mut self, entry: SessionEntry, peer_key: &str) -> Result<()> {
         let session_id = entry.session_id.to_string();

@@ -11,10 +11,7 @@
 //! 2. Re-exports the lifted DTOs (`AgentConfig`, `ExecutionConfig`,
 //!    `SpawnError`, `SubagentRunView`, `SpawnCleanupPolicy`,
 //!    `CompletedRun`, `SubagentResult`).
-//! 3. Defines [`DynamicSessionKeyProvider`] (root-only: the daemon
-//!    mutates the session key at runtime, which is a runtime concern
-//!    the built-in crate intentionally does not own).
-//! 4. Provides the executor-typed constructor shim [`new_agent_tool`]
+//! 3. Provides the executor-typed constructor shim [`new_agent_tool`]
 //!    that wraps an `Arc<SubagentExecutor>` in a
 //!    [`SubagentExecutorRuntime`] adapter before handing it to the
 //!    built-in `AgentTool`. Sprint 7 collapsed the previous
@@ -24,6 +21,12 @@
 //!    session id is read from `ToolContext::session_id` on the
 //!    production path (the runtime port's `session_id()` accessor is
 //!    the fallback).
+//!
+//! B4 cleanup: [`DynamicSessionKeyProvider`] was deleted — only
+//! `set_session_key` was called (once per subagent, in
+//! `subagent_executor.rs`); the `get_session_key` reader had no
+//! callers. `ToolContext::session_id` is the canonical production
+//! session-key source.
 
 use std::sync::Arc;
 
@@ -58,50 +61,4 @@ pub fn runtime_from_executor(executor: Arc<SubagentExecutor>) -> SharedSubagentR
 #[must_use]
 pub fn new_agent_tool(executor: Arc<SubagentExecutor>) -> AgentTool {
     AgentTool::new(runtime_from_executor(executor))
-}
-
-// ─── DynamicSessionKeyProvider (root-only runtime concern) ────────
-
-/// Dynamic session key provider that can be updated at runtime.
-///
-/// Root-owned because the daemon mutates session keys as it processes
-/// messages from different sessions. The built-in crate intentionally
-/// does not own this — it is one of the few runtime concerns that
-/// still legitimately belongs in root after the Phase 10e extraction.
-///
-/// Sprint 7: the `AgentTool` no longer reads session keys through this
-/// provider on the production path (`ToolContext::session_id` is the
-/// canonical source); the type is retained because
-/// `peko::agents::Agent` still tracks the "current session id" in
-/// one of these cells (via its `session_key_provider()` accessor)
-/// for orchestrator-level bookkeeping that survives a `ToolContext`
-/// roundtrip.
-#[derive(Clone)]
-pub struct DynamicSessionKeyProvider {
-    session_key: Arc<std::sync::RwLock<String>>,
-}
-
-impl DynamicSessionKeyProvider {
-    #[must_use]
-    pub fn new(initial_key: impl Into<String>) -> Self {
-        Self {
-            session_key: Arc::new(std::sync::RwLock::new(initial_key.into())),
-        }
-    }
-
-    /// Update the current session key
-    pub fn set_session_key(&self, key: impl Into<String>) {
-        if let Ok(mut guard) = self.session_key.write() {
-            *guard = key.into();
-        }
-    }
-
-    /// Get the current session key
-    #[must_use]
-    pub fn get_session_key(&self) -> String {
-        self.session_key
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_default()
-    }
 }

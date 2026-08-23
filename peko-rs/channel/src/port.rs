@@ -114,9 +114,10 @@ pub trait ChannelPort: Send + Sync + 'static {
     }
 
     /// Remove `principal` from the channel membership set. Emits a
-    /// `MemberLeft` event. Returns [`ChannelError::NotEmpty`] only if
-    /// the implementation wishes to forbid leaving with other members
-    /// present (PR-1: leaves are always permitted).
+    /// `MemberLeft` event. PR-1: leaves are always permitted;
+    /// [`ChannelError::NotEmpty`] is reserved for future implementations
+    /// that may forbid leaving with other members present — no current
+    /// adapter raises it (see B5 dead-surface cleanup).
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()>;
 
     /// All current members of the channel.

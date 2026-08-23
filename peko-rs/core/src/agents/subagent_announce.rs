@@ -1,64 +1,10 @@
-//! Subagent Result Announcement
+//! Subagent system prompt + task-message builders.
 //!
-//! Handles announcing subagent results back to parent sessions.
-//! When a subagent completes, its result is added as a message to the parent's base session.
-
-use crate::agents::subagent_types::SubagentRunView;
-use crate::extensions::framework::async_exec::executor::AsyncTaskStatus as SubagentStatus;
-
-/// Format a subagent result as an announcement message
-#[must_use]
-pub fn format_announcement(run: &SubagentRunView) -> String {
-    let label_part = run
-        .label
-        .as_ref()
-        .map(|l| format!(" [{l}]"))
-        .unwrap_or_default();
-
-    let header = format!("## Subagent Result{label_part}\n\n");
-
-    let status_emoji = match &run.status {
-        SubagentStatus::Completed { .. } => "✅",
-        SubagentStatus::Failed { .. } => "❌",
-        SubagentStatus::Cancelled => "🚫",
-        SubagentStatus::TimedOut { .. } => "⏱️",
-        SubagentStatus::Running => "🔄",
-        _ => "❓",
-    };
-
-    let status_line = format!("**Status:** {} {}\n\n", status_emoji, run.status.as_str());
-
-    let content = match &run.result {
-        Some(result) => match &run.status {
-            SubagentStatus::Completed { .. } => {
-                if let Some(output) = &result.output {
-                    format!("**Output:**\n\n{output}\n")
-                } else {
-                    "**Output:** (no content)\n".to_string()
-                }
-            }
-            SubagentStatus::Failed { .. } => {
-                if let Some(error) = &result.error {
-                    format!("**Error:** {error}\n")
-                } else {
-                    "**Error:** Unknown error occurred\n".to_string()
-                }
-            }
-            SubagentStatus::TimedOut { .. } => "**Error:** Subagent timed out\n".to_string(),
-            SubagentStatus::Cancelled => "**Info:** Subagent was cancelled\n".to_string(),
-            SubagentStatus::Running => "**Info:** Subagent is still running\n".to_string(),
-            _ => "**Info:** Unknown status\n".to_string(),
-        },
-        None => "**Info:** No result available\n".to_string(),
-    };
-
-    let metadata = format!(
-        "\n---\n*Run ID: `{}` | Child Session: `{}`*",
-        run.run_id, run.child_session_key
-    );
-
-    format!("{header}{status_line}{content}{metadata}")
-}
+//! B4 cleanup: `format_announcement` was removed — its only consumer
+//! was the deleted announcement-sender chain (B4 #17). Live
+//! consumers remain:
+//! - [`build_subagent_system_prompt`]
+//! - [`build_subagent_task_message`]
 
 /// Build a system prompt for a subagent
 ///
@@ -119,76 +65,6 @@ Remember: You are running as a subagent (depth {depth}/{max_depth}). Results aut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::subagent_types::SubagentRunView;
-    use crate::extensions::framework::async_exec::executor::{
-        AsyncTaskStatus as SubagentStatus, SubagentResult,
-    };
-    use chrono::Utc;
-
-    fn make_test_view(status: SubagentStatus, result: Option<SubagentResult>) -> SubagentRunView {
-        SubagentRunView {
-            run_id: "run_123".to_string(),
-            child_session_key: "child_key".to_string(),
-            parent_session_key: "parent_key".to_string(),
-            task: "Test task".to_string(),
-            status,
-            started_at: Utc::now(),
-            completed_at: Some(Utc::now()),
-            cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
-            label: Some("my_label".to_string()),
-            result,
-            depth: 1,
-            announce_completion: true,
-        }
-    }
-
-    #[test]
-    fn test_format_announcement_completed() {
-        let run = make_test_view(
-            SubagentStatus::Completed {
-                result: peko_tools_core::ToolResult::success(serde_json::json!({})),
-            },
-            Some(SubagentResult {
-                status: SubagentStatus::Completed {
-                    result: peko_tools_core::ToolResult::success(serde_json::json!({})),
-                },
-                output: Some("Success output".to_string()),
-                error: None,
-                token_usage: Some((10, 20, 30)),
-                completed_at: Utc::now(),
-            }),
-        );
-
-        let announcement = format_announcement(&run);
-        assert!(announcement.contains("Subagent Result [my_label]"));
-        assert!(announcement.contains("✅"));
-        assert!(announcement.contains("completed"));
-        assert!(announcement.contains("Success output"));
-        assert!(announcement.contains("run_123"));
-    }
-
-    #[test]
-    fn test_format_announcement_failed() {
-        let run = make_test_view(
-            SubagentStatus::Failed {
-                error: "Something went wrong".to_string(),
-            },
-            Some(SubagentResult {
-                status: SubagentStatus::Failed {
-                    error: "Something went wrong".to_string(),
-                },
-                output: None,
-                error: Some("Something went wrong".to_string()),
-                token_usage: None,
-                completed_at: Utc::now(),
-            }),
-        );
-
-        let announcement = format_announcement(&run);
-        assert!(announcement.contains("❌"));
-        assert!(announcement.contains("failed"));
-        assert!(announcement.contains("Something went wrong"));
-    }
 
     #[test]
     fn test_build_subagent_system_prompt() {

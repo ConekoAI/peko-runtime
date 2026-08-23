@@ -16,9 +16,7 @@ use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
-use peko_cron::{
-    CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, IdleDetector,
-};
+use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, IdleDetector};
 use peko_observability::Observability;
 use peko_subject::PrincipalId;
 use peko_tools_core::ToolResult;
@@ -27,14 +25,6 @@ use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-
-/// Daemon-local status snapshot updated by the cron engine.
-#[derive(Debug, Default, Clone)]
-pub struct CronStatus {
-    pub jobs_checked: u64,
-    pub jobs_executed: u64,
-    pub last_check: Option<chrono::DateTime<Utc>>,
-}
 
 /// Self-contained cron subsystem.
 #[derive(Clone)]
@@ -72,7 +62,6 @@ pub struct CronEngine {
     /// in-flight `AgenticLoop` drains.
     async_executor: Arc<AsyncExecutor>,
     extension_core: Weak<ExtensionCore>,
-    status: Arc<Mutex<CronStatus>>,
 }
 
 impl CronEngine {
@@ -105,13 +94,7 @@ impl CronEngine {
             principal_manager,
             async_executor,
             extension_core,
-            status: Arc::new(Mutex::new(CronStatus::default())),
         }
-    }
-
-    /// Snapshot of current cron status.
-    pub async fn status(&self) -> CronStatus {
-        self.status.lock().await.clone()
     }
 
     /// Look up (or lazily construct) the `CronScheduler` for a given
@@ -222,12 +205,6 @@ impl CronEngine {
     /// Check for time-based due jobs and execute them.
     pub async fn check_and_run(&self) -> Result<()> {
         let now = Utc::now();
-
-        {
-            let mut st = self.status.lock().await;
-            st.jobs_checked += 1;
-            st.last_check = Some(now);
-        }
 
         // Phase A: aggregate due jobs across all loaded
         // principals. Each principal's scheduler points at its
@@ -514,11 +491,6 @@ impl CronEngine {
             scheduler.delete_job(&job.id)?;
         }
 
-        {
-            let mut st = self.status.lock().await;
-            st.jobs_executed += 1;
-        }
-
         info!("✅ Job '{}' completed with status: {}", job.name, status);
         Ok(())
     }
@@ -597,18 +569,6 @@ impl CronEngine {
                 Some(format!("Principal trunk execution error: {e}")),
             )),
         }
-    }
-
-    /// The messenger used for note delivery: the daemon-installed
-    /// global when present, else one constructed from the engine's own
-    /// `PrincipalManager` (tests never install the global).
-    fn messenger(&self) -> Option<Arc<dyn crate::principal::messenger::PeerMessenger>> {
-        crate::principal::messenger::global_messenger().or_else(|| {
-            self.principal_manager.clone().map(|pm| {
-                Arc::new(crate::principal::messenger::PrincipalPeerMessenger::new(pm))
-                    as Arc<dyn crate::principal::messenger::PeerMessenger>
-            })
-        })
     }
 
     // ------------------------------------------------------------------
@@ -1005,10 +965,7 @@ mod tests {
     #[tokio::test]
     async fn test_cron_engine_creation() {
         let tmp = TempDir::new().unwrap();
-        let engine = engine_from_tmp(&tmp);
-        let status = engine.status().await;
-        assert_eq!(status.jobs_checked, 0);
-        assert_eq!(status.jobs_executed, 0);
+        let _engine = engine_from_tmp(&tmp);
     }
 
     #[tokio::test]
@@ -1016,8 +973,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let engine = engine_from_tmp(&tmp);
         assert!(engine.check_and_run().await.is_ok());
-        let status = engine.status().await;
-        assert_eq!(status.jobs_checked, 1);
     }
 
     #[tokio::test]
@@ -1084,19 +1039,19 @@ mod tests {
         engine.check_and_run().await.unwrap();
 
         // PR 2: per-job execution is now detached onto a tokio task,
-        // so poll the status counter rather than asserting
+        // so poll the run history rather than asserting
         // synchronously. 5s budget is more than enough for the
         // in-process test setup.
-        let mut jobs_executed = 0;
+        let mut success = false;
         for _ in 0..50 {
-            let status = engine.status().await;
-            jobs_executed = status.jobs_executed;
-            if jobs_executed >= 1 {
+            let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+            if runs.iter().any(|r| r.status == "success") {
+                success = true;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        assert_eq!(jobs_executed, 1);
+        assert!(success, "expected the due Send job to land a success row");
 
         let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         let success = runs.iter().find(|r| r.status == "success");

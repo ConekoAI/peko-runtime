@@ -52,15 +52,16 @@ pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
 // Phase 7.4 lifted the rest of `src/session/` (events.rs, jsonl.rs,
 // message.rs, message_conversion.rs, metadata.rs,
 // metadata_controller.rs, key.rs, subagent_key.rs, index.rs,
-// directory.rs, recovery.rs, sync.rs, overlay.rs, spawn.rs,
+// sync.rs, overlay.rs, spawn.rs,
 // todos.rs, todo_runtime_impl.rs, session_runtime_impl.rs,
 // context.rs, test_config.rs, types.rs, unified.rs, manager.rs,
 // inbox_registry.rs, lock_utils.rs, maintenance.rs) into this crate.
 // Re-exports below preserve the historical `peko_session::X` paths.
+// (`directory.rs` + `recovery.rs` were lifted and then retired in B3
+// cleanup — see the cleanup phase index in AGENTS.md.)
 pub mod context;
 pub mod default_path_resolver;
 pub use default_path_resolver::DefaultPathResolver;
-pub mod directory;
 pub mod events;
 pub mod id;
 pub mod inbox_registry;
@@ -76,7 +77,6 @@ pub mod metadata;
 pub mod metadata_controller;
 pub mod overlay;
 pub mod path;
-pub mod recovery;
 pub mod session_core;
 pub mod session_core_impl;
 pub mod session_info;
@@ -88,7 +88,6 @@ pub mod todos;
 pub mod unified;
 
 pub use context::SessionContext;
-pub use directory::SessionDirectory;
 pub use events::{
     generate_event_id, generate_message_id, EventEnvelope, MessageSource, RoleMetadata,
     SessionCreatedEvent, SessionEndedEvent, SessionEvent, SessionMessage, SessionTrigger,
@@ -115,7 +114,6 @@ pub use manager::{OverlayRef, SessionCreateOptions, SessionHandle, SessionManage
 pub use metadata::{ReconciliationResult, SessionMetadata};
 pub use metadata_controller::MetadataController;
 pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOverlay};
-pub use recovery::{RecoveryReport, SessionRecovery};
 pub use session_core::{SessionCore, SessionView};
 pub use session_info::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
@@ -127,7 +125,7 @@ pub use subagent_key::{
     get_key_depth, get_parent_key, is_subagent_key, parse_subagent_key,
 };
 pub use sync::SyncSessionStorage;
-pub use test_config::{lock_timeout_ms, max_sessions, prune_duration, rotate_bytes};
+pub use test_config::rotate_bytes;
 pub use todos::{Todo, TodoStatus, TodoStorage};
 pub use unified::Session;
 

@@ -255,17 +255,25 @@ pub fn err_run_active(target: &str) -> anyhow::Error {
 }
 
 /// `compact` on an archived session.
+///
+/// B3 cleanup: the archived-write chain (`set_archived` /
+/// `unarchive`) was retired end-to-end. Archived sessions can no
+/// longer be restored — the operator's recourse is to create a new
+/// session, which is what the error text directs the user to do.
 pub fn err_compact_archived(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "cannot compact archived session '{target}': no future run will consume the request — \
-         unarchive it first with action 'unarchive'"
+        "error: session is archived: archived sessions are not currently restorable; \
+         create a new session (target: '{target}')"
     )
 }
 
-/// `resume` of an archived session.
+/// `resume` of an archived session. See [`err_compact_archived`] for
+/// the B3 rationale on why this refuses rather than offering an
+/// "unarchive" path.
 pub fn err_resume_archived(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "cannot resume archived session '{target}' — unarchive it first with action 'unarchive'"
+        "error: session is archived: archived sessions are not currently restorable; \
+         create a new session (target: '{target}')"
     )
 }
 

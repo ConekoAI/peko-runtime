@@ -5,7 +5,6 @@ use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
-use crate::tools::builtin::DynamicSessionKeyProvider;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
 use peko_engine::state::StateMachine;
@@ -50,8 +49,6 @@ pub struct Agent {
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Subagent executor for background task execution
     subagent_executor: Arc<SubagentExecutor>,
-    /// Dynamic session key provider for `Agent` tool
-    session_key_provider: Arc<DynamicSessionKeyProvider>,
     /// Current session ID for `session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Daemon-global extension core shared by every agent in the process.
@@ -163,7 +160,6 @@ impl Clone for Agent {
             llm_resolver: self.llm_resolver.clone(),
             session_manager: Arc::clone(&self.session_manager),
             subagent_executor: Arc::clone(&self.subagent_executor),
-            session_key_provider: Arc::clone(&self.session_key_provider),
             current_session_id: Arc::clone(&self.current_session_id),
             extension_core: Arc::clone(&self.extension_core),
             inbox_registry: self.inbox_registry.clone(),
@@ -651,11 +647,10 @@ impl Agent {
             None => Arc::new(subagent_executor_base),
         };
 
-        // Initialize session key provider for Agent tool
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
+        // B4 cleanup: `DynamicSessionKeyProvider` was removed — only
+        // `set_session_key` was called once per subagent; `get_session_key`
+        // had no readers. `ToolContext::session_id` is the canonical
+        // production session-key source.
 
         let agent = Self {
             config,
@@ -666,7 +661,6 @@ impl Agent {
             llm_resolver,
             session_manager,
             subagent_executor,
-            session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry,
@@ -1069,11 +1063,6 @@ impl Agent {
         };
         let llm_resolver: Option<Arc<peko_providers::LlmResolver>> = None;
 
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
-
         // Subagents share the daemon-global ExtensionCore with every other
         // agent in the process. There is no per-principal core; per-principal
         // tool visibility is enforced by the per-call `capabilities`
@@ -1094,7 +1083,6 @@ impl Agent {
             llm_resolver,
             session_manager,
             subagent_executor,
-            session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
@@ -1241,10 +1229,12 @@ impl Agent {
     }
 
     /// Get the session key provider for Agent tool.
-    #[must_use]
-    pub fn session_key_provider(&self) -> Arc<DynamicSessionKeyProvider> {
-        Arc::clone(&self.session_key_provider)
-    }
+    ///
+    /// B4 cleanup: this accessor (and the `DynamicSessionKeyProvider`
+    /// it returned) was deleted — only `set_session_key` was called
+    /// once per subagent (in `subagent_executor.rs`); the reader had
+    /// no callers. `ToolContext::session_id` is the canonical
+    /// production session-key source.
 
     /// Execute a task with the LLM provider using the unified callback API.
     ///
@@ -1390,10 +1380,9 @@ impl Agent {
         }
 
         let agent_arc = Arc::new(self.clone());
-        // Capture session ID into both the agent's cell (used by the
-        // session tool) and the agent's session_key_provider cell, then
-        // pass the session_id to the per-call wiring. Unlike
-        // `Agent::execute`, the session already exists here, so we can
+        // Capture session ID into the agent's cell (used by the
+        // session tool) and pass the session_id to the per-call wiring.
+        // Unlike `Agent::execute`, the session already exists here, so we can
         // push a real id onto the core before the loop starts — see the
         // session-key flow comment in `Agent::execute` for the full
         // picture across the three `execute_*` paths.
@@ -2007,14 +1996,19 @@ impl Agent {
         Arc::clone(&self.session_manager)
     }
 
-    /// Resolve a session for a peer and channel
+    /// Resolve a session for a peer through the legacy `ChannelType` +
+    /// `route` indirection. Production paths now flow through
+    /// `PrincipalManager::receive_*` with `ChannelKind` (see
+    /// `principal/router.rs`); `Agent::resolve_session` /
+    /// `resolve_default_session` are kept alive only because the
+    /// test suite uses them as scaffolding (12+ sites in
+    /// `agents/tests/subagent_integration_tests.rs`).
     ///
-    /// This is the primary method for channels to get a session.
-    /// It ensures cross-channel context sharing for the same peer.
-    ///
-    /// Returns a `ResolvedSession` containing both the metadata DTO (`context`)
-    /// and the operations handle (`handle`). Use `context` for read-only metadata
-    /// and `handle` for all session operations.
+    /// B5 cleanup note: `ChannelType` and `SessionManager::route` were
+    /// scoped out of this PR — they are embedded in
+    /// `OverlayType::Channel(ChannelType)` and `SessionContext.channel_type`
+    /// and removing them requires a coordinated refactor of those
+    /// types. Tracked for a follow-up.
     pub async fn resolve_session(
         &self,
         peer: &Subject,
@@ -2038,8 +2032,8 @@ impl Agent {
 
     /// Create a spawn/subagent session
     ///
-    /// Creates a new spawn overlay for isolated task execution.
-    /// Use `isolated=true` for tasks that should not share context.
+    /// Creates a new spawn overlay that shares context with the parent
+    /// (parent's context is copied into the child session).
     ///
     /// Returns a `ResolvedSession` containing both the metadata DTO (`context`)
     /// and the operations handle (`handle`).
@@ -2047,7 +2041,6 @@ impl Agent {
         &self,
         peer: &Subject,
         task: &str,
-        isolated: bool,
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
     ) -> Result<ResolvedSession> {
@@ -2057,186 +2050,19 @@ impl Agent {
                 &self.config.name,
                 peer,
                 task,
-                isolated,
                 parent_session_key,
                 timeout_seconds,
             )
             .await
     }
 
-    // Session management commands (CLI integration)
-
-    /// Create a new session (/new command)
-    pub async fn session_new(&self, peer: &Subject) -> Result<String> {
-        use peko_session::manager::SessionCreateOptions;
-        let mut manager = self.session_manager.write().await;
-        let options = SessionCreateOptions::new().with_trigger("user");
-        let handle = manager
-            .create_session(&self.config.name, peer, options)
-            .await?;
-        let session_id = handle.session_id().to_string();
-        info!("Created new session {} for peer {:?}", session_id, peer);
-        Ok(session_id)
-    }
-
-    /// Branch current session (/branch command)
-    pub async fn session_branch(&self, peer: &Subject, label: Option<String>) -> Result<String> {
-        let mut manager = self.session_manager.write().await;
-        let session_id = manager.branch_session(peer, label).await?;
-        info!("Branched session {} from peer {:?}", session_id, peer);
-        Ok(session_id)
-    }
-
-    /// Switch to a different session (/switch command)
-    pub async fn session_switch(&self, peer: &Subject, session_id: &str) -> Result<()> {
-        let mut manager = self.session_manager.write().await;
-        manager.switch_session(peer, session_id).await?;
-        info!("Switched peer {:?} to session {}", peer, session_id);
-        Ok(())
-    }
-
-    /// List all sessions for a peer (/sessions command)
-    pub async fn session_list(&self, peer: &Subject) -> Result<Vec<peko_session::SessionEntry>> {
-        let mut manager = self.session_manager.write().await;
-        let sessions = manager.list_sessions_for_peer(peer).await?;
-        Ok(sessions)
-    }
-
-    /// Format session list for display
-    #[must_use]
-    pub fn format_session_list(
-        &self,
-        sessions: &[peko_session::SessionEntry],
-        active_id: Option<&str>,
-    ) -> String {
-        if sessions.is_empty() {
-            return "No sessions found.".to_string();
-        }
-
-        let mut output = String::from("📁 Sessions:\n\n");
-
-        for (i, session) in sessions.iter().enumerate() {
-            let is_active = active_id.is_some_and(|id| id == session.session_id.as_str());
-            let marker = if is_active { "●" } else { "○" };
-            let label = session.title.as_deref().unwrap_or("unnamed");
-            let short_id = &session.session_id.as_str()[..8];
-
-            output.push_str(&format!("{} {}. {} ({})", marker, i + 1, label, short_id));
-
-            if let Some(parent) = session.parent_session_id {
-                let parent_str = parent.as_str();
-                let parent_short = &parent_str[..8];
-                output.push_str(&format!(" [branched from {}]", parent_short));
-            }
-
-            if is_active {
-                output.push_str(" ← active");
-            }
-
-            output.push('\n');
-        }
-
-        output.push_str("\nUse /switch <number> or /switch <session-id> to change session\n");
-        output
-    }
-
-    /// Process a session command and return (handled, response)
-    ///
-    /// Returns (true, response) if the command was handled
-    /// Returns (false, _) if not a command (should be processed as normal message)
-    pub async fn process_session_command(
-        &self,
-        peer: &Subject,
-        command: &str,
-    ) -> Result<(bool, String)> {
-        let parts: Vec<&str> = command.split_whitespace().collect();
-        if parts.is_empty() {
-            return Ok((false, String::new()));
-        }
-
-        match parts[0] {
-            "/new" => {
-                let session_id = self.session_new(peer).await?;
-                Ok((true, format!(
-                    "✨ Created new session!\n\nSession ID: {}\n\nYou can switch back to previous sessions with /sessions and /switch",
-                    &session_id[..8]
-                )))
-            }
-
-            "/branch" => {
-                let label = parts.get(1).map(std::string::ToString::to_string);
-                let session_id = self.session_branch(peer, label.clone()).await?;
-                let label_str = label.as_deref().unwrap_or("unnamed");
-                Ok((true, format!(
-                    "🌿 Branched new session from current!\n\nLabel: {}\nSession ID: {}\n\nThis session contains a copy of the current conversation.",
-                    label_str,
-                    &session_id[..8]
-                )))
-            }
-            "/switch" => {
-                if parts.len() < 2 {
-                    return Ok((true, "Usage: /switch <session-number> or /switch <session-id>\n\nUse /sessions to see available sessions.".to_string()));
-                }
-
-                let sessions = self.session_list(peer).await?;
-                let target = parts[1];
-
-                // Try to parse as index first (1-based)
-                let session_id = if let Ok(index) = target.parse::<usize>() {
-                    if index == 0 || index > sessions.len() {
-                        return Ok((true, format!("Invalid session number. Use /sessions to see available sessions (1-{}).", sessions.len())));
-                    }
-                    sessions[index - 1].session_id.clone()
-                } else {
-                    // Try as session ID (or partial)
-                    let target_lower = target.to_lowercase();
-                    sessions
-                        .iter()
-                        .find(|s| s.session_id.as_str().to_lowercase().starts_with(&target_lower))
-                        .map(|s| s.session_id.clone())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Session '{target}' not found. Use /sessions to see available sessions."
-                            )
-                        })?
-                };
-                let session_id_str = session_id.as_str().clone();
-
-                self.session_switch(peer, &session_id_str).await?;
-                Ok((true, format!(
-                    "↔️  Switched to session {}\n\nPrevious messages are now from the selected session context.",
-                    &session_id_str[..8]
-                )))
-            }
-            "/sessions" => {
-                let sessions = self.session_list(peer).await?;
-                let active_id = sessions
-                    .iter()
-                    .find(|s| {
-                        Some(s.session_id.as_str())
-                            == sessions.first().map(|f| f.session_id.as_str())
-                    })
-                    .map(|s| s.session_id.to_string());
-                let output = self.format_session_list(&sessions, active_id.as_deref());
-                Ok((true, output))
-            }
-            "/help" => Ok((
-                true,
-                "📚 Available commands:\n\n\
-                    /new           - Create a new empty session\n\
-                    /branch        - Branch (fork) current session\n\
-                    /sessions      - List all sessions\n\
-                    /switch <n>    - Switch to session by number or ID\n\
-                    /help          - Show this help\n\n\
-                    All other text is sent to the agent."
-                    .to_string(),
-            )),
-            _ => {
-                // Not a recognized command
-                Ok((false, String::new()))
-            }
-        }
-    }
+    // Session management commands (CLI integration) — the slash
+    // dispatcher (`/new`, `/branch`, `/sessions`, `/switch`) and the
+    // `session_*` helpers it called have been retired in B3 cleanup:
+    // `process_session_command` had no remaining callers in the engine,
+    // CLI, or desktop harness. `create_session` is still the live
+    // path through `SessionManager` (see `subagent_executor::spawn`
+    // and the session-tool surface).
 
     /// Create an agent for unit tests with isolated storage.
     ///
@@ -2273,11 +2099,6 @@ impl Agent {
                 None => (None, None),
             };
 
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
-
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         let subagent_executor_base = SubagentExecutor::new(
@@ -2304,7 +2125,6 @@ impl Agent {
             llm_resolver: None,
             session_manager,
             subagent_executor,
-            session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
@@ -2681,7 +2501,7 @@ mod tests {
 
         // Spawn a child session with shared context
         let spawn_resolved = agent
-            .spawn_session(&peer, "test task", false, &parent_key, Some(300))
+            .spawn_session(&peer, "test task", &parent_key, Some(300))
             .await;
 
         assert!(spawn_resolved.is_ok());

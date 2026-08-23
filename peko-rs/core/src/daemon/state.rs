@@ -2001,9 +2001,10 @@ impl crate::tunnel::TunnelHost for AppState {
         self.runtime_metadata.display_name.clone()
     }
 
-    fn runtime_direct_endpoint(&self) -> Option<String> {
-        self.peko_config.network.direct.advertise_endpoint.clone()
-    }
+    // B5 cleanup: `runtime_direct_endpoint` was retired — direct
+    // cross-runtime transport was removed (all cross-runtime traffic
+    // flows through the tunnel relay). The trait accessor and this
+    // impl are deleted.
 
     fn jwt_validator(&self) -> Option<peko_auth::jwt::JwtValidator> {
         self.jwt_validator.clone()

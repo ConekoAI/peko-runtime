@@ -284,18 +284,14 @@ impl SubagentRuntime for SubagentExecutorRuntime {
                 )
                 .await?
         } else {
-            // Phase 5b: an explicitly-provided `parent_session_key`
-            // (context seeding) must be the caller's own session or
-            // inside its subtree. The auto-detected default (caller
-            // key == parent key) always passes.
-            //
-            // `validate_context_parent` resolves the LLM-facing
-            // reference (absolute slug path or the caller's own id)
-            // to a canonical session id and returns it; we use the
-            // resolved value downstream so the in-subtree check is
-            // not the only thing that sees the resolved id.
-            // Caller-relative slugs and raw ids are refused by
-            // `resolve_reference` before the in-subtree check runs.
+            // B4 cleanup: `validate_context_parent` is now a thin
+            // `resolve_reference` wrapper — the deeper subtree check
+            // (caller.is_base / privileged / in_subtree) was
+            // unreachable in production (producer always passes the
+            // caller's own key). We still route the LLM-facing
+            // reference through it so caller-relative slugs / raw ids
+            // are refused via `resolve_reference` before the resolved
+            // id reaches the executor.
             let parent_session_key = if let Some(ref caller) = request.caller_session_key {
                 self.executor
                     .validate_context_parent(&parent_session_key, caller)
@@ -306,13 +302,6 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             self.executor
                 .execute_and_wait(
                     &prompt,
-                    None,
-                    // Sprint 7: the LLM-facing Agent tool no longer
-                    // exposes `isolated`. The executor's flag stays
-                    // (defense-in-depth; the tool never spawned
-                    // isolated sessions after the agent-session
-                    // paradigm landed) — we hardcode `false` here.
-                    false,
                     &parent_session_key,
                     root_config,
                     timeout_seconds,

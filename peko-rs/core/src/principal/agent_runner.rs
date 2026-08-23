@@ -232,12 +232,12 @@ where
 
     // Register the principal-scoped `Agent` tool after `Agent::new*` but
     // before execution so it is available on the principal's shared
-    // core. Sprint 7: the tool no longer needs a runtime-mutable
+    // core. Sprint 7 + B4: the tool no longer needs a runtime-mutable
     // session-key provider; the canonical caller session id flows
-    // through `ToolContext::session_id` on the production path. The
-    // `DynamicSessionKeyProvider` machinery stays around for
-    // non-engine callers (tests, async_executor) that bind the
-    // runtime port's `session_id()` accessor directly.
+    // through `ToolContext::session_id` on the production path.
+    // `DynamicSessionKeyProvider` was deleted in B4 (write-only on
+    // production — `set_session_key` was called once per subagent
+    // but `get_session_key` had no readers).
     let session_manager = SessionManager::new()
         .with_sessions_dir_internal(ctx.sessions_dir.clone())
         .with_agent_name(&prompt.name)

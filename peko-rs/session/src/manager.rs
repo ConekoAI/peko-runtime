@@ -522,8 +522,15 @@ pub struct SessionManager {
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
     spawn_overlays: HashMap<String, Arc<RwLock<SpawnOverlay>>>,
     /// Metadata controller (single point of truth for metadata)
-    /// Wrapped in Arc<`RwLock`<>> for sharing with `SessionHandles`
-    metadata_controller: Arc<RwLock<MetadataController>>,
+    /// Wrapped in Arc<`RwLock`<>> for sharing with `SessionHandles`.
+    ///
+    /// B3 cleanup: previously private. The legacy `set_archived` write
+    /// path was retired end-to-end; the integration tests in
+    /// `peko::agents::subagent_integration_tests` now seed the
+    /// "archived target" precondition through this field instead.
+    /// Public-by-accident — not a stable API.
+    #[doc(hidden)]
+    pub metadata_controller: Arc<RwLock<MetadataController>>,
     /// Session index for peer routing
     index: Option<SessionIndex>,
     /// Sessions directory path
@@ -1003,34 +1010,24 @@ impl SessionManager {
             .await
     }
 
-    /// Route to a specific agent
-    pub async fn route_to_agent(
-        &mut self,
-        agent: &str,
-        _peer: &Subject,
-        channel_type: ChannelType,
-        channel_id: &str,
-    ) -> Result<ResolvedSession> {
-        self.resolve_session(agent, channel_type, channel_id, None, false)
-            .await
-    }
-
     /// Create a spawn session
     pub async fn spawn_session(
         &mut self,
         agent: &str,
         peer: &Subject,
         task: &str,
-        isolated: bool,
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
     ) -> Result<ResolvedSession> {
+        // B4 cleanup: `isolated` removed — `SessionManager::spawn_session`
+        // now always runs in shared-context mode (copies parent's context
+        // into the child).
         let handle = self
             .create_spawn_overlay_with_config(
                 agent,
                 peer,
                 task,
-                isolated,
+                false,
                 parent_session_key,
                 timeout_seconds,
                 SpawnCleanupPolicy::default(),
@@ -1295,44 +1292,6 @@ impl SessionManager {
     // Session Branching and Switching
     // ====================================================================================
 
-    /// Branch current session (/branch command)
-    pub async fn branch_session(
-        &mut self,
-        peer: &Subject,
-        label: Option<String>,
-    ) -> Result<String> {
-        // Get agent name first to avoid borrow issues
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
-            .clone();
-
-        let index = self
-            .index
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
-
-        let peer_key = derive_base_session_key(&agent, peer);
-
-        // Get current active session as parent
-        let parent_id = index
-            .get_active_session_id(&peer_key)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("No active session to branch from"))?;
-
-        // Create new session with parent
-        let options = SessionCreateOptions::new()
-            .with_parent(&parent_id)
-            .with_title(label.unwrap_or_default());
-
-        let handle = self.create_session(&agent, peer, options).await?;
-        let session_id = handle.session_id().to_string();
-
-        info!("Branched session {} from {}", session_id, parent_id);
-        Ok(session_id)
-    }
-
     /// Branch a specific session by ID (for CLI operations)
     ///
     /// Creates a new session with the parent's history copied.
@@ -1443,35 +1402,6 @@ impl SessionManager {
             .await
     }
 
-    /// Set the archived flag on a session (passthrough to the
-    /// `MetadataController`). When `archived == true`, also scrubs the
-    /// session id from any peer routing entry so that archived sessions
-    /// are no longer reachable via `peko send --session <id>` /
-    /// InboxRegistry permits. Errors when the session does not exist.
-    pub async fn set_archived(&mut self, session_id: &str, archived: bool) -> Result<()> {
-        self.metadata_controller
-            .write()
-            .await
-            .set_archived(session_id, archived)
-            .await?;
-        if archived {
-            // Scrub the peer routing entry. The session index is the
-            // peer-id → routing-entry map; we walk it because peer
-            // attribution is not always 1:1 with session metadata.
-            if let Some(index) = self.index.as_mut() {
-                let peer_keys = index.peer_keys_with_session(session_id).await;
-                for peer_key in peer_keys {
-                    if let Err(e) = index.remove_session_from_peer(&peer_key, session_id).await {
-                        tracing::warn!(
-                            "set_archived: failed to scrub {session_id} from peer {peer_key}: {e}"
-                        );
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Set the compaction-request flag on a session (passthrough to
     /// the `MetadataController`). Errors when the session does not
     /// exist.
@@ -1568,50 +1498,6 @@ impl SessionManager {
             .await
     }
 
-    /// Switch to a different session (/switch command)
-    pub async fn switch_session(&mut self, peer: &Subject, session_id: &str) -> Result<()> {
-        if self.index.is_none() {
-            return Err(anyhow::anyhow!("Session index not initialized"));
-        }
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
-
-        let peer_key = derive_base_session_key(agent, peer);
-        self.metadata_controller
-            .write()
-            .await
-            .set_active_for_peer(&peer_key, session_id)
-            .await?;
-        self.metadata_controller.write().await.save_index().await?;
-
-        info!("Switched {} to session {}", peer_key, session_id);
-        Ok(())
-    }
-
-    /// List all sessions for a peer (legacy)
-    ///
-    /// NOTE: This returns `SessionEntry` for backward compatibility.
-    /// Consider using `list_sessions()` for new code.
-    pub async fn list_sessions_for_peer(&mut self, peer: &Subject) -> Result<Vec<SessionEntry>> {
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
-            .clone();
-
-        if self.index.is_none() {
-            return Err(anyhow::anyhow!("Session index not initialized"));
-        }
-
-        let peer_key = derive_base_session_key(&agent, peer);
-        self.metadata_controller
-            .write()
-            .await
-            .list_for_peer_from_index(&peer_key)
-            .await
-    }
 
     /// Get active session ID for a peer
     pub async fn get_active_session_id(&mut self, peer: &Subject) -> Result<Option<String>> {

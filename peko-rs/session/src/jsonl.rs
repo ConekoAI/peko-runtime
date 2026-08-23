@@ -798,15 +798,6 @@ impl SessionStorage {
             .join(format!("{}.tmp", safe_filename_component(session_id)))
     }
 
-    /// Get index file path for a session
-    #[must_use]
-    pub fn index_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!(
-            "{}.index.json",
-            safe_filename_component(session_id)
-        ))
-    }
-
     /// Get context cache file path for a session (ADR-022)
     #[must_use]
     pub fn context_cache_path(&self, session_id: &str) -> PathBuf {
@@ -1022,7 +1013,6 @@ impl SessionStorage {
     /// Delete a session file, all its numbered pages, and its derived cache
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let path = self.session_path(session_id);
-        let index_path = self.index_path(session_id);
         let cache_path = self.context_cache_path(session_id);
 
         // Hold the same cross-process lock `append_event` uses so a
@@ -1039,10 +1029,6 @@ impl SessionStorage {
             if page.exists() {
                 fs::remove_file(&page).await?;
             }
-        }
-
-        if index_path.exists() {
-            fs::remove_file(&index_path).await?;
         }
 
         if cache_path.exists() {

@@ -66,25 +66,10 @@ impl SessionId {
 
     /// Parse a UUID-shaped string. Returns `None` for any non-UUID
     /// input — including the legacy `root:*` shapes that pre-sprint-6
-    /// fixtures may still carry. Callers that need to read pre-launch
-    /// fixtures should call `parse_legacy` instead.
+    /// fixtures may still carry.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Uuid::parse_str(s).ok().map(Self)
-    }
-
-    /// Parse, also accepting the legacy `root:*` shape as the trunk's
-    /// old literal `"root:self"`. Used only by recovery / migration
-    /// paths that may still encounter legacy data; the canonical
-    /// session id minting goes through `SessionId::new()`.
-    #[must_use]
-    pub fn parse_legacy(s: &str) -> Option<Self> {
-        if s == "root:self" {
-            // Legacy trunk: nothing — UUIDs only.
-            None
-        } else {
-            Self::parse(s)
-        }
     }
 }
 
@@ -189,19 +174,6 @@ mod tests {
         assert!(SessionId::parse("not-a-uuid").is_none());
         assert!(SessionId::parse("").is_none());
         assert!(SessionId::parse("550e8400").is_none()); // too short
-    }
-
-    #[test]
-    fn session_id_parse_legacy_rejects_legacy_shapes() {
-        // Pre-sprint-6 fixtures may carry "root:self" or other legacy
-        // shapes. parse_legacy is strict: only canonical UUIDs pass.
-        assert!(SessionId::parse_legacy("root:self").is_none());
-        assert!(SessionId::parse_legacy("root:user:alice").is_none());
-        let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
-        assert_eq!(
-            SessionId::parse_legacy(uuid_str).unwrap().as_str(),
-            uuid_str
-        );
     }
 
     #[test]

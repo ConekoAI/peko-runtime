@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
@@ -122,9 +121,6 @@ impl Default for DaemonConfig {
 #[derive(Debug, Clone)]
 pub(crate) struct DaemonStatus {
     pub running: bool,
-    pub jobs_checked: u64,
-    pub jobs_executed: u64,
-    pub last_check: Option<chrono::DateTime<Utc>>,
 }
 
 /// The peko daemon.
@@ -135,59 +131,27 @@ pub(crate) struct DaemonStatus {
 /// stays private to `Daemon::run`.
 pub struct Daemon {
     config: DaemonConfig,
-    status: Arc<Mutex<DaemonStatus>>,
-    cron_engine: CronEngine,
+    status: Arc<std::sync::Mutex<DaemonStatus>>,
+    cron_engine: Option<CronEngine>,
 }
 
 impl Daemon {
     /// Create a new daemon
     pub fn new(config: DaemonConfig) -> Result<Self> {
-        let status = Arc::new(Mutex::new(DaemonStatus {
+        let status = Arc::new(std::sync::Mutex::new(DaemonStatus {
             running: false,
-            jobs_checked: 0,
-            jobs_executed: 0,
-            last_check: None,
         }));
 
-        // Phase A: the cron engine no longer opens a single global
-        // scheduler — it derives per-principal schedulers from the
-        // typed path resolver. The legacy `cron_db_path` field is
-        // gone from `DaemonConfig`.
-        let cron_path_resolver = crate::common::paths::PathResolver::with_dirs(
-            config.config_dir.clone(),
-            config.data_dir.clone(),
-            dirs::cache_dir().map_or_else(|| config.data_dir.join("cache"), |d| d.join("peko")),
-        );
-        // ADR-046 trust + audit: extract the audit dir BEFORE moving
-        // the path resolver into the cron engine — JSONL audit
-        // events (cron.execute, cron.result, cron.write) flow
-        // through this observability instance and need a sink to land
-        // in.
-        let cron_audit_dir = cron_path_resolver.audit_dir();
-
-        let cron_engine = CronEngine::new(
-            cron_path_resolver,
-            std::sync::Arc::new(peko_cron::IdleDetector::new()),
-            std::sync::Arc::new(peko_observability::Observability::with_audit_dir(
-                "daemon",
-                cron_audit_dir,
-            )?),
-            None,
-            // Placeholder executor for the un-wired constructor — the
-            // daemon replaces this in `Daemon::run` with a real one
-            // bound to the AppState's `InboxRegistry`.
-            std::sync::Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-                ),
-            ),
-            std::sync::Weak::new(),
-        );
+        // The cron engine is constructed later in `Daemon::run` once
+        // `AppState` is available — the engine needs the shared
+        // `InboxRegistry`, the `PrincipalManager`, and the daemon's
+        // global `ExtensionCore` (weak), none of which exist at
+        // construction time.
 
         Ok(Self {
             config,
             status,
-            cron_engine,
+            cron_engine: None,
         })
     }
 
@@ -223,7 +187,7 @@ impl Daemon {
         );
 
         {
-            let mut status = self.status.lock().await;
+            let mut status = self.status.lock().expect("status lock poisoned");
             status.running = true;
         }
 
@@ -309,13 +273,13 @@ impl Daemon {
             .map(|arc| std::sync::Arc::downgrade(&arc))
             .unwrap_or_else(std::sync::Weak::new);
 
-        // Replace the placeholder cron engine with one wired to the real
-        // PrincipalManager, shared idle detector, and cron-owned executor.
-        // Phase A: the cron engine takes the typed path resolver
-        // directly; no global `CronScheduler` is constructed here —
-        // the engine derives per-principal schedulers on demand.
+        // Build the cron engine wired to the real PrincipalManager,
+        // shared idle detector, and cron-owned executor. Phase A: the
+        // cron engine takes the typed path resolver directly; no
+        // global `CronScheduler` is constructed here — the engine
+        // derives per-principal schedulers on demand.
         let cron_path_resolver = app_state.path_resolver.clone();
-        self.cron_engine = CronEngine::new(
+        self.cron_engine = Some(CronEngine::new(
             cron_path_resolver,
             idle_detector,
             Arc::new(peko_observability::Observability::with_audit_dir(
@@ -325,11 +289,16 @@ impl Daemon {
             Some(app_state.principal_manager().clone()),
             cron_async_executor,
             cron_extension_core,
-        );
+        ));
         // PR 2: hand the engine to AppState so the `CronRun` IPC
         // handler can dispatch manual triggers through the same
         // coalescing / spawn logic that scheduled fires use.
-        app_state.set_cron_engine(Arc::new(self.cron_engine.clone()));
+        app_state.set_cron_engine(Arc::new(
+            self.cron_engine
+                .as_ref()
+                .expect("cron_engine is initialized just above")
+                .clone(),
+        ));
 
         // Write our own PID file so stop commands can find us even if the parent is gone
         let pid_file = crate::ipc::default_pid_path();
@@ -448,7 +417,9 @@ impl Daemon {
             tokio::select! {
                 // Periodic cron check (time-based jobs)
                 _ = poll_tick.tick() => {
-                    if let Err(e) = self.cron_engine.check_and_run().await {
+                    let engine = self.cron_engine.as_ref()
+                        .expect("cron_engine initialized earlier in run()");
+                    if let Err(e) = engine.check_and_run().await {
                         let msg = e.to_string();
                         if msg.contains("no such table") {
                             debug!("Cron table not initialized, skipping cron check");
@@ -456,12 +427,13 @@ impl Daemon {
                             error!("Error checking cron jobs: {}", e);
                         }
                     }
-                    self.sync_cron_status().await;
                 }
 
                 // Periodic idle check (idle-triggered jobs)
                 _ = idle_check_tick.tick() => {
-                    if let Err(e) = self.cron_engine.check_idle().await {
+                    let engine = self.cron_engine.as_ref()
+                        .expect("cron_engine initialized earlier in run()");
+                    if let Err(e) = engine.check_idle().await {
                         let msg = e.to_string();
                         if msg.contains("no such table") {
                             debug!("Cron table not initialized, skipping idle check");
@@ -469,7 +441,6 @@ impl Daemon {
                             error!("Error checking idle jobs: {}", e);
                         }
                     }
-                    self.sync_cron_status().await;
                 }
 
                 // Periodic session maintenance
@@ -496,7 +467,9 @@ impl Daemon {
                     // Reconcile `CronRun` rows still marked `"running"`
                     // against the executor's task registry so SpawnTool
                     // fires reach their final status (Phase 4).
-                    match self.cron_engine.reconcile_running_runs().await {
+                    let engine = self.cron_engine.as_ref()
+                        .expect("cron_engine initialized earlier in run()");
+                    match engine.reconcile_running_runs().await {
                         Ok(0) => {}
                         Ok(n) => info!("Cron janitor reconciled {n} previously-running runs"),
                         Err(e) => error!("Cron janitor reconciliation failed: {e}"),
@@ -532,21 +505,12 @@ impl Daemon {
         let _ = std::fs::remove_file(pid_file.with_extension("lock"));
 
         {
-            let mut status = self.status.lock().await;
+            let mut status = self.status.lock().expect("status lock poisoned");
             status.running = false;
         }
 
         info!("👋 Daemon shutdown complete");
         Ok(())
-    }
-
-    /// Copy cron-engine counters into the daemon's top-level status.
-    async fn sync_cron_status(&self) {
-        let cron = self.cron_engine.status().await;
-        let mut status = self.status.lock().await;
-        status.jobs_checked = cron.jobs_checked;
-        status.jobs_executed = cron.jobs_executed;
-        status.last_check = cron.last_check;
     }
 
     /// Run session maintenance on all agents by delegating to `session::MaintenanceScheduler`.
@@ -593,7 +557,7 @@ mod tests {
         };
 
         let daemon = Daemon::new(config).unwrap();
-        let status = daemon.status.lock().await.clone();
+        let status = daemon.status.lock().unwrap().clone();
         assert!(!status.running);
     }
 }

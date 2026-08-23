@@ -1,38 +1,9 @@
 //! Test configuration for session management
 //!
 //! This module provides test-friendly constants that can be overridden
-//! via environment variables for integration testing.
-
-/// Get prune duration with test override support
-///
-/// Environment variable: `SESSION_TEST_PRUNE_DAYS`
-/// Default: 30 days
-pub fn prune_duration() -> std::time::Duration {
-    let days = if std::env::var("PEKO_TEST_MODE").is_ok() {
-        std::env::var("SESSION_TEST_PRUNE_DAYS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1u64)
-    } else {
-        30u64
-    };
-    std::time::Duration::from_secs(days * 24 * 60 * 60)
-}
-
-/// Get max sessions per agent with test override support
-///
-/// Environment variable: `SESSION_TEST_MAX_SESSIONS`
-/// Default: 500
-pub fn max_sessions() -> usize {
-    if std::env::var("PEKO_TEST_MODE").is_ok() {
-        std::env::var("SESSION_TEST_MAX_SESSIONS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(3usize)
-    } else {
-        500usize
-    }
-}
+//! via environment variables for integration testing. Only `rotate_bytes`
+//! remains — the rest (prune_duration, max_sessions, lock_timeout_ms,
+//! cache_ttl_ms, stale_lock_ms) were retired in B3 cleanup.
 
 /// Get rotate bytes threshold with test override support
 ///
@@ -46,51 +17,6 @@ pub fn rotate_bytes() -> usize {
             .unwrap_or(1024usize) // 1KB for tests
     } else {
         10 * 1024 * 1024 // 10MB default
-    }
-}
-
-/// Get lock timeout with test override support
-///
-/// Environment variable: `SESSION_TEST_LOCK_TIMEOUT_MS`
-/// Default: 10000ms
-pub fn lock_timeout_ms() -> u64 {
-    if std::env::var("PEKO_TEST_MODE").is_ok() {
-        std::env::var("SESSION_TEST_LOCK_TIMEOUT_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(100u64) // 100ms for tests
-    } else {
-        10000u64 // 10s default
-    }
-}
-
-/// Get cache TTL with test override support
-///
-/// Environment variable: `SESSION_TEST_CACHE_TTL_MS`
-/// Default: 45000ms (45s)
-pub fn cache_ttl_ms() -> u64 {
-    if std::env::var("PEKO_TEST_MODE").is_ok() {
-        std::env::var("SESSION_TEST_CACHE_TTL_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(100u64) // 100ms for tests
-    } else {
-        45000u64 // 45s default
-    }
-}
-
-/// Get stale lock threshold with test override support
-///
-/// Environment variable: `SESSION_TEST_STALE_LOCK_MS`
-/// Default: 30000ms (30s)
-pub fn stale_lock_ms() -> u64 {
-    if std::env::var("PEKO_TEST_MODE").is_ok() {
-        std::env::var("SESSION_TEST_STALE_LOCK_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(500u64) // 500ms for tests
-    } else {
-        30000u64 // 30s default
     }
 }
 
@@ -108,25 +34,11 @@ mod tests {
     use crate::*;
 
     #[test]
-    fn test_defaults() {
-        // Excludes concurrent `PEKO_TEST_MODE` guard-holding tests —
-        // without the lock they could set the var mid-assertion.
+    fn test_default_rotate_bytes() {
         let _lock = crate::test_config::TEST_MODE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // Without test mode, should return defaults
-        assert_eq!(max_sessions(), 500);
+        // Without test mode, should return default
         assert_eq!(rotate_bytes(), 10 * 1024 * 1024);
-        assert_eq!(lock_timeout_ms(), 10000);
-    }
-
-    #[test]
-    fn test_prune_duration() {
-        let _lock = crate::test_config::TEST_MODE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let duration = prune_duration();
-        // Should be approximately 30 days
-        assert!(duration.as_secs() >= 30 * 24 * 60 * 60);
     }
 }

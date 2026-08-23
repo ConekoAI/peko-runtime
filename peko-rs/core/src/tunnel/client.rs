@@ -640,6 +640,11 @@ impl TunnelClient {
             TunnelMessage::Disconnect { reason } => {
                 info!("Received disconnect: {}", reason);
             }
+            // B5 cleanup: `TunnelMessage::InstanceDeregister` was deleted
+            // from the enum — it was never sent on the wire, so the
+            // inbound handler must never see it. If this `unreachable!`
+            // fires, a sender re-introduced the variant without
+            // updating the inbound match.
             TunnelMessage::ProxiedRequest { .. }
             | TunnelMessage::ProxiedResponse { .. }
             | TunnelMessage::StreamChunk { .. }
@@ -647,7 +652,6 @@ impl TunnelClient {
             | TunnelMessage::StreamIteration { .. }
             | TunnelMessage::InstanceAnnounce { .. }
             | TunnelMessage::InstanceHeartbeat { .. }
-            | TunnelMessage::InstanceDeregister { .. }
             | TunnelMessage::ExposureUpdate { .. }
             | TunnelMessage::StatusUpdate { .. }
             // peko-channel cross-runtime PR-A: tunnel_channel_event

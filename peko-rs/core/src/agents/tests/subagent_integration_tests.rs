@@ -164,8 +164,6 @@ async fn test_e2e_spawn_and_complete() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig::default(),
             None,
@@ -233,8 +231,6 @@ async fn subagent_inherits_parent_cancel() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig::default(),
             Some(parent_token.clone()),
@@ -336,8 +332,6 @@ async fn test_spawn_depth_limit() {
     let run_id1 = executor
         .spawn_and_execute(
             "First task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             config.clone(),
             None,
@@ -369,8 +363,6 @@ async fn test_spawn_depth_limit() {
     let result = executor
         .spawn_and_execute(
             "Nested task",
-            Some(&resolved.context),
-            false,
             &child_key,
             config,
             None,
@@ -397,8 +389,6 @@ async fn test_spawn_depth_limit() {
     let result = executor
         .spawn_and_execute(
             "Independent task",
-            Some(&resolved.context),
-            false,
             &other_parent_key,
             ExecutionConfig {
                 max_depth: 1,
@@ -454,8 +444,6 @@ async fn test_isolated_vs_shared_session() {
     let isolated_run_id = executor
         .spawn_and_execute(
             "Isolated task",
-            Some(&resolved.context),
-            true,
             &parent_key,
             config.clone(),
             None,
@@ -470,8 +458,6 @@ async fn test_isolated_vs_shared_session() {
     let shared_run_id = executor
         .spawn_and_execute(
             "Shared task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             config,
             None,
@@ -543,8 +529,6 @@ async fn test_result_format_in_registry() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig::default(),
             None,
@@ -605,8 +589,6 @@ async fn test_list_runs_functionality() {
         let run_id = executor
             .spawn_and_execute(
                 &format!("Task {}", i),
-                Some(&resolved.context),
-                false,
                 &parent_key,
                 config.clone(),
                 None,
@@ -688,31 +670,15 @@ async fn test_cleanup_policy_tracking() {
         ..Default::default()
     };
 
-    // Test keep policy (default)
+    // B4 cleanup: the executor always stamps `Keep` regardless of
+    // `config.cleanup` (the Delete branch was unreachable). Verify
+    // the view reflects that — the keep entry is the only assertion
+    // left.
     let keep_run_id = executor
         .spawn_and_execute(
             "Keep task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             config.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Test delete policy
-    let delete_run_id = executor
-        .spawn_and_execute(
-            "Delete task",
-            Some(&resolved.context),
-            false,
-            &parent_key,
-            ExecutionConfig {
-                max_depth: 10,
-                cleanup: crate::extensions::framework::subagent::SpawnCleanupPolicy::Delete,
-                ..Default::default()
-            },
             None,
         )
         .await
@@ -721,17 +687,10 @@ async fn test_cleanup_policy_tracking() {
     sleep(Duration::from_millis(500)).await;
 
     let registry_guard = registry.read().await;
-
     let keep_entry = registry_guard.get(&keep_run_id).unwrap();
-    let delete_entry = registry_guard.get(&delete_run_id).unwrap();
-
     let keep_view = crate::agents::subagent_types::SubagentRunView::from_entry(keep_entry)
         .expect("Should be a subagent entry");
-    let delete_view = crate::agents::subagent_types::SubagentRunView::from_entry(delete_entry)
-        .expect("Should be a subagent entry");
-
     assert_eq!(keep_view.cleanup, SpawnCleanupPolicy::Keep);
-    assert_eq!(delete_view.cleanup, SpawnCleanupPolicy::Delete);
 }
 
 #[tokio::test]
@@ -768,8 +727,6 @@ async fn test_parent_child_relationship() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig::default(),
             None,
@@ -821,21 +778,20 @@ async fn test_runs_by_parent_filtering() {
         ..Default::default()
     };
 
-    // Create runs for different parents. `parent_ctx` is unused inside
-    // `spawn_and_execute`, so `None` is fine — only `parent_session_key`
+    // Create runs for different parents. `parent_session_key`
     // matters for registry bookkeeping.
     let run1 = executor
-        .spawn_and_execute("Task 1", None, false, &parent_key1, config.clone(), None)
+        .spawn_and_execute("Task 1", &parent_key1, config.clone(), None)
         .await
         .unwrap();
 
     let run2 = executor
-        .spawn_and_execute("Task 2", None, false, &parent_key1, config.clone(), None)
+        .spawn_and_execute("Task 2", &parent_key1, config.clone(), None)
         .await
         .unwrap();
 
     let run3 = executor
-        .spawn_and_execute("Task 3", None, false, &parent_key2, config, None)
+        .spawn_and_execute("Task 3", &parent_key2, config, None)
         .await
         .unwrap();
 
@@ -909,8 +865,6 @@ async fn test_concurrent_runs_counting() {
     let _run_id = executor
         .spawn_and_execute(
             "Long task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             config,
             None,
@@ -979,8 +933,6 @@ async fn test_executor_get_status() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig::default(),
             None,
@@ -989,15 +941,14 @@ async fn test_executor_get_status() {
         .unwrap();
 
     // Check status immediately (should be running or completed)
-    let status = executor.get_run_status(&run_id).await;
-    assert!(status.is_some());
+    let view = executor.get_run(&run_id).await;
+    assert!(view.is_some(), "run {run_id} not visible right after spawn");
 
     sleep(Duration::from_millis(500)).await;
 
     // Check status after completion
-    let status = executor.get_run_status(&run_id).await;
-    assert!(status.is_some());
-    let status = status.unwrap();
+    let view = executor.get_run(&run_id).await.expect("run {run_id} missing");
+    let status = view.status;
     assert!(status.is_terminal(), "Status: {}", status);
 }
 
@@ -1035,8 +986,6 @@ async fn test_executor_get_run() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig::default(),
             None,
@@ -1148,8 +1097,6 @@ async fn test_max_concurrent_limit() {
     let result1 = executor
         .spawn_and_execute(
             "Task 1",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig {
                 timeout_seconds: 3600,
@@ -1166,8 +1113,6 @@ async fn test_max_concurrent_limit() {
     let _result2 = executor
         .spawn_and_execute(
             "Task 2",
-            Some(&resolved.context),
-            false,
             &parent_key,
             ExecutionConfig::default(),
             None,
@@ -1221,6 +1166,26 @@ async fn create_linked_session(
             .await
             .unwrap();
     }
+}
+
+/// B3 helper: stamp `archived = true` on a session's metadata via the
+/// shared `MetadataController`. The legacy `SessionManager::set_archived`
+/// write path was retired end-to-end; this helper exists so the
+/// archived-target refusal tests can still seed their precondition
+/// (legacy data on disk that arrives already-archived is exactly what
+/// the `err_resume_archived` / `err_compact_archived` guards exist to
+/// catch).
+async fn mark_archived(session_manager: &Arc<RwLock<SessionManager>>, id: &str) {
+    let canonical = sid(id);
+    let mgr_guard = session_manager.write().await;
+    let mut controller = mgr_guard.metadata_controller.write().await;
+    let mut metadata = controller
+        .get_metadata(&canonical, false)
+        .await
+        .unwrap()
+        .expect("session must exist to mark archived");
+    metadata.archived = true;
+    controller.update_metadata(metadata).await.unwrap();
 }
 
 #[tokio::test]
@@ -1351,12 +1316,11 @@ async fn resume_refuses_archived_target() {
         "spawn",
     )
     .await;
-    session_manager
-        .write()
-        .await
-        .set_archived("spawn-a", true)
-        .await
-        .unwrap();
+    // B3: `set_archived` is gone; stamp the flag directly on the
+    // persisted metadata via the controller's update path. Sessions
+    // that arrive already-archived (legacy data) are exactly what
+    // this guard exists to refuse.
+    mark_archived(&session_manager, "spawn-a").await;
 
     let executor = SubagentExecutor::with_registry(
         registry,
@@ -1375,7 +1339,10 @@ async fn resume_refuses_archived_target() {
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unarchive"), "{err}");
+    assert!(
+        err.to_string().contains("archived sessions are not currently restorable"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -1532,8 +1499,6 @@ async fn new_with_name_attaches_to_standing_child() {
     let run_id = executor
         .spawn_and_execute(
             "summarize what you remember",
-            None,
-            false,
             "root-sess",
             ExecutionConfig {
                 slug: Some("memory".to_string()),
@@ -1600,8 +1565,6 @@ async fn new_with_fresh_name_spawns_new_session() {
     let run_id = executor
         .spawn_and_execute(
             "fresh task",
-            None,
-            false,
             "root-sess",
             ExecutionConfig {
                 slug: Some("about-user".to_string()),
@@ -1668,8 +1631,6 @@ async fn new_with_name_colliding_non_standing_errors() {
     let err = executor
         .spawn_and_execute(
             "task",
-            None,
-            false,
             "root-sess",
             ExecutionConfig {
                 slug: Some("notes".to_string()),
@@ -1712,8 +1673,6 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
     let err = executor
         .spawn_and_execute(
             "task",
-            None,
-            false,
             "root-sess",
             ExecutionConfig {
                 slug: Some("memory".to_string()),
@@ -1736,8 +1695,6 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
     let run_id = executor
         .spawn_and_execute(
             "task",
-            None,
-            false,
             "root-sess",
             ExecutionConfig {
                 slug: Some("memory".to_string()),
@@ -1838,12 +1795,8 @@ async fn compact_refuses_archived_target() {
         "spawn",
     )
     .await;
-    session_manager
-        .write()
-        .await
-        .set_archived("spawn-a", true)
-        .await
-        .unwrap();
+    // B3: see `mark_archived` helper — `set_archived` is gone.
+    mark_archived(&session_manager, "spawn-a").await;
 
     let executor = SubagentExecutor::with_registry(
         registry,
@@ -1856,7 +1809,10 @@ async fn compact_refuses_archived_target() {
         .request_compaction(path!("spawn-a"), &sid("root-sess"))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unarchive"), "{err}");
+    assert!(
+        err.to_string().contains("archived sessions are not currently restorable"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -1911,7 +1867,7 @@ async fn compact_happy_path_flags_session_without_trigger_requirement() {
 }
 
 #[tokio::test]
-async fn validate_context_parent_ownership() {
+async fn validate_context_parent_resolves_path() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
     create_linked_session(
@@ -1939,38 +1895,34 @@ async fn validate_context_parent_ownership() {
         peko_subject::PrincipalId::generate(),
     );
 
-    // Default path: caller's own session always passes.
-    executor
+    // B4 cleanup: `validate_context_parent` is now a thin resolve_reference
+    // wrapper — the deeper subtree check (caller.is_base / privileged /
+    // in_subtree) was unreachable in production because the producer
+    // always passes the caller's own key. The function still resolves
+    // slug paths to canonical session ids and refuses caller-relative
+    // slugs / raw ids via `resolve_reference`.
+    let resolved = executor
         .validate_context_parent(path!("spawn-a"), &sid("spawn-a"))
         .await
         .unwrap();
-    // Principal-level caller (base session) passes for any target.
-    executor
+    assert_eq!(resolved, sid("spawn-a"));
+
+    let resolved = executor
         .validate_context_parent(path!("spawn-b"), &sid("root-sess"))
         .await
         .unwrap();
-    // Subtree caller seeding from a sibling subtree → refused.
+    assert_eq!(resolved, sid("spawn-b"));
+
+    // Unknown slug path is still refused at the `resolve_path` layer.
     let err = executor
-        .validate_context_parent(path!("spawn-b"), &sid("spawn-a"))
+        .validate_context_parent(path!("does-not-exist"), &sid("spawn-a"))
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("outside your session subtree"),
+        err.to_string().contains("no child")
+            || err.to_string().contains("not found"),
         "{err}"
     );
-    // Subtree caller seeding from inside its own subtree passes.
-    create_linked_session(
-        &session_manager,
-        &agent_name,
-        "grandchild",
-        Some("spawn-a"),
-        "spawn",
-    )
-    .await;
-    executor
-        .validate_context_parent(path!("spawn-a/grandchild"), &sid("spawn-a"))
-        .await
-        .unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -2006,8 +1958,6 @@ async fn spawn_with_name_stamps_child_slug() {
     let run_id = executor
         .spawn_and_execute(
             "task",
-            None,
-            true,
             "root-sess",
             ExecutionConfig {
                 slug: Some("task-b".to_string()),
@@ -2038,8 +1988,6 @@ async fn spawn_with_name_stamps_child_slug() {
     let err = executor
         .spawn_and_execute(
             "task 2",
-            None,
-            true,
             "root-sess",
             ExecutionConfig {
                 slug: Some("task-b".to_string()),
@@ -2056,8 +2004,6 @@ async fn spawn_with_name_stamps_child_slug() {
     let err = executor
         .spawn_and_execute(
             "task 3",
-            None,
-            true,
             "root-sess",
             ExecutionConfig {
                 slug: Some("has/slash".to_string()),
@@ -2384,12 +2330,8 @@ async fn streaming_resume_enforces_guard_stack() {
         "user",
     )
     .await;
-    session_manager
-        .write()
-        .await
-        .set_archived("spawn-a", true)
-        .await
-        .unwrap();
+    // B3: see `mark_archived` helper — `set_archived` is gone.
+    mark_archived(&session_manager, "spawn-a").await;
 
     let executor = SubagentExecutor::with_registry(
         registry.clone(),
@@ -2412,7 +2354,10 @@ async fn streaming_resume_enforces_guard_stack() {
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unarchive"), "{err}");
+    assert!(
+        err.to_string().contains("archived sessions are not currently restorable"),
+        "{err}"
+    );
 
     // Non-spawn target.
     let (sink, _e) = event_collector();

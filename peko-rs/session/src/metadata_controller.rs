@@ -251,35 +251,15 @@ impl MetadataController {
         Ok(())
     }
 
-    /// Set the archived flag on a session
-    ///
-    /// Same update pattern as [`Self::update_metadata`]: load the entry,
-    /// mutate the flag, and write it back through the delta-merge-safe
-    /// index save. Errors when the session does not exist.
-    pub async fn set_archived(&mut self, session_id: &str, archived: bool) -> Result<()> {
-        debug!("Setting archived={} for session {}", archived, session_id);
-
-        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
-            anyhow::anyhow!("Cannot set archived for non-existent session {session_id}")
-        })?;
-
-        if entry.archived != archived {
-            entry.archived = archived;
-            entry.touch();
-            self.update_entry(entry).await?;
-        }
-
-        info!("Set archived={} for session {}", archived, session_id);
-        Ok(())
-    }
-
     /// Set the parent session id on a session (reparent).
     ///
-    /// Same update pattern as [`Self::set_archived`]: load the entry,
-    /// mutate the field, and write it back through the delta-merge-safe
-    /// index save. Errors when the session does not exist. This is a
-    /// raw write — the ownership / cycle / live-run guards live in the
-    /// caller (root's `SessionManagerRuntime::move_session`).
+    /// B3 cleanup: the legacy `set_archived` write path was retired
+    /// end-to-end (no live caller after the archived-write chain was
+    /// deleted). Use [`Self::update_metadata`] (or the test helper
+    /// `mark_archived` in `subagent_integration_tests.rs`) to stamp
+    /// the flag on legacy data. This is a raw write — the ownership /
+    /// cycle / live-run guards live in the caller (root's
+    /// `SessionManagerRuntime::move_session`).
     pub async fn set_parent(
         &mut self,
         session_id: &str,
@@ -350,7 +330,7 @@ impl MetadataController {
 
     /// Set the standing flag on a session.
     ///
-    /// Same update pattern as [`Self::set_archived`]: load the entry,
+    /// Same update pattern as the other flag setters: load the entry,
     /// mutate the flag, and write it back through the delta-merge-safe
     /// index save. Standing sessions are exempt from maintenance
     /// pruning (`SessionIndex::maintenance`). Errors when the session
@@ -1137,7 +1117,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_archived_and_compact_requested_roundtrip() {
+    async fn test_compact_requested_roundtrip() {
         let temp = TempDir::new().unwrap();
         let dir = temp.path().to_path_buf();
 
@@ -1145,32 +1125,31 @@ mod tests {
         let metadata = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         controller.create_metadata(metadata).await.unwrap();
 
-        controller.set_archived("sess_123", true).await.unwrap();
         controller
             .set_compact_requested("sess_123", true)
             .await
             .unwrap();
 
         // Reload through a fresh controller (fresh index + cache) to
-        // prove the flags survived the save/reload round trip.
+        // prove the flag survived the save/reload round trip.
         let mut reloaded = MetadataController::new(&dir);
         let meta = reloaded
             .get_metadata_fast("sess_123")
             .await
             .unwrap()
             .unwrap();
-        assert!(meta.archived);
         assert!(meta.compact_requested);
 
         // Clearing a flag persists too.
-        reloaded.set_archived("sess_123", false).await.unwrap();
+        reloaded
+            .set_compact_requested("sess_123", false)
+            .await
+            .unwrap();
         let mut third = MetadataController::new(&dir);
         let meta = third.get_metadata_fast("sess_123").await.unwrap().unwrap();
-        assert!(!meta.archived);
-        assert!(meta.compact_requested);
+        assert!(!meta.compact_requested);
 
-        // Both setters error on a non-existent session.
-        assert!(third.set_archived("sess_nope", true).await.is_err());
+        // The setter errors on a non-existent session.
         assert!(third
             .set_compact_requested("sess_nope", true)
             .await
@@ -1303,8 +1282,7 @@ mod tests {
     }
 
     /// `set_standing` round-trips the flag through the index and
-    /// errors on a non-existent session (same contract as
-    /// `set_archived`).
+    /// errors on a non-existent session.
     #[tokio::test]
     async fn test_set_standing() {
         let (mut controller, _temp) = setup_controller().await;
