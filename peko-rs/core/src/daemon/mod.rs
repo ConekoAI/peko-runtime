@@ -138,9 +138,7 @@ pub struct Daemon {
 impl Daemon {
     /// Create a new daemon
     pub fn new(config: DaemonConfig) -> Result<Self> {
-        let status = Arc::new(std::sync::Mutex::new(DaemonStatus {
-            running: false,
-        }));
+        let status = Arc::new(std::sync::Mutex::new(DaemonStatus { running: false }));
 
         // The cron engine is constructed later in `Daemon::run` once
         // `AppState` is available — the engine needs the shared
@@ -374,6 +372,10 @@ impl Daemon {
                 std::sync::Arc::clone(app_state.principal_manager()),
                 std::sync::Arc::clone(&app_state.authority),
             ));
+            // B8b.1: install the same `Arc<CronOps>` into AppState so
+            // the cron IPC handler shares one ops bundle with the
+            // adapter (was: per-request rebuild cloning Arc handles).
+            app_state.set_cron_ops(std::sync::Arc::clone(&cron_ops));
             let adapter = std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(
                 cron_ops,
             ));

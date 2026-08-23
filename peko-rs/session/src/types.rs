@@ -70,16 +70,6 @@ impl ChannelType {
     pub const fn supports_rich_formatting(&self) -> bool {
         matches!(self, ChannelType::Web)
     }
-
-    /// Check if this channel type supports threaded conversations
-    #[must_use]
-    pub const fn supports_threads(&self) -> bool {
-        // No active thread-capable channel remains; the dead
-        // Discord/Slack/Telegram arms were retired in Sprint 9
-        // Commit 2. Returns `false` until a new thread-capable
-        // channel is wired in.
-        false
-    }
 }
 
 impl fmt::Display for ChannelType {
@@ -260,11 +250,6 @@ mod tests {
         // Cli has no rich-formatting or thread support; Web still does.
         assert!(!ChannelType::Cli.supports_rich_formatting());
         assert!(ChannelType::Web.supports_rich_formatting());
-
-        // No active thread-capable channel remains; threads() returns
-        // false until a new thread-capable channel is wired in.
-        assert!(!ChannelType::Cli.supports_threads());
-        assert!(!ChannelType::Web.supports_threads());
     }
 
     #[test]

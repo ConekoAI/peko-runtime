@@ -17,9 +17,9 @@ use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
 #[cfg(test)]
 use std::path::Path;
+use std::sync::Arc;
 
 #[cfg(test)]
 use crate::tools::builtin::messaging::subagent_runtime::SubagentRuntime;
@@ -385,15 +385,15 @@ impl AgentTool {
     /// thread the typed error through `AsyncTaskEntry::metadata` to
     /// restore classification without re-introducing brittle string
     /// parsing here.
-    fn format_error_response(
-        error: &anyhow::Error,
-    ) -> anyhow::Result<serde_json::Value> {
+    fn format_error_response(error: &anyhow::Error) -> anyhow::Result<serde_json::Value> {
         // 1. Walk the anyhow chain to find the typed `SpawnError`.
         //    Intermediate layers re-wrap typed errors with
         //    string-formatted `anyhow!`, so the typed source can be
         //    several layers deep.
         for source in error.chain() {
-            if let Some(spawn_err) = source.downcast_ref::<crate::tools::builtin::messaging::dto::SpawnError>() {
+            if let Some(spawn_err) =
+                source.downcast_ref::<crate::tools::builtin::messaging::dto::SpawnError>()
+            {
                 return Self::spawn_error_to_json(spawn_err);
             }
         }
@@ -415,7 +415,10 @@ impl AgentTool {
         spawn_err: &crate::tools::builtin::messaging::dto::SpawnError,
     ) -> anyhow::Result<serde_json::Value> {
         Ok(match spawn_err {
-            crate::tools::builtin::messaging::dto::SpawnError::DepthLimitExceeded { current, max } => json!({
+            crate::tools::builtin::messaging::dto::SpawnError::DepthLimitExceeded {
+                current,
+                max,
+            } => json!({
                 "status": "forbidden",
                 "error_type": "DepthLimitExceeded",
                 "current_depth": current,
@@ -423,7 +426,10 @@ impl AgentTool {
                 "error": spawn_err.to_string(),
                 "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
             }),
-            crate::tools::builtin::messaging::dto::SpawnError::ConcurrentLimitExceeded { current, max } => json!({
+            crate::tools::builtin::messaging::dto::SpawnError::ConcurrentLimitExceeded {
+                current,
+                max,
+            } => json!({
                 "status": "forbidden",
                 "error_type": "ConcurrentLimitExceeded",
                 "current_concurrent": current,
@@ -443,7 +449,11 @@ impl AgentTool {
                 "error_type": "ExecutionFailed",
                 "error": msg,
             }),
-            crate::tools::builtin::messaging::dto::SpawnError::CostCeilingExceeded { estimated, ceiling, model_id } => json!({
+            crate::tools::builtin::messaging::dto::SpawnError::CostCeilingExceeded {
+                estimated,
+                ceiling,
+                model_id,
+            } => json!({
                 "status": "forbidden",
                 "error_type": "CostCeilingExceeded",
                 "estimated_cost_usd": estimated,
@@ -452,7 +462,10 @@ impl AgentTool {
                 "error": spawn_err.to_string(),
                 "note": "Per-spawn cost ceiling exceeded. The chosen model is too expensive for this principal."
             }),
-            crate::tools::builtin::messaging::dto::SpawnError::SpecGateFailed { model_id, reason } => json!({
+            crate::tools::builtin::messaging::dto::SpawnError::SpecGateFailed {
+                model_id,
+                reason,
+            } => json!({
                 "status": "forbidden",
                 "error_type": "SpecGateFailed",
                 "model_id": model_id,
@@ -643,10 +656,7 @@ Examples:
         // context on the production path; the runtime port's
         // `session_id()` is the fallback for non-context paths
         // (tests, async_executor).
-        let caller_session_key = ctx
-            .session_id
-            .clone()
-            .or_else(|| self.runtime.session_id());
+        let caller_session_key = ctx.session_id.clone().or_else(|| self.runtime.session_id());
 
         if action == AgentAction::Compact {
             return self.execute_compact(&args, caller_session_key).await;
@@ -692,7 +702,8 @@ struct TestSubagentState {
     /// Registered agent prompts by name. Sprint 8 Commit 4 switched
     /// from the mirror `BuiltinAgentConfig` DTO to `Arc<AgentPrompt>`
     /// (the workspace Markdown becomes the single source of truth).
-    configs: std::collections::HashMap<String, Arc<crate::agents::subagent_runtime_impl::AgentPrompt>>,
+    configs:
+        std::collections::HashMap<String, Arc<crate::agents::subagent_runtime_impl::AgentPrompt>>,
     /// Audit log of spawn events.
     audits: Vec<SpawnAuditEvent>,
     /// Phase 1: every `model_override` seen in
@@ -722,6 +733,12 @@ struct TestSubagentState {
     /// the no-`ToolContext` path. Default `None` matches the trait
     /// default.
     session_id: Option<String>,
+    /// Spawn-depth cap returned by [`SubagentRuntime::max_depth`].
+    /// Tests override this to assert the tool projects the value
+    /// onto the spawn request. B8a.3 default was 3 (the round-7
+    /// historical cap); kept on the test fixture for backward
+    /// compat with the existing assertion at line 1095.
+    max_depth: u32,
 }
 
 #[cfg(test)]
@@ -742,6 +759,7 @@ impl TestSubagentRuntime {
                 principal_id: String::new(),
                 principal_name: None,
                 session_id: None,
+                max_depth: 3,
             }),
         }
     }
@@ -931,6 +949,13 @@ impl SubagentRuntime for TestSubagentRuntime {
             .clone()
     }
 
+    fn max_depth(&self) -> u32 {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .max_depth
+    }
+
     async fn execute_and_wait(
         &self,
         request: SpawnRequest,
@@ -941,7 +966,9 @@ impl SubagentRuntime for TestSubagentRuntime {
                 .lock()
                 .expect("TestSubagentRuntime mutex poisoned");
             state.names_seen.push(request.name.clone());
-            state.resume_sessions_seen.push(request.resume_session.clone());
+            state
+                .resume_sessions_seen
+                .push(request.resume_session.clone());
             state.succeed_on_execute
         };
         if !succeed {
@@ -1009,10 +1036,7 @@ mod tests {
     async fn test_agent_state_registry_allows_enabled_subagent() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:writer");
-        runtime.register_agent(
-            "writer",
-            make_test_prompt("writer", Some("writer agent")),
-        );
+        runtime.register_agent("writer", make_test_prompt("writer", Some("writer agent")));
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let result = tool.resolve_subagent_config("writer", None).await;
@@ -1044,10 +1068,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_state_registry_unregistered_principal_is_fail_closed() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.register_agent(
-            "writer",
-            make_test_prompt("writer", None),
-        );
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         // No grants registered: missing authorization context is denied.
@@ -1074,7 +1095,10 @@ mod tests {
         runtime.set_session_id("caller:sess:runtime-port");
         let _tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
-        assert_eq!(runtime.session_id(), Some("caller:sess:runtime-port".into()));
+        assert_eq!(
+            runtime.session_id(),
+            Some("caller:sess:runtime-port".into())
+        );
     }
 
     #[test]
@@ -1102,13 +1126,18 @@ mod tests {
         // round-trips through the anyhow chain.
 
         // Test typed depth error
-        let depth_err = anyhow::anyhow!(crate::tools::builtin::messaging::dto::SpawnError::DepthLimitExceeded {
-            current: 4,
-            max: 3
-        });
+        let depth_err = anyhow::anyhow!(
+            crate::tools::builtin::messaging::dto::SpawnError::DepthLimitExceeded {
+                current: 4,
+                max: 3
+            }
+        );
         let response = AgentTool::format_error_response(&depth_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
-        assert_eq!(response["error_type"].as_str().unwrap(), "DepthLimitExceeded");
+        assert_eq!(
+            response["error_type"].as_str().unwrap(),
+            "DepthLimitExceeded"
+        );
         assert_eq!(response["current_depth"].as_u64().unwrap(), 4);
         assert_eq!(response["max_depth"].as_u64().unwrap(), 3);
         assert!(response["note"].as_str().unwrap().contains("depth"));
@@ -1132,9 +1161,10 @@ mod tests {
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
 
         // Test typed timeout error
-        let timeout_err = anyhow::anyhow!(crate::tools::builtin::messaging::dto::SpawnError::Timeout {
-            seconds: 30
-        });
+        let timeout_err =
+            anyhow::anyhow!(crate::tools::builtin::messaging::dto::SpawnError::Timeout {
+                seconds: 30
+            });
         let response = AgentTool::format_error_response(&timeout_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "timeout");
         assert_eq!(response["error_type"].as_str().unwrap(), "Timeout");
@@ -1148,10 +1178,7 @@ mod tests {
         );
         let response = AgentTool::format_error_response(&exec_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "error");
-        assert_eq!(
-            response["error_type"].as_str().unwrap(),
-            "ExecutionFailed"
-        );
+        assert_eq!(response["error_type"].as_str().unwrap(), "ExecutionFailed");
         assert!(response["error"]
             .as_str()
             .unwrap()
@@ -1173,16 +1200,9 @@ mod tests {
             response["error_type"].as_str().unwrap(),
             "CostCeilingExceeded"
         );
-        assert!(
-            (response["estimated_cost_usd"].as_f64().unwrap() - 0.135).abs() < 1e-9
-        );
-        assert!(
-            (response["ceiling_cost_usd"].as_f64().unwrap() - 0.10).abs() < 1e-9
-        );
-        assert_eq!(
-            response["model_id"].as_str().unwrap(),
-            "claude-opus-4-8"
-        );
+        assert!((response["estimated_cost_usd"].as_f64().unwrap() - 0.135).abs() < 1e-9);
+        assert!((response["ceiling_cost_usd"].as_f64().unwrap() - 0.10).abs() < 1e-9);
+        assert_eq!(response["model_id"].as_str().unwrap(), "claude-opus-4-8");
 
         // Test typed spec gate error (Sprint 7 Commit 4: same fix).
         let spec_err = anyhow::anyhow!(
@@ -1194,10 +1214,7 @@ mod tests {
         let response = AgentTool::format_error_response(&spec_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert_eq!(response["error_type"].as_str().unwrap(), "SpecGateFailed");
-        assert_eq!(
-            response["model_id"].as_str().unwrap(),
-            "claude-haiku-4-5"
-        );
+        assert_eq!(response["model_id"].as_str().unwrap(), "claude-haiku-4-5");
         assert_eq!(
             response["reason"].as_str().unwrap(),
             "model lacks tool support"
@@ -1296,9 +1313,18 @@ mod tests {
         assert!(desc.contains("compact"));
         assert!(desc.contains("path"));
         // Removed fields no longer appear in the description.
-        assert!(!desc.contains("session_key"), "description must not mention session_key");
-        assert!(!desc.contains("isolated"), "description must not mention isolated");
-        assert!(!desc.contains("cleanup"), "description must not mention cleanup");
+        assert!(
+            !desc.contains("session_key"),
+            "description must not mention session_key"
+        );
+        assert!(
+            !desc.contains("isolated"),
+            "description must not mention isolated"
+        );
+        assert!(
+            !desc.contains("cleanup"),
+            "description must not mention cleanup"
+        );
     }
 
     #[test]
@@ -1372,10 +1398,7 @@ mod tests {
     async fn test_new_rejects_invalid_path_shape() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:writer");
-        runtime.register_agent(
-            "writer",
-            make_test_prompt("writer", None),
-        );
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         // `:` is reserved for raw session ids — slugs refuse it
         // outright, so the validation error fires before the
@@ -1434,10 +1457,7 @@ mod tests {
     async fn test_audit_records_spawn_event() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:writer");
-        runtime.register_agent(
-            "writer",
-            make_test_prompt("writer", None),
-        );
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_principal_id("test-principal");
 
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
@@ -1472,10 +1492,7 @@ mod tests {
     async fn test_audit_records_model_override_on_spawn() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:writer");
-        runtime.register_agent(
-            "writer",
-            make_test_prompt("writer", None),
-        );
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_principal_id("test-principal");
 
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
@@ -1526,10 +1543,7 @@ mod tests {
     async fn test_new_with_path_forwards_child_slug() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:writer");
-        runtime.register_agent(
-            "writer",
-            make_test_prompt("writer", None),
-        );
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
@@ -1559,10 +1573,7 @@ mod tests {
     async fn test_resume_with_path_forwards_target() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.grant("agent:writer");
-        runtime.register_agent(
-            "writer",
-            make_test_prompt("writer", None),
-        );
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 

@@ -417,9 +417,8 @@ mod tests {
     #[test]
     fn test_thread_key() {
         // Sprint 9 Commit 2: only "cli" remains; thread shape preserved
-        // for forward-compat (the `ChannelType::supports_threads` API
-        // returned false after Commit 2, but the key-shape helper still
-        // works for any caller that supplies a thread_id).
+        // for forward-compat. B8b.3 deleted `ChannelType::supports_threads`
+        // since the only callers were test assertions.
         let ctx = SessionKeyContext {
             channel: Some("cli".to_string()),
             channel_id: Some("987654".to_string()),
@@ -428,10 +427,7 @@ mod tests {
             ..Default::default()
         };
         let key = derive_session_key("testagent", SessionScope::PerChannel, &ctx);
-        assert_eq!(
-            key,
-            "agent:testagent:cli:channel:987654:thread:thread123"
-        );
+        assert_eq!(key, "agent:testagent:cli:channel:987654:thread:thread123");
     }
 
     #[test]

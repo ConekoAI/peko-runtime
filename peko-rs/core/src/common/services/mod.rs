@@ -17,10 +17,12 @@ pub use credentials_service::CredentialsService;
 pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
 pub use extension_management_service::ExtensionManagementService;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
-pub use session_service::{
-    session_event_to_history, BranchResult, HistoryEvent, HistoryQuery, HistoryResult,
-    HistorySummary, SessionDetails, SessionInfo, SessionService,
-};
+// B8c.5: session DTOs (SessionInfo / HistoryEvent / HistoryQuery /
+// HistoryResult / BranchResult / SessionDetails / HistorySummary /
+// session_event_to_history) live in `peko_session::session_info`.
+// Import directly from there — the cleanup-invariant forbids new
+// `pub use peko_*::*` shims.
+pub use session_service::SessionService;
 
 /// Backward-compatible alias for `ServiceContainer`.
 #[deprecated(since = "0.2.0", note = "Use ServiceContainer instead")]

@@ -459,28 +459,6 @@ impl AsyncTaskRegistry {
             .count()
     }
 
-    /// Get the spawn depth of a session by looking up where it was a child.
-    ///
-    /// Matches on both the overlay `child_session_key` and the plain
-    /// `child_session_id` so callers holding either form resolve the
-    /// same depth.
-    #[must_use]
-    pub fn get_subagent_depth_for_session(&self, session_key: &str) -> u32 {
-        self.tasks
-            .values()
-            .filter_map(|e| match &e.metadata {
-                TaskMetadata::Subagent(m)
-                    if m.child_session_key == session_key
-                        || m.child_session_id.as_deref() == Some(session_key) =>
-                {
-                    Some(m.depth)
-                }
-                _ => None,
-            })
-            .next()
-            .unwrap_or(0)
-    }
-
     /// Whether a non-terminal subagent run is currently registered for
     /// the given child session (id or overlay key). The unified
     /// registry is the active-run source of truth for subagent runs —

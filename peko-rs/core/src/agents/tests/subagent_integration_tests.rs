@@ -342,28 +342,33 @@ async fn test_spawn_depth_limit() {
     // Wait for completion so the run is in registry with its depth
     sleep(Duration::from_millis(500)).await;
 
-    // Verify the first run completed at depth 1, and grab its child_session_key.
-    let child_key = {
+    // Verify the first run completed at depth 1, and grab its child_session_id.
+    // B8c.3: the depth check now reads the durable metadata chain
+    // (`subagent_depth_of`), so the parent_session_key we hand back to
+    // the executor must be the durable session id (UUID), not the
+    // spawn overlay key in `child_session_key`. The old registry-based
+    // check happened to index by overlay key — that's why the test
+    // passed `child_key` historically. `child_session_id` is the form
+    // the metadata chain can resolve.
+    let child_id = {
         let registry_guard = registry.read().await;
         let entry = registry_guard.get(&run_id1).unwrap();
         let view = crate::agents::subagent_types::SubagentRunView::from_entry(entry)
             .expect("Should be a subagent entry");
         assert_eq!(view.depth, 1, "First run should be at depth 1");
-        view.child_session_key.clone()
+        view.child_session_id
+            .clone()
+            .expect("child_session_id is stamped at spawn time")
     };
 
-    // Spawn from the *child* session of the first run. The depth check
-    // looks up runs by `child_session_key == parent_session_key`, so passing
-    // `child_key` as the new parent makes it match the first run (depth 1).
-    // The new run would be depth 2, exceeding max_depth=1, and must be
-    // rejected. (Earlier versions of this test asserted the opposite —
-    // that nesting succeeds — but that was a misreading of the depth
-    // tracking; the limit IS enforced via this key, not via the original
-    // parent's key.)
+    // Spawn from the *child* session of the first run. The metadata-chain
+    // depth check resolves `parent_session_key` against the session
+    // index, finds the child session's metadata (depth 1), and reports
+    // the new run as depth 2 — exceeding max_depth=1, must be rejected.
     let result = executor
         .spawn_and_execute(
             "Nested task",
-            &child_key,
+            &child_id,
             config,
             None,
         )
@@ -380,8 +385,8 @@ async fn test_spawn_depth_limit() {
     );
 
     // And spawning from a fresh, unrelated parent must still succeed —
-    // there's no run with `child_session_key == that key`, so parent_depth
-    // stays 0 and the spawn is allowed.
+    // there's no spawn-triggered ancestor in the metadata chain for that
+    // key, so parent_depth stays 0 and the spawn is allowed.
     let other_parent_key = peko_session::key::derive_base_session_key(
         &agent_name,
         &Subject::User("charlie".to_string()),

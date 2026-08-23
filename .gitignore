@@ -9,3 +9,4 @@ __pycache__/
 peko.toml
 config.toml
 .superpowers/
+AGENTS.md

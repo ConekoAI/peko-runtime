@@ -19,6 +19,14 @@ use peko_session::types::SpawnCleanupPolicy;
 pub struct SubagentRunView {
     pub run_id: String,
     pub child_session_key: String,
+    /// The child's durable session id (UUID) — the form `session list`
+    /// shows, Agent's `action = "resume"` consumes, and the metadata-
+    /// chain depth check reads. `None` for legacy runs registered before
+    /// this field existed. Spawn-registered runs store the overlay key
+    /// in `child_session_key`; callers that need to chain a follow-up
+    /// spawn against the same child should use THIS field as the new
+    /// `parent_session_key`, not `child_session_key`.
+    pub child_session_id: Option<String>,
     pub parent_session_key: String,
     pub task: String,
     pub status: AsyncTaskStatus,
@@ -52,6 +60,7 @@ impl SubagentRunView {
         Some(Self {
             run_id: entry.task_id.clone(),
             child_session_key: meta.child_session_key.clone(),
+            child_session_id: meta.child_session_id.clone(),
             parent_session_key: entry.parent_session_key.clone(),
             task,
             status: entry.status.clone(),

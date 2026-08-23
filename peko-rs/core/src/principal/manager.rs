@@ -28,6 +28,7 @@ use peko_observability::Observability;
 use peko_plan::{PlanNodeStatus, PlanRecord};
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
+use peko_session::RunPermitGuard;
 use peko_subject::PrincipalDID;
 
 /// Maximum number of resumed plans injected into the router context at
@@ -60,6 +61,65 @@ pub enum PrincipalManagerError {
     #[error("slash command error: {0}")]
     Slash(#[from] SlashError),
 }
+
+/// B8c.4: outcome of [`PrincipalManager::drive_principal_ingress`].
+///
+/// The three principal ingress sites (`receive_streaming`,
+/// `handle_principal_send`, the `Steer` arm of
+/// `handle_principal_send_control`) each format the outcome
+/// differently — `PrincipalResponse::text(...)` vs `PrincipalSent` vs
+/// `(success: bool, error: Option<String>)` — but the upstream
+/// sequence (resolve child + DM channel, post inbound, acquire or
+/// queue) is identical. The helper hands back this tagged enum; the
+/// caller maps `Ready` / `Queued` / `Failed` into its own wire format.
+pub enum IngressOutcome {
+    /// Run permit acquired; caller drives the turn. `permit` is held
+    /// for the caller scope; dropping it before the turn ends lets a
+    /// second ingress acquire its own run slot.
+    Ready {
+        child_id: String,
+        dm_channel: Option<peko_channel::ChannelId>,
+        permit: RunPermitGuard,
+    },
+    /// No run permit (interactive mode conflict, or SteerOnly
+    /// mode). The message was pushed to the child's inbox as a
+    /// `SteeringMessage`; caller emits a "Queued..." notice.
+    Queued { child_id: String },
+}
+
+/// B8c.4: dispatch mode for [`PrincipalManager::drive_principal_ingress`].
+pub enum IngressMode {
+    /// Acquire a run permit; queue on conflict. Used by
+    /// `receive_streaming` and the principal IPC ingress.
+    Interactive,
+    /// Always queue (Steer path — the in-flight run consumes the
+    /// steering push at its next iteration boundary).
+    SteerOnly,
+}
+
+/// B8c.4: failure modes from [`PrincipalManager::drive_principal_ingress`].
+/// Callers add their own wire-format prefix on `Post` (e.g. "Failed
+/// to persist chat input:" vs "Failed to persist steered chat input:").
+#[derive(Debug)]
+pub enum IngressError {
+    /// `peer_child_turns_for` or `ensure_child_ingress` failed.
+    Resolve(PrincipalManagerError),
+    /// `post_dm_inbound` failed — the peer's DM channel could not
+    /// be written. The ingress is rejected so the consumer cannot
+    /// believe they sent something that never landed.
+    Post(anyhow::Error),
+}
+
+impl std::fmt::Display for IngressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolve(e) => write!(f, "{e}"),
+            Self::Post(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for IngressError {}
 
 /// Owns all Principals in a runtime.
 pub struct PrincipalManager {
@@ -328,9 +388,8 @@ impl PrincipalManager {
         // the principal harness reaches plans through the dyn-trait
         // boundary so future impls (in-memory, network-backed) slot
         // in without rewriting this construction site.
-        let plan_port: Arc<dyn peko_plan::PlanPort> = Arc::new(peko_plan::PlanStorage::new(
-            layout.local.plans_dir.clone(),
-        ));
+        let plan_port: Arc<dyn peko_plan::PlanPort> =
+            Arc::new(peko_plan::PlanStorage::new(layout.local.plans_dir.clone()));
 
         let router = self
             .router_factory
@@ -424,9 +483,8 @@ impl PrincipalManager {
 
         // Phase 12+ PR #1: per-principal plan DAG storage. Same shape
         // as the `create` site above.
-        let plan_port: Arc<dyn peko_plan::PlanPort> = Arc::new(peko_plan::PlanStorage::new(
-            layout.local.plans_dir.clone(),
-        ));
+        let plan_port: Arc<dyn peko_plan::PlanPort> =
+            Arc::new(peko_plan::PlanStorage::new(layout.local.plans_dir.clone()));
 
         let router = self
             .router_factory
@@ -489,20 +547,20 @@ impl PrincipalManager {
     }
 
     /// Remove a Principal by name, deleting its workspace, data, and identity.
-///
-/// **Phase A.** The removal walks the typed layout: Shared tier root first
-/// (`{config_dir}/principals/{name}/`) and then Local tier root
-/// (`{data_dir}/principals/{name}/local/`) — both via `PathResolver`. The
-/// previous hand-rolled `data_dir.join("principals").join(name)` join at
-/// line 466 missed the keychain identity cleanup and any cron file; the
-/// new layout makes ownership explicit at every path.
-///
-/// Note: this method does NOT remove the principal's cron file directly.
-/// The cron handler owns its per-principal `local/cron/schedule.toml` and
-/// `local/cron/history.log` — those are deleted by `delete_jobs_for_principal`
-/// when the caller invokes the cron IPC verb. Future Phase A.5 will wire
-/// that into `PrincipalManager::remove` so the cron tier is cleaned up in
-/// the same call.
+    ///
+    /// **Phase A.** The removal walks the typed layout: Shared tier root first
+    /// (`{config_dir}/principals/{name}/`) and then Local tier root
+    /// (`{data_dir}/principals/{name}/local/`) — both via `PathResolver`. The
+    /// previous hand-rolled `data_dir.join("principals").join(name)` join at
+    /// line 466 missed the keychain identity cleanup and any cron file; the
+    /// new layout makes ownership explicit at every path.
+    ///
+    /// Note: this method does NOT remove the principal's cron file directly.
+    /// The cron handler owns its per-principal `local/cron/schedule.toml` and
+    /// `local/cron/history.log` — those are deleted by `delete_jobs_for_principal`
+    /// when the caller invokes the cron IPC verb. Future Phase A.5 will wire
+    /// that into `PrincipalManager::remove` so the cron tier is cleaned up in
+    /// the same call.
     pub async fn remove(&self, name: &str) -> Result<(), PrincipalManagerError> {
         let id = {
             let by_name = self.principals_by_name.read().await;
@@ -602,7 +660,12 @@ impl PrincipalManager {
         &self,
         name: &str,
     ) -> Result<peko_identity::Identity, PrincipalManagerError> {
-        let identity_dir = self.path_resolver.principal_layout(name).shared.root.join("identity");
+        let identity_dir = self
+            .path_resolver
+            .principal_layout(name)
+            .shared
+            .root
+            .join("identity");
         tokio::fs::create_dir_all(&identity_dir).await?;
         let identity_dir = identity_dir.clone();
         let name = name.to_string();
@@ -649,11 +712,28 @@ impl PrincipalManager {
     /// failure (no resolvable model — the same configuration error
     /// that breaks the trunk path) is NOT cached, so a config fix
     /// takes effect on the next message.
+    ///
+    /// B8c.4 fix: serialize the build step under the cache's write
+    /// lock so concurrent first-callers don't each construct their
+    /// own `PeerChildTurns` (each carries a fresh `session_manager`,
+    /// so racing creates would route `ensure_child_ingress` /
+    /// `drive_turn_streaming` through different managers — the child
+    /// session created by one would be invisible to the other's
+    /// `resume_preflight`). The fix uses `entry` to coalesce: first
+    /// writer builds + inserts; racing writers re-read the inserted
+    /// value and return it.
     pub(crate) async fn peer_child_turns_for(
         &self,
         principal: &Arc<Principal>,
     ) -> Result<Arc<crate::principal::child_turns::PeerChildTurns>, PrincipalManagerError> {
         if let Some(turns) = self.peer_child_turns.read().await.get(&principal.id) {
+            return Ok(Arc::clone(turns));
+        }
+        let mut cache = self.peer_child_turns.write().await;
+        // Re-check under the write lock — a racing writer may have
+        // already populated the cache between our read lock release
+        // and our write lock acquire.
+        if let Some(turns) = cache.get(&principal.id) {
             return Ok(Arc::clone(turns));
         }
         let resolver = self.resolver.clone().ok_or_else(|| {
@@ -688,10 +768,7 @@ impl PrincipalManager {
             .with_dm_subscriber_hook(dm_hook)
             .with_dm_lock(Some(self.session_creation_lock(principal.id.clone()).await));
         let turns = Arc::new(turns);
-        self.peer_child_turns
-            .write()
-            .await
-            .insert(principal.id.clone(), Arc::clone(&turns));
+        cache.insert(principal.id.clone(), Arc::clone(&turns));
         Ok(turns)
     }
 
@@ -712,6 +789,84 @@ impl PrincipalManager {
         turns.ensure_child_ingress(peer).await.map_err(|e| {
             PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
         })
+    }
+
+    /// B8c.4: shared body for [`Self::receive_streaming`],
+    /// `handle_principal_send`, and the `Steer` arm of
+    /// `handle_principal_send_control`. Three call sites previously
+    /// inlined the same five-step sequence (resolve peer's standing
+    /// child + DM channel → post inbound message attributed to the
+    /// peer → acquire a run permit OR queue a steering message →
+    /// surface the outcome). The bodies had drifted subtly in
+    /// error-mapping and queued-notice formatting — this helper is
+    /// the single source of truth.
+    ///
+    /// `mode = Interactive` acquires a run permit and queues on
+    /// conflict (used by `receive_streaming` and the principal IPC
+    /// ingress). `mode = SteerOnly` always queues (the `Steer` arm
+    /// targets the child session's inbox — the in-flight run drains
+    /// it at the next iteration boundary, so acquiring a permit
+    /// would be wrong).
+    pub(crate) async fn drive_principal_ingress(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &Subject,
+        message: &str,
+        mode: IngressMode,
+    ) -> Result<IngressOutcome, IngressError> {
+        let turns = self
+            .peer_child_turns_for(principal)
+            .await
+            .map_err(IngressError::Resolve)?;
+        let ingress = turns.ensure_child_ingress(peer).await.map_err(|e| {
+            IngressError::Resolve(PrincipalManagerError::RouterError(
+                RouterError::AgentFailed(format!("{e:?}")),
+            ))
+        })?;
+        let child_id = ingress.child_id.clone();
+
+        // Phase 11: post the inbound message to the peer's DM channel
+        // (peer-attributed) BEFORE acquiring the run permit / queueing.
+        // A post failure rejects the ingress so the consumer cannot
+        // believe they sent something that never entered the
+        // conversation's durable home.
+        if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
+            post_peer_dm_inbound(port, &principal.id, dm, &peer.to_string(), message)
+                .await
+                .map_err(|e| IngressError::Post(anyhow::anyhow!("{e:#}")))?;
+        }
+
+        match mode {
+            IngressMode::SteerOnly => {
+                // Steer is by definition a queue-only path — the
+                // in-flight run drains the steering push at its next
+                // iteration boundary. No permit acquisition.
+                let inbox = self.inbox_registry.get_or_create(&child_id).await;
+                inbox
+                    .push(SteeringMessage::new(message.to_string()).into())
+                    .await;
+                Ok(IngressOutcome::Queued { child_id })
+            }
+            IngressMode::Interactive => {
+                match self.inbox_registry.try_acquire_run(&child_id).await {
+                    Some(permit) => Ok(IngressOutcome::Ready {
+                        child_id,
+                        dm_channel: ingress.dm_channel,
+                        permit,
+                    }),
+                    None => {
+                        // A run is already active for this child session —
+                        // queue the message as steering. Caller emits the
+                        // "Queued..." notice.
+                        let inbox = self.inbox_registry.get_or_create(&child_id).await;
+                        inbox
+                            .push(SteeringMessage::new(message.to_string()).into())
+                            .await;
+                        Ok(IngressOutcome::Queued { child_id })
+                    }
+                }
+            }
+        }
     }
 
     /// Phase 11: the daemon-global channel port (when attached) — the
@@ -1030,26 +1185,24 @@ impl PrincipalManager {
 
         // Phase 11: same DM-channel discipline as `receive` — the
         // inbound message is posted (peer-attributed) before dispatch;
-        // a post failure rejects dispatch.
-        let turns = self.peer_child_turns_for(&principal).await?;
-        let ingress = turns.ensure_child_ingress(&peer).await.map_err(|e| {
-            PrincipalManagerError::RouterError(RouterError::AgentFailed(format!("{e:?}")))
-        })?;
-        let child_id = ingress.child_id.clone();
-        if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
-            post_peer_dm_inbound(port, &principal.id, dm, &peer.to_string(), &ctx.message)
-                .await
-                .map_err(|e| {
-                    PrincipalManagerError::Config(format!("peer DM inbound post: {e:#}"))
-                })?;
-        }
-
-        // Same serial-queue discipline as `receive`: only one run may
-        // be active per peer child. A message arriving while a run is
-        // active is queued as a steering message (no streaming events
-        // for the queued case).
-        match self.inbox_registry.try_acquire_run(&child_id).await {
-            Some(_permit) => {
+        // a post failure rejects dispatch. The full ingress sequence
+        // (resolve child + DM channel, post inbound, acquire or queue)
+        // is unified in `drive_principal_ingress` (B8c.4).
+        match self
+            .drive_principal_ingress(&principal, &peer, &ctx.message, IngressMode::Interactive)
+            .await
+        {
+            Ok(IngressOutcome::Ready {
+                child_id,
+                dm_channel,
+                permit: _permit,
+            }) => {
+                // Same serial-queue discipline as `receive`: only one
+                // run may be active per peer child (the helper
+                // already acquired the permit). Drive the streaming
+                // turn. The helper also re-built `turns` internally
+                // (cached), but we only need `child_id` here.
+                let turns = self.peer_child_turns_for(&principal).await?;
                 let outcome = turns
                     .drive_turn_streaming(
                         &child_id,
@@ -1065,23 +1218,23 @@ impl PrincipalManager {
                         )))
                     })?;
                 let response = outcome.final_text;
-                if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
+                if let (Some(port), Some(dm)) = (&self.channel_port, &dm_channel) {
                     post_peer_dm_reply(port, &principal.id, dm, &response).await;
                 }
                 self.record_peer_recall(&principal, &peer, &child_id, &response)
                     .await;
                 Ok(PrincipalResponse::text(response))
             }
-            None => {
-                let inbox = self.inbox_registry.get_or_create(&child_id).await;
-                inbox
-                    .push(SteeringMessage::new(ctx.message.clone()).into())
-                    .await;
+            Ok(IngressOutcome::Queued { child_id }) => {
                 // Phase 11: the "Queued…" notice is transport UX, not
                 // conversation — no DM channel row (see `receive`).
                 let queued = format!("Queued for root agent session {child_id}.");
                 Ok(PrincipalResponse::queued(queued))
             }
+            Err(IngressError::Resolve(e)) => Err(e),
+            Err(IngressError::Post(e)) => Err(PrincipalManagerError::Config(format!(
+                "peer DM inbound post: {e:#}"
+            ))),
         }
     }
 
@@ -1516,7 +1669,14 @@ mod tests {
         for i in 0..peers {
             let peer = Subject::User(format!("peer-{i}"));
             let response = manager
-                .receive_streaming(id.clone(), peer, format!("hello {i}"), cli_channel(), Box::new(|_| {}), None)
+                .receive_streaming(
+                    id.clone(),
+                    peer,
+                    format!("hello {i}"),
+                    cli_channel(),
+                    Box::new(|_| {}),
+                    None,
+                )
                 .await
                 .expect("receive should succeed");
             assert!(response.content.contains(&format!("peer reply {i}")));
@@ -1631,7 +1791,8 @@ mod tests {
         let child_id = manager
             .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("peer child provisioning").child_id;
+            .expect("peer child provisioning")
+            .child_id;
         let permit_hold = manager
             .inbox_registry
             .try_acquire_run(&child_id)
@@ -1645,7 +1806,14 @@ mod tests {
             let peer = peer.clone();
             let handle = tokio::spawn(async move {
                 manager
-                    .receive_streaming(id, peer, format!("hello {i}"), cli_channel(), Box::new(|_| {}), None)
+                    .receive_streaming(
+                        id,
+                        peer,
+                        format!("hello {i}"),
+                        cli_channel(),
+                        Box::new(|_| {}),
+                        None,
+                    )
                     .await
             });
             handles.push(handle);
@@ -1807,7 +1975,14 @@ mod tests {
             .expect("update_config should succeed");
         let stranger = Subject::User("stranger".to_string());
         let result = manager
-            .receive_streaming(id, stranger, "hello".to_string(), cli_channel(), Box::new(|_| {}), None)
+            .receive_streaming(
+                id,
+                stranger,
+                "hello".to_string(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
             .await;
         assert!(
             matches!(result, Err(PrincipalManagerError::PermissionDenied(_))),
@@ -1824,7 +1999,14 @@ mod tests {
         // Owner always passes.
         let owner = Subject::User("test-owner".to_string());
         let response = manager
-            .receive_streaming(id.clone(), owner, "hello".to_string(), cli_channel(), Box::new(|_| {}), None)
+            .receive_streaming(
+                id.clone(),
+                owner,
+                "hello".to_string(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
             .await
             .expect("owner should be allowed");
         assert!(response.content.contains("owner reply"));
@@ -1845,7 +2027,14 @@ mod tests {
         adapter.queue_text("friend reply".to_string());
         let friend = Subject::User("friend".to_string());
         let response = manager
-            .receive_streaming(id, friend, "hi".to_string(), cli_channel(), Box::new(|_| {}), None)
+            .receive_streaming(
+                id,
+                friend,
+                "hi".to_string(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
             .await
             .expect("grantee should be allowed");
         assert!(response.content.contains("friend reply"));
@@ -1983,7 +2172,8 @@ mod tests {
         let child_id = manager
             .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("peer child provisioning").child_id;
+            .expect("peer child provisioning")
+            .child_id;
         let permit_hold = manager
             .inbox_registry
             .try_acquire_run(&child_id)
@@ -2126,7 +2316,14 @@ mod tests {
 
         let peer = Subject::User("alice".to_string());
         let response = manager
-            .receive_streaming(id, peer.clone(), "hello principal".to_string(), cli_channel(), Box::new(|_| {}), None)
+            .receive_streaming(
+                id,
+                peer.clone(),
+                "hello principal".to_string(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
             .await
             .expect("receive should succeed");
         assert!(response.content.contains("hello alice"));
@@ -2149,7 +2346,8 @@ mod tests {
         let child_id = manager
             .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("peer child").child_id;
+            .expect("peer child")
+            .child_id;
         let artifact = principal
             .memory
             .find_latest_session_for_peer(&peer)
@@ -2160,7 +2358,10 @@ mod tests {
             artifact.session_id, child_id,
             "recall artifact must point at the peer-child session"
         );
-        assert!(artifact.summary.as_deref().is_some_and(|s| s.contains("hello alice")));
+        assert!(artifact
+            .summary
+            .as_deref()
+            .is_some_and(|s| s.contains("hello alice")));
     }
 
     /// Phase 11 queued path: with a channel port attached, every
@@ -2180,7 +2381,8 @@ mod tests {
         let child_id = manager
             .ensure_peer_child_ingress(&principal, &peer)
             .await
-            .expect("peer child provisioning").child_id;
+            .expect("peer child provisioning")
+            .child_id;
         let _permit_hold = manager
             .inbox_registry
             .try_acquire_run(&child_id)
@@ -2200,7 +2402,9 @@ mod tests {
                 .await
                 .expect("receive should succeed");
             assert!(
-                response.content.starts_with("Queued for root agent session"),
+                response
+                    .content
+                    .starts_with("Queued for root agent session"),
                 "expected the queued branch; got: {}",
                 response.content
             );
@@ -2409,10 +2613,8 @@ mod tests {
                 .map(|i| i.id.as_str())
                 .collect::<Vec<_>>()
         );
-        let ids: std::collections::HashSet<&str> = plan_injections
-            .iter()
-            .map(|i| i.id.as_str())
-            .collect();
+        let ids: std::collections::HashSet<&str> =
+            plan_injections.iter().map(|i| i.id.as_str()).collect();
         assert!(ids.contains(a.plan_id.as_str()));
         assert!(ids.contains(b.plan_id.as_str()));
         assert!(ids.contains(c.plan_id.as_str()));
@@ -2564,7 +2766,11 @@ mod tests {
         assert!(child.privileged, "owner's child must be privileged");
         assert_eq!(
             child.parent_session_id.map(|id| id.to_string()).as_deref(),
-            Some(peko_session::SessionId::from("root:self").to_string().as_str())
+            Some(
+                peko_session::SessionId::from("root:self")
+                    .to_string()
+                    .as_str()
+            )
         );
 
         // The exchange landed in the child JSONL.
@@ -2591,7 +2797,14 @@ mod tests {
             streaming: false,
         };
         let response = manager
-            .receive_streaming(id.clone(), peer.clone(), "ping".to_string(), channel, Box::new(|_| {}), None)
+            .receive_streaming(
+                id.clone(),
+                peer.clone(),
+                "ping".to_string(),
+                channel,
+                Box::new(|_| {}),
+                None,
+            )
             .await
             .expect("receive should succeed");
         assert!(response.content.contains("a2a reply"));
@@ -2792,10 +3005,7 @@ mod tests {
 ///   - "Needs attention" — blocked/failed nodes (warnings)
 fn render_plan_focus_block(record: &PlanRecord) -> String {
     let mut out = String::new();
-    out.push_str(&format!(
-        "Plan: {} ({})\n",
-        record.title, record.plan_id
-    ));
+    out.push_str(&format!("Plan: {} ({})\n", record.title, record.plan_id));
 
     let in_progress = record.current_focus_nodes();
     if !in_progress.is_empty() {

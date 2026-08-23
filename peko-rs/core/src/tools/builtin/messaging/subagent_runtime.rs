@@ -150,11 +150,15 @@ pub trait SubagentRuntime: Send + Sync {
     /// `ExecutionConfig.max_depth` calls. The production adapter
     /// reads this from the executor's principal config; test
     /// fixtures override to assert the tool projects the value
-    /// onto the spawn request. Default `3` (the round-7
-    /// historical cap).
-    fn max_depth(&self) -> u32 {
-        3
-    }
+    /// onto the spawn request.
+    ///
+    /// Required: no default body. A previous default of `3` was
+    /// silently inherited by every production caller, masking the
+    /// fact that `SubagentExecutorRuntime` (the sole production
+    /// implementor) never actually plumbed the per-principal cap
+    /// through — depth was a constant 3 everywhere regardless of
+    /// configuration. Implementors MUST override.
+    fn max_depth(&self) -> u32;
 
     /// The spawning principal's workspace (the `<workspace>/agents/`
     /// resolution root). `None` means global agents only
@@ -170,11 +174,15 @@ pub trait SubagentRuntime: Send + Sync {
     /// callers (tests, async_executor) can still supply a
     /// session id. On the production `execute_with_context`
     /// path, `ctx.session_id` is preferred and this accessor is
-    /// the fallback. Default `None`; production adapter
-    /// overrides.
-    fn session_id(&self) -> Option<String> {
-        None
-    }
+    /// the fallback.
+    ///
+    /// Required: no default body. A previous default of `None`
+    /// was silently inherited by every production caller —
+    /// `SubagentExecutorRuntime` (the sole production
+    /// implementor) never overrode it, so `Tool::execute` with
+    /// no `ToolContext` had no session id to project. Test
+    /// fixtures override to inject a synthetic caller session.
+    fn session_id(&self) -> Option<String>;
 }
 
 /// Type alias for the shared runtime handle threaded through every

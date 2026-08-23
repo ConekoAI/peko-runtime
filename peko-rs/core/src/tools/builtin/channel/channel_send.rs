@@ -346,9 +346,7 @@ impl ChannelSendTool {
             Err(e) => {
                 return Ok(self.error_value(
                     "principal",
-                    &format!(
-                        "ChannelSend: caller-side peer child provisioning failed: {e}"
-                    ),
+                    &format!("ChannelSend: caller-side peer child provisioning failed: {e}"),
                 ));
             }
         };
@@ -390,9 +388,7 @@ impl ChannelSendTool {
             Err(e) => {
                 return Ok(self.error_value(
                     "principal",
-                    &format!(
-                        "ChannelSend: target-side peer child provisioning failed: {e}"
-                    ),
+                    &format!("ChannelSend: target-side peer child provisioning failed: {e}"),
                 ));
             }
         };
@@ -444,10 +440,7 @@ impl ChannelSendTool {
                     author,
                     text,
                     ..
-                } if *author == target_raw =>
-                {
-                    Some(text.clone())
-                }
+                } if *author == target_raw => Some(text.clone()),
                 _ => None,
             },
         )
@@ -549,8 +542,7 @@ impl ChannelSendTool {
         //    offline tunnel still leaves the routing state durable
         //    (the post below then stays local-only and the await times
         //    out cleanly).
-        let has_remote_member = match ctx.channel_port.local().list_remote_members(&channel).await
-        {
+        let has_remote_member = match ctx.channel_port.local().list_remote_members(&channel).await {
             Ok(rows) => rows.iter().any(|rm| rm.runtime_id == resolution.runtime_id),
             Err(e) => {
                 return Ok(self.error_value(
@@ -672,8 +664,8 @@ async fn await_reply(
             Ok(events) => {
                 for (_id, ev) in events {
                     if let Some(text) = matches(&ev) {
-                    return Some(text);
-                }
+                        return Some(text);
+                    }
                 }
             }
             Err(e) => {
@@ -827,13 +819,15 @@ User:         `{ "success": true, "kind": "user", "response": "Delivered as a no
         // choosing the prefix.
         match channel_id.kind() {
             ProtoChannelKind::Bare | ProtoChannelKind::Group => {
-                self.execute_bare(&channel_id, text, parent, &principal_str).await
+                self.execute_bare(&channel_id, text, parent, &principal_str)
+                    .await
             }
             ProtoChannelKind::Principal => {
                 self.execute_principal_branch(&channel_id, text, ctx).await
             }
             ProtoChannelKind::User => {
-                self.execute_user_branch(&channel_id, text, label, ctx).await
+                self.execute_user_branch(&channel_id, text, label, ctx)
+                    .await
             }
         }
     }
@@ -908,9 +902,9 @@ impl ChannelSendTool {
         ctx: &peko_tools_core::exec::ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
         let raw = channel_id.as_str();
-        let target_principal_did = raw
-            .strip_prefix("principal:")
-            .ok_or_else(|| anyhow::anyhow!("internal: principal branch requires 'principal:' prefix"))?;
+        let target_principal_did = raw.strip_prefix("principal:").ok_or_else(|| {
+            anyhow::anyhow!("internal: principal branch requires 'principal:' prefix")
+        })?;
         if target_principal_did.is_empty() {
             return Ok(self.error_value("principal", "ChannelSend: target DID is empty"));
         }
@@ -931,7 +925,11 @@ impl ChannelSendTool {
                 "ChannelSend: caller principal is not loaded on this runtime",
             ));
         };
-        let resolution = match cross_runtime.directory.resolve_by_did(target_principal_did).await {
+        let resolution = match cross_runtime
+            .directory
+            .resolve_by_did(target_principal_did)
+            .await
+        {
             Ok(r) => r,
             Err(err) => {
                 return Ok(self.error_value("principal", &match err {
@@ -948,10 +946,13 @@ impl ChannelSendTool {
             }
         };
         if matches!(resolution.exposure, ResolvedExposure::Unexposed) {
-            return Ok(self.error_value("principal", &format!(
-                "target principal is unexposed (runtime_id={}, instance_id={})",
-                resolution.runtime_id, resolution.instance_id
-            )));
+            return Ok(self.error_value(
+                "principal",
+                &format!(
+                    "target principal is unexposed (runtime_id={}, instance_id={})",
+                    resolution.runtime_id, resolution.instance_id
+                ),
+            ));
         }
         if resolution.agent_did.is_empty() {
             return Ok(self.error_value(
@@ -964,8 +965,14 @@ impl ChannelSendTool {
             self.execute_local(cross_runtime, &caller, target_principal_did, text)
                 .await
         } else {
-            self.execute_remote(cross_runtime, &caller, target_principal_did, text, &resolution)
-                .await
+            self.execute_remote(
+                cross_runtime,
+                &caller,
+                target_principal_did,
+                text,
+                &resolution,
+            )
+            .await
         }
     }
 
@@ -979,13 +986,11 @@ impl ChannelSendTool {
         label: Option<String>,
         ctx: &peko_tools_core::exec::ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
-        let target = Subject::from_str(channel_id.as_str()).map_err(|e| {
-            anyhow::anyhow!("ChannelSend: invalid user target '{channel_id}': {e}")
+        let target = Subject::from_str(channel_id.as_str())
+            .map_err(|e| anyhow::anyhow!("ChannelSend: invalid user target '{channel_id}': {e}"))?;
+        let principal_str = ctx.principal_id.clone().ok_or_else(|| {
+            anyhow::anyhow!("ChannelSend: user targets require a principal context")
         })?;
-        let principal_str = ctx
-            .principal_id
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("ChannelSend: user targets require a principal context"))?;
         let Some(messenger) = crate::principal::messenger::global_messenger() else {
             return Ok(self.error_value(
                 "user",
@@ -1049,7 +1054,9 @@ mod tests {
             _creator: &PrincipalId,
             _opts: CreateOpts,
         ) -> peko_channel::Result<ChannelId> {
-            Err(ChannelError::Adapter("create not implemented in test".into()))
+            Err(ChannelError::Adapter(
+                "create not implemented in test".into(),
+            ))
         }
 
         async fn invite(
@@ -1095,6 +1102,21 @@ mod tests {
             Ok(events.get(channel).cloned().unwrap_or_default())
         }
 
+        async fn peek_with_ids(
+            &self,
+            channel: &ChannelId,
+            since: &Checkpoint,
+        ) -> peko_channel::Result<Vec<(String, ChannelEvent)>> {
+            let events = self.peek(channel, since).await?;
+            // Test fixture: assign line numbers by event index; the
+            // subscription loop only needs strictly-increasing ids.
+            Ok(events
+                .into_iter()
+                .enumerate()
+                .map(|(i, ev)| ((i + 1).to_string(), ev))
+                .collect())
+        }
+
         async fn leave(
             &self,
             _channel: &ChannelId,
@@ -1122,7 +1144,9 @@ mod tests {
             &self,
             _channel: &ChannelId,
         ) -> peko_channel::Result<std::path::PathBuf> {
-            Err(ChannelError::Adapter("pin_to_shared not implemented in test".into()))
+            Err(ChannelError::Adapter(
+                "pin_to_shared not implemented in test".into(),
+            ))
         }
     }
 
@@ -1300,7 +1324,10 @@ mod tests {
         let res = tool
             .execute(json!({ "channel": "chan_a1b2c3d4", "text": "hi" }))
             .await;
-        assert!(res.is_err(), "bare execute must surface principal-missing error");
+        assert!(
+            res.is_err(),
+            "bare execute must surface principal-missing error"
+        );
     }
 
     // -----------------------------------------------------------------

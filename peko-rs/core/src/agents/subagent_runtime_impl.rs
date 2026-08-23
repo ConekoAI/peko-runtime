@@ -121,9 +121,8 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         // before loading any on-disk config. Missing authorization context
         // is denied, matching the canonical tool-execution funnel.
         self.executor.principal_capabilities().is_some_and(|caps| {
-            let required = crate::extensions::framework::types::Capability::new(format!(
-                "agent:{agent}"
-            ));
+            let required =
+                crate::extensions::framework::types::Capability::new(format!("agent:{agent}"));
             caps.is_granted(&required)
         })
     }
@@ -198,37 +197,23 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     }
 
     fn spawn_cost_estimate_usd(&self) -> Option<f64> {
-        // Phase 3 — same heuristic the spawn-time pre-flight
-        // uses: 4K input + 1K output projected through the
-        // provider's `PricingHint`. Returns `None` when the
+        // B8b.2: the estimator shares a formula with the
+        // pre-flight gate via `estimate_spawn_cost_usd` in
+        // `agents::subagent_executor`. Returns `None` when the
         // principal has no `cost_per_call_max` configured or
-        // the provider carries no pricing hint. Match the
-        // production pre-flight math exactly so the audit row
-        // and the gate agree.
-        let ceiling = self
+        // the provider carries no pricing hint. The surface
+        // estimate (regardless of whether the ceiling would
+        // have rejected the spawn) is what the audit row
+        // records — `ceiling` is consulted only to gate
+        // whether we populate the field at all.
+        let _ceiling = self
             .executor
             .quota_meter()
             .as_ref()
             .and_then(|m| m.config().cost_per_call_max)?;
         let provider = self.executor.provider_for_cost_estimate()?;
         let pricing = provider.spec().and_then(|s| s.pricing)?;
-        const EST_INPUT_TOKENS: u64 = 4_000;
-        const EST_OUTPUT_TOKENS: u64 = 1_000;
-        let input_cost = pricing
-            .input_per_million
-            .map_or(0.0, |rate| rate * EST_INPUT_TOKENS as f64 / 1_000_000.0);
-        let output_cost = pricing
-            .output_per_million
-            .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
-        let estimated = input_cost + output_cost;
-        // Surface the estimate regardless of whether the
-        // ceiling would have rejected it — the audit log shows
-        // what the estimator saw, not just the gate decision.
-        // `ceiling` is consulted only to decide whether to
-        // populate the field at all (pre-flight runs iff
-        // ceiling is `Some`).
-        let _ = ceiling;
-        Some(estimated)
+        Some(crate::agents::subagent_executor::estimate_spawn_cost_usd(&pricing))
     }
 
     async fn execute_and_wait(&self, request: SpawnRequest) -> anyhow::Result<SubagentRunView> {
@@ -359,6 +344,26 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     }
     fn principal_name(&self) -> Option<String> {
         self.executor.principal_name().map(str::to_owned)
+    }
+
+    /// B8a.3: explicit override. The trait previously defaulted to
+    /// `3` and `SubagentExecutorRuntime` silently inherited it; the
+    /// executor never plumbed a per-principal cap through, so the
+    /// historical cap was effectively a constant 3. Preserve that
+    /// exact value here; a future phase that wires a per-principal
+    /// `SubagentConfig.max_depth` should replace this body.
+    fn max_depth(&self) -> u32 {
+        3
+    }
+
+    /// B8a.3: explicit override. The trait previously defaulted to
+    /// `None` and the production adapter silently inherited it; on
+    /// the `Tool::execute` (no `ToolContext`) path the tool now
+    /// surfaces a `None` here rather than reaching for the trait
+    /// default. The `ToolContext`-preferred path in
+    /// `agent.rs:659` continues to work unchanged.
+    fn session_id(&self) -> Option<String> {
+        None
     }
 
     fn workspace(&self) -> Option<&Path> {

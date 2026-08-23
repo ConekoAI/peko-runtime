@@ -49,8 +49,8 @@ use crate::ipc::packet::{
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
-use crate::principal::manager::PrincipalManager;
-use crate::principal::peer_dm::{find_peer_dm_channel, post_peer_dm_inbound, post_peer_dm_reply};
+use crate::principal::manager::{IngressError, IngressMode, IngressOutcome, PrincipalManager};
+use crate::principal::peer_dm::{find_peer_dm_channel, post_peer_dm_reply};
 use crate::principal::router::{ChannelContext, ChannelKind};
 use crate::principal::Principal;
 use crate::registry::packaging::TrustStore;
@@ -1809,47 +1809,38 @@ async fn handle_principal_send_control(
             // inbox push is also skipped — silently accepting a
             // message whose persistence we couldn't honour would be a
             // silent-data-loss bug.
+            //
+            // B8c.4: Steer is by definition `SteerOnly` mode — the
+            // in-flight run consumes the steering push at its next
+            // iteration boundary. We never try_acquire_run a new
+            // permit here (would race with the in-flight run).
             let principal = host.principal_manager().get_by_name(&principal_name).await;
             match principal {
-                Some(p) => {
-                    // One ingress call resolves the peer's standing
-                    // child + DM channel (Phase 11); the steering push
-                    // keys the CHILD session inbox.
-                    match host
-                        .principal_manager()
-                        .ensure_peer_child_ingress(&p, &peer)
-                        .await
-                    {
-                        Ok(ingress) => {
-                            let port = host.principal_manager().channel_port();
-                            if let Err(e) = post_dm_inbound(
-                                port.as_ref(),
-                                &p,
-                                ingress.dm_channel.as_ref(),
-                                &peer.to_string(),
-                                &text,
-                            )
-                            .await
-                            {
-                                (
-                                    false,
-                                    Some(format!("Failed to persist steered chat input: {e}")),
-                                )
-                            } else {
-                                let inbox = host
-                                    .inbox_registry()
-                                    .get_or_create(&ingress.child_id)
-                                    .await;
-                                inbox.push(SteeringMessage::new(text).into()).await;
-                                (true, None)
-                            }
-                        }
-                        Err(e) => (
+                Some(p) => match host
+                    .principal_manager()
+                    .drive_principal_ingress(&p, &peer, &text, IngressMode::SteerOnly)
+                    .await
+                {
+                    Ok(IngressOutcome::Queued { .. }) => (true, None),
+                    Ok(IngressOutcome::Ready { .. }) => {
+                        // SteerOnly mode should never return Ready —
+                        // the helper unconditionally queues. Treat
+                        // this as a hard invariant violation rather
+                        // than silently dropping.
+                        (
                             false,
-                            Some(format!("Failed to resolve peer child session: {e}")),
-                        ),
+                            Some("Steer path returned Ready (expected Queued); helper invariant violation".to_string()),
+                        )
                     }
-                }
+                    Err(IngressError::Resolve(_)) => (
+                        false,
+                        Some("Failed to resolve peer child session".to_string()),
+                    ),
+                    Err(IngressError::Post(e)) => (
+                        false,
+                        Some(format!("Failed to persist steered chat input: {e}")),
+                    ),
+                },
                 None => (
                     false,
                     Some(format!(
@@ -2018,94 +2009,36 @@ async fn run_principal_send(
     // of which branch (drive / queue) runs below. A post failure
     // rejects the ingress with the same error shape the pre-Phase-11
     // chat-log write used.
-    let turns = match host
+    //
+    // B8c.4: the full ingress sequence (resolve child + DM channel,
+    // post inbound, acquire or queue) is unified in
+    // `drive_principal_ingress`. The IPC ingress differs from
+    // `receive_streaming` only in how it formats the outcome — same
+    // wire-format prefixes preserved below.
+    let ingress_outcome = host
         .principal_manager()
-        .peer_child_turns_for(&principal)
-        .await
-    {
-        Ok(t) => t,
-        Err(e) => {
-            let response = ResponsePacket::Error {
-                request_id,
-                message: format!("Failed to build peer-child turn driver: {e}"),
-            };
-            send_response(sink, response).await?;
-            let done = ResponsePacket::Done {
-                request_id,
-                success: false,
-                error: Some(e.to_string()),
-            };
-            send_response(sink, done).await?;
-            return Ok(());
-        }
-    };
-    let ingress = match turns.ensure_child_ingress(&peer).await {
-        Ok(i) => i,
-        Err(e) => {
-            let response = ResponsePacket::Error {
-                request_id,
-                message: format!("Failed to provision peer child session: {e:?}"),
-            };
-            send_response(sink, response).await?;
-            let done = ResponsePacket::Done {
-                request_id,
-                success: false,
-                error: Some(format!("{e:?}")),
-            };
-            send_response(sink, done).await?;
-            return Ok(());
-        }
-    };
-    let channel_port = host.principal_manager().channel_port();
-    let dm_channel = ingress.dm_channel.clone();
-    if let Err(e) = post_dm_inbound(
-        channel_port.as_ref(),
-        &principal,
-        dm_channel.as_ref(),
-        &peer.to_string(),
-        &message,
-    )
-    .await
-    {
-        let response = ResponsePacket::Error {
-            request_id,
-            message: format!("Failed to persist chat input: {e}"),
-        };
-        send_response(sink, response).await?;
-        let done = ResponsePacket::Done {
-            request_id,
-            success: false,
-            error: Some(e.to_string()),
-        };
-        send_response(sink, done).await?;
-        return Ok(());
-    }
-
-    // Per-session run permit. The principal IPC must honor the same
-    // serial-queue contract as `PrincipalManager::receive_streaming`:
-    // only one run may be active per (peer, child session) at a
-    // time. If a run is already in flight, the message is queued as a
-    // `SteeringMessage` and the caller gets a "Queued…" response — the
-    // existing `PrincipalSendControl::Steer` IPC will inject it at the
-    // next iteration boundary of the in-flight run. The input was
-    // already posted to the peer's DM channel above (Phase 11), so
-    // consumer chat history stays consistent regardless of which
-    // branch we take. Without this guard, two concurrent
-    // `principal_send*` calls for the same peer would spawn two
-    // parallel runs over the same session and any steered push keyed
-    // by that session-id would be drained by whichever loop ran first.
-    let session_id = ingress.child_id;
-    let _permit_guard = match host.inbox_registry().try_acquire_run(&session_id).await {
-        Some(g) => g,
-        None => {
-            let inbox = host.inbox_registry().get_or_create(&session_id).await;
-            inbox
-                .push(SteeringMessage::new(message.clone()).into())
-                .await;
+        .drive_principal_ingress(&principal, &peer, &message, IngressMode::Interactive)
+        .await;
+    // The `permit` inside the Ready variant is the per-session run
+    // permit that gates concurrent `principal_send*` calls — it MUST
+    // stay alive for the lifetime of the streaming task that runs
+    // after this match. Bind it before the match so the binding
+    // outlives the early-return branches (Queued/Err).
+    let (session_id, dm_channel, _permit_guard): (
+        String,
+        Option<peko_channel::ChannelId>,
+        Option<peko_session::RunPermitGuard>,
+    ) = match ingress_outcome {
+        Ok(IngressOutcome::Ready {
+            child_id,
+            dm_channel,
+            permit,
+        }) => (child_id, dm_channel, Some(permit)),
+        Ok(IngressOutcome::Queued { child_id }) => {
             // Phase 11: the "Queued…" notice is transport UX — no DM
             // channel row; the inbound post above is the durable
             // record.
-            let queued = format!("Queued for root agent session {session_id}.");
+            let queued = format!("Queued for root agent session {child_id}.");
             let final_packet = match response_kind {
                 PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
                     request_id,
@@ -2126,7 +2059,34 @@ async fn run_principal_send(
             host.record_principal_activity(&name).await;
             return Ok(());
         }
+        Err(e) => {
+            let msg = match &e {
+                IngressError::Resolve(_) => "Failed to resolve peer child ingress",
+                IngressError::Post(_) => "Failed to persist chat input",
+            };
+            let err_str = format!("{e}");
+            let response = ResponsePacket::Error {
+                request_id,
+                message: format!("{msg}: {err_str}"),
+            };
+            send_response(sink, response).await?;
+            let done = ResponsePacket::Done {
+                request_id,
+                success: false,
+                error: Some(err_str),
+            };
+            send_response(sink, done).await?;
+            return Ok(());
+        }
     };
+    // Local alias for the post-dm-reply call sites below. The
+    // helper post-dm-inbound internally; the post-dm-reply path is
+    // caller-driven (the streaming task owns the response text).
+    let channel_port = host.principal_manager().channel_port();
+
+    // silence unused-bindings warning when the early-return arms above
+    // are the only path taken in tests (none — kept for robustness)
+    let _permit_guard = _permit_guard;
 
     // Bounded channel for streaming events. Capacity 256; a slow client
     // back-pressures the root agent (events are dropped on `try_send`
@@ -2140,6 +2100,17 @@ async fn run_principal_send(
     // peer-child turn (`PeerChildTurns::drive_turn_streaming`), whose
     // `StreamingResumeOutcome.final_text` is the authoritative answer
     // the success packet carries.
+    //
+    // B8c.4: re-fetch `turns` from the principal manager. The helper
+    // already built the cached instance internally; this is a single
+    // `HashMap` lookup, not a re-construction.
+    let turns = host
+        .principal_manager()
+        .peer_child_turns_for(&principal)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("failed to build peer-child turn driver after ingress: {e}")
+        })?;
     let (result_tx, result_rx) =
         tokio::sync::oneshot::channel::<anyhow::Result<StreamingResumeOutcome>>();
 
@@ -2387,7 +2358,13 @@ async fn run_principal_send(
             let content = outcome.final_text;
             // Phase 11: the reply's durable home is the peer's DM
             // channel (principal-authored).
-            post_dm_reply(channel_port.as_ref(), &principal, dm_channel.as_ref(), &content).await;
+            post_dm_reply(
+                channel_port.as_ref(),
+                &principal,
+                dm_channel.as_ref(),
+                &content,
+            )
+            .await;
             // Peer-recall artifact: the peer's latest session is the
             // child (Phase 7); future turns recall it via
             // `find_latest_session_for_peer`.
@@ -2491,27 +2468,6 @@ async fn run_principal_send(
             };
             send_response(sink, done).await?;
         }
-    }
-    Ok(())
-}
-
-/// Phase 11: post a peer's inbound message to the peer's DM channel,
-/// attributed to the peer's Subject wire form. A no-op when no
-/// channel port is attached or no DM channel was provisioned
-/// (port-less contexts: tests / standalone); `Some` + failure rejects
-/// the ingress so the consumer cannot believe they sent something
-/// that never entered the conversation's durable home.
-async fn post_dm_inbound(
-    port: Option<&Arc<dyn ChannelPort>>,
-    principal: &Principal,
-    dm_channel: Option<&ChannelId>,
-    author: &str,
-    text: &str,
-) -> anyhow::Result<()> {
-    if let (Some(port), Some(dm)) = (port, dm_channel) {
-        post_peer_dm_inbound(port, &principal.id, dm, author, text)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
     }
     Ok(())
 }
@@ -2652,7 +2608,13 @@ async fn run_steering_successor(
 
     let content = outcome.final_text;
 
-    post_dm_reply(channel_port.as_ref(), principal, dm_channel.as_ref(), &content).await;
+    post_dm_reply(
+        channel_port.as_ref(),
+        principal,
+        dm_channel.as_ref(),
+        &content,
+    )
+    .await;
     host.principal_manager()
         .record_peer_recall(principal, &peer, session_id, &content)
         .await;
@@ -3246,7 +3208,10 @@ async fn read_principal_log(
     let principal_subject = Subject::Principal(principal.did().await);
     let mut rows: Vec<(u64, PrincipalLogMessage)> = Vec::new();
     for (line, event) in events {
-        let ChannelEvent::Posted { author, text, at, .. } = event else {
+        let ChannelEvent::Posted {
+            author, text, at, ..
+        } = event
+        else {
             continue;
         };
         // The store keys events by line number; skip anything that
@@ -3523,9 +3488,13 @@ mod tests {
                 )
                 .await
                 .expect("inbound post");
-                port.post(&fx.channel, &fx.principal.id, PostMsg::root(format!("answer {i}")))
-                    .await
-                    .expect("reply post");
+                port.post(
+                    &fx.channel,
+                    &fx.principal.id,
+                    PostMsg::root(format!("answer {i}")),
+                )
+                .await
+                .expect("reply post");
             }
         }
 
