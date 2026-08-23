@@ -231,18 +231,6 @@ impl CronJobAction {
             Self::SpawnTool { .. } => "spawn_tool",
         }
     }
-
-    /// Whether the action is a [`Self::Send`].
-    #[must_use]
-    pub fn is_send(&self) -> bool {
-        matches!(self, Self::Send { .. })
-    }
-
-    /// Whether the action is a [`Self::SpawnTool`].
-    #[must_use]
-    pub fn is_spawn_tool(&self) -> bool {
-        matches!(self, Self::SpawnTool { .. })
-    }
 }
 
 /// A scheduled cron job.
@@ -286,18 +274,6 @@ pub struct CronJob {
 }
 
 impl CronJob {
-    /// Whether the job's action is [`CronJobAction::Send`].
-    #[must_use]
-    pub fn is_send(&self) -> bool {
-        self.action.is_send()
-    }
-
-    /// Whether the job's action is [`CronJobAction::SpawnTool`].
-    #[must_use]
-    pub fn is_spawn_tool(&self) -> bool {
-        self.action.is_spawn_tool()
-    }
-
     /// A short description for the steer message body. Falls back to
     /// the job's `name` and finally a generic label.
     #[must_use]
@@ -346,43 +322,6 @@ pub fn normalize_cron_expr(expr: &str) -> String {
     match parts.len() {
         5 => format!("0 {trimmed} *"),
         _ => trimmed.to_string(),
-    }
-}
-
-/// Build a `Send`-action [`CronJob`] from caller parameters.
-///
-/// `next_run` is precomputed by the caller (the cron engine will
-/// re-evaluate on its own clock, but the initial schedule fires
-/// from this value). `target` is the optional session target — see
-/// [`CronJobAction::Send`]; the daemon-side `CronScheduler::add_job`
-/// validation ([`validate_send_target`]) rejects unknown values even
-/// for in-process construction paths that bypass serde.
-#[allow(clippy::too_many_arguments)]
-pub fn build_send_job(
-    id: String,
-    name: String,
-    principal_id: PrincipalId,
-    schedule: ScheduleKind,
-    message: String,
-    delete_after_run: bool,
-    next_run: DateTime<Utc>,
-    target: Option<String>,
-) -> CronJob {
-    CronJob {
-        id,
-        name,
-        principal_id,
-        schedule,
-        action: CronJobAction::Send { message, target },
-        delete_after_run,
-        enabled: true,
-        created_at: Utc::now(),
-        next_run,
-        last_run: None,
-        last_status: None,
-        run_count: 0,
-        consecutive_failures: 0,
-        max_retries: None,
     }
 }
 
@@ -479,21 +418,6 @@ pub fn resolve_label(params: &serde_json::Value) -> String {
         .and_then(|v| v.as_str())
         .map(String::from)
         .unwrap_or_else(|| format!("cron-{}", Uuid::new_v4().simple()))
-}
-
-/// Resolve the task/prompt from parameters.
-pub fn resolve_prompt(params: &serde_json::Value) -> Result<String> {
-    params
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| {
-            params
-                .get("task")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
-        .ok_or_else(|| anyhow::anyhow!("prompt is required"))
 }
 
 /// Resolve whether the job should delete after run (one-shot).

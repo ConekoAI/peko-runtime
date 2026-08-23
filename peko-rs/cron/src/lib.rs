@@ -31,16 +31,14 @@
 //! pure data (`CronJob` / `&str` / `Vec<CronJob>`). The adapter wires
 //! the trait methods through to `DaemonClient` calls.
 
-// Crate-wide `dead_code` allow is intentional: `CronScheduler` exposes
-// several type predicates (`is_send`/`is_spawn_tool`) and builder
-// helpers (`build_send_job`/`build_spawn_tool_job`/`calculate_next_run_for_job`/
-// `list_jobs_for_principal`/`resolve_prompt`) that lint flags as dead
-// from the crate's root because nothing in this crate's `lib.rs`
-// symbols references them directly — they are consumed only by tests
-// in `lib.rs::tests` + by `peko_core::daemon::cron_runtime` callers
-// through `pub use tools::{...}` re-exports. Keep the allow narrow
-// here; tighten at each helper's site if a future cleanup proves a
-// subset unreachable.
+// Crate-wide `dead_code` allow is intentionally narrow: it covers
+// the builder helpers (`build_send_job`/`build_spawn_tool_job`/
+// `resolve_prompt`) that lint flags as dead from the crate's root
+// because nothing in this crate's `lib.rs` symbols references them
+// directly — they are consumed only via `pub use tools::{...}`
+// re-exports by `peko_core::daemon::cron_runtime` and adjacent
+// callers. Keep the allow narrow here; tighten at each helper's site
+// if a future cleanup proves a subset unreachable.
 #![allow(dead_code)]
 
 pub mod idle;
@@ -65,9 +63,9 @@ use tracing::info;
 // IPC handlers) imports from `peko_cron::*` directly.
 #[allow(unused_imports)]
 pub use tools::{
-    build_send_job, build_spawn_tool_job, calculate_next_interval_anchored, calculate_next_run,
+    build_spawn_tool_job, calculate_next_interval_anchored, calculate_next_run,
     global_runtime, normalize_cron_expr, render_job_list, resolve_delete_after_run, resolve_label,
-    resolve_prompt, resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
+    resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
     CronJob, CronJobAction, CronListTool, CronRuntime, ScheduleKind,
     DEFAULT_MAX_RETRIES,
 };
@@ -261,22 +259,6 @@ impl CronScheduler {
         Ok(jobs)
     }
 
-    /// List cron jobs for a specific Principal.
-    ///
-    /// **Phase B.** Filters by `PrincipalId` rather than the legacy
-    /// `principal_name: String`; the on-disk schedule file is one-per-
-    /// principal so the caller's already narrowed to a single principal's
-    /// file, but the field-level filter now matches the wire shape.
-    pub fn list_jobs_for_principal(
-        &self,
-        principal_id: &peko_subject::PrincipalId,
-        include_disabled: bool,
-    ) -> Result<Vec<CronJob>> {
-        let mut jobs = self.list_jobs(include_disabled)?;
-        jobs.retain(|j| &j.principal_id == principal_id);
-        Ok(jobs)
-    }
-
     /// Get jobs that are due to run
     pub fn due_jobs(&self, now: DateTime<Utc>) -> Result<Vec<CronJob>> {
         let db = self.read_db()?;
@@ -347,12 +329,7 @@ impl CronScheduler {
     /// Recompute the cron job's `next_run` based on its stored
     /// schedule. Returns `None` for schedules that never re-fire
     /// (e.g. `At`) or when the job id is unknown.
-    pub fn calculate_next_run_for_job(&self, job_id: &str) -> Result<Option<DateTime<Utc>>> {
-        let Some(job) = self.get_job(job_id)? else {
-            return Ok(None);
-        };
-        Ok(Some(calculate_next_run(&job.schedule, Utc::now())?))
-    }
+    /// Delete a job. Run history is intentionally preserved: one-shot
 
     /// Delete a job. Run history is intentionally preserved: one-shot
     /// (`delete_after_run`) jobs delete themselves after firing, and
@@ -527,8 +504,7 @@ mod tests {
         let jobs = scheduler.list_jobs(false).unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].name, "Test Job");
-        assert!(jobs[0].is_send());
-        assert!(!jobs[0].is_spawn_tool());
+        assert_eq!(jobs[0].action.kind_label(), "send");
     }
 
     /// One-shot (`delete_after_run`) jobs delete themselves after a

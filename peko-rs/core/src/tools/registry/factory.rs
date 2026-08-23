@@ -25,13 +25,13 @@
 //!
 //! Note: Custom tools can also be disabled by name.
 
-use crate::tools::builtin::BashTool;
-use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool};
-use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
-use peko_tools_core::traits::Tool;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[cfg(test)]
+use peko_tools_core::traits::Tool;
+#[cfg(test)]
+use std::collections::HashSet;
 
 // Extension Framework integration
 
@@ -42,13 +42,16 @@ use std::sync::Arc;
 ///
 /// Note: This is unrelated to the `tool_registry` module which handles
 /// downloading and installing tools from remote registries.
+#[cfg(test)]
 struct DisabledToolFilter {
     tools: Vec<Arc<dyn Tool>>,
     disabled: Vec<String>,
     disabled_set: HashSet<String>,
 }
 
+#[cfg(test)]
 impl DisabledToolFilter {
+
     fn new(disabled_tools: &[String]) -> Self {
         let disabled_set: HashSet<String> =
             disabled_tools.iter().map(|s| s.to_lowercase()).collect();
@@ -295,6 +298,7 @@ impl std::fmt::Debug for ToolCreationResult {
     }
 }
 
+#[cfg(test)]
 impl ToolFactory {
     /// Create all essential tools based on configuration (synchronous version)
     ///
@@ -302,6 +306,10 @@ impl ToolFactory {
     /// from the returned list and won't be shown to the LLM.
     #[must_use]
     pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult {
+        use crate::tools::builtin::BashTool;
+        use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool};
+        use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
+
         let mut registry = DisabledToolFilter::new(&config.disabled_tools);
 
         // Filesystem tool
