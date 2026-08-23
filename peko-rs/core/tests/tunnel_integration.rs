@@ -619,5 +619,16 @@ async fn test_instance_announce_publishes_transport_fields() {
     );
     let body: serde_json::Value = dir_resp.json().await.unwrap();
     assert_eq!(body["transportPreference"], "direct");
-    assert_eq!(body["directEndpoint"], "wss://example.com:11436");
+    // B5 cleanup: `runtime_direct_endpoint` was dropped from the
+    // announce payload (transport gone — all cross-runtime traffic
+    // flows through the tunnel relay). Pekohub only updates
+    // `directEndpoint` when the runtime includes it in the announce,
+    // so the directory now returns `null` (or omits) for this field.
+    // The wire-shape decoder still accepts it as an optional
+    // backward-compat field (see `hub_directory.rs::test_agent_resolution_*`).
+    assert!(
+        body["directEndpoint"].is_null(),
+        "directEndpoint should be null after B5 (runtime no longer sends runtime_direct_endpoint), got: {}",
+        body["directEndpoint"]
+    );
 }
