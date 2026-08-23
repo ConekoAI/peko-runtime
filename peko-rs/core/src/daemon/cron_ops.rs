@@ -25,21 +25,6 @@ use crate::common::authority::RuntimeAuthority;
 use crate::common::paths::PathResolver;
 use crate::principal::manager::PrincipalManager;
 
-/// Discriminator for [`CronOps::authorize`] — picks between the
-/// schedule-write gate (Add/Remove/Run) and the history gate (History).
-///
-/// **Read-via-write-cap invariant:** `CronOp::History` is gated by
-/// `principal:write_cron_history` because there is no separate read cap
-/// for cron history. The capability string is reused deliberately
-/// (see PR #339); the gate key is `local_cron_history_gate_for_name`.
-/// If a separate read cap is ever introduced, split the gate AND the
-/// starter-bundle grants at the same time.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum CronOp {
-    Mutate,
-    History,
-}
-
 /// Narrow bundle of daemon state the cron ops need. Cheap to clone
 /// (Arc/PathResolver are cheap); handlers build one per request.
 pub(crate) struct CronOps {
@@ -78,7 +63,7 @@ impl CronOps {
         };
         let principal_name = p.name().await;
         let caps = p.capabilities().await;
-        self.gate(&principal_name, &caps, CronOp::Mutate)?;
+        self.gate(&principal_name, &caps)?;
 
         let cron_db = self.path_resolver.cron_schedule(&principal_name);
         let scheduler =
@@ -93,7 +78,7 @@ impl CronOps {
     /// Delete a job by id. Returns `Ok(false)` when the job is not
     /// found under any loaded principal.
     pub(crate) async fn remove_job(&self, job_id: &str) -> Result<bool, String> {
-        let (principal_name, cron_db, _caps) = self.authorize(job_id, CronOp::Mutate).await?;
+        let (principal_name, cron_db, _caps) = self.authorize(job_id).await?;
         let scheduler =
             CronScheduler::new(&cron_db).map_err(|e| format!("Cron DB error: {e}"))?;
         let removed = scheduler
@@ -195,9 +180,8 @@ impl CronOps {
         Err(format!("Job {job_id} not found"))
     }
 
-    /// Resolve the owner of `job_id` and run the tier + capability gate
-    /// for `op`. Returns the owner's name, schedule file path, and
-    /// capabilities.
+    /// Resolve the owner of `job_id` and run the owner-cap gate.
+    /// Returns the owner's name, schedule file path, and capabilities.
     ///
     /// **Cross-tenant enforcement.** The cap check fires against the
     /// OWNER's capabilities, so a caller authorized for principal B
@@ -207,7 +191,6 @@ impl CronOps {
     pub(crate) async fn authorize(
         &self,
         job_id: &str,
-        op: CronOp,
     ) -> Result<(String, PathBuf, Capabilities), String> {
         let (principal_name, cron_db) = self.resolve_principal_for_job(job_id).await?;
 
@@ -224,30 +207,21 @@ impl CronOps {
         let caps =
             caps.ok_or_else(|| format!("Principal '{principal_name}' is not loaded"))?;
 
-        self.gate(&principal_name, &caps, op)?;
+        self.gate(&principal_name, &caps)?;
         Ok((principal_name, cron_db, caps))
     }
 
-    /// The owner-capability gate shared by every mutating/history op.
-///
-/// Both arms resolve a `LocalPath` as the gate token; the IPC handler
-/// doesn't need the path itself — `CronOps::authorize` only returns
-/// the path for future use. The path-discarding `map(|_| ())` keeps
-/// the gate surface uniform across `Mutate` and `History`.
-    fn gate(&self, principal_name: &str, caps: &Capabilities, op: CronOp) -> Result<(), String> {
-        let gate = match op {
-            CronOp::Mutate => self
-                .authority
-                .local_cron_schedule_write_for_name(principal_name, Some(caps))
-                .map(|_| ()),
-            CronOp::History => self
-                .authority
-                .local_cron_history_gate_for_name(principal_name, Some(caps))
-                .map(|_| ()),
-        };
-        gate.map_err(|e| {
-            warn!("cron {op:?} capability denied for principal {principal_name}: {e}");
-            format!("[permission_denied] {e}")
-        })
+    /// Owner-capability gate shared by every cron op (mutate, manual
+    /// run, history read). The single cap is `principal:write_cron` —
+    /// cron history lives inside the schedule file, so reading it is
+    /// the same authority as writing it.
+    fn gate(&self, principal_name: &str, caps: &Capabilities) -> Result<(), String> {
+        self.authority
+            .local_cron_schedule_write_for_name(principal_name, Some(caps))
+            .map(|_| ())
+            .map_err(|e| {
+                warn!("cron capability denied for principal {principal_name}: {e}");
+                format!("[permission_denied] {e}")
+            })
     }
 }

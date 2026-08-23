@@ -106,9 +106,6 @@ pub mod skill_catalog;
 pub mod store;
 pub mod store_trait;
 
-/// Subagent spawning port-trait (extension-type adapter).
-pub mod subagent;
-
 /// Engine-facing surface of root's `ExtensionCore`. The trait port
 /// lives in `peko_extension_api::ToolFunnel`; the concrete impl lives
 /// in `tool_funnel_impl.rs` at this path. The trait-and-impl pair

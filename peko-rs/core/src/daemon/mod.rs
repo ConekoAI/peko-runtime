@@ -585,7 +585,7 @@ mod e2e_tests;
 /// active reads via the `ChannelRead` tool). Post-boot channels (created
 /// or joined after this enumeration) are covered by the supervisor's
 /// `ensure_subscriber`, wired to the `ChannelHost::channel_created` /
-/// `kickoff_channel_read` hooks.
+/// `ensure_invitee_subscriber` hooks.
 ///
 /// `app_state` must already be constructed (drift check ran, principals
 /// are loaded). The function returns the `JoinHandle`s so a future

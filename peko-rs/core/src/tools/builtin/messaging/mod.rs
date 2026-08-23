@@ -10,7 +10,7 @@
 //! ## DTOs
 //!
 //! [`SpawnError`], [`ExecutionConfig`],
-//! [`CompletedRun`], [`SubagentResult`], and [`SubagentRunView`] are
+//! [`SubagentResult`], and [`SubagentRunView`] are
 //! the canonical DTOs the port traffics in. Root re-exports each via
 //! `pub use crate::tools::builtin::messaging::...` for backwards
 //! compatibility. [`SpawnCleanupPolicy`] is re-exported from
@@ -40,7 +40,7 @@ pub mod subagent_runtime;
 
 pub use agent::{AgentArgs, AgentTool};
 pub use dto::{
-    CompletedRun, ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult,
+    ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult,
     SubagentRunView,
 };
 pub use subagent_runtime::{SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime};

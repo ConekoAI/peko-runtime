@@ -8,7 +8,6 @@ use crate::tools::{global_runtime, render_job_list};
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// `CronList` tool — list scheduled jobs
@@ -27,16 +26,6 @@ impl Default for CronListTool {
     }
 }
 
-/// `CronList` tool arguments
-///
-/// Accepts an empty object. Sprint 7 trim (Commit A): `status_filter` and
-/// `kind_filter` were declared + schema'd but the body never read them —
-/// pure no-op fields. The struct stays as a named token so the
-/// deserialization call site remains unchanged; future filters can land
-/// here when they have an actual consumer.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CronListArgs {}
-
 #[async_trait]
 impl Tool for CronListTool {
     fn name(&self) -> &'static str {
@@ -48,10 +37,8 @@ impl Tool for CronListTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // Sprint 7 Commit A: empty properties — `status_filter` and
-        // `kind_filter` were declared but never read in
-        // `execute_with_context`. Re-add a property here when an actual
-        // filter ships.
+        // Empty properties — list takes no parameters today. Re-add a
+        // property here when an actual filter ships.
         json!({
             "type": "object",
             "properties": {}
@@ -66,7 +53,7 @@ impl Tool for CronListTool {
 
     async fn execute_with_context(
         &self,
-        params: serde_json::Value,
+        _params: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
         // **Phase B.** Filter by the principal's stable DID rather than
@@ -80,9 +67,6 @@ impl Tool for CronListTool {
         let runtime = global_runtime().ok_or_else(|| {
             anyhow::anyhow!("CronList requires the daemon's cron runtime; not initialized")
         })?;
-
-        let _args: CronListArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid CronList arguments: {e}"))?;
 
         let jobs = runtime.list_jobs().await?;
         let filtered: Vec<_> = jobs

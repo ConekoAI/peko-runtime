@@ -88,8 +88,6 @@ pub struct LocalLayout {
     pub cron_dir: PathBuf,
     /// `…/local/cron/schedule.toml`
     pub cron_schedule: PathBuf,
-    /// `…/local/cron/history.log`
-    pub cron_history: PathBuf,
     /// `…/local/cache/` — tool scratch space.
     pub cache_dir: PathBuf,
     /// `…/local/locks/` — principal-scoped lock files.
@@ -412,7 +410,6 @@ impl PathResolver {
                 memory_index: local_root.join("memory_index.json"),
                 cron_dir: local_root.join("cron"),
                 cron_schedule: local_root.join("cron").join("schedule.toml"),
-                cron_history: local_root.join("cron").join("history.log"),
                 cache_dir: local_root.join("cache"),
                 locks_dir: local_root.join("locks"),
                 plans_dir: local_root.join("plans"),
@@ -630,14 +627,6 @@ impl PathResolver {
             return Some(peko_subject::PrincipalId(did.to_string()));
         }
         None
-    }
-
-    /// Per-principal cron history log (Local tier).
-    ///
-    /// Path: `{data_dir}/principals/{principal}/local/cron/history.log`
-    #[must_use]
-    pub fn cron_history(&self, principal: &str) -> PathBuf {
-        self.principal_layout(principal).local.cron_history
     }
 
     /// Per-principal cron directory (Local tier).
@@ -1033,7 +1022,6 @@ mod tests {
         assert!(local
             .cron_schedule
             .ends_with("alice/local/cron/schedule.toml"));
-        assert!(local.cron_history.ends_with("alice/local/cron/history.log"));
         assert!(local.cache_dir.ends_with("alice/local/cache"));
         assert!(local.locks_dir.ends_with("alice/local/locks"));
         assert!(local.plans_dir.ends_with("alice/local/plans"));
@@ -1385,12 +1373,6 @@ impl GlobalPaths {
     #[must_use]
     pub fn cron_schedule(&self, principal: &str) -> PathBuf {
         self.resolver.cron_schedule(principal)
-    }
-
-    /// Per-principal cron history log (Local tier).
-    #[must_use]
-    pub fn cron_history(&self, principal: &str) -> PathBuf {
-        self.resolver.cron_history(principal)
     }
 
     /// Per-principal cron directory (Local tier).

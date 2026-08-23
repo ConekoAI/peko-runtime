@@ -10,15 +10,15 @@
 //! supply `tool` and `params` (the JSON schema's `required` enforces
 //! this).
 
-use crate::tools::{
-    add_job_via_runtime, build_spawn_tool_job, global_runtime, resolve_delete_after_run,
-    resolve_label, resolve_schedule_kind,
-};
+use crate::tools::{add_job_via_runtime, global_runtime, resolve_schedule_kind};
+use crate::{CronJob, CronJobAction};
 use async_trait::async_trait;
+use chrono::Utc;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use uuid::Uuid;
 
 /// `CronCreate` tool — create scheduled jobs
 pub struct CronCreateTool;
@@ -90,7 +90,11 @@ fn resolve_one_shot(
     params: &serde_json::Value,
     schedule: &crate::ScheduleKind,
 ) -> bool {
-    resolve_delete_after_run(params) || matches!(schedule, crate::ScheduleKind::At { .. })
+    params
+        .get("one_shot")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || matches!(schedule, crate::ScheduleKind::At { .. })
 }
 
 /// Resolve the job's schedule. `delay` (relative shorthand) wins when
@@ -235,27 +239,40 @@ impl Tool for CronCreateTool {
 
         let schedule = resolve_schedule(&args, &params)?;
         let delete_after_run = resolve_one_shot(&params, &schedule);
-        let label = resolve_label(&params);
+        let label = params
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("cron-{}", Uuid::new_v4().simple()));
 
         // Generate the job ID + compute next_run here. `next_run` is
         // best-effort — the daemon cron engine re-evaluates on its own
         // clock, but we precompute so the `add_job_via_runtime` response
         // shape can include a `next_run_at` field immediately.
-        let job_id = format!("cron_{}", uuid::Uuid::new_v4().simple());
+        let job_id = format!("cron_{}", Uuid::new_v4().simple());
         let next_run = crate::tools::calculate_next_run(&schedule, chrono::Utc::now())?;
 
-        let job = build_spawn_tool_job(
-            job_id,
-            label,
-            peko_subject::PrincipalId(principal_id.clone()),
+        let job = CronJob {
+            id: job_id,
+            name: label,
+            principal_id: peko_subject::PrincipalId(principal_id.clone()),
             schedule,
-            tool,
-            tool_params,
+            action: CronJobAction::SpawnTool {
+                tool_name: tool,
+                tool_params,
+                wake_on_completion: args.wake_on_completion,
+                timeout_secs: args.timeout_secs,
+            },
             delete_after_run,
+            enabled: true,
+            created_at: Utc::now(),
             next_run,
-            args.wake_on_completion,
-            args.timeout_secs,
-        );
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
         add_job_via_runtime(&runtime, job).await
     }
 }

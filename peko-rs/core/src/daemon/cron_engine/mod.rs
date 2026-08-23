@@ -44,12 +44,11 @@ pub struct CronEngine {
     schedulers: Arc<Mutex<HashMap<PrincipalId, Arc<CronScheduler>>>>,
     path_resolver: PathResolver,
     /// **Phase C.** Engine-internal `RuntimeAuthority` for the
-    /// `local_cron_schedule_runtime` / `local_cron_history_runtime`
-    /// accessors. The engine writes cron files on behalf of the
-    /// principal owner (not a peer session), so the capability gate is
-    /// intentionally bypassed — the principal's `[[permissions]]` ACL is
-    /// the only gate at this layer. Built once at construction via
-    /// `RuntimeAuthority::for_runtime(...)`.
+    /// `local_cron_schedule_runtime` accessor. The engine writes cron
+    /// files on behalf of the principal owner (not a peer session), so
+    /// the capability gate is intentionally bypassed — the principal's
+    /// `[[permissions]]` ACL is the only gate at this layer. Built once
+    /// at construction via `RuntimeAuthority::for_runtime(...)`.
     authority: Arc<RuntimeAuthority>,
     idle_detector: Arc<IdleDetector>,
     observability: Arc<Observability>,
@@ -68,8 +67,7 @@ impl CronEngine {
     /// Create a new cron engine.
     ///
     /// `path_resolver` is the typed resolver; cron state for each
-    /// principal lives at `<resolver>.cron_schedule(name)` and
-    /// `<resolver>.cron_history(name)`.
+    /// principal lives at `<resolver>.cron_schedule(name)`.
     /// `async_executor` is the daemon-shared executor used to fire
     /// `CronJobAction::SpawnTool` jobs. Pass a fresh `Arc<AsyncExecutor>`
     /// (built with `AsyncExecutor::new(standalone_inbox_registry())`) when
@@ -431,7 +429,7 @@ impl CronEngine {
             peko_cron::ScheduleKind::Every { every_ms } => {
                 peko_cron::calculate_next_interval_anchored(job.next_run, *every_ms, finished_at)
             }
-            _ => scheduler.calculate_next_run(&job.schedule, finished_at)?,
+            _ => peko_cron::calculate_next_run(&job.schedule, finished_at)?,
         };
         scheduler.update_job_after_run(&job.id, &status, next_run)?;
 
@@ -777,14 +775,21 @@ impl CronEngine {
     }
 }
 
-/// Translate an `AsyncTaskStatus` into the wire string the cron
+/// Translate a terminal `AsyncTaskStatus` into the wire string the cron
 /// `CronRun.status` field has historically used.
 ///
 /// `Completed` is collapsed to `"success"` so existing users (the CLI
 /// renderer, history grep) keep matching what the `Send` path emitted.
 /// Failures / timeouts / cancellations keep the executor's names so an
-/// operator can correlate cron history with `AsyncOutput`.
+/// operator can correlate cron history with `AsyncOutput`. The caller
+/// gates on [`AsyncTaskStatus::is_terminal`] so non-terminal variants
+/// (Pending, Running) never reach this match; the catch-all arm is a
+/// defensive `unreachable!` for that contract.
 fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<String>) {
+    debug_assert!(
+        status.is_terminal(),
+        "map_async_status called with non-terminal status: {status:?}"
+    );
     match status {
         AsyncTaskStatus::Completed { result } => {
             let rendered = result
@@ -801,11 +806,7 @@ fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<
             Some("cancelled by user".to_string()),
         ),
         AsyncTaskStatus::TimedOut { error } => ("timed_out".to_string(), None, Some(error)),
-        other => (
-            other.as_str().to_string(),
-            None,
-            Some("run did not reach terminal state".to_string()),
-        ),
+        _ => unreachable!("caller must gate on AsyncTaskStatus::is_terminal()"),
     }
 }
 

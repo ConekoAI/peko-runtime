@@ -66,7 +66,7 @@ pub(crate) trait ChannelHost: Send + Sync {
     /// `AsyncSpawn` of `ChannelRead` via `AsyncExecutor::spawn`)
     /// override this to fire the dispatch — the handler keeps the
     /// log + swallow contract.
-    fn kickoff_channel_read(
+    fn ensure_invitee_subscriber(
         &self,
         _invitee: &PrincipalId,
         _channel: &ChannelId,
@@ -83,7 +83,7 @@ pub(crate) trait ChannelHost: Send + Sync {
     ///
     /// **Default impl is no-op.** Test hosts don't need to override.
     /// Sync + `()` return, same contract as
-    /// [`Self::kickoff_channel_read`]: the IPC arm never blocks on it
+    /// [`Self::ensure_invitee_subscriber`]: the IPC arm never blocks on it
     /// and create must not depend on subscriber-spawn success.
     fn channel_created(&self, _creator: &PrincipalId, _channel: &ChannelId) {}
 }
@@ -252,7 +252,7 @@ impl RequestHandler for ChannelHandler {
                         // trigger in the audit ring buffer. Log +
                         // swallow on failure — invite must not depend
                         // on kickoff success.
-                        self.host.kickoff_channel_read(&resp.invitee, &resp.channel);
+                        self.host.ensure_invitee_subscriber(&resp.invitee, &resp.channel);
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
@@ -677,7 +677,7 @@ mod tests {
     struct TestChannelHost {
         path_resolver: PathResolver,
         port: Arc<dyn ChannelPort>,
-        /// PR-4c: records every `kickoff_channel_read` invocation so
+        /// PR-4c: records every `ensure_invitee_subscriber` invocation so
         /// tests can assert the hook fired from the invite success
         /// arm. Tests can also flip `kickoff_should_panic: true` to
         /// simulate a misbehaving host and confirm the invite
@@ -696,7 +696,7 @@ mod tests {
         // Default `principal_manager` returns None — happy paths
         // don't need it.
 
-        fn kickoff_channel_read(
+        fn ensure_invitee_subscriber(
             &self,
             invitee: &PrincipalId,
             channel: &ChannelId,
@@ -778,10 +778,10 @@ mod tests {
     // PR-4c — ChannelInvite auto-kickoff
     // -----------------------------------------------------------------
     //
-    // The kickoff hook (`ChannelHost::kickoff_channel_read`) is sync
+    // The kickoff hook (`ChannelHost::ensure_invitee_subscriber`) is sync
     // and best-effort. These three tests pin the contract:
     //
-    // 1. Success path: the host's `kickoff_channel_read` records the
+    // 1. Success path: the host's `ensure_invitee_subscriber` records the
     //    (invitee, channel) pair when invoked.
     // 2. Failure path: a default no-op host never panics; the trait
     //    contract requires hosts to be infallible (log + swallow).
@@ -793,7 +793,7 @@ mod tests {
         // PR-4c: with no `principal_manager`, the invite fails with
         // `ResponsePacket::Error { "Inviter principal '...' is not loaded" }`
         // — the kickoff hook is NOT called. To exercise the success
-        // path we instead call `kickoff_channel_read` directly
+        // path we instead call `ensure_invitee_subscriber` directly
         // (mirrors what the `AppState` override does in production
         // when the invite succeeds) and assert the test host's log
         // captures it. This is the cleanest way to pin the contract
@@ -801,7 +801,7 @@ mod tests {
         let (_tmp, host) = test_host();
         let ch = ChannelId::generate();
         let invitee = PrincipalId::generate();
-        host.kickoff_channel_read(&invitee, &ch);
+        host.ensure_invitee_subscriber(&invitee, &ch);
         let log = host.kickoff_log.lock().unwrap();
         assert_eq!(log.len(), 1, "kickoff hook should fire once");
         assert_eq!(log[0].0 .0, invitee.0);
@@ -815,14 +815,14 @@ mod tests {
         // contract pins this. We assert the kickoff panic doesn't
         // escape by calling the panic-flagged host directly: if the
         // panic propagated, the test would fail. If the host's
-        // `kickoff_channel_read` impl swallowed it (it doesn't —
+        // `ensure_invitee_subscriber` impl swallowed it (it doesn't —
         // the host panics), the test would pass.
         //
         // **Important:** the production handler does NOT have a
         // catch_unwind around the kickoff call (deliberately — Rust
         // async + catch_unwind is unsound across await points). The
         // log + swallow contract instead relies on the host's impl
-        // returning normally; production `AppState::kickoff_channel_read`
+        // returning normally; production `AppState::ensure_invitee_subscriber`
         // only does tracing + a no-op meter hold, both infallible.
         // This test therefore asserts the **default no-op host** does
         // not panic, which is the surface the trait contract
@@ -830,9 +830,9 @@ mod tests {
         let (_tmp, host) = test_host();
         let ch = ChannelId::generate();
         let invitee = PrincipalId::generate();
-        // Default host overrides kickoff_channel_read to push into
+        // Default host overrides ensure_invitee_subscriber to push into
         // the log; calling it here must not panic.
-        host.kickoff_channel_read(&invitee, &ch);
+        host.ensure_invitee_subscriber(&invitee, &ch);
         let log = host.kickoff_log.lock().unwrap();
         assert_eq!(log.len(), 1);
     }
@@ -849,13 +849,13 @@ mod tests {
         // override (which logs) is the production-shape path.
         //
         // Note: `tokio::test` spawns the future on a single-threaded
-        // runtime; if `kickoff_channel_read` panicked, the test
+        // runtime; if `ensure_invitee_subscriber` panicked, the test
         // thread would die. The fact that this test runs to
         // completion with the default override is the assertion.
         let (_tmp, host) = test_host();
         let ch = ChannelId::generate();
         let invitee = PrincipalId::generate();
-        host.kickoff_channel_read(&invitee, &ch);
+        host.ensure_invitee_subscriber(&invitee, &ch);
         // No assertion needed beyond reaching this line; the
         // presence of the entry proves the hook fired.
         assert!(!host.kickoff_log.lock().unwrap().is_empty());

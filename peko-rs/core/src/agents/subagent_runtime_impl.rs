@@ -29,7 +29,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::extensions::framework::subagent::SpawnCleanupPolicy;
+use peko_extension_api::SpawnCleanupPolicy;
 use crate::tools::builtin::messaging::{
     SpawnAuditEvent, SpawnRequest, SubagentRunView, SubagentRuntime,
 };

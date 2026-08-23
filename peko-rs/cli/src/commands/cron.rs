@@ -68,11 +68,6 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Session target for the fired turn. Since Phase 7 the trunk
-        /// (`root:self`) is the default and only destination; "trunk" is
-        /// accepted for compatibility and changes nothing
-        #[arg(long)]
-        target: Option<String>,
         /// Delete after successful run (one-shot)
         #[arg(long)]
         delete_after_run: bool,
@@ -93,10 +88,6 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`; the
-        /// default since Phase 7 — the flag is accepted for compatibility)
-        #[arg(long)]
-        target: Option<String>,
     },
 
     /// Add a recurring interval job
@@ -117,10 +108,6 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`; the
-        /// default since Phase 7 — the flag is accepted for compatibility)
-        #[arg(long)]
-        target: Option<String>,
     },
 
     /// Remove a cron job
@@ -172,10 +159,6 @@ pub enum CronCommands {
         /// Message/prompt to execute
         #[arg(short = 'm', long)]
         message: String,
-        /// Session target for the fired turn ("trunk" → `root:self`; the
-        /// default since Phase 7 — the flag is accepted for compatibility)
-        #[arg(long)]
-        target: Option<String>,
     },
 }
 
@@ -184,15 +167,6 @@ async fn connect_daemon() -> Result<DaemonClient> {
     DaemonClient::connect()
         .await
         .context("Daemon is not running. Start it with: peko daemon start")
-}
-
-/// Validate a `--target` flag value against the cron DTO rule (only
-/// `"trunk"` is accepted) before the job leaves the CLI — the daemon
-/// re-validates at `CronScheduler::add_job`, but failing here gives the
-/// operator the error without a daemon round-trip.
-fn resolve_send_target(target: Option<String>) -> Result<Option<String>> {
-    peko_cron::tools::validate_send_target(&target)?;
-    Ok(target)
 }
 
 /// Handle cron commands
@@ -255,7 +229,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             timezone,
             principal,
             message,
-            target,
             delete_after_run,
         } => {
             let client = connect_daemon().await?;
@@ -289,7 +262,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 schedule: schedule_kind,
                 action: CronJobAction::Send {
                     message,
-                    target: resolve_send_target(target)?,
+                    target: None,
                 },
                 delete_after_run,
                 enabled: true,
@@ -323,7 +296,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             at,
             principal,
             message,
-            target,
         } => {
             let client = connect_daemon().await?;
 
@@ -342,7 +314,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 },
                 action: CronJobAction::Send {
                     message,
-                    target: resolve_send_target(target)?,
+                    target: None,
                 },
                 delete_after_run: true,
                 enabled: true,
@@ -376,7 +348,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             interval,
             principal,
             message,
-            target,
         } => {
             let client = connect_daemon().await?;
 
@@ -405,7 +376,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 schedule: schedule_kind,
                 action: CronJobAction::Send {
                     message,
-                    target: resolve_send_target(target)?,
+                    target: None,
                 },
                 delete_after_run: false,
                 enabled: true,
@@ -529,7 +500,6 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
             minutes,
             principal,
             message,
-            target,
         } => {
             let client = connect_daemon().await?;
 
@@ -544,7 +514,7 @@ pub async fn handle_cron(cmd: CronCommands, paths: &GlobalPaths, json: bool) -> 
                 schedule: ScheduleKind::Idle { minutes },
                 action: CronJobAction::Send {
                     message,
-                    target: resolve_send_target(target)?,
+                    target: None,
                 },
                 delete_after_run: false,
                 enabled: true,

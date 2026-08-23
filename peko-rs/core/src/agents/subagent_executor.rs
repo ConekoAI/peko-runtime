@@ -38,7 +38,7 @@ use crate::extensions::framework::async_exec::executor::{
 use crate::extensions::framework::async_exec::executor::{
     AsyncTaskStatus as SubagentStatus, SubagentResult,
 };
-use crate::extensions::framework::subagent::SpawnCleanupPolicy;
+use peko_extension_api::SpawnCleanupPolicy;
 use crate::extensions::framework::types::Capabilities;
 use peko_auth::Subject;
 use peko_observability::Observability;

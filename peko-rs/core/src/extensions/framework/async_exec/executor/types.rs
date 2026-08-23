@@ -122,20 +122,20 @@ pub enum WaitResult {
     Timeout,
 }
 
-/// Delivery target types for async task results
+/// Delivery target types for async task results.
+///
+/// Only one variant survives: the queue manager fallback (`AsyncQueue`)
+/// at executor completion. The other three (`SessionAnnouncement`,
+/// `EventBroadcast`, `DirectChannel`) had no implementors and no match
+/// arms anywhere in the workspace — the `register_delivery` /
+/// `default_delivery` plumbing is also dead in practice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 pub enum DeliveryTarget {
-    /// Deliver to session via announcement
-    SessionAnnouncement,
     /// Deliver to async result queue
     #[default]
     AsyncQueue,
-    /// Deliver via EventSubscriber broadcast
-    EventBroadcast,
-    /// Deliver via direct channel (for sync waiting)
-    DirectChannel,
 }
 
 /// Message types for principal-to-principal communication

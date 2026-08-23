@@ -104,12 +104,12 @@ pub trait SubagentRuntime: Send + Sync {
     /// from the chosen model's `PricingHint` and a 4K-in +
     /// 1K-out token projection. Returns `None` when no
     /// pre-flight applies (no `cost_per_call_max` configured or
-    /// no model pricing hint available). Default impl returns
-    /// `None` so existing test stubs don't need to grow a new
-    /// method.
-    fn spawn_cost_estimate_usd(&self) -> Option<f64> {
-        None
-    }
+    /// no model pricing hint available).
+    ///
+    /// Required: no default body. Both production and test
+    /// implementors must override (the test fixture returns
+    /// `None` because it has no model).
+    fn spawn_cost_estimate_usd(&self) -> Option<f64>;
 
     /// Execute a subagent spawn and wait for completion (or framework
     /// detach on timeout).
@@ -133,18 +133,17 @@ pub trait SubagentRuntime: Send + Sync {
     ) -> anyhow::Result<CompactRequestOutcome>;
 
     /// The spawning principal's runtime id (DID). Used for the audit
-    /// event's `principal_id` field. Defaults to empty so simple test
-    /// fixtures don't have to override it; the production
-    /// `SubagentExecutorRuntime` adapter returns the active principal.
-    fn principal_id(&self) -> String {
-        String::new()
-    }
+    /// event's `principal_id` field.
+    ///
+    /// Required: no default body. The production adapter returns the
+    /// active principal; the test fixture returns its own configured
+    /// value.
+    fn principal_id(&self) -> String;
 
     /// The spawning principal's display name (for the audit row).
-    /// Defaults to `None`.
-    fn principal_name(&self) -> Option<String> {
-        None
-    }
+    ///
+    /// Required: no default body.
+    fn principal_name(&self) -> Option<String>;
 
     /// Maximum spawn depth the runtime enforces on incoming
     /// `ExecutionConfig.max_depth` calls. The production adapter
@@ -162,11 +161,11 @@ pub trait SubagentRuntime: Send + Sync {
 
     /// The spawning principal's workspace (the `<workspace>/agents/`
     /// resolution root). `None` means global agents only
-    /// (standalone / test paths). Default `None`; production
-    /// adapter overrides.
-    fn workspace(&self) -> Option<&Path> {
-        None
-    }
+    /// (standalone / test paths).
+    ///
+    /// Required: no default body. The production adapter returns
+    /// the bound workspace; the test fixture returns `None`.
+    fn workspace(&self) -> Option<&Path>;
 
     /// The calling run's own session id (the engine-side caller
     /// of the `Agent` tool). The tool reads this in the

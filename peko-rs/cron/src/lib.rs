@@ -16,29 +16,7 @@
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
 //! - [`idle`] — scheduler-side submodule for idle detection.
-//!
-//! ## Port (`CronRuntime`)
-//!
-//! [`tools::CronRuntime`] is the port the cron tools use to talk to the
-//! daemon. The concrete implementation in root is
-//! `peko_core::daemon::cron_runtime::DaemonCronAdapter`, which wraps
-//! `peko_core::ipc::DaemonClient::cron_add/cron_remove/cron_list`. That
-//! adapter stays in root because it depends on `DaemonClient`; it
-//! implements the `CronRuntime` trait via the orphan rule (the trait
-//! is foreign to root, but the adapter type is local).
-//!
-//! The trait deliberately does not touch IPC — the trait surface is
-//! pure data (`CronJob` / `&str` / `Vec<CronJob>`). The adapter wires
-//! the trait methods through to `DaemonClient` calls.
 
-// Crate-wide `dead_code` allow is intentionally narrow: it covers
-// the builder helpers (`build_send_job`/`build_spawn_tool_job`/
-// `resolve_prompt`) that lint flags as dead from the crate's root
-// because nothing in this crate's `lib.rs` symbols references them
-// directly — they are consumed only via `pub use tools::{...}`
-// re-exports by `peko_core::daemon::cron_runtime` and adjacent
-// callers. Keep the allow narrow here; tighten at each helper's site
-// if a future cleanup proves a subset unreachable.
 #![allow(dead_code)]
 
 pub mod idle;
@@ -46,14 +24,8 @@ pub mod tools;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-#[allow(unused_imports)]
-use cron::Schedule;
-#[allow(unused_imports)]
-use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-#[allow(unused_imports)]
-use std::str::FromStr;
 use tracing::info;
 
 // ── Cron domain surface (canonical home — no re-export dance) ──
@@ -63,12 +35,18 @@ use tracing::info;
 // IPC handlers) imports from `peko_cron::*` directly.
 #[allow(unused_imports)]
 pub use tools::{
-    build_spawn_tool_job, calculate_next_interval_anchored, calculate_next_run,
-    global_runtime, normalize_cron_expr, render_job_list, resolve_delete_after_run, resolve_label,
+    calculate_next_interval_anchored, calculate_next_run,
+    global_runtime, normalize_cron_expr, render_job_list,
     resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
     CronJob, CronJobAction, CronListTool, CronRuntime, ScheduleKind,
     DEFAULT_MAX_RETRIES,
 };
+#[allow(unused_imports)]
+pub use cron::Schedule;
+#[allow(unused_imports)]
+pub use peko_subject::PrincipalId;
+#[allow(unused_imports)]
+pub use std::str::FromStr;
 
 pub use idle::IdleDetector;
 
@@ -326,11 +304,6 @@ impl CronScheduler {
         Ok(true)
     }
 
-    /// Recompute the cron job's `next_run` based on its stored
-    /// schedule. Returns `None` for schedules that never re-fire
-    /// (e.g. `At`) or when the job id is unknown.
-    /// Delete a job. Run history is intentionally preserved: one-shot
-
     /// Delete a job. Run history is intentionally preserved: one-shot
     /// (`delete_after_run`) jobs delete themselves after firing, and
     /// purging their runs made `cron history <id>` unanswerable for a
@@ -448,16 +421,9 @@ impl CronScheduler {
         Ok(true)
     }
 
-    /// Calculate next run time for a schedule
-    pub fn calculate_next_run(
-        &self,
-        schedule: &ScheduleKind,
-        after: DateTime<Utc>,
-    ) -> Result<DateTime<Utc>> {
-        calculate_next_run(schedule, after)
-    }
-
-    /// Get idle-triggered jobs
+    /// Idle-triggered jobs — a filtered view over the schedule.
+    /// Used by the daemon engine; the only caller is
+    /// `CronEngine::check_idle`, which filters by `Idle` already.
     pub fn idle_jobs(&self, include_disabled: bool) -> Result<Vec<CronJob>> {
         let jobs = self.list_jobs(include_disabled)?;
         Ok(jobs
@@ -465,8 +431,7 @@ impl CronScheduler {
             .filter(|j| matches!(j.schedule, ScheduleKind::Idle { .. }))
             .collect())
     }
-
-    }
+}
 
 #[cfg(test)]
 mod tests {

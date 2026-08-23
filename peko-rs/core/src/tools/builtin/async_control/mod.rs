@@ -101,19 +101,18 @@ pub enum AsyncResultDeliveryMode {
     Steer,
 }
 
-/// Delivery target types for async task results
+/// Delivery target types for async task results.
+///
+/// Mirror of the canonical `DeliveryTarget` in
+/// `peko_extension_api::async_exec::types`; same single-variant
+/// reduction. Three variants (`SessionAnnouncement`, `EventBroadcast`,
+/// `DirectChannel`) had no implementors and no consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryTarget {
-    /// Deliver to session via announcement
-    SessionAnnouncement,
     /// Deliver to async result queue
     #[default]
     AsyncQueue,
-    /// Deliver via EventSubscriber broadcast
-    EventBroadcast,
-    /// Deliver via direct channel (for sync waiting)
-    DirectChannel,
 }
 
 /// Configuration for async tool execution

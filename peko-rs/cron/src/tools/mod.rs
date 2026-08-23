@@ -325,43 +325,6 @@ pub fn normalize_cron_expr(expr: &str) -> String {
     }
 }
 
-/// Build a `SpawnTool`-action [`CronJob`] from caller parameters.
-#[allow(clippy::too_many_arguments)]
-pub fn build_spawn_tool_job(
-    id: String,
-    name: String,
-    principal_id: PrincipalId,
-    schedule: ScheduleKind,
-    tool_name: String,
-    tool_params: serde_json::Value,
-    delete_after_run: bool,
-    next_run: DateTime<Utc>,
-    wake_on_completion: Option<bool>,
-    timeout_secs: Option<u64>,
-) -> CronJob {
-    CronJob {
-        id,
-        name,
-        principal_id,
-        schedule,
-        action: CronJobAction::SpawnTool {
-            tool_name,
-            tool_params,
-            wake_on_completion,
-            timeout_secs,
-        },
-        delete_after_run,
-        enabled: true,
-        created_at: Utc::now(),
-        next_run,
-        last_run: None,
-        last_status: None,
-        run_count: 0,
-        consecutive_failures: 0,
-        max_retries: None,
-    }
-}
-
 /// Resolve a schedule kind from `CronCreate` tool parameters.
 pub fn resolve_schedule_kind(params: &serde_json::Value) -> Result<ScheduleKind> {
     use std::str::FromStr;
@@ -408,25 +371,6 @@ pub fn resolve_schedule_kind(params: &serde_json::Value) -> Result<ScheduleKind>
     Err(anyhow::anyhow!(
         "No schedule provided. Supply one of: cron, at, interval_ms, idle_ms."
     ))
-}
-
-/// Build a human-readable label from parameters or generate one.
-#[must_use]
-pub fn resolve_label(params: &serde_json::Value) -> String {
-    params
-        .get("label")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| format!("cron-{}", Uuid::new_v4().simple()))
-}
-
-/// Resolve whether the job should delete after run (one-shot).
-#[must_use]
-pub fn resolve_delete_after_run(params: &serde_json::Value) -> bool {
-    params
-        .get("one_shot")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
 }
 
 /// Parse a human duration into milliseconds. Accepts a bare number
