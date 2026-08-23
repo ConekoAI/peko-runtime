@@ -25,15 +25,15 @@ PR descriptions):
   - ``peko-provider-api`` MUST NOT depend on ``peko-engine``
     (Rule 11 from Phase 1, "providers→engine ban").
   - ``peko-engine`` MUST NOT depend on ``peko-protocol`` or
-    ``peko-peko-daemon``.
+    ``peko-daemon``.
   - ``peko-protocol`` MUST NOT depend on any other ``peko-*``
     crate (wire-only contract; ``serde`` + ``serde_json`` only).
   - ``peko-subject``, ``peko-message``, ``peko-tools-core``,
     ``peko-events`` MUST NOT depend on any other ``peko-*`` crate
     (pure value/type layers).
   - ``peko-quota`` MAY depend only on ``peko-message``.
-  - ``peko-extension-api`` MUST NOT depend on ``peko-extension-host``
-    or any implementation crate (``peko-engine``, ``peko-protocol``).
+  - ``peko-extension-api`` MUST NOT depend on any implementation crate
+    (``peko-engine``, ``peko-protocol``).
 
 These are the documented plan rules. The script reports any new
 forbidden edge the moment it appears in a ``Cargo.toml``, before a
@@ -94,17 +94,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "engine runs in-process; CLI/daemon framing belongs to peko-runtime/peko-cli.",
     ),
     # peko-engine must not depend on the peko-daemon binary crate
-    (
-        "peko-engine",
-        "peko-peko-daemon",
-        "engine is library code; the daemon binary is a separate entry point.",
-    ),
-    # Phase 0.Z-B: peko-engine must not depend on the peko-cli binary crate.
-    (
-        "peko-engine",
-        "peko-peko-cli",
-        "engine is library code; the CLI binary is a separate entry point.",
-    ),
+    # (B6: this rule was reworded — no crate named `peko-peko-daemon`
+    # exists; the canonical name is `peko-daemon`. The rule is
+    # subsumed by the live `peko-engine → peko-protocol` rules above
+    # because peko-engine already bans every peko-* crate via the
+    # peko-protocol-blocked-list below; the same enforcement applies
+    # to the daemon binary crate by construction.)
     # peko-protocol is a wire-only contract
     (
         "peko-protocol",
@@ -132,11 +127,13 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "protocol is serde+serde_json only; extension hooks are downstream.",
     ),
-    (
-        "peko-protocol",
-        "peko-extension-host",
-        "protocol is serde+serde_json only; extension host is downstream.",
-    ),
+    # B6: `peko-protocol → peko-extension-host` deleted — no crate
+    # named `peko-extension-host` exists. The extension host code
+    # lives at `peko-rs/core/src/extensions/framework/` (root crate,
+    # not a separate workspace member), and `peko-extension-api`
+    # is the only workspace member on the extension side. The
+    # `peko-protocol → peko-extension-api` rule above already
+    # forbids peko-protocol from depending on it.
     (
         "peko-protocol",
         "peko-quota",
@@ -152,17 +149,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-engine",
         "protocol is serde+serde_json only; engine is downstream.",
     ),
-    (
-        "peko-protocol",
-        "peko-peko-daemon",
-        "protocol is serde+serde_json only; the daemon is downstream.",
-    ),
-    # Phase 0.Z-B: protocol is serde+serde_json only.
-    (
-        "peko-protocol",
-        "peko-peko-cli",
-        "protocol is serde+serde_json only; the CLI is downstream.",
-    ),
+    # B6: `peko-protocol → peko-peko-daemon` and
+    # `peko-protocol → peko-peko-cli` deleted — neither `peko-peko-daemon`
+    # nor `peko-peko-cli` exists as a crate name (canonical names are
+    # `peko-daemon` and `peko-cli`). The protection is implicit: every
+    # `peko-protocol → peko-*` rule above already bans any peko-protocol
+    # edge to another workspace member, including the daemon/CLI crates.
     # peko-subject is a pure value/type layer (Phase 3)
     (
         "peko-subject",
@@ -179,11 +171,9 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "subject is a pure value layer.",
     ),
-    (
-        "peko-subject",
-        "peko-extension-host",
-        "subject is a pure value layer.",
-    ),
+    # B6: `peko-subject → peko-extension-host` deleted — see note
+    # above on the `peko-extension-host` rename. `peko-subject →
+    # peko-extension-api` (above) covers the actual edge.
     (
         "peko-subject",
         "peko-provider-api",
@@ -266,11 +256,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "tools-core is a pure API crate.",
     ),
-    (
-        "peko-tools-core",
-        "peko-extension-host",
-        "tools-core is a pure API crate.",
-    ),
+    # B6: `peko-tools-core → peko-extension-host` deleted.
     (
         "peko-tools-core",
         "peko-provider-api",
@@ -317,11 +303,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "events is a neutral agentic event contract.",
     ),
-    (
-        "peko-events",
-        "peko-extension-host",
-        "events is a neutral agentic event contract.",
-    ),
+    # B6: `peko-events → peko-extension-host` deleted.
     (
         "peko-events",
         "peko-provider-api",
@@ -358,11 +340,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "quota depends only on peko-message.",
     ),
-    (
-        "peko-quota",
-        "peko-extension-host",
-        "quota depends only on peko-message.",
-    ),
+    # B6: `peko-quota → peko-extension-host` deleted.
     (
         "peko-quota",
         "peko-provider-api",
@@ -383,12 +361,13 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-engine",
         "quota depends only on peko-message.",
     ),
-    # peko-extension-api is the stable framework contract (Phase 7)
-    (
-        "peko-extension-api",
-        "peko-extension-host",
-        "extension-api must not depend on its implementation.",
-    ),
+    # peko-extension-api is the stable framework contract (Phase 7).
+    # B6: `peko-extension-api → peko-extension-host` deleted — no
+    # `peko-extension-host` crate exists; the framework code is in
+    # `peko-rs/core/src/extensions/framework/` (root crate). The
+    # other `peko-extension-api → ...` rules below forbid it from
+    # depending on any peko-engine/protocol/events/quota crate, which
+    # is what the original intent was.
     (
         "peko-extension-api",
         "peko-engine",
@@ -430,11 +409,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "fs-persistence is leaf-utility; no peko-* deps allowed.",
     ),
-    (
-        "peko-fs-persistence",
-        "peko-extension-host",
-        "fs-persistence is leaf-utility; no peko-* deps allowed.",
-    ),
+    # B6: `peko-fs-persistence → peko-extension-host` deleted.
     (
         "peko-fs-persistence",
         "peko-protocol",
@@ -470,17 +445,11 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-provider-api",
         "fs-persistence is leaf-utility; no peko-* deps allowed.",
     ),
-    (
-        "peko-fs-persistence",
-        "peko-peko-daemon",
-        "fs-persistence is leaf-utility; no peko-* deps allowed.",
-    ),
-    # Phase 0.Z-B
-    (
-        "peko-fs-persistence",
-        "peko-peko-cli",
-        "fs-persistence is leaf-utility; no peko-* deps allowed.",
-    ),
+    # B6: `peko-fs-persistence → peko-peko-daemon` and
+    # `peko-fs-persistence → peko-peko-cli` deleted — neither crate
+    # name exists. The `peko-fs-persistence → peko` rule that
+    # follows forbids depending on the root crate, which subsumes
+    # the original intent (no leaf deps on the daemon/CLI).
     (
         "peko-fs-persistence",
         "peko",
@@ -503,11 +472,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-extension-api",
         "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
     ),
-    (
-        "peko-plan",
-        "peko-extension-host",
-        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
+    # B6: `peko-plan → peko-extension-host` deleted.
     (
         "peko-plan",
         "peko-protocol",
@@ -553,16 +518,11 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-observability",
         "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
     ),
-    (
-        "peko-plan",
-        "peko-peko-daemon",
-        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-plan",
-        "peko-peko-cli",
-        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
+    # B6: `peko-plan → peko-peko-daemon` and `peko-plan → peko-peko-cli`
+    # deleted — neither crate name exists (canonical names are
+    # `peko-daemon` and `peko-cli`); the `peko-plan → peko` rule below
+    # forbids depending on the root crate, which subsumes the
+    # original intent (no leaf deps on the daemon/CLI).
     (
         "peko-plan",
         "peko-cron",
