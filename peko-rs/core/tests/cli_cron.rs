@@ -8,7 +8,7 @@
 //! | `cron_basics.ps1`     | `cron_*_persists`, `cron_list_*`, `cron_remove_*`, `cron_history_*`         |
 //! | `cron_execution.ps1`  | `cron_run_triggers_due_job`                                                 |
 //! | `cron_agent_tool.ps1` | `cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job` |
-//! | `cron_idle_event.ps1` | `cron_add_idle_does_not_panic`, `cron_add_event_does_not_panic`            |
+//! | `cron_idle_event.ps1` | `cron_add_idle_does_not_panic`                                              |
 //!
 //! Each test:
 //!   1. Builds an isolated [`PekoCli`] tempdir as `HOME`.
@@ -467,50 +467,6 @@ fn cron_add_idle_persists() {
 
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn cron_add_event_persists() {
-    if skip_if_no_mock().is_none() {
-        return;
-    }
-    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
-    let _daemon = CronDaemonGuard::spawn(&cli);
-    remove_jobs_with_prefix(&cli, "e2e-cron-event-");
-
-    let name = "e2e-cron-event-job";
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "cron",
-            "add-event",
-            "--principal",
-            TEST_PRINCIPAL,
-            "--name",
-            name,
-            "--event-type",
-            "internal",
-            "--once",
-            "--message",
-            "react",
-        ],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("Added"),
-        "add-event output should say Added, got: {out}"
-    );
-
-    let jobs = list_jobs_json(&cli);
-    assert!(
-        jobs.iter()
-            .any(|j| j.get("name").and_then(|n| n.as_str()) == Some(name)),
-        "added event-job not in list: {jobs:?}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn cron_list_json_returns_added_count() {
     if skip_if_no_mock().is_none() {
         return;
@@ -905,48 +861,11 @@ fn cron_add_idle_does_not_panic() {
     );
 }
 
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn cron_add_event_does_not_panic() {
-    if skip_if_no_mock().is_none() {
-        return;
-    }
-    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
-    let _daemon = CronDaemonGuard::spawn(&cli);
-    remove_jobs_with_prefix(&cli, "e2e-cron-evt-");
-
-    // Mirrors cron_idle_event.ps1 TEST 2: scheduling an event job must
-    // succeed even if no event source is wired.
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "cron",
-            "add-event",
-            "--principal",
-            TEST_PRINCIPAL,
-            "--name",
-            "e2e-cron-evt-smoke",
-            "--event-type",
-            "internal",
-            "--once",
-            "--message",
-            "react",
-        ],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
-    let (_, _, status) = run(
-        &cli,
-        &["daemon", "status", "--json"],
-        Duration::from_secs(5),
-    );
-    assert!(
-        status.success(),
-        "daemon should still respond after add-event"
-    );
-}
+// B7 cleanup (follow-up to B5/B6 dead-code campaign): the
+// `cron_add_event_*` tests were deleted because `peko cron add-event`
+// was retired alongside the `EventTriggerService` + `missed_jobs`
+// code path in PR #359 / commit 87447116. Only `cron add-idle` is
+// still exercised here.
 
 // ---------------------------------------------------------------------------
 // Integration sanity: every test cleans up its own prefix.
