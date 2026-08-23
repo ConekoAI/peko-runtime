@@ -5,7 +5,6 @@ use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
-use crate::tools::builtin::DynamicSessionKeyProvider;
 use anyhow::{Context, Result};
 use peko_auth::Subject;
 use peko_engine::state::StateMachine;
@@ -50,8 +49,6 @@ pub struct Agent {
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Subagent executor for background task execution
     subagent_executor: Arc<SubagentExecutor>,
-    /// Dynamic session key provider for `Agent` tool
-    session_key_provider: Arc<DynamicSessionKeyProvider>,
     /// Current session ID for `session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Daemon-global extension core shared by every agent in the process.
@@ -163,7 +160,6 @@ impl Clone for Agent {
             llm_resolver: self.llm_resolver.clone(),
             session_manager: Arc::clone(&self.session_manager),
             subagent_executor: Arc::clone(&self.subagent_executor),
-            session_key_provider: Arc::clone(&self.session_key_provider),
             current_session_id: Arc::clone(&self.current_session_id),
             extension_core: Arc::clone(&self.extension_core),
             inbox_registry: self.inbox_registry.clone(),
@@ -651,11 +647,10 @@ impl Agent {
             None => Arc::new(subagent_executor_base),
         };
 
-        // Initialize session key provider for Agent tool
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
+        // B4 cleanup: `DynamicSessionKeyProvider` was removed — only
+        // `set_session_key` was called once per subagent; `get_session_key`
+        // had no readers. `ToolContext::session_id` is the canonical
+        // production session-key source.
 
         let agent = Self {
             config,
@@ -666,7 +661,6 @@ impl Agent {
             llm_resolver,
             session_manager,
             subagent_executor,
-            session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry,
@@ -1069,11 +1063,6 @@ impl Agent {
         };
         let llm_resolver: Option<Arc<peko_providers::LlmResolver>> = None;
 
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
-
         // Subagents share the daemon-global ExtensionCore with every other
         // agent in the process. There is no per-principal core; per-principal
         // tool visibility is enforced by the per-call `capabilities`
@@ -1094,7 +1083,6 @@ impl Agent {
             llm_resolver,
             session_manager,
             subagent_executor,
-            session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
@@ -1241,10 +1229,12 @@ impl Agent {
     }
 
     /// Get the session key provider for Agent tool.
-    #[must_use]
-    pub fn session_key_provider(&self) -> Arc<DynamicSessionKeyProvider> {
-        Arc::clone(&self.session_key_provider)
-    }
+    ///
+    /// B4 cleanup: this accessor (and the `DynamicSessionKeyProvider`
+    /// it returned) was deleted — only `set_session_key` was called
+    /// once per subagent (in `subagent_executor.rs`); the reader had
+    /// no callers. `ToolContext::session_id` is the canonical
+    /// production session-key source.
 
     /// Execute a task with the LLM provider using the unified callback API.
     ///
@@ -1390,10 +1380,9 @@ impl Agent {
         }
 
         let agent_arc = Arc::new(self.clone());
-        // Capture session ID into both the agent's cell (used by the
-        // session tool) and the agent's session_key_provider cell, then
-        // pass the session_id to the per-call wiring. Unlike
-        // `Agent::execute`, the session already exists here, so we can
+        // Capture session ID into the agent's cell (used by the
+        // session tool) and pass the session_id to the per-call wiring.
+        // Unlike `Agent::execute`, the session already exists here, so we can
         // push a real id onto the core before the loop starts — see the
         // session-key flow comment in `Agent::execute` for the full
         // picture across the three `execute_*` paths.
@@ -2038,8 +2027,8 @@ impl Agent {
 
     /// Create a spawn/subagent session
     ///
-    /// Creates a new spawn overlay for isolated task execution.
-    /// Use `isolated=true` for tasks that should not share context.
+    /// Creates a new spawn overlay that shares context with the parent
+    /// (parent's context is copied into the child session).
     ///
     /// Returns a `ResolvedSession` containing both the metadata DTO (`context`)
     /// and the operations handle (`handle`).
@@ -2047,7 +2036,6 @@ impl Agent {
         &self,
         peer: &Subject,
         task: &str,
-        isolated: bool,
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
     ) -> Result<ResolvedSession> {
@@ -2057,7 +2045,6 @@ impl Agent {
                 &self.config.name,
                 peer,
                 task,
-                isolated,
                 parent_session_key,
                 timeout_seconds,
             )
@@ -2107,11 +2094,6 @@ impl Agent {
                 None => (None, None),
             };
 
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
-
         let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         let subagent_executor_base = SubagentExecutor::new(
@@ -2138,7 +2120,6 @@ impl Agent {
             llm_resolver: None,
             session_manager,
             subagent_executor,
-            session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
@@ -2515,7 +2496,7 @@ mod tests {
 
         // Spawn a child session with shared context
         let spawn_resolved = agent
-            .spawn_session(&peer, "test task", false, &parent_key, Some(300))
+            .spawn_session(&peer, "test task", &parent_key, Some(300))
             .await;
 
         assert!(spawn_resolved.is_ok());

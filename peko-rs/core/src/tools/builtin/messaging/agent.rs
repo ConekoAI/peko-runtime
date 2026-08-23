@@ -844,8 +844,9 @@ impl TestSubagentRuntime {
     /// [`SubagentRuntime::session_id`]. Used by tests to inject a
     /// synthetic caller session id on the no-`ToolContext` path so
     /// `AgentTool::execute` (no context) can be exercised without
-    /// the runtime-mutable `DynamicSessionKeyProvider` machinery
-    /// the production agent_runner used to thread through.
+    /// a runtime-mutable session-key cell (B4: that cell was the
+    /// `DynamicSessionKeyProvider`, deleted as write-only on
+    /// production).
     pub fn set_session_id(&self, id: impl Into<String>) {
         self.inner
             .lock()

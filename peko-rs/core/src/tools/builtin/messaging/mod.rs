@@ -45,16 +45,13 @@ pub use dto::{
 };
 pub use subagent_runtime::{SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime};
 
-// Phase F4: `agent_compat` exposes the root-only types the lifted
-// `peko-tools-builtin` sat intentionally does not own:
-// `DynamicSessionKeyProvider` (daemon mutates session keys at
-// runtime) + the executor-typed constructor shim `new_agent_tool`
-// that wraps an `Arc<SubagentExecutor>` in a
+// Phase F4: `agent_compat` exposes the executor-typed constructor
+// shim `new_agent_tool` that wraps an `Arc<SubagentExecutor>` in a
 // `SubagentExecutorRuntime` adapter. Sprint 7 collapsed the four
 // `agent_tool_with_*` variants into a single `new_agent_tool` —
 // workspace moved onto the runtime port (`SubagentRuntime::workspace`)
-// and the session-key provider moved onto the runtime port's
-// `session_id()` accessor (with `ToolContext::session_id` as the
-// canonical production source). Re-export them so
-// `crate::tools::builtin::messaging::X` keeps working.
-pub use agent_compat::{new_agent_tool, runtime_from_executor, DynamicSessionKeyProvider};
+// and `ToolContext::session_id` is the canonical session-key source.
+// B4 cleanup: `DynamicSessionKeyProvider` was removed — it was
+// write-only on the production path (only `set_session_key` was
+// called once per subagent, no reads).
+pub use agent_compat::{new_agent_tool, runtime_from_executor};

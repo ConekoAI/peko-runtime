@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::agents::agent_config::AgentConfig;
@@ -46,20 +46,14 @@ use peko_session::context::SessionContext;
 use peko_session::manager::SessionManager;
 use peko_subject::PrincipalId;
 
-/// Channel for announcing completed subagent runs
-pub type AnnouncementSender = mpsc::Sender<CompletedRun>;
-pub type AnnouncementReceiver = mpsc::Receiver<CompletedRun>;
-
-/// A completed subagent run ready for announcement
-#[derive(Debug, Clone)]
-pub struct CompletedRun {
-    /// The run that completed (view projected from unified registry)
-    pub run: SubagentRunView,
-    /// The parent session key
-    pub parent_session_key: String,
-    /// The announcement message
-    pub announcement: String,
-}
+// B4 cleanup: the announcement cluster (`CompletedRun`,
+// `with_announcement_channel`, `create_announcement_channel`,
+// `get_completed_for_announcement`, `announcement_sender`,
+// `send_announcement`, `subagent_announce::format_announcement`)
+// was retired end-to-end. The `announce_completion` field on
+// `SubagentRunView` is kept for backward-compat reads but no
+// longer has any writer; remove it in a follow-up once the
+// index-of-views migrates to a typed "delivery" channel.
 
 /// Shared streaming event sink for child turns (agent-session
 /// paradigm, sprint 2 Phase 6).
@@ -203,8 +197,6 @@ pub struct SubagentExecutor {
     agent_name: String,
     /// Maximum concurrent runs
     max_concurrent: usize,
-    /// Channel for announcing completed runs
-    announcement_tx: Option<AnnouncementSender>,
     /// Provider for LLM execution
     provider: Option<Arc<peko_providers::Provider>>,
     /// Agent configuration for creating subagents
@@ -309,7 +301,6 @@ impl SubagentExecutor {
             unified_executor,
             agent_name,
             max_concurrent,
-            announcement_tx: None,
             provider: None,
             agent_config: None,
             session_manager,
@@ -513,48 +504,6 @@ impl SubagentExecutor {
             unified_executor,
             agent_name: agent_name.into(),
             max_concurrent,
-            announcement_tx: None,
-            provider: None,
-            agent_config: None,
-            session_manager,
-            principal_workspace: None,
-            principal_id,
-            principal_name: None,
-            principal_capabilities: None,
-            active_extensions: None,
-            observability: None,
-            quota_meter: None,
-            // B5d: per-agent attribution meter. Audit-only by default;
-            // B5e wires it into the LLM call path alongside the
-            // principal meter.
-            agent_meter: Arc::new(peko_quota::meter::QuotaMeter::unlimited()),
-            principal_plan_port: None,
-            caller_principal_did: std::sync::OnceLock::new(),
-            inbox_registry: None,
-        }
-    }
-
-    /// Create an executor with full async framework integration
-    #[must_use]
-    pub fn with_async_framework(
-        async_registry: SharedAsyncTaskRegistry,
-        async_queue_manager: SharedAsyncResultQueueManager,
-        session_manager: Arc<RwLock<SessionManager>>,
-        agent_name: impl Into<String>,
-        max_concurrent: usize,
-        principal_id: PrincipalId,
-    ) -> Self {
-        let unified_executor = AsyncExecutor::with_registries(
-            async_registry,
-            async_queue_manager,
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-        );
-
-        Self {
-            unified_executor,
-            agent_name: agent_name.into(),
-            max_concurrent,
-            announcement_tx: None,
             provider: None,
             agent_config: None,
             session_manager,
@@ -635,19 +584,6 @@ impl SubagentExecutor {
         self.principal_plan_port.as_ref()
     }
 
-    /// Set the announcement channel
-    #[must_use]
-    pub fn with_announcement_channel(mut self, tx: AnnouncementSender) -> Self {
-        self.announcement_tx = Some(tx);
-        self
-    }
-
-    /// Create announcement channel
-    #[must_use]
-    pub fn create_announcement_channel() -> (AnnouncementSender, AnnouncementReceiver) {
-        mpsc::channel(100)
-    }
-
     /// Get a reference to the async task registry (unified)
     #[must_use]
     pub fn registry(&self) -> &SharedAsyncTaskRegistry {
@@ -681,12 +617,15 @@ impl SubagentExecutor {
     pub async fn spawn_and_execute(
         &self,
         task: &str,
-        _parent_ctx: Option<&SessionContext>,
-        isolated: bool,
         parent_session_key: &str,
         config: ExecutionConfig,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
+        // B4 cleanup: `parent_ctx` and `isolated` were both dropped.
+        // `parent_ctx` was only consumed by the dead `validate_context_parent`
+        // branch (deleted below); `isolated` was never deserialized
+        // from `AgentArgs` and `SessionManager::spawn_session` now
+        // always runs in shared-context mode.
         // Standing-child attach (agent-session paradigm, Phase 2): a
         // `name` (config.slug) that already matches a STANDING spawned
         // session in the caller's subtree re-attaches to it via the
@@ -862,7 +801,6 @@ impl SubagentExecutor {
                     &self.agent_name,
                     &peer,
                     task,
-                    isolated,
                     parent_session_key,
                     Some(config.timeout_seconds),
                 )
@@ -890,8 +828,8 @@ impl SubagentExecutor {
         }
 
         info!(
-            "Spawned subagent: run_id={} depth={} isolated={}",
-            run_id, child_depth, isolated
+            "Spawned subagent: run_id={} depth={}",
+            run_id, child_depth
         );
 
         self.register_subagent_run(SubagentRunSpec {
@@ -1282,17 +1220,21 @@ impl SubagentExecutor {
     /// principal-level callers pass for any session.
     ///
     /// Resolves the LLM-facing reference (absolute slug path or the
-    /// caller's own id) to a canonical session id before the
-    /// in-subtree check. Returns the resolved id so the caller can
-    /// pass it forward without re-resolving. Raw ids and
-    /// caller-relative slugs are refused via `resolve_reference`.
+    /// caller's own id) to a canonical session id. The caller uses
+    /// the resolved value downstream so the resolved id is the only
+    /// thing it sees. Raw ids and caller-relative slugs are refused
+    /// via `resolve_reference`.
+    ///
+    /// B4 cleanup: the deeper subtree check (caller.is_base /
+    /// privileged / in_subtree) was unreachable in production — the
+    /// producer always passes the caller's own key, so the early
+    /// `caller_session_key` check above always wins. The dead branch
+    /// was deleted.
     pub async fn validate_context_parent(
         &self,
         context_parent: &str,
         caller_session_key: &str,
     ) -> Result<String> {
-        use crate::session::ownership::{caller_context, err_context_out_of_tree, in_subtree};
-
         let mut manager = self.session_manager.write().await;
         let metas = manager.list_all_sessions(false).await?;
 
@@ -1305,20 +1247,11 @@ impl SubagentExecutor {
         let context_parent_id =
             peko_session::path::resolve_reference(&metas, caller_id, context_parent)?;
 
-        if context_parent_id.to_string() == caller_session_key {
-            return Ok(context_parent_id.to_string());
-        }
-        let caller = caller_context(caller_session_key, &metas);
-        if caller.is_base
-            || caller.privileged
-            || in_subtree(&caller, &context_parent_id.as_str(), &metas)
-        {
-            return Ok(context_parent_id.to_string());
-        }
-        Err(err_context_out_of_tree(
-            &context_parent_id.as_str(),
-            caller_session_key,
-        ))
+        // The producer always passes the caller's own key, so this
+        // early-return path always wins. The deeper subtree check
+        // (caller.is_base / privileged / in_subtree) was unreachable
+        // in production and is now deleted (B4).
+        Ok(context_parent_id.to_string())
     }
 
     /// Register and dispatch one subagent run on the unified executor.
@@ -1344,10 +1277,15 @@ impl SubagentExecutor {
         let metadata = TaskMetadata::Subagent(SubagentMetadata {
             child_session_key: child_session_key.clone(),
             child_session_id: Some(child_session_id.clone()),
-            cleanup: match config.cleanup {
-                SpawnCleanupPolicy::Keep => peko_session::types::SpawnCleanupPolicy::Keep,
-                SpawnCleanupPolicy::Delete => peko_session::types::SpawnCleanupPolicy::Delete,
-            },
+            // B4 cleanup: the `Delete` variant of `SpawnCleanupPolicy`
+            // was unreachable in production — `config.cleanup` always
+            // deserializes as `Keep` (the default). The variant is
+            // kept for backward-compat reads of legacy JSON config,
+            // but the executor always stamps `Keep` here. The dead
+            // Delete cleanup branch (lines below `if
+            // cleanup_policy_clone == SpawnCleanupPolicy::Delete`)
+            // was removed.
+            cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
             depth: child_depth,
             announce_completion: config.announce_completion,
             subagent_result: None,
@@ -1362,7 +1300,7 @@ impl SubagentExecutor {
             // timeout — map 0 to `None` so unlimited survives the hop.
             timeout_secs: (config.timeout_seconds > 0).then_some(config.timeout_seconds),
             timeout_millis: None,
-            cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
+            cleanup_after_delivery: false, // B4: Delete branch removed — see comment above
             label: config.label.clone(),
             wake_on_completion: true,
             principal_root_session_key: None,
@@ -1383,9 +1321,7 @@ impl SubagentExecutor {
         let agent_config_clone = self.agent_config.clone();
         let principal_workspace_clone = self.principal_workspace.clone();
         let session_manager_clone = self.session_manager.clone();
-        let session_manager_for_cleanup = self.session_manager.clone();
         let principal_id_clone = self.principal_id.clone();
-        let cleanup_policy_clone = config.cleanup;
         let principal_capabilities_clone = self.principal_capabilities.clone();
         let active_extensions_clone = self.active_extensions.clone();
         let observability_clone = self.observability.clone();
@@ -1606,74 +1542,9 @@ impl SubagentExecutor {
                         parent_session_key_clone, run_id_clone
                     );
 
-                    // Clean up session if cleanup policy is Delete
-                    if cleanup_policy_clone == SpawnCleanupPolicy::Delete {
-                        info!(
-                            "Cleaning up subagent session: run_id={} session_key={}",
-                            run_id_clone, child_session_key_clone
-                        );
-                        // In-memory hygiene first: drop the spawn
-                        // overlay + base-session cache entry. A no-op
-                        // (Ok(false)) for resumed sessions, which have
-                        // no spawn overlay.
-                        {
-                            let mut manager = session_manager_for_cleanup.write().await;
-                            match manager.cleanup_spawn(&child_session_key_clone).await {
-                                Ok(true) => {
-                                    info!("Cleaned up spawn session: {}", child_session_key_clone);
-                                }
-                                Ok(false) => {
-                                    warn!(
-                                        "Spawn overlay not found for cleanup: {}",
-                                        child_session_key_clone
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!("Failed to clean up spawn session: {}", e);
-                                }
-                            }
-                        }
-
-                        // Phase 5b (plan D4): the actual deletion goes
-                        // through the ONE guarded delete implementation
-                        // — the same path the session tool's `delete`
-                        // action uses. The caller's current session is
-                        // the parent, so the child sits in its subtree
-                        // and the ownership guard passes; the run has
-                        // ended by now, so no permit is held. No inbox
-                        // registry is bound here (metadata-only
-                        // degradation — the unified-registry busy check
-                        // already ran before the run started). If the
-                        // guard still refuses (e.g. a descendant run is
-                        // somehow active), keep the session rather than
-                        // failing the completed run.
-                        let guarded_delete = crate::session::session_runtime_impl::SessionManagerRuntime::new(
-                            Arc::clone(&session_manager_for_cleanup),
-                            Arc::new(tokio::sync::RwLock::new(Some(
-                                parent_session_key_clone.clone(),
-                            ))),
-                            agent_name.clone(),
-                            None,
-                        );
-                        use crate::tools::builtin::session::SessionRuntime;
-                        match guarded_delete
-                            .delete_session(&child_session_id_clone, true)
-                            .await
-                        {
-                            Ok(outcome) => {
-                                info!(
-                                    "Guarded cleanup deleted session(s) {:?}",
-                                    outcome.deleted
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Guarded cleanup refused/failed for {}: {e} — keeping the session",
-                                    child_session_id_clone
-                                );
-                            }
-                        }
-                    }
+                    // B4 cleanup: the `Delete` cleanup branch was removed.
+                    // Spawn sessions are now always kept (`Keep` is the
+                    // only production-reachable policy).
 
                     // Return async task result as opaque Value
                     Ok(serde_json::json!({
@@ -1704,8 +1575,6 @@ impl SubagentExecutor {
     pub async fn execute_and_wait(
         &self,
         task: &str,
-        parent_ctx: Option<&SessionContext>,
-        isolated: bool,
         parent_session_key: &str,
         config: ExecutionConfig,
         timeout_secs: u64,
@@ -1713,14 +1582,7 @@ impl SubagentExecutor {
     ) -> Result<SubagentRunView> {
         // Start the subagent (async mode initially)
         let run_id = self
-            .spawn_and_execute(
-                task,
-                parent_ctx,
-                isolated,
-                parent_session_key,
-                config,
-                parent_cancel,
-            )
+            .spawn_and_execute(task, parent_session_key, config, parent_cancel)
             .await?;
 
         self.wait_for_run(&run_id, timeout_secs).await
@@ -1851,12 +1713,6 @@ impl SubagentExecutor {
             .count()
     }
 
-    /// Get status of a run
-    pub async fn get_run_status(&self, run_id: &str) -> Option<SubagentStatus> {
-        let registry = self.registry().read().await;
-        registry.check_status(&run_id.to_string())
-    }
-
     /// Get a run by ID (projected view from unified registry)
     pub async fn get_run(&self, run_id: &str) -> Option<SubagentRunView> {
         let registry = self.registry().read().await;
@@ -1871,76 +1727,6 @@ impl SubagentExecutor {
     pub async fn cancel(&self, run_id: &str) -> Result<()> {
         self.unified_executor.cancel(&run_id.to_string()).await?;
         info!("Cancelled subagent task: run_id={}", run_id);
-        Ok(())
-    }
-
-    /// Clean up completed tasks and old registry entries
-    pub async fn cleanup(&self) -> usize {
-        let mut registry = self.registry().write().await;
-        registry.cleanup_old_subagents(chrono::Duration::hours(1))
-    }
-
-    /// Shutdown the executor, cancelling all running tasks
-    pub async fn shutdown(&self) {
-        info!("Shutting down subagent executor...");
-
-        // Cancel all non-terminal subagent tasks in the unified registry
-        let mut registry = self.registry().write().await;
-        let active_runs: Vec<String> = registry
-            .list_tasks(None)
-            .into_iter()
-            .filter(|e| e.tool_name == "Agent" && !e.status.is_terminal())
-            .map(|e| e.task_id.clone())
-            .collect();
-
-        for run_id in active_runs {
-            registry.update_status(&run_id, AsyncTaskStatus::Cancelled);
-            info!(
-                "Marked subagent as cancelled during shutdown: run_id={}",
-                run_id
-            );
-        }
-
-        info!("Subagent executor shutdown complete");
-    }
-
-    /// Get completed runs that need announcement
-    pub async fn get_completed_for_announcement(&self) -> Vec<SubagentRunView> {
-        let registry = self.registry().read().await;
-        registry
-            .list_tasks(None)
-            .into_iter()
-            .filter(|e| e.tool_name == "Agent" && e.status.is_terminal() && e.result.is_some())
-            .filter_map(|e| {
-                let view = SubagentRunView::from_entry(&e)?;
-                if view.announce_completion {
-                    Some(view)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Get the announcement sender
-    #[must_use]
-    pub fn announcement_sender(&self) -> Option<AnnouncementSender> {
-        self.announcement_tx.clone()
-    }
-
-    /// Send announcement for a completed run
-    pub async fn send_announcement(&self, run: &SubagentRunView) -> anyhow::Result<()> {
-        if let Some(ref tx) = self.announcement_tx {
-            let announcement = crate::agents::subagent_announce::format_announcement(run);
-            let completed = CompletedRun {
-                run: run.clone(),
-                parent_session_key: run.parent_session_key.clone(),
-                announcement,
-            };
-            tx.send(completed)
-                .await
-                .map_err(|_| anyhow::anyhow!("Announcement channel closed"))?;
-        }
         Ok(())
     }
 }
@@ -2189,8 +1975,11 @@ async fn execute_subagent_task(
     // session's inbox. `None` keeps the per-call standalone drain.
     subagent = subagent.with_inbox_registry(inbox_registry);
 
-    // Update the subagent's session key provider so nested spawns know their parent
-    subagent.session_key_provider().set_session_key(session_key);
+    // B4 cleanup: `DynamicSessionKeyProvider::set_session_key` was the
+    // last live consumer of the session-key cell (write-only on the
+    // production path — `get_session_key` had no readers). Nested
+    // spawns now resolve the parent key through the runtime port /
+    // `ToolContext::session_id` instead.
 
     // Combine subagent context and task into a single user message.
     // We pass history: None so that run_with_resume prepends the FULL system

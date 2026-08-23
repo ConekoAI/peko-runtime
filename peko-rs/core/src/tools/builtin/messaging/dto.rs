@@ -64,8 +64,9 @@ pub use peko_extension_api::SpawnCleanupPolicy;
 /// caller always passed the default (`Keep` / `None`). The
 /// projection onto root-side `subagent_executor::ExecutionConfig`
 /// in `agents/subagent_runtime_impl.rs` now hardcodes the default
-/// for those two, since the root-side type keeps them for its own
-/// `SubagentRunView` consumers (`subagent_announce::format_announcement`).
+/// for those two. B4 cleanup: `format_announcement` was deleted —
+/// `cleanup` / `label` are now dead in the root-side type too, but
+/// retained for backward-compat reads of legacy JSON config.
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
     /// Maximum execution time in seconds (0 = unlimited)

@@ -1028,16 +1028,18 @@ impl SessionManager {
         agent: &str,
         peer: &Subject,
         task: &str,
-        isolated: bool,
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
     ) -> Result<ResolvedSession> {
+        // B4 cleanup: `isolated` removed — `SessionManager::spawn_session`
+        // now always runs in shared-context mode (copies parent's context
+        // into the child).
         let handle = self
             .create_spawn_overlay_with_config(
                 agent,
                 peer,
                 task,
-                isolated,
+                false,
                 parent_session_key,
                 timeout_seconds,
                 SpawnCleanupPolicy::default(),
