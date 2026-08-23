@@ -18,25 +18,22 @@
 //! [`SessionRuntime`] is the full surface the `SessionTool` needs:
 //! reads (`list_sessions` / `get_history` / `get_status` /
 //! `search_sessions` / `current_session_key`) and storage mutations
-//! (`copy_session` / `rename_session` / `set_archived` /
-//! `delete_session` / `move_session`). `request_compaction` rides
-//! the same trait but is engine-facing only — the model-facing
-//! `compact` affordance lives on the Agent tool. Production wiring
-//! uses the `SessionManagerRuntime` adapter in
+//! (`copy_session` / `rename_session` /
+//! `delete_session` / `move_session`). The model-facing `compact`
+//! affordance lives on the Agent tool (SubagentRuntime path).
+//! Production wiring uses the `SessionManagerRuntime` adapter in
 //! `src/session/session_runtime_impl.rs`; tests construct a
 //! [`SessionCache`] (in this module, an in-memory implementation).
 //!
 //! Note on `SessionRuntime` method names vs. tool-action names:
 //! the runtime methods are storage verbs (`copy_session`,
-//! `delete_session`, `rename_session`, `move_session`,
-//! `set_archived`); the model-facing tool actions are bash-aligned
-//! verbs (`copy`, `remove`, in-place `move`, no archive/unarchive).
+//! `delete_session`, `rename_session`, `move_session`);
+//! the model-facing tool actions are bash-aligned
+//! verbs (`copy`, `remove`, in-place `move`).
 //! The tool layer is the only place that bridges between the two —
-//! see `tool.rs::SessionTool::execute` for the dispatch. `set_archived`
-//! stays on the trait for legacy record compatibility (records that
-//! already carry `archived: true` are still readable via
-//! `list_sessions` with `include_archived: true`), but no model-facing
-//! action writes it. Sprint 7 Commit F (2026-08-21).
+//! see `tool.rs::SessionTool::execute` for the dispatch.
+//! `set_archived` + `request_compaction` were retired in B3 cleanup
+//! (no production caller).
 //!
 //! Sprint 7 Commit H (2026-08-22): `copy_session` now takes an
 //! explicit `target_parent` + `target_slug` (mirrors bash
@@ -314,11 +311,6 @@ pub trait SessionRuntime: Send + Sync {
         new_slug: Option<String>,
     ) -> anyhow::Result<()>;
 
-    /// Set or clear the archived flag on a session. Archived sessions
-    /// are hidden from `list` (unless `include_archived: true`) and
-    /// refuse resume/compact.
-    async fn set_archived(&self, session_key: &str, archived: bool) -> anyhow::Result<()>;
-
     /// Delete a session. When the session has descendants (via
     /// `parent_session_id`), the delete refuses unless `recursive` —
     /// which deletes the whole subtree, children first.
@@ -327,19 +319,6 @@ pub trait SessionRuntime: Send + Sync {
         session_key: &str,
         recursive: bool,
     ) -> anyhow::Result<DeleteOutcome>;
-
-    /// Schedule compaction for a session (next iteration for the
-    /// current session, next run for others).
-    ///
-    /// Not exposed on the `session` tool: the orchestrator fires
-    /// compaction automatically from the persisted token counter (WS1),
-    /// and the model-facing `compact` affordance lives on the Agent
-    /// tool — its real caller arrives via the `SubagentExecutor` path
-    /// (next phase), sharing the ownership guard helpers in
-    /// `crate::session::ownership`. The trait method stays so that
-    /// caller can route through the same port.
-    #[allow(dead_code)]
-    async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome>;
 }
 
 /// Type alias for the shared runtime handle threaded through every

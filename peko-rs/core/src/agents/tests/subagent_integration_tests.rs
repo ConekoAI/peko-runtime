@@ -1223,6 +1223,26 @@ async fn create_linked_session(
     }
 }
 
+/// B3 helper: stamp `archived = true` on a session's metadata via the
+/// shared `MetadataController`. The legacy `SessionManager::set_archived`
+/// write path was retired end-to-end; this helper exists so the
+/// archived-target refusal tests can still seed their precondition
+/// (legacy data on disk that arrives already-archived is exactly what
+/// the `err_resume_archived` / `err_compact_archived` guards exist to
+/// catch).
+async fn mark_archived(session_manager: &Arc<RwLock<SessionManager>>, id: &str) {
+    let canonical = sid(id);
+    let mgr_guard = session_manager.write().await;
+    let mut controller = mgr_guard.metadata_controller.write().await;
+    let mut metadata = controller
+        .get_metadata(&canonical, false)
+        .await
+        .unwrap()
+        .expect("session must exist to mark archived");
+    metadata.archived = true;
+    controller.update_metadata(metadata).await.unwrap();
+}
+
 #[tokio::test]
 async fn resume_refuses_nonexistent_target() {
     let (session_manager, registry, agent_name) = create_test_components().await;
@@ -1351,12 +1371,11 @@ async fn resume_refuses_archived_target() {
         "spawn",
     )
     .await;
-    session_manager
-        .write()
-        .await
-        .set_archived("spawn-a", true)
-        .await
-        .unwrap();
+    // B3: `set_archived` is gone; stamp the flag directly on the
+    // persisted metadata via the controller's update path. Sessions
+    // that arrive already-archived (legacy data) are exactly what
+    // this guard exists to refuse.
+    mark_archived(&session_manager, "spawn-a").await;
 
     let executor = SubagentExecutor::with_registry(
         registry,
@@ -1375,7 +1394,10 @@ async fn resume_refuses_archived_target() {
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unarchive"), "{err}");
+    assert!(
+        err.to_string().contains("archived sessions are not currently restorable"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -1838,12 +1860,8 @@ async fn compact_refuses_archived_target() {
         "spawn",
     )
     .await;
-    session_manager
-        .write()
-        .await
-        .set_archived("spawn-a", true)
-        .await
-        .unwrap();
+    // B3: see `mark_archived` helper — `set_archived` is gone.
+    mark_archived(&session_manager, "spawn-a").await;
 
     let executor = SubagentExecutor::with_registry(
         registry,
@@ -1856,7 +1874,10 @@ async fn compact_refuses_archived_target() {
         .request_compaction(path!("spawn-a"), &sid("root-sess"))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unarchive"), "{err}");
+    assert!(
+        err.to_string().contains("archived sessions are not currently restorable"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -2384,12 +2405,8 @@ async fn streaming_resume_enforces_guard_stack() {
         "user",
     )
     .await;
-    session_manager
-        .write()
-        .await
-        .set_archived("spawn-a", true)
-        .await
-        .unwrap();
+    // B3: see `mark_archived` helper — `set_archived` is gone.
+    mark_archived(&session_manager, "spawn-a").await;
 
     let executor = SubagentExecutor::with_registry(
         registry.clone(),
@@ -2412,7 +2429,10 @@ async fn streaming_resume_enforces_guard_stack() {
         )
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("unarchive"), "{err}");
+    assert!(
+        err.to_string().contains("archived sessions are not currently restorable"),
+        "{err}"
+    );
 
     // Non-spawn target.
     let (sink, _e) = event_collector();

@@ -32,8 +32,6 @@ pub struct SessionCache {
     sessions: Mutex<HashMap<String, SessionInfo>>,
     histories: Mutex<HashMap<String, Vec<HistoryMessage>>>,
     statuses: Mutex<HashMap<String, SessionStatusResult>>,
-    /// Sessions that got a `request_compaction` call (for assertions).
-    compact_requests: Mutex<Vec<String>>,
     /// Monotonic counter for deterministic branch ids in tests.
     branch_counter: Mutex<usize>,
 }
@@ -47,7 +45,6 @@ impl SessionCache {
             sessions: Mutex::new(HashMap::new()),
             histories: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
-            compact_requests: Mutex::new(Vec::new()),
             branch_counter: Mutex::new(0),
         }
     }
@@ -72,15 +69,6 @@ impl SessionCache {
             .lock()
             .expect("statuses mutex poisoned")
             .insert(key, status);
-    }
-
-    /// Sessions that received a compaction request (test assertions).
-    #[must_use]
-    pub fn compact_requests(&self) -> Vec<String> {
-        self.compact_requests
-            .lock()
-            .expect("compact_requests mutex poisoned")
-            .clone()
     }
 
     /// Wrap into a `SharedSessionRuntime` for tool construction.
@@ -327,15 +315,6 @@ impl SessionRuntime for SessionCache {
         Ok(())
     }
 
-    async fn set_archived(&self, session_key: &str, archived: bool) -> anyhow::Result<()> {
-        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-        let info = sessions
-            .get_mut(session_key)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
-        info.archived = archived;
-        Ok(())
-    }
-
     async fn move_session(
         &self,
         session_key: &str,
@@ -428,26 +407,6 @@ impl SessionRuntime for SessionCache {
         Ok(DeleteOutcome { deleted: subtree })
     }
 
-    async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome> {
-        if !self
-            .sessions
-            .lock()
-            .expect("sessions mutex poisoned")
-            .contains_key(session_key)
-        {
-            return Err(anyhow::anyhow!("Session not found: {session_key}"));
-        }
-        self.compact_requests
-            .lock()
-            .expect("compact_requests mutex poisoned")
-            .push(session_key.to_string());
-        Ok(CompactRequestOutcome {
-            session_id: session_key.to_string(),
-            message: "Compaction scheduled — fires at the next iteration for the \
-                      current session, at its next run for others"
-                .to_string(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -566,17 +525,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_requests_are_recorded() {
-        let cache = SessionCache::new("live-1");
-        cache.add_session("s1".to_string(), info("s1"), vec![], status("s1", None));
-
-        let outcome = cache.request_compaction("s1").await.unwrap();
-        assert_eq!(outcome.session_id, "s1");
-        assert!(cache.request_compaction("missing").await.is_err());
-        assert_eq!(cache.compact_requests(), vec!["s1".to_string()]);
-    }
-
-    #[tokio::test]
     async fn search_skips_archived_and_matches_case_insensitively() {
         let cache = SessionCache::new("main");
         let history = vec![HistoryMessage {
@@ -587,9 +535,11 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
         }];
         cache.add_session("s1".to_string(), info("s1"), history, status("s1", None));
+        let mut s2_info = info("s2");
+        s2_info.archived = true;
         cache.add_session(
             "s2".to_string(),
-            info("s2"),
+            s2_info,
             vec![HistoryMessage {
                 role: "assistant".to_string(),
                 content: "another needle here".to_string(),
@@ -599,9 +549,7 @@ mod tests {
             }],
             status("s2", None),
         );
-        // Archive s2: it must drop out of search results.
-        cache.set_archived("s2", true).await.unwrap();
-
+        // s2 is seeded archived, so it must drop out of search results.
         let hits = cache.search_sessions("NEEDLE", None, 10).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "s1");

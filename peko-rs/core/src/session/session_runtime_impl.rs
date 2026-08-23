@@ -488,47 +488,6 @@ impl SessionRuntime for SessionManagerRuntime {
         Ok(())
     }
 
-    async fn set_archived(&self, session_key: &str, archived: bool) -> anyhow::Result<()> {
-        let mut manager = self.session_manager.write().await;
-        let (caller, metas) = self.caller_and_metas(&mut manager).await?;
-        let session_key = &self.resolve_ref(&caller, &metas, session_key)?;
-        self.guard_not_self(&caller, session_key)?;
-        self.guard_tree(&caller, session_key, &metas)?;
-        // The live trunk session (`root:self`) is continuous and
-        // engine-managed: archiving it is refused outright. Phase 7
-        // narrowed this from the whole `root:*` family — the per-peer
-        // root sessions are retired; the trunk is the only one left.
-        if archived && session_key.as_str() == crate::principal::routers::root::trunk_session_id() {
-            return Err(self.refuse(err_live_base_managed(session_key)));
-        }
-
-        if archived {
-            // Archiving blocks future runs of the session; refuse while
-            // one is in flight. The permit is held across the flag write
-            // so no run can start in between. `None` registry (stateless
-            // CLI) degrades to metadata-only.
-            match &self.inbox_registry {
-                Some(registry) => {
-                    let _permit = registry
-                        .try_acquire_run(session_key)
-                        .await
-                        .ok_or_else(|| self.refuse(err_run_active(session_key)))?;
-                    manager.set_archived(session_key, true).await?;
-                }
-                None => {
-                    tracing::debug!(
-                        "no inbox registry bound; archiving {session_key} without run-permit check"
-                    );
-                    manager.set_archived(session_key, true).await?;
-                }
-            }
-        } else {
-            // Unarchive needs ownership only.
-            manager.set_archived(session_key, false).await?;
-        }
-        Ok(())
-    }
-
     async fn delete_session(
         &self,
         session_key: &str,
@@ -746,30 +705,6 @@ impl SessionRuntime for SessionManagerRuntime {
         Ok(())
     }
 
-    async fn request_compaction(&self, session_key: &str) -> anyhow::Result<CompactRequestOutcome> {
-        let mut manager = self.session_manager.write().await;
-        let (caller, metas) = self.caller_and_metas(&mut manager).await?;
-        let session_key = &self.resolve_ref(&caller, &metas, session_key)?;
-        // Compacting the CURRENT session is allowed and encouraged
-        // (fires at the next iteration); only the ownership guard and
-        // the archived refusal apply.
-        self.guard_tree(&caller, session_key, &metas)?;
-        let meta = metas
-            .iter()
-            .find(|m| m.session_id.as_str() == *session_key)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
-        if meta.archived {
-            return Err(self.refuse(err_compact_archived(session_key)));
-        }
-
-        manager.set_compact_requested(session_key, true).await?;
-        Ok(CompactRequestOutcome {
-            session_id: session_key.clone(),
-            message: "Compaction scheduled — fires at the next iteration for the \
-                      current session, at its next run for others"
-                .to_string(),
-        })
-    }
 }
 
 /// Convert an `LlmMessage` to a `HistoryMessage` for tool output.
@@ -1008,22 +943,11 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, sid("child1"));
 
-        // Rename / archive / unarchive / compact / branch on others.
+        // Rename / copy / branch on others.
         h.runtime
             .rename_session("/c", Some("renamed".to_string()), None)
             .await
             .unwrap();
-        h.runtime.set_archived("/c", true).await.unwrap();
-        let listed = h
-            .runtime
-            .list_sessions(None, None, 50, None, false)
-            .await
-            .unwrap();
-        assert_eq!(listed.len(), 3, "archived hidden by default");
-        let err = h.runtime.request_compaction("/c").await.unwrap_err();
-        assert!(err.to_string().contains("unarchive"), "{err}");
-        h.runtime.set_archived("/c", false).await.unwrap();
-        h.runtime.request_compaction("/c").await.unwrap();
         let outcome = h
             .runtime
             .copy_session("/c", "/".into(), "c-copy".into(), None)
@@ -1036,9 +960,6 @@ mod tests {
             .copy_session("/", "/".into(), "root-copy".into(), None)
             .await
             .unwrap();
-
-        // Compacting the CURRENT session is allowed (fires next iteration).
-        h.runtime.request_compaction("/").await.unwrap();
     }
 
     #[tokio::test]
@@ -1050,10 +971,8 @@ mod tests {
         // runtime; only the guard logic cares.
         let h = tree_harness("root:user:alice").await;
 
-        // Self: delete / archive / rename the current session → refused.
+        // Self: delete / rename the current session → refused.
         let err = h.runtime.delete_session("/", true).await.unwrap_err();
-        assert!(err.to_string().contains("currently running in"), "{err}");
-        let err = h.runtime.set_archived("/", true).await.unwrap_err();
         assert!(err.to_string().contains("currently running in"), "{err}");
         let err = h
             .runtime
@@ -1063,7 +982,7 @@ mod tests {
         assert!(err.to_string().contains("currently running in"), "{err}");
 
         // The trunk (`root:self`) — the only engine-managed id left
-        // after Phase 7 — refuses delete/archive. We address it as a
+        // after Phase 7 — refuses delete. We address it as a
         // child of root:user:alice via a slug so the resolver can
         // find it (sibling-root addressing is out of scope for v1;
         // see sprint 5 plan).
@@ -1074,8 +993,6 @@ mod tests {
             .delete_session("/self", true)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
-        let err = h.runtime.set_archived("/self", true).await.unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
 
         // A retired-shape id (`root:cron:*`) has no family protection
@@ -1121,18 +1038,6 @@ mod tests {
 
         let outcome = h.runtime.delete_session("/c", false).await.unwrap();
         assert_eq!(outcome.deleted, vec![sid("spawn2")]);
-    }
-
-    #[tokio::test]
-    async fn archive_run_permit_held_refuses() {
-        let h = tree_harness("root:user:alice").await;
-
-        let guard = h.registry.try_acquire_run(&sid("spawn2")).await.unwrap();
-        let err = h.runtime.set_archived("/c", true).await.unwrap_err();
-        assert!(err.to_string().contains("active run"), "{err}");
-        drop(guard);
-
-        h.runtime.set_archived("/c", true).await.unwrap();
     }
 
     #[tokio::test]
@@ -1231,21 +1136,11 @@ mod tests {
             err.to_string().contains("outside your session subtree"),
             "{err}"
         );
-        let err = h.runtime.set_archived("/c", true).await.unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
         let err = h
             .runtime
             .rename_session("/c", Some("x".to_string()), None)
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-        let err = h.runtime.request_compaction("/c").await.unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
@@ -1273,9 +1168,6 @@ mod tests {
         assert!(err.to_string().contains("currently running in"), "{err}");
 
         // In-tree mutations work.
-        h.runtime.set_archived("/a/b", true).await.unwrap();
-        h.runtime.set_archived("/a/b", false).await.unwrap();
-        h.runtime.request_compaction("/a/b").await.unwrap();
         let branch = h
             .runtime
             .copy_session("/a/b", "/a/b".into(), "b-copy".into(), None)
@@ -1361,13 +1253,11 @@ mod tests {
             .unwrap();
         assert_eq!(all.len(), 4);
 
-        // Out-of-subtree mutations pass: rename, archive, move, delete.
+        // Out-of-subtree mutations pass: rename, move, delete.
         h.runtime
             .rename_session("/c", Some("renamed".to_string()), None)
             .await
             .unwrap();
-        h.runtime.set_archived("/c", true).await.unwrap();
-        h.runtime.set_archived("/c", false).await.unwrap();
         h.runtime
             .move_session("/c", "/a".to_string(), None)
             .await
@@ -1382,24 +1272,13 @@ mod tests {
         assert!(err.to_string().contains("currently running in"), "{err}");
 
         // The caller's base ancestor is still refused as an ancestor
-        // (delete); the TRUNK (`root:self`) is refused as
-        // engine-managed (archive) — Phase 7 narrowed the family guard
-        // to the trunk alone, so the archive assertion targets it.
+        // (delete).
         let err = h
             .runtime
             .delete_session("/", true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
-        // Hang root:self under root:user:alice with a slug so the
-        // resolver can address it from a non-self caller (sibling-root
-        // addressing isn't supported in the resolver scope; see
-        // sprint 5 plan). The engine-managed guard fires on the id
-        // shape regardless of where it sits in the tree.
-        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
-        h.set_slug("root:self", "self").await;
-        let err = h.runtime.set_archived("/self", true).await.unwrap_err();
-        assert!(err.to_string().contains("managed by the engine"), "{err}");
     }
 
     // ─── Move (reparent) ────────────────────────────────────────────
@@ -1652,13 +1531,6 @@ mod tests {
                 || err.to_string().contains("managed by the engine"),
             "{err}"
         );
-
-        let err = h.runtime.set_archived("/", true).await.unwrap_err();
-        assert!(
-            err.to_string().contains("currently running in")
-                || err.to_string().contains("managed by the engine"),
-            "{err}"
-        );
     }
 
     // ─── Slugs + path addressing (Phase 1b) ─────────────────────────
@@ -1723,10 +1595,7 @@ mod tests {
         let status = h.runtime.get_status("/c/b2").await.unwrap();
         assert_eq!(status.parent_session.as_deref(), Some(sid("spawn2").as_str()));
 
-        // compact + archive + delete via path.
-        h.runtime.request_compaction("/c/b2").await.unwrap();
-        h.runtime.set_archived("/c/b2", true).await.unwrap();
-        h.runtime.set_archived("/c/b2", false).await.unwrap();
+        // delete via path.
         let outcome = h.runtime.delete_session("/c/b2", false).await.unwrap();
         assert_eq!(outcome.deleted, vec![sid("child1")]);
     }

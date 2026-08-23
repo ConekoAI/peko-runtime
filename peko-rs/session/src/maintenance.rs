@@ -8,7 +8,6 @@
 
 use crate::index::MaintenanceConfig;
 use crate::metadata_controller::MetadataController;
-use peko_subject::PathResolverLike;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::interval;
@@ -118,26 +117,6 @@ impl MaintenanceScheduler {
         info!("Running initial maintenance at startup");
         self.run_maintenance().await
     }
-}
-
-/// Run maintenance for a specific agent
-pub async fn maintain_agent(
-    agent_name: &str,
-    config: &MaintenanceConfig,
-) -> anyhow::Result<crate::index::MaintenanceReport> {
-    let resolver = crate::default_path_resolver::DefaultPathResolver::new();
-    let sessions_dir = resolver.agent_sessions_dir(agent_name);
-
-    let mut controller = MetadataController::new(&sessions_dir);
-    controller.maintenance(config).await
-}
-
-/// Spawn maintenance scheduler as a background task
-pub fn spawn_scheduler(agents_dir: PathBuf) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let scheduler = MaintenanceScheduler::new(agents_dir);
-        scheduler.start().await;
-    })
 }
 
 #[cfg(test)]
