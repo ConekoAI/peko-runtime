@@ -38,8 +38,6 @@ pub struct BuiltinToolRegistrarConfig {
     pub enable_granular_write: bool,
     /// Enable shell tool
     pub enable_shell: bool,
-    /// Enable session introspection tools
-    pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
     /// Enable async execution control tools (AsyncSpawn, AsyncOutput, AsyncStop,
@@ -65,7 +63,6 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_granular_fs: true,
             enable_granular_write: true,
             enable_shell: true,
-            enable_session_tools: true,
             enable_cron: true,
             enable_async_tools: true,
             enable_task_tools: true,
@@ -248,16 +245,11 @@ impl BuiltinToolAdapter {
             }
         }
 
-        // Session introspection tool (unified)
-        if config.enable_session_tools && !disabled_set.contains("session") {
-            // Phase 10d: SessionTool takes Arc<dyn SessionRuntime>; the
-            // SessionCache placeholder is provided by peko_tools_builtin.
-            let registry = std::sync::Arc::new(crate::tools::builtin::SessionCache::new("main"));
-            let tool = Arc::new(SessionTool::new(
-                registry.as_shared() as crate::tools::builtin::session::SharedSessionRuntime
-            ));
-            Self::register_tool_system(core, tool).await?;
-        }
+        // Session introspection tool — owned by the agent
+        // (`agents/agent.rs` wires a real `SessionManagerRuntime`).
+        // The placeholder registration here used
+        // `SessionCache::new("main")`, a static map with no live
+        // session-manager backing — removed in the C-7 cleanup.
 
         // Cron family for scheduled jobs
         let cron_disabled = disabled_set.contains("cron");

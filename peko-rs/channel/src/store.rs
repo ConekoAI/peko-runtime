@@ -42,7 +42,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use peko_fs_persistence::{append_bytes_durable, FileLock};
-use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
+use peko_protocol::channel::{ChannelEvent, ChannelId};
+// `ChannelMembership` is referenced only in the `ChannelPort::membership`
+// trait surface; this adapter relies on the default `peek`-walk impl
+// and never names the wire type. Mark the import as allowed so the
+// type re-export is visible across the crate without an inert hack
+// function.
+#[allow(unused_imports)]
+use peko_protocol::channel::ChannelMembership;
 use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -1187,13 +1194,6 @@ impl ChannelPort for ChannelStore {
         self.subscribe_events_broadcast(channel).await
     }
 }
-
-// Silence the unused `ChannelMembership` import — the trait's default
-// `membership` impl walks `peek`, so the wire type is only referenced
-// in the trait surface.
-#[allow(dead_code)]
-fn _ensure_wire_imported(_: ChannelMembership) {}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

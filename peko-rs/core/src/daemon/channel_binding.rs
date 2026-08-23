@@ -528,7 +528,7 @@ pub(crate) fn select_responder(
 /// Owns the per-(principal, channel) `ChannelSubscriber` lifespan:
 /// boot-time enumeration ([`Self::spawn_all`]) plus the post-boot
 /// hooks ([`Self::ensure_subscriber`], called from `ChannelHost`'s
-/// `channel_created` / `kickoff_channel_read` impls on `AppState`).
+/// `channel_created` / `ensure_invitee_subscriber` impls on `AppState`).
 ///
 /// Also owns the per-principal [`SubagentResumeDriver`] cache — driver
 /// construction resolves the principal's provider, so it happens once
@@ -552,7 +552,7 @@ pub(crate) struct ChannelBindingSupervisor {
     /// Short critical sections only — a std Mutex is fine.
     spawned: std::sync::Mutex<HashSet<(PrincipalId, ChannelId)>>,
     /// Per-principal (turn driver, binding resolver) bundles.
-    drivers: tokio::sync::Mutex<
+    drivers: tokio::sync::RwLock<
         HashMap<PrincipalId, (Arc<SubagentResumeDriver>, Arc<SessionStoreBindingResolver>)>,
     >,
 }
@@ -574,7 +574,7 @@ impl ChannelBindingSupervisor {
             llm_resolver,
             observability,
             spawned: std::sync::Mutex::new(HashSet::new()),
-            drivers: tokio::sync::Mutex::new(HashMap::new()),
+            drivers: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -725,11 +725,27 @@ impl ChannelBindingSupervisor {
     /// configuration error that breaks `peko send`; bound channels
     /// then stay active-only until the principal config is fixed and
     /// the daemon restarts.
+    ///
+    /// The fast path is the read lock; the slow path holds the write
+    /// lock across construction so two concurrent misses on the same
+    /// principal serialize through `insert` and only the first bundle
+    /// is cached. The previous `read → construct → write` pattern
+    /// could build the bundle twice under concurrent first-contact,
+    /// dropping the first executor on the floor mid-construction
+    /// (channels then handed events to a different `SubagentExecutor`
+    /// than the cached one — silent per-channel cross-talk).
     async fn driver_for(
         &self,
         principal: &Arc<Principal>,
     ) -> Option<(Arc<SubagentResumeDriver>, Arc<SessionStoreBindingResolver>)> {
-        if let Some(bundle) = self.drivers.lock().await.get(&principal.id).cloned() {
+        if let Some(bundle) = self.drivers.read().await.get(&principal.id).cloned() {
+            return Some(bundle);
+        }
+
+        let mut drivers = self.drivers.write().await;
+        // Re-check under the write lock: a concurrent slow-path
+        // already built and cached the bundle while we waited.
+        if let Some(bundle) = drivers.get(&principal.id).cloned() {
             return Some(bundle);
         }
 
@@ -773,10 +789,7 @@ impl ChannelBindingSupervisor {
         ));
 
         let bundle = (turn_driver, binding_resolver);
-        self.drivers
-            .lock()
-            .await
-            .insert(principal.id.clone(), bundle.clone());
+        drivers.insert(principal.id.clone(), bundle.clone());
         Some(bundle)
     }
 }

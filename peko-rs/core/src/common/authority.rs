@@ -49,7 +49,6 @@ const CAP_WRITE_AGENTS: &str = "principal:write_agents";
 const CAP_WRITE_MCPS: &str = "principal:write_mcps";
 const CAP_WRITE_IDENTITY: &str = "principal:write_identity";
 const CAP_WRITE_CRON: &str = "principal:write_cron";
-const CAP_WRITE_CRON_HISTORY: &str = "principal:write_cron_history";
 const CAP_WRITE_EXTENSIONS: &str = "runtime:write_extensions";
 
 /// The storage tier a path belongs to.
@@ -275,13 +274,6 @@ impl RuntimeAuthority {
         self.assert_local_entitled()?;
         let layout = self.principal_layout(principal)?;
         Ok(LocalPath(layout.local.cron_schedule))
-    }
-
-    /// Hand out a `LocalPath` for the principal's cron history log.
-    pub fn local_cron_history(&self, principal: &PrincipalId) -> Result<LocalPath, AuthorityError> {
-        self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        Ok(LocalPath(layout.local.cron_history))
     }
 
     /// Hand out a `LocalPath` for the principal's sessions directory.
@@ -531,42 +523,6 @@ impl RuntimeAuthority {
         Ok(LocalPath(layout.local.cron_schedule))
     }
 
-    /// Hand out a `LocalPath` for the cron history log IF the principal
-    /// carries `principal:write_cron_history`.
-    pub fn local_cron_history_write(
-        &self,
-        principal: &PrincipalId,
-        caps: Option<&Capabilities>,
-    ) -> Result<LocalPath, AuthorityError> {
-        self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        self.assert_capability_granted(caps, CAP_WRITE_CRON_HISTORY, Tier::Local)?;
-        Ok(LocalPath(layout.local.cron_history))
-    }
-
-    /// Name-keyed variant of [`local_cron_history_write`] for IPC
-    /// `CronHistory`, mirroring [`local_cron_schedule_write_for_name`].
-    /// The actor + capability gate is identical; the layout is
-    /// resolved directly from the validated principal name.
-    ///
-    /// **Capability invariant (PR #339):** the read of `peko cron
-    /// history` is intentionally gated by `principal:write_cron_history`
-    /// because there is no separate read cap for cron history. The
-    /// capability string is reused; the accessor name reflects that
-    /// the gate sees both kinds of callers. New callers should NOT
-    /// introduce a separate `read_cron_history` cap without also
-    /// splitting the audit / starter-bundle grants.
-    pub fn local_cron_history_gate_for_name(
-        &self,
-        principal_name: &str,
-        caps: Option<&Capabilities>,
-    ) -> Result<LocalPath, AuthorityError> {
-        self.assert_local_entitled()?;
-        let layout = self.resolver.principal_layout(principal_name);
-        self.assert_capability_granted(caps, CAP_WRITE_CRON_HISTORY, Tier::Local)?;
-        Ok(LocalPath(layout.local.cron_history))
-    }
-
     /// Hand out a `RuntimePath` for the extensions install root IF the
     /// principal carries `runtime:write_extensions`. Gates
     /// `ExtensionInstall` / `ExtensionUninstall` / `ExtensionBundle`.
@@ -602,18 +558,6 @@ impl RuntimeAuthority {
         Ok(LocalPath(layout.local.cron_schedule))
     }
 
-    /// **Cron-engine-only.** Same as [`local_cron_schedule_runtime`] but
-    /// for the cron history log. IPC handlers MUST use
-    /// [`RuntimeAuthority::local_cron_history_write`].
-    pub fn local_cron_history_runtime(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<LocalPath, AuthorityError> {
-        self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        Ok(LocalPath(layout.local.cron_history))
-    }
-
     /// **Cron-engine-only.** Like [`local_cron_schedule_runtime`] but
     /// accepts a pre-resolved principal name (the result of the
     /// manager-aware `principal_name_for` lookup). The cron engine uses
@@ -627,18 +571,6 @@ impl RuntimeAuthority {
         self.assert_local_entitled()?;
         let layout = self.resolver.principal_layout(principal_name);
         Ok(LocalPath(layout.local.cron_schedule))
-    }
-
-    /// **Cron-engine-only.** Same as [`local_cron_schedule_runtime_for_name`]
-    /// but for the cron history log. IPC handlers MUST use
-    /// [`RuntimeAuthority::local_cron_history_write`].
-    pub fn local_cron_history_runtime_for_name(
-        &self,
-        principal_name: &str,
-    ) -> Result<LocalPath, AuthorityError> {
-        self.assert_local_entitled()?;
-        let layout = self.resolver.principal_layout(principal_name);
-        Ok(LocalPath(layout.local.cron_history))
     }
 
     // ---------------------------------------------------------------------
@@ -1204,36 +1136,6 @@ mod tests {
                 tier: Tier::Local,
                 capability
             }) if capability == Capability::new("principal:write_cron")
-        ));
-    }
-
-    #[test]
-    fn write_gate_local_cron_history_with_grant_succeeds() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_cron_history"]);
-        let result = authority.local_cron_history_write(&pid, Some(&caps));
-        assert!(result.is_ok());
-        assert!(result
-            .unwrap()
-            .as_path()
-            .ends_with("alice/local/cron/history.log"));
-    }
-
-    #[test]
-    fn write_gate_local_cron_history_without_grant_is_capability_denied() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.local_cron_history_write(&pid, Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Local,
-                capability
-            }) if capability == Capability::new("principal:write_cron_history")
         ));
     }
 

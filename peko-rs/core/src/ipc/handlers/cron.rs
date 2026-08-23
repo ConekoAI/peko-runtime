@@ -12,10 +12,11 @@
 //!   it (same pattern as the rest of the F6/F7 handler family).
 //! - F6: this module must not import any other `ipc::handlers::*` module.
 //!
-//! **Phase A.** Cron state now lives per-principal at
-//! `{data_dir}/principals/{name}/local/cron/schedule.toml` and
-//! `{data_dir}/principals/{name}/local/cron/history.log`. The
-//! legacy global `<data_dir>/cron.json` is gone.
+//! **Phase A.** Cron state lives per-principal at
+//! `{data_dir}/principals/{name}/local/cron/schedule.toml`.
+//! Cron run history is stored inside the schedule file; there is no
+//! separate history.log. The legacy global `<data_dir>/cron.json`
+//! is gone.
 //!
 //! **F1b (2026-08-07 field test).** The actual operations — principal
 //! resolution, the owner-capability gate, and the scheduler mutations —
@@ -28,7 +29,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::common::paths::PathResolver;
-use crate::daemon::cron_ops::CronOp;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
@@ -45,8 +45,7 @@ use peko_cron::CronScheduler;
 /// reference, so the trait is object-safe without `async_trait`.
 pub(crate) trait CronHost: Send + Sync {
     /// Typed path resolver. Used to derive each principal's
-    /// per-principal cron file via `cron_schedule(name)` and
-    /// `cron_history(name)`.
+    /// per-principal cron file via `cron_schedule(name)`.
     fn path_resolver(&self) -> PathResolver;
 
     /// Principal manager used to validate that a job's
@@ -205,7 +204,7 @@ impl RequestHandler for CronHandler {
                 // which walks loaded schedulers to find the job,
                 // coalesces with any in-flight run, and spawns the
                 // work so the IPC handler returns immediately.
-                if let Err(message) = self.host.cron_ops().authorize(&job_id, CronOp::Mutate).await {
+                if let Err(message) = self.host.cron_ops().authorize(&job_id).await {
                     let response = ResponsePacket::Error {
                         request_id,
                         message,
@@ -237,9 +236,11 @@ impl RequestHandler for CronHandler {
                 job_id,
                 limit,
             } => {
-                // The history cap gates the read; the gate fires against
-                // the OWNER's caps so cross-principal reads stay blocked.
-                match self.host.cron_ops().authorize(&job_id, CronOp::History).await {
+                // The schedule-write cap gates the read (cron history
+                // lives inside the schedule file). The gate fires
+                // against the OWNER's caps so cross-principal reads
+                // stay blocked.
+                match self.host.cron_ops().authorize(&job_id).await {
                     Ok((_principal_name, cron_db, _caps)) => match CronScheduler::new(&cron_db) {
                         Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
                             Ok(runs) => {

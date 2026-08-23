@@ -106,10 +106,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     ) -> Result<Vec<(TaskId, ChannelEvent)>>;
 
     /// Remove `principal` from the channel membership set. Emits a
-    /// `MemberLeft` event. PR-1: leaves are always permitted;
-    /// [`ChannelError::NotEmpty`] is reserved for future implementations
-    /// that may forbid leaving with other members present — no current
-    /// adapter raises it (see B5 dead-surface cleanup).
+    /// `MemberLeft` event. PR-1: leaves are always permitted.
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()>;
 
     /// All current members of the channel.
@@ -440,12 +437,6 @@ pub enum ChannelError {
     /// Fan-out cap exceeded. PR-1: hard cap of 8 members per channel.
     #[error("fan-out cap exceeded ({current}); max 8 members per channel")]
     FanOutCap { current: usize },
-
-    /// Attempted to leave a non-empty channel where leaving is forbidden.
-    /// PR-1 does NOT raise this — leaves are always permitted — but the
-    /// variant is reserved for future stricter semantics.
-    #[error("channel still has {remaining} members; cannot remove")]
-    NotEmpty { remaining: usize },
 
     /// Generic adapter-level error. Avoid for new code; prefer a
     /// dedicated variant.

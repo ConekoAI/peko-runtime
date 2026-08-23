@@ -264,11 +264,3 @@ pub struct ListResponse {
     pub principal: PrincipalId,
     pub channels: Vec<ChannelId>,
 }
-
-// ---------------------------------------------------------------------------
-// Re-export for ergonomic callers
-// ---------------------------------------------------------------------------
-
-/// Re-export so callers can `use peko_channel::Tier` without naming the
-/// underlying module.
-pub use crate::port::Tier as _Tier;

@@ -94,19 +94,6 @@ impl Default for ExecutionConfig {
     }
 }
 
-// ─── CompletedRun (lifted from src/agents/subagent_executor.rs) ────
-
-/// A completed subagent run ready for announcement
-#[derive(Debug, Clone)]
-pub struct CompletedRun {
-    /// The run that completed (view projected from unified registry)
-    pub run: SubagentRunView,
-    /// The parent session key
-    pub parent_session_key: String,
-    /// The announcement message
-    pub announcement: String,
-}
-
 // ─── SubagentResult (lifted from src/extensions/framework/async_exec/executor/registry.rs)
 
 /// Result of a subagent run.

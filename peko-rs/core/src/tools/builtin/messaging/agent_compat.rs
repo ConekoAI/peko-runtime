@@ -10,7 +10,7 @@
 //!    keep working.
 //! 2. Re-exports the lifted DTOs (`AgentConfig`, `ExecutionConfig`,
 //!    `SpawnError`, `SubagentRunView`, `SpawnCleanupPolicy`,
-//!    `CompletedRun`, `SubagentResult`).
+//!    `SubagentResult`).
 //! 3. Provides the executor-typed constructor shim [`new_agent_tool`]
 //!    that wraps an `Arc<SubagentExecutor>` in a
 //!    [`SubagentExecutorRuntime`] adapter before handing it to the
@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 pub use crate::tools::builtin::messaging::{
-    AgentArgs, AgentTool, CompletedRun, ExecutionConfig, SharedSubagentRuntime, SpawnAuditEvent,
+    AgentArgs, AgentTool, ExecutionConfig, SharedSubagentRuntime, SpawnAuditEvent,
     SpawnCleanupPolicy, SpawnRequest, SubagentResult, SubagentRunView,
 };
 

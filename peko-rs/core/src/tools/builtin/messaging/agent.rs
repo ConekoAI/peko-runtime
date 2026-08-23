@@ -956,6 +956,14 @@ impl SubagentRuntime for TestSubagentRuntime {
             .max_depth
     }
 
+    fn workspace(&self) -> Option<&Path> {
+        None
+    }
+
+    fn spawn_cost_estimate_usd(&self) -> Option<f64> {
+        None
+    }
+
     async fn execute_and_wait(
         &self,
         request: SpawnRequest,

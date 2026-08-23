@@ -2328,9 +2328,9 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
 
     /// Phase B: hand the tier-typed authority through to the cron
     /// handler. The cron engine resolves Local-tier paths (the
-    /// per-principal `schedule.toml` / `history.log`) through this
-    /// authority; the actor is the daemon (`Subject::Public`), which
-    /// is allowed to grant `LocalPath` (see
+    /// per-principal `schedule.toml`) through this authority; the
+    /// actor is the daemon (`Subject::Public`), which is allowed to
+    /// grant `LocalPath` (see
     /// `common::authority::RuntimeAuthority::local`).
     fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
         &self.authority
@@ -2388,7 +2388,7 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
     /// `ChannelRead`: waking a session on join remains the passive
     /// binding's job, driven by inbound events rather than the join
     /// itself.
-    fn kickoff_channel_read(
+    fn ensure_invitee_subscriber(
         &self,
         invitee: &peko_subject::PrincipalId,
         channel: &peko_channel::ChannelId,

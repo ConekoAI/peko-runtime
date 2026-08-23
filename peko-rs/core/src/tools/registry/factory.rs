@@ -133,8 +133,6 @@ pub struct ToolFactoryConfig {
     /// Enable shell tool (replaces process tool)
     pub enable_shell: bool,
 
-    /// Enable session introspection tools
-    pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
     /// Enable async execution control tools
@@ -158,7 +156,6 @@ impl Default for ToolFactoryConfig {
             enable_granular_fs: true,    // Enabled by default
             enable_granular_write: true, // Enable write tools by default
             enable_shell: true,
-            enable_session_tools: true,
             enable_cron: true,
             enable_async_tools: true,
             enable_task_tools: true,
@@ -182,7 +179,6 @@ impl ToolFactoryConfig {
             enable_granular_fs: true,
             enable_granular_write: false, // Read-only: no Write or Edit
             enable_shell: true,
-            enable_session_tools: false,
             enable_cron: false,
             enable_async_tools: false,
             enable_task_tools: false,
@@ -200,7 +196,6 @@ impl ToolFactoryConfig {
         Self {
             workspace_dir,
             enable_granular_fs: true,
-            enable_session_tools: false,
             enable_cron: false,
             mcp: McpFactoryConfig::disabled(),
             ..Default::default()
@@ -307,7 +302,7 @@ impl ToolFactory {
     #[must_use]
     pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult {
         use crate::tools::builtin::BashTool;
-        use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool};
+        use crate::tools::builtin::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
         use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
 
         let mut registry = DisabledToolFilter::new(&config.disabled_tools);
@@ -351,19 +346,12 @@ impl ToolFactory {
             }
         }
 
-        // Session introspection tool (unified)
-        if config.enable_session_tools {
-            registry.register("session", true, || {
-                // Phase 10d: `SessionTool` now lives in peko_tools_builtin and
-                // takes a `SharedSessionRuntime` (Arc<dyn SessionRuntime>).
-                // The legacy placeholder `SessionCache` is provided by
-                // peko_tools_builtin and exposed here for back-compat.
-                let cache = std::sync::Arc::new(crate::tools::builtin::SessionCache::new("main"));
-                Arc::new(SessionTool::new(
-                    cache.as_shared() as crate::tools::builtin::session::SharedSessionRuntime
-                ))
-            });
-        }
+        // Session introspection tool — owned by the agent (`agents/agent.rs`
+        // wires a real `SessionManagerRuntime`). The placeholder registration
+        // here used `SessionCache::new("main")`, a static map with no live
+        // session-manager backing — every query landed on an empty cache.
+        // Removed in the C-7 cleanup; the SessionTool reaches the principal
+        // exclusively through the agent path.
 
         // Cron family for scheduled jobs
         if config.enable_cron {
