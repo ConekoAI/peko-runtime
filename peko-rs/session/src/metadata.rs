@@ -1,251 +1,31 @@
 //! Session Metadata Value Object
 //!
-//! This module provides an immutable value object for session metadata,
-//! ensuring controlled updates and clear data flow.
+//! B8c.1: `SessionMetadata` is now a type alias for [`SessionEntry`]
+//! (`crate::index::SessionEntry`). The two structs carried identical
+//! 21 fields and a hand-rolled `from_entry`/`to_entry` pair was used to
+//! bridge them at API boundaries. With the alias, `SessionMetadata` is
+//! the same type as `SessionEntry` — `to_metadata` / `to_entry` and the
+//! duplicate `new` / `record_tokens` / `set_*` / `increment_turn`
+//! methods all collapse onto the canonical definitions in
+//! `crate::index`.
 //!
-//! All metadata mutations go through the `MetadataController`, which is the
-//! sole authority for session metadata operations.
+//! `MetadataDiscrepancy` and `ReconciliationResult` remain here:
+//! they describe cross-source (index vs JSONL) reconciliation outcomes
+//! and are not part of the per-session value object.
 
-use crate::id::SessionId;
 use crate::index::SessionEntry;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Immutable session metadata
+/// Backward-compatible alias for [`SessionEntry`].
 ///
-/// This is a value object that represents a snapshot of session metadata.
-/// To modify metadata, create a new instance and pass it to `MetadataController`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionMetadata {
-    pub session_id: SessionId,
-    pub agent_name: String,
-    pub created_at: u64,
-    pub updated_at: u64,
-    pub message_count: usize,
-    pub turn_count: u32,
-    /// `total_tokens` reported by the most recent assistant message.
-    /// This is the model's count of *how many tokens the current turn
-    /// used* — it is NOT the model's maximum context window.
-    pub last_total_tokens: usize,
-    /// Cumulative input tokens across all assistant messages
-    pub total_input_tokens: usize,
-    /// Cumulative output tokens across all assistant messages
-    pub total_output_tokens: usize,
-    /// The model's maximum context window size, in tokens, if known.
-    /// `None` when the session has not yet been opened against a
-    /// known provider/model — e.g. legacy entries, sessions opened
-    /// without a provider reference. Populated by the engine when
-    /// the orchestrator pins the registry-resolved model max.
-    pub model_context_limit: Option<usize>,
-    pub transcript_file: String,
-    pub title: Option<String>,
-    pub parent_session_id: Option<SessionId>,
-    pub trigger: String,
-    /// Subject type ("user" or "agent")
-    pub peer_type: Option<String>,
-    /// Subject ID
-    pub peer_id: Option<String>,
-    /// Archived sessions are hidden from default listings and refuse
-    /// resume/compact until unarchived (agent-owned session management).
-    pub archived: bool,
-    /// Set when an agent requests compaction of this session; consumed
-    /// by the compaction orchestrator at the session's next run.
-    pub compact_requested: bool,
-    /// Standing sessions are exempt from maintenance pruning — their
-    /// transcripts are durable regardless of idle age.
-    pub standing: bool,
-    /// Privileged sessions give their caller whole-store reach in the
-    /// ownership guards (like a base caller) while keeping their parent
-    /// pointer and tree membership (sprint 2 peer-child provisioning —
-    /// set only for the principal owner's peer child).
-    pub privileged: bool,
-    /// Per-parent-unique path segment for `/slug/...` addressing
-    /// (see `crate::path`). `title` stays free-form display text;
-    /// the slug is the machine-stable segment. The trunk session
-    /// (sprint 6: `parent_session_id == None`) carries no slug —
-    /// it is addressable only as `/` from inside its own tree.
-    pub slug: Option<String>,
-}
-
-impl SessionMetadata {
-    /// Create new metadata for a session
-    pub fn new(
-        session_id: impl Into<SessionId>,
-        agent_name: impl Into<String>,
-        transcript_file: impl Into<String>,
-    ) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        Self {
-            session_id: session_id.into(),
-            agent_name: agent_name.into(),
-            created_at: now,
-            updated_at: now,
-            message_count: 0,
-            turn_count: 0,
-            last_total_tokens: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            model_context_limit: None,
-            transcript_file: transcript_file.into(),
-            title: None,
-            parent_session_id: None,
-            trigger: "user".to_string(),
-            peer_type: None,
-            peer_id: None,
-            archived: false,
-            compact_requested: false,
-            standing: false,
-            privileged: false,
-            slug: None,
-        }
-    }
-
-    /// Create metadata with parent session (for branching)
-    pub fn with_parent(
-        session_id: impl Into<SessionId>,
-        agent_name: impl Into<String>,
-        transcript_file: impl Into<String>,
-        parent_session_id: impl Into<SessionId>,
-    ) -> Self {
-        let mut meta = Self::new(session_id, agent_name, transcript_file);
-        meta.parent_session_id = Some(parent_session_id.into());
-        meta.trigger = "branch".to_string();
-        meta
-    }
-
-    /// Create from existing `SessionEntry` (index data)
-    #[must_use]
-    pub fn from_entry(entry: SessionEntry) -> Self {
-        Self {
-            session_id: entry.session_id,
-            agent_name: entry.agent_name,
-            created_at: entry.created_at,
-            updated_at: entry.updated_at,
-            message_count: entry.message_count,
-            turn_count: entry.turn_count,
-            last_total_tokens: entry.last_total_tokens,
-            total_input_tokens: entry.total_input_tokens,
-            total_output_tokens: entry.total_output_tokens,
-            model_context_limit: entry.model_context_limit,
-            transcript_file: entry.transcript_file,
-            title: entry.title,
-            parent_session_id: entry.parent_session_id,
-            trigger: entry.trigger,
-            peer_type: entry.peer_type,
-            peer_id: entry.peer_id,
-            archived: entry.archived,
-            compact_requested: entry.compact_requested,
-            standing: entry.standing,
-            privileged: entry.privileged,
-            slug: entry.slug,
-        }
-    }
-
-    /// Convert to `SessionEntry` for index storage
-    #[must_use]
-    pub fn to_entry(&self) -> SessionEntry {
-        SessionEntry {
-            session_id: self.session_id,
-            agent_name: self.agent_name.clone(),
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-            message_count: self.message_count,
-            turn_count: self.turn_count,
-            last_total_tokens: self.last_total_tokens,
-            total_input_tokens: self.total_input_tokens,
-            total_output_tokens: self.total_output_tokens,
-            model_context_limit: self.model_context_limit,
-            transcript_file: self.transcript_file.clone(),
-            title: self.title.clone(),
-            parent_session_id: self.parent_session_id,
-            trigger: self.trigger.clone(),
-            peer_type: self.peer_type.clone(),
-            peer_id: self.peer_id.clone(),
-            archived: self.archived,
-            compact_requested: self.compact_requested,
-            standing: self.standing,
-            privileged: self.privileged,
-            slug: self.slug.clone(),
-        }
-    }
-
-    /// Update timestamp to now
-    fn touch(&mut self) {
-        self.updated_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-    }
-
-    /// Record token usage for the most recent assistant message.
-    ///
-    /// `last_total_tokens` is the `total_tokens` reported by the
-    /// provider on the last assistant turn. `input` and `output` are
-    /// the incremental tokens for this turn.
-    pub fn record_tokens(&mut self, last_total_tokens: usize, input: usize, output: usize) {
-        self.last_total_tokens = last_total_tokens;
-        self.total_input_tokens += input;
-        self.total_output_tokens += output;
-        self.touch();
-    }
-
-    /// Set the model's maximum context window size (in tokens).
-    ///
-    /// Called by the engine when the compaction orchestrator pins the
-    /// registry-resolved model max. Idempotent; calling with a different
-    /// value overwrites the previous one.
-    pub fn set_model_context_limit(&mut self, limit: usize) {
-        if self.model_context_limit != Some(limit) {
-            self.model_context_limit = Some(limit);
-            self.touch();
-        }
-    }
-
-    /// Set message count from computed value (reconciliation)
-    pub fn set_message_count(&mut self, count: usize) {
-        if self.message_count != count {
-            tracing::debug!(
-                "Updating message count for {}: {} -> {}",
-                self.session_id,
-                self.message_count,
-                count
-            );
-            self.message_count = count;
-            self.touch();
-        }
-    }
-
-    /// Increment turn count
-    pub fn increment_turn(&mut self) {
-        self.turn_count += 1;
-        self.touch();
-    }
-
-    /// Set title
-    pub fn set_title(&mut self, title: Option<impl Into<String>>) {
-        self.title = title.map(Into::into);
-        self.touch();
-    }
-
-    /// Set the slug (per-parent-unique path segment).
-    ///
-    /// Raw write — format validation and per-parent uniqueness are
-    /// enforced by the callers (`crate::path::validate_slug` /
-    /// `crate::path::slug_conflict`, applied in
-    /// `MetadataController::set_slug` and the root-side adapters).
-    pub fn set_slug(&mut self, slug: Option<impl Into<String>>) {
-        self.slug = slug.map(Into::into);
-        self.touch();
-    }
-
-    /// Set trigger
-    pub fn set_trigger(&mut self, trigger: impl Into<String>) {
-        self.trigger = trigger.into();
-    }
-}
+/// `SessionMetadata` predates `SessionEntry`'s full role as the
+/// single per-session value object. Existing call sites
+/// (`SessionMetadata::new(...)`, `metadata.set_message_count(...)`,
+/// `metadata.to_entry()`, etc.) continue to compile and behave
+/// identically because they all resolve to the same underlying
+/// `SessionEntry` impl block.
+///
+/// New code should prefer the canonical name `SessionEntry`.
+pub type SessionMetadata = SessionEntry;
 
 /// Discrepancy between index and JSONL
 #[derive(Debug, Clone, PartialEq)]
@@ -301,34 +81,31 @@ impl ReconciliationResult {
 
 #[cfg(test)]
 mod tests {
-    use crate::*;
+    use super::*;
+    use crate::id::SessionId;
+
+    // B8c.1: alias exists; constructors and accessors resolve to
+    // `SessionEntry`. These tests guard the alias shape rather than
+    // exercising the underlying behavior (which is covered by
+    // `crate::index` tests).
 
     #[test]
-    fn test_metadata_new() {
-        let meta = SessionMetadata::new(
-            SessionId::parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
-            "test_agent",
-            "sess_123.jsonl",
-        );
-        assert_eq!(
-            meta.session_id,
-            SessionId::parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap()
-        );
-        assert_eq!(meta.agent_name, "test_agent");
-        assert_eq!(meta.message_count, 0);
+    fn test_metadata_alias_is_session_entry() {
+        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+        let entry = SessionEntry::new("sess_123", "test_agent", "sess_123.jsonl");
+        assert_eq!(meta.session_id, entry.session_id);
+        assert_eq!(meta.agent_name, entry.agent_name);
     }
 
     #[test]
-    fn test_metadata_mutation() {
-        // Use mutable methods instead of builder pattern
+    fn test_metadata_mutation_through_alias() {
         let mut meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         meta.set_title(Some("Test Title"));
         meta.set_message_count(10);
-        // record_tokens(last_total_tokens, input_tokens, output_tokens)
         meta.record_tokens(1000, 100, 50);
         meta.set_model_context_limit(200_000);
 
-        assert_eq!(meta.title, Some("Test Title".to_string()));
+        assert_eq!(meta.title.as_deref(), Some("Test Title"));
         assert_eq!(meta.message_count, 10);
         assert_eq!(meta.last_total_tokens, 1000);
         assert_eq!(meta.total_input_tokens, 100);
@@ -337,82 +114,47 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_context_limit_unknown_by_default() {
-        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
-        assert_eq!(meta.model_context_limit, None);
-    }
-
-    #[test]
-    fn test_metadata_roundtrip() {
-        let entry = SessionEntry::new(
-            "sess_123".to_string(),
-            "test_agent".to_string(),
-            "sess_123.jsonl".to_string(),
-        );
-
-        let meta = SessionMetadata::from_entry(entry.clone());
-        let entry2 = meta.to_entry();
-
-        assert_eq!(entry.session_id, entry2.session_id);
-        assert_eq!(entry.agent_name, entry2.agent_name);
-        assert_eq!(entry.message_count, entry2.message_count);
-    }
-
-    #[test]
-    fn test_archive_flags_roundtrip() {
-        let mut entry = SessionEntry::new(
-            "sess_123".to_string(),
-            "test_agent".to_string(),
-            "sess_123.jsonl".to_string(),
-        );
-        entry.archived = true;
-        entry.compact_requested = true;
-        entry.standing = true;
-        entry.privileged = true;
-
-        let meta = SessionMetadata::from_entry(entry);
-        assert!(meta.archived);
-        assert!(meta.compact_requested);
-        assert!(meta.standing);
-        assert!(meta.privileged);
-
-        let entry2 = meta.to_entry();
-        assert!(entry2.archived);
-        assert!(entry2.compact_requested);
-        assert!(entry2.standing);
-        assert!(entry2.privileged);
-
-        // Defaults are false on construction.
-        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+    fn test_archive_flags_via_alias() {
+        let mut meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         assert!(!meta.archived);
         assert!(!meta.compact_requested);
         assert!(!meta.standing);
         assert!(!meta.privileged);
+
+        meta.archived = true;
+        meta.compact_requested = true;
+        meta.standing = true;
+        meta.privileged = true;
+        assert!(meta.archived);
+        assert!(meta.compact_requested);
+        assert!(meta.standing);
+        assert!(meta.privileged);
     }
 
     #[test]
-    fn test_slug_roundtrip() {
-        let mut entry = SessionEntry::new(
-            "sess_123".to_string(),
-            "test_agent".to_string(),
-            "sess_123.jsonl".to_string(),
-        );
-        assert_eq!(entry.slug, None);
-        entry.slug = Some("task-b".to_string());
-
-        let meta = SessionMetadata::from_entry(entry);
-        assert_eq!(meta.slug.as_deref(), Some("task-b"));
-
-        let entry2 = meta.to_entry();
-        assert_eq!(entry2.slug.as_deref(), Some("task-b"));
-
-        // Slug defaults to None on construction; set_slug mirrors set_title.
+    fn test_slug_via_alias() {
         let mut meta = SessionMetadata::new("sess_456", "test_agent", "sess_456.jsonl");
         assert_eq!(meta.slug, None);
         meta.set_slug(Some("memory"));
         assert_eq!(meta.slug.as_deref(), Some("memory"));
         meta.set_slug(None::<String>);
         assert_eq!(meta.slug, None);
+    }
+
+    #[test]
+    fn test_with_parent_via_alias() {
+        // `with_parent` is provided by `SessionEntry`; the alias
+        // surfaces it on `SessionMetadata` calls without an extra
+        // method.
+        let parent = SessionId::from("parent");
+        let child = SessionMetadata::with_parent(
+            SessionId::from("child"),
+            "test_agent",
+            "child.jsonl",
+            parent.clone(),
+        );
+        assert_eq!(child.parent_session_id, Some(parent));
+        assert_eq!(child.trigger, "branch");
     }
 
     #[test]

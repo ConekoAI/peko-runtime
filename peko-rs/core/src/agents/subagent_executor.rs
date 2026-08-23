@@ -338,11 +338,8 @@ impl SubagentExecutor {
             // completion pushes actually reach the loop's drain site.
             let async_registry = get_or_create_registry_for_agent(&self.agent_name);
             let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-            self.unified_executor = AsyncExecutor::with_registries(
-                async_registry,
-                async_queue_manager,
-                reg,
-            );
+            self.unified_executor =
+                AsyncExecutor::with_registries(async_registry, async_queue_manager, reg);
         }
         self
     }
@@ -370,10 +367,7 @@ impl SubagentExecutor {
     /// behavior (counters always readable via
     /// [`agent_meter_usage`](Self::agent_meter_usage)) is unchanged.
     #[must_use]
-    pub fn with_agent_meter(
-        mut self,
-        meter: Arc<peko_quota::meter::QuotaMeter>,
-    ) -> Self {
+    pub fn with_agent_meter(mut self, meter: Arc<peko_quota::meter::QuotaMeter>) -> Self {
         self.agent_meter = meter;
         self
     }
@@ -570,10 +564,7 @@ impl SubagentExecutor {
     /// same per-Principal store. `None` is the default; depth-1+
     /// children of unbound principals do not register `Plan*` tools.
     #[must_use]
-    pub fn with_principal_plan_port(
-        mut self,
-        plan_port: Arc<dyn peko_plan::PlanPort>,
-    ) -> Self {
+    pub fn with_principal_plan_port(mut self, plan_port: Arc<dyn peko_plan::PlanPort>) -> Self {
         self.principal_plan_port = Some(plan_port);
         self
     }
@@ -711,15 +702,20 @@ impl SubagentExecutor {
                 // canonicalize the input here so the sibling-vs-foreign
                 // branch picks the right error.
                 let parent_key = peko_session::SessionId::from(parent_session_key).to_string();
-                return Err(if found_parent_str.as_deref() == Some(parent_key.as_str()) {
-                    peko_session::path::err_slug_conflict(
-                        slug,
-                        found.session_id,
-                        Some(peko_session::SessionId::from(parent_key.as_str())),
-                    )
-                } else {
-                    crate::session::standing::err_name_not_standing(slug, &found.session_id.as_str())
-                });
+                return Err(
+                    if found_parent_str.as_deref() == Some(parent_key.as_str()) {
+                        peko_session::path::err_slug_conflict(
+                            slug,
+                            found.session_id,
+                            Some(peko_session::SessionId::from(parent_key.as_str())),
+                        )
+                    } else {
+                        crate::session::standing::err_name_not_standing(
+                            slug,
+                            &found.session_id.as_str(),
+                        )
+                    },
+                );
             }
         }
 
@@ -733,16 +729,37 @@ impl SubagentExecutor {
         //   * `cost_per_call_max` is `None` (no per-call cap),
         //   * the chosen provider has no `PricingHint` (local
         //     / unpriced model — can't estimate).
-        if let Some(err) = pre_flight_cost_ceiling(
-            self.quota_meter.as_deref(),
-            self.provider.as_ref(),
-        ) {
+        if let Some(err) =
+            pre_flight_cost_ceiling(self.quota_meter.as_deref(), self.provider.as_ref())
+        {
             return Err(anyhow::anyhow!(err));
         }
 
-        // Check depth limits
-        let parent_depth = self.get_parent_depth(parent_session_key).await;
-        let child_depth = parent_depth + 1;
+        // Check depth limits.
+        //
+        // B8c.3: read the durable metadata chain via the unified
+        // `subagent_depth_of` helper (same shape as the resume path
+        // at `resume_and_execute`) instead of the
+        // `AsyncTaskRegistry`'s in-memory task map. The registry
+        // entries are GC'd after `cleanup_completed` (5 minutes) and
+        // lost on daemon restart, so the depth check could let a
+        // deeper-than-allowed spawn through the moment a parent run
+        // aged out — the metadata chain is the durable answer.
+        let child_depth = {
+            use crate::session::ownership::subagent_depth_of;
+            let metas = self
+                .session_manager
+                .write()
+                .await
+                .list_all_sessions(false)
+                .await?;
+            // The new subagent's depth = 1 + depth of its parent.
+            // When `parent_session_key` itself is a spawned subagent,
+            // the helper counts it as 1, so spawning from a depth-N
+            // subagent yields depth N+1 — the test_spawn_depth_limit
+            // invariant.
+            1 + subagent_depth_of(parent_session_key, &metas)
+        };
 
         if config.max_depth > 0 && child_depth > config.max_depth {
             return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
@@ -777,9 +794,12 @@ impl SubagentExecutor {
                 .any(|m| m.session_id.to_string() == parent_session_key)
             {
                 let parent_id = peko_session::SessionId::from(parent_session_key);
-                if let Some(conflict) =
-                    peko_session::path::slug_conflict(&metas, Some(parent_id), slug, peko_session::SessionId::new())
-                {
+                if let Some(conflict) = peko_session::path::slug_conflict(
+                    &metas,
+                    Some(parent_id),
+                    slug,
+                    peko_session::SessionId::new(),
+                ) {
                     return Err(peko_session::path::err_slug_conflict(
                         slug,
                         conflict,
@@ -827,10 +847,7 @@ impl SubagentExecutor {
                 .await?;
         }
 
-        info!(
-            "Spawned subagent: run_id={} depth={}",
-            run_id, child_depth
-        );
+        info!("Spawned subagent: run_id={} depth={}", run_id, child_depth);
 
         self.register_subagent_run(SubagentRunSpec {
             run_id,
@@ -1068,21 +1085,14 @@ impl SubagentExecutor {
         }
 
         // Depth comes from the target session's OWN persisted parent
-        // chain (count of spawn-triggered strict ancestors + 1), not
-        // caller depth + 1: re-attaching keeps the session's original
-        // spawn depth, so the depth-limit check stays correct for the
-        // sub-tree below it even across daemon restarts and registry
-        // GC (the registry-based `get_parent_depth` answer is lost
-        // when run entries age out; the metadata chain is durable).
-        let child_depth = 1 + caller_context(&resume_session_id, &metas)
-            .ancestors
-            .iter()
-            .filter(|a| {
-                metas
-                    .iter()
-                    .any(|m| m.session_id.to_string() == a.as_str() && m.trigger == "spawn")
-            })
-            .count() as u32;
+        // chain — not caller depth + 1: re-attaching keeps the
+        // session's original spawn depth, so the depth-limit check
+        // stays correct for the sub-tree below it even across daemon
+        // restarts and registry GC. B8c.3 unifies this onto
+        // `subagent_depth_of`, the same helper the spawn path uses,
+        // so the two answers cannot drift.
+        let child_depth =
+            crate::session::ownership::subagent_depth_of(&resume_session_id, &metas);
         if config.max_depth > 0 && child_depth > config.max_depth {
             return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
                 current: child_depth,
@@ -1697,12 +1707,6 @@ impl SubagentExecutor {
         }
     }
 
-    /// Get the current depth for a parent session
-    async fn get_parent_depth(&self, parent_session_key: &str) -> u32 {
-        let registry = self.registry().read().await;
-        registry.get_subagent_depth_for_session(parent_session_key)
-    }
-
     /// Count total active subagent runs
     async fn count_active_runs(&self) -> usize {
         let registry = self.registry().read().await;
@@ -2122,14 +2126,19 @@ async fn execute_subagent_task(
 /// the estimate exceeds the ceiling, `None` when the spawn
 /// should proceed or when no pre-flight applies (no `cost_per_call_max`
 /// configured or no `PricingHint` available).
-fn pre_flight_cost_ceiling(
-    quota_meter: Option<&peko_quota::meter::QuotaMeter>,
-    provider: Option<&Arc<peko_providers::Provider>>,
-) -> Option<SpawnError> {
-    let meter = quota_meter?;
-    let ceiling = meter.config().cost_per_call_max?;
-    let provider = provider?;
-    let pricing = provider.spec().and_then(|s| s.pricing)?;
+/// B8b.2: single source of truth for spawn-cost estimation.
+///
+/// Used by [`pre_flight_cost_ceiling`] (the production gate that
+/// compares the estimate against the per-principal
+/// `cost_per_call_max`) and [`SubagentExecutorRuntime::spawn_cost_estimate_usd`]
+/// (the audit-side estimator that surfaces the same number on the
+/// spawn row). Both surfaces previously carried their own copies of
+/// the formula and the `4_000`/`1_000` constants; B8b.2 collapses
+/// them here. The estimator used to acknowledge the drift risk in a
+/// code comment ("Match the production pre-flight math exactly so
+/// the audit row and the gate agree.") — collapsing the bodies
+/// removes the drift risk by construction.
+pub(crate) fn estimate_spawn_cost_usd(pricing: &peko_providers::spec::PricingHint) -> f64 {
     const EST_INPUT_TOKENS: u64 = 4_000;
     const EST_OUTPUT_TOKENS: u64 = 1_000;
     let input_cost = pricing
@@ -2138,7 +2147,18 @@ fn pre_flight_cost_ceiling(
     let output_cost = pricing
         .output_per_million
         .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
-    let estimated = input_cost + output_cost;
+    input_cost + output_cost
+}
+
+fn pre_flight_cost_ceiling(
+    quota_meter: Option<&peko_quota::meter::QuotaMeter>,
+    provider: Option<&Arc<peko_providers::Provider>>,
+) -> Option<SpawnError> {
+    let meter = quota_meter?;
+    let ceiling = meter.config().cost_per_call_max?;
+    let provider = provider?;
+    let pricing = provider.spec().and_then(|s| s.pricing)?;
+    let estimated = estimate_spawn_cost_usd(&pricing);
     if estimated > ceiling {
         Some(SpawnError::CostCeilingExceeded {
             estimated,
@@ -2163,27 +2183,18 @@ mod tests {
     use peko_quota::{QuotaConfig, QuotaCycle, QuotaMeter};
     use peko_session::manager::SessionManager;
 
-    /// Phase 3 — the spawn-time pre-flight heuristic in a
-    /// standalone form so it's unit-testable without wiring the
-    /// full subagent flow. Returns the `SpawnError` the gate
-    /// would emit, or `None` if the spawn should proceed.
+    /// B8b.2: same shape as the production `pre_flight_cost_ceiling`
+    /// but takes `&ModelSpec` directly so unit tests don't need to
+    /// wire an `Arc<Provider>`. Both call
+    /// [`estimate_spawn_cost_usd`] — formula is single-sourced.
     fn pre_flight_cost_ceiling_for_test(
         quota_meter: Option<&QuotaMeter>,
         provider_spec: Option<&peko_providers::spec::ModelSpec>,
         model_id: &str,
     ) -> Option<SpawnError> {
-        let ceiling = quota_meter
-            .and_then(|m| m.config().cost_per_call_max)?;
+        let ceiling = quota_meter.and_then(|m| m.config().cost_per_call_max)?;
         let pricing = provider_spec.and_then(|s| s.pricing)?;
-        const EST_INPUT_TOKENS: u64 = 4_000;
-        const EST_OUTPUT_TOKENS: u64 = 1_000;
-        let input_cost = pricing
-            .input_per_million
-            .map_or(0.0, |rate| rate * EST_INPUT_TOKENS as f64 / 1_000_000.0);
-        let output_cost = pricing
-            .output_per_million
-            .map_or(0.0, |rate| rate * EST_OUTPUT_TOKENS as f64 / 1_000_000.0);
-        let estimated = input_cost + output_cost;
+        let estimated = estimate_spawn_cost_usd(&pricing);
         if estimated > ceiling {
             Some(SpawnError::CostCeilingExceeded {
                 estimated,
@@ -2215,12 +2226,8 @@ mod tests {
             None,
             Utc::now(),
         );
-        let err = pre_flight_cost_ceiling_for_test(
-            Some(&meter),
-            Some(&spec),
-            "claude-opus-4-8",
-        )
-        .expect("Opus with $0.10 ceiling must trip");
+        let err = pre_flight_cost_ceiling_for_test(Some(&meter), Some(&spec), "claude-opus-4-8")
+            .expect("Opus with $0.10 ceiling must trip");
         match err {
             SpawnError::CostCeilingExceeded {
                 estimated,
@@ -2588,17 +2595,15 @@ mod tests {
 
         // `with_agent_meter` replaces the default — useful when a
         // caller wants the agent meter to enforce a real cap.
-        let capped = Arc::new(
-            peko_quota::meter::QuotaMeter::new(
-                peko_quota::config::QuotaConfig {
-                    request_count: Some(2),
-                    cycle: peko_quota::config::QuotaCycle::Hourly,
-                    ..Default::default()
-                },
-                None,
-                chrono::Utc::now(),
-            ),
-        );
+        let capped = Arc::new(peko_quota::meter::QuotaMeter::new(
+            peko_quota::config::QuotaConfig {
+                request_count: Some(2),
+                cycle: peko_quota::config::QuotaCycle::Hourly,
+                ..Default::default()
+            },
+            None,
+            chrono::Utc::now(),
+        ));
         let executor = executor.with_agent_meter(capped.clone());
         assert!(
             Arc::ptr_eq(executor.agent_meter(), &capped),

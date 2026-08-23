@@ -4,17 +4,14 @@
 //! All metadata reads and writes must go through this controller to ensure:
 //! - Data consistency between index and JSONL
 //! - Single point of truth for metadata
-//! - Centralized caching and reconciliation
+//! - Centralized reconciliation
 
 use crate::id::SessionId;
 use crate::index::{MaintenanceConfig, MaintenanceReport, SessionEntry, SessionIndex};
 use crate::jsonl::SessionStorage;
 use crate::metadata::{ReconciliationResult, SessionMetadata};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Controller for all session metadata operations
@@ -22,22 +19,27 @@ use tracing::{debug, info, warn};
 /// This is the SINGLE POINT OF TRUTH for session metadata.
 /// No other component should directly access `SessionIndex`.
 ///
-/// Internally uses `SessionEntry` for storage; `SessionMetadata` is used
-/// at API boundaries for backward compatibility.
+/// B8c.2: the prior `cache: Arc<RwLock<HashMap>>` field was a
+/// redundant second cache on top of `SessionIndex`'s own 30-second
+/// TTL cache. Every controller mutator (`create_metadata`,
+/// `update_metadata`, `delete_metadata`, `reconcile_with_jsonl`)
+/// updated both, and every reader checked both — so the controller
+/// cache and the index cache drifted apart whenever a write hit
+/// one but not the other. `SessionIndex::load_sessions` already
+/// keeps an in-memory `HashMap` with TTL invalidation, so the
+/// controller's separate `HashMap` provided no extra speed and
+/// only one extra source of inconsistency.
 pub struct MetadataController {
     index: SessionIndex,
     storage: SessionStorage,
     sessions_dir: PathBuf,
-    /// In-memory cache of metadata (`session_id` -> `SessionEntry`)
-    /// Using `SessionEntry` internally for consistency with `SessionIndex`
-    cache: Arc<RwLock<HashMap<String, SessionEntry>>>,
 }
 
 impl Clone for MetadataController {
     fn clone(&self) -> Self {
         // Create a fresh controller with the same directory
-        // Note: We don't clone the cache or index state - this is intentional
-        // to ensure consistency when the cloned controller is used independently
+        // Note: We don't clone the index state — this is intentional
+        // to ensure consistency when the cloned controller is used independently.
         Self::new(&self.sessions_dir)
     }
 }
@@ -61,7 +63,6 @@ impl MetadataController {
             index,
             storage,
             sessions_dir,
-            cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -77,15 +78,13 @@ impl MetadataController {
         let session_id = metadata.session_id;
         debug!("Creating metadata for session {}", session_id);
 
-        // Convert to entry for internal storage
-        let entry = metadata.to_entry();
+        // `SessionMetadata` is now a type alias for `SessionEntry`;
+        // the prior `to_entry()` conversion collapsed onto a clone.
+        let entry = metadata;
 
         // Insert into index
-        self.index.insert(entry.clone()).await?;
+        self.index.insert(entry).await?;
         self.index.save().await?;
-
-        // Update cache with entry
-        self.cache.write().await.insert(session_id.to_string(), entry);
 
         info!("Created metadata for session {}", session_id);
         Ok(())
@@ -99,11 +98,8 @@ impl MetadataController {
         debug!("Creating entry for session {}", session_id);
 
         // Insert into index
-        self.index.insert(entry.clone()).await?;
+        self.index.insert(entry).await?;
         self.index.save().await?;
-
-        // Update cache with entry
-        self.cache.write().await.insert(session_id.to_string(), entry);
 
         info!("Created entry for session {}", session_id);
         Ok(())
@@ -124,15 +120,13 @@ impl MetadataController {
         // — canonical UUIDs parse directly, anything else derives a
         // stable v5 UUID so the lookup is deterministic.
         let key = SessionId::from(session_id).to_string();
-        // Check cache first (only if not syncing)
-        if !sync_from_jsonl {
-            if let Some(cached) = self.cache.read().await.get(&key).cloned() {
-                debug!("Cache hit for session {}", session_id);
-                return Ok(Some(cached));
-            }
-        }
 
-        // Load from index
+        // Load from index (SessionIndex keeps a 30s TTL cache — see
+        // `SessionIndex::load_sessions`). B8c.2: the prior controller-
+        // level HashMap cache was removed; reads now go through the
+        // index directly. When `sync_from_jsonl` is true the
+        // 30s TTL is bypassed by writing back via `index.save()`,
+        // which marks the cache dirty for the next `load_sessions`.
         let mut entry = match self.index.get(&key).await? {
             Some(e) => e,
             None => return Ok(None),
@@ -182,12 +176,6 @@ impl MetadataController {
             }
         }
 
-        // Update cache
-        self.cache
-            .write()
-            .await
-            .insert(session_id.to_string(), entry.clone());
-
         Ok(Some(entry))
     }
 
@@ -219,15 +207,13 @@ impl MetadataController {
         let session_id = metadata.session_id;
         debug!("Updating metadata for session {}", session_id);
 
-        // Convert to entry for internal storage
-        let entry = metadata.to_entry();
+        // `SessionMetadata` is now a type alias for `SessionEntry`;
+        // the prior `to_entry()` conversion collapsed onto a clone.
+        let entry = metadata;
 
         // Update index
-        self.index.insert(entry.clone()).await?;
+        self.index.insert(entry).await?;
         self.index.save().await?;
-
-        // Update cache with entry
-        self.cache.write().await.insert(session_id.to_string(), entry);
 
         debug!("Updated metadata for session {}", session_id);
         Ok(())
@@ -241,11 +227,8 @@ impl MetadataController {
         debug!("Updating entry for session {}", session_id);
 
         // Update index
-        self.index.insert(entry.clone()).await?;
+        self.index.insert(entry).await?;
         self.index.save().await?;
-
-        // Update cache with entry
-        self.cache.write().await.insert(session_id.to_string(), entry);
 
         debug!("Updated entry for session {}", session_id);
         Ok(())
@@ -483,9 +466,6 @@ impl MetadataController {
             self.index.save().await?;
         }
 
-        // Remove from cache
-        self.cache.write().await.remove(&key);
-
         if removed {
             info!("Deleted metadata for session {}", session_id);
         }
@@ -618,7 +598,10 @@ impl MetadataController {
                 let session_id = entry.session_id;
 
                 // Sync message count
-                match self.count_messages_from_jsonl(&session_id.to_string()).await {
+                match self
+                    .count_messages_from_jsonl(&session_id.to_string())
+                    .await
+                {
                     Ok(actual_count) => {
                         if entry.message_count != actual_count {
                             debug!(
@@ -634,7 +617,10 @@ impl MetadataController {
                 }
 
                 // Sync token usage
-                if let Err(e) = self.sync_token_metrics_to_entry(&session_id.to_string(), entry).await {
+                if let Err(e) = self
+                    .sync_token_metrics_to_entry(&session_id.to_string(), entry)
+                    .await
+                {
                     warn!("Failed to sync token metrics for {}: {}", session_id, e);
                 }
             }
@@ -681,7 +667,10 @@ impl MetadataController {
         if sync_from_jsonl {
             for entry in &mut entries {
                 let session_id = entry.session_id;
-                match self.count_messages_from_jsonl(&session_id.to_string()).await {
+                match self
+                    .count_messages_from_jsonl(&session_id.to_string())
+                    .await
+                {
                     Ok(actual_count) => {
                         if entry.message_count != actual_count {
                             debug!(
@@ -842,13 +831,8 @@ impl MetadataController {
             Ok(ReconciliationResult::new(session_id))
         } else {
             metadata.set_message_count(actual_count);
-            let entry = metadata.clone().to_entry();
-            self.index.insert(entry.clone()).await?;
+            self.index.insert(metadata.clone()).await?;
             self.index.save().await?;
-            self.cache
-                .write()
-                .await
-                .insert(session_id.to_string(), entry);
 
             Ok(ReconciliationResult::new(session_id)
                 .with_discrepancy("message_count", old_count, actual_count)
@@ -936,18 +920,6 @@ impl MetadataController {
         );
 
         Ok(results)
-    }
-
-    /// Clear the metadata cache
-    pub async fn clear_cache(&self) {
-        self.cache.write().await.clear();
-        debug!("Metadata cache cleared");
-    }
-
-    /// Get cache statistics
-    pub async fn cache_stats(&self) -> (usize, usize) {
-        let cache = self.cache.read().await;
-        (cache.len(), cache.capacity())
     }
 
     // ====================================================================================
@@ -1162,11 +1134,8 @@ mod tests {
         let dir = temp.path().to_path_buf();
 
         let mut controller = MetadataController::new(&dir);
-        let metadata = SessionMetadata::new(
-            SessionId::from("sess_123"),
-            "test_agent",
-            "sess_123.jsonl",
-        );
+        let metadata =
+            SessionMetadata::new(SessionId::from("sess_123"), "test_agent", "sess_123.jsonl");
         controller.create_metadata(metadata).await.unwrap();
 
         controller
@@ -1185,10 +1154,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            meta.parent_session_id,
-            Some(SessionId::from("sess_parent"))
-        );
+        assert_eq!(meta.parent_session_id, Some(SessionId::from("sess_parent")));
 
         // Clearing the parent persists too.
         reloaded
@@ -1410,7 +1376,10 @@ mod tests {
 
         // Delete the ACTIVE session: the active pointer is cleared but
         // sess_a remains listable/routable under the same peer.
-        controller.delete_session(&SessionId::from("sess_b").to_string()).await.unwrap();
+        controller
+            .delete_session(&SessionId::from("sess_b").to_string())
+            .await
+            .unwrap();
         assert_eq!(
             controller.get_active_session_id(&peer_key).await.unwrap(),
             None
@@ -1423,7 +1392,10 @@ mod tests {
         assert_eq!(remaining[0].session_id, SessionId::from("sess_a"));
 
         // Delete the last session: the peer entry disappears entirely.
-        controller.delete_session(&SessionId::from("sess_a").to_string()).await.unwrap();
+        controller
+            .delete_session(&SessionId::from("sess_a").to_string())
+            .await
+            .unwrap();
         assert!(controller
             .list_for_peer_from_index(&peer_key)
             .await

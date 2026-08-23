@@ -1139,11 +1139,20 @@ impl SessionManager {
         // (audit M7).
         let mut controller = self.metadata_controller.write().await;
         // The index entry is built from `SessionEntry::with_peer`, which
-        // hardcodes `parent_session_id: None` / `trigger: "user"` — copy
-        // the values the caller actually supplied so the index matches
-        // the metadata (2026-08-07 field test, Finding 7).
+        // hardcodes `parent_session_id: None` / `trigger: "user"` —
+        // copy the values the caller actually supplied so the index
+        // matches the metadata (2026-08-07 field test, Finding 7).
+        //
+        // B8c.2: also copy `title`. The pre-B8c.2 controller-level
+        // cache hid a title-loss bug where `create_for_peer`'s sessions
+        // re-insert overwrote the metadata's titled entry with a
+        // `with_peer`-constructed title-less entry; subsequent
+        // `merge_save_sessions` then persisted the title-less version.
+        // Now that reads go straight through the index, the title has
+        // to survive the second insert.
         let entry_parent = metadata.parent_session_id;
         let entry_trigger = metadata.trigger.clone();
+        let entry_title = metadata.title.clone();
         controller.create_metadata(metadata).await?;
         if self.index.is_some() {
             let mut entry = SessionEntry::with_peer(
@@ -1155,6 +1164,7 @@ impl SessionManager {
             );
             entry.parent_session_id = entry_parent;
             entry.trigger = entry_trigger;
+            entry.title = entry_title;
             controller.create_for_peer(entry, &session_key).await?;
             controller.save_index().await?;
         }

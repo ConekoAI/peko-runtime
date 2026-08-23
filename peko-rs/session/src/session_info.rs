@@ -350,4 +350,101 @@ mod tests {
         assert_eq!(query.limit, 100);
         assert!(query.cursor.is_none());
     }
+
+    #[test]
+    fn test_session_info_from_entry() {
+        let entry = SessionEntry::new(
+            "sess_123".to_string(),
+            "myagent".to_string(),
+            "sess_123.jsonl".to_string(),
+        );
+
+        let info: SessionInfo = entry.into();
+        assert_eq!(
+            info.id,
+            crate::id::SessionId::from("sess_123").to_string()
+        );
+        assert_eq!(info.agent_name, "myagent");
+    }
+
+    #[test]
+    fn test_session_event_to_history_hides_system_prompt() {
+        use crate::message::SessionMessage;
+        let event = SessionEvent::MessageV2(SessionMessage::system(
+            "You are the root agent for a Principal...",
+        ));
+        assert!(
+            session_event_to_history(&event, "sess_123", "").is_none(),
+            "persisted system prompts must not appear in the user-facing log"
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_keeps_user_and_assistant() {
+        use crate::message::SessionMessage;
+        let user = SessionEvent::MessageV2(SessionMessage::user(
+            "hello",
+            crate::message::MessageSource::User,
+        ));
+        let assistant = SessionEvent::MessageV2(SessionMessage::assistant_text(
+            "hi there",
+            "anthropic",
+            "claude-sonnet-4-6",
+        ));
+
+        let user_hist = session_event_to_history(&user, "sess_123", "").unwrap();
+        let assistant_hist = session_event_to_history(&assistant, "sess_123", "").unwrap();
+
+        assert!(
+            matches!(user_hist, HistoryEvent::Message { role, content, .. } if role == "user" && content == "hello")
+        );
+        assert!(
+            matches!(assistant_hist, HistoryEvent::Message { role, content, .. } if role == "assistant" && content == "hi there")
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_model_change() {
+        use crate::events::{EventEnvelope, SystemEvent};
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope::new(),
+            event: "model_change".to_string(),
+            detail: serde_json::json!({"provider": "anthropic", "model_id": "claude-sonnet-4-6"}),
+        });
+        let hist = session_event_to_history(&event, "sess_123", "").unwrap();
+        assert!(
+            matches!(hist, HistoryEvent::ModelChange { provider, model_id, .. }
+                if provider == "anthropic" && model_id == "claude-sonnet-4-6"
+            ),
+            "model_change system events should surface as ModelChange history, not as a message"
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_compaction() {
+        use crate::events::{EventEnvelope, SystemEvent};
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope::new(),
+            event: "compaction".to_string(),
+            detail: serde_json::json!({"summary": "summarized prior turns", "messages_compacted": 4}),
+        });
+        let hist = session_event_to_history(&event, "sess_123", "").unwrap();
+        assert!(
+            matches!(hist, HistoryEvent::Compaction { summary, .. } if summary == "summarized prior turns")
+        );
+    }
+
+    #[test]
+    fn test_session_event_to_history_hides_generic_system_annotations() {
+        use crate::events::{EventEnvelope, SystemEvent};
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope::new(),
+            event: "session_resumed".to_string(),
+            detail: serde_json::json!({"reason": "steering"}),
+        });
+        assert!(
+            session_event_to_history(&event, "sess_123", "").is_none(),
+            "generic system annotations should be hidden from the user-facing log"
+        );
+    }
 }

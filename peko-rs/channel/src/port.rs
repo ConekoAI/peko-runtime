@@ -50,12 +50,8 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// convention — `msg.parent` references the line number of the
     /// message being replied to. Returns the new message's [`TaskId`]
     /// (the line number it was assigned in the channel's event log).
-    async fn post(
-        &self,
-        channel: &ChannelId,
-        sender: &PrincipalId,
-        msg: PostMsg,
-    ) -> Result<TaskId>;
+    async fn post(&self, channel: &ChannelId, sender: &PrincipalId, msg: PostMsg)
+        -> Result<TaskId>;
 
     /// Phase 11 (agent-session paradigm sprint): like [`Self::post`]
     /// but writes an explicit `author` string onto the event instead
@@ -88,30 +84,26 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// Walk the channel's event log starting from `since`, returning
     /// every event keyed at a strictly later `TaskId`. An empty
     /// `Checkpoint` (default) returns the entire log.
-    async fn peek(
-        &self,
-        channel: &ChannelId,
-        since: &Checkpoint,
-    ) -> Result<Vec<ChannelEvent>>;
+    async fn peek(&self, channel: &ChannelId, since: &Checkpoint) -> Result<Vec<ChannelEvent>>;
 
     /// Like [`Self::peek`] but each item carries its source `TaskId`
     /// (the line number where the event was appended in the channel's
     /// JSONL log). Used by the subscription loop to advance cursors
-    /// precisely without re-decoding the wire event. Has a default
-    /// impl that re-reads via [`Self::peek`] and falls back to opaque
-    /// cursors (one-event-at-a-time), so adapters don't *have* to
-    /// override.
+    /// precisely without re-decoding the wire event.
+    ///
+    /// **No default body.** A previous default of `Ok(Vec::new())` was
+    /// a silent footgun: an adapter that forgot to override would
+    /// compile clean, but the subscription loop at
+    /// `crate::subscription::Subscriber::poll` would see zero events
+    /// and never advance its cursor — effectively turning the channel
+    /// into a no-op at runtime. Implementors MUST override; both
+    /// production ports (`ChannelStore`, `TunnelChannelPort`) already
+    /// do.
     async fn peek_with_ids(
         &self,
         channel: &ChannelId,
         since: &Checkpoint,
-    ) -> Result<Vec<(TaskId, ChannelEvent)>> {
-        // Fallback: walk the events; we don't have TaskIds here.
-        // Callers that need precise cursors must override.
-        let _ = since;
-        let _ = channel;
-        Ok(Vec::new())
-    }
+    ) -> Result<Vec<(TaskId, ChannelEvent)>>;
 
     /// Remove `principal` from the channel membership set. Emits a
     /// `MemberLeft` event. PR-1: leaves are always permitted;
@@ -141,7 +133,12 @@ pub trait ChannelPort: Send + Sync + 'static {
         let mut last_change: Option<String> = None;
         for ev in events {
             match ev {
-                ChannelEvent::Created { name: n, creator: c, at, .. } => {
+                ChannelEvent::Created {
+                    name: n,
+                    creator: c,
+                    at,
+                    ..
+                } => {
                     name = n;
                     creator = c;
                     created_at = at;
@@ -177,10 +174,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// Adapters backed by an authoritative `members.json`
     /// (e.g. [`crate::ChannelStore`]) should override this to surface
     /// remote members with their `runtime_id`.
-    async fn members_with_attribution(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<Vec<MemberProvenance>> {
+    async fn members_with_attribution(&self, channel: &ChannelId) -> Result<Vec<MemberProvenance>> {
         let membership = self.membership(channel).await?;
         // The default event-log walk can't distinguish local vs
         // remote — every row is treated as local.
@@ -201,10 +195,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// without a Shared dir (CLI fallback that only knows the
     /// runtime dir) must return `ChannelError::Adapter` with a
     /// clear message.
-    async fn pin_to_shared(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<std::path::PathBuf>;
+    async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf>;
 
     /// Phase 4 (agent-session paradigm sprint): the channel's passive
     /// binding — a session id or `/path` declared at create time
@@ -258,12 +249,18 @@ pub struct PostMsg {
 impl PostMsg {
     /// Construct a root post (no parent).
     pub fn root(text: impl Into<String>) -> Self {
-        Self { text: text.into(), parent: None }
+        Self {
+            text: text.into(),
+            parent: None,
+        }
     }
 
     /// Construct a reply post.
     pub fn reply(parent: TaskId, text: impl Into<String>) -> Self {
-        Self { text: text.into(), parent: Some(parent) }
+        Self {
+            text: text.into(),
+            parent: Some(parent),
+        }
     }
 }
 
@@ -477,11 +474,7 @@ pub struct NoopChannelPort;
 
 #[async_trait]
 impl ChannelPort for NoopChannelPort {
-    async fn create(
-        &self,
-        _creator: &PrincipalId,
-        _opts: CreateOpts,
-    ) -> Result<ChannelId> {
+    async fn create(&self, _creator: &PrincipalId, _opts: CreateOpts) -> Result<ChannelId> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
@@ -509,39 +502,35 @@ impl ChannelPort for NoopChannelPort {
         ))
     }
 
-    async fn peek(
+    async fn peek(&self, _channel: &ChannelId, _since: &Checkpoint) -> Result<Vec<ChannelEvent>> {
+        Err(ChannelError::Adapter(
+            "no channel port configured (NoopChannelPort)".into(),
+        ))
+    }
+
+    async fn peek_with_ids(
         &self,
         _channel: &ChannelId,
         _since: &Checkpoint,
-    ) -> Result<Vec<ChannelEvent>> {
+    ) -> Result<Vec<(TaskId, ChannelEvent)>> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
     }
 
-    async fn leave(
-        &self,
-        _channel: &ChannelId,
-        _principal: &PrincipalId,
-    ) -> Result<()> {
+    async fn leave(&self, _channel: &ChannelId, _principal: &PrincipalId) -> Result<()> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
     }
 
-    async fn list_members(
-        &self,
-        _channel: &ChannelId,
-    ) -> Result<Vec<PrincipalId>> {
+    async fn list_members(&self, _channel: &ChannelId) -> Result<Vec<PrincipalId>> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
     }
 
-    async fn list_for_principal(
-        &self,
-        _principal: &PrincipalId,
-    ) -> Result<Vec<ChannelId>> {
+    async fn list_for_principal(&self, _principal: &PrincipalId) -> Result<Vec<ChannelId>> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))

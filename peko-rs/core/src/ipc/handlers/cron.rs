@@ -28,7 +28,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::common::paths::PathResolver;
-use crate::daemon::cron_ops::{CronOp, CronOps};
+use crate::daemon::cron_ops::CronOp;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
@@ -55,13 +55,12 @@ pub(crate) trait CronHost: Send + Sync {
     fn principal_manager(&self) -> &Arc<PrincipalManager>;
 
     /// **Phase B.** Tier-typed authority that hands out
-    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Production
-    /// hosts override this. The default is provided so test hosts
-    /// that haven't been refactored get a runtime-only authority.
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        // …
-        unimplemented!("CronHost::authority must be implemented; production hosts override this")
-    }
+    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Required:
+    /// no default body — a previous `unimplemented!()` default panicked
+    /// at runtime whenever a non-production host (e.g. a stub wired
+    /// into a test) failed to override this method. Production host
+    /// is [`crate::daemon::state::AppState`].
+    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority>;
 
     /// **Phase C.** Build a per-call authority that projects this
     /// handler's caller subject. Handlers MUST call this instead of
@@ -85,6 +84,15 @@ pub(crate) trait CronHost: Send + Sync {
     /// (all fields are `Arc`) so spawn-and-forget execution does
     /// not require `&mut`.
     fn cron_engine(&self) -> Arc<crate::daemon::cron_engine::CronEngine>;
+
+    /// B8b.1: shared in-process [`CronOps`] handle. The startup
+    /// code at `daemon/mod.rs` installs the SAME `Arc<CronOps>` into
+    /// both [`DaemonCronAdapter`] and [`AppState`]; this accessor
+    /// returns the latter so the IPC handler reads the cached ops
+    /// rather than rebuilding a fresh `CronOps::new(...)` on every
+    /// packet. Required (no default body): `CronHandler::ops()` was
+    /// the only caller and it's been replaced with this accessor.
+    fn cron_ops(&self) -> Arc<crate::daemon::cron_ops::CronOps>;
 }
 
 /// `cron` domain request handler. Constructed with an `Arc<dyn CronHost>`
@@ -96,16 +104,6 @@ pub(crate) struct CronHandler {
 impl CronHandler {
     pub(crate) fn new(host: Arc<dyn CronHost>) -> Self {
         Self { host }
-    }
-
-    /// Build the shared in-process ops bundle from the host. Cheap:
-    /// `PathResolver`/`Arc` clones only.
-    fn ops(&self) -> CronOps {
-        CronOps::new(
-            self.host.path_resolver(),
-            Arc::clone(self.host.principal_manager()),
-            Arc::clone(self.host.authority()),
-        )
     }
 }
 
@@ -138,29 +136,40 @@ impl RequestHandler for CronHandler {
                 request_id,
                 include_disabled,
                 principal,
-            } => match self.ops().list_jobs(include_disabled, principal).await {
+            } => match self.host.cron_ops().list_jobs(include_disabled, principal).await {
                 Ok(jobs) => {
                     send_response(sink, ResponsePacket::CronList { request_id, jobs }).await?;
                 }
                 Err(message) => {
-                    send_response(sink, ResponsePacket::Error { request_id, message }).await?;
+                    send_response(
+                        sink,
+                        ResponsePacket::Error {
+                            request_id,
+                            message,
+                        },
+                    )
+                    .await?;
                 }
             },
 
-            RequestPacket::CronAdd { request_id, job } => {
-                match self.ops().add_job(job).await {
-                    Ok(job_id) => {
-                        send_response(sink, ResponsePacket::CronAdded { request_id, job_id })
-                            .await?;
-                    }
-                    Err(message) => {
-                        send_response(sink, ResponsePacket::Error { request_id, message }).await?;
-                    }
+            RequestPacket::CronAdd { request_id, job } => match self.host.cron_ops().add_job(job).await {
+                Ok(job_id) => {
+                    send_response(sink, ResponsePacket::CronAdded { request_id, job_id }).await?;
                 }
-            }
+                Err(message) => {
+                    send_response(
+                        sink,
+                        ResponsePacket::Error {
+                            request_id,
+                            message,
+                        },
+                    )
+                    .await?;
+                }
+            },
 
             RequestPacket::CronRemove { request_id, job_id } => {
-                match self.ops().remove_job(&job_id).await {
+                match self.host.cron_ops().remove_job(&job_id).await {
                     Ok(true) => {
                         send_response(sink, ResponsePacket::CronRemoved { request_id, job_id })
                             .await?;
@@ -176,7 +185,14 @@ impl RequestHandler for CronHandler {
                         .await?;
                     }
                     Err(message) => {
-                        send_response(sink, ResponsePacket::Error { request_id, message }).await?;
+                        send_response(
+                            sink,
+                            ResponsePacket::Error {
+                                request_id,
+                                message,
+                            },
+                        )
+                        .await?;
                     }
                 }
             }
@@ -189,7 +205,7 @@ impl RequestHandler for CronHandler {
                 // which walks loaded schedulers to find the job,
                 // coalesces with any in-flight run, and spawns the
                 // work so the IPC handler returns immediately.
-                if let Err(message) = self.ops().authorize(&job_id, CronOp::Mutate).await {
+                if let Err(message) = self.host.cron_ops().authorize(&job_id, CronOp::Mutate).await {
                     let response = ResponsePacket::Error {
                         request_id,
                         message,
@@ -223,32 +239,29 @@ impl RequestHandler for CronHandler {
             } => {
                 // The history cap gates the read; the gate fires against
                 // the OWNER's caps so cross-principal reads stay blocked.
-                match self.ops().authorize(&job_id, CronOp::History).await {
-                    Ok((_principal_name, cron_db, _caps)) => {
-                        match CronScheduler::new(&cron_db) {
-                            Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
-                                Ok(runs) => {
-                                    let response =
-                                        ResponsePacket::CronHistory { request_id, runs };
-                                    send_response(sink, response).await?;
-                                }
-                                Err(e) => {
-                                    let response = ResponsePacket::Error {
-                                        request_id,
-                                        message: format!("Failed to get history: {e}"),
-                                    };
-                                    send_response(sink, response).await?;
-                                }
-                            },
+                match self.host.cron_ops().authorize(&job_id, CronOp::History).await {
+                    Ok((_principal_name, cron_db, _caps)) => match CronScheduler::new(&cron_db) {
+                        Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
+                            Ok(runs) => {
+                                let response = ResponsePacket::CronHistory { request_id, runs };
+                                send_response(sink, response).await?;
+                            }
                             Err(e) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
-                                    message: format!("Cron DB error: {e}"),
+                                    message: format!("Failed to get history: {e}"),
                                 };
                                 send_response(sink, response).await?;
                             }
+                        },
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Cron DB error: {e}"),
+                            };
+                            send_response(sink, response).await?;
                         }
-                    }
+                    },
                     Err(message) => {
                         let response = ResponsePacket::Error {
                             request_id,

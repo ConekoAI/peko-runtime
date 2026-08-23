@@ -212,6 +212,17 @@ pub(crate) struct AppState {
     /// via [`AppState::set_cron_engine`].
     cron_engine: Option<Arc<crate::daemon::cron_engine::CronEngine>>,
 
+    /// B8b.1: shared in-process [`CronOps`] handle. Constructed once
+    /// at daemon startup and handed to both [`DaemonCronAdapter`]
+    /// (for tool-side calls) and the `cron` IPC handler (for
+    /// `CronList`/`CronAdd`/`CronRemove`/`CronRun`/`CronHistory`).
+    /// Bypasses the per-request `CronOps::new(...)` rebuild the IPC
+    /// handler used to do (the rebuild cloned `Arc<PrincipalManager>`
+    /// and `Arc<RuntimeAuthority>` on every packet — wasteful given
+    /// all three callers share the exact same inputs). Set once at
+    /// startup via [`AppState::set_cron_ops`].
+    cron_ops: Option<Arc<crate::daemon::cron_ops::CronOps>>,
+
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
 
@@ -636,9 +647,9 @@ impl AppState {
             use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
             use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
             use crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox;
-            let router = AsyncExecutionRouter::with_transport(
-                create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
-            );
+            let router = AsyncExecutionRouter::with_transport(create_local_transport_with_inbox(
+                Arc::clone(&inbox_registry),
+            ));
             let services = ExtensionServices::with_async_router(Arc::new(router));
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
         } else if let Some(existing) = crate::extensions::framework::core::global_core() {
@@ -650,9 +661,9 @@ impl AppState {
             };
             use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
             use crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox;
-            let router = AsyncExecutionRouter::with_transport(
-                create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
-            );
+            let router = AsyncExecutionRouter::with_transport(create_local_transport_with_inbox(
+                Arc::clone(&inbox_registry),
+            ));
             let services = ExtensionServices::with_async_router(Arc::new(router));
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
             init_global_core(Arc::clone(&core));
@@ -736,8 +747,7 @@ impl AppState {
         // `inbox_registry` Arc is constructed ABOVE the global_core
         // block (WS3, 2026-08-11) so the AsyncExecutionRouter can be
         // wired to it; we just `Arc::clone` it here.
-        let async_task_executor =
-            Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
+        let async_task_executor = Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 
         // ADR-025: Initialize BackgroundRuntimeManager.
         // Sprint 9 Commit 3: the chat-gateway adapter framework was
@@ -1005,9 +1015,9 @@ impl AppState {
             // into a panic if someone reorders the construction
             // without populating `tunnel_channel_port` — fail loud,
             // not silent.
-            tunnel_channel_port: tunnel_channel_port
-                .clone()
-                .unwrap_or_else(|| panic!("tunnel_channel_port must be initialized before AppState build")),
+            tunnel_channel_port: tunnel_channel_port.clone().unwrap_or_else(|| {
+                panic!("tunnel_channel_port must be initialized before AppState build")
+            }),
             peer_registry,
             lifecycle,
             session_service,
@@ -1027,6 +1037,7 @@ impl AppState {
             peko_config,
             idle_detector: None,
             cron_engine: None,
+            cron_ops: None,
             runtime_metadata,
             known_runtimes,
             trust_store,
@@ -1110,6 +1121,14 @@ impl AppState {
     /// here so the IPC handler can dispatch manual triggers).
     pub fn set_cron_engine(&mut self, engine: Arc<crate::daemon::cron_engine::CronEngine>) {
         self.cron_engine = Some(engine);
+    }
+
+    /// B8b.1: install the shared in-process [`CronOps`] handle. The
+    /// startup code at `daemon/mod.rs` clones the same `Arc` into
+    /// [`DaemonCronAdapter`] so the cron tools and the cron IPC
+    /// handler see one and the same ops bundle.
+    pub fn set_cron_ops(&mut self, ops: Arc<crate::daemon::cron_ops::CronOps>) {
+        self.cron_ops = Some(ops);
     }
 
     /// Record activity for a Principal so idle-triggered cron jobs do not
@@ -1673,8 +1692,11 @@ impl AppState {
         &self,
         cred: &crate::tunnel::PekoHubCredential,
         vault: &crate::common::vault::Vault,
-    ) -> anyhow::Result<(Arc<dyn crate::tunnel::AgentDirectory>, Arc<ed25519_dalek::SigningKey>, String)>
-    {
+    ) -> anyhow::Result<(
+        Arc<dyn crate::tunnel::AgentDirectory>,
+        Arc<ed25519_dalek::SigningKey>,
+        String,
+    )> {
         use base64::engine::general_purpose::STANDARD as BASE64;
         use base64::Engine as _;
         use ed25519_dalek::SigningKey;
@@ -2325,6 +2347,19 @@ impl crate::ipc::handlers::cron::CronHost for AppState {
             .clone()
             .expect("CronHost::cron_engine called before AppState::set_cron_engine")
     }
+
+    /// B8b.1: shared in-process [`CronOps`] handle. Set once at
+    /// startup via [`AppState::set_cron_ops`] right after the
+    /// `DaemonCronAdapter` is built; same `Arc` as the adapter holds,
+    /// so IPC `CronList`/`CronAdd`/`CronRemove`/`CronRun`/`CronHistory`
+    /// requests bypass the per-request `CronOps::new(...)` rebuild.
+    /// Required method; the prior `CronHandler::ops()` helper that
+    /// called `CronOps::new(...)` per packet has been deleted.
+    fn cron_ops(&self) -> Arc<crate::daemon::cron_ops::CronOps> {
+        self.cron_ops
+            .clone()
+            .expect("CronHost::cron_ops called before AppState::set_cron_ops")
+    }
 }
 
 impl crate::ipc::handlers::channel::ChannelHost for AppState {
@@ -2336,9 +2371,7 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
         self.channel_port.clone()
     }
 
-    fn principal_manager(
-        &self,
-    ) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {
+    fn principal_manager(&self) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {
         Some(&self.principal_manager)
     }
 
@@ -3078,9 +3111,7 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
                     .rewire_credential(old_id, &new_id)
                     .await
                     .map_err(|e| {
-                        anyhow::anyhow!(
-                            "vault stored credential but catalog rewire failed: {e}"
-                        )
+                        anyhow::anyhow!("vault stored credential but catalog rewire failed: {e}")
                     })?
             }
         } else {
@@ -3143,7 +3174,9 @@ impl crate::ipc::handlers::credential::CredentialHost for AppState {
         )
     }
 
-    async fn credential_references(&self) -> HashMap<String, Vec<crate::ipc::packet::ModelSummary>> {
+    async fn credential_references(
+        &self,
+    ) -> HashMap<String, Vec<crate::ipc::packet::ModelSummary>> {
         let mut out: HashMap<String, Vec<crate::ipc::packet::ModelSummary>> = HashMap::new();
         // Best-effort join: if the catalog is corrupt or unloaded we
         // just don't decorate rows. The handler will still paint a

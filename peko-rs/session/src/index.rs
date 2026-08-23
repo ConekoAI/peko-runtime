@@ -188,6 +188,20 @@ impl SessionEntry {
         entry
     }
 
+    /// Create a new session entry with a parent session id (for branching).
+    #[must_use]
+    pub fn with_parent(
+        session_id: impl Into<SessionId>,
+        agent_name: impl Into<String>,
+        transcript_file: impl Into<String>,
+        parent_session_id: impl Into<SessionId>,
+    ) -> Self {
+        let mut entry = Self::new(session_id, agent_name, transcript_file);
+        entry.parent_session_id = Some(parent_session_id.into());
+        entry.trigger = "branch".to_string();
+        entry
+    }
+
     /// Update timestamp
     pub fn touch(&mut self) {
         self.updated_at = SystemTime::now()
@@ -234,18 +248,58 @@ impl SessionEntry {
         self.touch();
     }
 
+    /// Set message count from a computed value (reconciliation).
+    /// No-op + no `touch()` when the value matches the existing count,
+    /// so reconcilers don't churn `updated_at`.
+    pub fn set_message_count(&mut self, count: usize) {
+        if self.message_count != count {
+            tracing::debug!(
+                "Updating message count for {}: {} -> {}",
+                self.session_id,
+                self.message_count,
+                count
+            );
+            self.message_count = count;
+            self.touch();
+        }
+    }
+
     /// Increment turn count
     pub fn increment_turn(&mut self) {
         self.turn_count += 1;
         self.touch();
     }
 
+    /// Set the title.
+    pub fn set_title(&mut self, title: Option<impl Into<String>>) {
+        self.title = title.map(Into::into);
+        self.touch();
+    }
+
+    /// Set the slug (per-parent-unique path segment).
+    ///
+    /// Raw write — format validation and per-parent uniqueness are
+    /// enforced by callers (`crate::path::validate_slug` /
+    /// `crate::path::slug_conflict`, applied in
+    /// `MetadataController::set_slug` and the root-side adapters).
+    pub fn set_slug(&mut self, slug: Option<impl Into<String>>) {
+        self.slug = slug.map(Into::into);
+        self.touch();
+    }
+
+    /// Set trigger (e.g. "user" → "branch" → "resume").
+    pub fn set_trigger(&mut self, trigger: impl Into<String>) {
+        self.trigger = trigger.into();
+    }
+
     /// Convert to `SessionMetadata` for backward compatibility
     ///
-    /// This is the preferred conversion method when passing to API boundaries.
+    /// B8c.1: `SessionMetadata` is now a type alias for `SessionEntry`,
+    /// so this is just a clone. The historical `from_entry` bridge
+    /// collapsed onto the alias.
     #[must_use]
     pub fn to_metadata(&self) -> crate::metadata::SessionMetadata {
-        crate::metadata::SessionMetadata::from_entry(self.clone())
+        self.clone()
     }
 
     /// Convert to `SessionInfo` for service layer
@@ -1197,11 +1251,7 @@ mod tests {
         let id_def = Uuid::new_v4();
 
         // Create session for peer
-        let entry = SessionEntry::new(
-            id_abc,
-            "testagent".to_string(),
-            format!("{id_abc}.jsonl"),
-        );
+        let entry = SessionEntry::new(id_abc, "testagent".to_string(), format!("{id_abc}.jsonl"));
         index.create_for_peer(entry, peer_key).await.unwrap();
 
         // Get active
@@ -1210,11 +1260,7 @@ mod tests {
         assert_eq!(active.unwrap().session_id, SessionId(id_abc));
 
         // Create another session
-        let entry2 = SessionEntry::new(
-            id_def,
-            "testagent".to_string(),
-            format!("{id_def}.jsonl"),
-        );
+        let entry2 = SessionEntry::new(id_def, "testagent".to_string(), format!("{id_def}.jsonl"));
         index.create_for_peer(entry2, peer_key).await.unwrap();
 
         // Active should be the new one
@@ -1337,11 +1383,7 @@ mod tests {
             updated_at: u64,
             mutate: impl FnOnce(&mut SessionEntry),
         ) {
-            let mut entry = SessionEntry::new(
-                id,
-                "testagent".to_string(),
-                format!("{id}.jsonl"),
-            );
+            let mut entry = SessionEntry::new(id, "testagent".to_string(), format!("{id}.jsonl"));
             entry.parent_session_id = parent.map(SessionId::from);
             entry.updated_at = updated_at;
             mutate(&mut entry);
@@ -1372,7 +1414,14 @@ mod tests {
             },
         )
         .await;
-        insert_old(&mut index, id_plain, Some(id_trunk), now - two_days_ms, |_| {}).await;
+        insert_old(
+            &mut index,
+            id_plain,
+            Some(id_trunk),
+            now - two_days_ms,
+            |_| {},
+        )
+        .await;
         insert_old(
             &mut index,
             id_legacy_root,
@@ -1384,19 +1433,10 @@ mod tests {
         index.save().await.unwrap();
 
         // Transcripts exist on disk for the exempt + plain sessions.
-        for id in [
-            id_trunk,
-            id_archived,
-            id_standing,
-            id_plain,
-            id_legacy_root,
-        ] {
-            fs::write(
-                temp.path().join(format!("{id}.jsonl")),
-                "{}\n",
-            )
-            .await
-            .unwrap();
+        for id in [id_trunk, id_archived, id_standing, id_plain, id_legacy_root] {
+            fs::write(temp.path().join(format!("{id}.jsonl")), "{}\n")
+                .await
+                .unwrap();
         }
 
         let config = MaintenanceConfig {
@@ -1440,11 +1480,7 @@ mod tests {
         let id_b = Uuid::from_u128(0xDDDD_DDDD_DDDD_DDDD_DDDD_DDDD_DDDD_DDDD);
 
         for id in [id_a, id_b] {
-            let entry = SessionEntry::new(
-                id,
-                "testagent".to_string(),
-                format!("{id}.jsonl"),
-            );
+            let entry = SessionEntry::new(id, "testagent".to_string(), format!("{id}.jsonl"));
             index.create_for_peer(entry, peer_key).await.unwrap();
         }
         assert_eq!(
@@ -1474,11 +1510,7 @@ mod tests {
         let id_b = Uuid::from_u128(0xBBBB_BBBB_BBBB_BBBB_BBBB_BBBB_BBBB_BBBB);
 
         for id in [id_a, id_b] {
-            let entry = SessionEntry::new(
-                id,
-                "testagent".to_string(),
-                format!("{id}.jsonl"),
-            );
+            let entry = SessionEntry::new(id, "testagent".to_string(), format!("{id}.jsonl"));
             index.create_for_peer(entry, peer_key).await.unwrap();
         }
 
@@ -1551,19 +1583,35 @@ mod tests {
         let changed = backfill_peer_attribution(&mut entries);
         assert!(changed);
         assert_eq!(
-            entries.get(&id_branch.to_string()).unwrap().peer_type.as_deref(),
+            entries
+                .get(&id_branch.to_string())
+                .unwrap()
+                .peer_type
+                .as_deref(),
             Some("user")
         );
         assert_eq!(
-            entries.get(&id_branch.to_string()).unwrap().peer_id.as_deref(),
+            entries
+                .get(&id_branch.to_string())
+                .unwrap()
+                .peer_id
+                .as_deref(),
             Some("alice")
         );
         assert_eq!(
-            entries.get(&id_grand.to_string()).unwrap().peer_type.as_deref(),
+            entries
+                .get(&id_grand.to_string())
+                .unwrap()
+                .peer_type
+                .as_deref(),
             Some("user")
         );
         assert_eq!(
-            entries.get(&id_grand.to_string()).unwrap().peer_id.as_deref(),
+            entries
+                .get(&id_grand.to_string())
+                .unwrap()
+                .peer_id
+                .as_deref(),
             Some("alice")
         );
     }
@@ -1636,19 +1684,11 @@ mod tests {
         let id_a = Uuid::from_u128(0x3000_3000_3000_3000_3000_3000_3000_3000);
         let id_b = Uuid::from_u128(0x4000_4000_4000_4000_4000_4000_4000_4000);
 
-        let mut a = SessionEntry::new(
-            id_a,
-            "testagent".to_string(),
-            format!("{id_a}.jsonl"),
-        );
+        let mut a = SessionEntry::new(id_a, "testagent".to_string(), format!("{id_a}.jsonl"));
         a.parent_session_id = Some(SessionId::from(id_b));
         a.peer_type = Some("user".to_string());
         a.peer_id = Some("alice".to_string());
-        let mut b = SessionEntry::new(
-            id_b,
-            "testagent".to_string(),
-            format!("{id_b}.jsonl"),
-        );
+        let mut b = SessionEntry::new(id_b, "testagent".to_string(), format!("{id_b}.jsonl"));
         b.parent_session_id = Some(SessionId::from(id_a));
         entries.insert(id_a.to_string(), a);
         entries.insert(id_b.to_string(), b);

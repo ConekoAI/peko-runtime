@@ -128,6 +128,41 @@ fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
     caller_context(id, metas).ancestors
 }
 
+/// Depth of `target` in the spawn tree: the number of
+/// `trigger == "spawn"` sessions in the parent chain from `target`
+/// up to (and including) `target`. `0` for user roots and for any
+/// session whose metadata is missing — a dangling target is treated
+/// as depth 0 so a spawn against it falls open to the lowest
+/// allowed depth rather than being silently infinite.
+///
+/// B8c.3: unified depth source-of-truth. The transient
+/// `AsyncTaskRegistry`-based answer (lost on daemon restart, aged
+/// out by `cleanup_completed`) and the resume path's per-ancestor
+/// walk both collapse onto this single walk — same shape, same
+/// durable answer. The spawn path adds `1` for the hypothetical
+/// new subagent; the resume path returns this value directly
+/// (re-attach keeps the target's existing depth).
+#[must_use]
+pub fn subagent_depth_of(target: &str, metas: &[SessionMetadata]) -> u32 {
+    let canonical = peko_session::SessionId::from(target).to_string();
+    let mut depth: u32 = 0;
+    let mut cursor: Option<String> = Some(canonical);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while let Some(id) = cursor {
+        if !seen.insert(id.clone()) {
+            break; // corrupt chain with a cycle — stop, keep what we have
+        }
+        let Some(m) = metas.iter().find(|m| m.session_id.to_string() == id) else {
+            break; // dangling parent — stop
+        };
+        if m.trigger == "spawn" {
+            depth += 1;
+        }
+        cursor = m.parent_session_id.as_ref().map(|p| p.to_string());
+    }
+    depth
+}
+
 /// True when `target` is the caller's current session or sits in the
 /// subtree below it (target's ancestor chain contains the caller's
 /// current session id).

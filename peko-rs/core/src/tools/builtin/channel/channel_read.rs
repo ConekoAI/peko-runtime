@@ -114,7 +114,10 @@ impl Tool for ChannelReadTool {
             .and_then(|v| v.as_str())
             .map_or_else(Checkpoint::zero, |s| Checkpoint(s.to_string()));
 
-        let limit = params.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
 
         // Pull the principal id out of the ToolContext. The F37 funnel
         // supplies this; bare `execute` callers (none in production)
@@ -194,7 +197,9 @@ mod tests {
             _creator: &PrincipalId,
             _opts: peko_channel::CreateOpts,
         ) -> peko_channel::Result<ChannelId> {
-            Err(ChannelError::Adapter("create not implemented in test".into()))
+            Err(ChannelError::Adapter(
+                "create not implemented in test".into(),
+            ))
         }
 
         async fn invite(
@@ -232,6 +237,21 @@ mod tests {
             }
         }
 
+        async fn peek_with_ids(
+            &self,
+            channel: &ChannelId,
+            since: &Checkpoint,
+        ) -> peko_channel::Result<Vec<(String, ChannelEvent)>> {
+            let events = self.peek(channel, since).await?;
+            // Test fixture: assign line numbers by event index; the
+            // subscription loop only needs strictly-increasing ids.
+            Ok(events
+                .into_iter()
+                .enumerate()
+                .map(|(i, ev)| ((i + 1).to_string(), ev))
+                .collect())
+        }
+
         async fn leave(
             &self,
             _channel: &ChannelId,
@@ -259,7 +279,9 @@ mod tests {
             &self,
             _channel: &ChannelId,
         ) -> peko_channel::Result<std::path::PathBuf> {
-            Err(ChannelError::Adapter("pin_to_shared not implemented in test".into()))
+            Err(ChannelError::Adapter(
+                "pin_to_shared not implemented in test".into(),
+            ))
         }
     }
 
@@ -296,10 +318,7 @@ mod tests {
 
         let tool = ChannelReadTool::new(port);
         let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str() }),
-                &ctx_with(alice),
-            )
+            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx_with(alice))
             .await
             .unwrap();
         let arr = got.as_array().expect("events array");
@@ -372,10 +391,7 @@ mod tests {
         // isn't in the port's member/event maps. The fixture returns
         // an empty member list, so we hit the soft-error branch.
         let got = tool
-            .execute_with_context(
-                json!({ "channel": "chan_zzzzzzzz" }),
-                &ctx_with(alice),
-            )
+            .execute_with_context(json!({ "channel": "chan_zzzzzzzz" }), &ctx_with(alice))
             .await
             .unwrap();
         assert_eq!(got["error"], "caller is not a member of this channel");
@@ -396,10 +412,7 @@ mod tests {
         let tool = ChannelReadTool::new(port);
 
         let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str() }),
-                &ctx_with(alice),
-            )
+            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx_with(alice))
             .await
             .unwrap();
         assert_eq!(got["error"], "caller is not a member of this channel");
@@ -412,10 +425,7 @@ mod tests {
         let tool = ChannelReadTool::new(port);
 
         let res = tool
-            .execute_with_context(
-                json!({ "channel": "not-a-chan-id" }),
-                &ctx_with(alice),
-            )
+            .execute_with_context(json!({ "channel": "not-a-chan-id" }), &ctx_with(alice))
             .await;
         assert!(res.is_err(), "invalid channel id must propagate as Err");
     }
@@ -425,9 +435,10 @@ mod tests {
         let port = Arc::new(TestChannelPort::default());
         let tool = ChannelReadTool::new(port);
         // Bare `execute` — no principal context.
-        let res = tool
-            .execute(json!({ "channel": "chan_a1b2c3d4" }))
-            .await;
-        assert!(res.is_err(), "bare execute must surface principal-missing error");
+        let res = tool.execute(json!({ "channel": "chan_a1b2c3d4" })).await;
+        assert!(
+            res.is_err(),
+            "bare execute must surface principal-missing error"
+        );
     }
 }
