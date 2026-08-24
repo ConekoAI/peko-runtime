@@ -121,7 +121,11 @@ impl BuiltInAdapters {
         vec![
             Box::new(agent::adapter::AgentAdapter::new()),
             Box::new(slash::adapter::SlashAdapter::new()),
-            Box::new(universal::adapter::UniversalToolAdapter::new()),
+            // Phase 2 PR 3 (ADR-047 §2.4): universal tools no longer
+            // register a framework adapter. Workspace-resident tools
+            // are scanned by `extensions::universal::workspace`
+            // and registered via `BuiltinToolAdapter::register_tool`
+            // — no framework hook layer.
             Box::new(general::adapter::GeneralExtensionAdapter::new()),
         ]
     }
@@ -227,9 +231,11 @@ mod tests {
         // dropped from 6 to 5.
         // Phase 2 PR 2 (ADR-047 §2.3): McpAdapter removed — count
         // dropped from 5 to 4.
+        // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed
+        // — count dropped from 4 to 3.
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 4);
+        assert_eq!(adapters.len(), 3);
     }
 }

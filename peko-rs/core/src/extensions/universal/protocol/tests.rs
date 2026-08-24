@@ -200,18 +200,19 @@ for line in sys.stdin:
 "#;
     tokio::fs::write(&script_path, script).await.unwrap();
 
-    // Use ExtensionStore for discovery.
-    use crate::extensions::framework::store::ExtensionStore;
-    use crate::extensions::BuiltInAdapters;
-    let store = ExtensionStore::new();
-    for adapter in BuiltInAdapters::new().adapters() {
-        store.register_adapter(adapter).await;
-    }
-    let discovered = store.scan_directory(dir).await.unwrap();
-
+    // Phase 2 PR 3 (ADR-047 §2.4): the framework-coupled
+    // `UniversalToolAdapter` is gone, so the framework `scan_directory`
+    // path (which iterated built-in adapters to enumerate extensions)
+    // no longer finds tools. The new canonical path is the workspace
+    // scanner at `peko_core::extensions::universal::discover_workspace_universal_tools`.
+    let discovered =
+        crate::extensions::universal::discover_workspace_universal_tools(dir)
+            .await
+            .unwrap();
     assert_eq!(discovered.len(), 1);
-    // The extension type should be "universal-tool" for manifest.yaml files
-    assert_eq!(discovered[0].extension_type, "universal-tool");
+    // The discovered entry's first tuple slot is the tool name from
+    // the parsed `Manifest`.
+    assert_eq!(discovered[0].0, "test_tool");
 }
 
 #[test]

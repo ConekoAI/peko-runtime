@@ -427,6 +427,13 @@ impl PrincipalContext {
             // `McpToolProxy` / `InjectableMcpToolProxy` instances
             // onto the global core.
             let mcp_dir = self.workspace_path.join("mcp");
+            // Phase 2 PR 3 (ADR-047 §2.1): universal tools live
+            // under `<workspace>/tools/<id>/manifest.yaml`. The
+            // scanner reads each manifest, constructs the
+            // canonical `peko_tools_core::Tool` impl (no framework
+            // hook layer), and registers it via
+            // `BuiltinToolAdapter::register_tool`.
+            let tools_dir = self.workspace_path.join("tools");
             // Channel port resolution (2026-08-18 reviewer finding):
             // principal contexts don't hold their own channel port —
             // the daemon builds the real file-backed port at startup
@@ -447,6 +454,7 @@ impl PrincipalContext {
                 &agents_dir,
                 &skills_dir,
                 &mcp_dir,
+                &tools_dir,
                 &self.principal_id,
                 channel_port,
             )
@@ -536,6 +544,7 @@ async fn install_principal_tool_bag(
     agents_dir: &Path,
     skills_dir: &Path,
     mcp_dir: &Path,
+    tools_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
@@ -643,6 +652,41 @@ async fn install_principal_tool_bag(
              installed; MCP tools will not be registered for this principal",
             mcp_dir.display()
         );
+    }
+
+    // Phase 2 PR 3 (ADR-047 §2.1, §2.4): universal tools live
+    // under `<workspace>/tools/<id>/manifest.yaml`. The
+    // workspace scanner reads each manifest, finds the executable
+    // sibling, constructs the canonical `peko_tools_core::Tool`
+    // impl (`protocol::UniversalToolAdapter`), and registers it
+    // via `BuiltinToolAdapter::register_tool` — no framework
+    // hook layer.
+    //
+    // No auto-start: the tool's process spawns on first
+    // `execute()` call via `UniversalToolAdapter::execute`,
+    // matching the framework's prior behaviour where the
+    // `ToolExecute` hook fired lazily.
+    if tools_dir.exists() {
+        match crate::extensions::universal::load_workspace_universal_tools(
+            tools_dir,
+            core.as_ref(),
+            principal_id,
+        )
+        .await
+        {
+            Ok(loaded) => {
+                if loaded > 0 {
+                    tracing::info!(
+                        "registered {loaded} universal tool(s) from {}",
+                        tools_dir.display()
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Universal tools workspace scan failed for {}: {e}",
+                tools_dir.display()
+            ),
+        }
     }
 
     // Cross-peer session introspection is handled by the per-agent `session`

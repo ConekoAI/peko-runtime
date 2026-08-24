@@ -39,12 +39,15 @@
 //!
 //! - **MCP**: `mcp:{server_name}:{tool_name}` — e.g. `mcp:standard-echo:echo`.
 //!   The owner `extension_id` for the whitelist is the bare `server_name`
-//!   (e.g. `standard-echo`); see `McpAdapter::register_server_tools` at
-//!   `src/extensions/mcp/adapter.rs:320-339`.
-//! - **Universal**: the bare `tool_name` — e.g. `calculator_simple`. The
-//!   owner `extension_id` is `universal:{tool_name}` — e.g.
-//!   `universal:calculator_simple`; see `UniversalAdapter::register_tool`
-//!   at `src/extensions/universal/adapter.rs:182-188`.
+//!   (e.g. `standard-echo`). The framework `McpAdapter` was deleted in
+//!   Phase 2 PR 2; MCP servers are now workspace-resident files
+//!   registered via the global `McpManager` and surfaced as
+//!   `BuiltinToolAdapter`-registered `McpToolProxy` instances.
+//! - **Universal**: the bare `tool_name` — e.g. `calculator_simple`.
+//!   Universal tools are registered via `BuiltinToolAdapter` with the
+//!   canonical `builtin:tool:{name}` extension id (no longer
+//!   `universal:{tool_name}` — that framing predates Phase 2 PR 3). See
+//!   `peko-rs/core/src/extensions/universal/workspace.rs`.
 //!
 //! Under the Principal model, MCP extensions must be granted via
 //! `principal.toml [capabilities] mcps`, while universal tools are
@@ -301,10 +304,12 @@ async fn ext_mcp_standard_echo_roundtrip() {
 /// both the sentinel AND the integer `20` (the deterministic sum the
 /// python tool returns — `7.0 + 13.0 = 20.0`).
 ///
-/// The universal owner id is `universal:calculator_simple` (NOT the bare
-/// `calculator_simple` — see `UniversalAdapter::register_tool` at
-/// `src/extensions/universal/adapter.rs:182-188`), so the Principal's
-/// `[capabilities] tools` must contain that canonical id verbatim.
+/// Phase 2 PR 3 (ADR-047 §2.4): the framework `UniversalAdapter` is
+/// gone — universal tools register via `BuiltinToolAdapter` with the
+/// canonical `builtin:tool:{name}` extension id (no longer the
+/// `universal:{tool_name}` canonical id that this comment
+/// previously referenced). The Principal's `[capabilities] tools`
+/// grant list resolves bare tool names against this id.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL, PEKO_TEST_PYTHON=1, and peko daemon"]
 #[serial]

@@ -17,7 +17,6 @@ use crate::extensions::framework::store_trait::DependencyStatus;
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::general::GeneralExtensionAdapter;
 use crate::extensions::slash::SlashAdapter;
-use crate::extensions::universal::UniversalToolAdapter;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::RegistryConfig;
 use crate::registry::manifest::RegistryManifest;
@@ -63,9 +62,11 @@ impl ExtensionManagementService {
         }
 
         store.register_adapter(Box::new(SlashAdapter::new())).await;
-        store
-            .register_adapter(Box::new(UniversalToolAdapter::new()))
-            .await;
+        // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed.
+        // Universal tools are now workspace-resident; the workspace
+        // scanner in `install_principal_tool_bag` reads each
+        // manifest and registers the canonical `peko_tools_core::Tool`
+        // impl via BuiltinToolAdapter. No framework adapter.
         store
             .register_adapter(Box::new(GeneralExtensionAdapter::new()))
             .await;

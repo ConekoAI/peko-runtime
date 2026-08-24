@@ -1,4 +1,4 @@
-//! Universal-tool extension packaging integration test.
+//! Extension packaging safety tests (path traversal + unsafe ids).
 //!
 //! Phase 2 PR 1 (ADR-047 §2.4) deletes the `SkillAdapter`. The
 //! `ExtensionPackager` / `ExtensionUnpackager` skill-based tests
@@ -7,110 +7,19 @@
 //! Phase 7 deletes the entire `.ext` packaging format in favor of a
 //! literal tar of the principal workspace, so those tests are not
 //! restored.
+//!
+//! Phase 2 PR 3 (ADR-047 §2.4) deletes the framework-coupled
+//! `UniversalToolAdapter`. The end-to-end registration+invocation
+//! test that used
+//! `ExtensionStore::register_adapter(Box::new(UniversalToolAdapter::new()))`
+//! is gone too — the new path is the workspace scanner at
+//! `peko_core::extensions::universal::load_workspace_universal_tools`,
+//! which registers each tool via `BuiltinToolAdapter::register_tool`.
+//! That path is exercised by the workspace-scanner unit tests in
+//! `peko_core::extensions::universal::workspace`.
 
 use peko_core::extensions::framework::manager::packaging::ExtensionUnpackager;
-use peko_core::extensions::framework::store::ExtensionStore;
-use peko_subject::PrincipalId;
-use std::path::PathBuf;
 use tempfile::TempDir;
-
-use peko_core::extensions::framework::core::HookPoint;
-use peko_core::extensions::framework::types::{HookInput, HookOutput, HookResult};
-use peko_core::extensions::universal::UniversalToolAdapter;
-
-fn create_test_tool_extension(temp: &TempDir, id: &str) -> PathBuf {
-    let ext_dir = temp.path().join(id);
-    std::fs::create_dir_all(&ext_dir).unwrap();
-
-    // Universal-tool manifest
-    std::fs::write(
-        ext_dir.join("manifest.yaml"),
-        format!(
-            "name: {id}\nextension_type: universal-tool\ndescription: A test universal tool\nversion: 1.0.0\nparameters:\n  type: object\n  properties:\n    input:\n      type: string\n"
-        ),
-    )
-    .unwrap();
-
-    // Simple Python executable that implements the universal tool protocol
-    let script = r#"import sys, json
-line = sys.stdin.readline()
-if line:
-    req = json.loads(line)
-    resp = {"jsonrpc": "2.0", "id": req.get("id"), "result": {"success": true, "data": {"echoed": true}}}
-    print(json.dumps(resp), flush=True)
-"#;
-    std::fs::write(ext_dir.join(format!("{id}.py")), script).unwrap();
-
-    ext_dir
-}
-
-#[tokio::test]
-async fn test_extension_install_tool_registration_and_invocation() {
-    let temp = TempDir::new().unwrap();
-    let ext_dir = create_test_tool_extension(&temp, "test-echo");
-
-    let store = ExtensionStore::new();
-    store
-        .register_adapter(Box::new(UniversalToolAdapter::new()))
-        .await;
-
-    // 1. Install the extension
-    let ext_id = store.install(&ext_dir).await.unwrap();
-    assert_eq!(ext_id.0, "test-echo");
-
-    // 2. Get the ExtensionCore from the store (tools registered during install)
-    let core = store.core_arc();
-
-    // 3. Verify the tool is listed
-    let tools = core.list_tools(PrincipalId::system()).await;
-    let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-    assert!(
-        tool_names.contains(&"test-echo".to_string()),
-        "Expected 'test-echo' in list_tools, got: {:?}",
-        tool_names
-    );
-
-    // 4. Verify the tool can be invoked via ToolExecute with the right capability.
-    let result = core
-        .invoke_hook(
-            HookPoint::ToolExecute {
-                tool_name: "test-echo".to_string(),
-            },
-            HookInput::ToolCall {
-                tool_name: "test-echo".to_string(),
-                params: serde_json::json!({"input": "hello"}),
-                workspace: None,
-                agent_id: None,
-                session_id: None,
-                caller_id: None,
-                principal_id: None,
-                principal_name: None,
-                capabilities: Some(vec!["tool:test-echo".to_string()]),
-                active_extensions: Some(vec!["universal:test-echo".to_string()]),
-                abort_signal: None,
-            },
-        )
-        .await;
-
-    // The tool should execute successfully and return JSON output.
-    // If Python is unavailable we accept an Error result as long as it is
-    // not a whitelist block — that still proves the hook was resolved.
-    match result {
-        HookResult::Continue(HookOutput::Json(json)) => {
-            assert_eq!(json["echoed"], true, "Expected echoed result, got: {json}");
-        }
-        HookResult::Error(ref e) => {
-            let msg = e.to_string();
-            assert!(
-                !msg.contains("disabled") && !msg.contains("not enabled"),
-                "Tool invocation blocked by whitelist: {msg}"
-            );
-        }
-        other => {
-            panic!("Expected Continue(JSON) or Error, got: {other:?}");
-        }
-    }
-}
 
 // ── Path-traversal & unsafe-name safety tests ───────────────────────
 //
@@ -140,7 +49,7 @@ fn write_ext_tarball(
     all_entries.push(("manifest.toml", manifest_toml.as_bytes()));
     all_entries.extend_from_slice(entries);
 
-    for (name, content) in all_entries {
+    for (name, content) in &all_entries {
         let mut header = [0u8; 512];
         let name_bytes = name.as_bytes();
         let n = name_bytes.len().min(100);

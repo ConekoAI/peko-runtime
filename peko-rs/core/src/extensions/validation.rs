@@ -67,7 +67,7 @@ impl ExtensionValidationService {
         use crate::extensions::general::discover_general_extensions;
         use crate::extensions::mcp::discover_workspace_mcp_servers;
         use crate::extensions::slash::SlashAdapter;
-        use crate::extensions::universal::UniversalToolAdapter;
+        use crate::extensions::universal::discover_workspace_universal_tools;
 
         if !path.exists() {
             anyhow::bail!("Path does not exist: {}", path.display());
@@ -183,16 +183,19 @@ impl ExtensionValidationService {
 
                     match ext_type.as_str() {
                         "universal-tool" => {
-                            let adapter = UniversalToolAdapter::new();
-                            let tools = adapter.discover_tools(path).await;
+                            // Phase 2 PR 3 (ADR-047 §2.4): the
+                            // framework-coupled UniversalToolAdapter is
+                            // gone. Walk the workspace via the
+                            // parser-only scanner (no `ExtensionCore`
+                            // needed) and report what exists.
+                            let tools = discover_workspace_universal_tools(path)
+                                .await
+                                .unwrap_or_default();
                             if tools.is_empty() {
                                 errors.push("No valid tools found in directory".to_string());
                             } else if verbose {
-                                for tool in &tools {
-                                    println!(
-                                        "  ✓ Tool: {} - {}",
-                                        tool.manifest.name, tool.manifest.description
-                                    );
+                                for (name, _) in &tools {
+                                    println!("  ✓ Tool: {name}");
                                 }
                             }
 
