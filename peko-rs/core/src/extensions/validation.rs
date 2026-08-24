@@ -65,7 +65,7 @@ impl ExtensionValidationService {
     ) -> anyhow::Result<ValidationReport> {
         use crate::extensions::framework::adapters::extract_extension_type_from_yaml;
         use crate::extensions::general::discover_general_extensions;
-        use crate::extensions::mcp::McpAdapter;
+        use crate::extensions::mcp::discover_workspace_mcp_servers;
         use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::UniversalToolAdapter;
 
@@ -206,13 +206,26 @@ impl ExtensionValidationService {
                             }
                         }
                         "mcp" => {
-                            let adapter = McpAdapter::with_default_manager();
-                            let servers = adapter.discover_servers(path).await;
+                            // Phase 2 PR 2 (ADR-047 §2.3): the
+                            // framework-coupled McpAdapter is gone; the
+                            // workspace scanner (parser-only) reports
+                            // servers without touching the global
+                            // McpManager. Validation is purely about
+                            // manifest shape, not runtime registration.
+                            let servers = match discover_workspace_mcp_servers(path).await {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    errors.push(format!(
+                                        "Failed to scan MCP directory: {e}"
+                                    ));
+                                    Vec::new()
+                                }
+                            };
                             if servers.is_empty() {
                                 errors.push("No valid MCP servers found in directory".to_string());
                             } else if verbose {
-                                for server in &servers {
-                                    println!("  ✓ Server: {}", server.manifest.name);
+                                for (name, _) in &servers {
+                                    println!("  ✓ Server: {name}");
                                 }
                             }
 

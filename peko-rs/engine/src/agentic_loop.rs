@@ -15,8 +15,9 @@ use crate::audit_sink::{AuditEventView, AuditSeverity};
 use crate::synthetic_stream::synthesize_stream_from_blocking;
 use crate::{
     AgentView, AgenticEvent, AsyncInboxItem, AsyncInboxLike, BackgroundCompactorFactory,
-    CapabilityDiffTracker, CompactionConfig, LifecyclePhase, OrchestratorConfig, PromptRenderer,
-    ProviderView, SessionView, StackedMeteredProvider, StreamOrchestrator, TurnPromptContext,
+    CapabilityDiffTracker, CompactionConfig, EmptyMcpPromptContextProvider, LifecyclePhase,
+    McpPromptContextProvider, OrchestratorConfig, PromptRenderer, ProviderView, SessionView,
+    StackedMeteredProvider, StreamOrchestrator, TurnPromptContext,
 };
 use anyhow::Result;
 use futures::StreamExt;
@@ -218,6 +219,16 @@ pub struct AgenticLoop {
     /// sink-binding don't get first-use UX, just the
     /// info-tier baseline.
     audit_first_use_for_model: Option<FirstUseLookupFn>,
+    /// Phase 2 PR 2 (ADR-047 §2.3): source for the `{{mcp_context}}`
+    /// system-prompt section. The framework `McpAdapter` was deleted;
+    /// the renderer consults this provider directly. Default
+    /// [`EmptyMcpPromptContextProvider`] (returns ""), which is what
+    /// tests and unit-test fixtures get; the daemon binds a real
+    /// provider that wraps the global `McpManager` via
+    /// [`with_mcp_context_provider`].
+    ///
+    /// [`with_mcp_context_provider`]: AgenticLoop::with_mcp_context_provider
+    mcp_context_provider: Arc<dyn McpPromptContextProvider>,
 }
 
 /// Lookup closure for the `model.selected` first-use audit decision:
@@ -317,6 +328,12 @@ impl AgenticLoop {
             // decoupled from `peko-observability`.
             audit_sink: None,
             audit_first_use_for_model: None,
+            // Phase 2 PR 2: default to the empty provider so
+            // existing tests / fixtures continue to render
+            // `{{mcp_context}}` as the empty string. The daemon
+            // overrides this via `with_mcp_context_provider`
+            // once it has the global `McpManager` in hand.
+            mcp_context_provider: Arc::new(EmptyMcpPromptContextProvider),
         }
     }
 
@@ -487,6 +504,24 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_cancel_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
         self.cancel = Some(token);
+        self
+    }
+
+    /// Phase 2 PR 2 (ADR-047 §2.3): bind an MCP context provider so
+    /// `{{mcp_context}}` in the system prompt body renders real
+    /// Markdown describing the configured MCP servers. Default is
+    /// [`EmptyMcpPromptContextProvider`] (returns ""), which makes
+    /// the placeholder expand to nothing via `remove_missing=true`.
+    ///
+    /// Called from root (after constructing the loop) once the
+    /// global `McpManager` is reachable, so the engine crate never
+    /// imports `peko_core::extensions::mcp` directly.
+    #[must_use]
+    pub fn with_mcp_context_provider(
+        mut self,
+        provider: Arc<dyn McpPromptContextProvider>,
+    ) -> Self {
+        self.mcp_context_provider = provider;
         self
     }
 
@@ -1189,7 +1224,10 @@ impl AgenticLoop {
             // job.
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
                 let ctx = self.build_turn_context(iteration, &tool_defs, &session_id);
-                let renderer = PromptRenderer::new(Arc::clone(&self.extension_core));
+                let renderer = PromptRenderer::with_mcp_context_provider(
+                    Arc::clone(&self.extension_core),
+                    Arc::clone(&self.mcp_context_provider),
+                );
 
                 // F36: the prefix no longer references tool names, so
                 // there is no per-tool-table signal to invalidate on.

@@ -419,6 +419,14 @@ impl PrincipalContext {
             // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
             // runtime reads from that directory.
             let skills_dir = self.workspace_path.join("skills");
+            // Phase 2 PR 2 (ADR-047 §2.3): MCP servers live under
+            // `<workspace>/mcp/<id>/server.json`. The workspace
+            // scanner registers each server config with the global
+            // `McpManager` (lazy — servers start on first tool call)
+            // and wraps the manager's running tools as
+            // `McpToolProxy` / `InjectableMcpToolProxy` instances
+            // onto the global core.
+            let mcp_dir = self.workspace_path.join("mcp");
             // Channel port resolution (2026-08-18 reviewer finding):
             // principal contexts don't hold their own channel port —
             // the daemon builds the real file-backed port at startup
@@ -438,6 +446,7 @@ impl PrincipalContext {
                 Arc::clone(&core),
                 &agents_dir,
                 &skills_dir,
+                &mcp_dir,
                 &self.principal_id,
                 channel_port,
             )
@@ -508,16 +517,25 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 /// directly so the hand-rolled `workspace_path.join("agents")`
 /// join inside this function is gone.
 ///
+/// Phase 2 PR 2 (ADR-047 §2.3) also takes the typed `mcp_dir` and
+/// scans `<workspace>/mcp/<id>/server.json` (or `manifest.yaml`) for
+/// MCP servers. Each server is registered with the global
+/// `McpManager`; the manager's running tools are wrapped as
+/// `McpToolProxy` / `InjectableMcpToolProxy` and registered on the
+/// global core under the principal's scope.
+///
 /// `channel_port` is the `ChannelPort` used for the `ChannelRead` /
 /// `ChannelSend` tool registrations. Production callers pass
 /// [`resolve_channel_port`]'s result (the daemon-installed real
 /// port); `Arc::new(NoopChannelPort)` is fine for tests that don't
 /// have a real adapter wired up — `ChannelRead` will surface
 /// `Adapter` errors instead of silently zero-returning.
+#[allow(clippy::too_many_arguments)]
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     agents_dir: &Path,
     skills_dir: &Path,
+    mcp_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
@@ -562,6 +580,69 @@ async fn install_principal_tool_bag(
         if let Err(e) = register_agents_with_core(&core, discovered).await {
             tracing::warn!("register_agents_with_core failed during core build: {e}");
         }
+    }
+
+    // Phase 2 PR 2 (ADR-047 §2.3): MCP servers are workspace-resident.
+    // The scanner walks `<workspace>/mcp/<id>/server.json` and
+    // registers each with the global McpManager. After that, every
+    // running MCP tool becomes a `McpToolProxy` /
+    // `InjectableMcpToolProxy` tool on the principal's core so the
+    // agent sees them in its tool catalog.
+    //
+    // Servers themselves stay lazy — `McpToolProxy::call_with_auto_start`
+    // starts the process on first tool call (matching the framework's
+    // prior "do NOT auto-start on AgentInit" behaviour, which existed
+    // because the framework hook fires for every agent and starting
+    // there races `peko ext start`).
+    if let Some(mcp_manager) = crate::extensions::mcp::global_mcp_manager() {
+        if mcp_dir.exists() {
+            match crate::extensions::mcp::load_workspace_mcp_servers(
+                mcp_dir,
+                &mcp_manager,
+            )
+            .await
+            {
+                Ok(loaded) => {
+                    if loaded > 0 {
+                        tracing::info!(
+                            "registered {loaded} MCP server(s) from {}",
+                            mcp_dir.display()
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "MCP workspace scan failed for {}: {e}",
+                    mcp_dir.display()
+                ),
+            }
+        }
+
+        // Wrap each running MCP tool as a McpToolProxy / InjectableMcpToolProxy
+        // and register it on the principal's core. The `Injectable…` variant
+        // is used when the server has `reserved_parameters` configured so
+        // the LLM never sees (and the runtime always injects) vault-backed
+        // secret params.
+        let manager_arc = mcp_manager.clone();
+        let mgr = manager_arc.read().await;
+        let proxy_tools = mgr.get_tools().await;
+        drop(mgr);
+        for tool in proxy_tools {
+            if let Err(e) = BuiltinToolAdapter::register_tool(
+                core.as_ref(),
+                tool,
+                principal_id,
+            )
+            .await
+            {
+                tracing::warn!("MCP tool registration failed during core build: {e}");
+            }
+        }
+    } else if mcp_dir.exists() {
+        tracing::warn!(
+            "MCP workspace dir {} exists but no global McpManager is \
+             installed; MCP tools will not be registered for this principal",
+            mcp_dir.display()
+        );
     }
 
     // Cross-peer session introspection is handled by the per-agent `session`

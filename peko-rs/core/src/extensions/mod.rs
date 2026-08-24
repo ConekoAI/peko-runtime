@@ -105,11 +105,23 @@ impl BuiltInAdapters {
         // are now files inside the principal's workspace and are
         // resolved by `WorkspaceSkillRuntime`, not registered through
         // the extension framework.
+        //
+        // Phase 2 PR 2 (ADR-047 §2.3): `McpAdapter` removed. MCP
+        // servers are now files inside `<workspace>/mcp/<id>/` and
+        // are loaded by `workspace::load_workspace_mcp_servers` at
+        // principal boot. The global `McpManager` (initialised in
+        // `daemon/state.rs`) is the canonical runtime for them; the
+        // `McpToolProxy` / `InjectableMcpToolProxy` types wrap its
+        // tools for the principal's tool bag. The four framework
+        // hooks that McpAdapter wired (AgentInit, AgentShutdown,
+        // PromptSystemSection, ToolExecute) are no longer needed —
+        // server lifecycle is the manager's job, MCP context is
+        // rendered directly by `workspace::render_mcp_prompt_context`,
+        // and tool execution goes through `McpToolProxy::execute_with_context`.
         vec![
             Box::new(agent::adapter::AgentAdapter::new()),
             Box::new(slash::adapter::SlashAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),
-            Box::new(mcp::adapter::McpAdapter::with_default_manager()),
             Box::new(general::adapter::GeneralExtensionAdapter::new()),
         ]
     }
@@ -213,9 +225,11 @@ mod tests {
         // dropped from 7 to 6.
         // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed — count
         // dropped from 6 to 5.
+        // Phase 2 PR 2 (ADR-047 §2.3): McpAdapter removed — count
+        // dropped from 5 to 4.
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 5);
+        assert_eq!(adapters.len(), 4);
     }
 }

@@ -782,15 +782,15 @@ impl AppState {
         // Sprint 9 Commit 3: `GatewayAdapter` removed — chat-gateway
         // adapter framework retired.
         use crate::extensions::general::GeneralExtensionAdapter;
-        use crate::extensions::mcp::McpAdapter;
         use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::UniversalToolAdapter;
 
         // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed. Skills
         // are workspace files; the SkillTool uses WorkspaceSkillRuntime.
-        extension_store
-            .register_adapter(Box::new(McpAdapter::with_default_manager()))
-            .await;
+        // Phase 2 PR 2 (ADR-047 §2.3): McpAdapter removed. MCP servers
+        // are workspace-resident; the workspace scanner in
+        // `install_principal_tool_bag` reads them and registers tools
+        // via the global McpManager + BuiltinToolAdapter.
         extension_store
             .register_adapter(Box::new(SlashAdapter::new()))
             .await;
@@ -1174,8 +1174,12 @@ impl AppState {
         tracing::info!("MCP reload: {keys_count} vault entries reloaded");
 
         let mcp_config_path = self.config_dir.join("mcp.toml");
-        let adapter = crate::extensions::mcp::McpAdapter::with_default_manager();
-        let manager = adapter.manager();
+        // Phase 2 PR 2 (ADR-047 §2.3): the framework-coupled
+        // `McpAdapter` is gone; the global `McpManager` (installed by
+        // `init_global_mcp_manager_with_shared_resources` at daemon
+        // startup) is the canonical owner of MCP server configs.
+        let manager = crate::extensions::mcp::global_mcp_manager()
+            .ok_or_else(|| anyhow::anyhow!("global MCP manager is not initialised"))?;
         let servers_count = manager
             .read()
             .await
