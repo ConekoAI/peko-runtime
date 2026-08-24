@@ -35,6 +35,7 @@
 pub mod async_inbox;
 pub mod async_status;
 pub mod async_types;
+pub mod authority;
 pub mod capabilities;
 pub mod completion_event;
 pub mod hook_io;
@@ -66,6 +67,10 @@ pub use tool_funnel::ToolFunnel;
 // depending on root.
 pub use async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 pub use async_types::AsyncReceipt;
+// Phase 3a (ADR-047 §2.5): flat per-tier filesystem/network/tunnel
+// authority envelope. Phase 3b routes the runtime write gates through
+// it; for now it lives next to `Capabilities` for forward compatibility.
+pub use authority::{Authority, NetworkAccess, TunnelAccess};
 pub use capabilities::{ActiveExtensionSet, Capabilities, Capability};
 pub use hook_io::{
     tool_result_from_hook, CompactionPreparationPayload, CompactionResultPayload, HookDecision,
