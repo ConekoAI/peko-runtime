@@ -479,23 +479,6 @@ pub enum RequestPacket {
         ext_type: Option<String>,
     },
 
-    #[serde(rename = "capability_grant")]
-    CapabilityGrant {
-        request_id: u64,
-        principal: String,
-        capability: String,
-    },
-
-    #[serde(rename = "capability_revoke")]
-    CapabilityRevoke {
-        request_id: u64,
-        principal: String,
-        capability: String,
-    },
-
-    #[serde(rename = "capability_list")]
-    CapabilityList { request_id: u64, principal: String },
-
     #[serde(rename = "extension_validate")]
     ExtensionValidate {
         request_id: u64,
@@ -983,9 +966,6 @@ impl RequestPacket {
             | Self::SystemDoctor { request_id }
             | Self::AuditQuery { request_id, .. }
             | Self::ExtensionList { request_id, .. }
-            | Self::CapabilityGrant { request_id, .. }
-            | Self::CapabilityRevoke { request_id, .. }
-            | Self::CapabilityList { request_id, .. }
             | Self::ExtensionValidate { request_id, .. }
             | Self::ExtensionDebug { request_id, .. }
             | Self::ExtensionInfo { request_id, .. }
@@ -1659,55 +1639,6 @@ pub enum ResponsePacket {
         request_id: u64,
         extensions: Vec<ExtensionSummary>,
         total: usize,
-    },
-
-    /// Capability granted response
-    #[serde(rename = "capability_granted")]
-    CapabilityGranted {
-        request_id: u64,
-        capability: String,
-        message: String,
-    },
-
-    /// Capability revoked response
-    ///
-    /// `removed` is `true` when the revoke actually changed the principal's
-    /// effective authority (a literal grant was dropped, or a wildcard
-    /// grant that was satisfying the cap was dropped). It is `false` when
-    /// no literal grant existed and no wildcard covered the capability
-    /// either — i.e. the call was a no-op. This lets the CLI and desktop
-    /// distinguish "✅ revoked" from "✅ nothing to revoke".
-    /// `#[serde(default)]` keeps the field forward+backward compatible.
-    #[serde(rename = "capability_revoked")]
-    CapabilityRevoked {
-        request_id: u64,
-        capability: String,
-        message: String,
-        #[serde(default)]
-        removed: bool,
-    },
-
-    /// Capability list response
-    #[serde(rename = "capability_list")]
-    CapabilityList {
-        request_id: u64,
-        principal: String,
-        /// Capabilities explicitly granted in `principal.toml`.
-        granted: Vec<String>,
-        /// Capabilities declared by detected/installed extensions that are
-        /// not currently granted.
-        detected: Vec<String>,
-        /// Capabilities that are currently active (granted + extension
-        /// requirements satisfied).
-        active: Vec<String>,
-        /// IDs of extensions the principal currently has enabled (built-ins,
-        /// agents, installed extensions). Mirrors
-        /// `PrincipalCatalog::active_extensions()` — the desktop uses this
-        /// in place of its own synthesized extension-capability join so the
-        /// IPC payload is the single source of truth. `#[serde(default)]`
-        /// keeps the field forward+backward compatible.
-        #[serde(default)]
-        active_extensions: Vec<String>,
     },
 
     /// Extension validated response
@@ -2633,9 +2564,6 @@ impl ResponsePacket {
             | Self::BindingSetDone { request_id, .. }
             | Self::BindingDeleted { request_id, .. }
             | Self::ExtensionList { request_id, .. }
-            | Self::CapabilityGranted { request_id, .. }
-            | Self::CapabilityRevoked { request_id, .. }
-            | Self::CapabilityList { request_id, .. }
             | Self::ExtensionValidated { request_id, .. }
             | Self::ExtensionDebugInfo { request_id, .. }
             | Self::ExtensionInfoResponse { request_id, .. }
@@ -2732,9 +2660,6 @@ impl ResponsePacket {
             Self::BindingSetDone { .. } => "BindingSetDone",
             Self::BindingDeleted { .. } => "BindingDeleted",
             Self::ExtensionList { .. } => "ExtensionList",
-            Self::CapabilityGranted { .. } => "CapabilityGranted",
-            Self::CapabilityRevoked { .. } => "CapabilityRevoked",
-            Self::CapabilityList { .. } => "CapabilityList",
             Self::ExtensionValidated { .. } => "ExtensionValidated",
             Self::ExtensionDebugInfo { .. } => "ExtensionDebugInfo",
             Self::ExtensionInfoResponse { .. } => "ExtensionInfoResponse",
@@ -6017,94 +5942,4 @@ mod tests {
         );
     }
 
-    /// `CapabilityRevoked` carries a `removed: bool` field with
-    /// `#[serde(default)]` so older CLIs/desktops that don't know about
-    /// the field still deserialize. Pin the wire shape + the default.
-    #[test]
-    fn test_capability_revoked_removed_field_default_is_false() {
-        // Modern encoder: explicit `removed: true` survives the round trip.
-        let modern = ResponsePacket::CapabilityRevoked {
-            request_id: 700,
-            capability: "tool:Read".to_string(),
-            message: "ok".to_string(),
-            removed: true,
-        };
-        let bytes = modern.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::CapabilityRevoked { removed, .. } => {
-                assert!(removed, "explicit removed:true must round-trip");
-            }
-            _ => panic!("Wrong variant"),
-        }
-
-        // Old encoder: omits `removed` entirely. New decoder must
-        // backfill it with `false` so callers don't need to special-case
-        // an absent field.
-        let legacy_json = serde_json::json!({
-            "type": "capability_revoked",
-            "request_id": 700,
-            "capability": "tool:Read",
-            "message": "ok",
-        });
-        let decoded_legacy =
-            ResponsePacket::from_bytes(legacy_json.to_string().as_bytes()).unwrap();
-        match decoded_legacy {
-            ResponsePacket::CapabilityRevoked { removed, .. } => {
-                assert!(
-                    !removed,
-                    "legacy payload without `removed` must default to false"
-                );
-            }
-            _ => panic!("Wrong variant"),
-        }
     }
-
-    /// `CapabilityList` carries an `active_extensions: Vec<String>` field
-    /// with `#[serde(default)]` so older CLIs/desktops still deserialize.
-    /// Pin the wire shape + the empty-list default.
-    #[test]
-    fn test_capability_list_active_extensions_default_is_empty() {
-        let modern = ResponsePacket::CapabilityList {
-            request_id: 701,
-            principal: "helper".to_string(),
-            granted: vec!["tool:Read".to_string()],
-            detected: vec!["skill:docker".to_string()],
-            active: vec!["tool:Read".to_string()],
-            active_extensions: vec!["builtin:tool:Read".to_string()],
-        };
-        let bytes = modern.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::CapabilityList {
-                active_extensions, ..
-            } => {
-                assert_eq!(active_extensions, vec!["builtin:tool:Read".to_string()]);
-            }
-            _ => panic!("Wrong variant"),
-        }
-
-        // Legacy payload without `active_extensions`: must default to empty.
-        let legacy_json = serde_json::json!({
-            "type": "capability_list",
-            "request_id": 701,
-            "principal": "helper",
-            "granted": ["tool:Read"],
-            "detected": [],
-            "active": ["tool:Read"],
-        });
-        let decoded_legacy =
-            ResponsePacket::from_bytes(legacy_json.to_string().as_bytes()).unwrap();
-        match decoded_legacy {
-            ResponsePacket::CapabilityList {
-                active_extensions, ..
-            } => {
-                assert!(
-                    active_extensions.is_empty(),
-                    "legacy payload without `active_extensions` must default to empty"
-                );
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-}

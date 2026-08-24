@@ -2244,31 +2244,6 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
     }
 }
 
-/// F7 fifth narrow handle: the port the `capability` IPC domain handler
-/// uses for principal-capability grant/list/revoke. Trait lives in
-/// `ipc::handlers::capability`. Both methods are sync (return cheap
-/// references), so the trait is object-safe without `async_trait`. The
-/// actual per-principal mutations happen in the handler against these
-/// accessors.
-impl crate::ipc::handlers::capability::CapabilityHost for AppState {
-    fn principal_manager(&self) -> &Arc<PrincipalManager> {
-        AppState::principal_manager(self)
-    }
-
-    fn extension_store(&self) -> &Arc<ExtensionStore> {
-        AppState::extension_store(self)
-    }
-
-    /// ADR-046: grant audit events are emitted from the
-    /// capability handler. Returns the Observability hub by
-    /// cheap Arc clone — same shape as the existing `observability`
-    /// accessor at line 1985, just lifted onto the trait surface
-    /// the handler imports.
-    fn observability(&self) -> Arc<Observability> {
-        AppState::observability(self)
-    }
-}
-
 /// F7 sixth narrow handle: the port the `instance` IPC domain handler
 /// uses to reach the live tunnel dispatcher. Trait lives in
 /// `ipc::handlers::instance`. Async because `tunnel_dispatcher` is
