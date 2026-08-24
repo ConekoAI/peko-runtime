@@ -17,7 +17,6 @@ use crate::extensions::framework::store_trait::DependencyStatus;
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::general::GeneralExtensionAdapter;
 use crate::extensions::mcp::McpAdapter;
-use crate::extensions::skill::SkillAdapter;
 use crate::extensions::slash::SlashAdapter;
 use crate::extensions::universal::UniversalToolAdapter;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
@@ -64,9 +63,7 @@ impl ExtensionManagementService {
             );
         }
 
-        store.register_adapter(Box::new(SkillAdapter::new())).await;
-        store
-            .register_adapter(Box::new(McpAdapter::with_default_manager()))
+        store.register_adapter(Box::new(McpAdapter::with_default_manager()))
             .await;
         store.register_adapter(Box::new(SlashAdapter::new())).await;
         store

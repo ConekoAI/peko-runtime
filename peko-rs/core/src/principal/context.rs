@@ -415,6 +415,10 @@ impl PrincipalContext {
             // the Shared tier root, so the agents dir is exactly
             // `workspace_path.join("agents")`.
             let agents_dir = self.workspace_path.join("agents");
+            // Phase 2 PR 1 (ADR-047): skills live under
+            // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
+            // runtime reads from that directory.
+            let skills_dir = self.workspace_path.join("skills");
             // Channel port resolution (2026-08-18 reviewer finding):
             // principal contexts don't hold their own channel port —
             // the daemon builds the real file-backed port at startup
@@ -433,6 +437,7 @@ impl PrincipalContext {
             if let Err(e) = install_principal_tool_bag(
                 Arc::clone(&core),
                 &agents_dir,
+                &skills_dir,
                 &self.principal_id,
                 channel_port,
             )
@@ -512,6 +517,7 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     agents_dir: &Path,
+    skills_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
@@ -532,10 +538,15 @@ async fn install_principal_tool_bag(
     // Per-principal enablement and workspace state are resolved at handle
     // time from the `ToolContext` carried with each invocation. Scoped to
     // this principal_id so concurrent principals each see their own Skill.
+    //
+    // Phase 2 PR 1 (ADR-047 §2.4): the runtime reads directly from
+    // the principal's `<workspace>/skills/` directory — no catalog,
+    // no adapter. The principal is responsible for installation; the
+    // runtime's only job is to point the SkillTool at SKILL.md files.
     if let Err(e) = BuiltinToolAdapter::register_tool(
         core.as_ref(),
         Arc::new(SkillTool::new(std::sync::Arc::new(
-            crate::extensions::skill::skill_runtime_impl::SkillCatalogRuntime::new(),
+            crate::extensions::skill::WorkspaceSkillRuntime::new(skills_dir.to_path_buf()),
         ))),
         principal_id,
     )

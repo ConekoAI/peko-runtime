@@ -66,7 +66,6 @@ impl ExtensionValidationService {
         use crate::extensions::framework::adapters::extract_extension_type_from_yaml;
         use crate::extensions::general::discover_general_extensions;
         use crate::extensions::mcp::McpAdapter;
-        use crate::extensions::skill::SkillAdapter;
         use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::UniversalToolAdapter;
 
@@ -84,18 +83,10 @@ impl ExtensionValidationService {
                 println!("✓ Detected as: skill extension (SKILL.md) [Tier 1 ecosystem standard]");
             }
 
-            let skill_adapter = SkillAdapter::new();
-            let skills = skill_adapter.discover_skills(path);
-            if skills.is_empty() {
-                errors.push("No valid skills found in directory".to_string());
-            } else if verbose {
-                for skill in &skills {
-                    println!(
-                        "  ✓ Skill: {} - {}",
-                        skill.manifest.name, skill.manifest.description
-                    );
-                }
-            }
+            // Phase 2 PR 1 (ADR-047 §2.4): the SkillAdapter is gone.
+            // The SKILL.md validator just checks frontmatter shape +
+            // heading presence — both done by `semantic_check_skill`
+            // below — so no separate discover step is needed.
 
             if depth >= ValidationDepth::Semantic {
                 Self::semantic_check_skill(path, &mut errors, &mut warnings, verbose);

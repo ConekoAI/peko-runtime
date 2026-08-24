@@ -783,13 +783,11 @@ impl AppState {
         // adapter framework retired.
         use crate::extensions::general::GeneralExtensionAdapter;
         use crate::extensions::mcp::McpAdapter;
-        use crate::extensions::skill::SkillAdapter;
         use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::UniversalToolAdapter;
 
-        extension_store
-            .register_adapter(Box::new(SkillAdapter::new()))
-            .await;
+        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed. Skills
+        // are workspace files; the SkillTool uses WorkspaceSkillRuntime.
         extension_store
             .register_adapter(Box::new(McpAdapter::with_default_manager()))
             .await;

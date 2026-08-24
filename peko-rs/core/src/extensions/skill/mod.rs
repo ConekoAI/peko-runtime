@@ -1,25 +1,21 @@
-//! Skill Extension Type Implementation
+//! Workspace-backed skill surface (ADR-047 §2.4).
 //!
-//! This module contains the Skill adapter for SKILL.md-based extensions and
-//! re-exports the global skill location catalog used by the builtin `Skill` tool.
+//! Phase 2 PR 1 deletes the `SkillAdapter` + the per-extension
+//! `SkillCatalog` registration path. Skills are now files inside the
+//! principal's workspace (`<workspace>/skills/<id>/SKILL.md`); the
+//! [`WorkspaceSkillRuntime`](reader::WorkspaceSkillRuntime) is the
+//! `SkillRuntime` impl the `SkillTool` uses to resolve them.
 //!
-//! Phase 10d moved the `Skill` tool, `SkillFrontmatter` DTO, and the YAML
-//! frontmatter parser into `peko_tools_builtin::skill`. Root-side callers
-//! (including this module's `SkillAdapter`) continue to use the same types
-//! via the re-exports below; the adapter for the new port trait lives in
-//! `skill_runtime_impl`.
+//! The re-exports below preserve the legacy
+//! `crate::extensions::skill::{SkillFrontmatter, parse_yaml_frontmatter,
+//! parse_yaml_frontmatter_typed}` paths used by other parts of the
+//! codebase (validation, the builtin `Skill` tool, etc.).
 
-pub mod adapter;
-pub mod skill_runtime_impl;
+pub mod reader;
 
-// Canonical DTOs and parser re-exports — `peko_tools_builtin::skill` is
-// the source of truth. Keeping these here preserves the legacy
-// `crate::extensions::skill::{SkillFrontmatter, parse_yaml_frontmatter,
-// parse_yaml_frontmatter_typed}` paths used by the adapter and any
-// downstream consumers.
+// Canonical DTOs and parser re-exports — `peko_tools_builtin::skill`
+// is the source of truth.
 pub use crate::tools::builtin::skill::{
     parse_yaml_frontmatter, parse_yaml_frontmatter_typed, SkillFrontmatter,
 };
-pub use adapter::{
-    load_skills_from_directory, register_skills_with_core, DiscoveredSkill, SkillAdapter,
-};
+pub use reader::WorkspaceSkillRuntime;

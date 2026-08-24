@@ -101,8 +101,11 @@ impl BuiltInAdapters {
     pub fn adapters(
         &self,
     ) -> Vec<Box<dyn crate::extensions::framework::adapters::ExtensionTypeAdapter>> {
+        // Phase 2 PR 1 (ADR-047 §2.4): `SkillAdapter` removed. Skills
+        // are now files inside the principal's workspace and are
+        // resolved by `WorkspaceSkillRuntime`, not registered through
+        // the extension framework.
         vec![
-            Box::new(skill::adapter::SkillAdapter::new()),
             Box::new(agent::adapter::AgentAdapter::new()),
             Box::new(slash::adapter::SlashAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),
@@ -208,9 +211,11 @@ mod tests {
     fn test_built_in_adapters() {
         // Sprint 9 Commit 3: GatewayAdapter retired — adapter count
         // dropped from 7 to 6.
+        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed — count
+        // dropped from 6 to 5.
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 6);
+        assert_eq!(adapters.len(), 5);
     }
 }

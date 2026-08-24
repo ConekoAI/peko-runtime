@@ -9,7 +9,6 @@
 
 use anyhow::Context;
 use peko_core::extensions::framework::store::ExtensionStore;
-use peko_core::extensions::skill::SkillAdapter;
 use peko_core::principal::config::PrincipalConfig;
 use peko_core::registry::packaging::{
     compute_digest, PrincipalExportOptions, PrincipalManifest, PrincipalPackager,
@@ -115,7 +114,9 @@ impl PrincipalPackageBuilder {
         }
 
         let store = ExtensionStore::new();
-        store.register_adapter(Box::new(SkillAdapter::new())).await;
+        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed. Skills
+        // are workspace-resident; the package builder doesn't need
+        // to register an adapter for them any more.
         if !self.skills.is_empty() {
             store
                 .load_from_directory(&extensions_dir)
