@@ -64,8 +64,14 @@ pub mod skill;
 /// Agent extension adapter — AGENT.md-based prompt extensions with YAML frontmatter.
 pub mod agent;
 
-/// Slash command extension adapter — COMMAND.md-based user-invoked commands with YAML frontmatter.
-pub mod slash;
+// Phase 2 PR 4 (ADR-047 §2.4): the framework `slash` adapter was
+// removed. Slash dispatch is handled daemon-side by
+// `crate::principal::slash::SlashDispatcher`, which only resolves
+// `/help` in v0. The framework `SlashAdapter` was a no-op wrapper:
+// its `register_commands_with_core` returned `Vec::new()` and no
+// `COMMAND.md` installer ever wired its discovered manifests into
+// the dispatcher. No behavior change after removal — same `/help`
+// semantics, fewer indirections.
 
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
@@ -120,7 +126,14 @@ impl BuiltInAdapters {
         // and tool execution goes through `McpToolProxy::execute_with_context`.
         vec![
             Box::new(agent::adapter::AgentAdapter::new()),
-            Box::new(slash::adapter::SlashAdapter::new()),
+            // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed. The
+            // framework wrapper was a no-op (`register_commands_with_core`
+            // returned `Vec::new()`); slash dispatch is handled
+            // daemon-side by `principal::slash::SlashDispatcher`,
+            // which only resolves `/help` in v0 (no `COMMAND.md`
+            // installer). The framework adapter added no behavior
+            // beyond discovering and discarding manifests.
+            //
             // Phase 2 PR 3 (ADR-047 §2.4): universal tools no longer
             // register a framework adapter. Workspace-resident tools
             // are scanned by `extensions::universal::workspace`
@@ -233,9 +246,11 @@ mod tests {
         // dropped from 5 to 4.
         // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed
         // — count dropped from 4 to 3.
+        // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed — count
+        // dropped from 3 to 2.
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 3);
+        assert_eq!(adapters.len(), 2);
     }
 }

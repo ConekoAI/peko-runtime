@@ -66,7 +66,6 @@ impl ExtensionValidationService {
         use crate::extensions::framework::adapters::extract_extension_type_from_yaml;
         use crate::extensions::general::discover_general_extensions;
         use crate::extensions::mcp::discover_workspace_mcp_servers;
-        use crate::extensions::slash::SlashAdapter;
         use crate::extensions::universal::discover_workspace_universal_tools;
 
         if !path.exists() {
@@ -106,19 +105,12 @@ impl ExtensionValidationService {
                 );
             }
 
-            let slash_adapter = SlashAdapter::new();
-            let commands = slash_adapter.discover_commands(path);
-            if commands.is_empty() {
-                errors.push("No valid slash commands found in directory".to_string());
-            } else if verbose {
-                for command in &commands {
-                    println!(
-                        "  ✓ Slash command: {} - {}",
-                        command.manifest.name, command.manifest.description
-                    );
-                }
-            }
-
+            // Phase 2 PR 4 (ADR-047 §2.4): the framework `SlashAdapter`
+            // is gone. Slash dispatch is handled daemon-side by
+            // `principal::slash::SlashDispatcher`, which only resolves
+            // `/help` in v0. `COMMAND.md` files in the workspace are
+            // not auto-discovered for runtime dispatch — the validator
+            // just confirms the file is present.
             return Ok(ValidationReport {
                 detected_type: "slash".to_string(),
                 errors,

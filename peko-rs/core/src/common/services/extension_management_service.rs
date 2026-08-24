@@ -16,7 +16,6 @@ use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::store_trait::DependencyStatus;
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::general::GeneralExtensionAdapter;
-use crate::extensions::slash::SlashAdapter;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::RegistryConfig;
 use crate::registry::manifest::RegistryManifest;
@@ -61,7 +60,11 @@ impl ExtensionManagementService {
             );
         }
 
-        store.register_adapter(Box::new(SlashAdapter::new())).await;
+        // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed. The framework
+        // wrapper was a no-op (`register_commands_with_core` returned
+        // `Vec::new()`); slash dispatch is handled daemon-side by
+        // `principal::slash::SlashDispatcher`.
+        //
         // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed.
         // Universal tools are now workspace-resident; the workspace
         // scanner in `install_principal_tool_bag` reads each

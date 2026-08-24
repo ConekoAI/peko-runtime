@@ -782,7 +782,6 @@ impl AppState {
         // Sprint 9 Commit 3: `GatewayAdapter` removed — chat-gateway
         // adapter framework retired.
         use crate::extensions::general::GeneralExtensionAdapter;
-        use crate::extensions::slash::SlashAdapter;
 
         // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed. Skills
         // are workspace files; the SkillTool uses WorkspaceSkillRuntime.
@@ -790,14 +789,16 @@ impl AppState {
         // are workspace-resident; the workspace scanner in
         // `install_principal_tool_bag` reads them and registers tools
         // via the global McpManager + BuiltinToolAdapter.
+        // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed. The
+        // framework wrapper was a no-op; slash dispatch is handled
+        // by `principal::slash::SlashDispatcher` at the principal
+        // boundary.
+        //
         // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed.
         // Universal tools are workspace-resident; the scanner in
         // `install_principal_tool_bag` reads each manifest and
         // registers the canonical `peko_tools_core::Tool` impl via
         // BuiltinToolAdapter. No framework adapter.
-        extension_store
-            .register_adapter(Box::new(SlashAdapter::new()))
-            .await;
         extension_store
             .register_adapter(Box::new(GeneralExtensionAdapter::new()))
             .await;
