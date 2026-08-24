@@ -101,7 +101,7 @@ fn is_extension_allowed(ext: &ExtensionSummary, allowed: &Capabilities) -> bool 
         return false;
     }
 
-    let kind = crate::principal::extension_store::capability_kind_for_extension_type(&ext.ext_type);
+    let kind = crate::principal::catalog::capability_kind_for_extension_type(&ext.ext_type);
     let id_required = Capability::new(format!("{kind}:{}", ext.id));
     let name_required = Capability::new(format!("{kind}:{}", ext.name));
 

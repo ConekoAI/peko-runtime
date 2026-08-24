@@ -18,7 +18,7 @@
 //! `PrincipalManager::update_config`, which holds the single
 //! per-principal write lock — there is no IPC-side bypass. The list
 //! path returns `{granted, detected, active}` derived from the
-//! per-principal `ExtensionCatalog` (built from capabilities +
+//! per-principal `PrincipalCatalog` (built from capabilities +
 //! `agent_prompts` + the daemon-wide `ExtensionStore::global_items()`),
 //! so the response reflects the same enable set the runtime sees.
 
@@ -48,7 +48,7 @@ pub(crate) trait CapabilityHost: Send + Sync {
     fn principal_manager(&self) -> &Arc<PrincipalManager>;
 
     /// Extension store used to source `global_items()` for the list
-    /// path's `ExtensionCatalog::build`.
+    /// path's `PrincipalCatalog::build`.
     fn extension_store(&self) -> &Arc<ExtensionStore>;
 
     /// Observability hub for ADR-046 grant audit events.
@@ -240,7 +240,8 @@ impl RequestHandler for CapabilityHandler {
                         let granted = capabilities.to_strings();
 
                         let global_items = store.global_items().await;
-                        let catalog = crate::principal::extension_store::ExtensionCatalog::build(
+                        let catalog = crate::principal::catalog::PrincipalCatalog::build(
+                            &principal_ref.workspace_path,
                             &capabilities,
                             &principal_ref.agent_prompts,
                             &global_items,
@@ -249,7 +250,7 @@ impl RequestHandler for CapabilityHandler {
                         let detected = catalog.detected_capabilities();
                         let active = catalog.active_capabilities(&capabilities);
                         let active_extensions: Vec<String> = catalog
-                            .items()
+                            .entries()
                             .iter()
                             .filter(|i| i.enabled)
                             .map(|i| i.id.clone())

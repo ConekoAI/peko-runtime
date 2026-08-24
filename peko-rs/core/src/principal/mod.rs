@@ -20,9 +20,9 @@ pub mod agent_runner;
 pub mod capability_evaluator;
 pub(crate) mod child_turns;
 pub mod children;
+pub mod catalog;
 pub mod config;
 pub mod context;
-pub mod extension_store;
 pub mod factory;
 pub mod manager;
 pub mod memory;
@@ -43,14 +43,13 @@ pub mod slash;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
+pub use catalog::{
+    capability_kind_for_extension_type, CatalogEntry, PrincipalCatalog,
+};
 pub use config::{
     ArtifactKind, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig,
     PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig, Status, TransportPreference, TtlPolicy,
-};
-pub use context::PrincipalContext;
-pub use extension_store::{
-    capability_kind_for_extension_type, ExtensionCatalog, ExtensionCatalogItem,
 };
 pub use factory::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalMemoryFactory,
@@ -81,7 +80,7 @@ use tokio::sync::RwLock;
 use peko_subject::{PrincipalDID, PrincipalId};
 // Phase 14.c.1/14.c.2a: pure-deps types lifted into `peko-principal`
 // (config, peer, memory, factory, agent_prompt, capability_evaluator,
-// extension_store). The runtime-coupled files in root that compose
+// catalog — formerly `extension_store`). The runtime-coupled files in root that compose
 // a `Principal` (manager, context, agent_runner, routers, slash)
 // continue to live alongside the `Principal` struct definition here,
 // so they reach for the same DTOs.

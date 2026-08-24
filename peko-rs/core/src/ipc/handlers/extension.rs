@@ -136,7 +136,7 @@ impl RequestHandler for ExtensionHandler {
 
                 // Aggregate all built-in tool capabilities into a single
                 // "Built-in Tools" extension. Use the static tool-name catalog
-                // (the same source the per-principal ExtensionCatalog uses) so
+                // (the same source the per-principal PrincipalCatalog uses) so
                 // the bundle is stable and complete, instead of the live hook
                 // registry which only contains tools registered so far.
                 let mut builtin_provides: Vec<String> =

@@ -1702,7 +1702,7 @@ pub enum ResponsePacket {
         active: Vec<String>,
         /// IDs of extensions the principal currently has enabled (built-ins,
         /// agents, installed extensions). Mirrors
-        /// `ExtensionCatalog::active_extensions()` — the desktop uses this
+        /// `PrincipalCatalog::active_extensions()` — the desktop uses this
         /// in place of its own synthesized extension-capability join so the
         /// IPC payload is the single source of truth. `#[serde(default)]`
         /// keeps the field forward+backward compatible.

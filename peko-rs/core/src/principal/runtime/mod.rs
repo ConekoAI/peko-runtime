@@ -7,7 +7,7 @@
 //! * [`builtin_tools`] — the canonical list of built-in tool names
 //!   (global + agent-specific). Lifted from
 //!   `crate::extensions::framework::adapters::builtin_tools`. Used by
-//!   [`super::extension_store::ExtensionCatalog::build`] to populate
+//!   [`super::catalog::PrincipalCatalog::build`] to populate
 //!   the catalog's "builtin" rows.
 
 pub mod builtin_tools;
