@@ -76,6 +76,11 @@ pub mod agent;
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
 
+/// ADR-047 §5 Phase 4: workspace-resident hook scanner. Reads
+/// `<workspace>/hooks/<id>/hook.toml` and registers each binding
+/// against the canonical `ExtensionCore` hook registry.
+pub mod workspace_hooks;
+
 /// Manifest validation service — walks an extension directory, detects its
 /// type (Tier 1 ecosystem standard or Tier 2 unified manifest), and runs
 /// optional semantic checks (ADR-036). Lives here next to the extension

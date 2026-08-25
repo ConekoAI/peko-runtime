@@ -434,6 +434,10 @@ impl PrincipalContext {
             // hook layer), and registers it via
             // `BuiltinToolAdapter::register_tool`.
             let tools_dir = self.workspace_path.join("tools");
+            // Phase 4 (ADR-047 §5): workspace hooks live under
+            // `<workspace>/hooks/<id>/hook.toml`. See
+            // `extensions::workspace_hooks::load_workspace_hooks`.
+            let hooks_dir = self.workspace_path.join("hooks");
             // Channel port resolution (2026-08-18 reviewer finding):
             // principal contexts don't hold their own channel port —
             // the daemon builds the real file-backed port at startup
@@ -455,6 +459,7 @@ impl PrincipalContext {
                 &skills_dir,
                 &mcp_dir,
                 &tools_dir,
+                &hooks_dir,
                 &self.principal_id,
                 channel_port,
             )
@@ -545,6 +550,7 @@ async fn install_principal_tool_bag(
     skills_dir: &Path,
     mcp_dir: &Path,
     tools_dir: &Path,
+    hooks_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
@@ -685,6 +691,44 @@ async fn install_principal_tool_bag(
             Err(e) => tracing::warn!(
                 "Universal tools workspace scan failed for {}: {e}",
                 tools_dir.display()
+            ),
+        }
+    }
+
+    // Phase 4 (ADR-047 §5): workspace-resident hooks live under
+    // `<workspace>/hooks/<id>/hook.toml`. The scanner reads each
+    // manifest and registers every `binds` entry against the canonical
+    // hook registry. Firing surface (PreToolUse / PostToolUse / Stop /
+    // AfterAgent) is unchanged — the scanner only changes discovery.
+    //
+    // Each bind entry spawns an external `command` via the existing
+    // `CommandHookHandler` (the same handler general extensions have
+    // used since pre-Phase 2). One `CommandHookHandler` per bind; the
+    // manifest's `command` / `args` / `env` / `timeout_secs` / `output`
+    // map directly to `CommandHookConfig`.
+    //
+    // Failure isolation matches the MCP / universal-tool posture:
+    // malformed manifests are logged at `warn!` and skipped, never
+    // block the principal boot.
+    if hooks_dir.exists() {
+        match crate::extensions::workspace_hooks::load_workspace_hooks(
+            hooks_dir,
+            core.as_ref(),
+            principal_id,
+        )
+        .await
+        {
+            Ok(loaded) => {
+                if loaded > 0 {
+                    tracing::info!(
+                        "registered {loaded} workspace hook binding(s) from {}",
+                        hooks_dir.display()
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Hooks workspace scan failed for {}: {e}",
+                hooks_dir.display()
             ),
         }
     }
