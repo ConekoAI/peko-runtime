@@ -1,8 +1,11 @@
 //! Extension Runtime Starter Registry
 //!
 //! Central registry that maps extension types to their `ExtensionRuntimeStarter`
-//! implementations. The IPC server and daemon use this registry to start, stop,
-//! and restart extension background runtimes without knowing the extension type.
+//! implementations. Used by the daemon-side runtime manager to start, stop,
+//! and restart extension background runtimes without knowing the extension
+//! type. Phase 5 (ADR-047 §2.1): the IPC `ext_start` / `ext_stop` /
+//! `ext_restart` / `ext_status` surface is gone; the registry is now driven
+//! only by in-process callers (the runtime manager, internal hooks).
 
 use super::starter::{ExtensionRuntimeStarter, StarterContext};
 use std::collections::HashMap;
@@ -11,7 +14,7 @@ use tracing::{info, warn};
 /// Registry of extension runtime starters.
 ///
 /// Each starter is registered by its extension type string (e.g., "gateway", "mcp").
-/// When the daemon receives an `ext_start` IPC request, it looks up the extension's
+/// The daemon's background runtime manager looks up the extension's
 /// manifest, finds the starter for that type, and delegates.
 #[derive(Debug)]
 pub struct ExtensionRuntimeStarterRegistry {

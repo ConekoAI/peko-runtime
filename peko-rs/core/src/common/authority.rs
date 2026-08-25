@@ -524,8 +524,10 @@ impl RuntimeAuthority {
     }
 
     /// Hand out a `RuntimePath` for the extensions install root IF the
-    /// principal carries `runtime:write_extensions`. Gates
-    /// `ExtensionInstall` / `ExtensionUninstall` / `ExtensionBundle`.
+    /// principal carries `runtime:write_extensions`. Reserved for
+    /// future workspace-installer flows; the Phase 5 IPC surface
+    /// (`ExtensionInstall` / `ExtensionUninstall` / `ExtensionBundle`)
+    /// was removed in ADR-047 §2.1.
     pub fn runtime_extensions_root_write(
         &self,
         caps: Option<&Capabilities>,

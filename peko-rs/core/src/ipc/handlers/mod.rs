@@ -28,8 +28,6 @@ pub(crate) mod auth;
 pub(crate) mod channel;
 pub(crate) mod credential;
 pub(crate) mod cron;
-pub(crate) mod ext_runtime;
-pub(crate) mod extension;
 pub(crate) mod instance;
 pub(crate) mod persona;
 pub(crate) mod principal;
@@ -48,8 +46,6 @@ use auth::AuthHandler;
 use channel::ChannelHandler;
 use credential::CredentialHandler;
 use cron::CronHandler;
-use ext_runtime::ExtRuntimeHandler;
-use extension::ExtensionHandler;
 use instance::InstanceHandler;
 use persona::PersonaHandler;
 use principal::PrincipalHandler;
@@ -121,16 +117,14 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 19] = [
+        let handlers: [Arc<dyn RequestHandler>; 17] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
             Arc::new(TunnelHandler::new(host.clone())),
             Arc::new(InstanceHandler::new(host.clone())),
-            Arc::new(ExtRuntimeHandler::new(host.clone())),
             Arc::new(CronHandler::new(host.clone())),
             Arc::new(RuntimeHandler::new(host.clone())),
-            Arc::new(ExtensionHandler::new(host.clone())),
             Arc::new(ProviderMcpHandler::new(host.clone())),
             Arc::new(QuotaHandler::new(host.clone())),
             Arc::new(CredentialHandler::new(host.clone(), host.clone())),

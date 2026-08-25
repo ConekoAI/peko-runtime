@@ -2255,35 +2255,6 @@ impl crate::ipc::handlers::instance::InstanceHost for AppState {
     }
 }
 
-/// F7 seventh narrow handle: the port the `ext_runtime` IPC domain
-/// handler uses to drive the background extension runtime manager
-/// (ADR-025). Trait lives in `ipc::handlers::ext_runtime`. All
-/// methods are sync (return cheap references / owned `StarterContext`),
-/// so the trait is object-safe without `async_trait`.
-impl crate::ipc::handlers::ext_runtime::ExtRuntimeHost for AppState {
-    fn runtime_starter_registry(
-        &self,
-    ) -> &Arc<crate::daemon::background_runtime::ExtensionRuntimeStarterRegistry> {
-        AppState::runtime_starter_registry(self)
-    }
-
-    fn starter_context(&self) -> crate::daemon::background_runtime::StarterContext {
-        AppState::starter_context(self)
-    }
-
-    fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
-        AppState::background_runtime_manager(self)
-    }
-
-    /// Phase B: tier-typed authority mirror. The ext_runtime
-    /// handler doesn't currently use tier-typed paths but the
-    /// accessor is here for parity with the rest of the trait
-    /// ports.
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        &self.authority
-    }
-}
-
 /// F7 eighth narrow handle: the port the `cron` IPC domain handler uses
 /// to read the typed path resolver (cron files now live at
 /// `{data_dir}/principals/{name}/local/cron/schedule.toml`) and the
@@ -2477,26 +2448,6 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
 
     async fn tunnel_connected(&self) -> bool {
         AppState::tunnel_connected(self).await
-    }
-}
-
-/// F7 tenth narrow handle: the port the `extension` IPC domain handler
-/// uses to read/write the on-disk extension store and to enumerate
-/// built-in extensions via `Services`. Trait lives in
-/// `ipc::handlers::extension`. Both methods are sync (cheap `Arc`
-/// references), so the trait is object-safe without `async_trait`.
-/// The actual store awaits (install / uninstall / list / bundle /
-/// export) happen in the handler against these accessors.
-impl crate::ipc::handlers::extension::ExtensionHost for AppState {
-    fn extension_store(&self) -> &Arc<ExtensionStore> {
-        AppState::extension_store(self)
-    }
-
-    /// Phase B: hand the tier-typed authority through to the
-    /// extension handler. Runtime-tier reads (`extensions_root`)
-    /// pass through this accessor; the actor is the daemon.
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        &self.authority
     }
 }
 
