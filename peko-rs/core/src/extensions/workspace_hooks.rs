@@ -383,7 +383,7 @@ command = "/bin/true"
     }
 
     /// End-to-end: write a workspace `hooks/<id>/hook.toml` whose
-    /// command is a `/bin/echo` with a marker, run the scanner, fire a
+    /// command prints a marker, run the scanner, fire a
     /// `PreToolUse("Bash")` hook, and assert the captured stdout makes
     // it into the `HookResult`. Exercises parse → register → fire.
     #[tokio::test]
@@ -392,14 +392,38 @@ command = "/bin/true"
         use peko_subject::PrincipalId;
 
         let tmp = tempfile::tempdir().unwrap();
+
+        // Write a portable echo script into the temp dir so the test
+        // works on both Unix (where `/bin/echo` is fine) and Windows
+        // (where `/bin/echo` does not exist). The hook.toml points
+        // `command` at this script; the scanner's per-hook CWD is the
+        // script's directory, so a relative path resolves.
+        let (script_name, script_body) = if cfg!(windows) {
+            ("echo-hook.bat", "@echo off\r\necho hook-fired\r\n")
+        } else {
+            ("echo-hook.sh", "#!/bin/sh\necho hook-fired\n")
+        };
+        let script_path = tmp.path().join(script_name);
+        std::fs::write(&script_path, script_body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&script_path).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perm).unwrap();
+        }
+
         let hook_dir = tmp.path().join("hooks").join("notify-bash");
         std::fs::create_dir_all(&hook_dir).unwrap();
-        let manifest = r#"
-binds = [{ point = "PreToolUse", tool_name = "Bash" }]
-command = "/bin/echo"
-args = ["hook-fired"]
+        let manifest = format!(
+            r#"
+binds = [{{ point = "PreToolUse", tool_name = "Bash" }}]
+command = "{}"
+args = []
 output = "text"
-"#;
+"#,
+            script_path.display().to_string().replace('\\', "\\\\")
+        );
         std::fs::write(hook_dir.join("hook.toml"), manifest).unwrap();
 
         let core = ExtensionCore::new();

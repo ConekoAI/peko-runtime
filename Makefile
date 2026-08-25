@@ -16,9 +16,8 @@
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
         test-cli-subagent test-cli-tools test-cli-agent-signature \
-        test-cli-extensions test-cli-providers \
-        test-scenarios-s1 test-scenarios-s2 test-scenarios-s4 \
-        test-scenarios-s5 test-scenarios-s6 \
+        test-cli-providers \
+        test-scenarios-s4 test-scenarios-s6 \
         test-mock-llm-sequence \
         ci
 
@@ -26,16 +25,15 @@
 # peko-rs/core/tests/scenarios/*.rs after Phase 0.Z-D moved tests/).
 # Kept in sync with `cargo metadata` (targets of kind = ["test"]); the
 # Principal migration dropped the cli_compaction / cli_a2a /
-# s3_agent_registry_roundtrip suites, and the parity branch added
-# cli_agent_signature for issue #14 (manifest signature verification).
+# s3_agent_registry_roundtrip suites, the parity branch added
+# cli_agent_signature for issue #14 (manifest signature verification),
+# and ADR-047 Phases 5d/5e retired the extension_packaging and
+# cli_extensions suites along with the extension framework.
 INTEGRATION_TESTS := pekohub_integration tunnel_integration \
                      packaging_integration registry_integration \
-                     extension_packaging \
                      cli_send cli_basics cli_cron cli_subagent \
                      cli_tools cli_agent_signature \
-                     cli_extensions cli_providers \
-                     s1_local_agent_with_extensions \
-                     s2_extension_registry_roundtrip \
+                     cli_providers \
                      s4_publish_running_agent_with_permission \
                      s6_principal_grant_revoke_roundtrip \
                      mock_llm_sequence
@@ -76,10 +74,8 @@ help:
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
 	@echo "    test-cli-subagent / test-cli-tools / test-cli-agent-signature"
-	@echo "    test-cli-extensions"
 	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY; kimi skipped while KIMI_API_KEY is suspended)"
-	@echo "    test-scenarios-s1 (Phase D — local agent + ext lifecycle, mock-LLM)"
-	@echo "    test-scenarios-s2 / s4 (Phase D — registry/tunnel scenarios, mock-LLM)"
+	@echo "    test-scenarios-s4 (Phase D — publish running agent behind tunnel, mock-LLM)"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -117,9 +113,8 @@ docker-down:
 # dual-mode tests to the real provider.
 #
 # --include-ignored runs BOTH the hub-gated #[ignore] tests AND the
-# always-on pure-Rust tests in extension_packaging (10) plus the 6
-# offline CLI tests in cli_basics.
-# Plain --ignored would skip those 16 always-on tests entirely.
+# always-on pure-Rust tests in cli_basics (6). Plain --ignored would
+# skip those offline tests entirely.
 
 test-integration: docker-up
 	# Phase 0.Z-B: `peko` bin lives in the `peko-cli` satellite. Cargo
@@ -256,9 +251,8 @@ test-cli-agent-signature:
 # they need Python and/or Node runtimes in the test environment.
 # See docs/integration/TESTING.md §7 for the extensions migration
 # context.
-test-cli-extensions: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test cli_extensions -- --include-ignored
+# Removed in ADR-047 Phase 5e along with `peko ext *` and the
+# extension framework; the workspace tooling model replaces it.
 
 # Mock LLM sequence feature (Phase C, see docs/integration/TESTING.md §3).
 # Exercises the per-substring counter in the list-value branch of
@@ -288,27 +282,17 @@ test-cli-providers: docker-up
 	    cargo test --test cli_providers -- --include-ignored
 
 # ── Phase D — user-journey scenarios (mock-LLM tier) ──────────────────────
-# The D1-D4 scenarios live under peko-rs/core/tests/scenarios/. Each
+# The D4-D6 scenarios live under peko-rs/core/tests/scenarios/. Each
 # `sN_*.rs` file is its own integration test binary (registered via
 # [[test]] entries in peko-rs/core/Cargo.toml — cargo's auto-discovery
 # only finds tests/*.rs directly, not nested subdirs). The mock LLM
 # provides the chat payload; what
 # we test is the runtime↔registry↔tunnel↔PekoHub-relay orchestration
 # plumbing, not LLM decision-making.
-
-# D1: Local agent + extension lifecycle (flow 1+2). 6 tests, all
-# `#[ignore]` for the daemon requirement. No PekoHub dependency.
-test-scenarios-s1: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test s1_local_agent_with_extensions -- --include-ignored
-
-# D2: Extension registry round-trip (flow 3+4, author → pekohub → collab).
-# 4 tests, all `#[ignore]` for the PekoHub + mock LLM + daemon stack.
-# Author and collaborator are two `PekoCli` instances on the same
-# pekohub-test backend; API keys are minted via POST /v1/auth/api-keys.
-test-scenarios-s2: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test s2_extension_registry_roundtrip -- --include-ignored
+#
+# D1/D2 (`s1_local_agent_with_extensions`, `s2_extension_registry_roundtrip`)
+# were retired in ADR-047 Phase 5 — they exercised the deleted
+# `peko ext` CLI and on-disk extension store.
 
 # D4: Publish running agent behind tunnel with permission (flow 6).
 # Lands in D4's PR.
