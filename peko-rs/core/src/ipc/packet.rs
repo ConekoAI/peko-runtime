@@ -680,6 +680,11 @@ pub enum RequestPacket {
         name: String,
         output: Option<String>,
         include_sessions: bool,
+        /// Always `false` since Phase 5 (ADR-047): extensions are
+        /// workspace-resident and ride along in the bundle. Retained
+        /// for backward compat with old CLIs that still emit the
+        /// field; the daemon ignores it.
+        #[serde(default)]
         with_extensions: bool,
     },
 

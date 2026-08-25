@@ -579,7 +579,6 @@ impl DaemonClient {
         name: impl Into<String>,
         output: Option<String>,
         include_sessions: bool,
-        with_extensions: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalExport {
@@ -587,7 +586,7 @@ impl DaemonClient {
             name: name.into(),
             output,
             include_sessions,
-            with_extensions,
+            with_extensions: false,
         };
         self.request_response(packet).await
     }

@@ -200,7 +200,6 @@ grants = [{grants_toml}]
 
         let export_opts = PrincipalExportOptions {
             output_path: Some(package_path.to_string_lossy().to_string()),
-            with_extensions: !self.skills.is_empty(),
             ..Default::default()
         };
         let descriptor = packager.export_for_registry(export_opts).await?;

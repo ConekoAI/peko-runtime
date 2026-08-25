@@ -20,8 +20,6 @@ pub struct PrincipalExportOptions {
     pub output_path: Option<String>,
     /// Include session history (can be large)
     pub include_sessions: bool,
-    /// Embed extension packages in an `extensions/` layer
-    pub with_extensions: bool,
     /// Optional description
     pub description: Option<String>,
 }
@@ -31,7 +29,6 @@ impl Default for PrincipalExportOptions {
         Self {
             output_path: None,
             include_sessions: false,
-            with_extensions: false,
             description: None,
         }
     }
@@ -282,12 +279,12 @@ impl PrincipalPackager {
 
         manifest.extensions = self.extension_refs.clone();
 
-        if options.with_extensions {
-            for (path, content) in &self.embedded_extensions {
-                files.insert(path.clone(), content.clone());
-                manifest.add_file(path, content);
-            }
-        }
+        // Phase 5 (ADR-047 §2.1): the legacy "embed extensions
+        // from the global ExtensionStore" path is gone. Workspace-
+        // resident plugins (tools/hooks/skills/MCP) live in the
+        // principal's workspace and are scoped to that workspace;
+        // they no longer ship as a portable layer. A future Phase 7
+        // PR will add a `workspace/` layer to the bundle tar.
 
         self.export_agents(&mut files, &mut manifest)
             .await
@@ -570,7 +567,7 @@ mod tests {
         let opts = PrincipalExportOptions::default();
         assert!(opts.output_path.is_none());
         assert!(!opts.include_sessions);
-        assert!(!opts.with_extensions);
+        assert!(opts.description.is_none());
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {

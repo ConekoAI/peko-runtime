@@ -93,10 +93,6 @@ pub enum PrincipalCommands {
         /// Include session history in the package
         #[arg(long)]
         include_sessions: bool,
-
-        /// Embed extension packages referenced by the Principal
-        #[arg(long)]
-        with_extensions: bool,
     },
 
     /// Import a Principal from a `.principal` package
@@ -471,8 +467,7 @@ pub async fn handle_principal(
             name,
             output,
             include_sessions,
-            with_extensions,
-        } => export_principal(&name, output, include_sessions, with_extensions).await,
+        } => export_principal(&name, output, include_sessions).await,
         PrincipalCommands::Import {
             file_path,
             name,
@@ -1104,11 +1099,10 @@ async fn export_principal(
     name: &str,
     output: Option<String>,
     include_sessions: bool,
-    with_extensions: bool,
 ) -> Result<()> {
     let client = DaemonClient::connect().await?;
     let response = client
-        .principal_export(name, output, include_sessions, with_extensions)
+        .principal_export(name, output, include_sessions)
         .await?;
 
     match response {

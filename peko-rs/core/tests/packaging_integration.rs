@@ -505,7 +505,6 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
 
     let export_opts = PrincipalExportOptions {
         output_path: Some(package_path.to_string_lossy().to_string()),
-        with_extensions: true,
         ..Default::default()
     };
 
