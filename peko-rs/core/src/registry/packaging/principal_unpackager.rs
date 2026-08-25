@@ -456,17 +456,20 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
-    /// Extract the embedded `extensions/` layer and install each `.ext` package
-    /// through `store`. Returns the IDs of installed extensions.
+    /// Extract the embedded `plugins/` (or legacy `extensions/`) layer and
+    /// route each bundle through `store`. Returns the IDs of installed
+    /// plugins.
     ///
-    /// **Phase 5 (ADR-047 §2.1):** the `extensions/` layer is dead.
-    /// Workspace-resident plugins (tools/hooks/skills/MCP) live in
-    /// the principal's workspace and are not embedded in
-    /// `.principal` packages (the `--with-extensions` flag was
-    /// dropped in Phase 5c). This method is preserved for the IPC
-    /// handler's call signature; old packages with embedded
-    /// extensions are silently ignored. A future Phase 7 PR will
-    /// introduce a `workspace/` layer.
+    /// **Phase 5 (ADR-047 §2.1):** workspace-resident tooling
+    /// (tools/hooks/skills/MCP) lives in the principal's workspace and
+    /// is not embedded in `.principal` packages (the `--with-extensions`
+    /// flag was dropped in Phase 5c).
+    ///
+    /// **Phase 7 (ADR-047 §5):** new packages emit a `plugins/` layer
+    /// instead of `extensions/`. This method accepts both prefixes and
+    /// routes them through the same handler. As with Phase 5, no plugin
+    /// content is actually installed today — the method is preserved for
+    /// the IPC handler's call signature and future bundles.
     pub async fn import_extensions(
         &self,
         manifest: &PrincipalManifest,
@@ -474,20 +477,24 @@ impl PrincipalUnpackager {
     ) -> anyhow::Result<Vec<ExtensionId>> {
         if !manifest.extensions.is_empty() {
             tracing::warn!(
-                "Principal package declares {} embedded extension(s) but the \
-                 extensions layer was removed in ADR-047 Phase 5. \
-                 Workspace plugins are not part of the portable bundle.",
+                "Principal package declares {} embedded extension(s) via the \
+                 legacy `extensions` layer; this is mapped to the new `plugins/` \
+                 convention (ADR-047 §5). Workspace plugins are not part of \
+                 the portable bundle.",
                 manifest.extensions.len()
             );
         }
         Ok(Vec::new())
     }
 
-    /// Extract the union of capabilities declared by the embedded extensions
-    /// in a `.principal` package.
+    /// Extract the union of capabilities declared by the embedded plugins
+    /// (or legacy embedded extensions) in a `.principal` package.
     ///
     /// Returns `(required_capabilities, warnings)`. The required set is the
-    /// union of each embedded extension manifest's `requires` list.
+    /// union of each embedded plugin manifest's `requires` list.
+    ///
+    /// **Phase 7 (ADR-047 §5):** accepts both `plugins/<id>.plugin` (new)
+    /// and `extensions/<id>.ext` (legacy) archive paths.
     pub fn extract_extension_capabilities(
         manifest: &PrincipalManifest,
         files: &HashMap<String, Vec<u8>>,
@@ -506,16 +513,24 @@ impl PrincipalUnpackager {
                 continue;
             }
 
-            let archive_path = format!("extensions/{}.ext", ext_ref.id);
-            let bytes = match files.get(&archive_path) {
-                Some(b) => b,
-                None => {
-                    warnings.push(format!(
-                        "Principal package declares extension '{}' but has no embedded {}",
-                        ext_ref.id, archive_path
-                    ));
-                    continue;
-                }
+            // Phase 7 (ADR-047 §5): prefer `plugins/<id>.plugin` (new
+            // exports); fall back to `extensions/<id>.ext` (legacy) so
+            // pre-Phase-7 packages still surface their capability union.
+            let plugin_path = format!("plugins/{}.plugin", ext_ref.id);
+            let legacy_path = format!("extensions/{}.ext", ext_ref.id);
+            let (resolved_path, bytes) = match files.get(&plugin_path) {
+                Some(b) => (plugin_path.as_str(), Some(b)),
+                None => match files.get(&legacy_path) {
+                    Some(b) => (legacy_path.as_str(), Some(b)),
+                    None => (legacy_path.as_str(), None),
+                },
+            };
+            let Some(bytes) = bytes else {
+                warnings.push(format!(
+                    "Principal package declares extension '{}' but has no embedded {}",
+                    ext_ref.id, resolved_path
+                ));
+                continue;
             };
 
             match Self::parse_embedded_extension_capabilities(bytes) {
@@ -1053,6 +1068,71 @@ mod tests {
         assert!(required.is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("missing"));
+    }
+
+    /// Phase 7 (ADR-047 §5): new exports land plugin archives under
+    /// `plugins/<id>.plugin` and the unpackager surfaces their capability
+    /// union. The legacy `extensions/<id>.ext` path remains accepted but
+    /// `plugins/` wins when both are present.
+    #[test]
+    fn extract_extension_capabilities_reads_plugins_path() {
+        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
+        manifest.extensions = vec![
+            crate::registry::packaging::types::ExtensionRef {
+                id: "plugin-a".to_string(),
+                registry_ref: "pekohub.com/ext/a".to_string(),
+            },
+            crate::registry::packaging::types::ExtensionRef {
+                id: "plugin-b".to_string(),
+                registry_ref: "pekohub.com/ext/b".to_string(),
+            },
+        ];
+
+        let mut files = HashMap::new();
+        files.insert(
+            "plugins/plugin-a.plugin".to_string(),
+            fake_ext_bytes(&["tool:Read"]),
+        );
+        files.insert(
+            "plugins/plugin-b.plugin".to_string(),
+            fake_ext_bytes(&["tool:Write", "network"]),
+        );
+
+        let (required, warnings) =
+            PrincipalUnpackager::extract_extension_capabilities(&manifest, &files);
+
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(
+            required,
+            vec![
+                "network".to_string(),
+                "tool:Read".to_string(),
+                "tool:Write".to_string(),
+            ]
+        );
+    }
+
+    /// Phase 7 (ADR-047 §5): legacy `extensions/<id>.ext` archives are
+    /// still readable when no `plugins/<id>.plugin` companion is present.
+    #[test]
+    fn extract_extension_capabilities_falls_back_to_legacy_path() {
+        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
+        manifest.extensions = vec![crate::registry::packaging::types::ExtensionRef {
+            id: "ext-a".to_string(),
+            registry_ref: "pekohub.com/ext/a".to_string(),
+        }];
+
+        let mut files = HashMap::new();
+        files.insert(
+            "extensions/ext-a.ext".to_string(),
+            fake_ext_bytes(&["tool:Read"]),
+        );
+
+        let (required, warnings) =
+            PrincipalUnpackager::extract_extension_capabilities(&manifest, &files);
+
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(required, vec!["tool:Read".to_string()]);
     }
 
     /// PR 2: Phase C gate. A caller without `principal:write_agents`

@@ -61,8 +61,12 @@ pub struct PrincipalRegistryDescriptor {
 /// **Phase 5 (ADR-047 §2.1):** the `with_extensions_from_store` /
 /// `with_embedded_extensions` / `with_extension_refs` setters are
 /// deleted. Workspace-resident plugins (tools/hooks/skills/MCP) are
-/// not part of the portable bundle; a future Phase 7 PR will add a
-/// `workspace/` layer to the tar.
+/// not part of the portable bundle.
+///
+/// **Phase 7 (ADR-047 §5):** the package format gains a `plugins/`
+/// layer convention. New exports emit `plugins/` and omit the legacy
+/// `extensions/` layer entirely; the unpackager still accepts the
+/// legacy `extensions/` prefix and routes it to the same handler.
 pub struct PrincipalPackager {
     config: PrincipalConfig,
     identity: Identity,
@@ -121,7 +125,7 @@ impl PrincipalPackager {
             ("agents", LayerType::Workspace),
             ("memory", LayerType::Sessions),
             ("sessions", LayerType::Sessions),
-            ("extensions", LayerType::Extensions),
+            ("plugins", LayerType::Plugins),
         ];
 
         for (prefix, layer_type) in prefix_layers {
@@ -180,10 +184,14 @@ impl PrincipalPackager {
         // Phase 5 (ADR-047 §2.1): the legacy "embed extensions
         // from the global ExtensionStore" path is gone. Workspace-
         // resident plugins (tools/hooks/skills/MCP) live in the
-        // principal's workspace and are scoped to that workspace;
-        // they no longer ship as a portable layer. A future Phase 7
-        // PR will add a `workspace/` layer to the bundle tar.
+        // principal's workspace and are scoped to that workspace.
         // `manifest.extensions` is left at its default empty Vec.
+        //
+        // Phase 7 (ADR-047 §5): new exports emit a `plugins/` layer
+        // (currently always empty — workspace tooling lives on disk
+        // in the principal's workspace, not in the portable bundle).
+        // The legacy `extensions/` prefix is dropped entirely from
+        // packager output.
 
         self.export_agents(&mut files, &mut manifest)
             .await
@@ -211,13 +219,16 @@ impl PrincipalPackager {
     fn compute_layers(files: &HashMap<String, Vec<u8>>) -> anyhow::Result<PrincipalLayers> {
         let mut layers = PrincipalLayers::default();
 
+        // Phase 7 (ADR-047 §5): the canonical plugin layer is `plugins/`;
+        // the legacy `extensions/` prefix is no longer emitted by the
+        // packager. The unpackager still accepts it on import.
         let layer_prefixes = [
             "config",
             "identity",
             "agents",
             "memory",
             "sessions",
-            "extensions",
+            "plugins",
         ];
 
         for prefix in layer_prefixes {
@@ -237,7 +248,7 @@ impl PrincipalPackager {
                     "agents" => layers.agents = Some(digest),
                     "memory" => layers.memory = Some(digest),
                     "sessions" => layers.sessions = Some(digest),
-                    "extensions" => layers.extensions = Some(digest),
+                    "plugins" => layers.plugins = Some(digest),
                     _ => {}
                 }
             }

@@ -509,6 +509,10 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     let descriptor = packager.export_for_registry(export_opts).await?;
 
     let manifest = PrincipalManifest::from_toml(std::str::from_utf8(&descriptor.manifest_toml)?)?;
+    // Phase 7 (ADR-047 §5): new exports emit a `plugins/` layer instead
+    // of `extensions/`. The pre-Phase-7 assertion below will need to be
+    // flipped to `l.plugins` once this test is un-ignored and the
+    // Pekohub backend is wired into CI.
     assert!(
         manifest
             .layers
