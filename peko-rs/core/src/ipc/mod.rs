@@ -23,7 +23,6 @@
 //! - Heartbeat packets prevent hanging on dead daemon
 
 pub mod client;
-pub mod client_service;
 pub mod connection;
 pub mod create_transport;
 pub mod daemon_transport_impl;

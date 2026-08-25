@@ -48,7 +48,6 @@
 
 use anyhow::Context;
 use peko_core::extensions::framework::store::ExtensionStore;
-use peko_core::extensions::skill::SkillAdapter;
 use peko_core::principal::config::PrincipalConfig;
 use peko_core::registry::packaging::{
     PrincipalExportOptions, PrincipalImportOptions, PrincipalManifest, PrincipalPackager,
@@ -197,14 +196,15 @@ async fn create_skill_fixture(base: &Path, name: &str) -> anyhow::Result<PathBuf
 }
 
 /// Load a skill from `extensions_dir` into an `ExtensionStore` with a
-/// registered `SkillAdapter`, and set its registry source reference.
+/// registered (Phase 2 PR 1: SkillAdapter removed; skills are
+/// workspace-resident, not loaded through the extension framework),
+/// and set its registry source reference.
 async fn create_store_with_skill(
     extensions_dir: &Path,
     storage_dir: &Path,
     source_ref: &str,
 ) -> anyhow::Result<(ExtensionStore, String)> {
     let store = ExtensionStore::new().with_storage_dir(storage_dir.to_path_buf());
-    store.register_adapter(Box::new(SkillAdapter::new())).await;
 
     let loaded = store.load_from_directory(extensions_dir).await?;
     let id = loaded
@@ -498,20 +498,21 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
 
     let agents_dir = principal_dir.join("agents");
-    let packager = PrincipalPackager::new(config.clone(), identity)
-        .with_agents_dir(&agents_dir)
-        .with_extensions_from_store(&store, &config)
-        .await?;
+    // Phase 5 (ADR-047 §2.1): `with_extensions_from_store` was deleted.
+    let packager = PrincipalPackager::new(config.clone(), identity).with_agents_dir(&agents_dir);
 
     let export_opts = PrincipalExportOptions {
         output_path: Some(package_path.to_string_lossy().to_string()),
-        with_extensions: true,
         ..Default::default()
     };
 
     let descriptor = packager.export_for_registry(export_opts).await?;
 
     let manifest = PrincipalManifest::from_toml(std::str::from_utf8(&descriptor.manifest_toml)?)?;
+    // Phase 7 (ADR-047 §5): new exports emit a `plugins/` layer instead
+    // of `extensions/`. The pre-Phase-7 assertion below will need to be
+    // flipped to `l.plugins` once this test is un-ignored and the
+    // Pekohub backend is wired into CI.
     assert!(
         manifest
             .layers
@@ -623,9 +624,7 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
 
     let target_storage = base_dir.join("target_ext_storage");
     let target_store = ExtensionStore::new().with_storage_dir(target_storage);
-    target_store
-        .register_adapter(Box::new(SkillAdapter::new()))
-        .await;
+    // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed.
 
     let installed = unpackager
         .import_extensions(&manifest, &target_store)

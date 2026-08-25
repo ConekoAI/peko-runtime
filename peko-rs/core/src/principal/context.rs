@@ -415,6 +415,29 @@ impl PrincipalContext {
             // the Shared tier root, so the agents dir is exactly
             // `workspace_path.join("agents")`.
             let agents_dir = self.workspace_path.join("agents");
+            // Phase 2 PR 1 (ADR-047): skills live under
+            // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
+            // runtime reads from that directory.
+            let skills_dir = self.workspace_path.join("skills");
+            // Phase 2 PR 2 (ADR-047 §2.3): MCP servers live under
+            // `<workspace>/mcp/<id>/server.json`. The workspace
+            // scanner registers each server config with the global
+            // `McpManager` (lazy — servers start on first tool call)
+            // and wraps the manager's running tools as
+            // `McpToolProxy` / `InjectableMcpToolProxy` instances
+            // onto the global core.
+            let mcp_dir = self.workspace_path.join("mcp");
+            // Phase 2 PR 3 (ADR-047 §2.1): universal tools live
+            // under `<workspace>/tools/<id>/manifest.yaml`. The
+            // scanner reads each manifest, constructs the
+            // canonical `peko_tools_core::Tool` impl (no framework
+            // hook layer), and registers it via
+            // `BuiltinToolAdapter::register_tool`.
+            let tools_dir = self.workspace_path.join("tools");
+            // Phase 4 (ADR-047 §5): workspace hooks live under
+            // `<workspace>/hooks/<id>/hook.toml`. See
+            // `extensions::workspace_hooks::load_workspace_hooks`.
+            let hooks_dir = self.workspace_path.join("hooks");
             // Channel port resolution (2026-08-18 reviewer finding):
             // principal contexts don't hold their own channel port —
             // the daemon builds the real file-backed port at startup
@@ -433,6 +456,10 @@ impl PrincipalContext {
             if let Err(e) = install_principal_tool_bag(
                 Arc::clone(&core),
                 &agents_dir,
+                &skills_dir,
+                &mcp_dir,
+                &tools_dir,
+                &hooks_dir,
                 &self.principal_id,
                 channel_port,
             )
@@ -503,15 +530,27 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 /// directly so the hand-rolled `workspace_path.join("agents")`
 /// join inside this function is gone.
 ///
+/// Phase 2 PR 2 (ADR-047 §2.3) also takes the typed `mcp_dir` and
+/// scans `<workspace>/mcp/<id>/server.json` (or `manifest.yaml`) for
+/// MCP servers. Each server is registered with the global
+/// `McpManager`; the manager's running tools are wrapped as
+/// `McpToolProxy` / `InjectableMcpToolProxy` and registered on the
+/// global core under the principal's scope.
+///
 /// `channel_port` is the `ChannelPort` used for the `ChannelRead` /
 /// `ChannelSend` tool registrations. Production callers pass
 /// [`resolve_channel_port`]'s result (the daemon-installed real
 /// port); `Arc::new(NoopChannelPort)` is fine for tests that don't
 /// have a real adapter wired up — `ChannelRead` will surface
 /// `Adapter` errors instead of silently zero-returning.
+#[allow(clippy::too_many_arguments)]
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     agents_dir: &Path,
+    skills_dir: &Path,
+    mcp_dir: &Path,
+    tools_dir: &Path,
+    hooks_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
@@ -532,10 +571,15 @@ async fn install_principal_tool_bag(
     // Per-principal enablement and workspace state are resolved at handle
     // time from the `ToolContext` carried with each invocation. Scoped to
     // this principal_id so concurrent principals each see their own Skill.
+    //
+    // Phase 2 PR 1 (ADR-047 §2.4): the runtime reads directly from
+    // the principal's `<workspace>/skills/` directory — no catalog,
+    // no adapter. The principal is responsible for installation; the
+    // runtime's only job is to point the SkillTool at SKILL.md files.
     if let Err(e) = BuiltinToolAdapter::register_tool(
         core.as_ref(),
         Arc::new(SkillTool::new(std::sync::Arc::new(
-            crate::extensions::skill::skill_runtime_impl::SkillCatalogRuntime::new(),
+            crate::extensions::skill::WorkspaceSkillRuntime::new(skills_dir.to_path_buf()),
         ))),
         principal_id,
     )
@@ -550,6 +594,142 @@ async fn install_principal_tool_bag(
         let discovered = adapter.discover_agents(agents_dir);
         if let Err(e) = register_agents_with_core(&core, discovered).await {
             tracing::warn!("register_agents_with_core failed during core build: {e}");
+        }
+    }
+
+    // Phase 2 PR 2 (ADR-047 §2.3): MCP servers are workspace-resident.
+    // The scanner walks `<workspace>/mcp/<id>/server.json` and
+    // registers each with the global McpManager. After that, every
+    // running MCP tool becomes a `McpToolProxy` /
+    // `InjectableMcpToolProxy` tool on the principal's core so the
+    // agent sees them in its tool catalog.
+    //
+    // Servers themselves stay lazy — `McpToolProxy::call_with_auto_start`
+    // starts the process on first tool call (matching the framework's
+    // prior "do NOT auto-start on AgentInit" behaviour, which existed
+    // because the framework hook fires for every agent and starting
+    // there races `peko ext start`).
+    if let Some(mcp_manager) = crate::extensions::mcp::global_mcp_manager() {
+        if mcp_dir.exists() {
+            match crate::extensions::mcp::load_workspace_mcp_servers(
+                mcp_dir,
+                &mcp_manager,
+            )
+            .await
+            {
+                Ok(loaded) => {
+                    if loaded > 0 {
+                        tracing::info!(
+                            "registered {loaded} MCP server(s) from {}",
+                            mcp_dir.display()
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "MCP workspace scan failed for {}: {e}",
+                    mcp_dir.display()
+                ),
+            }
+        }
+
+        // Wrap each running MCP tool as a McpToolProxy / InjectableMcpToolProxy
+        // and register it on the principal's core. The `Injectable…` variant
+        // is used when the server has `reserved_parameters` configured so
+        // the LLM never sees (and the runtime always injects) vault-backed
+        // secret params.
+        let manager_arc = mcp_manager.clone();
+        let mgr = manager_arc.read().await;
+        let proxy_tools = mgr.get_tools().await;
+        drop(mgr);
+        for tool in proxy_tools {
+            if let Err(e) = BuiltinToolAdapter::register_tool(
+                core.as_ref(),
+                tool,
+                principal_id,
+            )
+            .await
+            {
+                tracing::warn!("MCP tool registration failed during core build: {e}");
+            }
+        }
+    } else if mcp_dir.exists() {
+        tracing::warn!(
+            "MCP workspace dir {} exists but no global McpManager is \
+             installed; MCP tools will not be registered for this principal",
+            mcp_dir.display()
+        );
+    }
+
+    // Phase 2 PR 3 (ADR-047 §2.1, §2.4): universal tools live
+    // under `<workspace>/tools/<id>/manifest.yaml`. The
+    // workspace scanner reads each manifest, finds the executable
+    // sibling, constructs the canonical `peko_tools_core::Tool`
+    // impl (`protocol::UniversalToolAdapter`), and registers it
+    // via `BuiltinToolAdapter::register_tool` — no framework
+    // hook layer.
+    //
+    // No auto-start: the tool's process spawns on first
+    // `execute()` call via `UniversalToolAdapter::execute`,
+    // matching the framework's prior behaviour where the
+    // `ToolExecute` hook fired lazily.
+    if tools_dir.exists() {
+        match crate::extensions::universal::load_workspace_universal_tools(
+            tools_dir,
+            core.as_ref(),
+            principal_id,
+        )
+        .await
+        {
+            Ok(loaded) => {
+                if loaded > 0 {
+                    tracing::info!(
+                        "registered {loaded} universal tool(s) from {}",
+                        tools_dir.display()
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Universal tools workspace scan failed for {}: {e}",
+                tools_dir.display()
+            ),
+        }
+    }
+
+    // Phase 4 (ADR-047 §5): workspace-resident hooks live under
+    // `<workspace>/hooks/<id>/hook.toml`. The scanner reads each
+    // manifest and registers every `binds` entry against the canonical
+    // hook registry. Firing surface (PreToolUse / PostToolUse / Stop /
+    // AfterAgent) is unchanged — the scanner only changes discovery.
+    //
+    // Each bind entry spawns an external `command` via the existing
+    // `CommandHookHandler` (the same handler general extensions have
+    // used since pre-Phase 2). One `CommandHookHandler` per bind; the
+    // manifest's `command` / `args` / `env` / `timeout_secs` / `output`
+    // map directly to `CommandHookConfig`.
+    //
+    // Failure isolation matches the MCP / universal-tool posture:
+    // malformed manifests are logged at `warn!` and skipped, never
+    // block the principal boot.
+    if hooks_dir.exists() {
+        match crate::extensions::workspace_hooks::load_workspace_hooks(
+            hooks_dir,
+            core.as_ref(),
+            principal_id,
+        )
+        .await
+        {
+            Ok(loaded) => {
+                if loaded > 0 {
+                    tracing::info!(
+                        "registered {loaded} workspace hook binding(s) from {}",
+                        hooks_dir.display()
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Hooks workspace scan failed for {}: {e}",
+                hooks_dir.display()
+            ),
         }
     }
 

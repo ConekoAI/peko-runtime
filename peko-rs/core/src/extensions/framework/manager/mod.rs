@@ -6,8 +6,11 @@
 //!
 //! - `discovery`: directory scanning and extension detection
 //! - `storage`: on-disk persistence for installed extensions
-//! - `packaging`: `.ext` package export/import (Phase 8c.1.D.4 lift)
+//!
+//! **Phase 5 (ADR-047 §2.1):** the `packaging` backend (the `.ext`
+//! archive format) was deleted. Extensions are workspace-resident
+//! and no longer ship as portable archives; workspace scans are the
+//! single source of truth.
 
 pub mod discovery;
-pub mod packaging;
 pub mod storage;

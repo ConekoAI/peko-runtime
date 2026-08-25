@@ -454,6 +454,23 @@ principal boundary stays intact even when no one is reading.
 
 ### `ext` — Extension Management
 
+> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` command
+> tree was retired. Tooling lives directly in the principal's
+> workspace (`tools/`, `skills/`, `mcp/`, `hooks/`, `plugins/`); use
+> the per-category CLI:
+>
+> ```bash
+> peko principal tool   list / install / remove
+> peko principal skill  list / install / remove
+> peko principal mcp    list / install / remove
+> peko principal hook   list / install / remove
+> peko principal plugin list / install / remove
+> ```
+>
+> See [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md)
+> for the full layout. The subcommand table below is retained for
+> historical reference and will be removed in a follow-up PR.
+
 Manage extensions (skills, MCP, tools, channels, hooks).
 
 ```bash
@@ -464,29 +481,25 @@ peko ext <COMMAND>
 
 | Subcommand | Description |
 |-----------|-------------|
-| `install` | Install an extension |
-| `list` | List installed extensions |
-| `uninstall` | Uninstall an extension |
-| `info` | Show extension details |
-| `bundle` | Create a bundle from installed extensions |
-| `config` | Configure extension settings |
-| `validate` | Validate an extension manifest |
-| `debug` | Debug an installed extension |
-| `start` | Start a background runtime for an extension |
-| `stop` | Stop a background runtime for an extension |
-| `restart` | Restart a background runtime for an extension |
-| `status` | Show background runtime status for an extension |
+| `install` | Install an extension (deprecated) |
+| `list` | List installed extensions (deprecated) |
+| `uninstall` | Uninstall an extension (deprecated) |
+| `info` | Show extension details (deprecated) |
+| `bundle` | Create a bundle from installed extensions (deprecated) |
+| `config` | Configure extension settings (deprecated) |
+| `validate` | Validate an extension manifest (deprecated) |
+| `debug` | Debug an installed extension (deprecated) |
+| `start` | Start a background runtime for an extension (deprecated) |
+| `stop` | Stop a background runtime for an extension (deprecated) |
+| `restart` | Restart a background runtime for an extension (deprecated) |
+| `status` | Show background runtime status for an extension (deprecated) |
 
 #### Examples
 
 ```bash
-# List installed extensions
+# Deprecated — see the per-category CLI above
 peko ext list
-
-# Install an extension
 peko ext install <path-or-url>
-
-# Show extension info
 peko ext info <extension>
 ```
 
@@ -711,9 +724,9 @@ peko model add --template anthropic --model claude-sonnet-4-5 \
 peko credential set llm anthropic-claude-sonnet-4-5 \
   --kind api_key --material "$ANTHROPIC_API_KEY"
 
-# Extensions
-peko ext list
-peko ext install <path>
+# Extensions (deprecated — ADR-047; use `peko principal <category> list/install`)
+peko principal tool list
+peko principal skill install <path>
 
 # Daemon
 peko daemon start --foreground

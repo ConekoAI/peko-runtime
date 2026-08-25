@@ -1,8 +1,8 @@
 //! Catalog of built-in tool names registered by the framework.
 //!
-//! Lives in `peko-principal` because [`super::ExtensionCatalog::build`] (the
-//! per-principal extension catalog builder) reads these lists to compute
-//! `enabled` flags for the catalog items. The host crate does not own these
+//! Lives in `peko-principal` because [`super::PrincipalCatalog::build`] (the
+//! per-principal catalog builder) reads these lists to compute
+//! `enabled` flags for the catalog entries. The host crate does not own these
 //! names — they are the canonical contract between the framework's
 //! `ToolRuntime::register_builtins` call (in
 //! `peko-rs/core/src/engine/tool_runtime.rs`) and the principal layer's view

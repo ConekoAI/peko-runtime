@@ -782,23 +782,23 @@ impl AppState {
         // Sprint 9 Commit 3: `GatewayAdapter` removed — chat-gateway
         // adapter framework retired.
         use crate::extensions::general::GeneralExtensionAdapter;
-        use crate::extensions::mcp::McpAdapter;
-        use crate::extensions::skill::SkillAdapter;
-        use crate::extensions::slash::SlashAdapter;
-        use crate::extensions::universal::UniversalToolAdapter;
 
-        extension_store
-            .register_adapter(Box::new(SkillAdapter::new()))
-            .await;
-        extension_store
-            .register_adapter(Box::new(McpAdapter::with_default_manager()))
-            .await;
-        extension_store
-            .register_adapter(Box::new(SlashAdapter::new()))
-            .await;
-        extension_store
-            .register_adapter(Box::new(UniversalToolAdapter::new()))
-            .await;
+        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed. Skills
+        // are workspace files; the SkillTool uses WorkspaceSkillRuntime.
+        // Phase 2 PR 2 (ADR-047 §2.3): McpAdapter removed. MCP servers
+        // are workspace-resident; the workspace scanner in
+        // `install_principal_tool_bag` reads them and registers tools
+        // via the global McpManager + BuiltinToolAdapter.
+        // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed. The
+        // framework wrapper was a no-op; slash dispatch is handled
+        // by `principal::slash::SlashDispatcher` at the principal
+        // boundary.
+        //
+        // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed.
+        // Universal tools are workspace-resident; the scanner in
+        // `install_principal_tool_bag` reads each manifest and
+        // registers the canonical `peko_tools_core::Tool` impl via
+        // BuiltinToolAdapter. No framework adapter.
         extension_store
             .register_adapter(Box::new(GeneralExtensionAdapter::new()))
             .await;
@@ -1176,8 +1176,12 @@ impl AppState {
         tracing::info!("MCP reload: {keys_count} vault entries reloaded");
 
         let mcp_config_path = self.config_dir.join("mcp.toml");
-        let adapter = crate::extensions::mcp::McpAdapter::with_default_manager();
-        let manager = adapter.manager();
+        // Phase 2 PR 2 (ADR-047 §2.3): the framework-coupled
+        // `McpAdapter` is gone; the global `McpManager` (installed by
+        // `init_global_mcp_manager_with_shared_resources` at daemon
+        // startup) is the canonical owner of MCP server configs.
+        let manager = crate::extensions::mcp::global_mcp_manager()
+            .ok_or_else(|| anyhow::anyhow!("global MCP manager is not initialised"))?;
         let servers_count = manager
             .read()
             .await
@@ -2240,31 +2244,6 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
     }
 }
 
-/// F7 fifth narrow handle: the port the `capability` IPC domain handler
-/// uses for principal-capability grant/list/revoke. Trait lives in
-/// `ipc::handlers::capability`. Both methods are sync (return cheap
-/// references), so the trait is object-safe without `async_trait`. The
-/// actual per-principal mutations happen in the handler against these
-/// accessors.
-impl crate::ipc::handlers::capability::CapabilityHost for AppState {
-    fn principal_manager(&self) -> &Arc<PrincipalManager> {
-        AppState::principal_manager(self)
-    }
-
-    fn extension_store(&self) -> &Arc<ExtensionStore> {
-        AppState::extension_store(self)
-    }
-
-    /// ADR-046: grant audit events are emitted from the
-    /// capability handler. Returns the Observability hub by
-    /// cheap Arc clone — same shape as the existing `observability`
-    /// accessor at line 1985, just lifted onto the trait surface
-    /// the handler imports.
-    fn observability(&self) -> Arc<Observability> {
-        AppState::observability(self)
-    }
-}
-
 /// F7 sixth narrow handle: the port the `instance` IPC domain handler
 /// uses to reach the live tunnel dispatcher. Trait lives in
 /// `ipc::handlers::instance`. Async because `tunnel_dispatcher` is
@@ -2273,35 +2252,6 @@ impl crate::ipc::handlers::capability::CapabilityHost for AppState {
 impl crate::ipc::handlers::instance::InstanceHost for AppState {
     async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
         AppState::tunnel_dispatcher(self).await
-    }
-}
-
-/// F7 seventh narrow handle: the port the `ext_runtime` IPC domain
-/// handler uses to drive the background extension runtime manager
-/// (ADR-025). Trait lives in `ipc::handlers::ext_runtime`. All
-/// methods are sync (return cheap references / owned `StarterContext`),
-/// so the trait is object-safe without `async_trait`.
-impl crate::ipc::handlers::ext_runtime::ExtRuntimeHost for AppState {
-    fn runtime_starter_registry(
-        &self,
-    ) -> &Arc<crate::daemon::background_runtime::ExtensionRuntimeStarterRegistry> {
-        AppState::runtime_starter_registry(self)
-    }
-
-    fn starter_context(&self) -> crate::daemon::background_runtime::StarterContext {
-        AppState::starter_context(self)
-    }
-
-    fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
-        AppState::background_runtime_manager(self)
-    }
-
-    /// Phase B: tier-typed authority mirror. The ext_runtime
-    /// handler doesn't currently use tier-typed paths but the
-    /// accessor is here for parity with the rest of the trait
-    /// ports.
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        &self.authority
     }
 }
 
@@ -2498,26 +2448,6 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
 
     async fn tunnel_connected(&self) -> bool {
         AppState::tunnel_connected(self).await
-    }
-}
-
-/// F7 tenth narrow handle: the port the `extension` IPC domain handler
-/// uses to read/write the on-disk extension store and to enumerate
-/// built-in extensions via `Services`. Trait lives in
-/// `ipc::handlers::extension`. Both methods are sync (cheap `Arc`
-/// references), so the trait is object-safe without `async_trait`.
-/// The actual store awaits (install / uninstall / list / bundle /
-/// export) happen in the handler against these accessors.
-impl crate::ipc::handlers::extension::ExtensionHost for AppState {
-    fn extension_store(&self) -> &Arc<ExtensionStore> {
-        AppState::extension_store(self)
-    }
-
-    /// Phase B: hand the tier-typed authority through to the
-    /// extension handler. Runtime-tier reads (`extensions_root`)
-    /// pass through this accessor; the actor is the daemon.
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        &self.authority
     }
 }
 

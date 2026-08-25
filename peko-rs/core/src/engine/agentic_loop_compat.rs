@@ -2105,7 +2105,7 @@ mod tests {
             }
         }
 
-        for section in ["tools", "skills", "agents", "mcp_context"] {
+        for section in ["tools", "skills", "agents"] {
             core.register_hook(
                 crate::extensions::framework::core::HookPoint::PromptSystemSection {
                     section: section.to_string(),
@@ -2118,7 +2118,23 @@ mod tests {
             .unwrap();
         }
 
-        let renderer = PromptRenderer::new(core);
+        // Phase 2 PR 2 (ADR-047 §2.3): `mcp_context` is no longer
+        // a framework hook — the `McpAdapter` is deleted. The
+        // renderer consults an `McpPromptContextProvider`
+        // directly. Provide a 50ms-sleep mock so the parallel
+        // dispatch contract still holds across all four sections.
+        struct SleepMcpProvider(std::time::Duration);
+        #[async_trait::async_trait]
+        impl peko_engine::McpPromptContextProvider for SleepMcpProvider {
+            async fn render_mcp_context(&self) -> String {
+                tokio::time::sleep(self.0).await;
+                "mcp_context".to_string()
+            }
+        }
+        let mcp_provider: Arc<dyn peko_engine::McpPromptContextProvider> =
+            Arc::new(SleepMcpProvider(std::time::Duration::from_millis(50)));
+
+        let renderer = PromptRenderer::with_mcp_context_provider(core, mcp_provider);
         let ctx = TurnPromptContext {
             principal_id: "test".into(),
             session_id: "test-session".into(),

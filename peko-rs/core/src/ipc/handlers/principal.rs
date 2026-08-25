@@ -482,14 +482,13 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 output,
                 include_sessions,
-                with_extensions,
+                with_extensions: _, // Phase 5: ignored; extensions live in the workspace tar.
             } => {
                 match export_principal_package(
                     host,
                     &name,
                     output.clone(),
                     include_sessions,
-                    with_extensions,
                 )
                 .await
                 {
@@ -1501,6 +1500,7 @@ impl RequestHandler for PrincipalHandler {
                     permissions: Vec::new(),
                     preferred_model_id: Some(model_id),
                     transport_preference: Default::default(),
+                    authority: None,
                     quota: None,
                     children: Default::default(),
                 };
@@ -2689,13 +2689,16 @@ async fn load_principal_identity(
     .await?
 }
 
-/// Build a `PrincipalPackager` for export/push, optionally resolving
-/// and embedding the extensions referenced by the principal's
-/// capabilities.
+/// Build a `PrincipalPackager` for export/push.
+///
+/// Phase 5 (ADR-047 §2.1): the legacy `with_extensions` flag that
+/// embedded extensions from the global `ExtensionStore` is gone.
+/// Workspace-resident plugins are scoped to their workspace and are
+/// not part of the portable bundle yet (Phase 7 packaging format
+/// bump will add a `workspace/` layer).
 async fn build_principal_packager(
     host: &dyn PrincipalHost,
     name: &str,
-    with_extensions: bool,
 ) -> anyhow::Result<crate::registry::packaging::PrincipalPackager> {
     let principal = load_principal(host, name)
         .await
@@ -2717,17 +2720,9 @@ async fn build_principal_packager(
     let layout = resolver.principal_layout(name);
     let identity = load_principal_identity(&resolver, name, &did).await?;
 
-    let packager = crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
+    Ok(crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
         .with_agents_dir(&layout.shared.agents_dir)
-        .with_sessions_dir(&layout.local.sessions_dir);
-
-    if with_extensions {
-        let store = host.extension_store();
-        let packager = packager.with_extensions_from_store(store, &config).await?;
-        Ok(packager)
-    } else {
-        Ok(packager)
-    }
+        .with_sessions_dir(&layout.local.sessions_dir))
 }
 
 /// Export a Principal to a `.principal` package on disk.
@@ -2736,14 +2731,12 @@ async fn export_principal_package(
     name: &str,
     output: Option<String>,
     include_sessions: bool,
-    with_extensions: bool,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let packager = build_principal_packager(host, name, with_extensions).await?;
+    let packager = build_principal_packager(host, name).await?;
 
     let opts = crate::registry::packaging::PrincipalExportOptions {
         output_path: output,
         include_sessions,
-        with_extensions,
         description: None,
     };
     packager.export(opts).await
@@ -2912,12 +2905,11 @@ async fn push_principal_package(
     registry_host: Option<String>,
     registry_token: Option<String>,
 ) -> anyhow::Result<String> {
-    let packager = build_principal_packager(host, name, true).await?;
+    let packager = build_principal_packager(host, name).await?;
     let version = "1.0.0".to_string();
 
     let descriptor = packager
         .export_for_registry(crate::registry::packaging::PrincipalExportOptions {
-            with_extensions: true,
             ..Default::default()
         })
         .await?;
@@ -3399,6 +3391,7 @@ mod tests {
                 permissions: vec![],
                 preferred_model_id: Some("mock".to_string()),
                 transport_preference: Default::default(),
+                authority: None,
                 quota: None,
                 children: Default::default(),
             }

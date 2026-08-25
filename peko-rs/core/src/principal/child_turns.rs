@@ -446,6 +446,7 @@ mod tests {
             permissions: vec![],
             preferred_model_id: Some("mock".to_string()),
             transport_preference: Default::default(),
+            authority: None,
             quota: None,
             children: Default::default(),
         }

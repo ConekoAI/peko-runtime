@@ -1,11 +1,18 @@
-//! Capability model for extension-framework authority.
+//! Capability model — ADR-047 §2.5 collapsed surface.
 //!
-//! A capability is a typed grant such as `tool:Read`, `agent:researcher`,
-//! `skill:github_skill`, `filesystem.read:/path`, or `network`.  A Principal's
-//! `[capabilities] grants = [...]` array in `principal.toml` is the single
-//! source of truth for what the Principal is allowed to do, but the types
-//! themselves are generic authorization primitives used by the extension
-//! framework.
+//! Post-Phase 3b, `Capabilities` only carries cross-actor /
+//! cross-runtime grants (`principal:*` / `runtime:*`). Filesystem,
+//! network, and tunnel authority live on the new `Authority` envelope
+//! (see `peko_extension_api::authority`). The legacy `tool:*` /
+//! `agent:*` / `skill:*` / `network` / `filesystem.*` / `tunnel:*`
+//! grants that the framework used to use for `is_tool_enabled` are
+//! gone — workspace tools (Phase 1+2) are principal-owned and
+//! visible by default.
+//!
+//! The grant strings are still typed as `String` so the
+//! `principal:*` / `runtime:*` taxonomy can grow without a schema
+//! change. Wildcards (`runtime:*`) are matched against the literal
+//! grant list at lookup time, matching the previous semantics.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -13,9 +20,10 @@ use std::fmt;
 
 /// A typed capability grant.
 ///
-/// Capabilities are stored as opaque strings so the taxonomy can grow without
-/// changing the core type.  Convenience methods parse the `kind` prefix and
-/// wildcard suffix for matching.
+/// Post-Phase 3b this is a thin newtype around `String`. `principal:*`
+/// and `runtime:*` are the surviving kinds; the `Capability` struct
+/// itself stays so the existing `capabilities.is_granted(...)`
+/// call sites don't churn through every file in the workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Capability(pub String);
 
@@ -30,59 +38,6 @@ impl Capability {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// ADR-046 trust+audit: classify a capability as "high power"
-    /// — grants the user-visible warning after the grant lands.
-    ///
-    /// Definition (v1, hand-curated):
-    /// - `tool:Bash`, `tool:Write`, `tool:Edit` (filesystem/code
-    ///   mutation — direct disk writes, no gate)
-    /// - `network`, `tunnel:*` (egress authority)
-    /// - `filesystem.*` and `fs.*` (filesystem authority outside the
-    ///   tool-mediated layer)
-    /// - `principal:*`, `runtime:*` (cross-principal / runtime
-    ///   identity authority)
-    ///
-    /// Everything else (tool:Read, skill:*, agent:*) is low-power
-    /// and only emits an Info audit event. This is a coarse,
-    /// readable threshold — the user is asking for "things the
-    /// operator should glance at", not a security model.
-    #[must_use]
-    pub fn is_high_power(&self) -> bool {
-        let s = self.0.as_str();
-        if s == "network" {
-            return true;
-        }
-        let kind = self.kind();
-        // `tool:`-prefixed capabilities: classify by the tool name
-        // (the `value()` half). High-power tools are mutating /
-        // shell-execution ones.
-        if kind == "tool" {
-            return matches!(self.value(), "Bash" | "Write" | "Edit");
-        }
-        // Everything else: a kind prefix that names a wide
-        // authority domain.
-        kind.starts_with("filesystem")
-            || kind.starts_with("tunnel")
-            || kind.starts_with("principal")
-            || kind.starts_with("runtime")
-    }
-
-    /// The capability kind, i.e. the part before the first `:`.
-    ///
-    /// For bare capabilities such as `network` the whole string is returned.
-    #[must_use]
-    pub fn kind(&self) -> &str {
-        self.0.split_once(':').map(|(k, _)| k).unwrap_or(&self.0)
-    }
-
-    /// The capability value, i.e. the part after the first `:`.
-    ///
-    /// For bare capabilities such as `network` an empty string is returned.
-    #[must_use]
-    pub fn value(&self) -> &str {
-        self.0.split_once(':').map(|(_, v)| v).unwrap_or("")
     }
 
     /// Whether this capability ends in a wildcard (`*`).
@@ -226,101 +181,21 @@ impl Capabilities {
 
     /// A safe starter bundle for new Principals.
     ///
-    /// This grants the built-in tools and agents needed for basic operation
-    /// without handing over unrestricted authority.
+    /// Post-Phase 3b (ADR-047 §2.5) this only carries the cross-actor /
+    /// cross-runtime grants that still live on `Capabilities`:
+    /// `principal:write_config`, `principal:write_agents`,
+    /// `principal:write_cron`, and `principal:write_identity`.
     ///
-    /// **Phase C:** the bundle also carries the write-side capability
-    /// prefixes consumed by `peko_core::common::authority::RuntimeAuthority`'s
-    /// `_write` accessors — `principal:write_config`, `principal:write_agents`,
-    /// and `principal:write_cron` — so a freshly created Principal can write
-    /// to its own `principal.toml`, agents dir, and cron schedule without
-    /// a separate grant step. Pre-Phase-C on-disk principals that lack
-    /// these grants will surface `AuthorityError::CapabilityDenied` on their
-    /// first write; that's a one-time user-visible bootstrap (prelaunch,
-    /// no backward compat).
+    /// The `tool:*` / `agent:*` / `skill:*` / `network` /
+    /// `filesystem.*` / `tunnel:*` grants that used to live here
+    /// retired when those concerns moved to `Authority`
+    /// (filesystem/network/tunnel) or to the per-principal workspace
+    /// (tool/agent catalog). Workspace tools are principal-owned
+    /// and visible by default; no capability gating is required to
+    /// enumerate them in `available_tools`.
     #[must_use]
     pub fn starter_bundle() -> Self {
         Self::with_grants([
-            "tool:Read",
-            "tool:Write",
-            "tool:Edit",
-            "tool:Bash",
-            "tool:Agent",
-            "agent:*",
-            "tool:agent_catalog",
-            "tool:TaskCreate",
-            "tool:TaskList",
-            "tool:TaskGet",
-            "tool:TaskUpdate",
-            // peko_plan DAG family (PR #1+2 wiring). Auto-granted to
-            // match `AgentConfig::enable_plan_tools: true` (default) —
-            // without these, `is_tool_enabled` filters the 7 plan
-            // tools out of the LLM's available_tools at runtime and
-            // the principal can't actually plan despite the agent
-            // config being on.
-            "tool:PlanCreate",
-            "tool:PlanList",
-            "tool:PlanGet",
-            "tool:PlanMarkStep",
-            "tool:PlanRecordEvidence",
-            "tool:PlanAddStep",
-            "tool:PlanClose",
-            // Async control family (auto-granted to match the
-            // builtin async_control tools). Without these, the model
-            // sees the tool descriptions in `available_tools` but
-            // `is_tool_enabled` filters them out at dispatch and the
-            // principal can't actually call them — the agent would
-            // surface "tool not in my toolset" errors when it tries
-            // `AsyncSpawn` / `AsyncList` / etc.
-            "tool:AsyncSpawn",
-            "tool:AsyncOutput",
-            "tool:AsyncStatus",
-            "tool:AsyncList",
-            "tool:AsyncStop",
-            // Cron scheduling family (auto-granted to match the
-            // `principal:write_cron` grant below). The tools themselves
-            // are registered by `ToolRuntime::register_builtins` and
-            // backed by the daemon-installed `CronRuntime`; without
-            // these `tool:` grants, `is_tool_enabled` filters them out
-            // of the LLM's toolset and the principal can't schedule
-            // reminders conversationally despite holding the write
-            // capability (2026-08-07 field test, Finding 2).
-            "tool:CronCreate",
-            "tool:CronList",
-            "tool:CronDelete",
-            // Sprint 4: `tool:send_peer` is retired outright — the consolidated
-            // `ChannelSend` tool (registered per-agent with the
-            // caller's DID bound at construction) replaces both the
-            // bare-post ChannelSend and the principal/user RPC.
-            // Without the grant, the bare-branch ChannelSend lives on
-            // `tool:ChannelSend` (see below); the principal branch
-            // picks up the same grant. No compatibility alias —
-            // prelaunch, no live consumers.
-            //
-            // Session management (PR #351 agent-owned session mgmt;
-            // round-7 2026-08-13 surface). The unified `session` tool
-            // exposes 9 storage actions (status / list / history /
-            // search / rename / delete / branch / archive /
-            // unarchive) over the session store; the LLM-driving
-            // lifecycle actions (new / resume / compact) live on the
-            // `Agent` tool. Without this grant the capability filter
-            // (`is_tool_enabled` in tool_registry.rs) drops it from a
-            // default-created principal's toolset even though the tool
-            // itself is wired in BuiltinToolAdapter. Surfaced by the
-            // 2026-08-11 field test (scripts/e2e/reports/2026-08-11-
-            // non-technical-user-subagent-session.md, F1).
-            "tool:session",
-            // Channel messaging (2026-08-18 reviewer finding, same
-            // shape as the F351 session-tool bug PR #351). The
-            // ChannelRead / ChannelSend tools are registered globally
-            // by `ToolRuntime::register_builtins` against the
-            // daemon-installed `ChannelPort`; without these `tool:`
-            // grants the capability filter (`is_tool_enabled` in
-            // tool_registry.rs) drops them from a default-created
-            // principal's toolset even though the tools are wired in,
-            // so the principal can never read or post to channels.
-            "tool:ChannelRead",
-            "tool:ChannelSend",
             "principal:write_config",
             "principal:write_agents",
             "principal:write_cron",
@@ -337,185 +212,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capability_parses_kind_and_value() {
-        let cap = Capability::new("tool:Read");
-        assert_eq!(cap.kind(), "tool");
-        assert_eq!(cap.value(), "Read");
-
-        let bare = Capability::new("network");
-        assert_eq!(bare.kind(), "network");
-        assert_eq!(bare.value(), "");
-    }
-
-    #[test]
     fn exact_match() {
-        let grants = Capabilities::with_grants(["tool:Read", "agent:researcher"]);
-        assert!(grants.is_granted(&Capability::new("tool:Read")));
-        assert!(!grants.is_granted(&Capability::new("tool:Write")));
+        let grants = Capabilities::with_grants(["principal:write_config"]);
+        assert!(grants.is_granted(&Capability::new("principal:write_config")));
+        assert!(!grants.is_granted(&Capability::new("principal:write_agents")));
     }
 
     #[test]
     fn wildcard_match() {
-        let grants = Capabilities::with_grants(["tool:*", "agent:agency-agents/*"]);
-        assert!(grants.is_granted(&Capability::new("tool:Read")));
-        assert!(grants.is_granted(&Capability::new("tool:Write")));
-        assert!(grants.is_granted(&Capability::new("agent:agency-agents/researcher")));
-        assert!(!grants.is_granted(&Capability::new("agent:other/researcher")));
+        let grants = Capabilities::with_grants(["runtime:*"]);
+        assert!(grants.is_granted(&Capability::new("runtime:trust")));
+        assert!(grants.is_granted(&Capability::new("runtime:write_extensions")));
+        assert!(!grants.is_granted(&Capability::new("principal:write_config")));
     }
 
-    /// ADR-046 trust+audit: pin the v1 high-power classification
-    /// so future additions are deliberate. If a new capability
-    /// kind crosses the line, this test fails until the operator
-    /// confirms the user-visible warning should fire.
+    /// Post-Phase 3b the starter bundle carries only the cross-actor /
+    /// cross-runtime grants. Workspace tools are principal-owned and
+    /// visible by default — no per-tool grant is needed.
     #[test]
-    fn is_high_power_classification_v1() {
-        // Mutating tools + shell exec are high-power.
-        assert!(Capability::new("tool:Bash").is_high_power());
-        assert!(Capability::new("tool:Write").is_high_power());
-        assert!(Capability::new("tool:Edit").is_high_power());
-        // Read-only tool is NOT high-power.
-        assert!(!Capability::new("tool:Read").is_high_power());
-        // Bare egress / authority-domain prefixes are high-power.
-        assert!(Capability::new("network").is_high_power());
-        assert!(Capability::new("tunnel:create").is_high_power());
-        assert!(Capability::new("filesystem.read:/etc").is_high_power());
-        assert!(Capability::new("principal:write_identity").is_high_power());
-        assert!(Capability::new("runtime:trust").is_high_power());
-        // Skill / agent grants are low-power.
-        assert!(!Capability::new("skill:github").is_high_power());
-        assert!(!Capability::new("agent:researcher").is_high_power());
-        // Capability with no `:` separator and not "network" is
-        // low-power (catches the unknown-bare-name case).
-        assert!(!Capability::new("something").is_high_power());
-    }
-
-    #[test]
-    fn starter_bundle_includes_builtins() {
+    fn starter_bundle_carries_only_principal_and_runtime_grants() {
         let caps = Capabilities::starter_bundle();
-        assert!(caps.is_granted(&Capability::new("tool:Read")));
-        assert!(caps.is_granted(&Capability::new("agent:researcher")));
-        assert!(!caps.is_granted(&Capability::new("skill:unknown")));
-    }
-
-    /// Auto-grant all 7 peko_plan DAG tools so a fresh principal can
-    /// actually plan out of the box. Without these, `is_tool_enabled`
-    /// filters them out of the LLM's available_tools list and the
-    /// principal can't invoke them despite `AgentConfig::enable_plan_tools`
-    /// being true by default.
-    #[test]
-    fn starter_bundle_includes_plan_tools() {
-        let caps = Capabilities::starter_bundle();
-        for tool in [
-            "PlanCreate",
-            "PlanList",
-            "PlanGet",
-            "PlanMarkStep",
-            "PlanRecordEvidence",
-            "PlanAddStep",
-            "PlanClose",
+        for required in [
+            "principal:write_config",
+            "principal:write_agents",
+            "principal:write_cron",
+            "principal:write_identity",
         ] {
             assert!(
-                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
-                "starter_bundle must include tool:{tool}"
+                caps.is_granted(&Capability::new(required)),
+                "starter_bundle must carry {required}"
             );
         }
-    }
-
-    /// Auto-grant all 5 async control tools so a fresh principal can
-    /// actually background and inspect long-running tasks. Without
-    /// these, `is_tool_enabled` filters them out of the LLM's
-    /// `available_tools` list despite the framework describing them
-    /// in tool descriptions — the model would see them as available
-    /// but get refused at dispatch with a "tool not in my toolset"
-    /// style error. Surfaced in the 2026-08-02 subagent field test.
-    #[test]
-    fn starter_bundle_includes_async_tools() {
-        let caps = Capabilities::starter_bundle();
-        for tool in [
-            "AsyncSpawn",
-            "AsyncOutput",
-            "AsyncStatus",
-            "AsyncList",
-            "AsyncStop",
+        for retired in [
+            "tool:Read",
+            "tool:Write",
+            "tool:Edit",
+            "tool:Bash",
+            "tool:Agent",
+            "agent:researcher",
+            "skill:unknown",
+            "network",
+            "tunnel:create",
+            "filesystem.read:/etc",
         ] {
             assert!(
-                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
-                "starter_bundle must include tool:{tool}"
+                !caps.is_granted(&Capability::new(retired)),
+                "starter_bundle must NOT carry {retired} (Phase 3b retired the kind)"
             );
         }
-    }
-
-    /// Auto-grant the 3 cron scheduling tools so a fresh principal can
-    /// schedule reminders conversationally. The tools are registered by
-    /// `ToolRuntime::register_builtins` and backed by the daemon's
-    /// `CronRuntime`; without these grants `is_tool_enabled` filters
-    /// them out despite `principal:write_cron` being granted — the
-    /// model then honestly reports "I have no scheduling tool".
-    /// Surfaced in the 2026-08-07 cron/session field test.
-    #[test]
-    fn starter_bundle_includes_cron_tools() {
-        let caps = Capabilities::starter_bundle();
-        for tool in ["CronCreate", "CronList", "CronDelete"] {
-            assert!(
-                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
-                "starter_bundle must include tool:{tool}"
-            );
-        }
-    }
-
-    /// Auto-grant the unified `session` tool (PR #351 agent-owned
-    /// session management; round-7 2026-08-13: 9 storage actions —
-    /// status / list / history / search / rename / delete / branch /
-    /// archive / unarchive) so a fresh principal can actually manage
-    /// sessions conversationally. Without this, `is_tool_enabled`
-    /// filters the session tool out of the LLM's available_tools list
-    /// despite the tool being wired in `BuiltinToolAdapter` — the
-    /// model then honestly reports it has no session tool. Surfaced in
-    /// the 2026-08-11 subagent/session field test (F1).
-    #[test]
-    fn starter_bundle_includes_session_tool() {
-        let caps = Capabilities::starter_bundle();
-        assert!(
-            caps.is_granted(&Capability::new("tool:session")),
-            "starter_bundle must include tool:session"
-        );
-    }
-
-    /// Auto-grant the ChannelRead / ChannelSend tools so a fresh
-    /// principal can actually read and post to channels. The tools
-    /// are registered globally by `ToolRuntime::register_builtins`
-    /// against the daemon-installed `ChannelPort`; without these
-    /// grants `is_tool_enabled` filters them out of the LLM's
-    /// available_tools list despite the tools being wired in —
-    /// the same shape as the F351 session-tool bug (PR #351).
-    /// Surfaced by reviewer 2026-08-18.
-    #[test]
-    fn starter_bundle_includes_channel_tools() {
-        let caps = Capabilities::starter_bundle();
-        for tool in ["ChannelRead", "ChannelSend"] {
-            assert!(
-                caps.is_granted(&Capability::new(format!("tool:{tool}"))),
-                "starter_bundle must include tool:{tool}"
-            );
-        }
-    }
-
-    /// Sprint 4 regression: `tool:send_peer` is retired outright (no
-    /// compat alias). The unified `ChannelSend` (per-agent, caller-DID
-    /// bound at construction) covers both the bare-post and the
-    /// principal / user / group branches; principals with the legacy
-    /// grant lose it post-cutover. Pin here so a future accidental
-    /// re-add surfaces in CI rather than silently restoring the
-    /// parallel tool surface.
-    #[test]
-    fn starter_bundle_does_not_grant_send_peer() {
-        let caps = Capabilities::starter_bundle();
-        assert!(
-            !caps.is_granted(&Capability::new("tool:send_peer")),
-            "starter_bundle must NOT grant tool:send_peer — that tool is retired; \
-             use tool:ChannelSend with a typed channel id (chan_* / principal:<did> / \
-             user:<id> / group:<slug>) to dispatch"
-        );
     }
 }
 

@@ -229,7 +229,7 @@ peko system clean
 
 - [User Guide](../user-guide/USERS_GUIDE.md) — Comprehensive guide to Peko
 - [CLI Reference](../user-guide/CLI_REFERENCE.md) — Command-line documentation
-- [Extension System](../architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
+- [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) — Per-principal tooling layout (ADR-047)
 
 ---
 

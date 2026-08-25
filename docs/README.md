@@ -1,6 +1,6 @@
 # Peko Documentation
 
-**Last Updated:** 2026-06-23
+**Last Updated:** 2026-08-25
 **Version:** 0.1.0
 
 Complete documentation for the Peko multi-agent runtime.
@@ -21,9 +21,9 @@ Complete documentation for the Peko multi-agent runtime.
 
 ### 🏗️ Architecture
 
-- **[Extension System](architecture/EXTENSION_SYSTEM.md)** — Unified extension architecture
+- **[Principal Workspace](architecture/PRINCIPAL_WORKSPACE.md)** — Per-principal tooling, layout, plugin packaging (ADR-047)
 - **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-042
+- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-047
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
@@ -54,9 +54,9 @@ docs/
 ├── architecture/
 │   ├── AGENT_SESSION_PARADIGM.md
 │   ├── CAPABILITY_BASED_EXTENSIONS.md
-│   ├── EXTENSION_SYSTEM.md
+│   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
 │   ├── builtin-tools.md
-│   └── adr/                         # ADR-001 through ADR-042
+│   └── adr/                         # ADR-001 through ADR-047
 └── mcp/
     ├── MCP.md
     ├── QUICK_START.md
@@ -102,6 +102,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-040](architecture/adr/ADR-040-tool-timeout-and-async-refactor.md) | Tool timeout & async refactor |
 | [ADR-041](architecture/adr/ADR-041-principal-as-container.md) | Principal-as-container and session blackboxing |
 | [ADR-042](architecture/adr/ADR-042-no-external-session-concept.md) | No external `session` concept in the CLI/IPC surface (`peko log` is the only read path) |
+| [ADR-047](architecture/adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) | Principal workspace as the tooling trust boundary — supersedes the extension framework (ADR-017/024/026/036) |
 
 ---
 

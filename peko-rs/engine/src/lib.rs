@@ -119,7 +119,9 @@ pub use peko_session::compaction::{
     CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
     CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate,
 };
-pub use prompt::renderer::PromptRenderer;
+pub use prompt::renderer::{
+    EmptyMcpPromptContextProvider, McpPromptContextProvider, PromptRenderer,
+};
 pub use spec_gate::{check as check_spec, SpecGateError};
 pub use prompt::{
     builder::{PromptMode, SystemPromptBuilder},

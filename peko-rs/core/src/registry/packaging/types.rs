@@ -135,7 +135,16 @@ pub enum LayerType {
     /// this layer, but legacy packages containing `mcp/` can still be
     /// imported.
     Mcp,
-    /// Extensions layer — embedded extension packages (optional composite bundle)
+    /// Plugins layer — opaque workspace plugins shipped inside the package
+    /// (ADR-047 §2.1). Maps to `<workspace>/plugins/<plugin-id>/` on
+    /// import. New exports emit this layer; legacy `extensions/` layers
+    /// are accepted on import and mapped to the same handler.
+    Plugins,
+    /// Extensions layer (deprecated — retained for reading legacy packages).
+    ///
+    /// Under ADR-047 §5 the canonical layer is `Plugins`; new exports no
+    /// longer emit this layer, but legacy packages containing
+    /// `extensions/*.ext` can still be imported.
     Extensions,
 }
 
@@ -151,6 +160,7 @@ impl LayerType {
             LayerType::Workspace => "workspace",
             LayerType::Sessions => "sessions",
             LayerType::Mcp => "mcp",
+            LayerType::Plugins => "plugins",
             LayerType::Extensions => "extensions",
         }
     }
@@ -165,6 +175,7 @@ impl LayerType {
             LayerType::Workspace => "application/vnd.peko.layer.workspace.v1.tar+gzip",
             LayerType::Sessions => "application/vnd.peko.layer.sessions.v1.tar+gzip",
             LayerType::Mcp => "application/vnd.peko.layer.mcp.v1.tar+gzip",
+            LayerType::Plugins => "application/vnd.peko.layer.plugins.v1.tar+gzip",
             LayerType::Extensions => "application/vnd.peko.layer.extensions.v1.tar+gzip",
         }
     }
@@ -178,6 +189,7 @@ impl LayerType {
             "application/vnd.peko.layer.workspace.v1.tar+gzip" => LayerType::Workspace,
             "application/vnd.peko.layer.sessions.v1.tar+gzip" => LayerType::Sessions,
             "application/vnd.peko.layer.mcp.v1.tar+gzip" => LayerType::Mcp,
+            "application/vnd.peko.layer.plugins.v1.tar+gzip" => LayerType::Plugins,
             "application/vnd.peko.layer.extensions.v1.tar+gzip" => LayerType::Extensions,
             _ => LayerType::Config,
         }
@@ -323,6 +335,7 @@ mod tests {
         assert_eq!(LayerType::Workspace.dir_name(), "workspace");
         assert_eq!(LayerType::Sessions.dir_name(), "sessions");
         assert_eq!(LayerType::Mcp.dir_name(), "mcp");
+        assert_eq!(LayerType::Plugins.dir_name(), "plugins");
         assert_eq!(LayerType::Extensions.dir_name(), "extensions");
     }
 

@@ -87,6 +87,7 @@ async fn create_test_principal(
         permissions: Vec::new(),
         preferred_model_id: Some("mock".to_string()),
         transport_preference,
+        authority: None,
         quota: None,
         children: Default::default(),
     };

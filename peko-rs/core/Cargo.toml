@@ -306,13 +306,10 @@ rsa = "0.9"
 # (cargo's auto-discovery only picks up tests/*.rs directly). Each
 # scenario file needs an explicit [[test]] entry — D1 lands first,
 # D2-D4 add their own entries in their respective PRs.
-[[test]]
-name = "s1_local_agent_with_extensions"
-path = "tests/scenarios/s1_local_agent_with_extensions.rs"
-
-[[test]]
-name = "s2_extension_registry_roundtrip"
-path = "tests/scenarios/s2_extension_registry_roundtrip.rs"
+#
+# Phase 5 (ADR-047 §2.1): the `s1_local_agent_with_extensions` and
+# `s2_extension_registry_roundtrip` scenarios were retired — they
+# exercise the deleted `peko ext` CLI and on-disk extension store.
 
 [[test]]
 name = "s4_publish_running_agent_with_permission"
@@ -321,10 +318,6 @@ path = "tests/scenarios/s4_publish_running_agent_with_permission.rs"
 [[test]]
 name = "s6_principal_grant_revoke_roundtrip"
 path = "tests/scenarios/s6_principal_grant_revoke_roundtrip.rs"
-
-[[test]]
-name = "s7_capability_grant_revoke_list_e2e"
-path = "tests/scenarios/s7_capability_grant_revoke_list_e2e.rs"
 
 [[test]]
 name = "tunnel_security"

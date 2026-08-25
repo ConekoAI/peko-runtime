@@ -126,9 +126,29 @@ my-agent.agent (gzip-compressed tar)
 │   └── agent.toml          # Single source of truth for behavior
 ├── workspace/
 ├── sessions/
-└── extensions/             # Optional — embedded .ext packages (ADR-037)
-    └── {id}.ext
+└── plugins/                # Optional — workspace plugins (ADR-047 §2.1, §5)
+    └── {plugin-id}/
+        └── ...
+
+# Legacy packages may still ship an `extensions/` layer in place of
+# `plugins/`; the unpackager accepts either prefix.
 ```
+
+**Note:** Standalone `skills/` and `mcp/` layers were deprecated by
+[ADR-037](ADR-037-agent-extension-bundling-and-layer-rationalization.md).
+Skills and MCP servers are now managed as extensions and are declared in
+`agent.toml`'s `extensions.enabled` list. Their dependency metadata is
+recorded in `manifest.extensions` (a list of `ExtensionRef` structs) so
+that `peko agent pull` can auto-install missing extensions. Legacy
+packages that still contain `skills/` or `mcp/` layers can still be
+imported, but new exports do not emit them.
+
+The legacy `extensions/` layer (ADR-037 §4) is itself superseded by the
+`plugins/` layer per [ADR-047 §5](ADR-047-principal-workspace-as-tooling-trust-boundary.md):
+workspace-resident tooling is opaque to the runtime, so the new layer
+carries arbitrary plugin shapes rather than the historical `.ext` archive
+format. Both layers are accepted on import; new exports emit `plugins/`
+only.
 
 **Note:** Standalone `skills/` and `mcp/` layers were deprecated by
 [ADR-037](ADR-037-agent-extension-bundling-and-layer-rationalization.md).
@@ -160,7 +180,7 @@ config = "sha256:abc123..."
 identity = "sha256:def456..."
 workspace = "sha256:jkl012..."
 sessions = "sha256:mno345..."
-extensions = "sha256:stu901..."   # Optional — embedded extensions layer
+plugins = "sha256:stu901..."    # Optional — workspace plugins (ADR-047 §5)
 
 [[extensions]]              # ADR-037: dependency metadata
 id = "docker-skill"
@@ -185,7 +205,8 @@ archive_format = "tar"
 | `identity` | `identity/did.json`, `identity/keys.json` | No | ✅ Active | ❌ No |
 | `workspace` | `workspace/**` | Yes | ✅ Active | ❌ No |
 | `sessions` | `sessions/**` | Yes | ✅ Active | ❌ No |
-| `extensions` | `extensions/*.ext` | Yes | ✅ Active (ADR-037) | ❌ No |
+| `plugins` | `plugins/<plugin-id>/` | Yes | ✅ Active (ADR-047 §5) | ❌ No |
+| `extensions` | `extensions/*.ext` | Yes | ⚠️ Deprecated (ADR-047 §5) | ❌ No |
 | `skills` | `skills/**` | Yes | ⚠️ Deprecated (ADR-037) | ❌ No |
 | `mcp` | `mcp/**` | Yes | ⚠️ Deprecated (ADR-037) | ❌ No |
 

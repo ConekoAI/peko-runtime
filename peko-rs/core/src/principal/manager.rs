@@ -152,7 +152,7 @@ pub struct PrincipalManager {
     /// PrincipalManager without extension state.
     slash_dispatcher: Arc<RwLock<Option<Arc<SlashDispatcher>>>>,
     /// Optional daemon extension store. When present, the per-message
-    /// `ExtensionCatalog` includes installed extensions as well as built-ins
+    /// `PrincipalCatalog` includes installed extensions as well as built-ins
     /// and principal-scoped agents.
     extension_store: Option<Arc<ExtensionStore>>,
     /// Optional observability hub. Threaded into `RouterContext` so the root
@@ -241,7 +241,7 @@ impl PrincipalManager {
     }
 
     /// Attach a daemon extension store. When present, the per-message
-    /// `ExtensionCatalog` includes installed extensions alongside built-ins
+    /// `PrincipalCatalog` includes installed extensions alongside built-ins
     /// and principal-scoped agents.
     #[must_use]
     pub fn with_extension_store(mut self, extension_store: Arc<ExtensionStore>) -> Self {
@@ -904,7 +904,8 @@ impl PrincipalManager {
             Some(store) => store.global_items().await,
             None => Vec::new(),
         };
-        crate::principal::extension_store::ExtensionCatalog::build(
+        crate::principal::catalog::PrincipalCatalog::build(
+            &principal.workspace_path,
             capabilities,
             &principal.agent_prompts,
             &global_items,
@@ -999,7 +1000,7 @@ impl PrincipalManager {
 
         let (
             available_agents,
-            extension_store,
+            catalog,
             active_extensions,
             routing,
             capabilities,
@@ -1029,16 +1030,17 @@ impl PrincipalManager {
                 Some(store) => store.global_items().await,
                 None => Vec::new(),
             };
-            let extension_store = crate::principal::extension_store::ExtensionCatalog::build(
+            let catalog_local = crate::principal::catalog::PrincipalCatalog::build(
+                &principal.workspace_path,
                 allowed,
                 &principal.agent_prompts,
                 &global_items,
             );
-            let active_extensions = extension_store.active_extensions();
+            let active_extensions = catalog_local.active_extensions();
 
             (
                 available_agents,
-                extension_store,
+                catalog_local,
                 active_extensions,
                 config.routing.clone(),
                 allowed.clone(),
@@ -1057,7 +1059,7 @@ impl PrincipalManager {
             routing,
             recalled_context,
             available_agents,
-            extension_store,
+            catalog,
             active_extensions,
             capabilities,
             intent,
@@ -1602,6 +1604,7 @@ mod tests {
             }],
             preferred_model_id: Some("mock".to_string()),
             transport_preference: Default::default(),
+            authority: None,
             quota: None,
             children: Default::default(),
         }
@@ -2087,13 +2090,13 @@ mod tests {
             .expect("disabled_agent should be in catalog");
         assert!(!disabled.enabled, "disabled_agent should be disabled");
 
-        // The ExtensionStore also surfaces the disabled agent.
+        // The PrincipalCatalog also surfaces the disabled agent.
         let store_disabled = ctx
-            .extension_store
-            .items()
+            .catalog
+            .entries()
             .iter()
             .find(|i| i.id == "disabled_agent")
-            .expect("disabled_agent should be in extension store");
+            .expect("disabled_agent should be in catalog");
         assert!(!store_disabled.enabled);
 
         // Suppress unused warning for temp.

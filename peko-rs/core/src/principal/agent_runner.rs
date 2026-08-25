@@ -9,7 +9,7 @@ use crate::agents::Agent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
 use crate::principal::router::AgentPromptSummary;
 use peko_auth::Subject;
-use peko_engine::AgenticEvent;
+use peko_engine::{AgenticEvent, McpPromptContextProvider};
 use peko_message::LlmMessage;
 use peko_session::manager::{SessionManager, SessionManagerRotationSink};
 use peko_session::SessionCreateOptions;
@@ -450,6 +450,22 @@ where
         };
         agent.with_audit_sink(audit_sink, first_use_lookup)
     };
+
+    // Phase 2 PR 2 (ADR-047 §2.3): bind the MCP context provider
+    // so the `{{mcp_context}}` system-prompt section renders
+    // Markdown describing the workspace's configured MCP servers.
+    // The provider wraps the global `McpManager` (initialised by
+    // the daemon at startup); a missing manager (CLI one-shot path
+    // without the daemon wiring) leaves the loop on its default
+    // `EmptyMcpPromptContextProvider`, which strips the
+    // placeholder to empty via `remove_missing=true`.
+    let agent = agent.with_mcp_context_provider(
+        crate::extensions::mcp::global::global_mcp_manager().map(|mgr| {
+            Arc::new(
+                crate::extensions::mcp::workspace::McpManagerPromptContextProvider::new(mgr),
+            ) as Arc<dyn peko_engine::McpPromptContextProvider>
+        }),
+    );
 
     // F19: quota meter no longer threaded through Agent. The
     // engine loop fetches the principal's meter directly via

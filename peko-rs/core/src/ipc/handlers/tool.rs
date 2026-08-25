@@ -170,7 +170,7 @@ impl ToolHandler {
         // From the resolved principal we derive BOTH:
         //   - the granted capability set (`capabilities().to_strings()`)
         //   - the principal's active extension set, built by
-        //     `ExtensionCatalog::build` from the principal's
+        //     `PrincipalCatalog::build` from the principal's
         //     capabilities + `agent_prompts` and the daemon-wide
         //     `ExtensionStore::global_items()`. This is the same path
         //     `PrincipalManager::receive` uses when an agent session
@@ -191,7 +191,8 @@ impl ToolHandler {
             Some(principal) => {
                 let caps = principal.capabilities().await;
                 let global_items = self.host.extension_store().global_items().await;
-                let catalog = crate::principal::extension_store::ExtensionCatalog::build(
+                let catalog = crate::principal::catalog::PrincipalCatalog::build(
+                    &principal.workspace_path,
                     &caps,
                     &principal.agent_prompts,
                     &global_items,

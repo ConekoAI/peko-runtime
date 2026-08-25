@@ -47,6 +47,7 @@ use super::context::{
     TurnPromptContext,
 };
 use super::placeholder::{replace_placeholders, Placeholder};
+use async_trait::async_trait;
 use chrono::{Local, Utc};
 use peko_extension_api::session::SessionSnapshot;
 use peko_extension_api::ToolFunnel;
@@ -66,6 +67,36 @@ use tracing::{debug, warn};
 #[allow(unused_imports)]
 pub(crate) use peko_tools_core::HOOK_TIMEOUT;
 
+/// Source for the `{{mcp_context}}` system-prompt section.
+///
+/// Phase 2 PR 2 (ADR-047 §2.3) deletes the framework `McpAdapter`,
+/// so the `PromptSystemSection { section: "mcp_context" }` hook has
+/// no handler. The renderer instead consults an
+/// `McpPromptContextProvider` directly. The default
+/// [`EmptyMcpPromptContextProvider] returns the empty string
+/// (templates that reference `{{mcp_context}}` get the placeholder
+/// stripped by `remove_missing=true`); the daemon constructs a real
+/// provider wrapping the global `McpManager`.
+#[async_trait]
+pub trait McpPromptContextProvider: Send + Sync {
+    /// Render the `mcp_context` Markdown body. The empty string means
+    /// "no MCP servers configured".
+    async fn render_mcp_context(&self) -> String;
+}
+
+/// Default no-op provider — used by tests and any process that has
+/// no global `McpManager` initialised (so MCP context never
+/// silently leaks state from a prior test in the same process).
+#[derive(Default)]
+pub struct EmptyMcpPromptContextProvider;
+
+#[async_trait]
+impl McpPromptContextProvider for EmptyMcpPromptContextProvider {
+    async fn render_mcp_context(&self) -> String {
+        String::new()
+    }
+}
+
 /// Renders the system prompt for one iteration.
 ///
 /// Constructed once per agentic loop and shared across iterations. Cheap
@@ -76,17 +107,42 @@ pub(crate) use peko_tools_core::HOOK_TIMEOUT;
 /// into `peko-engine` without dragging root `HookPoint` / `HookInput`
 /// types along. The trait port is the same one the tool executor and
 /// compaction orchestrator use (see `peko_extension_api::ToolFunnel`).
+///
+/// Phase 2 PR 2 (ADR-047 §2.3) added the `mcp_context_provider`
+/// field. The `{{mcp_context}}` placeholder no longer fires a
+/// `PromptSystemSection` framework hook — the framework `McpAdapter`
+/// is gone — so the renderer calls the provider directly instead.
 #[derive(Clone)]
 pub struct PromptRenderer {
     extension_core: Arc<dyn ToolFunnel>,
+    mcp_context_provider: Arc<dyn McpPromptContextProvider>,
 }
 
 impl PromptRenderer {
     /// Create a new renderer bound to an [`ExtensionCore`] via the
-    /// canonical [`ToolFunnel`] trait port.
+    /// canonical [`ToolFunnel`] trait port, with a default
+    /// (empty) MCP context provider.
     #[must_use]
     pub fn new(extension_core: Arc<dyn ToolFunnel>) -> Self {
-        Self { extension_core }
+        Self {
+            extension_core,
+            mcp_context_provider: Arc::new(EmptyMcpPromptContextProvider),
+        }
+    }
+
+    /// Create a new renderer with an explicit MCP context provider.
+    /// Used by the daemon which wraps the global `McpManager` in a
+    /// provider that calls
+    /// `peko_extensions_mcp::render_mcp_prompt_context`.
+    #[must_use]
+    pub fn with_mcp_context_provider(
+        extension_core: Arc<dyn ToolFunnel>,
+        mcp_context_provider: Arc<dyn McpPromptContextProvider>,
+    ) -> Self {
+        Self {
+            extension_core,
+            mcp_context_provider,
+        }
     }
 
     /// Render the system prompt for one iteration.
@@ -109,10 +165,15 @@ impl PromptRenderer {
         // handler that hits the timeout simply returns an empty string
         // and the template's `remove_missing=true` strips any
         // leftover placeholder.
+        //
+        // Phase 2 PR 2: `mcp_context` no longer goes through
+        // `dispatch_text`; the framework McpAdapter was deleted, so
+        // the framework hook has no handler. The provider field on
+        // the renderer is the canonical source.
         let (skills, agents, mcp, session_ctx) = tokio::join!(
             self.dispatch_text("skills", ctx),
             self.dispatch_text("agents", ctx),
-            self.dispatch_text("mcp_context", ctx),
+            self.mcp_context_provider.render_mcp_context(),
             self.dispatch_session_context(ctx),
         );
 
@@ -144,10 +205,13 @@ impl PromptRenderer {
         // consume the three stable-section hooks. The session-context
         // hook is volatile (it runs every iteration); we ignore its
         // result by reading an empty string into the values map.
+        //
+        // Phase 2 PR 2: `mcp_context` sourced from the provider field,
+        // not from a framework hook.
         let (skills, agents, mcp) = tokio::join!(
             self.dispatch_text("skills", ctx),
             self.dispatch_text("agents", ctx),
-            self.dispatch_text("mcp_context", ctx),
+            self.mcp_context_provider.render_mcp_context(),
         );
 
         let empty_session = String::new();

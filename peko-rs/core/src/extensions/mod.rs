@@ -64,11 +64,22 @@ pub mod skill;
 /// Agent extension adapter — AGENT.md-based prompt extensions with YAML frontmatter.
 pub mod agent;
 
-/// Slash command extension adapter — COMMAND.md-based user-invoked commands with YAML frontmatter.
-pub mod slash;
+// Phase 2 PR 4 (ADR-047 §2.4): the framework `slash` adapter was
+// removed. Slash dispatch is handled daemon-side by
+// `crate::principal::slash::SlashDispatcher`, which only resolves
+// `/help` in v0. The framework `SlashAdapter` was a no-op wrapper:
+// its `register_commands_with_core` returned `Vec::new()` and no
+// `COMMAND.md` installer ever wired its discovered manifests into
+// the dispatcher. No behavior change after removal — same `/help`
+// semantics, fewer indirections.
 
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
+
+/// ADR-047 §5 Phase 4: workspace-resident hook scanner. Reads
+/// `<workspace>/hooks/<id>/hook.toml` and registers each binding
+/// against the canonical `ExtensionCore` hook registry.
+pub mod workspace_hooks;
 
 /// Manifest validation service — walks an extension directory, detects its
 /// type (Tier 1 ecosystem standard or Tier 2 unified manifest), and runs
@@ -101,12 +112,38 @@ impl BuiltInAdapters {
     pub fn adapters(
         &self,
     ) -> Vec<Box<dyn crate::extensions::framework::adapters::ExtensionTypeAdapter>> {
+        // Phase 2 PR 1 (ADR-047 §2.4): `SkillAdapter` removed. Skills
+        // are now files inside the principal's workspace and are
+        // resolved by `WorkspaceSkillRuntime`, not registered through
+        // the extension framework.
+        //
+        // Phase 2 PR 2 (ADR-047 §2.3): `McpAdapter` removed. MCP
+        // servers are now files inside `<workspace>/mcp/<id>/` and
+        // are loaded by `workspace::load_workspace_mcp_servers` at
+        // principal boot. The global `McpManager` (initialised in
+        // `daemon/state.rs`) is the canonical runtime for them; the
+        // `McpToolProxy` / `InjectableMcpToolProxy` types wrap its
+        // tools for the principal's tool bag. The four framework
+        // hooks that McpAdapter wired (AgentInit, AgentShutdown,
+        // PromptSystemSection, ToolExecute) are no longer needed —
+        // server lifecycle is the manager's job, MCP context is
+        // rendered directly by `workspace::render_mcp_prompt_context`,
+        // and tool execution goes through `McpToolProxy::execute_with_context`.
         vec![
-            Box::new(skill::adapter::SkillAdapter::new()),
             Box::new(agent::adapter::AgentAdapter::new()),
-            Box::new(slash::adapter::SlashAdapter::new()),
-            Box::new(universal::adapter::UniversalToolAdapter::new()),
-            Box::new(mcp::adapter::McpAdapter::with_default_manager()),
+            // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed. The
+            // framework wrapper was a no-op (`register_commands_with_core`
+            // returned `Vec::new()`); slash dispatch is handled
+            // daemon-side by `principal::slash::SlashDispatcher`,
+            // which only resolves `/help` in v0 (no `COMMAND.md`
+            // installer). The framework adapter added no behavior
+            // beyond discovering and discarding manifests.
+            //
+            // Phase 2 PR 3 (ADR-047 §2.4): universal tools no longer
+            // register a framework adapter. Workspace-resident tools
+            // are scanned by `extensions::universal::workspace`
+            // and registered via `BuiltinToolAdapter::register_tool`
+            // — no framework hook layer.
             Box::new(general::adapter::GeneralExtensionAdapter::new()),
         ]
     }
@@ -208,9 +245,17 @@ mod tests {
     fn test_built_in_adapters() {
         // Sprint 9 Commit 3: GatewayAdapter retired — adapter count
         // dropped from 7 to 6.
+        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed — count
+        // dropped from 6 to 5.
+        // Phase 2 PR 2 (ADR-047 §2.3): McpAdapter removed — count
+        // dropped from 5 to 4.
+        // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed
+        // — count dropped from 4 to 3.
+        // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed — count
+        // dropped from 3 to 2.
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 6);
+        assert_eq!(adapters.len(), 2);
     }
 }

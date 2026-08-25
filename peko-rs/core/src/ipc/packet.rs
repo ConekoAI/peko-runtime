@@ -131,34 +131,6 @@ pub enum RequestPacket {
         principal: Option<String>,
     },
 
-    /// Start a background runtime (extension lifecycle — ADR-026)
-    #[serde(rename = "ext_start")]
-    ExtStart {
-        request_id: u64,
-        extension_id: String,
-    },
-
-    /// Stop a background runtime (extension lifecycle — ADR-026)
-    #[serde(rename = "ext_stop")]
-    ExtStop {
-        request_id: u64,
-        extension_id: String,
-    },
-
-    /// Restart a background runtime (extension lifecycle — ADR-026)
-    #[serde(rename = "ext_restart")]
-    ExtRestart {
-        request_id: u64,
-        extension_id: String,
-    },
-
-    /// Get background runtime status (extension lifecycle — ADR-026)
-    #[serde(rename = "ext_status")]
-    ExtStatus {
-        request_id: u64,
-        extension_id: String,
-    },
-
     // ─── Agent CRUD ─────────────────────────────────────────────────
     // `AgentList` was retired in the principal-as-single-actor migration
     // (audit C1). Use `PrincipalList` / `PrincipalGet` below for the
@@ -472,72 +444,19 @@ pub enum RequestPacket {
     },
 
     // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
-    #[serde(rename = "extension_list")]
-    ExtensionList {
-        request_id: u64,
-        enabled_only: bool,
-        ext_type: Option<String>,
-    },
-
-    #[serde(rename = "capability_grant")]
-    CapabilityGrant {
-        request_id: u64,
-        principal: String,
-        capability: String,
-    },
-
-    #[serde(rename = "capability_revoke")]
-    CapabilityRevoke {
-        request_id: u64,
-        principal: String,
-        capability: String,
-    },
-
-    #[serde(rename = "capability_list")]
-    CapabilityList { request_id: u64, principal: String },
-
-    #[serde(rename = "extension_validate")]
-    ExtensionValidate {
-        request_id: u64,
-        path: String,
-        verbose: bool,
-        #[serde(default)]
-        semantic: bool,
-    },
-
-    #[serde(rename = "extension_debug")]
-    ExtensionDebug { request_id: u64, id: String },
-
-    #[serde(rename = "extension_info")]
-    ExtensionInfo { request_id: u64, id: String },
-
-    #[serde(rename = "extension_export")]
-    ExtensionExport {
-        request_id: u64,
-        id: String,
-        output: String,
-    },
-
-    #[serde(rename = "extension_bundle")]
-    ExtensionBundle {
-        request_id: u64,
-        name: String,
-        ids: Vec<String>,
-    },
+    // Removed in Phase 5 (ADR-047 §2.1): the entire extension IPC
+    // surface (`ExtensionList` / `ExtensionInstall` / `ExtensionUninstall`
+    // / `ExtensionValidate` / `ExtensionDebug` / `ExtensionInfo` /
+    // `ExtensionExport` / `ExtensionBundle`) is gone — extensions are
+    // workspace-resident and have no on-disk store, no packager, no
+    // runtime lifecycle. Workspace plugins are discovered by the
+    // principal's catalog builder instead.
 
     #[serde(rename = "system_clean")]
     SystemClean {
         request_id: u64,
         scope: Option<String>,
     },
-
-    /// Install an extension from a path
-    #[serde(rename = "extension_install")]
-    ExtensionInstall { request_id: u64, path: String },
-
-    /// Uninstall an extension by ID
-    #[serde(rename = "extension_uninstall")]
-    ExtensionUninstall { request_id: u64, id: String },
 
     // ── Runtime (ADR-032) ──
     #[serde(rename = "runtime_id")]
@@ -697,6 +616,11 @@ pub enum RequestPacket {
         name: String,
         output: Option<String>,
         include_sessions: bool,
+        /// Always `false` since Phase 5 (ADR-047): extensions are
+        /// workspace-resident and ride along in the bundle. Retained
+        /// for backward compat with old CLIs that still emit the
+        /// field; the daemon ignores it.
+        #[serde(default)]
         with_extensions: bool,
     },
 
@@ -952,10 +876,6 @@ impl RequestPacket {
             | Self::CronRemove { request_id, .. }
             | Self::CronRun { request_id, .. }
             | Self::CronHistory { request_id, .. }
-            | Self::ExtStart { request_id, .. }
-            | Self::ExtStop { request_id, .. }
-            | Self::ExtRestart { request_id, .. }
-            | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id }
             | Self::PrincipalGet { request_id, .. }
             | Self::PrincipalCreate { request_id, .. }
@@ -982,18 +902,7 @@ impl RequestPacket {
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::AuditQuery { request_id, .. }
-            | Self::ExtensionList { request_id, .. }
-            | Self::CapabilityGrant { request_id, .. }
-            | Self::CapabilityRevoke { request_id, .. }
-            | Self::CapabilityList { request_id, .. }
-            | Self::ExtensionValidate { request_id, .. }
-            | Self::ExtensionDebug { request_id, .. }
-            | Self::ExtensionInfo { request_id, .. }
-            | Self::ExtensionExport { request_id, .. }
-            | Self::ExtensionBundle { request_id, .. }
             | Self::SystemClean { request_id, .. }
-            | Self::ExtensionInstall { request_id, .. }
-            | Self::ExtensionUninstall { request_id, .. }
             | Self::RuntimeId { request_id }
             | Self::RuntimeInfo { request_id }
             | Self::RuntimeList { request_id }
@@ -1372,37 +1281,6 @@ pub enum ResponsePacket {
         entries: Vec<peko_observability::AuditEvent>,
     },
 
-    /// Background runtime started (ADR-026)
-    #[serde(rename = "ext_started")]
-    ExtStarted {
-        request_id: u64,
-        extension_id: String,
-    },
-
-    /// Background runtime stopped (ADR-026)
-    #[serde(rename = "ext_stopped")]
-    ExtStopped {
-        request_id: u64,
-        extension_id: String,
-    },
-
-    /// Background runtime restarted (ADR-026)
-    #[serde(rename = "ext_restarted")]
-    ExtRestarted {
-        request_id: u64,
-        extension_id: String,
-    },
-
-    /// Background runtime status response (ADR-026)
-    #[serde(rename = "ext_status")]
-    ExtStatus {
-        request_id: u64,
-        extension_id: String,
-        state: String,
-        restart_count: u32,
-        last_error: Option<String>,
-    },
-
     /// Agent list response — retired in the principal-as-single-actor
     /// migration (audit C1). Replaced by `PrincipalList` below.
 
@@ -1653,126 +1531,12 @@ pub enum ResponsePacket {
         servers_count: usize,
     },
 
-    /// Extension list response
-    #[serde(rename = "extension_list")]
-    ExtensionList {
-        request_id: u64,
-        extensions: Vec<ExtensionSummary>,
-        total: usize,
-    },
-
-    /// Capability granted response
-    #[serde(rename = "capability_granted")]
-    CapabilityGranted {
-        request_id: u64,
-        capability: String,
-        message: String,
-    },
-
-    /// Capability revoked response
-    ///
-    /// `removed` is `true` when the revoke actually changed the principal's
-    /// effective authority (a literal grant was dropped, or a wildcard
-    /// grant that was satisfying the cap was dropped). It is `false` when
-    /// no literal grant existed and no wildcard covered the capability
-    /// either — i.e. the call was a no-op. This lets the CLI and desktop
-    /// distinguish "✅ revoked" from "✅ nothing to revoke".
-    /// `#[serde(default)]` keeps the field forward+backward compatible.
-    #[serde(rename = "capability_revoked")]
-    CapabilityRevoked {
-        request_id: u64,
-        capability: String,
-        message: String,
-        #[serde(default)]
-        removed: bool,
-    },
-
-    /// Capability list response
-    #[serde(rename = "capability_list")]
-    CapabilityList {
-        request_id: u64,
-        principal: String,
-        /// Capabilities explicitly granted in `principal.toml`.
-        granted: Vec<String>,
-        /// Capabilities declared by detected/installed extensions that are
-        /// not currently granted.
-        detected: Vec<String>,
-        /// Capabilities that are currently active (granted + extension
-        /// requirements satisfied).
-        active: Vec<String>,
-        /// IDs of extensions the principal currently has enabled (built-ins,
-        /// agents, installed extensions). Mirrors
-        /// `ExtensionCatalog::active_extensions()` — the desktop uses this
-        /// in place of its own synthesized extension-capability join so the
-        /// IPC payload is the single source of truth. `#[serde(default)]`
-        /// keeps the field forward+backward compatible.
-        #[serde(default)]
-        active_extensions: Vec<String>,
-    },
-
-    /// Extension validated response
-    #[serde(rename = "extension_validated")]
-    ExtensionValidated {
-        request_id: u64,
-        valid: bool,
-        errors: Vec<String>,
-        warnings: Vec<String>,
-    },
-
-    /// Extension debug info response
-    #[serde(rename = "extension_debug_info")]
-    ExtensionDebugInfo {
-        request_id: u64,
-        id: String,
-        info: serde_json::Value,
-    },
-
-    /// Extension info response
-    #[serde(rename = "extension_info_response")]
-    ExtensionInfoResponse {
-        request_id: u64,
-        id: String,
-        info: serde_json::Value,
-    },
-
-    /// Extension exported response
-    #[serde(rename = "extension_exported")]
-    ExtensionExported {
-        request_id: u64,
-        id: String,
-        output: String,
-    },
-
-    /// Extension bundled response
-    #[serde(rename = "extension_bundled")]
-    ExtensionBundled {
-        request_id: u64,
-        name: String,
-        count: usize,
-    },
-
     /// System clean response
     #[serde(rename = "system_cleaned")]
     SystemCleaned {
         request_id: u64,
         cleaned: Vec<String>,
         bytes_freed: u64,
-    },
-
-    /// Extension installed response
-    #[serde(rename = "extension_installed")]
-    ExtensionInstalled {
-        request_id: u64,
-        id: String,
-        message: String,
-    },
-
-    /// Extension uninstalled response
-    #[serde(rename = "extension_uninstalled")]
-    ExtensionUninstalled {
-        request_id: u64,
-        id: String,
-        message: String,
     },
 
     // ── Runtime (ADR-032) ──
@@ -2604,10 +2368,6 @@ impl ResponsePacket {
             | Self::CronRunStarted { request_id, .. }
             | Self::CronHistory { request_id, .. }
             | Self::AuditEvents { request_id, .. }
-            | Self::ExtStarted { request_id, .. }
-            | Self::ExtStopped { request_id, .. }
-            | Self::ExtRestarted { request_id, .. }
-            | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id, .. }
             | Self::PrincipalGet { request_id, .. }
             | Self::PrincipalCreated { request_id, .. }
@@ -2632,18 +2392,7 @@ impl ResponsePacket {
             | Self::BindingsListed { request_id, .. }
             | Self::BindingSetDone { request_id, .. }
             | Self::BindingDeleted { request_id, .. }
-            | Self::ExtensionList { request_id, .. }
-            | Self::CapabilityGranted { request_id, .. }
-            | Self::CapabilityRevoked { request_id, .. }
-            | Self::CapabilityList { request_id, .. }
-            | Self::ExtensionValidated { request_id, .. }
-            | Self::ExtensionDebugInfo { request_id, .. }
-            | Self::ExtensionInfoResponse { request_id, .. }
-            | Self::ExtensionExported { request_id, .. }
-            | Self::ExtensionBundled { request_id, .. }
             | Self::SystemCleaned { request_id, .. }
-            | Self::ExtensionInstalled { request_id, .. }
-            | Self::ExtensionUninstalled { request_id, .. }
             | Self::RuntimeId { request_id, .. }
             | Self::RuntimeInfo { request_id, .. }
             | Self::RuntimeList { request_id, .. }
@@ -2703,10 +2452,6 @@ impl ResponsePacket {
             Self::CronRunStarted { .. } => "CronRunStarted",
             Self::CronHistory { .. } => "CronHistory",
             Self::AuditEvents { .. } => "AuditEvents",
-            Self::ExtStarted { .. } => "ExtStarted",
-            Self::ExtStopped { .. } => "ExtStopped",
-            Self::ExtRestarted { .. } => "ExtRestarted",
-            Self::ExtStatus { .. } => "ExtStatus",
             Self::PrincipalList { .. } => "PrincipalList",
             Self::PrincipalGet { .. } => "PrincipalGet",
             Self::PrincipalCreated { .. } => "PrincipalCreated",
@@ -2731,18 +2476,7 @@ impl ResponsePacket {
             Self::BindingsListed { .. } => "BindingsListed",
             Self::BindingSetDone { .. } => "BindingSetDone",
             Self::BindingDeleted { .. } => "BindingDeleted",
-            Self::ExtensionList { .. } => "ExtensionList",
-            Self::CapabilityGranted { .. } => "CapabilityGranted",
-            Self::CapabilityRevoked { .. } => "CapabilityRevoked",
-            Self::CapabilityList { .. } => "CapabilityList",
-            Self::ExtensionValidated { .. } => "ExtensionValidated",
-            Self::ExtensionDebugInfo { .. } => "ExtensionDebugInfo",
-            Self::ExtensionInfoResponse { .. } => "ExtensionInfoResponse",
-            Self::ExtensionExported { .. } => "ExtensionExported",
-            Self::ExtensionBundled { .. } => "ExtensionBundled",
             Self::SystemCleaned { .. } => "SystemCleaned",
-            Self::ExtensionInstalled { .. } => "ExtensionInstalled",
-            Self::ExtensionUninstalled { .. } => "ExtensionUninstalled",
             Self::RuntimeId { .. } => "RuntimeId",
             Self::RuntimeInfo { .. } => "RuntimeInfo",
             Self::RuntimeList { .. } => "RuntimeList",
@@ -4722,558 +4456,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extension_list_request_roundtrip() {
-        let req = RequestPacket::ExtensionList {
-            request_id: 1000,
-            enabled_only: true,
-            ext_type: Some("tool".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionList {
-                request_id,
-                enabled_only,
-                ext_type,
-            } => {
-                assert_eq!(request_id, 1000);
-                assert!(enabled_only);
-                assert_eq!(ext_type, Some("tool".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_system_clean_request_roundtrip() {
-        let req = RequestPacket::SystemClean {
-            request_id: 1003,
-            scope: Some("logs".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SystemClean { request_id, scope } => {
-                assert_eq!(request_id, 1003);
-                assert_eq!(scope, Some("logs".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_list_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionList {
-            request_id: 2000,
-            extensions: vec![ExtensionSummary {
-                id: "ext-1".to_string(),
-                name: "Test Extension".to_string(),
-                ext_type: "tool".to_string(),
-                version: "1.0.0".to_string(),
-                source: "installed".to_string(),
-                enabled: true,
-                runtime: "running".to_string(),
-                description: "A test extension".to_string(),
-                provides: vec!["tool:Read".to_string()],
-                requires: vec![],
-            }],
-            total: 1,
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionList {
-                request_id,
-                extensions,
-                total,
-            } => {
-                assert_eq!(request_id, 2000);
-                assert_eq!(extensions.len(), 1);
-                assert_eq!(extensions[0].id, "ext-1");
-                assert_eq!(extensions[0].name, "Test Extension");
-                assert_eq!(extensions[0].ext_type, "tool");
-                assert_eq!(extensions[0].version, "1.0.0");
-                assert_eq!(extensions[0].source, "installed");
-                assert!(extensions[0].enabled);
-                assert_eq!(extensions[0].runtime, "running");
-                assert_eq!(extensions[0].description, "A test extension");
-                assert_eq!(total, 1);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_system_cleaned_response_roundtrip() {
-        let resp = ResponsePacket::SystemCleaned {
-            request_id: 2003,
-            cleaned: vec!["logs".to_string(), "temp".to_string()],
-            bytes_freed: 1024,
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SystemCleaned {
-                request_id,
-                cleaned,
-                bytes_freed,
-            } => {
-                assert_eq!(request_id, 2003);
-                assert_eq!(cleaned, vec!["logs".to_string(), "temp".to_string()]);
-                assert_eq!(bytes_freed, 1024);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_request_ids() {
-        let req_list = RequestPacket::ExtensionList {
-            request_id: 1,
-            enabled_only: false,
-            ext_type: None,
-        };
-        assert_eq!(req_list.request_id(), 1);
-
-        let req_clean = RequestPacket::SystemClean {
-            request_id: 2,
-            scope: None,
-        };
-        assert_eq!(req_clean.request_id(), 2);
-    }
-
-    #[test]
-    fn test_extension_response_ids() {
-        let resp_list = ResponsePacket::ExtensionList {
-            request_id: 10,
-            extensions: vec![],
-            total: 0,
-        };
-        assert_eq!(resp_list.request_id(), 10);
-
-        let resp_cleaned = ResponsePacket::SystemCleaned {
-            request_id: 11,
-            cleaned: vec![],
-            bytes_freed: 0,
-        };
-        assert_eq!(resp_cleaned.request_id(), 11);
-    }
-
-    #[test]
-    fn test_extension_install_request_roundtrip() {
-        let req = RequestPacket::ExtensionInstall {
-            request_id: 1100,
-            path: "/path/to/extension".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionInstall { request_id, path } => {
-                assert_eq!(request_id, 1100);
-                assert_eq!(path, "/path/to/extension");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_uninstall_request_roundtrip() {
-        let req = RequestPacket::ExtensionUninstall {
-            request_id: 1101,
-            id: "ext-1".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionUninstall { request_id, id } => {
-                assert_eq!(request_id, 1101);
-                assert_eq!(id, "ext-1");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_installed_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionInstalled {
-            request_id: 2100,
-            id: "ext-1".to_string(),
-            message: "Extension 'ext-1' installed successfully".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionInstalled {
-                request_id,
-                id,
-                message,
-            } => {
-                assert_eq!(request_id, 2100);
-                assert_eq!(id, "ext-1");
-                assert_eq!(message, "Extension 'ext-1' installed successfully");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_uninstalled_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionUninstalled {
-            request_id: 2101,
-            id: "ext-1".to_string(),
-            message: "Extension 'ext-1' uninstalled".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionUninstalled {
-                request_id,
-                id,
-                message,
-            } => {
-                assert_eq!(request_id, 2101);
-                assert_eq!(id, "ext-1");
-                assert_eq!(message, "Extension 'ext-1' uninstalled");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_install_uninstall_request_ids() {
-        let req_install = RequestPacket::ExtensionInstall {
-            request_id: 1,
-            path: "/path/to/ext".to_string(),
-        };
-        assert_eq!(req_install.request_id(), 1);
-
-        let req_uninstall = RequestPacket::ExtensionUninstall {
-            request_id: 2,
-            id: "ext-1".to_string(),
-        };
-        assert_eq!(req_uninstall.request_id(), 2);
-    }
-
-    #[test]
-    fn test_extension_install_uninstall_response_ids() {
-        let resp_installed = ResponsePacket::ExtensionInstalled {
-            request_id: 10,
-            id: "ext-1".to_string(),
-            message: "m".to_string(),
-        };
-        assert_eq!(resp_installed.request_id(), 10);
-
-        let resp_uninstalled = ResponsePacket::ExtensionUninstalled {
-            request_id: 11,
-            id: "ext-1".to_string(),
-            message: "m".to_string(),
-        };
-        assert_eq!(resp_uninstalled.request_id(), 11);
-    }
-
-    // ─── Extension operations tests ─────────────────────────────────
-
-    #[test]
-    fn test_extension_validate_request_roundtrip() {
-        let req = RequestPacket::ExtensionValidate {
-            request_id: 1700,
-            path: "/path/to/ext".to_string(),
-            verbose: true,
-            semantic: false,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionValidate {
-                request_id,
-                path,
-                verbose,
-                semantic,
-            } => {
-                assert_eq!(request_id, 1700);
-                assert_eq!(path, "/path/to/ext");
-                assert!(verbose);
-                assert!(!semantic);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_debug_request_roundtrip() {
-        let req = RequestPacket::ExtensionDebug {
-            request_id: 1701,
-            id: "ext-1".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionDebug { request_id, id } => {
-                assert_eq!(request_id, 1701);
-                assert_eq!(id, "ext-1");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_info_request_roundtrip() {
-        let req = RequestPacket::ExtensionInfo {
-            request_id: 1702,
-            id: "ext-1".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionInfo { request_id, id } => {
-                assert_eq!(request_id, 1702);
-                assert_eq!(id, "ext-1");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_export_request_roundtrip() {
-        let req = RequestPacket::ExtensionExport {
-            request_id: 1703,
-            id: "ext-1".to_string(),
-            output: "/tmp/export.ext".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionExport {
-                request_id,
-                id,
-                output,
-            } => {
-                assert_eq!(request_id, 1703);
-                assert_eq!(id, "ext-1");
-                assert_eq!(output, "/tmp/export.ext");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_bundle_request_roundtrip() {
-        let req = RequestPacket::ExtensionBundle {
-            request_id: 1704,
-            name: "my-bundle".to_string(),
-            ids: vec!["ext-1".to_string(), "ext-2".to_string()],
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::ExtensionBundle {
-                request_id,
-                name,
-                ids,
-            } => {
-                assert_eq!(request_id, 1704);
-                assert_eq!(name, "my-bundle");
-                assert_eq!(ids, vec!["ext-1".to_string(), "ext-2".to_string()]);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_validated_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionValidated {
-            request_id: 2700,
-            valid: true,
-            errors: vec![],
-            warnings: vec!["warning-1".to_string()],
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionValidated {
-                request_id,
-                valid,
-                errors,
-                warnings,
-            } => {
-                assert_eq!(request_id, 2700);
-                assert!(valid);
-                assert!(errors.is_empty());
-                assert_eq!(warnings, vec!["warning-1".to_string()]);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_debug_info_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionDebugInfo {
-            request_id: 2701,
-            id: "ext-1".to_string(),
-            info: serde_json::json!({"hooks": 5}),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionDebugInfo {
-                request_id,
-                id,
-                info,
-            } => {
-                assert_eq!(request_id, 2701);
-                assert_eq!(id, "ext-1");
-                assert_eq!(info["hooks"], 5);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_info_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionInfoResponse {
-            request_id: 2702,
-            id: "ext-1".to_string(),
-            info: serde_json::json!({"name": "Test Extension"}),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionInfoResponse {
-                request_id,
-                id,
-                info,
-            } => {
-                assert_eq!(request_id, 2702);
-                assert_eq!(id, "ext-1");
-                assert_eq!(info["name"], "Test Extension");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_exported_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionExported {
-            request_id: 2703,
-            id: "ext-1".to_string(),
-            output: "/tmp/export.ext".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionExported {
-                request_id,
-                id,
-                output,
-            } => {
-                assert_eq!(request_id, 2703);
-                assert_eq!(id, "ext-1");
-                assert_eq!(output, "/tmp/export.ext");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_bundled_response_roundtrip() {
-        let resp = ResponsePacket::ExtensionBundled {
-            request_id: 2704,
-            name: "my-bundle".to_string(),
-            count: 3,
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::ExtensionBundled {
-                request_id,
-                name,
-                count,
-            } => {
-                assert_eq!(request_id, 2704);
-                assert_eq!(name, "my-bundle");
-                assert_eq!(count, 3);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_extension_ops_request_ids() {
-        let req_validate = RequestPacket::ExtensionValidate {
-            request_id: 1,
-            path: "/tmp".to_string(),
-            verbose: false,
-            semantic: false,
-        };
-        assert_eq!(req_validate.request_id(), 1);
-
-        let req_debug = RequestPacket::ExtensionDebug {
-            request_id: 2,
-            id: "e".to_string(),
-        };
-        assert_eq!(req_debug.request_id(), 2);
-
-        let req_info = RequestPacket::ExtensionInfo {
-            request_id: 3,
-            id: "e".to_string(),
-        };
-        assert_eq!(req_info.request_id(), 3);
-
-        let req_export = RequestPacket::ExtensionExport {
-            request_id: 4,
-            id: "e".to_string(),
-            output: "/tmp".to_string(),
-        };
-        assert_eq!(req_export.request_id(), 4);
-
-        let req_bundle = RequestPacket::ExtensionBundle {
-            request_id: 5,
-            name: "b".to_string(),
-            ids: vec![],
-        };
-        assert_eq!(req_bundle.request_id(), 5);
-    }
-
-    #[test]
-    fn test_extension_ops_response_ids() {
-        let resp_validated = ResponsePacket::ExtensionValidated {
-            request_id: 10,
-            valid: true,
-            errors: vec![],
-            warnings: vec![],
-        };
-        assert_eq!(resp_validated.request_id(), 10);
-
-        let resp_debug = ResponsePacket::ExtensionDebugInfo {
-            request_id: 11,
-            id: "e".to_string(),
-            info: serde_json::Value::Null,
-        };
-        assert_eq!(resp_debug.request_id(), 11);
-
-        let resp_info = ResponsePacket::ExtensionInfoResponse {
-            request_id: 12,
-            id: "e".to_string(),
-            info: serde_json::Value::Null,
-        };
-        assert_eq!(resp_info.request_id(), 12);
-
-        let resp_exported = ResponsePacket::ExtensionExported {
-            request_id: 13,
-            id: "e".to_string(),
-            output: "/tmp".to_string(),
-        };
-        assert_eq!(resp_exported.request_id(), 13);
-
-        let resp_bundled = ResponsePacket::ExtensionBundled {
-            request_id: 14,
-            name: "b".to_string(),
-            count: 0,
-        };
-        assert_eq!(resp_bundled.request_id(), 14);
-    }
-
-    #[test]
     fn test_authenticated_request_roundtrip() {
         // Critical path: auth envelope + request packet must serialize together
         let envelope = AuthenticatedRequest {
@@ -6017,94 +5199,4 @@ mod tests {
         );
     }
 
-    /// `CapabilityRevoked` carries a `removed: bool` field with
-    /// `#[serde(default)]` so older CLIs/desktops that don't know about
-    /// the field still deserialize. Pin the wire shape + the default.
-    #[test]
-    fn test_capability_revoked_removed_field_default_is_false() {
-        // Modern encoder: explicit `removed: true` survives the round trip.
-        let modern = ResponsePacket::CapabilityRevoked {
-            request_id: 700,
-            capability: "tool:Read".to_string(),
-            message: "ok".to_string(),
-            removed: true,
-        };
-        let bytes = modern.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::CapabilityRevoked { removed, .. } => {
-                assert!(removed, "explicit removed:true must round-trip");
-            }
-            _ => panic!("Wrong variant"),
-        }
-
-        // Old encoder: omits `removed` entirely. New decoder must
-        // backfill it with `false` so callers don't need to special-case
-        // an absent field.
-        let legacy_json = serde_json::json!({
-            "type": "capability_revoked",
-            "request_id": 700,
-            "capability": "tool:Read",
-            "message": "ok",
-        });
-        let decoded_legacy =
-            ResponsePacket::from_bytes(legacy_json.to_string().as_bytes()).unwrap();
-        match decoded_legacy {
-            ResponsePacket::CapabilityRevoked { removed, .. } => {
-                assert!(
-                    !removed,
-                    "legacy payload without `removed` must default to false"
-                );
-            }
-            _ => panic!("Wrong variant"),
-        }
     }
-
-    /// `CapabilityList` carries an `active_extensions: Vec<String>` field
-    /// with `#[serde(default)]` so older CLIs/desktops still deserialize.
-    /// Pin the wire shape + the empty-list default.
-    #[test]
-    fn test_capability_list_active_extensions_default_is_empty() {
-        let modern = ResponsePacket::CapabilityList {
-            request_id: 701,
-            principal: "helper".to_string(),
-            granted: vec!["tool:Read".to_string()],
-            detected: vec!["skill:docker".to_string()],
-            active: vec!["tool:Read".to_string()],
-            active_extensions: vec!["builtin:tool:Read".to_string()],
-        };
-        let bytes = modern.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::CapabilityList {
-                active_extensions, ..
-            } => {
-                assert_eq!(active_extensions, vec!["builtin:tool:Read".to_string()]);
-            }
-            _ => panic!("Wrong variant"),
-        }
-
-        // Legacy payload without `active_extensions`: must default to empty.
-        let legacy_json = serde_json::json!({
-            "type": "capability_list",
-            "request_id": 701,
-            "principal": "helper",
-            "granted": ["tool:Read"],
-            "detected": [],
-            "active": ["tool:Read"],
-        });
-        let decoded_legacy =
-            ResponsePacket::from_bytes(legacy_json.to_string().as_bytes()).unwrap();
-        match decoded_legacy {
-            ResponsePacket::CapabilityList {
-                active_extensions, ..
-            } => {
-                assert!(
-                    active_extensions.is_empty(),
-                    "legacy payload without `active_extensions` must default to empty"
-                );
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-}

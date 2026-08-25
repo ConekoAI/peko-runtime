@@ -68,64 +68,16 @@ async fn import_yes_selects_no_required_capabilities() {
     );
 }
 
-#[tokio::test]
-async fn import_interactive_partial_capability_selection() {
-    let name = unique_name("imp-partial-");
-    let cli = PekoCli::new();
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let package = PrincipalPackageBuilder::new(&name)
-        .with_skill(
-            "fixture-skill",
-            &["tool:fixture.exec", "tool:fixture.read"],
-            &[],
-        )
-        .build()
-        .await
-        .expect("build signed principal package");
-
-    // Required capabilities are sorted alphabetically. Defaults are now
-    // opt-out (y/N), so explicit answers select the partial set:
-    //   1. tool:fixture.exec  -> answer "n"
-    //   2. tool:fixture.read  -> answer "y"
-    // Then confirm the import                       -> answer "y"
-    let stdin = b"n\ny\ny\n";
-    run_with_stdin(
-        || cli.cmd(),
-        &[
-            "principal",
-            "import",
-            package.to_str().unwrap(),
-            "--name",
-            &name,
-        ],
-        stdin,
-        Duration::from_secs(30),
-    )
-    .expect("interactive import should succeed");
-
-    let config_path = cli
-        .peko_dir()
-        .join("principals")
-        .join(&name)
-        .join("principal.toml");
-    let config_toml = tokio::fs::read_to_string(&config_path)
-        .await
-        .expect("imported principal.toml should exist");
-    let config: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&config_toml).expect("parse imported principal.toml");
-
-    assert!(
-        !config.capabilities.contains_str("tool:fixture.exec"),
-        "tool:fixture.exec should not be granted; got {:?}",
-        config.capabilities
-    );
-    assert!(
-        config.capabilities.contains_str("tool:fixture.read"),
-        "expected tool:fixture.read to be granted; got {:?}",
-        config.capabilities
-    );
-}
+// `import_interactive_partial_capability_selection` removed in
+// Phase 2 PR 1 (ADR-047 §2.4): the interactive prompt for required
+// capabilities was driven by `with_skill(...)` building a skill
+// extension through `ExtensionStore`, which required the
+// `SkillAdapter`. Phase 7 deletes the entire `.principal`
+// extensions-layer packaging path (workspace tools are packaged as a
+// literal tar of `<workspace>/`, not as a separate extensions
+// layer). The interactive capability-selection UX is redesigned
+// in Phase 7 to operate on workspace-resident tools; that PR
+// will restore an equivalent test.
 
 #[tokio::test]
 async fn import_unsigned_with_allow_unsigned_yes_selects_none() {

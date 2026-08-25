@@ -65,10 +65,8 @@ impl ExtensionValidationService {
     ) -> anyhow::Result<ValidationReport> {
         use crate::extensions::framework::adapters::extract_extension_type_from_yaml;
         use crate::extensions::general::discover_general_extensions;
-        use crate::extensions::mcp::McpAdapter;
-        use crate::extensions::skill::SkillAdapter;
-        use crate::extensions::slash::SlashAdapter;
-        use crate::extensions::universal::UniversalToolAdapter;
+        use crate::extensions::mcp::discover_workspace_mcp_servers;
+        use crate::extensions::universal::discover_workspace_universal_tools;
 
         if !path.exists() {
             anyhow::bail!("Path does not exist: {}", path.display());
@@ -84,18 +82,10 @@ impl ExtensionValidationService {
                 println!("✓ Detected as: skill extension (SKILL.md) [Tier 1 ecosystem standard]");
             }
 
-            let skill_adapter = SkillAdapter::new();
-            let skills = skill_adapter.discover_skills(path);
-            if skills.is_empty() {
-                errors.push("No valid skills found in directory".to_string());
-            } else if verbose {
-                for skill in &skills {
-                    println!(
-                        "  ✓ Skill: {} - {}",
-                        skill.manifest.name, skill.manifest.description
-                    );
-                }
-            }
+            // Phase 2 PR 1 (ADR-047 §2.4): the SkillAdapter is gone.
+            // The SKILL.md validator just checks frontmatter shape +
+            // heading presence — both done by `semantic_check_skill`
+            // below — so no separate discover step is needed.
 
             if depth >= ValidationDepth::Semantic {
                 Self::semantic_check_skill(path, &mut errors, &mut warnings, verbose);
@@ -115,19 +105,12 @@ impl ExtensionValidationService {
                 );
             }
 
-            let slash_adapter = SlashAdapter::new();
-            let commands = slash_adapter.discover_commands(path);
-            if commands.is_empty() {
-                errors.push("No valid slash commands found in directory".to_string());
-            } else if verbose {
-                for command in &commands {
-                    println!(
-                        "  ✓ Slash command: {} - {}",
-                        command.manifest.name, command.manifest.description
-                    );
-                }
-            }
-
+            // Phase 2 PR 4 (ADR-047 §2.4): the framework `SlashAdapter`
+            // is gone. Slash dispatch is handled daemon-side by
+            // `principal::slash::SlashDispatcher`, which only resolves
+            // `/help` in v0. `COMMAND.md` files in the workspace are
+            // not auto-discovered for runtime dispatch — the validator
+            // just confirms the file is present.
             return Ok(ValidationReport {
                 detected_type: "slash".to_string(),
                 errors,
@@ -192,16 +175,19 @@ impl ExtensionValidationService {
 
                     match ext_type.as_str() {
                         "universal-tool" => {
-                            let adapter = UniversalToolAdapter::new();
-                            let tools = adapter.discover_tools(path).await;
+                            // Phase 2 PR 3 (ADR-047 §2.4): the
+                            // framework-coupled UniversalToolAdapter is
+                            // gone. Walk the workspace via the
+                            // parser-only scanner (no `ExtensionCore`
+                            // needed) and report what exists.
+                            let tools = discover_workspace_universal_tools(path)
+                                .await
+                                .unwrap_or_default();
                             if tools.is_empty() {
                                 errors.push("No valid tools found in directory".to_string());
                             } else if verbose {
-                                for tool in &tools {
-                                    println!(
-                                        "  ✓ Tool: {} - {}",
-                                        tool.manifest.name, tool.manifest.description
-                                    );
+                                for (name, _) in &tools {
+                                    println!("  ✓ Tool: {name}");
                                 }
                             }
 
@@ -215,13 +201,26 @@ impl ExtensionValidationService {
                             }
                         }
                         "mcp" => {
-                            let adapter = McpAdapter::with_default_manager();
-                            let servers = adapter.discover_servers(path).await;
+                            // Phase 2 PR 2 (ADR-047 §2.3): the
+                            // framework-coupled McpAdapter is gone; the
+                            // workspace scanner (parser-only) reports
+                            // servers without touching the global
+                            // McpManager. Validation is purely about
+                            // manifest shape, not runtime registration.
+                            let servers = match discover_workspace_mcp_servers(path).await {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    errors.push(format!(
+                                        "Failed to scan MCP directory: {e}"
+                                    ));
+                                    Vec::new()
+                                }
+                            };
                             if servers.is_empty() {
                                 errors.push("No valid MCP servers found in directory".to_string());
                             } else if verbose {
-                                for server in &servers {
-                                    println!("  ✓ Server: {}", server.manifest.name);
+                                for (name, _) in &servers {
+                                    println!("  ✓ Server: {name}");
                                 }
                             }
 

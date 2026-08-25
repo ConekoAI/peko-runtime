@@ -329,78 +329,6 @@ impl DaemonClient {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Extension runtime lifecycle (ADR-026)
-    // ------------------------------------------------------------------
-
-    /// Start a background runtime for an extension
-    pub async fn ext_start(
-        &self,
-        extension_id: impl Into<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::ExtStart {
-            request_id,
-            extension_id: extension_id.into(),
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Ext start stream closed unexpectedly"),
-        }
-    }
-
-    /// Stop a background runtime for an extension
-    pub async fn ext_stop(
-        &self,
-        extension_id: impl Into<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::ExtStop {
-            request_id,
-            extension_id: extension_id.into(),
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Ext stop stream closed unexpectedly"),
-        }
-    }
-
-    /// Restart a background runtime for an extension
-    pub async fn ext_restart(
-        &self,
-        extension_id: impl Into<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::ExtRestart {
-            request_id,
-            extension_id: extension_id.into(),
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Ext restart stream closed unexpectedly"),
-        }
-    }
-
-    /// Get background runtime status for an extension
-    pub async fn ext_status(
-        &self,
-        extension_id: impl Into<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::ExtStatus {
-            request_id,
-            extension_id: extension_id.into(),
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Ext status stream closed unexpectedly"),
-        }
-    }
-
     // ── Tunnel (ADR-035) ──
 
     /// Stop the PekoHub tunnel
@@ -497,51 +425,6 @@ impl DaemonClient {
         }
     }
 
-    // ── Capability authority management ───────────────────────────────
-
-    /// Grant a capability to a Principal.
-    pub async fn capability_grant(
-        &self,
-        principal: impl Into<String>,
-        capability: impl Into<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CapabilityGrant {
-            request_id,
-            principal: principal.into(),
-            capability: capability.into(),
-        };
-        self.request_response(packet).await
-    }
-
-    /// Revoke a capability from a Principal.
-    pub async fn capability_revoke(
-        &self,
-        principal: impl Into<String>,
-        capability: impl Into<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CapabilityRevoke {
-            request_id,
-            principal: principal.into(),
-            capability: capability.into(),
-        };
-        self.request_response(packet).await
-    }
-
-    /// List capabilities granted to a Principal.
-    pub async fn capability_list(
-        &self,
-        principal: impl Into<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CapabilityList {
-            request_id,
-            principal: principal.into(),
-        };
-        self.request_response(packet).await
-    }
-
     // ── Principal operations ─────────────────────────────────────────
 
     /// Send a message to a Principal and stream the response.
@@ -624,7 +507,6 @@ impl DaemonClient {
         name: impl Into<String>,
         output: Option<String>,
         include_sessions: bool,
-        with_extensions: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalExport {
@@ -632,7 +514,7 @@ impl DaemonClient {
             name: name.into(),
             output,
             include_sessions,
-            with_extensions,
+            with_extensions: false,
         };
         self.request_response(packet).await
     }

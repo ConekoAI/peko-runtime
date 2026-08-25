@@ -4,7 +4,7 @@
 |---|---|
 | **ADR** | 037 |
 | **Title** | Agent-Extension Bundling and Package Layer Rationalization |
-| **Status** | Superseded by [ADR-039](ADR-039-principal-model.md) / [ADR-041](ADR-041-principal-as-container.md) — `peko agent push/pull` and the standalone `.agent` bundle were retired in favor of `.principal` packages |
+| **Status** | Superseded by [ADR-039](ADR-039-principal-model.md) / [ADR-041](ADR-041-principal-as-container.md) — `peko agent push/pull` and the standalone `.agent` bundle were retired in favor of `.principal` packages. The `extensions/` composite bundle layer is further superseded by the `plugins/` layer per [ADR-047 §5](ADR-047-principal-workspace-as-tooling-trust-boundary.md). |
 | **Date** | 2026-06-10 |
 | **Last Updated** | 2026-06-10 |
 | **Implemented** | Yes |
@@ -12,6 +12,29 @@
 | **Reviewers** | TBD |
 | **Depends On** | ADR-017 (Unified Extension Architecture), ADR-024 (Unified Extension Manifest), ADR-027 (Unified Packaging), ADR-036 (Extension Developer Experience) |
 | **Related** | ADR-031 (Agent-Team Membership) |
+
+---
+
+## Update: ADR-047 §5 Phase 7 Rename (2026-08-25)
+
+Per [ADR-047 §5](ADR-047-principal-workspace-as-tooling-trust-boundary.md)
+the `extensions/` composite bundle layer is renamed to `plugins/`.
+Workspace-resident tooling is opaque to the runtime, so the new layer
+carries arbitrary plugin shapes rather than the historical `.ext` archive
+format.
+
+- **New exports** emit a `plugins/<plugin-id>/` layer and omit
+  `extensions/` entirely.
+- **Imports** accept either prefix and route both through the same
+  handler; pre-Phase-7 packages continue to import cleanly.
+- **The `mediaType`** for the legacy `extensions` layer
+  (`application/vnd.peko.layer.extensions.v1.tar+gzip`) is retained so
+  legacy manifests deserialize; the new mediaType is
+  `application/vnd.peko.layer.plugins.v1.tar+gzip`.
+
+The decision to keep skills and MCP servers out of standalone package
+layers (this ADR's §3) still holds — they remain declared via
+`agent.toml` `extensions.enabled` and `manifest.extensions`.
 
 ---
 

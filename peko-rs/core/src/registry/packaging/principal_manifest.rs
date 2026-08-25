@@ -3,7 +3,8 @@
 //! Mirrors the shape of the agent manifest but names the top-level metadata
 //! section `principal` and uses principal-specific layer names
 //! (`agents`, `memory`) in addition to the shared `config`, `identity`,
-//! `sessions`, and `extensions` layers.
+//! `sessions`, and `plugins` layers. The legacy `extensions` layer is
+//! retained for reading pre-Phase-7 packages.
 
 use crate::registry::packaging::manifest::{IdentityConfig, PackagingMetadata, Signatures};
 use crate::registry::packaging::types::ExtensionRef;
@@ -27,7 +28,18 @@ pub struct PrincipalLayers {
     /// Session history layer digest (`sessions/`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<String>,
-    /// Embedded extension packages layer digest (`extensions/*.ext`)
+    /// Plugins layer digest (`plugins/<plugin-id>/`) — ADR-047 §2.1.
+    ///
+    /// Replaces the legacy `extensions` layer. New exports emit this
+    /// field; legacy packages that declare `extensions` are still
+    /// accepted on import.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<String>,
+    /// Extensions layer digest (`extensions/*.ext`) — legacy.
+    ///
+    /// Pre-ADR-047 packages populated this field. New exports never emit
+    /// it; the unpackager accepts it and routes its content to the same
+    /// handler as the `plugins` layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<String>,
 }
@@ -180,14 +192,61 @@ mod tests {
             agents: Some("sha256:ghi".to_string()),
             memory: None,
             sessions: None,
+            plugins: Some("sha256:pqr".to_string()),
             extensions: Some("sha256:jkl".to_string()),
         };
 
         let toml = toml::to_string(&layers).unwrap();
         assert!(toml.contains("agents"));
+        assert!(toml.contains("plugins"));
         assert!(!toml.contains("memory"));
 
         let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.agents, Some("sha256:ghi".to_string()));
+        assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));
+        assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
+    }
+
+    /// Phase 7 (ADR-047 §5): legacy `.principal` packages that declare
+    /// `extensions = "sha256:..."` but not `plugins` continue to
+    /// deserialize cleanly. The new field defaults to `None`.
+    #[test]
+    fn test_principal_layers_accepts_legacy_extensions_only() {
+        let legacy_toml = r#"
+config = "sha256:abc"
+identity = "sha256:def"
+agents = "sha256:ghi"
+extensions = "sha256:jkl"
+"#;
+        let parsed: PrincipalLayers = toml::from_str(legacy_toml).unwrap();
+        assert_eq!(parsed.agents, Some("sha256:ghi".to_string()));
+        assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
+        assert!(parsed.plugins.is_none());
+        assert!(parsed.memory.is_none());
+        assert!(parsed.sessions.is_none());
+    }
+
+    /// Phase 7 (ADR-047 §5): new exports emit `plugins = ...` but skip
+    /// the legacy `extensions` field (skip_serializing_if drops `None`s,
+    /// and `Default` for the deprecated field is `None`).
+    #[test]
+    fn test_principal_layers_plugins_only_emits_no_legacy_field() {
+        let layers = PrincipalLayers {
+            config: Some("sha256:abc".to_string()),
+            identity: Some("sha256:def".to_string()),
+            agents: Some("sha256:ghi".to_string()),
+            memory: None,
+            sessions: None,
+            plugins: Some("sha256:pqr".to_string()),
+            extensions: None,
+        };
+
+        let toml = toml::to_string(&layers).unwrap();
+        assert!(toml.contains("plugins"));
+        assert!(!toml.contains("extensions"), "legacy field must not be emitted: {toml}");
+
+        let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));
+        assert!(parsed.extensions.is_none());
     }
 }

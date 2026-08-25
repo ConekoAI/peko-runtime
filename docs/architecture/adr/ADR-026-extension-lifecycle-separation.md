@@ -1,10 +1,10 @@
 # ADR-026: Separate Extension Runtime Lifecycle from Access Control
 
-**Status**: Accepted — Phase 2 Complete  
-**Date**: 2026-05-03  
-**Last Updated**: 2026-07-10  
-**Author**: Kimi Code CLI  
-**Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-025 (Gateway Extension Architecture)  
+**Status**: Superseded by [ADR-047](ADR-047-principal-workspace-as-tooling-trust-boundary.md) — the runtime lifecycle commands (`peko ext start` / `stop` / `restart` / `status`) and the capability grant/revoke flow were both deleted; tooling now lives directly in the principal's workspace and there is no extension registry to manage. Retained here for historical reference.
+**Date**: 2026-05-03
+**Last Updated**: 2026-08-25
+**Author**: Kimi Code CLI
+**Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-025 (Gateway Extension Architecture)
 **Replaces / Supersedes**: The overloaded semantics of `peko ext enable` / `peko ext disable` as defined in ADR-017 and ADR-025
 
 > **Subsequent Change (2026-07-10).** The access-control `peko ext enable` and
@@ -12,6 +12,11 @@
 > in favor of capability-based authorization (`peko capability grant/revoke
 > --principal`). Runtime lifecycle continues to be managed via `peko ext
 > start` / `stop` / `restart` / `status`.
+>
+> **Subsequent Change (2026-08-25, ADR-047).** The `peko ext start` /
+> `stop` / `restart` / `status` runtime-lifecycle surface and the
+> capability-grant/revoke flow were both deleted. The principal workspace is
+> now the sole tooling surface; there is no extension runtime to start.
 
 ---
 

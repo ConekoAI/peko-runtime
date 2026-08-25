@@ -1701,6 +1701,7 @@ mod tests {
             permissions,
             preferred_model_id: None,
             transport_preference: Default::default(),
+            authority: None,
             quota: None,
             children: Default::default(),
         }

@@ -2,7 +2,7 @@
 name = "peko-extension-api"
 version = "0.1.0"
 edition = "2021"
-description = "Extension framework API contracts (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result, ExtensionManifest, Capability, Capabilities, ActiveExtensionSet, ToolMetadata, ToolSource, ToolRuntimeContext, AsyncReceipt, AsyncTaskStatus, MessageEnvelope, SessionSnapshot, PromptBuildState, ToolRegistryAccess, and the data parts of ReservedParamsConfig / ParamSource. Re-exports ContentBlock / LlmMessage / MessageRole / TokenUsage from peko-message, ToolDefinition / ThinkingEffort / ServiceTier from peko-provider-api, and ToolExposure / ToolResult from peko-tools-core."
+description = "Extension framework API contracts (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result, ExtensionManifest, Capability, Capabilities, ActiveExtensionSet, ToolMetadata, ToolSource, ToolRuntimeContext, AsyncReceipt, AsyncTaskStatus, MessageEnvelope, SessionSnapshot, PromptBuildState, ToolRegistryAccess, and the data parts of ReservedParamsConfig / ParamSource. Re-exports ContentBlock / LlmMessage / MessageRole / TokenUsage from peko-message, ToolDefinition / ThinkingEffort / ServiceTier from peko-provider-api, and ToolExposure / ToolResult from peko-tools-core. Phase 3a (ADR-047 §2.5) adds Authority, NetworkAccess, TunnelAccess."
 
 [dependencies]
 peko-message = { path = "../message" }
@@ -29,3 +29,5 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["rt", "macros", "sync", "time"] }
+# Phase 3a tests round-trip Authority through TOML.
+toml = "1.0"

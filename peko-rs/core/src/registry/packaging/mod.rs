@@ -19,7 +19,9 @@
 //!   permissions, exposure, capabilities, root prompt)
 //! - `workspace/agents/` - The Principal's agent prompts (`AGENT.md`)
 //! - `workspace/memory/` - Memory index and session JSONL (optional)
-//! - `extensions/` - Embedded extension packages (optional, air-gapped bundles)
+//! - `plugins/` - Embedded workspace plugins (ADR-047 §2.1, §5).
+//!   Legacy packages with `extensions/` are still accepted; new exports
+//!   emit `plugins/` and omit `extensions/` entirely.
 //!
 //! ## Example
 //!

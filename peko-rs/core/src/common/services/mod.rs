@@ -5,8 +5,9 @@
 
 pub mod credentials_service;
 pub mod daemon_process_service;
-// ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
-pub mod extension_management_service;
+// ADR-047 Phase 5d: extension_management_service deleted — extensions
+// are now workspace-resident (ADR-047 §2.1); the legacy push/pull
+// registry flow for the .ext archive format was the only caller.
 pub mod session_service;
 
 // ConfigAuthority - the new central config system
@@ -15,7 +16,6 @@ pub use config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImp
 
 pub use credentials_service::CredentialsService;
 pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
-pub use extension_management_service::ExtensionManagementService;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 // B8c.5: session DTOs (SessionInfo / HistoryEvent / HistoryQuery /
 // HistoryResult / BranchResult / SessionDetails / HistorySummary /
@@ -40,7 +40,6 @@ use crate::common::paths::PathResolver;
 #[derive(Debug, Clone)]
 pub struct ServiceContainer {
     agent_config: ConfigAuthorityImpl,
-    extension_management: ExtensionManagementService,
 }
 
 impl ServiceContainer {
@@ -48,18 +47,12 @@ impl ServiceContainer {
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
         Self {
-            agent_config: ConfigAuthorityImpl::new(resolver.clone()),
-            extension_management: ExtensionManagementService::new(resolver),
+            agent_config: ConfigAuthorityImpl::new(resolver),
         }
     }
 
     /// Get the agent configuration service
     pub fn agent_config(&self) -> &ConfigAuthorityImpl {
         &self.agent_config
-    }
-
-    /// Get the extension management service (registry push/pull)
-    pub fn extension_management(&self) -> &ExtensionManagementService {
-        &self.extension_management
     }
 }

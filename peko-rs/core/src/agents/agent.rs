@@ -143,6 +143,16 @@ pub struct Agent {
     /// `Info` for every call.
     audit_first_use_for_model:
         Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// Phase 2 PR 2 (ADR-047 §2.3): MCP context provider forwarded
+    /// to the `AgenticLoop`. The framework `McpAdapter` is gone; the
+    /// renderer consults this provider directly for the
+    /// `{{mcp_context}}` system-prompt section. Default `None`
+    /// means the loop's `EmptyMcpPromptContextProvider` is used
+    /// (placeholder is stripped to empty via `remove_missing=true`).
+    /// Production wiring at `principal/agent_runner.rs` binds the
+    /// real provider wrapping the global `McpManager`.
+    mcp_context_provider:
+        Option<Arc<dyn peko_engine::McpPromptContextProvider>>,
 }
 
 impl Clone for Agent {
@@ -177,6 +187,7 @@ impl Clone for Agent {
             // descendants.
             audit_sink: self.audit_sink.clone(),
             audit_first_use_for_model: self.audit_first_use_for_model.clone(),
+            mcp_context_provider: self.mcp_context_provider.clone(),
         }
     }
 }
@@ -683,6 +694,7 @@ impl Agent {
             // fields.
             audit_sink: None,
             audit_first_use_for_model: None,
+            mcp_context_provider: None,
         };
 
         info!(
@@ -906,6 +918,22 @@ impl Agent {
     /// `sink = None` ⇒ no audit emission at all; `sink = Some` +
     /// `first_use_lookup = None` ⇒ every event is `Info`.
     #[must_use]
+    /// Phase 2 PR 2 (ADR-047 §2.3): bind an MCP context provider
+    /// that the `AgenticLoop` consults for the `{{mcp_context}}`
+    /// system-prompt section. The default `None` makes the loop
+    /// fall back to its `EmptyMcpPromptContextProvider` (the
+    /// placeholder is stripped to empty). Production wiring
+    /// (`principal/agent_runner.rs`) passes a provider wrapping
+    /// the global `McpManager` when one is reachable.
+    #[must_use]
+    pub fn with_mcp_context_provider(
+        mut self,
+        provider: Option<Arc<dyn peko_engine::McpPromptContextProvider>>,
+    ) -> Self {
+        self.mcp_context_provider = provider;
+        self
+    }
+
     pub fn with_audit_sink(
         mut self,
         sink: Option<Arc<dyn peko_engine::audit_sink::AuditSink>>,
@@ -1100,6 +1128,7 @@ impl Agent {
             // `Agent::with_audit_sink`.
             audit_sink: None,
             audit_first_use_for_model: None,
+            mcp_context_provider: None,
         };
 
         info!(
@@ -1861,6 +1890,19 @@ impl Agent {
         .with_async_completion_queue(async_completion_queue)
         .with_caller_id(caller_id)
         .with_quota_meter(quota_meter)
+        // Phase 2 PR 2: forward the agent's bound MCP context
+        // provider so the `{{mcp_context}}` placeholder renders
+        // real Markdown describing the configured MCP servers.
+        // Default `None` leaves the loop's
+        // `EmptyMcpPromptContextProvider` in place (CLI one-shot
+        // path, test fixtures); production wiring at
+        // `principal/agent_runner.rs` binds a provider wrapping
+        // the global `McpManager` via `Agent::with_mcp_context_provider`.
+        .with_mcp_context_provider(
+            self.mcp_context_provider
+                .clone()
+                .unwrap_or_else(|| Arc::new(peko_engine::EmptyMcpPromptContextProvider)),
+        )
         // Phase 4: forward the agent's bound audit sink so the
         // loop emits `model.selected` events on every successful
         // LLM call. Both fields default to `None` (CLI one-shot
@@ -2147,6 +2189,7 @@ impl Agent {
             // `AgenticLoop::with_audit_sink`.
             audit_sink: None,
             audit_first_use_for_model: None,
+            mcp_context_provider: None,
         })
     }
 

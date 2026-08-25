@@ -4,11 +4,11 @@
 |---|---|
 | **ADR** | 036 |
 | **Title** | Extension Developer Experience — `peko ext init` and Semantic Validation |
-| **Status** | Accepted — Implemented |
-| **Last Updated** | 2026-06-10 |
+| **Status** | Superseded by [ADR-047](ADR-047-principal-workspace-as-tooling-trust-boundary.md) — the `peko ext init` flow, semantic validator, and `EXTENSION_SYSTEM.md` were deleted; tooling lives directly in the principal's workspace. Retained here for historical reference. |
+| **Last Updated** | 2026-08-25 |
 | **Date** | 2026-06-10 |
 | **Depends On** | ADR-024 (Unified Extension Manifest), ADR-025 (Gateway Extension Architecture), ADR-026 (Extension Lifecycle Separation), ADR-027 (Unified Packaging) |
-| **Related** | ADR-017 (Unified Extension Architecture), EXTENSION_SYSTEM.md |
+| **Related** | ADR-017 (Unified Extension Architecture), [PRINCIPAL_WORKSPACE.md](../../PRINCIPAL_WORKSPACE.md) |
 
 ---
 
