@@ -5,7 +5,7 @@
 //! implements the `peko principal` CLI surface.
 
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -252,6 +252,138 @@ pub enum PrincipalCommands {
     /// "Top feature wish").
     #[command(subcommand)]
     Persona(PersonaCommands),
+
+    /// Manage workspace-resident universal tools
+    /// (`<workspace>/tools/<id>/manifest.yaml`). Phase 5 (ADR-047 §5)
+    /// replaces the legacy `peko ext *` command tree.
+    #[command(subcommand)]
+    Tool(PrincipalToolCommands),
+
+    /// Manage workspace-resident hook handlers
+    /// (`<workspace>/hooks/<id>/hook.toml`).
+    #[command(subcommand)]
+    Hook(PrincipalHookCommands),
+
+    /// Manage workspace-resident skill prompts
+    /// (`<workspace>/skills/<id>/SKILL.md`).
+    #[command(subcommand)]
+    Skill(PrincipalSkillCommands),
+
+    /// Manage workspace-resident MCP servers
+    /// (`<workspace>/mcp/<id>/server.json`).
+    #[command(subcommand)]
+    Mcp(PrincipalMcpCommands),
+}
+
+/// `peko principal tool list/install/remove` — workspace-resident
+/// universal tool manager (ADR-047 §2.1, §5 Phase 5).
+#[derive(Subcommand)]
+pub enum PrincipalToolCommands {
+    /// List every universal tool installed under
+    /// `<workspace>/tools/`.
+    List {
+        /// Principal name
+        name: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a universal tool by copying its directory into
+    /// `<workspace>/tools/<id>/`. The source must contain a
+    /// `manifest.yaml`.
+    Install {
+        /// Principal name
+        name: String,
+        /// Path to the tool directory.
+        path: PathBuf,
+        /// Overwrite an existing install at the destination.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove an installed universal tool (`rm -rf`).
+    Remove {
+        /// Principal name
+        name: String,
+        /// Tool id (basename of the install directory).
+        id: String,
+        /// Succeed silently if the tool isn't installed.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// `peko principal hook list/install/remove` — workspace-resident hook
+/// manager (ADR-047 §5 Phase 4 + Phase 5).
+#[derive(Subcommand)]
+pub enum PrincipalHookCommands {
+    /// List every hook installed under `<workspace>/hooks/`.
+    List {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a hook by copying its directory into
+    /// `<workspace>/hooks/<id>/`. The source must contain a
+    /// `hook.toml`.
+    Install {
+        name: String,
+        path: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove an installed hook (`rm -rf`).
+    Remove {
+        name: String,
+        id: String,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// `peko principal skill list/install/remove` — workspace-resident
+/// skill manager.
+#[derive(Subcommand)]
+pub enum PrincipalSkillCommands {
+    List {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Install {
+        name: String,
+        path: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+    Remove {
+        name: String,
+        id: String,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// `peko principal mcp list/install/remove` — workspace-resident MCP
+/// server manager.
+#[derive(Subcommand)]
+pub enum PrincipalMcpCommands {
+    List {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Install {
+        name: String,
+        path: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+    Remove {
+        name: String,
+        id: String,
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Subcommands for `peko principal persona`.
@@ -404,6 +536,54 @@ pub async fn handle_principal(
         PrincipalCommands::Diff { name, json: cmd_json } => {
             let use_json = cmd_json || json;
             show_principal_drift(name.as_deref(), paths, use_json).await
+        }
+        PrincipalCommands::Tool(PrincipalToolCommands::List { name, json: cmd_json }) => {
+            let use_json = cmd_json || json;
+            list_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Tool, use_json).await
+        }
+        PrincipalCommands::Tool(PrincipalToolCommands::Install {
+            name,
+            path,
+            force,
+        }) => install_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Tool, &path, force).await,
+        PrincipalCommands::Tool(PrincipalToolCommands::Remove { name, id, force }) => {
+            remove_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Tool, &id, force).await
+        }
+        PrincipalCommands::Hook(PrincipalHookCommands::List { name, json: cmd_json }) => {
+            let use_json = cmd_json || json;
+            list_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Hook, use_json).await
+        }
+        PrincipalCommands::Hook(PrincipalHookCommands::Install {
+            name,
+            path,
+            force,
+        }) => install_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Hook, &path, force).await,
+        PrincipalCommands::Hook(PrincipalHookCommands::Remove { name, id, force }) => {
+            remove_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Hook, &id, force).await
+        }
+        PrincipalCommands::Skill(PrincipalSkillCommands::List { name, json: cmd_json }) => {
+            let use_json = cmd_json || json;
+            list_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Skill, use_json).await
+        }
+        PrincipalCommands::Skill(PrincipalSkillCommands::Install {
+            name,
+            path,
+            force,
+        }) => install_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Skill, &path, force).await,
+        PrincipalCommands::Skill(PrincipalSkillCommands::Remove { name, id, force }) => {
+            remove_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Skill, &id, force).await
+        }
+        PrincipalCommands::Mcp(PrincipalMcpCommands::List { name, json: cmd_json }) => {
+            let use_json = cmd_json || json;
+            list_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Mcp, use_json).await
+        }
+        PrincipalCommands::Mcp(PrincipalMcpCommands::Install {
+            name,
+            path,
+            force,
+        }) => install_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Mcp, &path, force).await,
+        PrincipalCommands::Mcp(PrincipalMcpCommands::Remove { name, id, force }) => {
+            remove_workspace_plugin(&name, paths, super::principal_workspace::PluginKind::Mcp, &id, force).await
         }
     }
 }
@@ -737,6 +917,23 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
         )
     };
 
+    // Build a catalog summary for the show output. Phase 5
+    // (ADR-047 §5.3) adds the catalog block to the `peko principal
+    // show` payload. The catalog is the per-message view of what the
+    // principal has installed — built-in tools + agents + workspace
+    // entries. Empty workspaces render as an empty `catalog` object so
+    // downstream tooling doesn't have to special-case missing.
+    let allowed = {
+        let config = principal.config.read().await;
+        config.capabilities.clone()
+    };
+    let catalog = peko_core::principal::catalog::PrincipalCatalog::build(
+        &principal.workspace_path,
+        &allowed,
+        &principal.agent_prompts,
+        &[],
+    );
+
     if json {
         // Structured view — same shape as `peko log --json` for
         // downstream tooling. `path` is the absolute workspace path;
@@ -746,6 +943,11 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
         // principal persona set --from …` — non-tech users need a way
         // to confirm what the persona-builder drafted, and parsing
         // principal.toml by hand is a hard stop.
+        //
+        // `catalog` (ADR-047 §5.3) is the per-principal view of
+        // installed tooling. `entries[]` is grouped by `kind` so a
+        // caller can pivot by category (built-in, agent, workspace
+        // tool / hook / skill / mcp).
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct AgentView<'a> {
@@ -762,6 +964,18 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
         }
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
+        struct CatalogEntryView<'a> {
+            id: &'a str,
+            kind: &'a str,
+            enabled: bool,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CatalogView<'a> {
+            entries: Vec<CatalogEntryView<'a>>,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct ShowView<'a> {
             name: &'a str,
             display_name: &'a str,
@@ -770,6 +984,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
             preferred_model_id: Option<&'a str>,
             agents: Vec<AgentView<'a>>,
             persona: PersonaView<'a>,
+            catalog: CatalogView<'a>,
         }
         let agents: Vec<AgentView> = principal
             .agent_prompts
@@ -786,6 +1001,17 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
             goals: &config.intent.goals,
             values: &config.intent.values,
         };
+        let catalog_view = CatalogView {
+            entries: catalog
+                .entries()
+                .iter()
+                .map(|e| CatalogEntryView {
+                    id: e.id.as_str(),
+                    kind: e.kind.as_str(),
+                    enabled: e.enabled,
+                })
+                .collect(),
+        };
         let view = ShowView {
             name: &config.name,
             display_name: &display_name,
@@ -794,6 +1020,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
             preferred_model_id: preferred_model_id.as_deref(),
             agents,
             persona,
+            catalog: catalog_view,
         };
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
@@ -822,6 +1049,29 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
             .as_deref()
             .unwrap_or("(no description)");
         println!("    - {} ({}): {desc}", agent_name, prompt.path.display());
+    }
+
+    // Catalog summary (ADR-047 §5.3). Group by kind so the operator
+    // can see "5 built-ins, 3 agents, 1 tool, 2 hooks, 0 skills, 1
+    // MCP" at a glance.
+    let mut by_kind: std::collections::BTreeMap<&str, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for entry in catalog.entries() {
+        let slot = by_kind
+            .entry(entry.kind.as_str())
+            .or_insert((0usize, 0usize));
+        slot.0 += 1;
+        if entry.enabled {
+            slot.1 += 1;
+        }
+    }
+    if by_kind.is_empty() {
+        println!("  Catalog: (empty)");
+    } else {
+        println!("  Catalog:");
+        for (kind, (total, enabled)) in &by_kind {
+            println!("    - {kind}: {enabled}/{total} enabled");
+        }
     }
     Ok(())
 }
@@ -2012,6 +2262,132 @@ impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
     }
 }
 
+/// Resolve a principal name to its workspace root. Loads the principal
+/// first so a missing name fails with the same `load_principal` error
+/// every other principal CLI command uses.
+async fn workspace_for_principal(
+    name: &str,
+    paths: &GlobalPaths,
+) -> Result<std::path::PathBuf> {
+    let manager = build_manager(paths);
+    let principal = load_principal(name, &manager, paths).await?;
+    Ok(principal.workspace_path.clone())
+}
+
+async fn list_workspace_plugin(
+    name: &str,
+    paths: &GlobalPaths,
+    kind: super::principal_workspace::PluginKind,
+    json: bool,
+) -> Result<()> {
+    use super::principal_workspace::{list_kind, PluginEntry};
+
+    let workspace = workspace_for_principal(name, paths).await?;
+    let entries = list_kind(&workspace, kind);
+
+    if json {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ListView<'a> {
+            principal: &'a str,
+            kind: &'static str,
+            entries: Vec<PluginEntry>,
+        }
+        let view = ListView {
+            principal: name,
+            kind: kind.dir_name(),
+            entries,
+        };
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+
+    if entries.is_empty() {
+        println!(
+            "No {} installed for principal '{}' (looked under {}).",
+            match kind {
+                super::principal_workspace::PluginKind::Tool => "tools",
+                super::principal_workspace::PluginKind::Hook => "hooks",
+                super::principal_workspace::PluginKind::Skill => "skills",
+                super::principal_workspace::PluginKind::Mcp => "MCP servers",
+            },
+            name,
+            super::principal_workspace::kind_dir(&workspace, kind).display()
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{} installed for principal '{}' (under {}):",
+        match kind {
+            super::principal_workspace::PluginKind::Tool => "Tools",
+            super::principal_workspace::PluginKind::Hook => "Hooks",
+            super::principal_workspace::PluginKind::Skill => "Skills",
+            super::principal_workspace::PluginKind::Mcp => "MCP servers",
+        },
+        name,
+        super::principal_workspace::kind_dir(&workspace, kind).display()
+    );
+    for entry in &entries {
+        let marker = if entry.has_manifest { "✓" } else { "✗" };
+        println!(
+            "  {marker} {}  ({})",
+            entry.id,
+            entry.path.display()
+        );
+    }
+    Ok(())
+}
+
+async fn install_workspace_plugin(
+    name: &str,
+    paths: &GlobalPaths,
+    kind: super::principal_workspace::PluginKind,
+    source: &std::path::Path,
+    force: bool,
+) -> Result<()> {
+    use super::principal_workspace::install_kind;
+
+    let workspace = workspace_for_principal(name, paths).await?;
+    let entry = install_kind(&workspace, kind, source, force).await?;
+
+    println!(
+        "Installed {} `{}` for principal '{}' at {}",
+        kind.singular_label(),
+        entry.id,
+        name,
+        entry.path.display()
+    );
+    println!(
+        "Restart the daemon (`peko daemon restart`) for the change to take effect."
+    );
+    Ok(())
+}
+
+async fn remove_workspace_plugin(
+    name: &str,
+    paths: &GlobalPaths,
+    kind: super::principal_workspace::PluginKind,
+    id: &str,
+    force: bool,
+) -> Result<()> {
+    use super::principal_workspace::remove_kind;
+
+    let workspace = workspace_for_principal(name, paths).await?;
+    remove_kind(&workspace, kind, id, force)?;
+
+    println!(
+        "Removed {} `{}` for principal '{}'.",
+        kind.singular_label(),
+        id,
+        name
+    );
+    println!(
+        "Restart the daemon (`peko daemon restart`) for the change to take effect."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2217,6 +2593,10 @@ mod tests {
     /// The fix adds a `persona: {description, goals, values}` block to
     /// the `ShowView` envelope. Pin the field set + camelCase rename so
     /// scripts that pipe `jq '.persona.goals'` keep working.
+    ///
+    /// ADR-047 §5.3: the envelope also carries a `catalog` block so
+    /// downstream tooling can read the per-principal tooling snapshot
+    /// without parsing `principal show` text output.
     #[test]
     fn show_principal_json_envelope_has_persona_fields() {
         #[derive(serde::Serialize)]
@@ -2235,6 +2615,18 @@ mod tests {
         }
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
+        struct CatalogEntryView<'a> {
+            id: &'a str,
+            kind: &'a str,
+            enabled: bool,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CatalogView<'a> {
+            entries: Vec<CatalogEntryView<'a>>,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct ShowView<'a> {
             name: &'a str,
             display_name: &'a str,
@@ -2243,6 +2635,7 @@ mod tests {
             preferred_model_id: Option<&'a str>,
             agents: Vec<AgentView<'a>>,
             persona: PersonaView<'a>,
+            catalog: CatalogView<'a>,
         }
 
         let goals = vec!["write small CLI utilities".to_string()];
@@ -2264,6 +2657,13 @@ mod tests {
                 description: Some("A python helper that writes small CLI utilities."),
                 goals: &goals,
                 values: &values,
+            },
+            catalog: CatalogView {
+                entries: vec![CatalogEntryView {
+                    id: "builtin:tool:Read",
+                    kind: "builtin",
+                    enabled: true,
+                }],
             },
         };
 
@@ -2288,6 +2688,20 @@ mod tests {
         assert!(
             pretty.contains("\"Python CLI Helper\""),
             "displayName did not round-trip; got:\n{pretty}"
+        );
+
+        // ADR-047 §5.3: catalog block carries entries with the right
+        // shape. Without this, downstream `jq '.catalog.entries[]'`
+        // consumers would silently get `null`.
+        for field in ["catalog", "entries", "kind", "enabled"] {
+            assert!(
+                pretty.contains(&format!("\"{field}\"")),
+                "catalog block missing `{field}`; got:\n{pretty}"
+            );
+        }
+        assert!(
+            pretty.contains("\"builtin:tool:Read\""),
+            "catalog.entries[].id did not round-trip; got:\n{pretty}"
         );
     }
 

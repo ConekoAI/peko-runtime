@@ -16,12 +16,11 @@ pub mod config;
 pub mod credential;
 pub mod cron;
 pub mod daemon;
-pub mod ext;
 pub mod interrupt;
 pub mod log;
-pub mod mcp;
 pub mod model;
 pub mod principal;
+pub mod principal_workspace;
 pub mod quota;
 pub mod registry;
 pub mod runtime;
@@ -136,10 +135,6 @@ pub enum Commands {
     /// Vault management (advanced / hidden)
     #[command(subcommand, hide = true)]
     Vault(vault::VaultCommands),
-
-    /// Extension management commands (skills, MCP, tools, channels, hooks)
-    #[command(subcommand)]
-    Ext(ext::ExtCommands),
 
     /// Configuration management (advanced / hidden)
     #[command(subcommand, hide = true)]
