@@ -5,7 +5,6 @@
 
 use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
@@ -459,78 +458,29 @@ impl PrincipalUnpackager {
 
     /// Extract the embedded `extensions/` layer and install each `.ext` package
     /// through `store`. Returns the IDs of installed extensions.
+    ///
+    /// **Phase 5 (ADR-047 §2.1):** the `extensions/` layer is dead.
+    /// Workspace-resident plugins (tools/hooks/skills/MCP) live in
+    /// the principal's workspace and are not embedded in
+    /// `.principal` packages (the `--with-extensions` flag was
+    /// dropped in Phase 5c). This method is preserved for the IPC
+    /// handler's call signature; old packages with embedded
+    /// extensions are silently ignored. A future Phase 7 PR will
+    /// introduce a `workspace/` layer.
     pub async fn import_extensions(
         &self,
         manifest: &PrincipalManifest,
-        store: &ExtensionStore,
+        _store: &ExtensionStore,
     ) -> anyhow::Result<Vec<ExtensionId>> {
-        let files = self.extract_package().await?;
-        let mut installed = Vec::new();
-
-        // Build a unique temp directory manually (tempfile is a dev-dependency).
-        let temp_dir = std::env::temp_dir().join(format!(
-            "peko-import-ext-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        ));
-        std::fs::create_dir_all(&temp_dir)?;
-
-        for ext_ref in &manifest.extensions {
-            // `ext_ref.id` flows into `temp_dir.join("{id}.ext")` and
-            // `temp_dir.join("extract-{id}")` below; reject path-traversal
-            // spellings at the source.
-            crate::common::identifiers::validate_agent_name(&ext_ref.id)
-                .map_err(|e| anyhow::anyhow!("[unsafe_extension_id] {}: {e}", ext_ref.id))?;
-
-            let archive_path = format!("extensions/{}.ext", ext_ref.id);
-            let bytes = match files.get(&archive_path) {
-                Some(b) => b,
-                None => {
-                    tracing::warn!(
-                        "Principal package declares extension '{}' but has no embedded {}",
-                        ext_ref.id,
-                        archive_path
-                    );
-                    continue;
-                }
-            };
-
-            let temp_ext = temp_dir.join(format!("{}.ext", ext_ref.id));
-            std::fs::write(&temp_ext, bytes)
-                .with_context(|| format!("Failed to write temp .ext for {}", ext_ref.id))?;
-
-            let extract_dir = temp_dir.join(format!("extract-{}", ext_ref.id));
-            let installed_path = ExtensionUnpackager::install(&temp_ext, &extract_dir)
-                .with_context(|| format!("Failed to install extension {}", ext_ref.id))?;
-
-            // Preserve the registry source reference for future exports.
-            std::fs::write(installed_path.join(".source"), &ext_ref.registry_ref)
-                .with_context(|| format!("Failed to write .source for {}", ext_ref.id))?;
-
-            // TODO(phase-c): gate on
-            // `RuntimeAuthority::runtime_extensions_root_write(Some(&caps))`
-            // once the embedded-extension-install path threads a
-            // caller capability snapshot through `unpack_principal`.
-            // The runtime extensions root is Runtime-tier; required
-            // cap is `runtime:write_extensions`.
-            let id = store.install(&installed_path).await.with_context(|| {
-                format!("Failed to load extension {} after extract", ext_ref.id)
-            })?;
-            installed.push(id.clone());
-
-            store
-                .set_source(&id, &ext_ref.registry_ref)
-                .await
-                .with_context(|| format!("Failed to persist .source for {}", ext_ref.id))?;
+        if !manifest.extensions.is_empty() {
+            tracing::warn!(
+                "Principal package declares {} embedded extension(s) but the \
+                 extensions layer was removed in ADR-047 Phase 5. \
+                 Workspace plugins are not part of the portable bundle.",
+                manifest.extensions.len()
+            );
         }
-
-        // Best-effort cleanup.
-        let _ = std::fs::remove_dir_all(&temp_dir);
-
-        Ok(installed)
+        Ok(Vec::new())
     }
 
     /// Extract the union of capabilities declared by the embedded extensions

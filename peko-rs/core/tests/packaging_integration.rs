@@ -498,10 +498,8 @@ async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
 
     let agents_dir = principal_dir.join("agents");
-    let packager = PrincipalPackager::new(config.clone(), identity)
-        .with_agents_dir(&agents_dir)
-        .with_extensions_from_store(&store, &config)
-        .await?;
+    // Phase 5 (ADR-047 §2.1): `with_extensions_from_store` was deleted.
+    let packager = PrincipalPackager::new(config.clone(), identity).with_agents_dir(&agents_dir);
 
     let export_opts = PrincipalExportOptions {
         output_path: Some(package_path.to_string_lossy().to_string()),

@@ -198,21 +198,13 @@ impl RequestHandler for ExtensionHandler {
                 // into this handler. The on-disk extensions root is
                 // Runtime-tier; the required capability is
                 // `runtime:write_extensions`.
+                //
+                // Phase 5 (ADR-047 §2.1): the legacy
+                // `prepare_install_path` helper lived in the deleted
+                // `packaging` backend. Phase 5e will delete this
+                // whole handler. For now, install the path directly.
                 let store = self.host.extension_store();
-                let install_path =
-                    match crate::extensions::framework::manager::packaging::prepare_install_path(
-                        std::path::Path::new(&path),
-                    ) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Failed to prepare extension for install: {e}"),
-                            };
-                            send_response(sink, response).await?;
-                            return Ok(());
-                        }
-                    };
+                let install_path = std::path::PathBuf::from(&path);
 
                 match store.install(&install_path).await {
                     Ok(ext_id) => {
@@ -359,32 +351,20 @@ impl RequestHandler for ExtensionHandler {
 
             RequestPacket::ExtensionExport {
                 request_id,
-                id,
-                output,
+                id: _,
+                output: _,
             } => {
-                let store = self.host.extension_store();
-                let ext_id = ExtensionId::new(&id);
-                match crate::extensions::framework::manager::packaging::ExtensionPackager::export(
-                    store, &ext_id, &output,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        let response = ResponsePacket::ExtensionExported {
-                            request_id,
-                            id,
-                            output,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
+                // Phase 5 (ADR-047 §2.1): the `.ext` archive format is
+                // gone — extensions are workspace-resident and not
+                // portable. Phase 5e will delete this whole match arm
+                // along with the rest of `ExtensionHandler`.
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: "ExtensionExport is no longer supported: extensions \
+                              are workspace-resident (ADR-047 Phase 5)."
+                        .to_string(),
+                };
+                send_response(sink, response).await?;
             }
 
             RequestPacket::ExtensionBundle {

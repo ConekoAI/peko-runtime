@@ -2,15 +2,12 @@
 //!
 //! Exports Principals to `.principal` files (tar.gz archives with manifest).
 
-use crate::extensions::framework::manager::packaging::ExtensionPackager;
-use crate::extensions::framework::store::ExtensionStore;
-use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
-use crate::registry::packaging::types::{compute_digest, ExtensionRef, Layer, LayerType};
+use crate::registry::packaging::types::{compute_digest, Layer, LayerType};
 use anyhow::Context;
 use peko_identity::Identity;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Export options for a Principal package.
@@ -60,13 +57,17 @@ pub struct PrincipalRegistryDescriptor {
 /// capability). Memory snapshots, when implemented, will live at
 /// `SharedLayout::memory_snapshots_dir`; that layer is deferred to
 /// Phase A.5.
+///
+/// **Phase 5 (ADR-047 §2.1):** the `with_extensions_from_store` /
+/// `with_embedded_extensions` / `with_extension_refs` setters are
+/// deleted. Workspace-resident plugins (tools/hooks/skills/MCP) are
+/// not part of the portable bundle; a future Phase 7 PR will add a
+/// `workspace/` layer to the tar.
 pub struct PrincipalPackager {
     config: PrincipalConfig,
     identity: Identity,
     agents_dir: Option<PathBuf>,
     sessions_dir: Option<PathBuf>,
-    extension_refs: Vec<ExtensionRef>,
-    embedded_extensions: HashMap<String, Vec<u8>>,
 }
 
 impl PrincipalPackager {
@@ -77,8 +78,6 @@ impl PrincipalPackager {
             identity,
             agents_dir: None,
             sessions_dir: None,
-            extension_refs: Vec::new(),
-            embedded_extensions: HashMap::new(),
         }
     }
 
@@ -92,105 +91,6 @@ impl PrincipalPackager {
     pub fn with_sessions_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.sessions_dir = Some(dir.as_ref().to_path_buf());
         self
-    }
-
-    /// Set extension references to record in the manifest.
-    pub fn with_extension_refs(mut self, refs: Vec<ExtensionRef>) -> Self {
-        self.extension_refs = refs;
-        self
-    }
-
-    /// Set embedded extension packages to include in the `extensions/` layer.
-    pub fn with_embedded_extensions(mut self, extensions: HashMap<String, Vec<u8>>) -> Self {
-        self.embedded_extensions = extensions;
-        self
-    }
-
-    /// Resolve all extensions referenced by `config.capabilities` through the
-    /// loaded `ExtensionStore`, export each installed extension to a `.ext`
-    /// package, and attach the resulting `ExtensionRef`s and embedded bytes.
-    ///
-    /// Names that cannot be resolved to an installed extension are skipped with
-    /// a warning; this avoids failing a push because an extension name points
-    /// to a not-yet-installed extension.
-    pub async fn with_extensions_from_store(
-        mut self,
-        store: &ExtensionStore,
-        config: &PrincipalConfig,
-    ) -> anyhow::Result<Self> {
-        let mut refs = Vec::new();
-        let mut embedded = HashMap::new();
-        let mut seen = HashSet::new();
-
-        let names: Vec<&str> = config.capabilities.iter().map(|c| c.as_str()).collect();
-
-        if names.is_empty() {
-            return Ok(self);
-        }
-
-        // tempfile is a dev-dependency only, so build a unique temp directory
-        // manually for production code.
-        let temp_dir = std::env::temp_dir().join(format!(
-            "peko-principal-ext-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        ));
-        std::fs::create_dir_all(&temp_dir)?;
-
-        for name in names {
-            // Capabilities are typed strings like `skill:github_skill` or
-            // `agent:researcher`. Strip the capability prefix so we can
-            // resolve the underlying extension name/ID; skip wildcards and
-            // built-in tool grants that do not reference an installed
-            // extension package.
-            let normalized = name
-                .strip_prefix("skill:")
-                .or_else(|| name.strip_prefix("agent:"))
-                .or_else(|| name.strip_prefix("tool:"))
-                .or_else(|| name.strip_prefix("mcp:"))
-                .unwrap_or(name);
-            if normalized.contains('*') {
-                continue;
-            }
-
-            let Some(resolution) = store.resolve_tool_name(normalized).await else {
-                tracing::warn!(
-                    "Principal extension '{}' does not resolve to an installed extension; skipping embed",
-                    name
-                );
-                continue;
-            };
-            if !seen.insert(resolution.id.clone()) {
-                continue;
-            }
-
-            let ext_id = ExtensionId::new(&resolution.id);
-            let temp_path = temp_dir.join(format!("{}.ext", resolution.id));
-            ExtensionPackager::export(store, &ext_id, &temp_path)
-                .await
-                .with_context(|| format!("Failed to export extension {}", resolution.id))?;
-            let bytes = std::fs::read(&temp_path)
-                .with_context(|| format!("Failed to read exported extension {}", resolution.id))?;
-
-            let registry_ref = resolution
-                .registry_ref
-                .unwrap_or_else(|| resolution.id.clone());
-            refs.push(ExtensionRef {
-                id: resolution.id.clone(),
-                registry_ref,
-            });
-            embedded.insert(format!("extensions/{}.ext", resolution.id), bytes);
-        }
-
-        // Best-effort cleanup of the temp directory.
-        let _ = std::fs::remove_dir_all(&temp_dir);
-
-        self.extension_refs = refs;
-        self.embedded_extensions = embedded;
-        Ok(self)
     }
 
     /// Export the Principal to a `.principal` package.
@@ -277,14 +177,13 @@ impl PrincipalPackager {
         self.export_config(&mut files, &mut manifest)
             .context("Failed to export config")?;
 
-        manifest.extensions = self.extension_refs.clone();
-
         // Phase 5 (ADR-047 §2.1): the legacy "embed extensions
         // from the global ExtensionStore" path is gone. Workspace-
         // resident plugins (tools/hooks/skills/MCP) live in the
         // principal's workspace and are scoped to that workspace;
         // they no longer ship as a portable layer. A future Phase 7
         // PR will add a `workspace/` layer to the bundle tar.
+        // `manifest.extensions` is left at its default empty Vec.
 
         self.export_agents(&mut files, &mut manifest)
             .await

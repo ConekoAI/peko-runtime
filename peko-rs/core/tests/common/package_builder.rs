@@ -189,14 +189,11 @@ grants = [{grants_toml}]
 
         // ── Packager ─────────────────────────────────────────────────────
         let package_path = base.join(format!("{}.principal", self.name));
-        let mut packager =
+        let packager =
             PrincipalPackager::new(config.clone(), identity).with_agents_dir(&agents_dir);
-        if !self.skills.is_empty() {
-            packager = packager
-                .with_extensions_from_store(&store, &config)
-                .await
-                .context("embed skill fixtures")?;
-        }
+        // Phase 5 (ADR-047 §2.1): `with_extensions_from_store` was
+        // deleted. Skills are workspace-resident and are not part of
+        // the portable bundle.
 
         let export_opts = PrincipalExportOptions {
             output_path: Some(package_path.to_string_lossy().to_string()),
