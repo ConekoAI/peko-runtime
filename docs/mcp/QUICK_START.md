@@ -118,4 +118,4 @@ peko ext validate ./mcp-filesystem-server
 
 - Read the [MCP Overview](MCP.md)
 - Read the [Migration Guide](MIGRATION_GUIDE.md)
-- Learn about the [Extension System](../architecture/EXTENSION_SYSTEM.md)
+- Learn about the [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) (ADR-047)

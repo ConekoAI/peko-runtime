@@ -111,8 +111,8 @@ You'll see the Principal's response streamed to your terminal.
 |----------|-------------|
 | [Tutorial: Building Your First Principal](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive (file keeps its historical name; content follows ADR-041) |
 | [CLI Reference](../user-guide/CLI_REFERENCE.md) | All commands explained |
-| [Extension System](../architecture/EXTENSION_SYSTEM.md) | Unified extension architecture |
-| [User's Guide](../user-guide/USERS_GUIDE.md) | Principals, extensions, troubleshooting |
+| [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) | Per-principal tooling layout (ADR-047) |
+| [User's Guide](../user-guide/USERS_GUIDE.md) | Principals, tooling, troubleshooting |
 
 ---
 

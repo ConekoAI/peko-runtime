@@ -168,16 +168,31 @@ peko logout
 ```
 
 #### Extension Management
+
+> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` command
+> tree was retired; tooling lives directly in the principal's workspace.
+> Use the per-category CLI:
+>
+> ```bash
+> peko principal tool list / install / remove
+> peko principal skill list / install / remove
+> peko principal mcp list / install / remove
+> peko principal hook list / install / remove
+> peko principal plugin list / install / remove
+> ```
+>
+> The lines below are retained for historical reference.
+
 ```bash
-peko ext install <PATH|URL>                       # Install an extension
-peko ext list                                     # List installed extensions
-peko ext enable <ID>                              # Enable an extension
-peko ext disable <ID>                             # Disable an extension
-peko ext uninstall <ID>                           # Uninstall an extension
-peko ext info <ID>                                # Show extension info
-peko ext bundle <PATH> [--output <PATH>]          # Bundle extension
-peko ext config <ID>                              # Configure extension
-peko ext validate <PATH>                          # Validate extension manifest
+peko ext install <PATH|URL>                       # Install an extension (deprecated)
+peko ext list                                     # List installed extensions (deprecated)
+peko ext enable <ID>                              # Enable an extension (deprecated)
+peko ext disable <ID>                             # Disable an extension (deprecated)
+peko ext uninstall <ID>                           # Uninstall an extension (deprecated)
+peko ext info <ID>                                # Show extension info (deprecated)
+peko ext bundle <PATH> [--output <PATH>]          # Bundle extension (deprecated)
+peko ext config <ID>                              # Configure extension (deprecated)
+peko ext validate <PATH>                          # Validate extension manifest (deprecated)
 ```
 
 #### System
@@ -277,18 +292,29 @@ All capabilities — tools, skills, MCP servers, and channels — are implemente
 
 ### Managing Extensions
 
+> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` flow was
+> retired; tooling lives directly in the principal's workspace. Use:
+>
+> ```bash
+> peko principal tool install <path>
+> peko principal mcp install <path>
+> peko principal hook install <path>
+> ```
+>
+> The block below is retained for historical reference.
+
 ```bash
-# Install any extension type (auto-detected)
+# Install any extension type (auto-detected) — deprecated
 peko ext install ./my-skill
 peko ext install ./mcp-server.json
 
-# List all extensions
+# List all extensions — deprecated
 peko ext list
 # ID           TYPE      STATUS   HOOKS
 # docker       skill     enabled  prompt:skills
 # filesystem   mcp       enabled  prompt:tools, tool:*
 
-# Enable/disable
+# Enable/disable — deprecated
 peko ext enable docker
 peko ext disable docker
 ```
@@ -304,7 +330,7 @@ Extensions hook into the agentic loop at 22 different points:
 - **Event Hooks**: `EventSubscribe`, `EventEmit`
 - **Lifecycle Hooks**: `AgentShutdown`, `AgentIteration`
 
-Learn more: [Extension System Documentation](docs/architecture/EXTENSION_SYSTEM.md)
+Learn more: [Principal Workspace Documentation](docs/architecture/PRINCIPAL_WORKSPACE.md) (ADR-047 — replaces the extension framework)
 
 ---
 
@@ -458,9 +484,9 @@ MIT
 
 - [Getting Started](docs/getting-started/GETTING_STARTED.md) — Build and run your first agent
 - [Tutorial: Building Your First Agent](docs/getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md) — Step-by-step walkthrough
-- [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, principals, extensions
+- [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, principals, workspace tooling
 - [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Every `peko` command and flag
-- [Extension System](docs/architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
+- [Principal Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md) — Per-principal tooling layout (ADR-047)
 - [PEKO Primitive](docs/architecture/PEKO.md) — Canonical term: Persistent Entity with Keepalive Orchestration
 - [Agent–Session Paradigm](docs/architecture/AGENT_SESSION_PARADIGM.md) — Full design rationale, gap audit, build order
 - [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-042

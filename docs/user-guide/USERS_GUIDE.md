@@ -249,25 +249,41 @@ spawning a fresh one; `subagent_type` must match the declaration.
 
 ---
 
-## Extensions
+## Tooling (Workspace Plugins)
 
-Extensions provide additional capabilities to a Principal through the Unified Extension Architecture.
+> **ADR-047 (2026-08-25).** The legacy "Unified Extension Architecture"
+> and `peko ext *` CLI were retired. Tooling — tools, skills, MCP
+> servers, hooks, and opaque plugins — now lives directly in the
+> principal's workspace. See
+> [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md) for
+> the full layout and migration steps.
 
-### List Extensions
+The principal workspace at `~/.peko/principal/<name>/` is the canonical
+trust boundary for tooling.
+
+### List Installed Tooling
 
 ```bash
-peko ext list
+peko principal tool list
+peko principal skill list
+peko principal mcp list
+peko principal hook list
+peko principal plugin list
 ```
 
-### Install an Extension
+### Install a Plugin
 
 ```bash
-peko ext install <path-or-url>
+peko principal tool install <path>
+peko principal skill install <path>
+peko principal mcp install <path>
+peko principal hook install <path>
+peko principal plugin install <path>
 ```
 
-### Grant/Revoke Extension Capabilities
+### Grant/Revoke Capabilities
 
-Extension access is controlled through capabilities on a Principal:
+Access to installed tooling is controlled through capabilities on a Principal:
 
 ```bash
 # Grant a capability to a Principal
@@ -284,15 +300,19 @@ Principal-scoped authorization is configured in `principal.toml` under
 
 ### MCP Servers
 
-MCP (Model Context Protocol) servers are managed as extensions:
+MCP (Model Context Protocol) servers live in the principal workspace
+under `~/.peko/principal/<name>/mcp/<server-id>/server.json`:
 
 ```bash
-# MCP servers are installed and managed via the ext command
-peko ext install <mcp-extension>
+# MCP servers are installed into the principal's workspace
+peko principal mcp install <server-path>
 
 # Grant MCP capabilities to a Principal
-peko capability grant --principal <principal-name> mcp:<mcp-extension>
+peko capability grant --principal <principal-name> mcp:<server-id>
 ```
+
+No `start` / `stop` / `restart` / `status` step is required — the
+runtime discovers MCP servers at principal boot.
 
 ---
 
@@ -413,7 +433,8 @@ For the full option set, see the [CLI Reference](CLI_REFERENCE.md#cron--principa
 # Show command-specific help
 ./target/release/peko principal --help
 ./target/release/peko send --help
-./target/release/peko ext --help
+# peko ext was retired in ADR-047 — use `peko principal <category> --help`
+./target/release/peko principal tool --help
 ```
 
 ---
@@ -421,7 +442,7 @@ For the full option set, see the [CLI Reference](CLI_REFERENCE.md#cron--principa
 ## Next Steps
 
 - Read the [CLI Reference](CLI_REFERENCE.md) for all commands
-- Read the [Extension System](../architecture/EXTENSION_SYSTEM.md) to understand how extensions plug in
+- Read the [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) to understand where tooling lives (ADR-047)
 - Read the [Tutorial: Building Your First Agent](../getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md)
 
 ---

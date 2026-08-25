@@ -1,5 +1,21 @@
 # MCP (Model Context Protocol) Support
 
+> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` flow this
+> document describes has been retired. MCP servers now live directly in
+> the principal's workspace under `~/.peko/principal/<name>/mcp/<id>/server.json`
+> and are installed via:
+>
+> ```bash
+> peko principal mcp install <server-path>     # copy server.json into the workspace
+> peko principal mcp list                     # list workspace MCP servers
+> ```
+>
+> No `start` / `stop` / `restart` / `status` step is required — the
+> runtime discovers the server at principal boot. See
+> [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md) for
+> the full workspace layout. The body of this document is retained for
+> historical reference and will be rewritten in a follow-up PR.
+
 Peko supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), allowing you to extend agent capabilities with external tools from MCP servers.
 
 ## Overview
@@ -9,101 +25,66 @@ MCP is an open protocol that standardizes how applications provide context to LL
 - Connect to MCP servers via stdio (local) or SSE (remote)
 - Discover and invoke tools from MCP servers
 - Use MCP resources and prompts
-- Manage multiple MCP servers through the Unified Extension Architecture
+- Manage multiple MCP servers through the principal workspace (ADR-047) — formerly via the Unified Extension Architecture
 
 ## Quick Start
 
 ### 1. Install an MCP Server
 
-MCP servers are managed as extensions. For example, to use an MCP filesystem server:
+MCP servers are managed as workspace plugins. For example, to use an MCP filesystem server:
 
 ```bash
-# Install the MCP server as an extension
-peko ext install <mcp-extension-path-or-url>
+# Install the MCP server into the principal's workspace (ADR-047)
+peko principal mcp install <server-path>
 ```
 
-### 2. Start the MCP Server
+### 2. Verify It's Working
 
 ```bash
-# Start the MCP server runtime
-peko ext start <mcp-extension-name>
+# List MCP servers installed in the workspace
+peko principal mcp list
 ```
 
-### 3. Verify It's Working
+## Managing MCP via the Principal Workspace
+
+Peko manages MCP servers through the principal workspace (ADR-047); the
+`peko ext *` surface was retired.
+
+### Install an MCP Server
 
 ```bash
-# Check extension status
-peko ext status <mcp-extension-name>
-
-# List installed extensions
-peko ext list
+peko principal mcp install <server-path>
 ```
 
-## Managing MCP via Extensions
-
-Peko manages MCP servers through the Unified Extension Architecture (`peko ext`):
-
-### Install an MCP Extension
+### List MCP Servers
 
 ```bash
-peko ext install <path-or-url>
-```
-
-### List Extensions
-
-```bash
-peko ext list
+peko principal mcp list
 ```
 
 ### Grant/Revoke MCP Capabilities
 
 ```bash
-peko capability grant --principal <principal-name> mcp:<mcp-extension>
-peko capability revoke --principal <principal-name> mcp:<mcp-extension>
+peko capability grant --principal <principal-name> mcp:<mcp-server>
+peko capability revoke --principal <principal-name> mcp:<mcp-server>
 ```
 
-### Start/Stop MCP Runtimes
-
-```bash
-# Start a background runtime for the extension
-peko ext start <mcp-extension-name>
-
-# Stop the runtime
-peko ext stop <mcp-extension-name>
-
-# Restart the runtime
-peko ext restart <mcp-extension-name>
-
-# Check runtime status
-peko ext status <mcp-extension-name>
-```
-
-### Show Extension Info
-
-```bash
-peko ext info <mcp-extension-name>
-```
-
-### Debug an Extension
-
-```bash
-peko ext debug <mcp-extension-name>
-```
+> **Note (ADR-047):** the capability grant/revoke CLI is itself
+> scheduled for retirement in favor of the per-tier authority model.
+> The above form remains the documented path during the migration
+> window.
 
 ## Configuration
 
-Extension settings can be configured at global or agent level:
-
-```bash
-# Configure extension settings
-peko ext config <mcp-extension-name>
-```
+MCP server settings live in `server.json` inside the workspace
+directory; edit the file directly or re-run
+`peko principal mcp install` with a new manifest.
 
 ## Using MCP Tools with Agents
 
 MCP tools are automatically available to a Principal when the corresponding
-`mcp:` capability is granted. When MCP servers are running, their tools are
-discovered and merged with built-in tools.
+`mcp:` capability is granted. When MCP servers are present in the
+workspace, their tools are discovered and merged with built-in tools.
 
 ### Example Agent Configuration
 

@@ -1,11 +1,11 @@
 # ADR-024: Unified Extension Manifest
 
-**Status**: Accepted  
-**Date**: 2026-05-02  
-**Last Updated**: 2026-05-02  
-**Author**: Kimi Code CLI  
-**Reviewers**: Kimi Code CLI (self-reviewed)  
-**Depends On**: ADR-017 (Unified Extension Architecture)  
+**Status**: Superseded by [ADR-047](ADR-047-principal-workspace-as-tooling-trust-boundary.md) — the unified manifest schema, type-specific adapters, and `peko ext *` flow were deleted; tooling lives directly in the principal's workspace (`tools/`, `skills/`, `mcp/`, `hooks/`, `plugins/`) and is discovered at boot. Retained here for historical reference.
+**Date**: 2026-05-02
+**Last Updated**: 2026-08-25
+**Author**: Kimi Code CLI
+**Reviewers**: Kimi Code CLI (self-reviewed)
+**Depends On**: ADR-017 (Unified Extension Architecture)
 **Replaces / Supersedes**: File-name-based type detection for non-ecosystem-standard extension types
 
 ---
