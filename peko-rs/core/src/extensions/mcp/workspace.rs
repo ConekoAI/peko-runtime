@@ -140,11 +140,11 @@ async fn parse_server_manifest(path: &Path) -> anyhow::Result<McpServerConfig> {
     }
 }
 
-/// Parse-only walk used by the manifest validator (`peko ext validate`).
-/// Mirrors [`load_workspace_mcp_servers`] but does **not** require a
-/// [`McpManager`]; it just enumerates the MCP servers visible at
-/// `dir` and returns their parsed configs so the validator can report
-/// which servers exist. Each entry is `(server_name, config_path)`.
+/// Parse-only walk used by ad-hoc tooling (e.g., MCP config validation
+/// in tests). Mirrors [`load_workspace_mcp_servers`] but does **not**
+/// require a [`McpManager`]; it just enumerates the MCP servers visible
+/// at `dir` and returns their parsed configs. Each entry is
+/// `(server_name, config_path)`.
 pub async fn discover_workspace_mcp_servers(
     dir: &Path,
 ) -> anyhow::Result<Vec<(String, std::path::PathBuf)>> {

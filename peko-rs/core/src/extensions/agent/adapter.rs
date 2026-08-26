@@ -1,33 +1,23 @@
-//! Agent Adapter for the Extension system
+//! Agent adapter for the Extension system
 //!
-//! This adapter enables agents (AGENT.md files with YAML frontmatter) to be
-//! managed through the unified Extension Architecture.
+//! Discovers `AGENT.md` files in the principal's workspace and
+//! registers an `AgentPromptHandler` per agent against the canonical
+//! `ExtensionCore` `PromptSystemSection { section: "agents" }` hook.
+//! The engine prompt renderer dispatches that hook and renders the
+//! agent list into the system prompt (see
+//! `peko-rs/engine/src/prompt/renderer.rs`).
 //!
-//! # Agent Format
-//!
-//! Agents are markdown files with YAML frontmatter:
-//! ```markdown
-//! ---
-//! name: math
-//! description: Mathematics and calculations
-//! color: "#ff0000"
-//! ---
-//!
-//! # Math Agent
-//!
-//! Instructions for the LLM...
-//! ```
-//!
-//! # Hook Points
-//!
-//! Agents hook into:
-//! - `PromptSystemSection { section: "agents" }` - Injects available agents into system prompt
+//! PR-C.4: `ExtensionTypeAdapter` trait impl + `AgentPromptHandlerFactory`
+//! deleted. The trait impl was the framework-coupling path; both it
+//! and the factory that wrapped `AgentPromptHandler` had zero callers
+//! once `BuiltInAdapters` was gutted (PR-C.1). The remaining surface
+//! is `discover_agents` (called from `principal/context.rs` and
+//! `principal/manager.rs`) + `register_agents_with_core` (the only
+//! emitter of the "agents" prompt section) + the data types they
+//! produce/consume.
 
 use crate::extensions::framework::adapters::parsing;
-use crate::extensions::framework::adapters::{ExtensionTypeAdapter, ManifestFormat};
-use crate::extensions::framework::core::{
-    HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
-};
+use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
 use crate::extensions::framework::types::{
     ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
@@ -193,71 +183,6 @@ impl Default for AgentAdapter {
     }
 }
 
-#[async_trait]
-impl ExtensionTypeAdapter for AgentAdapter {
-    fn extension_type(&self) -> &'static str {
-        AGENT_EXTENSION_TYPE
-    }
-
-    fn manifest_format(&self) -> ManifestFormat {
-        ManifestFormat::YamlFrontmatterMarkdown {
-            required_fields: vec!["name", "description"],
-            file_name: "AGENT.md",
-        }
-    }
-
-    fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {
-        vec![HookBinding::new(
-            HookPoint::PromptSystemSection {
-                section: "agents".to_string(),
-                priority: AGENT_HOOK_PRIORITY,
-            },
-            Box::new(AgentPromptHandlerFactory {
-                manifest: manifest.clone(),
-            }),
-        )]
-    }
-
-    fn parse_manifest(
-        &self,
-        path: &Path,
-        content: &str,
-    ) -> anyhow::Result<crate::extensions::framework::types::ExtensionManifest> {
-        let (agent_frontmatter, _): (AgentFrontmatter, _) =
-            parsing::parse_yaml_frontmatter_typed(content)
-                .with_context(|| format!("Failed to parse AGENT.md frontmatter in {path:?}"))?;
-
-        if agent_frontmatter.name.is_empty() {
-            anyhow::bail!("Agent name cannot be empty");
-        }
-        if agent_frontmatter.description.is_empty() {
-            anyhow::bail!("Agent description cannot be empty");
-        }
-
-        let canonical_id = canonical_id_from_path(path);
-        if canonical_id.is_empty() {
-            anyhow::bail!("Agent canonical id cannot be empty for {path:?}");
-        }
-
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let mut manifest = ExtensionManifest::new(
-            &canonical_id,
-            AGENT_EXTENSION_TYPE,
-            &agent_frontmatter.name,
-            &agent_frontmatter.description,
-            "1.0.0",
-            base_dir.to_path_buf(),
-        );
-
-        manifest.set("agent_file", path.to_string_lossy().to_string());
-        if let Some(color) = agent_frontmatter.color {
-            manifest.set("color", color);
-        }
-
-        Ok(manifest)
-    }
-}
-
 /// A discovered agent before registration
 #[derive(Debug, Clone)]
 pub struct DiscoveredAgent {
@@ -276,29 +201,6 @@ struct AgentFrontmatter {
     description: String,
     #[serde(default)]
     color: Option<String>,
-}
-
-/// Factory for creating agent prompt handlers
-#[derive(Debug, Clone)]
-struct AgentPromptHandlerFactory {
-    manifest: ExtensionManifest,
-}
-
-impl HookHandlerFactory for AgentPromptHandlerFactory {
-    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
-        Box::new(AgentPromptHandler {
-            agent_id: self.manifest.id.0.clone(),
-            agent_name: self.manifest.name.clone(),
-            description: self.manifest.description.clone(),
-            file_path: PathBuf::from(
-                self.manifest
-                    .get("agent_file")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            ),
-        })
-    }
 }
 
 /// Handler that injects agent into prompt
@@ -458,17 +360,6 @@ This is a test agent.
         let agent_md = dir.join(format!("{name}.md"));
         std::fs::write(&agent_md, content).unwrap();
         agent_md
-    }
-
-    #[test]
-    fn test_agent_adapter_manifest_format() {
-        let adapter = AgentAdapter::new();
-        let format = adapter.manifest_format();
-
-        assert!(matches!(
-            format,
-            ManifestFormat::YamlFrontmatterMarkdown { .. }
-        ));
     }
 
     #[test]

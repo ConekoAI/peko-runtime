@@ -151,10 +151,11 @@ pub async fn load_workspace_universal_tools(
     Ok(loaded)
 }
 
-/// Parse-only walk used by the manifest validator (`peko ext validate`).
-/// Mirrors [`load_workspace_universal_tools`] but does **not** require
+/// Parse-only walk used by ad-hoc tooling (e.g., the universal-tools
+/// protocol tests). Mirrors [`load_workspace_universal_tools`] but
+/// does **not** require
 /// a live `ExtensionCore`; it just enumerates the tools visible at
-/// `dir` and returns their parsed manifests so the validator can
+/// `dir` and returns their parsed manifests so callers can
 /// report what exists. Each entry is `(tool_name, manifest_path)`.
 pub async fn discover_workspace_universal_tools(
     dir: &Path,

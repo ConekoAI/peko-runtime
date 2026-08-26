@@ -52,8 +52,21 @@ pub mod builtin;
 /// daemon. All external ingress lands in per-peer standing children
 /// under the agent-session paradigm (Phase 7 of sprint 2).
 
-/// General extension adapter — unconstrained access to all 22 hook points.
-pub mod general;
+// PR-C.5: `extensions::general` deleted (was 850 lines including
+// `adapter.rs` 832L + `command_handler.rs` 503L — the latter
+// moved to `extensions::command_handler` in PR-C.3). The general
+// adapter had no remaining production callers after the two
+// `register_adapter` sites were removed; with it gone, no
+// `ExtensionTypeAdapter` impls remain in the daemon's process.
+
+// PR-C.3: `CommandHookHandler` lifted out of `extensions/general/`
+// (503 lines) into `extensions::command_handler` because its only
+// remaining production consumer is `extensions::workspace_hooks` —
+// the parser-only scanner path. The general adapter no longer needs
+// it (the adapter has been thinned to a no-op shell that just
+// delegates to the workspace scanner); co-locating it under
+// `general::` was a historical artifact.
+pub mod command_handler;
 
 /// MCP extension — Model Context Protocol server integration.
 pub mod mcp;
@@ -81,12 +94,12 @@ pub mod universal;
 /// against the canonical `ExtensionCore` hook registry.
 pub mod workspace_hooks;
 
-/// Manifest validation service — walks an extension directory, detects its
-/// type (Tier 1 ecosystem standard or Tier 2 unified manifest), and runs
-/// optional semantic checks (ADR-036). Lives here next to the extension
-/// types it inspects rather than in the framework, so the framework can
-/// stay free of `crate::extensions::*` dependencies.
-pub mod validation;
+// PR-C: `extensions/validation.rs` (788 lines) deleted. The
+// `ExtensionValidationService` it hosted had zero production callers —
+// only its own unit tests referenced it. The `peko ext validate`
+// subcommand was retired in Phase 5 (ADR-047 §2.1). Doc comments in
+// `universal/workspace.rs` and `mcp/workspace.rs` that pointed to
+// `peko ext validate` have been reworded.
 
 // ============================================================================
 // Utilities
@@ -96,64 +109,32 @@ pub mod validation;
 // Built-in Adapter Provider
 // ============================================================================
 
-use std::sync::Arc;
+// PR-C: `BuiltInAdapters` (the `Vec<Box<dyn ExtensionTypeAdapter>>`
+// provider) deleted. After Phase 2 PR 1/2/3/4 stripped skill/mcp/
+// slash/universal adapters, only `AgentAdapter` + `GeneralExtensionAdapter`
+// remained; both are now registered directly at their single call
+// sites (`agents/agent.rs:443-451` for the runtime scan,
+// `daemon/state.rs:791-793` for daemon startup) instead of through a
+// centralized factory. The indirection added no value once the list
+// shrank to two adapters — and the agent scanner's wiring was always
+// more direct anyway.
+//
+// PR-C.5 follow-up: both single call sites were deleted once their
+// adapters were gutted. The `agent/adapter.rs` shell still hosts
+// `discover_agents` + `register_agents_with_core` (the only
+// production emitter of the "agents" prompt section); the
+// `general/` directory was deleted entirely.
 
-/// Built-in adapter provider
-///
-/// Constructs all built-in extension type adapters. Lives in `src/extensions/`
-/// (plural) because it depends on all extension type implementations.
-pub struct BuiltInAdapters;
+// PR-C: the `test_built_in_adapters` assertion
+// (`adapters.len() == 2`) lived here because `BuiltInAdapters`
+// depended on extension type impls. With `BuiltInAdapters` gone,
+// the test was deleted alongside it. The per-adapter tests in
+// `extensions/{agent,general}/adapter.rs` already cover the
+// `register_*` paths that mattered.
 
-impl BuiltInAdapters {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn adapters(
-        &self,
-    ) -> Vec<Box<dyn crate::extensions::framework::adapters::ExtensionTypeAdapter>> {
-        // Phase 2 PR 1 (ADR-047 §2.4): `SkillAdapter` removed. Skills
-        // are now files inside the principal's workspace and are
-        // resolved by `WorkspaceSkillRuntime`, not registered through
-        // the extension framework.
-        //
-        // Phase 2 PR 2 (ADR-047 §2.3): `McpAdapter` removed. MCP
-        // servers are now files inside `<workspace>/mcp/<id>/` and
-        // are loaded by `workspace::load_workspace_mcp_servers` at
-        // principal boot. The global `McpManager` (initialised in
-        // `daemon/state.rs`) is the canonical runtime for them; the
-        // `McpToolProxy` / `InjectableMcpToolProxy` types wrap its
-        // tools for the principal's tool bag. The four framework
-        // hooks that McpAdapter wired (AgentInit, AgentShutdown,
-        // PromptSystemSection, ToolExecute) are no longer needed —
-        // server lifecycle is the manager's job, MCP context is
-        // rendered directly by `workspace::render_mcp_prompt_context`,
-        // and tool execution goes through `McpToolProxy::execute_with_context`.
-        vec![
-            Box::new(agent::adapter::AgentAdapter::new()),
-            // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed. The
-            // framework wrapper was a no-op (`register_commands_with_core`
-            // returned `Vec::new()`); slash dispatch is handled
-            // daemon-side by `principal::slash::SlashDispatcher`,
-            // which only resolves `/help` in v0 (no `COMMAND.md`
-            // installer). The framework adapter added no behavior
-            // beyond discovering and discarding manifests.
-            //
-            // Phase 2 PR 3 (ADR-047 §2.4): universal tools no longer
-            // register a framework adapter. Workspace-resident tools
-            // are scanned by `extensions::universal::workspace`
-            // and registered via `BuiltinToolAdapter::register_tool`
-            // — no framework hook layer.
-            Box::new(general::adapter::GeneralExtensionAdapter::new()),
-        ]
-    }
-}
-
-impl Default for BuiltInAdapters {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// ============================================================================
+// Extension type identifiers and validation
+// ============================================================================
 
 /// Extension type identifiers and validation.
 pub mod extension_types {
@@ -239,23 +220,5 @@ mod tests {
         assert!(types.contains(&"slash"));
         assert!(types.contains(&"mcp"));
         assert!(!types.contains(&"gateway"));
-    }
-
-    #[test]
-    fn test_built_in_adapters() {
-        // Sprint 9 Commit 3: GatewayAdapter retired — adapter count
-        // dropped from 7 to 6.
-        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed — count
-        // dropped from 6 to 5.
-        // Phase 2 PR 2 (ADR-047 §2.3): McpAdapter removed — count
-        // dropped from 5 to 4.
-        // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed
-        // — count dropped from 4 to 3.
-        // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed — count
-        // dropped from 3 to 2.
-        let provider = BuiltInAdapters::new();
-        let adapters = provider.adapters();
-        assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 2);
     }
 }

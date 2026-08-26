@@ -41,7 +41,7 @@ use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::{HookPoint, HookPointBuilder};
 use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::types::ExtensionId;
-use crate::extensions::general::command_handler::{
+use crate::extensions::command_handler::{
     CommandHookConfig, CommandHookHandler, CommandOutputFormat,
 };
 use anyhow::{anyhow, Context, Result};
@@ -205,7 +205,7 @@ async fn register_one_hook(
         args: manifest.args.clone(),
         env: manifest.env.clone(),
         timeout_secs: manifest.timeout_secs.unwrap_or(
-            crate::extensions::general::command_handler::DEFAULT_COMMAND_TIMEOUT_SECS,
+            crate::extensions::command_handler::DEFAULT_COMMAND_TIMEOUT_SECS,
         ),
         output_format,
     };

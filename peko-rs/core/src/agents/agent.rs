@@ -441,11 +441,17 @@ impl Agent {
                 );
                 // Use ExtensionStore for unified tool discovery
                 use crate::extensions::framework::store::ExtensionStore;
-                use crate::extensions::BuiltInAdapters;
                 let store = ExtensionStore::with_core(self.extension_core.clone());
-                for adapter in BuiltInAdapters::new().adapters() {
-                    store.register_adapter(adapter).await;
-                }
+                // PR-C.5: `GeneralExtensionAdapter::register_adapter`
+                // call removed. No `ExtensionTypeAdapter` impls remain
+                // (skill/mcp/slash/universal/gateway retired in
+                // prior phases; validation deleted in PR-C.2;
+                // BuiltInAdapters gutted in PR-C.1; general adapter
+                // gutted here). `load_from_directory` only consults
+                // adapters for manifest types still produced by the
+                // validator path — which is itself deleted — so
+                // registering a no-op adapter here accomplished
+                // nothing.
                 match store.load_from_directory(&extensions_dir).await {
                     Ok(loaded_ids) => {
                         if loaded_ids.is_empty() {
