@@ -26,8 +26,14 @@ use tracing::{debug, info, warn};
 // Phase 8c.1.D.2: data types now live in `peko_extension_host::store`
 // (the trait port's home). Internal-only — callers reach for these
 // directly via the host crate's path.
+//
+// PR-B (extension removal): `BundleMetadata`, `ExtensionBundle`,
+// `DependencyResolution`, `DependencyStatus` dropped along with
+// `create_bundle` / `install_bundle` / `resolve_dependencies*`. Zero
+// production callers; with `peko ext *` retired in Phase 5
+// (ADR-047 §2.1) there is no bundle install / dependency-resolution
+// flow left.
 use crate::extensions::framework::store_trait::{
-    BundleMetadata, DependencyResolution, DependencyStatus, ExtensionBundle,
     ExtensionStore as ExtensionStoreTrait, GlobalExtensionItem, LoadReport, LoadedExtension,
     ToolResolution,
 };
@@ -537,182 +543,20 @@ impl ExtensionStore {
         inner.extensions.get(id).cloned()
     }
 
-    pub async fn create_bundle(
-        &self,
-        ids: Vec<ExtensionId>,
-        name: &str,
-    ) -> Result<ExtensionBundle> {
-        let inner = self.inner.read().await;
-        let mut extensions = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut conflicts = Vec::new();
-
-        for id in ids {
-            let ext = inner
-                .extensions
-                .get(&id)
-                .context(format!("Extension '{id}' not found for bundling"))?;
-            extensions.push(ext.manifest.clone());
-
-            if ext.manifest.dependencies.is_empty() {
-                if let Some(deps) = ext.manifest.get("dependencies") {
-                    if let Some(deps_array) = deps.as_array() {
-                        for dep in deps_array {
-                            if let Some(dep_str) = dep.as_str() {
-                                dependencies.push(dep_str.to_string());
-                            }
-                        }
-                    }
-                }
-            } else {
-                for dep in &ext.manifest.dependencies {
-                    dependencies.push(dep.package.clone());
-                }
-            }
-
-            if let Some(conf) = ext.manifest.get("conflicts") {
-                if let Some(conf_array) = conf.as_array() {
-                    for c in conf_array {
-                        if let Some(c_str) = c.as_str() {
-                            conflicts.push(c_str.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        let metadata = BundleMetadata {
-            version: "1.0.0".to_string(),
-            description: format!("Bundle containing {} extensions", extensions.len()),
-            dependencies,
-            conflicts,
-        };
-
-        Ok(ExtensionBundle {
-            name: name.to_string(),
-            extensions,
-            metadata,
-        })
-    }
-
-    pub async fn install_bundle(&self, bundle: ExtensionBundle) -> Result<Vec<ExtensionId>> {
-        let mut installed_ids = Vec::new();
-
-        let inner = self.inner.read().await;
-        for conflict in &bundle.metadata.conflicts {
-            if inner.extensions.contains_key(&ExtensionId::new(conflict)) {
-                anyhow::bail!("Bundle conflicts with installed extension: {conflict}");
-            }
-        }
-        drop(inner);
-
-        for manifest in &bundle.extensions {
-            let id = manifest.id.clone();
-            let path = manifest.path.clone();
-
-            if !path.exists() {
-                warn!("Extension path does not exist: {:?}", path);
-                continue;
-            }
-
-            match self.install(&path).await {
-                Ok(installed_id) => {
-                    installed_ids.push(installed_id);
-                }
-                Err(e) => {
-                    warn!("Failed to install extension '{}' from bundle: {}", id, e);
-                }
-            }
-        }
-
-        info!(
-            "Installed bundle '{}' with {}/{} extensions",
-            bundle.name,
-            installed_ids.len(),
-            bundle.extensions.len()
-        );
-
-        Ok(installed_ids)
-    }
-
-    // ============================================================================
-    // Dependency Resolution
-    // ============================================================================
-
-    fn resolve_dependencies_with_map(
-        manifest: &ExtensionManifest,
-        extensions: &HashMap<ExtensionId, LoadedExtension>,
-        visited: &mut HashSet<String>,
-    ) -> Result<DependencyResolution> {
-        let mut resolution = DependencyResolution::default();
-
-        if visited.contains(&manifest.id.0) {
-            let mut cycle: Vec<String> = visited.iter().cloned().collect();
-            cycle.push(manifest.id.0.clone());
-            resolution.circular.push(cycle);
-            return Ok(resolution);
-        }
-        visited.insert(manifest.id.0.clone());
-
-        for dep in &manifest.dependencies {
-            if dep.package == manifest.id.0 {
-                let mut cycle = visited.iter().cloned().collect::<Vec<_>>();
-                cycle.push(manifest.id.0.clone());
-                cycle.push(dep.package.clone());
-                resolution.circular.push(cycle);
-                continue;
-            }
-
-            let dep_id = ExtensionId::new(&dep.package);
-            if let Some(installed) = extensions.get(&dep_id) {
-                if let Some(ref required_version) = dep.version {
-                    let installed_version = &installed.manifest.version;
-                    if installed_version != required_version {
-                        resolution
-                            .version_mismatches
-                            .push(DependencyStatus::VersionMismatch {
-                                package: dep.package.clone(),
-                                have: installed_version.clone(),
-                                need: Some(required_version.clone()),
-                            });
-                    }
-                }
-                resolution.satisfied.push(DependencyStatus::Satisfied {
-                    package: dep.package.clone(),
-                    installed_version: installed.manifest.version.clone(),
-                });
-            } else {
-                resolution.missing.push(DependencyStatus::Missing {
-                    package: dep.package.clone(),
-                    required: dep.required,
-                });
-            }
-        }
-
-        visited.remove(&manifest.id.0);
-
-        Ok(resolution)
-    }
-
-    /// Resolve dependencies synchronously. Only usable from synchronous callers
-    /// because it acquires the store's read lock with `blocking_read`.
-    pub fn resolve_dependencies(
-        &self,
-        manifest: &ExtensionManifest,
-        visited: &mut HashSet<String>,
-    ) -> Result<DependencyResolution> {
-        let inner = self.inner.blocking_read();
-        Self::resolve_dependencies_with_map(manifest, &inner.extensions, visited)
-    }
-
-    /// Resolve dependencies from an async context.
-    pub async fn resolve_dependencies_root(
-        &self,
-        manifest: &ExtensionManifest,
-    ) -> Result<DependencyResolution> {
-        let inner = self.inner.read().await;
-        Self::resolve_dependencies_with_map(manifest, &inner.extensions, &mut HashSet::new())
-    }
+    // PR-B (extension removal): `create_bundle` deleted — zero
+    // production callers; `peko ext bundle` retired in Phase 5
+    // (ADR-047 §2.1).
+    //
+    // PR-B: `install_bundle` deleted — same reason. The
+    // `ExtensionBundle` / `BundleMetadata` types are gone from
+    // `store_trait.rs` alongside.
+    //
+    // PR-B: the entire `Dependency Resolution` section deleted —
+    // `resolve_dependencies_with_map`, `resolve_dependencies`, and
+    // `resolve_dependencies_root`. Exercised only by the 6 dependency
+    // tests (also deleted). No production call site exists for "is
+    // this extension's dependency set satisfiable" — workspace-
+    // resident tooling has no installation step.
 
     // ============================================================================
     // Discovery
@@ -903,7 +747,9 @@ impl Default for ExtensionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::types::ExtensionDependency;
+    // PR-B: `ExtensionDependency` import dropped — the 6 dependency
+    // resolution tests that used it were deleted alongside
+    // `resolve_dependencies_with_map` and friends.
     use tempfile::TempDir;
 
     #[test]
@@ -912,21 +758,9 @@ mod tests {
         assert!(store.inner.blocking_read().extensions.is_empty());
     }
 
-    #[test]
-    fn test_extension_bundle() {
-        let bundle = ExtensionBundle {
-            name: "test-bundle".to_string(),
-            extensions: vec![],
-            metadata: BundleMetadata {
-                version: "1.0.0".to_string(),
-                description: "Test bundle".to_string(),
-                dependencies: vec![],
-                conflicts: vec![],
-            },
-        };
-
-        assert_eq!(bundle.name, "test-bundle");
-    }
+    // PR-B (extension removal): `test_extension_bundle` deleted —
+    // exercised the now-removed `ExtensionBundle` / `BundleMetadata`
+    // types.
 
     // ─── ADR-024: Two-tier detection hierarchy tests ─────────────────────
 
@@ -1092,210 +926,16 @@ mod tests {
     }
 
     // ─── Dependency Resolution Tests ─────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_resolve_dependencies_no_deps() {
-        let store = ExtensionStore::new();
-        let manifest = ExtensionManifest::new(
-            "test-ext",
-            "skill",
-            "Test",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp"),
-        );
-
-        let resolution = store.resolve_dependencies_root(&manifest).await.unwrap();
-        assert!(resolution.satisfied.is_empty());
-        assert!(resolution.missing.is_empty());
-        assert!(resolution.version_mismatches.is_empty());
-        assert!(resolution.circular.is_empty());
-        assert!(!resolution.has_required_missing());
-    }
-
-    #[tokio::test]
-    async fn test_resolve_dependencies_with_missing_required() {
-        let store = ExtensionStore::new();
-        let mut manifest = ExtensionManifest::new(
-            "test-ext",
-            "skill",
-            "Test",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp"),
-        );
-        manifest.dependencies.push(ExtensionDependency {
-            package: "missing-dep".to_string(),
-            version: None,
-            required: true,
-        });
-
-        let resolution = store.resolve_dependencies_root(&manifest).await.unwrap();
-        assert_eq!(resolution.missing.len(), 1);
-        assert!(resolution.has_required_missing());
-        assert!(matches!(
-            &resolution.missing[0],
-            DependencyStatus::Missing { package, required: true } if package == "missing-dep"
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_resolve_dependencies_with_missing_optional() {
-        let store = ExtensionStore::new();
-        let mut manifest = ExtensionManifest::new(
-            "test-ext",
-            "skill",
-            "Test",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp"),
-        );
-        manifest.dependencies.push(ExtensionDependency {
-            package: "optional-dep".to_string(),
-            version: None,
-            required: false,
-        });
-
-        let resolution = store.resolve_dependencies_root(&manifest).await.unwrap();
-        assert_eq!(resolution.missing.len(), 1);
-        assert!(!resolution.has_required_missing());
-        assert_eq!(resolution.optional_missing().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_resolve_dependencies_satisfied() {
-        let store = ExtensionStore::new();
-
-        let dep_manifest = ExtensionManifest::new(
-            "already-installed",
-            "skill",
-            "Installed",
-            "Desc",
-            "2.0.0",
-            PathBuf::from("/tmp/installed"),
-        );
-        store
-            .insert_test_extension(LoadedExtension {
-                manifest: dep_manifest,
-                extension_type: "skill".to_string(),
-                hook_ids: vec![],
-                path: PathBuf::from("/tmp/installed"),
-            })
-            .await;
-
-        let mut manifest = ExtensionManifest::new(
-            "test-ext",
-            "skill",
-            "Test",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp"),
-        );
-        manifest.dependencies.push(ExtensionDependency {
-            package: "already-installed".to_string(),
-            version: None,
-            required: true,
-        });
-
-        let resolution = store.resolve_dependencies_root(&manifest).await.unwrap();
-        assert!(resolution.missing.is_empty());
-        assert_eq!(resolution.satisfied.len(), 1);
-        assert!(matches!(
-            &resolution.satisfied[0],
-            DependencyStatus::Satisfied { package, installed_version } if package == "already-installed" && installed_version == "2.0.0"
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_resolve_dependencies_version_mismatch_informational() {
-        let store = ExtensionStore::new();
-
-        let dep_manifest = ExtensionManifest::new(
-            "versioned-dep",
-            "skill",
-            "Versioned",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp/versioned"),
-        );
-        store
-            .insert_test_extension(LoadedExtension {
-                manifest: dep_manifest,
-                extension_type: "skill".to_string(),
-                hook_ids: vec![],
-                path: PathBuf::from("/tmp/versioned"),
-            })
-            .await;
-
-        let mut manifest = ExtensionManifest::new(
-            "test-ext",
-            "skill",
-            "Test",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp"),
-        );
-        manifest.dependencies.push(ExtensionDependency {
-            package: "versioned-dep".to_string(),
-            version: Some(">=2.0.0".to_string()),
-            required: true,
-        });
-
-        let resolution = store.resolve_dependencies_root(&manifest).await.unwrap();
-        assert_eq!(resolution.satisfied.len(), 1);
-        assert_eq!(resolution.version_mismatches.len(), 1);
-        assert!(matches!(
-            &resolution.version_mismatches[0],
-            DependencyStatus::VersionMismatch { package, have, need } if package == "versioned-dep" && have == "1.0.0" && need == &Some(">=2.0.0".to_string())
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_resolve_dependencies_circular_detection() {
-        let store = ExtensionStore::new();
-        let mut manifest_a = ExtensionManifest::new(
-            "ext-a",
-            "skill",
-            "Ext A",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp/a"),
-        );
-        manifest_a.dependencies.push(ExtensionDependency {
-            package: "ext-b".to_string(),
-            version: None,
-            required: true,
-        });
-
-        let mut visited = HashSet::new();
-        visited.insert("ext-a".to_string());
-        let _resolution = ExtensionStore::resolve_dependencies_with_map(
-            &manifest_a,
-            &HashMap::new(),
-            &mut visited,
-        )
-        .unwrap();
-
-        let mut manifest_self = ExtensionManifest::new(
-            "ext-self",
-            "skill",
-            "Self",
-            "Desc",
-            "1.0.0",
-            PathBuf::from("/tmp/self"),
-        );
-        manifest_self.dependencies.push(ExtensionDependency {
-            package: "ext-self".to_string(),
-            version: None,
-            required: true,
-        });
-
-        let resolution = store
-            .resolve_dependencies_root(&manifest_self)
-            .await
-            .unwrap();
-        assert!(!resolution.circular.is_empty());
-    }
+    //
+    // PR-B (extension removal): the 6 tests below deleted — they
+    // exercised `resolve_dependencies_with_map` /
+    // `resolve_dependencies` / `resolve_dependencies_root`, which are
+    // gone. `test_resolve_dependencies_no_deps`,
+    // `test_resolve_dependencies_with_missing_required`,
+    // `test_resolve_dependencies_with_missing_optional`,
+    // `test_resolve_dependencies_satisfied`,
+    // `test_resolve_dependencies_version_mismatch_informational`,
+    // `test_resolve_dependencies_circular_detection` all gone.
 
     // ─── Tool Name Resolution Tests ──────────────────────────────────────
 

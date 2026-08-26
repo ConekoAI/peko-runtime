@@ -13,8 +13,15 @@
 //! (`get_extension`, `resolve_tool_name`, `install`); future phases
 //! will add more as the framework is split further.
 //!
+//! PR-B (extension removal): `ExtensionBundle`, `BundleMetadata`,
+//! `DependencyStatus`, and `DependencyResolution` were deleted along
+//! with `ExtensionStore::create_bundle` / `install_bundle` /
+//! `resolve_dependencies*`. Zero production callers (only tests in
+//! `store.rs`); with `peko ext *` retired in Phase 5 (ADR-047 §2.1)
+//! there is no bundle install / dependency-resolution flow left.
+//!
 //! [`ExtensionStore`]: crate::extensions::framework::store::ExtensionStore (root)
-//! [`VaultAccess`]: crate::extensions::framework::vault::VaultAccess
+// [`VaultAccess`]: crate::extensions::framework::vault::VaultAccess
 
 use anyhow::Result;
 use peko_extension_api::{ExtensionId, ExtensionManifest, HookId};
@@ -102,79 +109,4 @@ pub struct GlobalExtensionItem {
 pub struct LoadReport {
     pub loaded: Vec<ExtensionId>,
     pub failed: Vec<(PathBuf, anyhow::Error)>,
-}
-
-/// Bundle of multiple extensions.
-#[derive(Debug, Clone)]
-pub struct ExtensionBundle {
-    pub name: String,
-    pub extensions: Vec<ExtensionManifest>,
-    pub metadata: BundleMetadata,
-}
-
-/// Metadata for an extension bundle.
-#[derive(Debug, Default, Clone)]
-pub struct BundleMetadata {
-    pub version: String,
-    pub description: String,
-    pub dependencies: Vec<String>,
-    pub conflicts: Vec<String>,
-}
-
-/// Status of a single dependency after resolution.
-#[derive(Debug, Clone)]
-pub enum DependencyStatus {
-    /// Already installed and version satisfies constraint.
-    Satisfied {
-        package: String,
-        installed_version: String,
-    },
-    /// Not installed, needs pull.
-    Missing { package: String, required: bool },
-    /// Installed but version doesn't satisfy constraint (informational only for v1).
-    VersionMismatch {
-        package: String,
-        have: String,
-        need: Option<String>,
-    },
-}
-
-/// Result of resolving dependencies for an extension.
-#[derive(Debug, Clone, Default)]
-pub struct DependencyResolution {
-    /// Dependencies that are already satisfied.
-    pub satisfied: Vec<DependencyStatus>,
-    /// Dependencies that need to be pulled.
-    pub missing: Vec<DependencyStatus>,
-    /// Dependencies with version mismatches (informational).
-    pub version_mismatches: Vec<DependencyStatus>,
-    /// Circular dependency chains detected (if any).
-    pub circular: Vec<Vec<String>>,
-}
-
-impl DependencyResolution {
-    /// Check if there are any required missing dependencies.
-    #[must_use]
-    pub fn has_required_missing(&self) -> bool {
-        self.missing
-            .iter()
-            .any(|m| matches!(m, DependencyStatus::Missing { required: true, .. }))
-    }
-
-    /// Get only the optional missing dependencies.
-    #[must_use]
-    pub fn optional_missing(&self) -> Vec<&DependencyStatus> {
-        self.missing
-            .iter()
-            .filter(|m| {
-                matches!(
-                    m,
-                    DependencyStatus::Missing {
-                        required: false,
-                        ..
-                    }
-                )
-            })
-            .collect()
-    }
 }
