@@ -2185,7 +2185,6 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         // this field; a default of `None` is only used by legacy tests.
         preferred_model_id: None,
         transport_preference: Default::default(),
-        authority: None,
         quota: None,
         children: Default::default(),
     }

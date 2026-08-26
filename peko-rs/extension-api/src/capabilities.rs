@@ -23,17 +23,17 @@
 //! # What `Capabilities` does NOT own
 //!
 //! Per ADR-047 §2.5, the following kinds moved off `Capabilities` and
-//! onto `Authority` (filesystem/network/tunnel) or onto the
-//! workspace (tool/agent catalog):
+//! onto the workspace (tool/agent catalog) or simply retired when the
+//! `Authority` envelope was deleted in PR-E #1:
 //!
 //! | Retired kind     | New surface                                                  |
 //! |------------------|--------------------------------------------------------------|
-//! | `tool:Bash`      | Implicitly granted by `[authority].local_paths`              |
-//! | `tool:Write`     | Implicitly granted by `[authority].local_paths`              |
-//! | `tool:Edit`      | Implicitly granted by `[authority].local_paths`              |
-//! | `network`        | `[authority].network`                                        |
-//! | `filesystem.*`   | `[authority].{local,shared,runtime}_paths`                   |
-//! | `tunnel:*`       | `[authority].tunnel`                                         |
+//! | `tool:Bash`      | Workspace tool; visible by default                           |
+//! | `tool:Write`     | Workspace tool; visible by default                           |
+//! | `tool:Edit`      | Workspace tool; visible by default                           |
+//! | `network`        | Retired with `Authority` envelope (PR-E #1)                  |
+//! | `filesystem.*`   | Retired with `Authority` envelope (PR-E #1)                  |
+//! | `tunnel:*`       | Retired with `Authority` envelope (PR-E #1)                  |
 //! | `agent:*`        | Subagent dispatch lives on `subagent_capabilities` snapshot  |
 //! | `skill:*`        | Workspace-resident; visible by default                       |
 //! | `tool:<name>`    | F37 funnel gate; checked in agentic-loop per tool call       |
@@ -50,9 +50,11 @@
 //! `Capability::is_high_power` was deleted in Phase 3b alongside the
 //! capability-grant IPC handler. ADR-046 §3 still describes the
 //! classifier as live; ADR-047 §2.5 documents the replacement
-//! ("authority tier widening"). The replacement audit hook fires on
-//! `[authority]` field widening (network flip, runtime_paths write),
-//! not on capability grants.
+//! ("authority tier widening"). The replacement audit hook was
+//! keyed off `[authority]` field widening (network flip,
+//! runtime_paths write) and was retired with the `Authority`
+//! envelope in PR-E #1 — there is no longer a high-power classifier
+//! surface in the runtime.
 //!
 //! # IPC surface
 //!
@@ -83,8 +85,9 @@ use std::fmt;
 ///
 /// `Capability` is a newtype around `String`. The string taxonomy is
 /// the canonical contract — see the module doc-comment above for the
-/// five strings that are runtime-gated vs the kinds that moved to
-/// `Authority` or to the F37 funnel.
+/// three strings that are runtime-gated (`principal:write_*`) vs the
+/// kinds that retired with the `Authority` envelope (PR-E #1) or
+/// live behind the F37 funnel.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Capability(pub String);
 
@@ -253,11 +256,12 @@ impl Capabilities {
     ///
     /// The `tool:*` / `agent:*` / `skill:*` / `network` /
     /// `filesystem.*` / `tunnel:*` grants that used to live here
-    /// retired when those concerns moved to `Authority`
-    /// (filesystem/network/tunnel) or to the per-principal workspace
-    /// (tool/agent catalog). Workspace tools are principal-owned
-    /// and visible by default; no capability gating is required to
-    /// enumerate them in `available_tools`.
+    /// retired when the `Authority` envelope was deleted in PR-E
+    /// #1 (network/filesystem/tunnel) or when those concerns moved
+    /// to the per-principal workspace (tool/agent catalog).
+    /// Workspace tools are principal-owned and visible by default;
+    /// no capability gating is required to enumerate them in
+    /// `available_tools`.
     #[must_use]
     pub fn starter_bundle() -> Self {
         Self::with_grants([

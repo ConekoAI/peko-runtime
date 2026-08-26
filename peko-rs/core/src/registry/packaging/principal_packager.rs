@@ -496,7 +496,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
-            authority: None,
             quota: None,
             children: Default::default(),
         }

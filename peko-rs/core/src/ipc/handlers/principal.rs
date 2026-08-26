@@ -1500,7 +1500,6 @@ impl RequestHandler for PrincipalHandler {
                     permissions: Vec::new(),
                     preferred_model_id: Some(model_id),
                     transport_preference: Default::default(),
-                    authority: None,
                     quota: None,
                     children: Default::default(),
                 };
@@ -3391,7 +3390,6 @@ mod tests {
                 permissions: vec![],
                 preferred_model_id: Some("mock".to_string()),
                 transport_preference: Default::default(),
-                authority: None,
                 quota: None,
                 children: Default::default(),
             }
