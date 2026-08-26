@@ -886,10 +886,9 @@ mod tests {
 
         // Non-channel variants are NOT claimed.
         assert!(!handler.matches(&RequestPacket::Ping { request_id: 1 }));
-        assert!(!handler.matches(&RequestPacket::CronList {
+        assert!(!handler.matches(&RequestPacket::Shutdown {
             request_id: 1,
-            include_disabled: false,
-            principal: None,
+            force: false,
         }));
     }
 

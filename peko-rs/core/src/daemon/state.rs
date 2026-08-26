@@ -212,17 +212,6 @@ pub(crate) struct AppState {
     /// via [`AppState::set_cron_engine`].
     cron_engine: Option<Arc<crate::daemon::cron_engine::CronEngine>>,
 
-    /// B8b.1: shared in-process [`CronOps`] handle. Constructed once
-    /// at daemon startup and handed to both [`DaemonCronAdapter`]
-    /// (for tool-side calls) and the `cron` IPC handler (for
-    /// `CronList`/`CronAdd`/`CronRemove`/`CronRun`/`CronHistory`).
-    /// Bypasses the per-request `CronOps::new(...)` rebuild the IPC
-    /// handler used to do (the rebuild cloned `Arc<PrincipalManager>`
-    /// and `Arc<RuntimeAuthority>` on every packet — wasteful given
-    /// all three callers share the exact same inputs). Set once at
-    /// startup via [`AppState::set_cron_ops`].
-    cron_ops: Option<Arc<crate::daemon::cron_ops::CronOps>>,
-
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
 
@@ -1037,7 +1026,6 @@ impl AppState {
             peko_config,
             idle_detector: None,
             cron_engine: None,
-            cron_ops: None,
             runtime_metadata,
             known_runtimes,
             trust_store,
@@ -1121,14 +1109,6 @@ impl AppState {
     /// here so the IPC handler can dispatch manual triggers).
     pub fn set_cron_engine(&mut self, engine: Arc<crate::daemon::cron_engine::CronEngine>) {
         self.cron_engine = Some(engine);
-    }
-
-    /// B8b.1: install the shared in-process [`CronOps`] handle. The
-    /// startup code at `daemon/mod.rs` clones the same `Arc` into
-    /// [`DaemonCronAdapter`] so the cron tools and the cron IPC
-    /// handler see one and the same ops bundle.
-    pub fn set_cron_ops(&mut self, ops: Arc<crate::daemon::cron_ops::CronOps>) {
-        self.cron_ops = Some(ops);
     }
 
     /// Record activity for a Principal so idle-triggered cron jobs do not
@@ -2252,63 +2232,6 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
 impl crate::ipc::handlers::instance::InstanceHost for AppState {
     async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
         AppState::tunnel_dispatcher(self).await
-    }
-}
-
-/// F7 eighth narrow handle: the port the `cron` IPC domain handler uses
-/// to read the typed path resolver (cron files now live at
-/// `{data_dir}/principals/{name}/local/cron/schedule.toml`) and the
-/// principal manager (used to validate `job.principal_name` resolves
-/// before adding a job, and to enumerate loaded principals for
-/// cross-principal operations). Trait lives in `ipc::handlers::cron`.
-/// Both methods are sync (cheap reference / `PathResolver` clone), so
-/// the trait is object-safe without `async_trait`.
-impl crate::ipc::handlers::cron::CronHost for AppState {
-    fn path_resolver(&self) -> crate::common::paths::PathResolver {
-        // Phase A: hand the typed resolver through to the cron
-        // handler so it can derive each principal's
-        // `cron_schedule(name)` path without re-walking
-        // `data_dir.join("principals").join(name)`.
-        self.path_resolver.clone()
-    }
-
-    fn principal_manager(&self) -> &Arc<PrincipalManager> {
-        AppState::principal_manager(self)
-    }
-
-    /// Phase B: hand the tier-typed authority through to the cron
-    /// handler. The cron engine resolves Local-tier paths (the
-    /// per-principal `schedule.toml`) through this authority; the
-    /// actor is the daemon (`Subject::Public`), which is allowed to
-    /// grant `LocalPath` (see
-    /// `common::authority::RuntimeAuthority::local`).
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        &self.authority
-    }
-
-    /// Cron engine for manual fire dispatch (`peko cron run <id>`).
-    /// The daemon attaches the engine at startup (after `AppState`
-    /// exists); the `expect` arms a programmer-error panic if the
-    /// IPC `CronRun` packet arrives before the engine is wired up.
-    /// `CronEngine` is cheaply cloneable (all internal state is
-    /// `Arc`), so callers get an owned handle without a borrow.
-    fn cron_engine(&self) -> Arc<crate::daemon::cron_engine::CronEngine> {
-        self.cron_engine
-            .clone()
-            .expect("CronHost::cron_engine called before AppState::set_cron_engine")
-    }
-
-    /// B8b.1: shared in-process [`CronOps`] handle. Set once at
-    /// startup via [`AppState::set_cron_ops`] right after the
-    /// `DaemonCronAdapter` is built; same `Arc` as the adapter holds,
-    /// so IPC `CronList`/`CronAdd`/`CronRemove`/`CronRun`/`CronHistory`
-    /// requests bypass the per-request `CronOps::new(...)` rebuild.
-    /// Required method; the prior `CronHandler::ops()` helper that
-    /// called `CronOps::new(...)` per packet has been deleted.
-    fn cron_ops(&self) -> Arc<crate::daemon::cron_ops::CronOps> {
-        self.cron_ops
-            .clone()
-            .expect("CronHost::cron_ops called before AppState::set_cron_ops")
     }
 }
 

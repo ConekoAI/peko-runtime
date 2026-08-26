@@ -7,14 +7,15 @@
 //! - `ext`: Extension management (tools, skills, MCP servers)
 //! - `config`: Configuration management
 //! - `system`: System diagnostics and maintenance
-//! - `daemon`: Daemon mode for cron job execution
+//! - `daemon`: Long-running daemon mode (cron engine + IPC server)
 
 pub mod audit;
 pub mod auth;
 pub mod channel;
 pub mod config;
 pub mod credential;
-pub mod cron;
+// 2026-08-25: `peko cron` retired. The cron module was deleted;
+// principals manage schedules through the `tool:Cron*` grants.
 pub mod daemon;
 pub mod interrupt;
 pub mod log;
@@ -148,10 +149,6 @@ pub enum Commands {
     #[command(subcommand)]
     Daemon(daemon::DaemonCommands),
 
-    /// Cron job management (advanced / hidden)
-    #[command(subcommand, hide = true)]
-    Cron(cron::CronCommands),
-
     /// Multi-principal chat primitive (channels) — read/create/post
     /// events across principals.
     ///
@@ -235,11 +232,11 @@ pub enum Commands {
     /// Audit log: tail the JSONL or list in-memory events (ADR-046).
     ///
     /// Two subcommands:
-    ///   peko audit tail [--since 1h] [--type cron.] [--principal foo] [--limit N] [--follow]
+    ///   peko audit tail [--since 1h] [--principal foo] [--limit N] [--follow]
     ///     Reads `<data_dir>/runtime/audit/audit-YYYY-MM-DD.jsonl`
     ///     directly. Survives daemon restarts. `--follow` is
     ///     single-file (today's file).
-    ///   peko audit list [--type cron.] [--principal foo]
+    ///   peko audit list [--principal foo]
     ///     Sends an IPC query to the daemon and reads the in-memory
     ///     ring buffer. Fast path for "what just happened this
     ///     session"; never touches disk.

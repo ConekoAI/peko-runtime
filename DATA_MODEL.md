@@ -1330,9 +1330,11 @@ the target peer's child session (find-only — a note never provisions
 a child) and the `[notify]` self-view line to the trunk's JSONL when
 the trunk exists.
 
-Creation surfaces: the `CronCreate` tool's `target` param (valid only
-together with `message`) and the `--target` flag on `peko cron add /
-at / every / add-idle / add-event`.
+Creation surface: the `CronCreate` tool's `target` param (valid only
+together with `message`). The legacy `peko cron add / at / every /
+add-idle / add-event` CLI subcommands were retired on 2026-08-25
+when cron became a fully internal principal tool gated by
+`tool:Cron{Create,List,Delete}` grants.
 
 **SpawnTool wake attribution (Phase 3b, 2026-08-15).** `SpawnTool`
 jobs take no `target` param; their `wake_on_completion` steer message

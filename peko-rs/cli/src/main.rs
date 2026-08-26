@@ -12,7 +12,7 @@ use std::io::Write;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crate::commands::{
-    audit, auth, channel, config, credential, cron, daemon, from_cli,
+    audit, auth, channel, config, credential, daemon, from_cli,
     init_logging, interrupt, log, model, principal, quota, registry, runtime, search, send,
     system, tunnel, update, vault, version, Cli, Commands, GlobalPaths,
 };
@@ -132,7 +132,6 @@ async fn run_command(
         Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,
         Commands::System(cmd) => system::handle_system(cmd, paths, json).await,
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, json).await,
-        Commands::Cron(cmd) => cron::handle_cron(cmd, paths, json).await,
         Commands::Channel(cmd) => channel::handle_channel(cmd, paths).await,
         Commands::Model(cmd) => model::execute(cmd, paths).await,
         Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,

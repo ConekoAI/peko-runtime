@@ -378,9 +378,10 @@ peko daemon stop
 peko daemon restart
 ```
 
-Scheduled jobs are managed via the hidden `peko cron` subcommands (for
-operators) and will be surfaced through the Principal model in a future
-release.
+Scheduled jobs are managed by the Principal itself via the
+`tool:Cron{Create,List,Delete}` tools (gated by the principal's
+`tool:*` grants). Operators interact with schedules by sending a
+message to the Principal that owns them.
 
 ---
 
