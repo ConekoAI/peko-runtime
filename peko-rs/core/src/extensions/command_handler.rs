@@ -159,6 +159,11 @@ impl CommandHookHandler {
 
     /// Pull event/workspace out of the hook input when possible.
     fn extract_event_and_workspace(&self, ctx: &HookContext) -> (Option<String>, Option<String>) {
+        // PR-E #4: `HookInput::PromptBuild(state)` branch retired alongside
+        // the variant — it was the only consumer of the deleted
+        // `PromptBuildState` type and produced a workspace string the
+        // session-state path also covers. SessionState remains the
+        // single path forward.
         match &ctx.input {
             HookInput::SessionState(snapshot) => {
                 let event = snapshot
@@ -173,10 +178,6 @@ impl CommandHookHandler {
                     .map(String::from);
                 (event, workspace)
             }
-            HookInput::PromptBuild(state) => (
-                Some("prompt_build".to_string()),
-                Some(state.workspace.to_string_lossy().to_string()),
-            ),
             _ => (None, None),
         }
     }

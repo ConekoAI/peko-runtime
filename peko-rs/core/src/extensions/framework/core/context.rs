@@ -65,17 +65,6 @@ impl HookContext {
         matches!(&self.input, HookInput::Json(_) if std::any::TypeId::of::<T>() == std::any::TypeId::of::<serde_json::Value>())
     }
 
-    /// Get input as prompt build state if applicable
-    #[must_use]
-    pub fn as_prompt_build(
-        &self,
-    ) -> Option<&crate::extensions::framework::types::PromptBuildState> {
-        match &self.input {
-            HookInput::PromptBuild(state) => Some(state),
-            _ => None,
-        }
-    }
-
     /// Get input as tool call if applicable
     #[must_use]
     pub fn as_tool_call(&self) -> Option<(&str, &serde_json::Value, Option<&str>)> {
@@ -97,15 +86,6 @@ impl HookContext {
     ) -> Option<&crate::extensions::framework::types::SessionSnapshot> {
         match &self.input {
             HookInput::SessionState(state) => Some(state),
-            _ => None,
-        }
-    }
-
-    /// Get input as message if applicable
-    #[must_use]
-    pub fn as_message(&self) -> Option<&crate::extensions::framework::types::MessageEnvelope> {
-        match &self.input {
-            HookInput::Message(msg) => Some(msg),
             _ => None,
         }
     }
