@@ -23,18 +23,27 @@
 //! tunnel        = false                             # or true / list of peer DIDs
 //! ```
 //!
-//! ## Phase 3 status
+//! ## Phase 3 status (post-PR #363, ADR-047 §5)
 //!
-//! Phase 3a (this PR): the struct is accepted by `principal.toml`
-//! deserializers. The runtime continues to consult `Capabilities` for
-//! write-side gating; the new `[authority]` block is read-only.
-//! Phase 3b will route the `_write(Option<&Caps>)` accessors through
-//! `Authority` and delete the legacy `Capability` / `is_high_power`
-//! surface.
+//! The IPC capability handler that mutated `[capabilities]` grants was
+//! retired in PR #363 (commit `5ad12b6e`). The runtime continues to
+//! consult `Capabilities` for write-side gating through the
+//! `RuntimeAuthority::shared_*_write` and
+//! `runtime_extensions_root_write` accessors; the `[authority]` block
+//! is read on load and projected onto filesystem/network/tunnel
+//! gates, not onto the per-resource capability checks. The
+//! `Capability::is_high_power` classifier referenced below was
+//! deleted alongside the IPC handler — ADR-046 §3 / §6 still describe
+//! it; the replacement is "authority tier widening" per ADR-047
+//! §2.5 (network flip, runtime_paths write).
 //!
 //! Migration shim: when no `[authority]` block is present, the
 //! legacy `[[capabilities.grants]]` entries are translated by
-//! [`Authority::from_legacy_capabilities`].
+//! [`Authority::from_legacy_capabilities`]. The translation moves
+//! `tool:*` / `network` / `filesystem.*` / `tunnel:*` onto
+//! `Authority` and leaves `principal:write_*` / `runtime:write_*` in
+//! `Capabilities` — see the `Capabilities` module doc-comment for the
+//! canonical contract.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,9 +53,14 @@ use crate::capabilities::Capabilities;
 ///
 /// Fields are all `#[serde(default)]`; an empty `Authority` (the
 /// default) means no filesystem authority, no network egress, no
-/// tunnel — the strictest posture. `Authority` deliberately has no
-/// `Display` or builder ergonomics yet; the migration story lives in
-/// Phase 3b when the runtime gating switches over.
+/// tunnel — the strictest posture. Runtime gating today reads
+/// `[authority]` for filesystem/network/tunnel decisions and
+/// `[capabilities].grants` for the `principal:write_*` /
+/// `runtime:write_*` per-resource gate — see
+/// `peko-rs/core/src/common/authority.rs` for the gate composition.
+/// The original plan to migrate the `principal:write_*` checks onto
+/// `Authority` was reversed in ADR-047 §2.5: those grants are
+/// cross-actor / cross-runtime audit markers, not tier-path grants.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authority {
     /// Read/write paths within the principal's local tier.

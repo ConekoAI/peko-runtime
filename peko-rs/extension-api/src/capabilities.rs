@@ -1,18 +1,79 @@
-//! Capability model — ADR-047 §2.5 collapsed surface.
+//! Capability model — `Capabilities` contract.
 //!
-//! Post-Phase 3b, `Capabilities` only carries cross-actor /
-//! cross-runtime grants (`principal:*` / `runtime:*`). Filesystem,
-//! network, and tunnel authority live on the new `Authority` envelope
-//! (see `peko_extension_api::authority`). The legacy `tool:*` /
-//! `agent:*` / `skill:*` / `network` / `filesystem.*` / `tunnel:*`
-//! grants that the framework used to use for `is_tool_enabled` are
-//! gone — workspace tools (Phase 1+2) are principal-owned and
-//! visible by default.
+//! # What `Capabilities` owns (ADR-047 §2.5)
 //!
-//! The grant strings are still typed as `String` so the
-//! `principal:*` / `runtime:*` taxonomy can grow without a schema
-//! change. Wildcards (`runtime:*`) are matched against the literal
-//! grant list at lookup time, matching the previous semantics.
+//! `Capabilities` carries the **cross-actor / cross-runtime grants** that
+//! survive the post-Phase 3b collapse. Five strings are in scope today
+//! (see `CAP_*` constants in `peko-rs/core/src/common/authority.rs`):
+//!
+//! | String                     | Owner / purpose                                              |
+//! |----------------------------|--------------------------------------------------------------|
+//! | `principal:write_config`   | Write the principal's `principal.toml`                       |
+//! | `principal:write_agents`   | Write the principal's `agents/` directory                    |
+//! | `principal:write_identity` | Write the principal's `identity/` directory (DID material)   |
+//! | `principal:write_mcps`     | Write the principal's `mcp/` directory                       |
+//! | `runtime:write_extensions` | Write the runtime `extensions/` directory (reserved; no IPC) |
+//!
+//! Every string above is a **runtime gate**: the `RuntimeAuthority`
+//! `*_write(Option<&Capabilities>)` accessors fail closed without it
+//! (see `assert_capability_granted`). The `principal:write_cron`
+//! grant was retired 2026-08-25 when cron became an internal
+//! principal tool gated by `tool:Cron{Create,List,Delete}`.
+//!
+//! # What `Capabilities` does NOT own
+//!
+//! Per ADR-047 §2.5, the following kinds moved off `Capabilities` and
+//! onto `Authority` (filesystem/network/tunnel) or onto the
+//! workspace (tool/agent catalog):
+//!
+//! | Retired kind     | New surface                                                  |
+//! |------------------|--------------------------------------------------------------|
+//! | `tool:Bash`      | Implicitly granted by `[authority].local_paths`              |
+//! | `tool:Write`     | Implicitly granted by `[authority].local_paths`              |
+//! | `tool:Edit`      | Implicitly granted by `[authority].local_paths`              |
+//! | `network`        | `[authority].network`                                        |
+//! | `filesystem.*`   | `[authority].{local,shared,runtime}_paths`                   |
+//! | `tunnel:*`       | `[authority].tunnel`                                         |
+//! | `agent:*`        | Subagent dispatch lives on `subagent_capabilities` snapshot  |
+//! | `skill:*`        | Workspace-resident; visible by default                       |
+//! | `tool:<name>`    | F37 funnel gate; checked in agentic-loop per tool call       |
+//!
+//! `tool:<name>` and `agent:*` strings **DO still appear** in the
+//! `[capabilities]` table of `principal.toml` — they are checked by
+//! the F37 agentic-loop funnel / subagent dispatch snapshot, not by
+//! this type. They round-trip through `Capabilities` only because
+//! the type is still the canonical store for whatever grant strings
+//! the principal carries.
+//!
+//! # ADR-046 high-power classifier — DELETED
+//!
+//! `Capability::is_high_power` was deleted in Phase 3b alongside the
+//! capability-grant IPC handler. ADR-046 §3 still describes the
+//! classifier as live; ADR-047 §2.5 documents the replacement
+//! ("authority tier widening"). The replacement audit hook fires on
+//! `[authority]` field widening (network flip, runtime_paths write),
+//! not on capability grants.
+//!
+//! # IPC surface
+//!
+//! `peko-rs/core/src/ipc/handlers/capability.rs` and the IPC variants
+//! `CapabilityGrant` / `CapabilityList` / `CapabilityRevoke` were
+//! retired in PR #363 (ADR-047 Phases 7+8, commit `5ad12b6e`). The
+//! only IPC path that still mentions capabilities is the wire
+//! projection `Vec<String>` (`peko-rs/core/src/ipc/packet.rs`).
+//!
+//! # Wildcard semantics
+//!
+//! A grant satisfies a requirement when:
+//! - they are identical strings, or
+//! - the grant ends in `*` and the requirement starts with the
+//!   prefix before the wildcard.
+//!
+//! In practice the only wildcards in production are `runtime:*` (no
+//! caller uses it today) and `principal:*` (no caller uses it
+//! today). The `tool:*` wildcard is checked by the F37 funnel on
+//! `Vec<String>` projections of `Capabilities`, not through this
+//! type's `is_granted`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -20,10 +81,10 @@ use std::fmt;
 
 /// A typed capability grant.
 ///
-/// Post-Phase 3b this is a thin newtype around `String`. `principal:*`
-/// and `runtime:*` are the surviving kinds; the `Capability` struct
-/// itself stays so the existing `capabilities.is_granted(...)`
-/// call sites don't churn through every file in the workspace.
+/// `Capability` is a newtype around `String`. The string taxonomy is
+/// the canonical contract — see the module doc-comment above for the
+/// five strings that are runtime-gated vs the kinds that moved to
+/// `Authority` or to the F37 funnel.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Capability(pub String);
 
