@@ -18,7 +18,6 @@ pub enum HookPoint {
     ///
     /// Called during: `SystemPromptBuilder.build()`
     ///
-    /// Handlers receive: `HookInput::PromptBuild`
     /// Handlers return: `HookOutput::Text` (content to inject)
     ///
     /// # Fields
@@ -26,21 +25,12 @@ pub enum HookPoint {
     /// - `priority`: Ordering within section (higher = earlier)
     PromptSystemSection { section: String, priority: i32 },
 
-    /// Modify messages before sending to LLM
-    ///
-    /// Called during: Before `provider.chat()`
-    ///
-    /// Handlers receive: `HookInput::Message`
-    /// Handlers return: `HookOutput::Message` (modified message)
-    PromptPreProcess,
-
-    /// Transform LLM response before parsing
-    ///
-    /// Called during: After provider response
-    ///
-    /// Handlers receive: `HookInput::Message`
-    /// Handlers return: `HookOutput::Message` (modified response)
-    PromptPostProcess,
+    // F36 / PR-E #4: `PromptPreProcess` and `PromptPostProcess` retired.
+    // The framework once used these hooks to mutate messages before/after the
+    // LLM call, but the engine now flows messages straight through
+    // `peko-message` with no hook layer. The `HookOutput::Message` variant
+    // that paired with them is also gone. Re-introduce only with a real
+    // payload requirement (e.g., a logging/redaction layer).
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TOOL LIFECYCLE
@@ -49,7 +39,6 @@ pub enum HookPoint {
     ///
     /// Called during: Agentic loop initialization
     ///
-    /// Handlers receive: `HookInput::ToolRegistry`
     /// Handlers return: `HookOutput::Tool` or `HookOutput::Vec` of tools
     ToolRegister,
 
@@ -86,17 +75,16 @@ pub enum HookPoint {
     /// Handlers receive: `HookInput::ToolCall { tool_name, params, ... }`
     /// with the original params; the result itself is NOT in the
     /// input payload today (would require a new `HookInput`
-    /// variant — deferred). Use `ToolResultTransform` for
-    /// post-call mutation.
+    /// variant — deferred).
     PostToolUse { tool_name: String },
 
-    /// Modify tool result before returning to LLM
-    ///
-    /// Called during: After tool execution
-    ///
-    /// Handlers receive: `HookInput::Json` (tool result)
-    /// Handlers return: `HookOutput::Json` (modified result)
-    ToolResultTransform,
+    // PR-E #4: `ToolResultTransform` retired. The variant once let
+    // handlers mutate a tool result before it returned to the LLM;
+    // post-F31x the only production caller was a single observation
+    // hook, and `HookResult::Continue(HookOutput::Json)` from the
+    // inner execute handler already covers the in-place mutation
+    // path. Re-introduce only if a future tool needs cross-tool
+    // result rewriting.
 
     /// Execute tool asynchronously
     ///
@@ -198,20 +186,18 @@ pub enum HookPoint {
     ///
     /// Called during: Event emission
     ///
-    /// Handlers receive: `HookInput::SystemEvent`
     /// Handlers return: `HookResult::Handled` to consume, or `PassThrough`
     ///
     /// # Fields
     /// - `topic_pattern`: Pattern for matching events (e.g., "instance.*", "principal.created")
     EventSubscribe { topic_pattern: String },
 
-    /// Emit custom events
-    ///
-    /// Called during: Custom event emission
-    ///
-    /// Handlers receive: `HookInput::SystemEvent`
-    /// Handlers return: `HookOutput::Event` (additional events to emit)
-    EventEmit,
+    // PR-E #4: `EventEmit` retired. The variant let handlers emit
+    // arbitrary events, but the `HookInput::SystemEvent` variant it
+    // required is also gone and no extension ever registered an
+    // emit hook in production. New event-emission needs should land
+    // on the principal's `InboxRegistry` or `ChannelPort`, not
+    // resurrect the hook layer.
 
     // ═══════════════════════════════════════════════════════════════════════════
     // AGENT LIFECYCLE
@@ -260,16 +246,12 @@ pub enum HookPoint {
     /// `HookResult::Continue(HookOutput::Unit)`.
     AfterAgent,
 
-    /// Hook between iterations (for monitoring/intervention)
-    ///
-    /// Called during: Between agent loop iterations
-    ///
-    /// Handlers receive: `HookInput::Json` (iteration state)
-    /// Handlers return: `HookOutput::Json` (modified state)
-    ///
-    /// # Fields
-    /// - `iteration`: Current iteration number
-    AgentIteration { iteration: usize },
+    // PR-E #4: `AgentIteration` retired. The variant let handlers
+    // observe / mutate per-iteration state, but no extension ever
+    // registered one in production (F31x moved iteration logging
+    // to the engine's `tracing` calls). If a future loop gains
+    // genuine cross-iteration state, prefer an explicit `HookPoint`
+    // with a typed payload over a free-form JSON blob.
 }
 
 impl HookPoint {
@@ -277,16 +259,13 @@ impl HookPoint {
     #[must_use]
     pub fn category(&self) -> &'static str {
         match self {
-            Self::PromptSystemSection { .. } | Self::PromptPreProcess | Self::PromptPostProcess => {
-                "prompt"
-            }
+            Self::PromptSystemSection { .. } => "prompt",
 
             Self::ToolRegister
             | Self::ToolExecute { .. }
             | Self::ToolExecuteAsync { .. }
             | Self::ToolCheckStatus { .. }
             | Self::ToolCancel { .. }
-            | Self::ToolResultTransform
             | Self::PreToolUse { .. }
             | Self::PostToolUse { .. } => "tool",
 
@@ -299,12 +278,9 @@ impl HookPoint {
             // Sprint 9 Commit 5: the I/O category is gone along with
             // its 4 hook variants.
             //
-            Self::EventSubscribe { .. } | Self::EventEmit => "event",
+            Self::EventSubscribe { .. } => "event",
 
-            Self::AgentInit
-            | Self::AgentShutdown
-            | Self::AgentIteration { .. }
-            | Self::AfterAgent => "agent",
+            Self::AgentInit | Self::AgentShutdown | Self::AfterAgent => "agent",
             Self::Stop => "loop",
         }
     }
@@ -316,8 +292,6 @@ impl HookPoint {
             Self::PromptSystemSection { section, .. } => {
                 format!("prompt.system_section.{section}")
             }
-            Self::PromptPreProcess => "prompt.pre_process".to_string(),
-            Self::PromptPostProcess => "prompt.post_process".to_string(),
 
             Self::ToolRegister => "tool.register".to_string(),
             Self::ToolExecute { tool_name } => {
@@ -338,7 +312,6 @@ impl HookPoint {
             Self::PostToolUse { tool_name } => {
                 format!("tool.post.{tool_name}")
             }
-            Self::ToolResultTransform => "tool.result_transform".to_string(),
 
             Self::SessionStateChange => "session.state_change".to_string(),
             Self::SessionCompaction => "session.compaction".to_string(),
@@ -351,15 +324,11 @@ impl HookPoint {
             Self::EventSubscribe { topic_pattern } => {
                 format!("event.subscribe.{topic_pattern}")
             }
-            Self::EventEmit => "event.emit".to_string(),
 
             Self::AgentInit => "agent.init".to_string(),
             Self::AgentShutdown => "agent.shutdown".to_string(),
             Self::AfterAgent => "agent.after".to_string(),
             Self::Stop => "loop.stop".to_string(),
-            Self::AgentIteration { iteration } => {
-                format!("agent.iteration.{iteration}")
-            }
         }
     }
 
@@ -498,11 +467,8 @@ impl HookPointBuilder {
         }
     }
 
-    /// Create an agent iteration hook point
-    #[must_use]
-    pub fn agent_iteration(iteration: usize) -> HookPoint {
-        HookPoint::AgentIteration { iteration }
-    }
+    // PR-E #4: `HookPointBuilder::agent_iteration` retired alongside
+    // the `HookPoint::AgentIteration` variant (zero callers).
 
     /// F31x: pre-tool-use hook point for a specific tool name.
     /// Fires before `ToolExecute` middleware. Observe-only in v1.

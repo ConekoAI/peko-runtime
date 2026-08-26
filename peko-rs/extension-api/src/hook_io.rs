@@ -19,8 +19,8 @@
 
 use crate::async_status::AsyncTaskStatus;
 use crate::async_types::AsyncReceipt;
-use crate::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
-use peko_message::{ContentBlock, LlmMessage};
+use crate::session::SessionSnapshot;
+use peko_message::LlmMessage;
 use peko_provider_api::ToolDefinition;
 use peko_tools_core::ToolResult;
 use serde_json::Value;
@@ -57,8 +57,13 @@ pub enum HookOutput {
     /// Tool registration
     Tool(ToolDefinition),
 
-    /// Message transformation
-    Message(ContentBlock),
+    // PR-E #4: `HookOutput::Message(ContentBlock)` retired alongside
+    // the dead `HookInput::PromptPreProcess` / `PromptPostProcess`
+    // hooks it paired with. The variant had zero production
+    // callers; the doc-comment references on
+    // `HookPoint::PromptPreProcess` (also retired) were the only
+    // remaining mentions. Use `HookOutput::Json(value)` to carry
+    // any message-shape payload going forward.
 
     /// Generic JSON value
     Json(serde_json::Value),
@@ -192,11 +197,18 @@ pub enum HookInput {
     #[default]
     Unit,
 
-    /// Prompt build state
-    PromptBuild(PromptBuildState),
-
-    /// Tool registry access
-    ToolRegistry(ToolRegistryAccess),
+    // PR-E #4: `HookInput::PromptBuild(PromptBuildState)`,
+    // `HookInput::ToolRegistry(ToolRegistryAccess)`, and
+    // `HookInput::Message(MessageEnvelope)` retired. The only
+    // production consumers of these variants were
+    // `extensions::command_handler` (parser-only) and the
+    // `HookContext` accessors that wrapped them; both call sites
+    // are also gone in this commit. The supporting types
+    // (`PromptBuildState`, `ToolRegistryAccess`, `MessageEnvelope`)
+    // are exported by `peko_extension_api::session` but had zero
+    // production callers of their own, so they stay exported for
+    // any future caller — see `session.rs` for the canonical
+    // contract.
 
     /// Tool call parameters
     ToolCall {
@@ -306,9 +318,6 @@ pub enum HookInput {
         /// Serialized `Vec<LlmMessage>` (summary + kept messages)
         messages_after: serde_json::Value,
     },
-
-    /// Message envelope
-    Message(MessageEnvelope),
 
     /// Generic JSON value
     Json(serde_json::Value),

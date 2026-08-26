@@ -19,7 +19,7 @@ The principal self-modification gate (originally drafted as a follow-up ADR befo
 
 The gate was built and merged, then immediately determined to be unworkable for a structural reason: **agents with `tool:Bash` can always find a way around any matcher**. Any rule that classifies "this command is destructive" can be defeated by base64, heredoc, `printf` chains, `python -c`, `xargs`, or simply typing the destructive verb into a script file. Adding a permission layer above a tool that executes arbitrary shell is duplicative work for the user without security benefit.
 
-The intent of the gate — make self-mutation visible — survives. The mechanism does not. This ADR replaces the gate with **trust + audit**: every principal action lands in a JSONL audit log the user can read, every high-power capability grant prints a non-blocking warning, and the user has a startup-time canary for any external `principal.toml` edit. The user is in the loop via awareness, not via a permission pop-up.
+The intent of the gate — make self-mutation visible — survives. The mechanism does not. This ADR replaces the gate with **trust + audit**: every principal action lands in a JSONL audit log the user can read, every authority tier widening prints a non-blocking warning (the successor to the deleted high-power classifier — see §3), and the user has a startup-time canary for any external `principal.toml` edit. The user is in the loop via awareness, not via a permission pop-up.
 
 ## 2. Decision
 
@@ -31,24 +31,55 @@ The intent of the gate — make self-mutation visible — survives. The mechanis
 
 2. **Startup config-drift canary** — at every daemon boot, the daemon SHA-256s every `principal.toml`, compares to `<config_dir>/runtime/principal-hashes.json`, and emits `principal.config_drift` `Security` audit events for any mismatch. The baseline is written atomically (`.tmp` + rename). Users read it via `peko principal diff` or `peko audit tail`.
 
-3. **Grant-time warnings** — successful `CapabilityGrant` IPC emits a `principal.capability_granted` audit event. High-power capabilities (tool:Bash, tool:Write, tool:Edit, network, filesystem / fs / tunnel / principal / runtime prefixes) escalate to `Warning` severity; everything else stays `Info`. The CLI side also prints a non-blocking stderr warning after the grant lands, naming the capability and pointing the user at `peko audit tail --principal <NAME>` for the trail. **No interactive `Continue? [y/N]` prompt** — agents invoking the grant are not blocked by a TTY requirement.
+3. **Grant-time warnings (post-ADR-047, pre-PR-E #1).** The original
+   `CapabilityGrant` IPC handler was retired in PR #363 alongside the
+   high-power classifier (see §3 below). Authority tier widening
+   warnings were the proposed replacement — `[authority].network`
+   flipping from `deny` to `allow`, `[authority].tunnel` flipping
+   from `false` to `true`, or first write to any
+   `[authority].runtime_paths` entry — all at `Warning` severity.
+   These warnings were retired in PR-E #1 (commit `224e4162`)
+   alongside the `Authority` envelope itself; there is no
+   authority tier widening to audit against in the current runtime.
+   No interactive `Continue? [y/N]` prompt was ever shipped; the
+   runtime never had a TTY requirement on agents.
 
-## 3. High-power capability classification
+## 3. High-power capability classification — RETIRED 2026 (ADR-047 §2.5)
 
-Hand-curated in `Capability::is_high_power` (`peko-rs/extension-api/src/capabilities.rs`). Single source of truth — both the daemon audit call and the CLI warning use it. v1:
+`Capability::is_high_power` was deleted alongside the IPC capability
+handler in PR #363 (commit `5ad12b6e`, ADR-047 Phases 7+8). The
+classifier was hand-curated and lived at
+`peko-rs/extension-api/src/capabilities.rs`. Its single-source-of-truth
+contract was satisfied by **authority tier widening** (ADR-047
+§2.5): the same audit `Warning` severity that the deleted classifier
+would have escalated to fired on:
 
-| Kind / value         | Why high-power                                     |
-|----------------------|----------------------------------------------------|
-| `tool:Bash`          | Arbitrary shell exec — bypasses every matcher      |
-| `tool:Write`         | Direct disk writes via tool layer                  |
-| `tool:Edit`          | Direct disk edits via tool layer                   |
-| `network`            | Bare egress authority                              |
-| `filesystem:*`       | Filesystem authority outside the tool layer        |
-| `tunnel:*`           | PekoHub egress                                     |
-| `principal:*`        | Cross-principal authority                          |
-| `runtime:*`          | Runtime identity authority                         |
+- `[authority].network` flipping from `deny` to `allow` (or to a
+  permissive `allow:<host-pattern>`).
+- `[authority].tunnel` flipping from `false` to `true` (or to a peer
+  DID list).
+- First write to any `[authority].runtime_paths` entry.
 
-Read-only tools (`tool:Read`), skills (`skill:*`), agents (`agent:*`) are low-power and emit Info events only. This is a coarse threshold — the user asked for "things the operator should glance at", not a security model. The audit log is the security model; the warning is the friction.
+**PR-E #1 (2026-08-26, commit `224e4162`):** the `Authority`
+envelope — including `[authority].network`, `[authority].tunnel`,
+and `[authority].{local,shared,runtime}_paths` — was deleted. The
+envelope had zero production consumers outside its own
+serde round-trip; the ADR-047 §2.5 migration onto it was never
+landed. The runtime gate continues to consult `Capabilities` for
+the cross-actor / cross-runtime `principal:write_*` strings. The
+high-power classifier is now completely retired; there is no
+authority tier widening to audit against. The audit log remains
+the security model; the warning surface simply does not exist
+anymore.
+
+The historical high-power kinds (v1 table that lived here before the
+deletion) are now redundant — `tool:Bash` / `tool:Write` / `tool:Edit`
+are workspace-resident tools visible by default; `network` /
+`filesystem:*` / `tunnel:*` were fields on the now-deleted
+`Authority` struct; the `principal:*` / `runtime:*` survivors are
+cross-actor / cross-runtime audit markers (not authority gates) per
+the `Capabilities` module doc-comment. The audit log is the security
+model; there is no warning friction.
 
 ## 4. What this ADR deletes
 
@@ -71,7 +102,14 @@ Tier authority (`LocalPath` / `SharedPath` / `RuntimePath`) remains — it preda
 - **No false security.** The gate gave the user a checkbox they would check without thinking. The audit log gives them data.
 - **Agent-friendly.** Agents can grant themselves the tools they need without waiting for a human or being stopped by a TTY prompt. The warning prints after the grant, in the same instant the agent's IPC call returns. The agent's loop is unaffected.
 - **User-friendly.** `peko audit tail --since 24h` is the one command the user needs to know. `peko principal diff` is the canary for "did someone edit my config while the daemon was stopped?".
-- **Single source of truth.** `Capability::is_high_power` is one classifier; both the daemon and CLI use it. Drift between the audit-event severity and the CLI warning is impossible.
+- **Single source of truth (post-ADR-047, pre-PR-E #1).** Authority
+  tier widening (see §3 / ADR-047 §2.5) was the one classifier; both
+  the daemon audit call and the CLI warning used it. After PR-E #1
+  retired the `Authority` envelope, the runtime has no tier-widening
+  surface — the audit log captures capability-grant IPC events
+  (where they still exist) but no field-flip events. Drift between
+  audit-event severity and CLI warning is impossible because there
+  is no CLI warning.
 
 ### Negative
 
@@ -87,7 +125,9 @@ Documented here so the next person doesn't have to re-discover them:
 - **No tamper-evident hash chain.** JSONL lines do not include `prev_hash`. A user editing the file is undetectable after the fact. (Trivial to add: every line carries a `prev_hash` and the line's own hash; verification walks the chain.)
 - **No line-level TOML diff.** `peko principal diff` only reports which principal drifted, not what changed inside it. A line-level diff is a follow-up; the current command is the "something changed" canary.
 - **`--follow` is single-file.** `peko audit tail --follow` reads only today's `audit-YYYY-MM-DD.jsonl`. Cross-day follow needs `tail -F audit-*.jsonl` from the shell. `notify`-based rotation polling is deferred.
-- **High-power classifier is hand-curated.** Adding a new high-power capability kind requires editing `Capability::is_high_power` and updating the test. A registry-driven description library is a follow-up.
+- **High-power classifier — DELETED.** `Capability::is_high_power`
+  was deleted in PR #363 alongside the IPC capability handler. The
+  replacement is authority tier widening (ADR-047 §2.5); see §3 above.
 - **No syslog / journald forwarding.** JSONL is the single sink in v1. Operators who want journald forwarding can `tail -F` the file; structured forwarding is a follow-up.
 - **No admin token rotation.** The admin token is created once at first boot and persists until manual file deletion + daemon restart. Rotation is out of scope for v1.
 
@@ -100,7 +140,7 @@ Listed in priority order:
 3. Line-level TOML diff for `peko principal diff`.
 4. `notify`-based multi-day `--follow` for `peko audit tail`.
 5. Optional syslog / journald forwarding.
-6. Capability description registry (move high-power descriptions out of the CLI string).
+6. ~~Capability description registry (move high-power descriptions out of the CLI string).~~ Superseded by authority tier widening (ADR-047 §2.5).
 7. Admin token rotation: `peko auth rotate-admin` + auto-rotate on N days.
 
 ## 8. Reference patterns
@@ -120,7 +160,7 @@ cargo test -p peko --lib daemon::config_drift::tests
 cargo test -p peko --lib ipc::handlers::audit::tests
 
 # High-power classifier
-cargo test -p peko-extension-api --lib capabilities::tests::is_high_power
+cargo test -p peko --lib common::authority::tests  # tier + capability write-gate ordering
 
 # Cross-cutting
 cargo build --workspace

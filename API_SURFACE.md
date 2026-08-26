@@ -743,17 +743,21 @@ Context for deriving semantic session keys. Not to be confused with the runtime 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
 | `ExtensionCore` | `extensions::framework::core` | ✅ New | Central hook registry |
-| `ExtensionManager` | `extensions::framework::manager` | ✅ New | Extension lifecycle |
-| `HookPoint` (22 variants) | `extensions::framework::core` | ✅ New | Extension hook points |
+| `ExtensionStore` | `extensions::framework` | ✅ New | Extension lifecycle + on-disk persistence |
+| `HookPoint` (17 variants post-PR-E #4) | `extensions::framework::core` | ✅ New | Extension hook points |
 | `HookHandler` trait | `extensions::framework::core` | ✅ New | Hook implementation |
-| `ExtensionTypeAdapter` trait | `extensions::framework::adapters` | ✅ New | Extension type adapter trait |
-| `BuiltInAdapters` | `extensions::framework::adapters` | ✅ New | Built-in adapter provider |
-| `SkillAdapter` | `extensions::skill::adapter` | ✅ New | SKILL.md-based capabilities |
-| `McpAdapter` | `extensions::mcp::adapter` | ✅ New | MCP server integration |
-| `UniversalToolAdapter` | `extensions::universal::adapter` | ✅ New | Executable tools |
 | `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
-| `GatewayAdapter` | `extensions::gateway::adapter` | ✅ New | Platform gateways |
-| `GeneralExtensionAdapter` | `extensions::general::adapter` | ✅ New | Multi-hook extensions |
+
+> **PR-E #1–#5 deletions (2026-08-26):** the `ExtensionManager`,
+> `BuiltInAdapters`, `GeneralExtensionAdapter`, `SkillAdapter`,
+> `McpAdapter`, `UniversalToolAdapter`, `GatewayAdapter` types and
+> their backing `extensions::framework::manager` / `::general` /
+> `::validation` modules were deleted as part of the
+> extension-removal series (commit `224e4162` + earlier). The
+> runtime now relies on workspace-resident extensions driven by
+> `EngineChannelResponder` (peko-channel) and the F37 funnel gate
+> (`peko_engine::funnel`); no adapter registry remains. HookPoint
+> dropped from 22 to 17 variants in PR-E #4.
 
 ### Agent-Owned Session Management (2026-08-09; revised 2026-08-13)
 

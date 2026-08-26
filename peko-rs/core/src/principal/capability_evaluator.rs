@@ -67,21 +67,6 @@ impl CapabilityEvaluator {
             .iter()
             .any(|provided| Self::is_granted(grants, provided))
     }
-
-    /// Return every capability from the extension that is currently granted.
-    #[must_use]
-    pub fn active_provides(
-        &self,
-        manifest: &ExtensionManifest,
-        grants: &Capabilities,
-    ) -> Vec<String> {
-        manifest
-            .provides
-            .iter()
-            .filter(|provided| Self::is_granted(grants, provided))
-            .cloned()
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -159,20 +144,5 @@ mod tests {
         let grants = Capabilities::with_grants(["tool:custom-tool"]);
 
         assert!(CapabilityEvaluator::new().is_extension_active(&manifest, &grants, None));
-    }
-
-    #[test]
-    fn active_provides_returns_only_granted() {
-        let manifest = manifest_with(
-            "agency",
-            &["agent:researcher", "agent:writer", "skill:briefing"],
-            &[],
-        );
-        let grants = Capabilities::with_grants(["agent:*"]);
-        let active = CapabilityEvaluator::new().active_provides(&manifest, &grants);
-
-        assert!(active.contains(&"agent:researcher".to_string()));
-        assert!(active.contains(&"agent:writer".to_string()));
-        assert!(!active.contains(&"skill:briefing".to_string()));
     }
 }

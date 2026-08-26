@@ -767,30 +767,17 @@ impl AppState {
                 .with_storage_dir(path_resolver.extensions_root()),
         );
 
-        // Register adapters (same as CLI create_manager_with_adapters).
-        // Sprint 9 Commit 3: `GatewayAdapter` removed — chat-gateway
-        // adapter framework retired.
-        use crate::extensions::general::GeneralExtensionAdapter;
-
-        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed. Skills
-        // are workspace files; the SkillTool uses WorkspaceSkillRuntime.
-        // Phase 2 PR 2 (ADR-047 §2.3): McpAdapter removed. MCP servers
-        // are workspace-resident; the workspace scanner in
-        // `install_principal_tool_bag` reads them and registers tools
-        // via the global McpManager + BuiltinToolAdapter.
-        // Phase 2 PR 4 (ADR-047 §2.4): SlashAdapter removed. The
-        // framework wrapper was a no-op; slash dispatch is handled
-        // by `principal::slash::SlashDispatcher` at the principal
-        // boundary.
-        //
-        // Phase 2 PR 3 (ADR-047 §2.4): UniversalToolAdapter removed.
-        // Universal tools are workspace-resident; the scanner in
-        // `install_principal_tool_bag` reads each manifest and
-        // registers the canonical `peko_tools_core::Tool` impl via
-        // BuiltinToolAdapter. No framework adapter.
-        extension_store
-            .register_adapter(Box::new(GeneralExtensionAdapter::new()))
-            .await;
+        // PR-C.5: `GeneralExtensionAdapter::register_adapter` call
+        // removed. With PR-A/B/C.1-C.4 deleting every other adapter
+        // type (skill/mcp/slash/universal/gateway in prior phases;
+        // validation/BuiltInAdapters in PR-C.1+PR-C.2), no
+        // `ExtensionTypeAdapter` impls remain in the daemon's
+        // process. The store's `load_all` only consults adapters
+        // for manifest types still produced by the validator path
+        // — which is itself deleted — so registering a no-op
+        // adapter here accomplished nothing. The IPC extension
+        // operations live on `ExtensionStore` directly; nothing
+        // about `register_adapter` was load-bearing.
 
         // Load all extensions (log warnings but don't fail startup)
         if let Err(e) = extension_store.load_all().await {

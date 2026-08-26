@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use peko_auth::host::PrincipalResourceView;
 pub use peko_auth::{Exposure, Permission, PermissionGrant};
-use peko_extension_api::{Authority, Capabilities};
+use peko_extension_api::Capabilities;
 use peko_quota::QuotaConfig;
 use peko_subject::PrincipalDID;
 
@@ -76,14 +76,19 @@ pub struct PrincipalConfig {
     #[serde(default, rename = "capabilities")]
     pub capabilities: Capabilities,
 
-    /// Phase 3a (ADR-047 §2.5): flat per-tier filesystem/network/tunnel
-    /// authority envelope. `None` ⇒ migrate from the legacy
-    /// `[[capabilities.grants]]` shape via
-    /// [`Self::resolved_authority`]; `Some(_)` ⇒ use the explicit
-    /// `[authority]` block verbatim. Phase 3b will retire the migration
-    /// shim and route write-side gating through this field.
-    #[serde(default, rename = "authority", skip_serializing_if = "Option::is_none")]
-    pub authority: Option<Authority>,
+    // PR-E #1: the `authority: Option<Authority>` field (Phase 3a
+    // envelope) and the `resolved_authority()` method that bridged
+    // legacy grants onto it are deleted. ADR-047 §2.5 had planned to
+    // route the runtime `_write(Option<&Caps>)` accessors onto
+    // `Authority`, but no producer of `[authority]` field checks
+    // ever landed and the envelope had zero consumers outside the
+    // deserialization path. On-disk `[authority]` blocks written by
+    // pre-PR-E-#1 builds will be silently ignored going forward —
+    // same forward-only behavior as every other pre-launch migration.
+    // Anyone who actually used `[authority]` to gate network or
+    // tunnel can move that policy into the `Capabilities` grant set
+    // (the runtime gate for `principal:write_*` / `runtime:*`
+    // survived intact — see `peko_extension_api::Capabilities`).
 
     /// Network exposure level for this Principal.
     #[serde(default)]
@@ -319,31 +324,21 @@ fn default_max_router_iterations() -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// `resolved_authority` — Phase 3a migration shim (ADR-047 §2.5)
+// PR-E #1: `resolved_authority` — Phase 3a migration shim (ADR-047 §2.5)
 // ---------------------------------------------------------------------------
-
-impl PrincipalConfig {
-    /// Resolve the principal's effective `Authority`.
-    ///
-    /// - If the on-disk config carries an explicit `[authority]`
-    ///   block, that block is returned verbatim (no migration).
-    /// - Otherwise the legacy `[[capabilities.grants]]` entries are
-    ///   translated by `Authority::from_legacy_capabilities`. An empty
-    ///   grant list yields the strictest posture (no paths, deny
-    ///   network, no tunnel).
-    ///
-    /// Phase 3a only — callers must continue to consult
-    /// `self.capabilities` for write-side gating until Phase 3b
-    /// re-points the runtime `_write(Option<&Caps>)` accessors at
-    /// this method.
-    #[must_use]
-    pub fn resolved_authority(&self) -> Authority {
-        match &self.authority {
-            Some(a) => a.clone(),
-            None => Authority::from_legacy_capabilities(&self.capabilities),
-        }
-    }
-}
+//
+// DELETED in this commit. The method returned an `Authority` envelope
+// translated from legacy `[[capabilities.grants]]` entries when no
+// explicit `[authority]` block was present. After the envelope itself
+// was deleted (zero runtime consumers; only the deserialization path
+// on `PrincipalConfig` ever produced a value), the migration shim has
+// nothing left to translate. Capabilities remain the SoT for the
+// `principal:write_*` / `runtime:*` grants (see
+// `peko_extension_api::Capabilities`).
+//
+// impl PrincipalConfig {
+//     pub fn resolved_authority(&self) -> Authority { ... }
+// }
 
 // ---------------------------------------------------------------------------
 // `PrincipalResourceView` impl for `PrincipalConfig`
@@ -430,7 +425,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: super::TransportPreference::Tunnel,
-            authority: None,
             quota: None,
             children: Default::default(),
         };
@@ -466,7 +460,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: Some("ollama-llama3.1".into()),
             transport_preference: super::TransportPreference::Direct,
-            authority: None,
             quota: None,
             children: Default::default(),
         };
@@ -508,7 +501,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
-            authority: None,
             quota: None,
             children: Default::default(),
         };
@@ -537,7 +529,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
-            authority: None,
             quota: None,
             children: Default::default(),
         };
@@ -590,7 +581,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
-            authority: None,
             quota: None,
             children: Default::default(),
         };
@@ -642,7 +632,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
-            authority: None,
             quota: None,
             children: Default::default(),
         };
@@ -698,7 +687,6 @@ mod tests {
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
-            authority: None,
             quota: None,
             children: Default::default(),
         }
@@ -806,110 +794,13 @@ mod tests {
         );
     }
 
-    // ─── [authority] Phase 3a migration shim (ADR-047 §2.5) ────────
-
-    /// A bare `[authority]` table parses into `PrincipalConfig.authority`
-    /// and round-trips losslessly. Network/tunnel defaults come from
-    /// `Authority`'s own `Default` impls (deny / disabled).
-    #[test]
-    fn authority_table_parses_and_defaults_none() {
-        let toml = r#"
-            name = "auth"
-
-            [authority]
-            local_paths = ["~/projects/**"]
-            network = "allow:*.anthropic.com"
-        "#;
-        let cfg: PrincipalConfig = toml::from_str(toml).expect("authority TOML must parse");
-        let auth = cfg.authority.as_ref().expect("explicit block populates the field").clone();
-        assert_eq!(auth.local_paths, vec!["~/projects/**".to_string()]);
-        assert_eq!(auth.network.as_str(), "allow:*.anthropic.com");
-        assert!(auth.tunnel.is_disabled());
-
-        let serialized = toml::to_string(&cfg).expect("serialize");
-        assert!(serialized.contains("[authority]"), "got: {serialized}");
-        assert!(
-            serialized.contains("local_paths"),
-            "got: {serialized}"
-        );
-        let back: PrincipalConfig = toml::from_str(&serialized).expect("re-deserialize");
-        assert_eq!(back.authority.unwrap(), auth);
-    }
-
-    /// `resolved_authority()` returns the explicit block verbatim
-    /// when present; capabilities are NOT consulted.
-    #[test]
-    fn resolved_authority_prefers_explicit_block() {
-        let mut cfg = make_test_config("explicit", peko_auth::Subject::User("u".into()));
-        cfg.authority = Some(Authority {
-            local_paths: vec!["/srv/only".to_string()],
-            shared_paths: Vec::new(),
-            runtime_paths: Vec::new(),
-            network: peko_extension_api::NetworkAccess::new("allow:api.example.com"),
-            tunnel: peko_extension_api::TunnelAccess::Bool(false),
-        });
-        // The capability list has filesystem grants too — the explicit
-        // block must win (no migration applied).
-        cfg.capabilities = Capabilities::with_grants(["tool:Bash", "network", "tunnel:open"]);
-        let resolved = cfg.resolved_authority();
-        assert_eq!(resolved.local_paths, vec!["/srv/only".to_string()]);
-        assert_eq!(resolved.network.as_str(), "allow:api.example.com");
-        assert!(resolved.tunnel.is_disabled());
-    }
-
-    /// `resolved_authority()` translates `[[capabilities.grants]]`
-    /// when the explicit block is absent.
-    #[test]
-    fn resolved_authority_migrates_legacy_grants() {
-        let mut cfg = make_test_config("legacy", peko_auth::Subject::User("u".into()));
-        assert!(cfg.authority.is_none());
-        cfg.capabilities = Capabilities::with_grants([
-            "tool:Bash",
-            "network",
-            "tunnel:create",
-            "filesystem.read:/etc/peko",
-            "principal:write_config", // stays in Capabilities
-        ]);
-        let resolved = cfg.resolved_authority();
-        // Bash + filesystem.read collapse to a single ** per dedupe.
-        assert_eq!(resolved.local_paths, vec!["**".to_string()]);
-        assert_eq!(resolved.network.as_str(), "allow");
-        assert!(matches!(
-            resolved.tunnel,
-            peko_extension_api::TunnelAccess::Bool(true)
-        ));
-    }
-
-    /// An empty `Capabilities` + absent `[authority]` block resolves
-    /// to the strictest posture (no paths, deny network, no tunnel).
-    #[test]
-    fn resolved_authority_empty_yields_strict_deny() {
-        let cfg = make_test_config("strict", peko_auth::Subject::User("u".into()));
-        let resolved = cfg.resolved_authority();
-        assert!(resolved.local_paths.is_empty());
-        assert!(resolved.shared_paths.is_empty());
-        assert!(resolved.runtime_paths.is_empty());
-        assert!(resolved.network.is_deny());
-        assert!(resolved.tunnel.is_disabled());
-    }
-
-    /// The `[authority]` block round-trips losslessly through serde
-    /// so config rewrites (e.g. `peko principal set-authority`) drop
-    /// nothing.
-    #[test]
-    fn authority_roundtrip_full() {
-        let mut cfg = make_test_config("rt", peko_auth::Subject::User("u".into()));
-        cfg.authority = Some(Authority {
-            local_paths: vec!["~/projects/**".to_string(), "/tmp/peko/**".to_string()],
-            shared_paths: vec!["/srv/shared/**".to_string()],
-            runtime_paths: vec!["/var/run/peko/**".to_string()],
-            network: peko_extension_api::NetworkAccess::new("allow"),
-            tunnel: peko_extension_api::TunnelAccess::Peers(vec![
-                "did:peko:public:alice".to_string(),
-            ]),
-        });
-        let serialized = toml::to_string(&cfg).expect("serialize");
-        let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(back.authority, cfg.authority);
-    }
+    // PR-E #1: 5 tests deleted alongside the `Authority` envelope and
+    // `resolved_authority()` method. They were the only callers; the
+    // migration shim's contract is now satisfied trivially (no
+    // `[authority]` field to migrate, no shim method to exercise).
+    //   - authority_table_parses_and_defaults_none
+    //   - resolved_authority_prefers_explicit_block
+    //   - resolved_authority_migrates_legacy_grants
+    //   - resolved_authority_empty_yields_strict_deny
+    //   - authority_roundtrip_full
 }

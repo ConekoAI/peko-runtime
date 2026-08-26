@@ -289,10 +289,10 @@ jsonschema = { version = "0.48", default-features = false }
 # internal access opt in explicitly, e.g.
 #   cargo test --lib --features test-utils daemon::e2e_tests
 default = []
-# Expose internal modules for integration tests. The `TestSyncHandler`
-# gated on `test-utils` lives at `framework::core::test_sync` after the
-# Phase F2 foldback (was `peko_extension_host::core::test_sync`); callers
-# that need it opt in via `--features test-utils`.
+# Expose internal modules for integration tests. No specific call-site
+# modules are gated on `test-utils` after PR-E #5 deleted
+# `framework::core::test_sync` (the only such gating); the feature is
+# kept for future opt-in test seams.
 test-utils = []
 
 [dev-dependencies]

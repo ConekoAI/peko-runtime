@@ -73,16 +73,9 @@ impl HookBindingBuilder {
         }
     }
 
-    /// Create an event emission binding
-    pub fn event_emit<F>(factory: F) -> HookBinding
-    where
-        F: HookHandlerFactory + 'static,
-    {
-        HookBinding {
-            point: HookPoint::EventEmit,
-            handler_factory: Box::new(factory),
-        }
-    }
+    // PR-E #4: `HookBindingBuilder::event_emit` retired alongside the
+    // `HookPoint::EventEmit` variant (zero callers; no extension
+    // registered an emit binding in production).
 
     /// Create a tool execution binding
     pub fn tool_execute<F>(tool_name: impl Into<String>, factory: F) -> HookBinding

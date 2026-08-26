@@ -17,8 +17,8 @@
 //!   `crate::extensions::framework::store_trait`
 //!
 //! Everything else (concrete `ExtensionStore`, hook dispatcher,
-//! capability gate, async executor, transport, manager, scaffold,
-//! skill catalog, integration, framework services, protocol
+//! capability gate, async executor, transport, discovery +
+//! extension_storage, skill catalog, framework services, protocol
 //! shared subtrees) stays in root.
 //!
 //! Extension type implementations (MCP, Gateway, Skill, etc.) live
@@ -32,7 +32,9 @@
 //! - `crate::daemon` (daemon-specific code)
 //! - `crate::tools` (tool implementations)
 //!
-//! Dependency direction: `extension::core` → `extension::types` → `extension::manager|async_exec`
+//! Dependency direction: `extension::core` → `extension::types` → `extension::async_exec`
+//! Extension lifecycle helpers (`discovery`, `extension_storage`) sit
+//! alongside `ExtensionStore` in `extension::*`.
 
 // ============================================================================
 // Submodules
@@ -53,19 +55,24 @@ pub mod async_exec;
 /// funnel).
 pub mod core;
 
-/// ExtensionTypeAdapter ↔ daeomon envelope conversion
-/// (port-trait seam for peers without an ExtensionCore).
-pub mod integration;
+// PR-A: the `integration` module was a 11-line doc-only stub with
+// zero callers in the repo. Its sole purpose was to host the
+// `ExtensionAsyncTool` wrapper, which moved to
+// `tools::registry::extension_async_tool` in Issue 016 long before
+// the framework was being torn down. Pure removal.
 
 /// Cross-boundary async-task inbox + the `InboxItem` / `SessionInbox`
 /// concrete types. The trait-port data types live in
 /// `peko_extension_api::completion_event` so engine can reach them.
 pub mod inbox;
 
-/// Extension lifecycle management (install, enable, disable,
-/// discover, package, bundle). Sub-modules: `discovery`,
-/// `packaging`, `storage`.
-pub mod manager;
+/// Workspace-resident extension discovery (directory scanning,
+/// detection). Consumed by [`ExtensionStore::load_all`].
+pub mod discovery;
+
+/// On-disk persistence for installed extensions. Consumed by
+/// [`ExtensionStore`] to copy + register loaded extensions.
+pub mod extension_storage;
 
 /// Default-agent-workspace path resolver + principal-messaging
 /// port traits. The path helpers `default_data_dir` /
@@ -88,9 +95,11 @@ pub mod protocols;
 /// `SimpleRegistry` / `SharedRegistry` utilities.
 pub mod registry;
 
-/// Scaffold generation engine for new extensions (the
-/// `ScaffoldEngine` / `ScaffoldLang` / `ScaffoldOptions` triple).
-pub mod scaffold;
+// PR-A: the `scaffold` module hosted `peko ext init` (the
+// `ScaffoldEngine` / `ScaffoldLang` / `ScaffoldOptions` triple plus
+// the embedded extension templates). With `peko ext *` retired in
+// Phase 5 (ADR-047 §2.1) there are no callers left in the repo; the
+// directory and its 399 lines are pure removal.
 
 /// Framework services — config scoping, reserved-params
 /// resolution, extension-host wiring layer.

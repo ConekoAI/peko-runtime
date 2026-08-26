@@ -100,8 +100,13 @@ pub mod scoring;
 pub mod tool_registration;
 pub mod tool_registry;
 
-#[cfg(feature = "test-utils")]
-pub mod test_sync;
+// PR-E #5: `framework::core::test_sync` (459 lines, test-utils feature
+// only) deleted. The module hosted `TestSyncHandler` for the F36
+// PostToolUse sync primitive, but the type had zero callers in the
+// repo — the F36 audit row it pointed at was closed by switching the
+// tool-gate tests to direct `__tool_search` interaction instead. The
+// Cargo.toml doc-comment that referenced "callers" at this path was
+// stale from the F2 foldback era.
 
 #[cfg(test)]
 mod integration_tests {

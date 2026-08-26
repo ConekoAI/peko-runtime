@@ -18,60 +18,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
 use peko_tools_core::{Tool, ToolInterruptNotice};
-use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
-// ============================================================================
-// Configuration
-// ============================================================================
-
-/// Configuration for built-in tool registration
-#[derive(Debug, Clone)]
-pub struct BuiltinToolRegistrarConfig {
-    /// Workspace directory for tools
-    pub workspace_dir: PathBuf,
-    /// Enable granular filesystem tools (`Read`, `Write`, `Glob`, `Grep`, `Edit`)
-    pub enable_granular_fs: bool,
-    /// Enable write tools (`Write`, `Edit`)
-    pub enable_granular_write: bool,
-    /// Enable shell tool
-    pub enable_shell: bool,
-    /// Enable cron tool
-    pub enable_cron: bool,
-    /// Enable async execution control tools (AsyncSpawn, AsyncOutput, AsyncStop,
-    /// AsyncStatus, AsyncList)
-    pub enable_async_tools: bool,
-    /// Enable planning todo tools (TaskCreate, TaskGet, TaskList, TaskUpdate)
-    pub enable_task_tools: bool,
-    /// F35 — enable the synthetic `__tool_search` stub for deferred-tool
-    /// discovery. Defaults to `false` so a fresh runtime does not pay
-    /// the prompt-token cost of always-on search. Per-agent override
-    /// lives on [`AgentConfig::enable_tool_search`](crate::agents::AgentConfig::enable_tool_search).
-    pub enable_tool_search: bool,
-    /// Instance ID for cron persistence
-    pub instance_id: Option<String>,
-    /// List of disabled tool names
-    pub disabled_tools: Vec<String>,
-}
-
-impl Default for BuiltinToolRegistrarConfig {
-    fn default() -> Self {
-        Self {
-            workspace_dir: PathBuf::from("."),
-            enable_granular_fs: true,
-            enable_granular_write: true,
-            enable_shell: true,
-            enable_cron: true,
-            enable_async_tools: true,
-            enable_task_tools: true,
-            enable_tool_search: false,
-            instance_id: None,
-            disabled_tools: Vec::new(),
-        }
-    }
-}
 
 // ============================================================================
 // Adapter
@@ -162,125 +110,6 @@ impl BuiltinToolAdapter {
         Self::register_tools(core, tools, PrincipalId::system()).await
     }
 
-    /// Register all enabled built-in tools with `ExtensionCore`
-    ///
-    /// This is the single entry point for registering built-in tools.
-    /// All tools are registered as hooks in `ExtensionCore`, making them
-    /// discoverable via `ToolRegister` hook and executable via `ToolExecute` hook.
-    ///
-    /// `AsyncSpawn` and `AsyncOutput` are **NOT** registered here. They
-    /// depend on a per-agent `AsyncExecutor` and `ExtensionCore` reference,
-    /// so they are registered per-agent by `register_async_spawn_tool` and
-    /// `register_async_output_tool` once the agent has constructed its
-    /// executor and queue.
-    pub async fn register_all(
-        core: &ExtensionCore,
-        config: &BuiltinToolRegistrarConfig,
-    ) -> Result<()> {
-        Self::register_globals(core, config).await
-    }
-
-    /// Register global built-in tools.
-    ///
-    /// `AsyncSpawn` and `AsyncOutput` are excluded because they require
-    /// per-agent wiring (an `AsyncExecutor` and an `ExtensionCore`
-    /// reference). Callers that need those tools must use
-    /// `register_async_spawn_tool` / `register_async_output_tool` per-agent.
-    pub async fn register_globals(
-        core: &ExtensionCore,
-        config: &BuiltinToolRegistrarConfig,
-    ) -> Result<()> {
-        use crate::tools::builtin::BashTool;
-        use crate::tools::builtin::{
-            EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool,
-        };
-        use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
-
-        let disabled_set: HashSet<String> = config
-            .disabled_tools
-            .iter()
-            .map(|s| s.to_lowercase())
-            .collect();
-
-        let workspace = config.workspace_dir.clone();
-
-        // Shell tool (Bash)
-        let bash_enabled = config.enable_shell;
-        let bash_disabled = disabled_set.contains("bash");
-        if bash_enabled && !bash_disabled {
-            let bash = Arc::new(BashTool::new().with_workspace(&workspace));
-            Self::register_tool_system(core, bash).await?;
-        }
-
-        // Granular filesystem tools
-        if config.enable_granular_fs {
-            // Read
-            if !disabled_set.contains("read") {
-                let tool = Arc::new(ReadTool::new().with_workspace(&workspace));
-                Self::register_tool_system(core, tool).await?;
-            }
-
-            // Write
-            if config.enable_granular_write && !disabled_set.contains("write") {
-                let tool = Arc::new(WriteTool::new().with_workspace(&workspace));
-                Self::register_tool_system(core, tool).await?;
-            }
-
-            // glob
-            if !disabled_set.contains("glob") {
-                let tool = Arc::new(GlobTool::new().with_workspace(&workspace));
-                Self::register_tool_system(core, tool).await?;
-            }
-
-            // grep
-            if !disabled_set.contains("grep") {
-                let tool = Arc::new(GrepTool::new().with_workspace(&workspace));
-                Self::register_tool_system(core, tool).await?;
-            }
-
-            // Edit
-            if config.enable_granular_write && !disabled_set.contains("edit") {
-                let tool = Arc::new(EditTool::new().with_workspace(&workspace));
-                Self::register_tool_system(core, tool).await?;
-            }
-        }
-
-        // Session introspection tool — owned by the agent
-        // (`agents/agent.rs` wires a real `SessionManagerRuntime`).
-        // The placeholder registration here used
-        // `SessionCache::new("main")`, a static map with no live
-        // session-manager backing — removed in the C-7 cleanup.
-
-        // Cron family for scheduled jobs
-        let cron_disabled = disabled_set.contains("cron");
-        if config.enable_cron {
-            if !cron_disabled && !disabled_set.contains("croncreate") {
-                Self::register_tool_system(core, Arc::new(CronCreateTool::new())).await?;
-            }
-            if !cron_disabled && !disabled_set.contains("crondelete") {
-                Self::register_tool_system(core, Arc::new(CronDeleteTool::new())).await?;
-            }
-            if !cron_disabled && !disabled_set.contains("cronlist") {
-                Self::register_tool_system(core, Arc::new(CronListTool::new())).await?;
-            }
-        }
-
-        // Async task control family (global members)
-        //
-        // AsyncStatus, AsyncList, and AsyncStop are intentionally NOT registered
-        // globally. The previous global implementation enumerated tasks across
-        // every agent's registry, which broke session isolation (issue from
-        // parity audit). Each agent now registers its own copy bound to its
-        // AsyncExecutor's registry inside `Agent::rebuild_async_tools`, so
-        // introspection is scoped to the calling agent's own tasks.
-        //
-        // AsyncSpawn and AsyncOutput are also per-agent for the same reason:
-        // they depend on per-agent state (AsyncExecutor + ExtensionCore for
-        // spawn-side lookups).
-
-        Ok(())
-    }
-
     /// Register `AsyncSpawn` with per-agent wiring.
     ///
     /// `AsyncSpawn` requires an `AsyncExecutor` and an `ExtensionCore`
@@ -352,7 +181,8 @@ impl BuiltinToolAdapter {
     /// Get list of globally-registered built-in tool names.
     ///
     /// These tools are registered once at daemon startup by
-    /// `BuiltinToolAdapter::register_all()` and are shared across all agents.
+    /// `engine::ToolRuntime::register_builtins` (consumed at
+    /// `principal/context.rs:560`) and are shared across all agents.
     #[must_use]
     pub fn global_tool_names() -> Vec<&'static str> {
         crate::principal::runtime::builtin_tools::GLOBAL_TOOL_NAMES.to_vec()
