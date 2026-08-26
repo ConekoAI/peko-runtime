@@ -4,4 +4,4 @@
 
 pub mod adapter;
 
-pub use adapter::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+pub use adapter::BuiltinToolAdapter;
