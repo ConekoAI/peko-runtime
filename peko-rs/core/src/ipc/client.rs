@@ -220,83 +220,9 @@ impl DaemonClient {
     // ------------------------------------------------------------------
     // Cron management
     // ------------------------------------------------------------------
-
-    /// List cron jobs
-    pub async fn cron_list(
-        &self,
-        include_disabled: bool,
-        principal: Option<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CronList {
-            request_id,
-            include_disabled,
-            principal,
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Cron list stream closed unexpectedly"),
-        }
-    }
-
-    /// Add a cron job
-    pub async fn cron_add(&self, job: peko_cron::CronJob) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CronAdd { request_id, job };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Cron add stream closed unexpectedly"),
-        }
-    }
-
-    /// Remove a cron job
-    pub async fn cron_remove(&self, job_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CronRemove {
-            request_id,
-            job_id: job_id.into(),
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Cron remove stream closed unexpectedly"),
-        }
-    }
-
-    /// Run a cron job immediately
-    pub async fn cron_run(&self, job_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CronRun {
-            request_id,
-            job_id: job_id.into(),
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Cron run stream closed unexpectedly"),
-        }
-    }
-
-    /// Get cron job run history
-    pub async fn cron_history(
-        &self,
-        job_id: impl Into<String>,
-        limit: usize,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::CronHistory {
-            request_id,
-            job_id: job_id.into(),
-            limit,
-        };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("Cron history stream closed unexpectedly"),
-        }
-    }
+    // 2026-08-25: cron is an internal principal tool. The IPC variants
+    // were retired; principals interact with cron via `tool:Cron*`
+    // grants in the agentic-loop funnel (see `peko_cron::tools`).
 
     /// Read a peer's conversation thread with a Principal (peko log).
     ///

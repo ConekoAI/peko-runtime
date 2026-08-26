@@ -11,7 +11,6 @@ pub(crate) mod background_runtime;
 pub(crate) mod channel_binding;
 pub(crate) mod config_drift;
 pub(crate) mod cron_engine;
-pub(crate) mod cron_ops;
 pub(crate) mod cron_runtime;
 pub(crate) mod state;
 
@@ -360,24 +359,19 @@ impl Daemon {
         // `Cron{Create,Delete,List}Tool`s (which live in
         // `peko-cron` and cannot import daemon state directly)
         // can dispatch through the F37 capability-gated funnel.
-        // F1b (2026-08-07 field test): the adapter dispatches to the
-        // in-process `CronOps` — no IPC loopback over the daemon's own
-        // socket (a latent receiver bug made every conversational cron
-        // tool call hang 60s and then fail while silently adding the
-        // job). Idempotent — repeated installs with the same adapter
+        // 2026-08-25: cron is a fully internal principal tool now —
+        // the legacy `CronList`/`CronAdd`/... IPC variants and the
+        // `peko cron` CLI were deleted. The adapter is self-sufficient:
+        // it owns the typed resolver + `PrincipalManager` and reads /
+        // writes each principal's `<resolver>.cron_schedule(name)`
+        // schedule file directly. Per-principal `tool:Cron*` grants gate
+        // tool access via the F37 funnel; the adapter does not re-check
+        // caps. Idempotent — repeated installs with the same adapter
         // are a no-op.
         {
-            let cron_ops = std::sync::Arc::new(crate::daemon::cron_ops::CronOps::new(
+            let adapter = std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(
                 app_state.path_resolver.clone(),
                 std::sync::Arc::clone(app_state.principal_manager()),
-                std::sync::Arc::clone(&app_state.authority),
-            ));
-            // B8b.1: install the same `Arc<CronOps>` into AppState so
-            // the cron IPC handler shares one ops bundle with the
-            // adapter (was: per-request rebuild cloning Arc handles).
-            app_state.set_cron_ops(std::sync::Arc::clone(&cron_ops));
-            let adapter = std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(
-                cron_ops,
             ));
             adapter.install_as_global();
             info!("🕓 Cron runtime port installed (DaemonCronAdapter, in-process)");

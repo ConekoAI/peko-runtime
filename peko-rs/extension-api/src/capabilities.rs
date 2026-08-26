@@ -183,8 +183,12 @@ impl Capabilities {
     ///
     /// Post-Phase 3b (ADR-047 §2.5) this only carries the cross-actor /
     /// cross-runtime grants that still live on `Capabilities`:
-    /// `principal:write_config`, `principal:write_agents`,
-    /// `principal:write_cron`, and `principal:write_identity`.
+    /// `principal:write_config`, `principal:write_agents`, and
+    /// `principal:write_identity`.
+    ///
+    /// 2026-08-25: `principal:write_cron` retired. Cron is now an
+    /// internal principal tool gated by `tool:Cron{Create,List,Delete}`
+    /// grants (workspace-owned, not on `Capabilities`).
     ///
     /// The `tool:*` / `agent:*` / `skill:*` / `network` /
     /// `filesystem.*` / `tunnel:*` grants that used to live here
@@ -198,7 +202,6 @@ impl Capabilities {
         Self::with_grants([
             "principal:write_config",
             "principal:write_agents",
-            "principal:write_cron",
             // PR 2 (storage review): required by
             // `principal_unpackager::import_identity` so the import
             // path can write the imported DID's identity directory.
@@ -235,7 +238,6 @@ mod tests {
         for required in [
             "principal:write_config",
             "principal:write_agents",
-            "principal:write_cron",
             "principal:write_identity",
         ] {
             assert!(

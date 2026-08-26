@@ -14,7 +14,7 @@
         docker-build docker-up docker-down \
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
-        test-cli-send test-cli-session test-cli-basics test-cli-cron \
+        test-cli-send test-cli-session test-cli-basics \
         test-cli-subagent test-cli-tools test-cli-agent-signature \
         test-cli-providers \
         test-scenarios-s4 test-scenarios-s6 \
@@ -31,7 +31,7 @@
 # cli_extensions suites along with the extension framework.
 INTEGRATION_TESTS := pekohub_integration tunnel_integration \
                      packaging_integration registry_integration \
-                     cli_send cli_basics cli_cron cli_subagent \
+                     cli_send cli_basics cli_subagent \
                      cli_tools cli_agent_signature \
                      cli_providers \
                      s4_publish_running_agent_with_permission \
@@ -72,7 +72,7 @@ help:
 	@echo "  Granular slices of test-integration (one file at a time):"
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
-	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
+	@echo "    test-cli-send / test-cli-session / test-cli-basics"
 	@echo "    test-cli-subagent / test-cli-tools / test-cli-agent-signature"
 	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY; kimi skipped while KIMI_API_KEY is suspended)"
 	@echo "    test-scenarios-s4 (Phase D — publish running agent behind tunnel, mock-LLM)"
@@ -206,12 +206,6 @@ test-cli-send: docker-up
 test-cli-basics: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_basics -- --include-ignored
-
-# `peko cron` slice. Uses --interval 1 in the test harness so the poll
-# cycle is fast enough to wait for jobs to fire under 30s/test.
-test-cli-cron: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test cli_cron -- --include-ignored
 
 # `peko subagent` / `agent_spawn` slice. Uses plain `DaemonGuard::spawn`
 # (no `--interval`) — subagent tests don't poll. All multi-turn tests

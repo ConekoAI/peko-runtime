@@ -418,15 +418,12 @@ peko channel peek chan_a1b2c3d4 --json
 
 The `peko_channel_read` built-in tool lets any principal's agentic loop
 read its own channel events on demand. To pull events on an interval
-without the principal being online, schedule the tool via `CronCreate`:
+without the principal being online, schedule the tool via the
+principal's own `CronCreate` agentic-loop tool (e.g. send a message
+to `bob` asking it to schedule itself):
 
-```bash
-# Read chan_xxx every 30 seconds for principal `bob`.
-peko cron add \
-  --principal bob \
-  --tool ChannelRead \
-  --params '{"channel":"chan_a1b2c3d4","limit":50}' \
-  --every 30000
+```text
+> "bob, please schedule ChannelRead for chan_a1b2c3d4 every 30s"
 ```
 
 The cron engine loads enabled jobs on its next tick
@@ -437,8 +434,8 @@ principal's capability snapshot at dispatch time — same boundary model
 as any other async tool run. Add `--wake-on-completion` to surface a
 steer message into `bob`'s root inbox when a non-empty read completes.
 
-Use `peko cron list --principal bob` to confirm the job landed and
-`peko cron delete <JOB_ID>` to remove it.
+Use the `CronList` tool from the principal itself to confirm the job
+landed and `CronDelete` to remove it.
 
 #### Tools backing `peko channel`
 
@@ -750,7 +747,6 @@ operators and scripts, not day-to-day Principal use.
 |---------|---------|
 | `peko auth apikey` | Runtime API key management (`create`/`list`/`revoke`). The `peko auth status` surface is visible — see [`auth`](#auth--authentication-status). |
 | `peko config` | Read/write global `config.toml` |
-| `peko cron` | Schedule Principal-targeted jobs (recurring, one-time, idle, event). The internal `CronCreate` tool surfaces the same store from inside an agent turn. |
 | `peko registry` | Registry host configuration |
 | `peko runtime` | Runtime identity and known-runtimes trust |
 | `peko tunnel` | PekoHub tunnel setup and status |

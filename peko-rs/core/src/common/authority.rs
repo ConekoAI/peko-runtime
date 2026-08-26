@@ -48,8 +48,12 @@ const CAP_WRITE_CONFIG: &str = "principal:write_config";
 const CAP_WRITE_AGENTS: &str = "principal:write_agents";
 const CAP_WRITE_MCPS: &str = "principal:write_mcps";
 const CAP_WRITE_IDENTITY: &str = "principal:write_identity";
-const CAP_WRITE_CRON: &str = "principal:write_cron";
 const CAP_WRITE_EXTENSIONS: &str = "runtime:write_extensions";
+// 2026-08-25: `principal:write_cron` was retired along with the
+// `CronList` / `CronAdd` / `CronRemove` / `CronRun` / `CronHistory`
+// IPC variants and the `peko cron` CLI. Cron is now an internal
+// principal tool gated by `tool:Cron{Create,List,Delete}` grants in
+// the F37 agentic-loop funnel.
 
 /// The storage tier a path belongs to.
 ///
@@ -491,38 +495,6 @@ impl RuntimeAuthority {
         Ok(SharedPath(layout.shared.mcps_dir))
     }
 
-    /// Hand out a `LocalPath` for the cron schedule file IF the principal
-    /// carries `principal:write_cron`. IPC `CronAdd`/`CronRemove` paths.
-    pub fn local_cron_schedule_write(
-        &self,
-        principal: &PrincipalId,
-        caps: Option<&Capabilities>,
-    ) -> Result<LocalPath, AuthorityError> {
-        self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        self.assert_capability_granted(caps, CAP_WRITE_CRON, Tier::Local)?;
-        Ok(LocalPath(layout.local.cron_schedule))
-    }
-
-    /// Name-keyed variant of [`local_cron_schedule_write`] for IPC
-    /// `CronAdd`, where the principal's `PrincipalId` is the in-memory
-    /// `prin_<uuid>` form (from `PrincipalManager::create`) and the
-    /// on-disk `did` is `did:peko:public:<uuid>` (from `peko_identity`)
-    /// — these never match through `lookup_principal_name`. The IPC
-    /// path already holds the principal's display name from
-    /// `resolve_principal`, so the layout is resolved directly from
-    /// the validated name. The actor + capability gate is identical.
-    pub fn local_cron_schedule_write_for_name(
-        &self,
-        principal_name: &str,
-        caps: Option<&Capabilities>,
-    ) -> Result<LocalPath, AuthorityError> {
-        self.assert_local_entitled()?;
-        let layout = self.resolver.principal_layout(principal_name);
-        self.assert_capability_granted(caps, CAP_WRITE_CRON, Tier::Local)?;
-        Ok(LocalPath(layout.local.cron_schedule))
-    }
-
     /// Hand out a `RuntimePath` for the extensions install root IF the
     /// principal carries `runtime:write_extensions`. Reserved for
     /// future workspace-installer flows; the Phase 5 IPC surface
@@ -543,14 +515,20 @@ impl RuntimeAuthority {
     // (not on behalf of a peer). The principal's `[[permissions]]` ACL
     // is the only gate at that layer — there is no per-grant capability
     // check because the engine isn't a peer session. Use these methods
-    // from the cron engine; use `*_write` from the IPC handlers.
+    // from the cron engine. The legacy `local_cron_schedule_write*`
+    // IPC accessors were deleted in the cron-as-internal-tool refactor
+    // (2026-08-25): cron is now a fully internal principal tool gated
+    // by `tool:Cron{Create,List,Delete}` grants in the agentic-loop
+    // funnel (F37). The IPC cron variants are gone.
     // ---------------------------------------------------------------------
 
     /// **Cron-engine-only.** Hands out a `LocalPath` for the principal's
     /// cron schedule file, bypassing the capability gate (the engine
     /// writes on behalf of the principal; the principal's `[[permissions]]`
-    /// ACL is the only gate). IPC handlers MUST use
-    /// [`RuntimeAuthority::local_cron_schedule_write`] instead.
+    /// ACL is the only gate). The legacy IPC `*_write` accessors were
+    /// deleted in the cron-as-internal-tool refactor (2026-08-25):
+    /// cron is now a fully internal principal tool gated by
+    /// `tool:Cron{Create,List,Delete}` grants in the F37 funnel.
     pub fn local_cron_schedule_runtime(
         &self,
         principal: &PrincipalId,
@@ -565,7 +543,8 @@ impl RuntimeAuthority {
     /// manager-aware `principal_name_for` lookup). The cron engine uses
     /// this when it has already resolved DID → name through
     /// `PrincipalManager::get` and doesn't want a second disk scan.
-    /// IPC handlers MUST use [`RuntimeAuthority::local_cron_schedule_write`].
+    /// The legacy IPC `*_write` accessors were deleted in the
+    /// cron-as-internal-tool refactor (2026-08-25).
     pub fn local_cron_schedule_runtime_for_name(
         &self,
         principal_name: &str,
@@ -822,22 +801,6 @@ mod tests {
     }
 
     #[test]
-    fn write_gate_user_actor_on_local_is_tier_denied() {
-        // Peer-as-User cannot obtain a Local-tier write even if it
-        // carries the right capability grant — the actor gate fires
-        // first.
-        let resolver = test_resolver();
-        let pid = principal_id("alice");
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("alice".into()));
-        let caps = Capabilities::with_grants(["principal:write_cron"]);
-        let result = authority.local_cron_schedule_write(&pid, Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::TierDenied { tier: Tier::Local })
-        ));
-    }
-
-    #[test]
     fn write_gate_principal_actor_on_shared_without_grant_is_capability_denied() {
         // The Principal owner DID clear the tier gate (Subject::Principal
         // is allowed on Shared). But with empty grants, the capability
@@ -895,70 +858,8 @@ mod tests {
         let result = authority.local_cron_schedule_runtime(&pid);
         assert!(matches!(result, Err(AuthorityError::UnknownPrincipal(_))));
     }
-
-    #[test]
-    fn write_gate_local_cron_for_name_with_grant_succeeds() {
-        // IPC `CronAdd` holds the principal's display name (from
-        // `resolve_principal`) and the in-memory `PrincipalId`
-        // (`prin_<uuid>`) — the on-disk `did` is `did:peko:public:<uuid>`,
-        // so the ID-keyed `local_cron_schedule_write` always fails
-        // with `UnknownPrincipal`. The `_for_name` variant resolves
-        // the layout directly from the validated name, bypassing the
-        // disk scan. This pins the success path used by `CronAdd`.
-        let resolver = test_resolver();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_cron"]);
-        let result = authority.local_cron_schedule_write_for_name("alice", Some(&caps));
-        assert!(result.is_ok());
-        let path = result.unwrap().into_path_buf();
-        assert!(path.ends_with("alice/local/cron/schedule.toml"));
-    }
-
-    #[test]
-    fn write_gate_local_cron_for_name_without_grant_is_capability_denied() {
-        // Same path as the success test, but with no capability grant.
-        // The actor + tier gate passes (Subject::Principal is entitled
-        // on Local), but the capability gate fires
-        // `CapabilityDenied{Local, principal:write_cron}`.
-        let resolver = test_resolver();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new(); // empty
-        let result = authority.local_cron_schedule_write_for_name("alice", Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Local,
-                capability
-            }) if capability == Capability::new("principal:write_cron")
-        ));
-    }
-
-    #[test]
-    fn write_gate_local_cron_for_name_user_actor_is_tier_denied() {
-        // Peer-as-User cannot obtain a Local-tier write even with the
-        // right capability grant — the actor gate fires first. Same
-        // shape as `write_gate_user_actor_on_local_is_tier_denied`
-        // but routed through the `_for_name` variant to confirm the
-        // tier gate is independent of the resolution path.
-        let resolver = test_resolver();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("alice".into()));
-        let caps = Capabilities::with_grants(["principal:write_cron"]);
-        let result = authority.local_cron_schedule_write_for_name("alice", Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::TierDenied { tier: Tier::Local })
-        ));
-    }
-
-    // ---------------------------------------------------------------------
-    // PR 3: real-layout test fixture + comprehensive capability-gate
-    // coverage. PR 1 introduced `_for_name` accessors that bypass the
-    // `lookup_principal_name` disk scan; PR 3 fills the gap by writing a
-    // real `principals/<name>/principal.toml` to disk so the ID-keyed
-    // accessors can reach `Ok` and `CapabilityDenied{Shared/Local}`
-    // outcomes (the previous tests only ever hit `UnknownPrincipal`).
+    // were retired along with the IPC cron surface; cron is now an
+    // internal principal tool gated by `tool:Cron*` grants.)
     //
     // Each `principal:write_*` capability gets a positive and negative
     // test through both the ID-keyed and `_for_name` paths.
@@ -1104,42 +1005,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn write_gate_local_cron_schedule_with_grant_succeeds() {
-        // Replaces the old `write_gate_accepts_satisfied_grant` for
-        // `local_cron_schedule_write`. Real layout lets us reach
-        // `Ok` instead of stopping at `UnknownPrincipal`.
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_cron"]);
-        let result = authority.local_cron_schedule_write(&pid, Some(&caps));
-        assert!(result.is_ok());
-        assert!(result
-            .unwrap()
-            .as_path()
-            .ends_with("alice/local/cron/schedule.toml"));
-    }
-
-    #[test]
-    fn write_gate_local_cron_schedule_without_grant_is_capability_denied() {
-        // Replaces the old `write_gate_rejects_missing_grant` for
-        // `local_cron_schedule_write`. Real layout lets us reach
-        // `CapabilityDenied{Local}` instead of stopping at
-        // `UnknownPrincipal`.
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.local_cron_schedule_write(&pid, Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Local,
-                capability
-            }) if capability == Capability::new("principal:write_cron")
-        ));
-    }
 
     // ----- _for_name accessors with real layout ------------------------
 

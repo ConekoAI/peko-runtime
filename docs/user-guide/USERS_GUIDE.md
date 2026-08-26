@@ -319,24 +319,14 @@ runtime discovers MCP servers at principal boot.
 ## Cron Scheduling
 
 The daemon can run scheduled jobs on behalf of a Principal. Each job is
-scoped to exactly one Principal by name and executes as that Principal's
+scoped to exactly one Principal by DID and executes as that Principal's
 owner, so it reuses the same `peko send` permission path and session memory.
 
-There are **two surfaces** for cron entries, both backed by the same
-schedule store (`cron.json`). `peko cron list` shows entries from both
-surfaces so you always see everything scheduled against a Principal:
-
-1. **User cron (`peko cron`)** — a deferred `peko send`. Each fire
-   delivers a user message to the Principal's owner root session. Built
-   via the CLI subcommands `add`, `at`, `every`, `add-idle`. Use this
-   when you want "send my Principal this prompt on a schedule."
-
-2. **Agent cron (`CronCreate` tool)** — a deferred `AsyncSpawn`. Each
-   fire asks the daemon's executor to invoke a tool on behalf of the
-   Principal. Built from inside an agent turn. Use this when you want
-   "have my Principal run a tool at a time." The `prompt` shorthand is
-   `tool="Agent", params={ prompt }`. Any tool works: `Bash`, `Read`,
-   `Agent`, etc.
+Cron is now an **internal principal tool** (like Bash, Session). Operators
+interact with schedules by asking the Principal itself to manage them via
+the `CronCreate` / `CronList` / `CronDelete` agentic-loop tools (gated
+by the principal's `tool:*` grants — same F37 funnel as any other
+internal tool). The legacy `peko cron` CLI was retired.
 
 Supported schedules:
 
@@ -344,7 +334,6 @@ Supported schedules:
 - **One-time `at`** — RFC3339 timestamp (one-shot; auto-deleted)
 - **Interval `every`** — fixed millisecond interval
 - **Idle** — fires after the Principal has had no user activity for N minutes
-- **Event** — fires when a matching system event is published
 
 ### SpawnTool attribution: `wake_on_completion` and `timeout_secs`
 
@@ -353,25 +342,28 @@ Supported schedules:
 | Attribute | Default | What it does |
 |-----------|---------|--------------|
 | `wake_on_completion` | `false` for cron-spawned runs (`true` for natural agent spawns) | When `true`, the executor posts a `SteeringMessage` into the Principal's root inbox saying "Your N:NN cron job `{name}` completed. You can check details with the TaskOutput tool." |
-| `timeout_secs` | `7200` (2h) for everyone | Per-run timeout. Both surfaces override per call. |
+| `timeout_secs` | `7200` (2h) for everyone | Per-run timeout. The cron tool overrides per call. |
 
 If the fire is an `Agent` tool run, the spawned session transcript
 appears automatically in the Principal's session list.
 
-### Example: daily Principal digest (user cron)
+### Example: daily Principal digest
 
-```bash
-# Requires the daemon to be running
-peko daemon start --foreground
+Send a message to your Principal asking it to schedule the digest. From
+inside an agent turn (or as a user invoking the principal's chat):
 
-# Schedule a daily message to your Principal
-peko cron add --principal my-principal \
-  --name daily-digest \
-  --schedule "0 9 * * * *" \
-  --message "Summarize my open tasks and today's priorities."
+```text
+CronCreate {
+  at: "+24h",
+  every: "1d",
+  tool: "Agent",
+  params: { prompt: "Summarize my open tasks and today's priorities.", agent: "general-purpose", path: "/tmp/digest" },
+  name: "daily-digest",
+  principal_id: "my-principal"
+}
 ```
 
-### Example: nightly shell command (agent cron)
+### Example: nightly shell command
 
 Inside an agent turn:
 
@@ -389,9 +381,10 @@ On fire the daemon runs `Bash { command: ... }` on behalf of your
 Principal. Because `wake_on_completion=true`, the Principal's next
 turn opens with a one-line steer message pointing at the task id.
 
-Jobs are stored in the daemon's cron DB (`<data_dir>/cron.json`) and can be
-listed, inspected, and removed with `peko cron list` and `peko cron remove`.
-For the full option set, see the [CLI Reference](CLI_REFERENCE.md#cron--principal-cron-jobs).
+Jobs are stored in the per-principal schedule file
+(`<data_dir>/principals/<name>/local/cron/schedule.toml`) and can be
+listed, inspected, and removed with the `CronList` and `CronDelete`
+tools from inside the owning principal's agent turn.
 
 ---
 
