@@ -53,9 +53,11 @@ pub mod async_exec;
 /// funnel).
 pub mod core;
 
-/// ExtensionTypeAdapter ↔ daeomon envelope conversion
-/// (port-trait seam for peers without an ExtensionCore).
-pub mod integration;
+// PR-A: the `integration` module was a 11-line doc-only stub with
+// zero callers in the repo. Its sole purpose was to host the
+// `ExtensionAsyncTool` wrapper, which moved to
+// `tools::registry::extension_async_tool` in Issue 016 long before
+// the framework was being torn down. Pure removal.
 
 /// Cross-boundary async-task inbox + the `InboxItem` / `SessionInbox`
 /// concrete types. The trait-port data types live in
@@ -88,9 +90,11 @@ pub mod protocols;
 /// `SimpleRegistry` / `SharedRegistry` utilities.
 pub mod registry;
 
-/// Scaffold generation engine for new extensions (the
-/// `ScaffoldEngine` / `ScaffoldLang` / `ScaffoldOptions` triple).
-pub mod scaffold;
+// PR-A: the `scaffold` module hosted `peko ext init` (the
+// `ScaffoldEngine` / `ScaffoldLang` / `ScaffoldOptions` triple plus
+// the embedded extension templates). With `peko ext *` retired in
+// Phase 5 (ADR-047 §2.1) there are no callers left in the repo; the
+// directory and its 399 lines are pure removal.
 
 /// Framework services — config scoping, reserved-params
 /// resolution, extension-host wiring layer.
