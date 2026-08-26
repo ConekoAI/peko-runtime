@@ -220,17 +220,6 @@ impl Capabilities {
         self.grants.iter()
     }
 
-    /// Remove all grants that do not satisfy the predicate.
-    pub fn retain(&mut self, mut f: impl FnMut(&Capability) -> bool) {
-        self.grants.retain(|c| f(c));
-    }
-
-    /// Clone the grants into a `Vec<Capability>`.
-    #[must_use]
-    pub fn to_vec(&self) -> Vec<Capability> {
-        self.grants.clone()
-    }
-
     /// Convert grants to plain strings.
     #[must_use]
     pub fn to_strings(&self) -> Vec<String> {

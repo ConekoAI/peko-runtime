@@ -12,9 +12,9 @@
 
 use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter};
 use crate::extensions::framework::core::ExtensionCore;
-use crate::extensions::framework::manager::storage::ExtensionStorage;
+use crate::extensions::framework::extension_storage::ExtensionStorage;
 
-use crate::extensions::framework::manager::discovery::{discovery_paths, DiscoveredExtension};
+use crate::extensions::framework::discovery::{discovery_paths, DiscoveredExtension};
 use crate::extensions::framework::types::HookId;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -97,19 +97,6 @@ impl ExtensionStore {
             })),
             storage: ExtensionStorage::new(),
             core,
-        }
-    }
-
-    #[must_use]
-    pub fn with_storage(storage: ExtensionStorage) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(ExtensionStoreInner {
-                adapters: HashMap::new(),
-                extensions: HashMap::new(),
-                extension_states: HashMap::new(),
-            })),
-            storage,
-            core: Arc::new(ExtensionCore::new()),
         }
     }
 

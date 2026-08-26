@@ -31,18 +31,18 @@ The intent of the gate — make self-mutation visible — survives. The mechanis
 
 2. **Startup config-drift canary** — at every daemon boot, the daemon SHA-256s every `principal.toml`, compares to `<config_dir>/runtime/principal-hashes.json`, and emits `principal.config_drift` `Security` audit events for any mismatch. The baseline is written atomically (`.tmp` + rename). Users read it via `peko principal diff` or `peko audit tail`.
 
-3. **Grant-time warnings (post-ADR-047).** The original
+3. **Grant-time warnings (post-ADR-047, pre-PR-E #1).** The original
    `CapabilityGrant` IPC handler was retired in PR #363 alongside the
-   high-power classifier (see §3 below). Today the equivalent
-   warning fires on authority tier widening — `[authority].network`
+   high-power classifier (see §3 below). Authority tier widening
+   warnings were the proposed replacement — `[authority].network`
    flipping from `deny` to `allow`, `[authority].tunnel` flipping
    from `false` to `true`, or first write to any
    `[authority].runtime_paths` entry — all at `Warning` severity.
-   The CLI side prints a non-blocking stderr warning after the
-   edit lands, naming the field and pointing the user at
-   `peko audit tail --principal <NAME>` for the trail. **No
-   interactive `Continue? [y/N]` prompt** — agents widening their
-   own authority are not blocked by a TTY requirement.
+   These warnings were retired in PR-E #1 (commit `224e4162`)
+   alongside the `Authority` envelope itself; there is no
+   authority tier widening to audit against in the current runtime.
+   No interactive `Continue? [y/N]` prompt was ever shipped; the
+   runtime never had a TTY requirement on agents.
 
 ## 3. High-power capability classification — RETIRED 2026 (ADR-047 §2.5)
 
@@ -50,9 +50,9 @@ The intent of the gate — make self-mutation visible — survives. The mechanis
 handler in PR #363 (commit `5ad12b6e`, ADR-047 Phases 7+8). The
 classifier was hand-curated and lived at
 `peko-rs/extension-api/src/capabilities.rs`. Its single-source-of-truth
-contract is now satisfied by **authority tier widening** (ADR-047
+contract was satisfied by **authority tier widening** (ADR-047
 §2.5): the same audit `Warning` severity that the deleted classifier
-would have escalated to now fires on:
+would have escalated to fired on:
 
 - `[authority].network` flipping from `deny` to `allow` (or to a
   permissive `allow:<host-pattern>`).
@@ -60,14 +60,26 @@ would have escalated to now fires on:
   DID list).
 - First write to any `[authority].runtime_paths` entry.
 
+**PR-E #1 (2026-08-26, commit `224e4162`):** the `Authority`
+envelope — including `[authority].network`, `[authority].tunnel`,
+and `[authority].{local,shared,runtime}_paths` — was deleted. The
+envelope had zero production consumers outside its own
+serde round-trip; the ADR-047 §2.5 migration onto it was never
+landed. The runtime gate continues to consult `Capabilities` for
+the cross-actor / cross-runtime `principal:write_*` strings. The
+high-power classifier is now completely retired; there is no
+authority tier widening to audit against. The audit log remains
+the security model; the warning surface simply does not exist
+anymore.
+
 The historical high-power kinds (v1 table that lived here before the
 deletion) are now redundant — `tool:Bash` / `tool:Write` / `tool:Edit`
-are implicitly granted by `[authority].local_paths`; `network` /
-`filesystem:*` / `tunnel:*` are flat fields on `Authority`; the
-`principal:*` / `runtime:*` survivors are cross-actor / cross-runtime
-audit markers (not authority gates) per the `Capabilities` module
-doc-comment. The audit log is the security model; the warning is
-the friction.
+are workspace-resident tools visible by default; `network` /
+`filesystem:*` / `tunnel:*` were fields on the now-deleted
+`Authority` struct; the `principal:*` / `runtime:*` survivors are
+cross-actor / cross-runtime audit markers (not authority gates) per
+the `Capabilities` module doc-comment. The audit log is the security
+model; there is no warning friction.
 
 ## 4. What this ADR deletes
 
@@ -90,10 +102,14 @@ Tier authority (`LocalPath` / `SharedPath` / `RuntimePath`) remains — it preda
 - **No false security.** The gate gave the user a checkbox they would check without thinking. The audit log gives them data.
 - **Agent-friendly.** Agents can grant themselves the tools they need without waiting for a human or being stopped by a TTY prompt. The warning prints after the grant, in the same instant the agent's IPC call returns. The agent's loop is unaffected.
 - **User-friendly.** `peko audit tail --since 24h` is the one command the user needs to know. `peko principal diff` is the canary for "did someone edit my config while the daemon was stopped?".
-- **Single source of truth (post-ADR-047).** Authority tier widening
-  (see §3 / ADR-047 §2.5) is the one classifier; both the daemon
-  audit call and the CLI warning use it. Drift between the
-  audit-event severity and the CLI warning is impossible.
+- **Single source of truth (post-ADR-047, pre-PR-E #1).** Authority
+  tier widening (see §3 / ADR-047 §2.5) was the one classifier; both
+  the daemon audit call and the CLI warning used it. After PR-E #1
+  retired the `Authority` envelope, the runtime has no tier-widening
+  surface — the audit log captures capability-grant IPC events
+  (where they still exist) but no field-flip events. Drift between
+  audit-event severity and CLI warning is impossible because there
+  is no CLI warning.
 
 ### Negative
 

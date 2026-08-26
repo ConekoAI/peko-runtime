@@ -62,15 +62,6 @@ pub type HookPriority = i32;
 /// Default priority for handlers
 pub const DEFAULT_HOOK_PRIORITY: HookPriority = 100;
 
-/// Priority for system handlers (highest)
-pub const SYSTEM_HOOK_PRIORITY: HookPriority = 1000;
-
-/// Priority for user handlers (normal)
-pub const USER_HOOK_PRIORITY: HookPriority = 100;
-
-/// Priority for fallback handlers (lowest)
-pub const FALLBACK_HOOK_PRIORITY: HookPriority = 0;
-
 /// Runtime context fields for tool execution within the extension framework.
 ///
 /// This is a framework-native struct that carries the subset of `ToolContext`
@@ -199,9 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_priority_constants() {
+    fn test_hook_priority_default() {
         assert_eq!(DEFAULT_HOOK_PRIORITY, 100);
-        assert_eq!(SYSTEM_HOOK_PRIORITY, 1000);
-        assert_eq!(FALLBACK_HOOK_PRIORITY, 0);
     }
 }

@@ -1,9 +1,19 @@
 # ADR-047: Principal Workspace as the Tooling Trust Boundary
 
-**Status:** Accepted
+**Status:** Accepted (with §2.5 partially rolled back by PR-E #1, 2026-08-26)
 **Date:** 2026-08-24
 **Author:** rlsn
 **Related:** [ADR-017](ADR-017.md) (unified extension architecture — superseded), [ADR-024](ADR-024-unified-extension-manifest.md) (unified manifest — superseded), [ADR-026](ADR-026-extension-lifecycle-separation.md) (extension lifecycle — superseded), [ADR-036](ADR-036-extension-developer-experience.md) (extension DX — superseded), [ADR-037](ADR-037-agent-extension-bundling-and-layer-rationalization.md) (bundling — partially superseded), [ADR-039](ADR-039-principal-model.md) (principal model), [ADR-041](ADR-041-principal-as-container.md) (principal-as-container), [ADR-046](ADR-046-trust-and-audit.md) (trust + audit — direct philosophical predecessor).
+
+**§2.5 status:** The `Authority` envelope + `resolved_authority()`
+migration shim proposed in §2.5 of this ADR were deleted in PR-E #1
+(commit `224e4162`) before they ever gated any runtime write-side
+accessor. `Capabilities` remains the canonical store for the
+cross-actor / cross-runtime `principal:write_*` strings; the
+filesystem/network/tunnel concerns moved to the workspace tool
+catalog (`tool:<name>` goes through the F37 funnel gate). See
+ADR-046 §3 for the matching retirement note on the high-power
+classifier.
 
 **Note:** This is a clean-slate pre-production design. The change reverts significant portions of ADR-017, ADR-024, ADR-026, ADR-036, and parts of ADR-037 in favor of a simpler model where tooling lives inside the principal's workspace. ADR-046's trust-and-audit posture is the prerequisite that makes this safe.
 

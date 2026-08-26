@@ -88,5 +88,4 @@ pub use subagent::SpawnCleanupPolicy;
 pub use tool::{ToolMetadata, ToolSource};
 pub use types::{
     ExtensionId, HookId, HookPriority, ToolRuntimeContext, DEFAULT_HOOK_PRIORITY,
-    FALLBACK_HOOK_PRIORITY, SYSTEM_HOOK_PRIORITY, USER_HOOK_PRIORITY,
 };

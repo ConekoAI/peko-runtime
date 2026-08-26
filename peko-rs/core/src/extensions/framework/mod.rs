@@ -17,8 +17,8 @@
 //!   `crate::extensions::framework::store_trait`
 //!
 //! Everything else (concrete `ExtensionStore`, hook dispatcher,
-//! capability gate, async executor, transport, manager, scaffold,
-//! skill catalog, integration, framework services, protocol
+//! capability gate, async executor, transport, discovery +
+//! extension_storage, skill catalog, framework services, protocol
 //! shared subtrees) stays in root.
 //!
 //! Extension type implementations (MCP, Gateway, Skill, etc.) live
@@ -32,7 +32,9 @@
 //! - `crate::daemon` (daemon-specific code)
 //! - `crate::tools` (tool implementations)
 //!
-//! Dependency direction: `extension::core` → `extension::types` → `extension::manager|async_exec`
+//! Dependency direction: `extension::core` → `extension::types` → `extension::async_exec`
+//! Extension lifecycle helpers (`discovery`, `extension_storage`) sit
+//! alongside `ExtensionStore` in `extension::*`.
 
 // ============================================================================
 // Submodules
@@ -64,10 +66,13 @@ pub mod core;
 /// `peko_extension_api::completion_event` so engine can reach them.
 pub mod inbox;
 
-/// Extension lifecycle management (install, enable, disable,
-/// discover, package, bundle). Sub-modules: `discovery`,
-/// `packaging`, `storage`.
-pub mod manager;
+/// Workspace-resident extension discovery (directory scanning,
+/// detection). Consumed by [`ExtensionStore::load_all`].
+pub mod discovery;
+
+/// On-disk persistence for installed extensions. Consumed by
+/// [`ExtensionStore`] to copy + register loaded extensions.
+pub mod extension_storage;
 
 /// Default-agent-workspace path resolver + principal-messaging
 /// port traits. The path helpers `default_data_dir` /
