@@ -1384,7 +1384,7 @@ impl Agent {
     /// `cancel` is the soft-interrupt `CancellationToken` (PR #128) the
     /// child agent should observe at iteration boundaries. When the
     /// parent agent's `CancellationToken` is flipped (e.g. via
-    /// `PrincipalSendControl`), the child agent's loop also exits
+    /// `PrincipalStop`), the child agent's loop also exits
     /// cleanly with `AgenticResult { interrupted: true }`. `None` for
     /// the legacy non-cancelable path (sub-agents that pre-date this
     /// plumbing, tests).

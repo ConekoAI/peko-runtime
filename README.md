@@ -132,12 +132,15 @@ peko principal agent list <NAME>                    # List agent prompts in a Pr
 
 > **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a Principal; teams were removed in favor of Principal-to-Principal interaction.
 
-#### Send Messages (Primary Interaction)
+#### Talk to a Principal (Primary Interaction)
 ```bash
-peko send <PRINCIPAL> [MESSAGE]                    # Send message to a Principal
+peko send <PRINCIPAL> [MESSAGE]                    # Post to your thread; streams the reply
+peko send <PRINCIPAL> "…" --wait                   # If busy: queued — block for the reply
 peko send <PRINCIPAL> --file <PATH>                # Send message from file
 peko send <PRINCIPAL> --stdin                      # Read message from stdin
-peko send <PRINCIPAL> "Hello" --no-stream          # Wait for full response
+peko stop <PRINCIPAL>                              # Soft-stop the running turn (idempotent)
+peko log <PRINCIPAL>                               # Read the thread
+peko log <PRINCIPAL> --watch                       # Follow the thread live
 ```
 
 #### Authentication (v3: catalog + vault)

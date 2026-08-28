@@ -58,8 +58,7 @@ flow_main() {
   echo
   echo "──── TURN 1 (Agent call with cleanup='purge') ────"
   peko_iso_run send probe \
-      "Call the Agent tool with subagent_type=primary, prompt='Reply with the single word: ok', and cleanup='purge'. I know 'purge' is probably not a valid value — I want to see the tool's exact error message. Actually make the call and quote the tool's response verbatim, word for word." \
-      --no-stream
+      "Call the Agent tool with subagent_type=primary, prompt='Reply with the single word: ok', and cleanup='purge'. I know 'purge' is probably not a valid value — I want to see the tool's exact error message. Actually make the call and quote the tool's response verbatim, word for word."
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
   local raw="$_peko_iso_capture_out"

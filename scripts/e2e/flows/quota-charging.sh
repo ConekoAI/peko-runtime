@@ -43,7 +43,7 @@ flow_main() {
   echo
   echo "==== Make 3 short real-LLM sends ===="
   for i in 1 2 3; do
-    peko_iso_run send quoter "Count to ${i}0 and stop." --no-stream >/dev/null || true
+    peko_iso_run send quoter "Count to ${i}0 and stop." >/dev/null || true
   done
 
   echo

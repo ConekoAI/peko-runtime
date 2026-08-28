@@ -58,6 +58,10 @@ _PEKO_ISO_SOCK=""
 _PEKO_ISO_BIN=""
 _PEKO_ISO_VAULT_PP="peko-test-vault-passphrase"
 _PEKO_ISO_DAEMON_PID=""
+# Extra background PIDs a flow registers (mock LLM servers, `peko log
+# --watch` watchers, background `peko send` processes). peko_iso_done
+# kills them all, so cleanup happens even when a flow fails midway.
+_PEKO_ISO_EXTRA_PIDS=()
 
 # --- public API ------------------------------------------------------------
 
@@ -229,6 +233,25 @@ PY
 #   $1  exit code to propagate (default: 0)
 peko_iso_done() {
   local rc="${1:-0}"
+  # Kill any extra background processes the flow registered (mock LLM
+  # servers, `peko log --watch` watchers, background `peko send`
+  # processes) so nothing escapes the flow even on a mid-flow failure.
+  # Two registration paths: the _PEKO_ISO_EXTRA_PIDS array (in-shell)
+  # and <tempdir>/extra.pids (one PID per line — survives the subshell
+  # that `port="$(peko_iso_start_mock_llm …)"` command substitution
+  # runs the helper in).
+  if [[ ${#_PEKO_ISO_EXTRA_PIDS[@]} -gt 0 ]]; then
+    local extra
+    for extra in "${_PEKO_ISO_EXTRA_PIDS[@]}"; do
+      kill "$extra" 2>/dev/null || true
+    done
+  fi
+  if [[ -n "$_PEKO_ISO_TEMPDIR" && -f "$_PEKO_ISO_TEMPDIR/extra.pids" ]]; then
+    local extra
+    while read -r extra; do
+      [[ -n "$extra" ]] && kill "$extra" 2>/dev/null || true
+    done < "$_PEKO_ISO_TEMPDIR/extra.pids"
+  fi
   if [[ -n "$_PEKO_ISO_DAEMON_PID" ]]; then
     kill "$_PEKO_ISO_DAEMON_PID" 2>/dev/null || true
     wait "$_PEKO_ISO_DAEMON_PID" 2>/dev/null || true
@@ -376,5 +399,123 @@ peko_iso_start_daemon() {
   echo "❌ daemon did not become ready within 30s" >&2
   echo "--- daemon stderr ---" >&2
   tail -n 50 "$debug_err" >&2
+  return 1
+}
+
+# Start a stdlib-only Python mock LLM (OpenAI-compatible SSE server) on
+# 127.0.0.1, on an OS-assigned port. Unlike .github/docker/mock-llm/
+# (which needs fastapi + uvicorn), this one uses only http.server, so
+# it runs anywhere python3 does — no pip installs, no docker.
+#
+# Every POST gets the same reply: the given text, streamed word-by-word
+# in OpenAI `delta.content` chunks with a per-word delay. Set the delay
+# high (e.g. 0.5) to keep an agentic run in flight long enough for
+# `peko stop` to land mid-stream; keep it tiny (0.01) for fast replies.
+#
+# Args:
+#   $1  response text          (default: "mock reply")
+#   $2  per-word delay, secs   (default: 0.01)
+# Stdout: the bound port (ONLY the port — logs go to stderr, so callers
+#   can do `port="$(peko_iso_start_mock_llm …)"`).
+# The server PID is appended to <tempdir>/extra.pids (survives the
+# command-substitution subshell), so peko_iso_done kills it on exit.
+peko_iso_start_mock_llm() {
+  local text="${1:-mock reply}" delay="${2:-0.01}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "❌ python3 not found — mock LLM unavailable" >&2
+    return 1
+  fi
+  local py="$_PEKO_ISO_TEMPDIR/mock_llm.py"
+  local port_file="$_PEKO_ISO_TEMPDIR/mock_llm.port"
+  cat >"$py" <<'PY'
+import json
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+TEXT = sys.argv[1]
+DELAY = float(sys.argv[2])
+
+
+def chunk(obj):
+    return ("data: " + json.dumps(obj) + "\n\n").encode()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):  # silence per-request logging
+        pass
+
+    def do_GET(self):  # health probe
+        body = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):  # any path → chat completion
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        try:
+            words = TEXT.split(" ")
+            for i, word in enumerate(words):
+                emit = word if i == len(words) - 1 else word + " "
+                self.wfile.write(chunk({
+                    "choices": [
+                        {"delta": {"content": emit}, "finish_reason": None}
+                    ]
+                }))
+                self.wfile.flush()
+                time.sleep(DELAY)
+            self.wfile.write(chunk({
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": len(words),
+                    "total_tokens": 10 + len(words),
+                },
+            }))
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client went away mid-stream (e.g. `peko stop` cancelled the
+            # run). Nothing to do — the next request gets a fresh reply.
+            pass
+
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(srv.server_address[1], flush=True)  # stdout = port file
+srv.serve_forever()
+PY
+  python3 "$py" "$text" "$delay" \
+    >"$port_file" 2>"$_PEKO_ISO_TEMPDIR/mock_llm.err" &
+  local pid=$!
+  # Record the PID in a file, not the _PEKO_ISO_EXTRA_PIDS array: this
+  # helper is normally called via `port="$(peko_iso_start_mock_llm …)"`
+  # command substitution, which runs it in a subshell — array appends
+  # would be lost. peko_iso_done kills every PID in this file.
+  echo "$pid" >> "$_PEKO_ISO_TEMPDIR/extra.pids"
+
+  # Wait for the server to print its OS-assigned port.
+  local deadline=$((SECONDS + 10)) port
+  while (( SECONDS < deadline )); do
+    if [[ -s "$port_file" ]]; then
+      port="$(head -1 "$port_file" | tr -d '[:space:]')"
+      if [[ -n "$port" ]]; then
+        echo "🤖 mock LLM on 127.0.0.1:$port (pid=$pid, delay=${delay}s/word)" >&2
+        printf '%s' "$port"
+        return 0
+      fi
+    fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  echo "❌ mock LLM did not start" >&2
+  cat "$_PEKO_ISO_TEMPDIR/mock_llm.err" >&2 2>/dev/null || true
   return 1
 }

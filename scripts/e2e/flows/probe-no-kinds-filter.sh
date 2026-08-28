@@ -64,7 +64,7 @@ flow_main() {
     echo "──── ${label} ────"
     local t0 dur
     t0=$SECONDS
-    peko_iso_run "$@" --no-stream
+    peko_iso_run "$@"
     dur=$((SECONDS - t0))
     peko_iso_assert_rc_zero
     echo "wall: ${dur}s"

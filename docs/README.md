@@ -103,6 +103,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-041](architecture/adr/ADR-041-principal-as-container.md) | Principal-as-container and session blackboxing |
 | [ADR-042](architecture/adr/ADR-042-no-external-session-concept.md) | No external `session` concept in the CLI/IPC surface (`peko log` is the only read path) |
 | [ADR-047](architecture/adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) | Principal workspace as the tooling trust boundary — supersedes the extension framework (ADR-017/024/026/036) |
+| [ADR-048](architecture/adr/ADR-048-channel-native-cli-surface.md) | Channel-native CLI surface: merged `send`, `stop` (replaces `interrupt`), `log --watch`; `PrincipalSendControl` removed |
 
 ---
 

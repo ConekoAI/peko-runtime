@@ -4,6 +4,85 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel-native CLI surface: `send` / `stop` / `log` (2026-08-27, ADR-048)
+
+Reshapes the user-facing surface around one mental model — "I'm
+messaging a principal on a channel; I don't care whether it's
+mid-run" — and fixes a real run-registry collision bug underneath it.
+
+#### Changed
+- **`peko send <principal> [msg]`** always posts to the `(principal,
+  peer)` thread. If a run is in flight, the message is queued onto the
+  session inbox and folds into the running turn at the next agentic
+  iteration; the daemon answers the streaming request with
+  `Done { success: false, error: "[queued] …" }` and the CLI prints a
+  busy notice to stderr and exits 0. New flags: `--wait` (block for
+  the reply via the log-watch stream; 10-minute cap, poll fallback)
+  and `--peer user:<id>` (overrides `-U/--user` for both the send and
+  the Ctrl-C stop target).
+- **`peko stop <principal> [--peer]`** replaces `peko interrupt`:
+  deterministic soft-stop at the next agentic boundary with the
+  structural subagent cascade, a peer-authored `⏹ stopped by user`
+  marker on the thread, and a stop-context note in the session inbox
+  that the *next* turn drains as cleanup context. Idempotent — no
+  running turn prints a friendly notice and exits 0.
+- **`peko log`**: new `--watch` (replay newer than `--cursor`, then
+  live rows over the privacy-checked `principal_log_watch` stream with
+  2s heartbeats; `--json` → NDJSON). `--limit` is now a hard cap on a
+  single page; `--all` opts into the multi-page drain.
+- **Group recipients** (`group:<slug>`): `peko log` reads the channel
+  directly via `ChannelPeek` (client-side `--limit`/`--since`, 2s poll
+  for `--watch`, `{at, author, text}` JSON rows). `peko send` and
+  `peko stop` refuse groups with a pointer to `peko channel post` —
+  the channel IPC authorizes writes against member principals and has
+  no user-authored post path (known limitation, see ADR-048).
+- **Ctrl-C in `peko send`** sends `PrincipalStop` for the thread
+  instead of a request-id-addressed control packet.
+- **Cancel-path transcript**: a user stop no longer posts
+  `⚠ Run failed: Subagent was cancelled` to the thread; the send
+  stream's error reads `stopped by user`.
+- **Run registry rekeyed**: `streaming_runs` is keyed by the peer
+  child session id instead of the client-minted `request_id` — every
+  CLI process starts request ids at 1, so concurrent `peko send`
+  processes used to overwrite each other's entry and
+  `peko interrupt 1` cancelled the wrong run. Steering-successor runs
+  (Gap-2 drain) are now registered under the same key and are
+  stoppable.
+- **E2E scripts**: `--no-stream` swept from all flows under
+  `scripts/e2e/flows/` (the flag no longer exists).
+
+#### Removed
+- **`peko interrupt <request-id> [--steer]`** — replaced by
+  `peko stop`; steering as a separate concept is gone (send always
+  queues onto a busy thread).
+- **`peko send --stream` / `--no-stream`** — streaming render is the
+  only mode; the `request_id` stderr banner is gone (`peko stop` needs
+  no id).
+- **IPC `PrincipalSendControl` + `PrincipalSendControlMode`** —
+  breaking protocol removal (pre-launch cutover; no known external
+  consumer). Replaced by `PrincipalStop`.
+- **`IngressMode::SteerOnly`** — its only caller was the deleted Steer
+  arm.
+
+#### Added (IPC)
+- `PrincipalStop { name, peer }` → `Done { success, error }`.
+- `PrincipalLogWatch { name, peer, since_cursor }` → stream of
+  `PrincipalLogAppended { message }` + `Heartbeat` — the
+  privacy-checked sibling of `ChannelEventsWatch` (which stays
+  unchanged for peko-desktop).
+
+#### Compatibility
+- peko-desktop: the one-shot `PrincipalSend`/`PrincipalSent` shapes it
+  depends on are untouched, including the legacy "Queued…" content on
+  the one-shot busy path (only the streaming variant gained the
+  `[queued]` signal).
+
+#### Docs
+- **ADR-048** (channel-native CLI surface) added.
+- CLI_REFERENCE rewritten for `send` / `stop` / `log`; USERS_GUIDE
+  privacy table now covers `stop` and `--watch`; README command list
+  updated.
+
 ### Sprint 9 — Retire chat-gateway adapter; converge ingress paths (2026-08-22)
 
 Removes the last holdout that bridged out-of-process children to the

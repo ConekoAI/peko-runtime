@@ -55,7 +55,7 @@ action parameter. Do NOT call any tool; just answer from your schema.'
 
   local t0 dur
   t0=$SECONDS
-  peko_iso_run send probe "$prompt" --no-stream
+  peko_iso_run send probe "$prompt"
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo

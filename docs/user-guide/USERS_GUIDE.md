@@ -82,7 +82,9 @@ A **Principal** is the top-level AI actor in Peko. It owns:
 - **Agent Prompts** — Thin Markdown files that shape the Principal's behavior
 - **Extensions** — Allowed tools, skills, MCP servers, and gateways
 
-You interact with a Principal through `peko send`.
+You interact with a Principal through `peko send` (post to your
+thread), `peko stop` (halt the running turn), and `peko log` (read or
+follow the thread).
 
 ### DID (Decentralized Identifier)
 
@@ -107,15 +109,20 @@ resumed on every subsequent send from the same peer, and compacted
 when context pressure demands. Sessions are an internal storage
 detail — they are deliberately **not** exposed as a CLI command:
 
-- `peko send <PRINCIPAL> "…"` — drive a conversation.
+- `peko send <PRINCIPAL> "…"` — drive a conversation. If a turn is
+  already running on the thread, the message is queued and folds into
+  it at the next step; `--wait` blocks for the reply.
+- `peko stop <PRINCIPAL>` — soft-stop the running turn on your thread
+  (idempotent: nothing running → friendly notice, exit 0).
 - `peko log <PRINCIPAL>` — read the **owner-root view** of activity
   (the conversation running on the owner's behalf, plus any background
   work the owner is entitled to see: cron wakes, async-task
-  completions, etc.).
+  completions, etc.). `--watch` follows the thread live.
 - `peko log <PRINCIPAL> --peer <X>` — read peer `X`'s thread. Only
   peer `X` itself or the principal's owner can request this; other
   peers cannot snoop on each other (see ADR-042 for the full
-  privacy contract).
+  privacy contract). The same rule governs `peko stop --peer <X>` and
+  `peko log --watch --peer <X>`.
 
 **There is no `peko session` command and there will never be one.** The
 Principal is an integral actor; sessions are storage, not state that
@@ -126,25 +133,33 @@ raw session files read them directly from the Principal's workspace.
 
 The default `peko log <PRINCIPAL>` invocation (no `--peer`) returns
 the **owner-root view**, which is special: it is only readable by the
-Principal's owner. The privacy contract is enforced strictly:
+Principal's owner. The privacy contract is enforced strictly, and
+applies identically to `peko log --watch` and `peko stop`:
 
 | Caller | Command | Result |
 |---|---|---|
 | Principal's owner | `peko log <P>` | OK — owner-root view |
 | Principal's owner | `peko log <P> --peer user:<any>` | OK — owner can audit any peer thread |
+| Principal's owner | `peko stop <P> --peer user:<any>` | OK — owner can stop any peer's run |
 | Peer `user:bob` with `Chat` grant | `peko log <P> --peer user:bob` | OK — peer self-read |
+| Peer `user:bob` with `Chat` grant | `peko log <P> --watch --peer user:bob` | OK — peer self-watch |
+| Peer `user:bob` with `Chat` grant | `peko stop <P> --peer user:bob` | OK — peer stops their own run |
 | Peer `user:bob` with `Chat` grant | `peko log <P>` (no `--peer`) | **rejected** — owner-root is not bob's view |
 | Peer `user:bob` with `Chat` grant | `peko log <P> --peer user:alice` | **rejected** — bob cannot read alice's thread |
-| Stranger (no `Chat` grant) | any `peko log …` | **rejected** |
+| Peer `user:bob` with `Chat` grant | `peko stop <P> --peer user:alice` | **rejected** — bob cannot stop alice's run |
+| Stranger (no `Chat` grant) | any `peko log …` / `peko stop …` | **rejected** |
 
 Concretely, a non-owner caller must pass `--peer <self>` (e.g.
-`--peer user:bob`) to read anything; the default form is owner-only.
-There is no flag that widens access. If a future ADR wants asymmetric
-read/write grants (e.g. a broadcast peer that can read but not chat),
-a `ReadLog` permission variant will be designed and documented there.
+`--peer user:bob`) to read or stop anything; the default form is
+owner-only. There is no flag that widens access. If a future ADR wants
+asymmetric read/write grants (e.g. a broadcast peer that can read but
+not chat), a `ReadLog` permission variant will be designed and
+documented there.
 
 See [ADR-042](../architecture/adr/ADR-042-no-external-session-concept.md)
-for the underlying contract and the rationale for keeping it strict.
+for the underlying contract and the rationale for keeping it strict,
+and [ADR-048](../architecture/adr/ADR-048-channel-native-cli-surface.md)
+for the send/stop/log surface built on it.
 
 ---
 

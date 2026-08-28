@@ -811,7 +811,7 @@ children of the trunk. New/changed public items:
 | `SessionMetadata`/`SessionEntry` (+`privileged`) | `peko_session::{metadata,index}` | ✅ Extended | Owner's child gets whole-store guard reach |
 | `CallerContext.privileged` | `session::ownership` | ✅ Extended | Privilege = guard reach, not tree membership |
 | `peer_child_slug` / `ensure_peer_child` | `principal::peer_children` | ✅ New | Spawn-on-contact per-peer children (`/local-user`, `/user-x`, `/principal-{did}`), trunk-anchored |
-| `PeerChildTurns` (`ensure_child`, `drive_turn{,_streaming}`) | `principal::child_turns` | ✅ New | Persona-inheriting child turn driver (shared with channel binding) |
+| `PeerChildTurns` (`ensure_child`, `drive_turn_streaming`) | `principal::child_turns` | ✅ New | Persona-inheriting child turn driver (shared with channel binding) |
 | `SubagentExecutor::resume_streaming` / `StreamingResumeOutcome` | `agents::subagent_executor` | ✅ New | Streaming child turns (same event shape as the root path) |
 | `PrincipalManager::record_peer_recall` | `principal::manager` | ✅ New | Per-peer recall artifact → peer-child session id |
 | ~~`PrincipalManager::receive`~~ / `receive_streaming` | `principal::manager` | ❌ Deleted / ⚠️ Changed | Peer channels route to peer children; Trunk/Cron → `receive_trunk`. The one-shot `receive` was deleted in sprint 3 Phase 12b (its only production callers were the retired A2A RPC paths) |

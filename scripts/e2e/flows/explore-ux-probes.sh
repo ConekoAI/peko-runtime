@@ -31,7 +31,7 @@ flow_main() {
 
   # Make a few real calls so quota should have counts.
   for i in 1 2 3; do
-    peko_iso_run send probe "Count to ${i}0 and stop." --no-stream >/dev/null || true
+    peko_iso_run send probe "Count to ${i}0 and stop." >/dev/null || true
   done
 
   echo
@@ -120,7 +120,7 @@ PY
   echo "D2. send probe --file /tmp/probe-snippet.txt (real LLM):"
   local t0 t1
   t0=$SECONDS
-  peko_iso_run send probe --file /tmp/probe-snippet.txt --no-stream
+  peko_iso_run send probe --file /tmp/probe-snippet.txt
   t1=$SECONDS
   echo "rc=$_peko_iso_capture_rc  wall=$((t1 - t0))s"
   echo "stdout (first 20 lines):"

@@ -52,26 +52,6 @@ pub enum AuthCredential {
     ApiKey(String),
 }
 
-/// Mode for a `PrincipalSendControl` request.
-///
-/// Wire shape:
-///
-/// ```json
-/// { "mode": "interrupt" }
-/// { "mode": "steer", "text": "..." }
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum PrincipalSendControlMode {
-    /// Set the run's cancel token. The run finishes its current step
-    /// (LLM stream chunk, in-flight tool call) and exits cleanly,
-    /// emitting a final `PrincipalSentDone` + `Lifecycle::Interrupted`.
-    Interrupt,
-    /// Inject `text` as a new user-role turn into the run's session
-    /// inbox. The agentic loop drains it at the next iteration.
-    Steer { text: String },
-}
-
 /// Authentication header appended to every request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AuthHeader {
@@ -104,19 +84,6 @@ mod tests {
             let back = serde_json::to_string(&variant).unwrap();
             assert_eq!(back, json);
         }
-    }
-
-    #[test]
-    fn control_mode_round_trip() {
-        let interrupt = PrincipalSendControlMode::Interrupt;
-        let json = serde_json::to_string(&interrupt).unwrap();
-        assert_eq!(json, r#"{"mode":"interrupt"}"#);
-        let back: PrincipalSendControlMode = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, PrincipalSendControlMode::Interrupt));
-
-        let steer = PrincipalSendControlMode::Steer { text: "hi".into() };
-        let json = serde_json::to_string(&steer).unwrap();
-        assert_eq!(json, r#"{"mode":"steer","text":"hi"}"#);
     }
 
     #[test]

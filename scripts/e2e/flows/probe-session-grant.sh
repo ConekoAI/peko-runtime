@@ -46,9 +46,9 @@ flow_main() {
   echo "──── starting daemon + sending probe query ────"
   peko_iso_start_daemon || return 1
 
-  # Use --no-stream so we get a single response. The model will report
+  # Streaming render is the default. The model will report
   # "no such tool" because session isn't in its toolset.
-  peko_iso_run send probe "Use the session tool to list all your sessions. Then use it to compact the current session." --no-stream
+  peko_iso_run send probe "Use the session tool to list all your sessions. Then use it to compact the current session."
   echo "rc=$_peko_iso_capture_rc"
   echo "──── reply ────"
   echo "$_peko_iso_capture_out" | head -40

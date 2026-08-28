@@ -45,7 +45,7 @@ pub struct AgenticResult {
     /// Token usage
     pub usage: TokenUsage,
     /// True if the run was soft-interrupted by an external
-    /// `PrincipalSendControl` request. The current step finished
+    /// `PrincipalStop` request. The current step finished
     /// cleanly before exit; `final_answer` may be empty or partial.
     pub interrupted: bool,
 }
@@ -168,7 +168,7 @@ pub struct AgenticLoop {
     /// current in-flight step (LLM stream chunk, tool call) always
     /// runs to completion — this is a *soft* interrupt, not a hard
     /// kill. Set by the streaming IPC handler via `with_cancel_token`
-    /// so the `PrincipalSendControl` IPC can signal cancellation.
+    /// so the `PrincipalStop` IPC can signal cancellation.
     cancel: Option<tokio_util::sync::CancellationToken>,
     /// Catalog id picked by `LlmResolver::build` for this session,
     /// cached at construction. Surfaces in `{{runtime}}`'s `Model:`
@@ -1175,7 +1175,7 @@ impl AgenticLoop {
                     on_event(AgenticEvent::Lifecycle {
                         run_id: run_id.clone(),
                         phase: LifecyclePhase::Interrupted,
-                        error: Some("cancelled by PrincipalSendControl".to_string()),
+                        error: Some("cancelled by PrincipalStop".to_string()),
                     });
                     // F31x: Stop hook observe-only — soft-interrupt
                     // signal carries `reason: "interrupted"`.
@@ -2022,7 +2022,7 @@ impl AgenticLoop {
                     on_event(AgenticEvent::Lifecycle {
                         run_id: run_id.clone(),
                         phase: LifecyclePhase::Interrupted,
-                        error: Some("cancelled by PrincipalSendControl".to_string()),
+                        error: Some("cancelled by PrincipalStop".to_string()),
                     });
                     // F31x: Stop hook observe-only — late soft-interrupt
                     // also fires Stop (handlers can tell apart the
@@ -2220,7 +2220,7 @@ impl AgenticLoop {
         //   prompt). Both `snapshot()` and `config()` return owned
         //   clones so the lock is released before the renderer runs.
         // - `soft_cancel_pending`: already wired in Phase 1; the token
-        //   is set by the IPC handler when `PrincipalSendControl`
+        //   is set by the IPC handler when `PrincipalStop`
         //   arrives. Surfaced verbatim at `{{soft_cancel}}`.
         // - `capability_diff`: already wired in Phase 1 via the
         //   tracker's `observe` call above.

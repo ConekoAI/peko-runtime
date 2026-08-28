@@ -102,7 +102,7 @@ flow_main() {
   # Need a daemon for `send` to reach the empty-message guard.
   # The guard runs BEFORE IPC, so the daemon could be absent and
   # we'd still get the error. Test both modes.
-  peko_iso_run send scout "" --no-stream || true
+  peko_iso_run send scout "" || true
   if [[ "$_peko_iso_capture_rc" -ne 0 ]] \
      && grep -q "Message is empty" <<<"$_peko_iso_capture_err$_peko_iso_capture_out"; then
     echo "✅ Fix #4: empty \"\" refused (rc=$_peko_iso_capture_rc)"
@@ -112,7 +112,7 @@ flow_main() {
     peko_iso_done 1
   fi
 
-  peko_iso_run send scout "   " --no-stream || true
+  peko_iso_run send scout "   " || true
   if [[ "$_peko_iso_capture_rc" -ne 0 ]] \
      && grep -q "Message is empty" <<<"$_peko_iso_capture_err$_peko_iso_capture_out"; then
     echo "✅ Fix #4: whitespace-only \"   \" refused"
@@ -433,11 +433,11 @@ flow_main() {
     # `input_tokens` should easily exceed 1000. Use `alpha`
     # (already created) to avoid consuming quota on a fresh
     # principal.
-    peko_iso_run send alpha "Reply with just the word ok" --no-stream
+    peko_iso_run send alpha "Reply with just the word ok"
     peko_iso_assert_rc_zero || peko_iso_done 1
-    peko_iso_run send alpha "Reply with just the word ok" --no-stream
+    peko_iso_run send alpha "Reply with just the word ok"
     peko_iso_assert_rc_zero || peko_iso_done 1
-    peko_iso_run send alpha "Reply with just the word ok" --no-stream
+    peko_iso_run send alpha "Reply with just the word ok"
     peko_iso_assert_rc_zero || peko_iso_done 1
 
     peko_iso_run quota status alpha --json

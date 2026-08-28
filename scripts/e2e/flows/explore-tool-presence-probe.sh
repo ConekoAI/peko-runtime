@@ -38,8 +38,7 @@ flow_main() {
   echo "─── A: explicit Bash + curl request ─────────────────────"
   t0=$SECONDS
   peko_iso_run send probe \
-      "Use the Bash tool with the command: curl -sS 'https://en.wikipedia.org/wiki/Vegetarian_cuisine' | head -c 1500. Then in 2 lines tell me what you actually fetched." \
-      --no-stream
+      "Use the Bash tool with the command: curl -sS 'https://en.wikipedia.org/wiki/Vegetarian_cuisine' | head -c 1500. Then in 2 lines tell me what you actually fetched."
   dur=$((SECONDS - t0))
   echo "rc=$_peko_iso_capture_rc, wall=${dur}s"
   echo "$_peko_iso_capture_out"
@@ -48,8 +47,7 @@ flow_main() {
   echo "─── B: explicit Agent (subagent) request ───────────────"
   t0=$SECONDS
   peko_iso_run send probe \
-      "Use the Agent (subagent) tool to spawn a research subagent that returns a one-paragraph answer about vegetarian food in Lisbon. Then summarise what the subagent said in 3 lines." \
-      --no-stream
+      "Use the Agent (subagent) tool to spawn a research subagent that returns a one-paragraph answer about vegetarian food in Lisbon. Then summarise what the subagent said in 3 lines."
   dur=$((SECONDS - t0))
   echo "rc=$_peko_iso_capture_rc, wall=${dur}s"
   echo "$_peko_iso_capture_out"
@@ -58,8 +56,7 @@ flow_main() {
   echo "─── C: open-ended (does model reach for Bash on its own?) ─"
   t0=$SECONDS
   peko_iso_run send probe \
-      "What's a good vegetarian tasca in Lisbon's Príncipe Real neighbourhood with €10-15 mains?" \
-      --no-stream
+      "What's a good vegetarian tasca in Lisbon's Príncipe Real neighbourhood with €10-15 mains?"
   dur=$((SECONDS - t0))
   echo "rc=$_peko_iso_capture_rc, wall=${dur}s"
   echo "$_peko_iso_capture_out"

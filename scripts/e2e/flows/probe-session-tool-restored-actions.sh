@@ -64,8 +64,7 @@ flow_main() {
   peko_iso_run send probe 'Output ONLY a JSON array of action names that your `session` tool \
 can be called with. No prose, no markdown, no commentary. Each element \
 must be a single lowercase action verb that is a valid value for the \
-action parameter. Do NOT call any tool; just answer from your schema.' \
-      --no-stream
+action parameter. Do NOT call any tool; just answer from your schema.'
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
   local session_out="$_peko_iso_capture_out"
@@ -122,8 +121,7 @@ action parameter. Do NOT call any tool; just answer from your schema.' \
   peko_iso_run send probe 'Output ONLY a JSON object with two keys describing your `Agent` tool: \
 "action_enum" — a JSON array of the exact allowed values for its action parameter; \
 "properties" — a JSON array of every parameter name the tool accepts. \
-No prose, no markdown, no commentary. Do NOT call any tool; answer from your schema.' \
-      --no-stream
+No prose, no markdown, no commentary. Do NOT call any tool; answer from your schema.'
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
   local agent_out="$_peko_iso_capture_out"

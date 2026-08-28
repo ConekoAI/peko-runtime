@@ -2581,7 +2581,7 @@ mod tests {
                 .unwrap(),
         );
         let cancel = tokio_util::sync::CancellationToken::new();
-        cancel.cancel(); // simulate mid-run PrincipalSendControl
+        cancel.cancel(); // simulate mid-run PrincipalStop
 
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,

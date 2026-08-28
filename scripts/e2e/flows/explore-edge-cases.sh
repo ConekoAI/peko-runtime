@@ -39,7 +39,7 @@ flow_main() {
   echo "=========================================="
   echo "EDGE 2: Send empty message"
   echo "=========================================="
-  peko_iso_run send scout "" --no-stream
+  peko_iso_run send scout ""
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT:"
   echo "$_peko_iso_capture_out"
@@ -51,7 +51,7 @@ flow_main() {
   echo "=========================================="
   echo "EDGE 3: Slash command '/help'"
   echo "=========================================="
-  peko_iso_run send scout "/help" --no-stream
+  peko_iso_run send scout "/help"
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT (first 50 lines):"
   echo "$_peko_iso_capture_out" | head -50
@@ -63,7 +63,7 @@ flow_main() {
   echo "=========================================="
   echo "EDGE 4: Slash with --no-slash (treated as LLM input)"
   echo "=========================================="
-  peko_iso_run send scout "/help" --no-stream --no-slash
+  peko_iso_run send scout "/help" --no-slash
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT (first 30 lines):"
   echo "$_peko_iso_capture_out" | head -30
@@ -95,7 +95,7 @@ flow_main() {
   echo "=========================================="
   echo "EDGE 7: peko send --json (protocol view)"
   echo "=========================================="
-  peko_iso_run send scout "say ok" --no-stream --json
+  peko_iso_run send scout "say ok" --json
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT (first 30 lines):"
   echo "$_peko_iso_capture_out" | head -30

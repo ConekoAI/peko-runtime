@@ -17,7 +17,6 @@ pub mod credential;
 // 2026-08-25: `peko cron` retired. The cron module was deleted;
 // principals manage schedules through the `tool:Cron*` grants.
 pub mod daemon;
-pub mod interrupt;
 pub mod log;
 pub mod model;
 pub mod principal;
@@ -27,6 +26,7 @@ pub mod registry;
 pub mod runtime;
 pub mod search;
 pub mod send;
+pub mod stop;
 pub mod system;
 pub mod tunnel;
 pub mod vault;
@@ -110,13 +110,14 @@ pub enum Commands {
     ///   peko send myprincipal "Hello" --no-stream
     Send(send::SendArgs),
 
-    /// Soft-interrupt or steer a running `peko send --stream` run.
+    /// Soft-stop the running turn on your thread with a Principal.
     ///
-    /// The `request_id` is the integer printed to stderr by
-    /// `peko send --stream` at start. Use `--steer "text"` to inject
-    /// a new user turn into the run's session inbox instead of
-    /// cancelling it.
-    Interrupt(interrupt::InterruptArgs),
+    /// The run cancels at the next agentic boundary and a
+    /// `⏹ stopped by user` marker is posted to the thread. Idempotent:
+    /// with no run in flight it reports "no running turn" and exits 0.
+    /// Use `--peer user:<id>` (owner only) to stop another peer's
+    /// thread.
+    Stop(stop::StopArgs),
 
     /// Read a Principal's activity (owner-root view by default)
     ///
@@ -268,6 +269,24 @@ pub enum Commands {
 // compiling unchanged.
 pub use peko_core::common::GlobalPaths;
 
+/// Recipient of `peko send` / `peko log` / `peko stop`: a principal
+/// name, or a group channel in the `group:<slug>` wire form. Bare
+/// `chan_<id>` channels are not recipient sugar — they stay on the
+/// `peko channel` surface.
+pub(crate) enum Recipient {
+    Principal(String),
+    /// Group slug (the part after `group:`).
+    Group(String),
+}
+
+/// Split a recipient positional into principal vs group channel.
+pub(crate) fn parse_recipient(s: &str) -> Recipient {
+    match s.strip_prefix("group:") {
+        Some(slug) if !slug.is_empty() => Recipient::Group(slug.to_string()),
+        _ => Recipient::Principal(s.to_string()),
+    }
+}
+
 /// Build a [`GlobalPaths`] from a parsed [`Cli`] argument struct.
 ///
 /// Lives in the CLI crate (here in `commands/mod.rs`, then in
@@ -310,4 +329,31 @@ pub fn init_logging(verbosity: u8, quiet: bool) {
         .with_max_level(level)
         .with_ansi(ansi)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_recipient, Recipient};
+
+    #[test]
+    fn parse_recipient_splits_group_prefix() {
+        assert!(matches!(
+            parse_recipient("group:eng-standup"),
+            Recipient::Group(slug) if slug == "eng-standup"
+        ));
+        assert!(matches!(
+            parse_recipient("scout"),
+            Recipient::Principal(name) if name == "scout"
+        ));
+        // Bare `group:` with an empty slug is not a group recipient.
+        assert!(matches!(
+            parse_recipient("group:"),
+            Recipient::Principal(name) if name == "group:"
+        ));
+        // Bare `chan_<id>` forms stay principal-positioned (no sugar).
+        assert!(matches!(
+            parse_recipient("chan_abcdefgh"),
+            Recipient::Principal(name) if name == "chan_abcdefgh"
+        ));
+    }
 }

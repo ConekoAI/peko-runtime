@@ -371,7 +371,7 @@ pub enum SessionEndReason {
     IdleTimeout,
     /// Hard token limit hit
     MaxTokensReached,
-    /// Run was soft-interrupted by an external `PrincipalSendControl`
+    /// Run was soft-interrupted by an external `PrincipalStop`
     /// request. The current step finished cleanly before exit.
     Interrupted,
 }

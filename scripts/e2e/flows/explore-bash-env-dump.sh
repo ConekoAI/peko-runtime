@@ -30,24 +30,21 @@ flow_main() {
   echo
   echo "─── A: dump bash env into a file in the workspace ─────"
   peko_iso_run send probe \
-      "Use the Bash tool to write to the file '${probe_home}/bash_env.txt' the following output (one per line, no commentary): the string 'BEGIN_DUMP'; then the output of: id; pwd; which sh; echo PATH=\$PATH; ls -la /tmp 2>&1 | head -5; echo END_DUMP. Then in 2 lines tell me whether the file got written." \
-      --no-stream
+      "Use the Bash tool to write to the file '${probe_home}/bash_env.txt' the following output (one per line, no commentary): the string 'BEGIN_DUMP'; then the output of: id; pwd; which sh; echo PATH=\$PATH; ls -la /tmp 2>&1 | head -5; echo END_DUMP. Then in 2 lines tell me whether the file got written."
   echo "rc=$_peko_iso_capture_rc"
   echo "$_peko_iso_capture_out"
 
   echo
   echo "─── B: read that file via Read tool ───────────────────"
   peko_iso_run send probe \
-      "Use the Read tool to read the file '${probe_home}/bash_env.txt' and show me the full contents." \
-      --no-stream
+      "Use the Read tool to read the file '${probe_home}/bash_env.txt' and show me the full contents."
   echo "rc=$_peko_iso_capture_rc"
   echo "$_peko_iso_capture_out"
 
   echo
   echo "─── C: bypass Bash — use Write tool directly ───────────"
   peko_iso_run send probe \
-      "Use the Write tool to create the file '${probe_home}/from_write.txt' with the content 'written_via_Write_tool\n'. Then Read it back to confirm." \
-      --no-stream
+      "Use the Write tool to create the file '${probe_home}/from_write.txt' with the content 'written_via_Write_tool\n'. Then Read it back to confirm."
   echo "rc=$_peko_iso_capture_rc"
   echo "$_peko_iso_capture_out"
 
