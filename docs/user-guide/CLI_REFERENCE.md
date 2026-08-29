@@ -119,6 +119,11 @@ principal-authored spaces with no bound run, and the channel IPC has
 no user-authored post path. Post as a member principal instead:
 `peko channel post group:<slug> <sender-principal> "<msg>"`.
 
+> **Note:** ADR-049 supersedes this — groups become multi-principal,
+> multi-user channels and `peko send group:<slug>` posts as the caller's
+> user identity. This paragraph describes the behavior until the ADR-049
+> Phase 2 implementation lands.
+
 #### Examples
 
 ```bash
@@ -171,7 +176,9 @@ peko stop <PRINCIPAL> [--peer <SUBJECT>]
 
 The privacy contract matches `log` (ADR-042): the caller must be the
 thread's peer or the Principal's owner. Group channels (`group:<slug>`)
-are refused — groups have no bound run.
+are refused — groups have no bound run. (ADR-049 keeps this refusal: a
+group wake fans out to one run per member principal, so there is no
+single run to stop; per-member stop is future work.)
 
 #### Examples
 
@@ -645,8 +652,9 @@ quiet thread's stream alive).
 
 A `group:<slug>` recipient reads that group channel's log directly via
 the channel IPC, bypassing the principal privacy model (same posture
-as `peko channel peek`; membership gating is a known gap). Authors
-render verbatim; group `--watch` polls every 2s.
+as `peko channel peek`; membership gating is a known gap — ADR-049 D6
+gates these reads on membership). Authors render verbatim; group
+`--watch` polls every 2s.
 
 ```bash
 peko log [OPTIONS] <PRINCIPAL>

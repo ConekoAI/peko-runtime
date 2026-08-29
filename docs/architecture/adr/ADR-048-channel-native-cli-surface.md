@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-08-27
 **Author:** rlsn
-**Related:** [ADR-042](ADR-042-no-external-session-concept.md) (no external `session` concept; the privacy rule `stop`/`log --watch` inherit), [ADR-044](ADR-044-chat-session-separation.md) (peer DM channels as the conversation's durable home), [ADR-041](ADR-041-principal-as-container.md) (principal-as-container).
+**Related:** [ADR-042](ADR-042-no-external-session-concept.md) (no external `session` concept; the privacy rule `stop`/`log --watch` inherit), [ADR-044](ADR-044-chat-session-separation.md) (peer DM channels as the conversation's durable home), [ADR-041](ADR-041-principal-as-container.md) (principal-as-container), [ADR-049](ADR-049-multi-party-group-channels.md) (supersedes the group-channels section below).
 
 **Note:** This is a clean-slate pre-production design. Backward compatibility with Peko 0.1.0 is intentionally discarded so the codebase and UX remain coherent.
 
@@ -122,27 +122,31 @@ heartbeats are interleaved. `ChannelEventsWatch` itself is unchanged
 
 ### Group channels (`group:<slug>` recipients)
 
-Groups are principal-authored spaces: the channel IPC authorizes
-writes against a *member principal* sender and has no user-authored
-post path, and groups never trigger an agent run (unbound channels get
-`NoopChannelResponder`). Scoped-minimal outcome:
+> **Superseded by [ADR-049](ADR-049-multi-party-group-channels.md).** The
+> group model below ("principal-authored spaces, no user-authored post
+> path") was the pre-ADR-049 state. ADR-049 redefines groups as
+> multi-principal, multi-user channels with `Subject`-typed membership and
+> authorship, a user write path via `peko send group:<slug>`, a loop-safe
+> wake policy for user-authored posts, and membership-gated reads.
 
-- `peko send group:<slug> …` is **refused** with a pointer to
+Historical record (pre-ADR-049 behavior at the time of this ADR):
+
+- `peko send group:<slug> …` was **refused** with a pointer to
   `peko channel post group:<slug> <sender-principal> "<msg>"`.
-  (`--wait`/`--model`/`--no-slash` get their own clear refusals.)
-- `peko stop group:<slug>` is refused ("groups have no bound run").
-- `peko log group:<slug> [--watch]` reads the channel directly via
+  (`--wait`/`--model`/`--no-slash` got their own clear refusals.)
+- `peko stop group:<slug>` was refused ("groups have no bound run").
+- `peko log group:<slug> [--watch]` read the channel directly via
   `ChannelPeek` (no principal privacy check — same posture as `peko
-  channel peek`; membership gating is a known gap). `--watch` polls
+  channel peek`; membership gating was a known gap). `--watch` polled
   every 2s rather than using the heartbeat-less raw watch stream.
-  Group `--json` rows are `{at, author, text}` (authors verbatim), not
+  Group `--json` rows were `{at, author, text}` (authors verbatim), not
   the `PrincipalLogMessage` shape.
 
-A future change — an `author` field on `ChannelPost` mapped to
-`post_attributed`, with a decision about which member principal
-authorizes a human's write — would enable real `peko send
-group:<slug>` posts. Noted here so the refusal reads as a designed
-boundary, not an oversight.
+The future change sketched here at acceptance time — an `author` field on
+`ChannelPost` mapped to `post_attributed`, with a decision about which
+member principal authorizes a human's write — is the path ADR-049 took,
+with one amendment: ADR-049 D2 makes membership `Subject`-typed, so users
+post as themselves and no vouching principal is needed.
 
 ## 3. Consequences
 
@@ -172,7 +176,8 @@ boundary, not an oversight.
   same-second duplicate post could be dropped. Accepted at DM-channel
   scale.
 - Group log reads bypass membership checks (same as `peko channel
-  peek`). A known gap, deferred to a channels-focused ADR.
+  peek`). A known gap at acceptance time — **closed by ADR-049 D6**
+  (membership-gated reads).
 
 ## 4. References
 
