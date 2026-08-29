@@ -259,12 +259,17 @@ The essential built-in tool set for a working principal is therefore:
 1. **Passive (DM).** `user-a` sends to the `user-a` DM channel; the agent
    at `/user-a` picks it up automatically, runs an LLM turn, and the
    output streams back to the channel.
-2. **Active (group).** In a group channel with multiple principals, no
-   principal passively processes messages — if every principal reacted to
-   every message (including each other's), the channel would explode into
-   a feedback loop. Instead each principal *actively* reads the channel on
-   its own rhythm (cron + `channel read`) and deliberately decides when to
-   call `channel send`.
+2. **Active (group).** A group channel is multi-principal **and
+   multi-user** (ADR-049). Principal-authored posts never wake other
+   members — if every principal reacted to every message (including each
+   other's), the channel would explode into a feedback loop — so each
+   principal *actively* reads the channel on its own rhythm (cron +
+   `channel read`) and deliberately decides when to call `channel send`.
+   User-authored root posts are the one exception: they wake every member
+   principal, each in its own per-`(principal, channel)` session
+   (ADR-049 D4). Humans are scarce and expect responses; principals
+   reacting to principals is the loop risk, and that path stays
+   forbidden.
 
 ### 3.2 What exists today
 
@@ -285,8 +290,11 @@ is already consumed by the desktop UI stream
 (`ipc/handlers/channel.rs:561-632`). The `ChannelResponder::
 consider_response` trait (`channel/src/responder.rs:36-40`) is the
 "should I respond?" seam; the daemon selects per channel:
-`NoopChannelResponder` for unbound channels, `PassiveBindingResponder`
-for bound ones (Phase 4, below).
+`PassiveBindingResponder` for bound (DM-tier) channels (Phase 4, below),
+`GroupWakeResponder` for unbound (group-tier) channels (ADR-049 Phase 3 —
+`user:*` root posts wake the member principal; principal posts never
+wake), `NoopChannelResponder` only when the principal has no resolvable
+model.
 
 **(implemented — Phase 7, sprint 2)** Passive DM pickup exists on BOTH
 paths, and both land in children now: an inbound A2A/tunnel or CLI/Hub

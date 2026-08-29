@@ -231,7 +231,7 @@ pub(crate) async fn post_peer_dm_inbound(
     author: &str,
     text: &str,
 ) -> Result<()> {
-    port.post_attributed(channel, principal, author, PostMsg::root(text))
+    port.post_attributed(channel, &Subject::from(principal), author, PostMsg::root(text))
         .await?;
     Ok(())
 }
@@ -254,7 +254,7 @@ pub(crate) async fn post_peer_dm_reply(
     if text.trim().is_empty() {
         return;
     }
-    if let Err(e) = port.post(channel, principal, PostMsg::root(text)).await {
+    if let Err(e) = port.post(channel, &Subject::from(principal), PostMsg::root(text)).await {
         warn!(
             channel = %channel,
             "peer DM reply projection failed (reply already delivered): {e}"
@@ -321,7 +321,7 @@ mod tests {
         // The principal is a member (creator auto-added) — the
         // responder's reply post + ChannelSend both require it.
         let members = store.list_members(&provision.channel).await.unwrap();
-        assert_eq!(members, vec![principal_id()]);
+        assert_eq!(members, vec![Subject::from(&principal_id())]);
     }
 
     #[tokio::test]

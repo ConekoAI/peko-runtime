@@ -37,6 +37,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -50,7 +51,7 @@ use peko_protocol::channel::{ChannelEvent, ChannelId};
 // function.
 #[allow(unused_imports)]
 use peko_protocol::channel::ChannelMembership;
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalDID, PrincipalId, Subject};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -66,8 +67,17 @@ use crate::fs::channel_dir_name;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Hard cap on members per channel. PR-1 default. PR-3 may make this
-/// configurable on the channel.
+/// Hard cap on PRINCIPAL members per channel. PR-1 default. PR-3 may
+/// make this configurable on the channel.
+///
+/// ADR-049 Phase 4: the cap counts principal members only, not users.
+/// What the cap actually bounds is per-post fan-out cost: the
+/// cross-runtime `TunnelChannelEvent` fan-out (one envelope per remote
+/// runtime hosting a member principal) and the Phase 3 group wake
+/// (one run per member principal per `user:*` root post, D4). Both
+/// scale with PRINCIPAL membership; user members cost a
+/// `members.json` row and nothing per-post (users are runtime-local
+/// and never wake), so they join uncapped.
 pub const FAN_OUT_CAP: usize = 8;
 
 /// Channel directory under the runtime tier root.
@@ -240,6 +250,15 @@ impl MetaJson {
 /// principals that live on other runtimes; the field defaults to `[]`
 /// when absent so legacy files deserialize cleanly without a
 /// migration. New writes always serialize both fields.
+///
+/// ## On-disk back-compat (ADR-049 Phase 1, Subject-typed members)
+///
+/// `members` stays a string list. Entries may be `Subject` wire forms
+/// (`user:<id>`, `principal:<did>`, `public`) or legacy bare principal
+/// ids (every pre-ADR-049 channel on disk). Reads parse each entry via
+/// [`member_subject`]; writes serialize via [`subject_wire_form`],
+/// which keeps principals in the legacy bare form so string-comparing
+/// consumers are unaffected.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MembersJson {
     pub members: Vec<String>,
@@ -278,6 +297,40 @@ impl MembersJson {
             .await
             .map_err(|e| ChannelError::Adapter(format!("rename {}: {e}", p.display())))?;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Subject <-> member-row conversion (ADR-049 Phase 1)
+// ---------------------------------------------------------------------------
+
+/// Parse a `members.json` entry into a [`Subject`]. Entries in a known
+/// `Subject` wire form (`user:<id>`, `principal:<did>`, `public`)
+/// parse as that Subject; anything else is a legacy bare principal id
+/// (pre-ADR-049 channels stored principal ids unprefixed — including
+/// bare `did:...` forms, whose `did` kind tag is not a `Subject` kind
+/// and therefore also falls through to `Principal`).
+fn member_subject(entry: &str) -> Subject {
+    Subject::from_str(entry)
+        .unwrap_or_else(|_| Subject::Principal(PrincipalDID(entry.to_string())))
+}
+
+/// Serialize a [`Subject`] for storage in `members.json` (and for the
+/// default `author` on `ChannelEvent::Posted`).
+///
+/// Principals keep the legacy bare-id form — every pre-ADR-049 member
+/// row and `Posted.author` on disk uses it, and consumers that
+/// string-compare member rows or authors against a `PrincipalId`
+/// (e.g. `list_for_principal`, the passive-binding responder's
+/// self-skip rule) depend on it. Users and `public` have no legacy
+/// form, so they take the canonical `Subject` wire form
+/// (`user:<id>` / `public`) — the shape ADR-049 D3 mandates at the
+/// boundary.
+#[must_use]
+pub fn subject_wire_form(subject: &Subject) -> String {
+    match subject {
+        Subject::Principal(did) => did.to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -523,18 +576,24 @@ impl ChannelStore {
     // Membership helpers
     // -----------------------------------------------------------------
 
-    /// Check whether `principal` is a current member. Loads + parses
+    /// Check whether `subject` is a current member. Loads + parses
     /// `members.json` directly (no event-log walk — the JSON file is
-    /// the authoritative answer).
+    /// the authoritative answer). ADR-049 Phase 1: membership is
+    /// [`Subject`]-typed, so a `user:<id>` sender who is a member
+    /// passes; legacy bare principal rows parse as principals (see
+    /// [`member_subject`]).
     async fn check_membership(
         &self,
         tier: Tier,
         channel: &ChannelId,
-        principal: &PrincipalId,
+        subject: &Subject,
     ) -> Result<bool> {
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
-        Ok(members.members.iter().any(|m| m == &principal.to_string()))
+        Ok(members
+            .members
+            .iter()
+            .any(|m| member_subject(m) == *subject))
     }
 
     /// Walk `<runtime_dir>/channels/` and return every `ChannelId` for
@@ -580,7 +639,12 @@ impl ChannelStore {
                 Ok(m) => m,
                 Err(_) => continue, // skip corrupt / incomplete dirs
             };
-            if members.members.iter().any(|m| m == &principal.to_string()) {
+            let principal_subject = Subject::from(principal);
+            if members
+                .members
+                .iter()
+                .any(|m| member_subject(m) == principal_subject)
+            {
                 out.push(channel_id);
             }
         }
@@ -886,14 +950,16 @@ impl ChannelStore {
     /// that need the event for outbound fan-out use this directly.
     ///
     /// Membership + parent validation are the same as the trait
-    /// `post`.
+    /// `post`. ADR-049 Phase 1: `sender` is [`Subject`]-typed; the
+    /// default `author` is the sender's [`subject_wire_form`] (legacy
+    /// bare id for principals, canonical `user:<id>` for users).
     pub async fn post_with_event(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         msg: PostMsg,
     ) -> Result<(TaskId, ChannelEvent)> {
-        self.post_attributed_with_event(channel, sender, &sender.to_string(), msg)
+        self.post_attributed_with_event(channel, sender, &subject_wire_form(sender), msg)
             .await
     }
 
@@ -910,7 +976,7 @@ impl ChannelStore {
     pub async fn post_attributed_with_event(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         author: &str,
         msg: PostMsg,
     ) -> Result<(TaskId, ChannelEvent)> {
@@ -1011,29 +1077,44 @@ impl ChannelPort for ChannelStore {
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &PrincipalId,
+        invitee: &Subject,
     ) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let mut members = MembersJson::load(&chan_dir).await?;
-        if !members.members.iter().any(|m| m == &inviter.to_string()) {
+        let inviter_subject = Subject::from(inviter);
+        if !members
+            .members
+            .iter()
+            .any(|m| member_subject(m) == inviter_subject)
+        {
             return Err(ChannelError::NotMember);
         }
-        if members.members.iter().any(|m| m == &invitee.to_string()) {
+        if members.members.iter().any(|m| member_subject(m) == *invitee) {
             // Idempotent: invitee already a member.
             return Ok(());
         }
-        if members.members.len() >= FAN_OUT_CAP {
-            return Err(ChannelError::FanOutCap {
-                current: members.members.len(),
-            });
+        // ADR-049 Phase 4: the fan-out cap counts principal members
+        // only (see the `FAN_OUT_CAP` doc) — a principal invite past
+        // the cap is refused; user invites are uncapped.
+        if matches!(invitee, Subject::Principal(_)) {
+            let principal_count = members
+                .members
+                .iter()
+                .filter(|m| matches!(member_subject(m), Subject::Principal(_)))
+                .count();
+            if principal_count >= FAN_OUT_CAP {
+                return Err(ChannelError::FanOutCap {
+                    current: principal_count,
+                });
+            }
         }
-        members.members.push(invitee.to_string());
+        members.members.push(subject_wire_form(invitee));
         members.save(&chan_dir).await?;
 
         let ev = ChannelEvent::MemberJoined {
             channel: channel.clone(),
-            member: invitee.to_string(),
+            member: subject_wire_form(invitee),
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev).await?;
@@ -1043,7 +1124,7 @@ impl ChannelPort for ChannelStore {
     async fn post(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         msg: PostMsg,
     ) -> Result<TaskId> {
         let (_line, _ev) = self.post_with_event(channel, sender, msg).await?;
@@ -1055,7 +1136,7 @@ impl ChannelPort for ChannelStore {
     async fn post_attributed(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         author: &str,
         msg: PostMsg,
     ) -> Result<TaskId> {
@@ -1113,7 +1194,10 @@ impl ChannelPort for ChannelStore {
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let mut members = MembersJson::load(&chan_dir).await?;
         let before_len = members.members.len();
-        members.members.retain(|m| m != &principal.to_string());
+        let principal_subject = Subject::from(principal);
+        members
+            .members
+            .retain(|m| member_subject(m) != principal_subject);
         if members.members.len() == before_len {
             // Idempotent leave for non-members.
             return Ok(());
@@ -1132,14 +1216,14 @@ impl ChannelPort for ChannelStore {
     async fn list_members(
         &self,
         channel: &ChannelId,
-    ) -> Result<Vec<PrincipalId>> {
+    ) -> Result<Vec<Subject>> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
         Ok(members
             .members
-            .into_iter()
-            .map(PrincipalId)
+            .iter()
+            .map(|m| member_subject(m))
             .collect())
     }
 
@@ -1256,6 +1340,291 @@ mod tests {
         let bytes = serde_json::to_vec(&m).unwrap();
         let parsed: MembersJson = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, m);
+    }
+
+    // -- ADR-049 Phase 1: Subject-typed membership --------------------
+
+    /// `member_subject` parses every on-disk member-row shape:
+    /// canonical `Subject` wire forms parse as their kind; legacy bare
+    /// principal ids (including bare `did:...` forms, whose `did` tag
+    /// is not a `Subject` kind) fall back to `Subject::Principal`.
+    #[test]
+    fn member_subject_parses_wire_forms_and_legacy_bare_ids() {
+        assert_eq!(
+            member_subject("user:alice"),
+            Subject::User("alice".into())
+        );
+        assert_eq!(
+            member_subject("principal:did:peko:principal:abc"),
+            Subject::Principal(PrincipalDID("did:peko:principal:abc".into()))
+        );
+        assert_eq!(member_subject("public"), Subject::Public);
+        // Legacy bare principal id — no `kind:` prefix.
+        assert_eq!(
+            member_subject("prin_alice"),
+            Subject::Principal(PrincipalDID("prin_alice".into()))
+        );
+        // Legacy bare DID form — `did` is not a Subject kind, so the
+        // whole string falls back to a principal id.
+        assert_eq!(
+            member_subject("did:peko:principal:abc"),
+            Subject::Principal(PrincipalDID("did:peko:principal:abc".into()))
+        );
+    }
+
+    /// `subject_wire_form` keeps principals in the legacy bare form
+    /// (string-comparing consumers depend on it) and gives users the
+    /// canonical `user:<id>` form.
+    #[test]
+    fn subject_wire_form_preserves_legacy_principal_shape() {
+        assert_eq!(
+            subject_wire_form(&Subject::Principal(PrincipalDID("prin_alice".into()))),
+            "prin_alice"
+        );
+        assert_eq!(
+            subject_wire_form(&Subject::User("alice".into())),
+            "user:alice"
+        );
+        assert_eq!(subject_wire_form(&Subject::Public), "public");
+    }
+
+    /// ADR-049 D2: a principal member can invite a `user:<id>`
+    /// invitee. The user lands in `members.json` in canonical wire
+    /// form and reads back through `list_members` as `Subject::User`.
+    #[tokio::test]
+    async fn invite_accepts_user_subject() {
+        let cfg = tmp_cfg("invite-user");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let user = Subject::User("alice".to_string());
+        store
+            .invite(&channel, &creator, &user)
+            .await
+            .expect("principal member must be able to invite a user");
+
+        let members = store.list_members(&channel).await.unwrap();
+        assert_eq!(
+            members,
+            vec![Subject::from(&creator), user],
+            "creator (legacy bare row) + invited user"
+        );
+
+        // On disk the user row is the canonical wire form.
+        let chan_dir = cfg.channel_dir(&channel);
+        let on_disk = MembersJson::load(&chan_dir).await.unwrap();
+        assert!(
+            on_disk.members.iter().any(|m| m == "user:alice"),
+            "user member must persist as 'user:alice'; got {:?}",
+            on_disk.members
+        );
+
+        // Idempotent re-invite: no duplicate row.
+        store
+            .invite(&channel, &creator, &Subject::User("alice".to_string()))
+            .await
+            .expect("re-invite is idempotent");
+        assert_eq!(store.list_members(&channel).await.unwrap().len(), 2);
+    }
+
+    /// ADR-049 D2: a member user posts as themselves — membership
+    /// itself is the authorization, and the event's `author` is the
+    /// canonical `user:<id>` wire form (D3).
+    #[tokio::test]
+    async fn user_member_posts_as_themselves() {
+        let cfg = tmp_cfg("user-post");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        store
+            .invite(&channel, &creator, &Subject::User("alice".to_string()))
+            .await
+            .unwrap();
+
+        store
+            .post(
+                &channel,
+                &Subject::User("alice".to_string()),
+                PostMsg::root("hello from alice"),
+            )
+            .await
+            .expect("member user must pass the membership check");
+
+        let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
+        let posted: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { author, text, .. } => Some((author, text)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].0, "user:alice");
+        assert_eq!(posted[0].1, "hello from alice");
+    }
+
+    /// A `user:<id>` sender who is NOT a member is still rejected
+    /// with `NotMember` — Subject-typing the check does not widen it.
+    #[tokio::test]
+    async fn non_member_user_post_rejected() {        let cfg = tmp_cfg("user-not-member");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let err = store
+            .post(
+                &channel,
+                &Subject::User("mallory".to_string()),
+                PostMsg::root("must not land"),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ChannelError::NotMember)),
+            "non-member user must be rejected; got: {err:?}"
+        );
+
+        // A non-member inviter (user or principal) cannot invite.
+        let err = store
+            .invite(
+                &channel,
+                &pid("prin_stranger"),
+                &Subject::User("alice".to_string()),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ChannelError::NotMember)),
+            "non-member inviter must be rejected; got: {err:?}"
+        );
+    }
+
+    /// ADR-049 Phase 4: the fan-out cap counts PRINCIPAL members only.
+    /// User invites succeed past the cap; the 9th PRINCIPAL is refused
+    /// even when users padded the member list first.
+    #[tokio::test]
+    async fn fan_out_cap_counts_principals_only() {
+        let cfg = tmp_cfg("cap-principals-only");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_creator");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("capped"))
+            .await
+            .unwrap();
+
+        // Pad to the cap: creator + 7 principals = 8 principal members.
+        for i in 0..7 {
+            store
+                .invite(
+                    &channel,
+                    &creator,
+                    &Subject::from(&pid(&format!("prin_{i}"))),
+                )
+                .await
+                .expect("principal invite up to the cap");
+        }
+        assert_eq!(store.list_members(&channel).await.unwrap().len(), 8);
+
+        // Users join past the cap — they add no per-post fan-out cost.
+        for i in 0..4 {
+            store
+                .invite(
+                    &channel,
+                    &creator,
+                    &Subject::User(format!("user_{i}")),
+                )
+                .await
+                .expect("user invite past the principal cap must succeed");
+        }
+        assert_eq!(store.list_members(&channel).await.unwrap().len(), 12);
+
+        // The 9th principal is still refused, reporting the principal
+        // count (8), not the padded member count (12).
+        let err = store
+            .invite(
+                &channel,
+                &creator,
+                &Subject::from(&pid("prin_ninth")),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ChannelError::FanOutCap { current: 8 })),
+            "9th principal must hit the cap at current=8; got: {err:?}"
+        );
+    }
+
+    /// Legacy channels on disk carry bare principal ids in
+    /// `members.json`. Those rows must keep working unchanged: the
+    /// principal passes the (now Subject-typed) membership check and
+    /// `list_members` surfaces them as `Subject::Principal`.
+    #[tokio::test]
+    async fn legacy_bare_principal_rows_still_authorize() {
+        let cfg = tmp_cfg("legacy-members");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        // Rewrite members.json the way a pre-ADR-049 store would
+        // have: bare principal ids, no `kind:` prefixes.
+        let chan_dir = cfg.channel_dir(&channel);
+        let legacy = MembersJson {
+            members: vec!["prin_alice".to_string(), "prin_bob".to_string()],
+            remote_members: Vec::new(),
+        };
+        legacy.save(&chan_dir).await.unwrap();
+
+        // `prin_bob` (never invited through the new code path) posts.
+        store
+            .post(
+                &channel,
+                &Subject::from(&pid("prin_bob")),
+                PostMsg::root("legacy member talking"),
+            )
+            .await
+            .expect("legacy bare principal row must pass membership");
+
+        let members = store.list_members(&channel).await.unwrap();
+        assert_eq!(
+            members,
+            vec![
+                Subject::Principal(PrincipalDID("prin_alice".into())),
+                Subject::Principal(PrincipalDID("prin_bob".into())),
+            ]
+        );
+
+        // `list_for_principal` (the boot sweep) matches legacy rows too.
+        let listed = store.list_for_principal(&pid("prin_bob")).await.unwrap();
+        assert!(
+            listed.contains(&channel),
+            "legacy member's channel must appear in list_for_principal; got {listed:?}"
+        );
+
+        // A `principal:<did>`-prefixed row (written by a future or
+        // cross-version writer) parses to the same principal.
+        let mixed = MembersJson {
+            members: vec!["principal:prin_carol".to_string()],
+            remote_members: Vec::new(),
+        };
+        mixed.save(&chan_dir).await.unwrap();
+        store
+            .post(
+                &channel,
+                &Subject::from(&pid("prin_carol")),
+                PostMsg::root("prefixed member talking"),
+            )
+            .await
+            .expect("principal:-prefixed row must pass membership");
     }
 
     // -- passive_binding (Phase 4, agent-session paradigm sprint) ------
@@ -1531,7 +1900,7 @@ mod tests {
         let post_err = store
             .post(
                 &channel,
-                &pid("prin_bob@runtime-B"),
+                &Subject::from(&pid("prin_bob@runtime-B")),
                 PostMsg::root("hello"),
             )
             .await;
@@ -1599,7 +1968,7 @@ mod tests {
         let line = store
             .post_attributed(
                 &channel,
-                &creator,
+                &Subject::from(&creator),
                 "user:alice",
                 PostMsg::root("hi from alice"),
             )
@@ -1635,7 +2004,7 @@ mod tests {
         let err = store
             .post_attributed(
                 &channel,
-                &pid("prin_stranger"),
+                &Subject::from(&pid("prin_stranger")),
                 "user:alice",
                 PostMsg::root("must not land"),
             )
@@ -1661,7 +2030,7 @@ mod tests {
         let bad = store
             .post_attributed(
                 &channel,
-                &creator,
+                &Subject::from(&creator),
                 "user:alice",
                 PostMsg::reply("9".to_string(), "bad parent"),
             )
@@ -1673,7 +2042,7 @@ mod tests {
 
         // Line 1 is the first post (line 0 is Created).
         store
-            .post_attributed(&channel, &creator, "user:alice", PostMsg::root("inbound"))
+            .post_attributed(&channel, &Subject::from(&creator), "user:alice", PostMsg::root("inbound"))
             .await
             .unwrap();
         let events = store
@@ -1688,7 +2057,7 @@ mod tests {
         let reply = store
             .post_attributed(
                 &channel,
-                &creator,
+                &Subject::from(&creator),
                 "user:alice",
                 PostMsg::reply(first_post_line, "follow-up"),
             )
@@ -1696,8 +2065,9 @@ mod tests {
         assert!(reply.is_ok(), "valid parent must land; got: {reply:?}");
     }
 
-    /// Plain `post` delegates with `author = sender.to_string()` —
-    /// the two paths must agree byte-for-byte on the event shape.
+    /// Plain `post` delegates with `author = subject_wire_form(sender)`
+    /// (legacy bare id for a principal sender) — the two paths must
+    /// agree byte-for-byte on the event shape.
     #[tokio::test]
     async fn post_with_event_delegates_with_sender_author() {
         let cfg = tmp_cfg("delegate-author");
@@ -1709,7 +2079,7 @@ mod tests {
             .unwrap();
 
         let (_line, ev) = store
-            .post_with_event(&channel, &creator, PostMsg::root("plain"))
+            .post_with_event(&channel, &Subject::from(&creator), PostMsg::root("plain"))
             .await
             .unwrap();
         match ev {
@@ -1739,7 +2109,7 @@ mod tests {
 
         let mut rx = store.subscribe_events(&channel).await;
         store
-            .post(&channel, &creator, PostMsg::root("wake up"))
+            .post(&channel, &Subject::from(&creator), PostMsg::root("wake up"))
             .await
             .unwrap();
 
@@ -1874,7 +2244,7 @@ mod tests {
 
         // The receiver's own post passes the membership check.
         store
-            .post(&channel, &receiver, PostMsg::root("receiver talking"))
+            .post(&channel, &Subject::from(&receiver), PostMsg::root("receiver talking"))
             .await
             .expect("receiver must be able to post to its own mirror");
 

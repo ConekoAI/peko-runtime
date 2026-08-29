@@ -14,17 +14,24 @@
 //!   peko send myprincipal "also check the calendar" --wait
 //!   peko send myprincipal "Hello" --model openai-gpt-4o
 //!
-//! Group channels (`group:<slug>` recipients) are refused: groups are
-//! principal-authored spaces with no bound run — post via
-//! `peko channel post` as a member principal instead.
+//! Group channels (`group:<slug>` recipients) post as the caller's
+//! user identity (ADR-049 Phase 2, D7): `peko send group:eng "hi"`
+//! writes to the group channel's log as `user:<id>`; store-level
+//! Subject membership is the write authorization. `--wait`, `--model`
+//! and `--no-slash` stay refused — a group post fans out to one run
+//! per member principal, so there is no single run to await or steer.
 
 use crate::commands::{parse_recipient, GlobalPaths, Recipient};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
+use peko_channel::{ChannelCliRouter, ChannelConfig, ChannelStore};
+use peko_core::ipc::packet::RequestPacket;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_core::principal::runtime::OutputFormat;
+use peko_protocol::channel::ChannelId;
 use std::io::Write;
 use std::str::FromStr;
+use std::sync::Arc;
 use tracing::info;
 
 /// Send a message to a Principal
@@ -86,31 +93,11 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         );
     }
 
-    // Group recipients (`group:<slug>`): group channels are
-    // principal-authored spaces — the channel IPC authorizes writes
-    // against a *member principal* sender and has no user-authored
-    // post path, and groups never trigger an agent run. So `send`
-    // can't post here as the CLI user; point at the channel surface.
-    if let Recipient::Group(slug) = parse_recipient(&args.principal) {
-        if args.wait {
-            anyhow::bail!("groups have no bound agent run; nothing to wait on");
-        }
-        if args.model.is_some() {
-            anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
-        }
-        if args.no_slash {
-            anyhow::bail!("--no-slash is meaningless for group channels (no bound agent run)");
-        }
-        anyhow::bail!(
-            "groups are principal-authored channels; `peko send` can't post as a user — \
-             post as a member principal instead: peko channel post group:{slug} <sender-principal> \"<msg>\""
-        );
-    }
-
-    // The thread's peer identity: `--peer user:<id>` overrides the
+    // The sender's user identity: `--peer user:<id>` overrides the
     // global `-U/--user` derivation. The daemon wraps the packet's
     // `user` string as `Subject::User(user)`, so only the user form is
-    // supported here.
+    // supported here. Derived before the group branch so both the
+    // principal and group paths share the same identity rule.
     let user = match args.peer.as_deref() {
         Some(raw) => match peko_auth::Subject::from_str(raw) {
             Ok(peko_auth::Subject::User(id)) => id,
@@ -122,6 +109,26 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         None => paths.user().to_string(),
     };
     let peer = peko_auth::Subject::User(user.clone());
+
+    // Group recipients (`group:<slug>`): post to the group channel as
+    // the caller's user identity (ADR-049 Phase 2, D7). Membership is
+    // the write authorization — a non-member user is refused by the
+    // store with `NotMember`. `--wait` / `--model` / `--no-slash` stay
+    // refused: a group post fans out to one run per member principal,
+    // so there is no single run to await or steer.
+    if let Recipient::Group(slug) = parse_recipient(&args.principal) {
+        if args.wait {
+            anyhow::bail!("groups have no bound agent run; nothing to wait on");
+        }
+        if args.model.is_some() {
+            anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
+        }
+        if args.no_slash {
+            anyhow::bail!("--no-slash is meaningless for group channels (no bound agent run)");
+        }
+        let channel = format!("group:{slug}");
+        return post_to_group(paths, &channel, &message, &user).await;
+    }
 
     info!("Sending message to principal '{}'", args.principal);
 
@@ -155,6 +162,58 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         .await?;
 
     process_response_stream(stream, &client, &args, &peer, sent_at, _json).await
+}
+
+/// `peko send group:<slug>` (ADR-049 Phase 2, D7): post `message` to
+/// the group channel as `user:<user>`. Daemon-first via `ChannelPost`
+/// (the daemon IPC accepts `user:<id>` senders and the store's
+/// Subject membership authorizes the write); falls back to an
+/// in-process `ChannelStore` when the daemon is unreachable, mirroring
+/// the `peko channel` dual-path so manual smoke tests work without a
+/// live daemon.
+async fn post_to_group(
+    paths: &GlobalPaths,
+    channel: &str,
+    message: &str,
+    user: &str,
+) -> Result<()> {
+    let packet = RequestPacket::ChannelPost {
+        request_id: 0,
+        channel: channel.to_string(),
+        sender_name: format!("user:{user}"),
+        text: message.to_string(),
+        parent: None,
+    };
+    if let Ok(client) = DaemonClient::connect().await {
+        if let Ok(resp) = client.request_response(packet).await {
+            match resp {
+                ResponsePacket::ChannelPosted { task_id, .. } => {
+                    println!("posted → {task_id}");
+                    return Ok(());
+                }
+                // A daemon-side application error (e.g. NotMember) is
+                // authoritative — the fallback reads the same store
+                // and would only repeat it.
+                ResponsePacket::Error { message, .. } => {
+                    anyhow::bail!("group post failed: {message}");
+                }
+                // Unexpected shape — fall through to the in-process path.
+                _ => {}
+            }
+        }
+    }
+
+    let ch = ChannelId::parse(channel).with_context(|| format!("invalid ChannelId: {channel}"))?;
+    let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(ChannelConfig {
+        runtime_dir: paths.runtime_dir(),
+        shared_dir: None,
+    }));
+    let router = ChannelCliRouter::new(port);
+    let resp = router
+        .handle_post(&ch, &peko_auth::Subject::User(user.to_string()), message, None)
+        .await?;
+    println!("posted → {}", resp.task_id);
+    Ok(())
 }
 
 /// Process the response stream from a `PrincipalSend` request.
@@ -459,6 +518,7 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
 mod tests {
     use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
+    use peko_channel::ChannelPort as _;
 
     /// Bug 4 (scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md):
     /// `peko send <name> ""` previously called the LLM with empty content
@@ -587,24 +647,150 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn send_group_recipient_refused_with_guidance() {
-        // Groups are principal-authored channels; the channel IPC has
-        // no user-authored post path, so `send` refuses before any IPC.
-        let cli = Cli::try_parse_from(["peko", "send", "group:eng-standup", "hi"])
-            .expect("should parse group recipient");
-        let paths = from_cli(&cli);
-        let args = match cli.command {
-            Commands::Send(args) => args,
-            _ => panic!("expected Send"),
-        };
-        let err = super::handle_send(args, &paths, false)
+    // -----------------------------------------------------------------
+    // ADR-049 Phase 2 (D7): `peko send group:<slug>` posts as the
+    // caller's user identity.
+    // -----------------------------------------------------------------
+
+    /// Build `SendArgs` for a group recipient without going through
+    /// clap (the flag-refusal tests below still exercise the parse
+    /// path end-to-end).
+    fn group_send_args(principal: &str, message: &str) -> super::SendArgs {
+        super::SendArgs {
+            principal: principal.to_string(),
+            message: Some(message.to_string()),
+            file: None,
+            stdin: false,
+            wait: false,
+            peer: None,
+            no_slash: false,
+            model: None,
+        }
+    }
+
+    /// `GlobalPaths` rooted in a tempdir, with the default `local`
+    /// user identity (what `-U` defaults to).
+    fn test_paths(tmp: &tempfile::TempDir) -> crate::commands::GlobalPaths {
+        crate::commands::GlobalPaths::new(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+            "local".to_string(),
+        )
+    }
+
+    /// Seed a `group:<slug>` channel (creator principal + the given
+    /// user members) in the tempdir's runtime root. Returns the store
+    /// so the test can assert on the resulting event log.
+    async fn seed_group(
+        paths: &crate::commands::GlobalPaths,
+        slug: &str,
+        user_members: &[&str],
+    ) -> peko_channel::ChannelStore {
+        use peko_channel::CreateOpts;
+        use peko_subject::{PrincipalId, Subject};
+
+        let store = peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
+            runtime_dir: paths.runtime_dir(),
+            shared_dir: None,
+        });
+        let creator = PrincipalId("prin_alice".to_string());
+        let channel_id =
+            peko_protocol::channel::ChannelId::for_group(slug);
+        let channel = store
+            .create(&creator, CreateOpts::runtime(slug).with_id(channel_id))
             .await
-            .expect_err("group send must be refused before IPC");
-        let msg = format!("{err:#}");
+            .expect("seed create");
+        for user in user_members {
+            store
+                .invite(&channel, &creator, &Subject::User((*user).to_string()))
+                .await
+                .expect("seed invite");
+        }
+        store
+    }
+
+    #[tokio::test]
+    async fn send_group_posts_as_caller_user_identity() {
+        // No daemon in the test env, so `handle_send` exercises the
+        // in-process fallback against the tempdir store.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = test_paths(&tmp);
+        let store = seed_group(&paths, "eng-standup", &["local"]).await;
+
+        super::handle_send(group_send_args("group:eng-standup", "hi all"), &paths, false)
+            .await
+            .expect("group send must succeed for a member user");
+
+        let events = store
+            .peek(
+                &peko_protocol::channel::ChannelId::for_group("eng-standup"),
+                &peko_channel::Checkpoint::default(),
+            )
+            .await
+            .expect("peek");
+        let posted: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
+                    Some((author, text))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(posted.len(), 1, "expected exactly one post; got {posted:?}");
+        assert_eq!(posted[0].0, "user:local");
+        assert_eq!(posted[0].1, "hi all");
+    }
+
+    #[tokio::test]
+    async fn send_group_honors_peer_override() {
+        // `--peer user:<id>` overrides the `-U` identity, mirroring
+        // the principal path's derivation.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = test_paths(&tmp);
+        let store = seed_group(&paths, "eng", &["alice"]).await;
+
+        let mut args = group_send_args("group:eng", "hello from alice");
+        args.peer = Some("user:alice".to_string());
+        super::handle_send(args, &paths, false)
+            .await
+            .expect("group send as --peer user must succeed");
+
+        let events = store
+            .peek(
+                &peko_protocol::channel::ChannelId::for_group("eng"),
+                &peko_channel::Checkpoint::default(),
+            )
+            .await
+            .expect("peek");
+        let authors: Vec<&str> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                peko_protocol::channel::ChannelEvent::Posted { author, .. } => {
+                    Some(author.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(authors, vec!["user:alice"]);
+    }
+
+    #[tokio::test]
+    async fn send_group_rejects_non_member_user() {
+        // Membership is the write authorization: the caller's user
+        // identity is not a member, so the store refuses with
+        // `NotMember`.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = test_paths(&tmp);
+        let _store = seed_group(&paths, "eng", &[]).await;
+
+        let err = super::handle_send(group_send_args("group:eng", "must not land"), &paths, false)
+            .await
+            .expect_err("non-member user must be refused");
         assert!(
-            msg.contains("peko channel post group:eng-standup"),
-            "error should point at the channel surface: {msg}"
+            format!("{err:#}").contains("not a member"),
+            "got: {err:#}"
         );
     }
 
@@ -622,6 +808,44 @@ mod tests {
             .expect_err("--wait on a group must be refused");
         assert!(
             format!("{err:#}").contains("nothing to wait on"),
+            "got: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_group_recipient_refuses_model_flag() {
+        let cli = Cli::try_parse_from([
+            "peko", "send", "group:eng", "hi", "--model", "openai-gpt-4o",
+        ])
+        .expect("should parse");
+        let paths = from_cli(&cli);
+        let args = match cli.command {
+            Commands::Send(args) => args,
+            _ => panic!("expected Send"),
+        };
+        let err = super::handle_send(args, &paths, false)
+            .await
+            .expect_err("--model on a group must be refused");
+        assert!(
+            format!("{err:#}").contains("--model is meaningless"),
+            "got: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_group_recipient_refuses_no_slash_flag() {
+        let cli = Cli::try_parse_from(["peko", "send", "group:eng", "/help", "--no-slash"])
+            .expect("should parse");
+        let paths = from_cli(&cli);
+        let args = match cli.command {
+            Commands::Send(args) => args,
+            _ => panic!("expected Send"),
+        };
+        let err = super::handle_send(args, &paths, false)
+            .await
+            .expect_err("--no-slash on a group must be refused");
+        assert!(
+            format!("{err:#}").contains("--no-slash is meaningless"),
             "got: {err:#}"
         );
     }

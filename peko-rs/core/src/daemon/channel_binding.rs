@@ -99,6 +99,52 @@
 //!   history through the responder. Caveat: a message whose turn task
 //!   was in flight when the daemon died is not retried (the cursor
 //!   advanced past it at delivery) — at-most-once delivery, by design.
+//!
+//! ## ADR-049 Phase 3: the group wake (D4)
+//!
+//! Unbound channels (no `passive_binding` in `meta.json` — every
+//! `group:<slug>` channel and every bare `chan_*` group) get a
+//! [`GroupWakeResponder`] instead of [`NoopChannelResponder`] when the
+//! principal has a resolvable model. The trigger is the D4 wake policy:
+//!
+//! - A `user:*`-authored **root** post wakes the principal. Every member
+//!   principal's subscriber fires independently — one wake run per
+//!   (principal, channel).
+//! - Principal-authored posts (bare id or `principal:<did>`) NEVER
+//!   trigger. Loop safety is structural: the group responder's own reply
+//!   is principal-authored, and principals reacting to principals is
+//!   exactly the feedback vector D4 forbids.
+//! - Replies (`parent: Some`) never trigger (same root-post-only rule
+//!   as the DM responder).
+//!
+//! The wake runs in the principal's per-(principal, channel) standing
+//! child session (`/group-<slug>`, provisioned via
+//! [`crate::principal::peer_children::ensure_group_child`] — the
+//! peer-DM child mechanism keyed on the channel instead of a peer),
+//! driven by the same [`SubagentResumeDriver`] machinery as the DM
+//! path. The responder posts the turn's final text back to the channel
+//! as the principal, threaded onto the triggering post — the agent
+//! does NOT need the `ChannelSend` tool for the reply (mirroring the
+//! DM responder, which also posts the reply itself). The turn input is
+//! `{author}: {text}` so the principal can tell speakers apart in a
+//! multi-party channel (the DM path passes raw text — a two-party
+//! channel has exactly one possible speaker).
+//!
+//! Turn concurrency mirrors the DM path: the per-responder turn mutex
+//! serializes wake runs for one (principal, channel) — a second user
+//! post arriving mid-run queues behind the first and gets its own turn
+//! — and `resume_and_execute`'s `has_active_subagent_run_for_child`
+//! guard refuses cross-path double-runs (a root agent resuming the
+//! same group child mid-wake loses with `err_run_active`, logged).
+//!
+//! There is no duplicate-run path for `peko send group:` (Phase 2):
+//! the `ChannelPost` IPC handler posts the message and nothing more —
+//! no ingress handler drives a turn for group posts, so the
+//! subscriber's [`GroupWakeResponder`] is the ONLY driver. (Peer DMs
+//! differ: their ingress handlers post AND drive, which is why the DM
+//! trigger must skip Subject-wire-form authors — group posts carry
+//! those same `user:*` authors but have no ingress driver, so the
+//! group trigger keys on them instead.)
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -116,7 +162,7 @@ use peko_channel::{
 };
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::extensions::framework::async_exec::executor::registry::TaskMetadata;
@@ -293,7 +339,7 @@ impl ResponderInner {
                     .port
                     .post(
                         &self.channel,
-                        &self.principal,
+                        &Subject::from(&self.principal),
                         PostMsg::reply(event_id, reply),
                     )
                     .await
@@ -321,11 +367,96 @@ impl ChannelResponder for PassiveBindingResponder {
         let Some(text) = Self::response_trigger(&ctx.principal, &ctx.event) else {
             return Ok(());
         };
-        // Detached task: the subscriber's cursor advance + persistence
-        // must not block on an LLM turn (see module docs). The turn
-        // lock inside `run_turn` serializes concurrent arrivals.
-        let inner = Arc::clone(&self.inner);
-        tokio::spawn(async move { inner.run_turn(ctx.event_id, text).await });
+        spawn_turn(Arc::clone(&self.inner), ctx, text);
+        Ok(())
+    }
+}
+
+/// Detached-task spawn shared by both responders: the subscriber's
+/// cursor advance + persistence must not block on an LLM turn (see
+/// module docs). The turn lock inside `run_turn` serializes concurrent
+/// arrivals.
+fn spawn_turn(inner: Arc<ResponderInner>, ctx: RespondCtx, input: String) {
+    tokio::spawn(async move { inner.run_turn(ctx.event_id, input).await });
+}
+
+// ---------------------------------------------------------------------------
+// GroupWakeResponder (ADR-049 Phase 3, D4)
+// ---------------------------------------------------------------------------
+
+/// `ChannelResponder` for group-tier (unbound) channels. See the
+/// module docs' "ADR-049 Phase 3" section for the design; the trigger
+/// is [`Self::response_trigger`].
+///
+/// Reuses [`ResponderInner`] wholesale — the binding slot carries the
+/// channel's wire id and the resolver find-or-creates the
+/// per-(principal, channel) group child session; the reply post path
+/// (threaded, principal-authored) is identical to the DM responder's.
+#[derive(Clone)]
+pub(crate) struct GroupWakeResponder {
+    inner: Arc<ResponderInner>,
+}
+
+impl GroupWakeResponder {
+    pub(crate) fn new(
+        channel: ChannelId,
+        principal: PrincipalId,
+        port: Arc<dyn ChannelPort>,
+        resolver: Arc<dyn BindingResolver>,
+        driver: Arc<dyn BoundTurnDriver>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(ResponderInner {
+                binding: channel.as_str().to_string(),
+                channel,
+                principal,
+                port,
+                resolver,
+                driver,
+                resolved_session: tokio::sync::OnceCell::new(),
+                turn_lock: tokio::sync::Mutex::new(()),
+            }),
+        }
+    }
+
+    /// The D4 wake filter. Returns the turn input to act on, or `None`
+    /// to drop the event. Fires ONLY on a `user:*`-authored ROOT post:
+    ///
+    /// - `parent.is_none()` — replies never wake (same rule as the DM
+    ///   responder; every responder reply carries `parent: Some`).
+    /// - The author parses as `Subject::User` — principal-authored
+    ///   posts (bare ids AND `principal:<did>` forms) never trigger,
+    ///   which is the D4 loop-safety rule; `public` is not a user and
+    ///   never triggers. The subscribing principal's own posts are
+    ///   principal-authored, so self-suppression falls out of the same
+    ///   rule (no separate author-equality check is needed).
+    ///
+    /// The input is `{author}: {text}` so the woken session can tell
+    /// speakers apart in a multi-party channel (see module docs).
+    fn response_trigger(_principal: &PrincipalId, event: &ChannelEvent) -> Option<String> {
+        match event {
+            ChannelEvent::Posted {
+                author,
+                text,
+                parent,
+                ..
+            } if parent.is_none()
+                && matches!(Subject::from_str(author), Ok(Subject::User(_))) =>
+            {
+                Some(format!("{author}: {text}"))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[async_trait]
+impl ChannelResponder for GroupWakeResponder {
+    async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
+        let Some(input) = Self::response_trigger(&ctx.principal, &ctx.event) else {
+            return Ok(());
+        };
+        spawn_turn(Arc::clone(&self.inner), ctx, input);
         Ok(())
     }
 }
@@ -384,6 +515,44 @@ impl BindingResolver for SessionStoreBindingResolver {
             .await?;
         let anchor_id = peko_session::SessionId::from(self.anchor.as_str());
         Ok(peko_session::path::resolve_path(&metas, anchor_id, binding)?.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GroupChildResolver (ADR-049 Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Production [`BindingResolver`] for the group wake: the "binding" is
+/// the channel's wire id and resolution find-or-creates the
+/// principal's per-(principal, channel) standing child session
+/// (`/group-<slug>`) via
+/// [`crate::principal::peer_children::ensure_group_child`]. Idempotent
+/// per channel — the responder's `OnceCell` caches the first
+/// successful resolution, so provisioning happens at most once per
+/// (principal, channel) per daemon lifetime.
+pub(crate) struct GroupChildResolver {
+    agent_name: String,
+    session_manager: Arc<RwLock<SessionManager>>,
+}
+
+impl GroupChildResolver {
+    pub(crate) fn new(agent_name: String, session_manager: Arc<RwLock<SessionManager>>) -> Self {
+        Self {
+            agent_name,
+            session_manager,
+        }
+    }
+}
+
+#[async_trait]
+impl BindingResolver for GroupChildResolver {
+    async fn resolve(&self, binding: &str) -> anyhow::Result<String> {
+        crate::principal::peer_children::ensure_group_child(
+            &self.agent_name,
+            binding,
+            &self.session_manager,
+        )
+        .await
     }
 }
 
@@ -486,29 +655,53 @@ impl BoundTurnDriver for SubagentResumeDriver {
 // select_responder — the per-channel wiring decision
 // ---------------------------------------------------------------------------
 
+/// The per-principal driver bundle [`select_responder`] picks from:
+/// the shared turn driver plus the two resolvers (the DM path resolves
+/// the channel's own `passive_binding`; the group path find-or-creates
+/// the per-(principal, channel) group child).
+pub(crate) struct ResponderDrivers {
+    pub(crate) turn: Arc<dyn BoundTurnDriver>,
+    pub(crate) binding_resolver: Arc<dyn BindingResolver>,
+    pub(crate) group_resolver: Arc<dyn BindingResolver>,
+}
+
 /// Pick the responder for one (principal, channel) pair. Pure decision
 /// shared by the boot path and the post-boot hooks, and unit-tested
-/// here: a binding + a successfully built driver yields a
-/// [`PassiveBindingResponder`]; anything else (unbound channel, or a
-/// principal with no resolvable model) keeps the pre-Phase-4
-/// [`NoopChannelResponder`] behavior.
+/// here:
+///
+/// - a binding + driver bundle yields a [`PassiveBindingResponder`]
+///   (DM tier);
+/// - no binding + driver bundle yields a [`GroupWakeResponder`]
+///   (ADR-049 Phase 3, D4 — group tier; bare `chan_*` and
+///   `group:<slug>` channels alike — any unbound channel can carry
+///   `user:*` posts since Phase 1, so the wake rule keys on the
+///   binding, not the id's kind prefix);
+/// - no driver bundle (the principal has no resolvable model) keeps
+///   the pre-Phase-4 [`NoopChannelResponder`] behavior either way.
 pub(crate) fn select_responder(
     channel: ChannelId,
     principal: PrincipalId,
     port: Arc<dyn ChannelPort>,
     binding: Option<String>,
-    driver: Option<(Arc<dyn BoundTurnDriver>, Arc<dyn BindingResolver>)>,
+    drivers: Option<ResponderDrivers>,
 ) -> Arc<dyn ChannelResponder> {
-    match (binding, driver) {
-        (Some(binding), Some((turn_driver, resolver))) => Arc::new(PassiveBindingResponder::new(
+    match (binding, drivers) {
+        (Some(binding), Some(drivers)) => Arc::new(PassiveBindingResponder::new(
             channel,
             principal,
             binding,
             port,
-            resolver,
-            turn_driver,
+            drivers.binding_resolver,
+            drivers.turn,
         )),
-        (binding, _) => {
+        (None, Some(drivers)) => Arc::new(GroupWakeResponder::new(
+            channel,
+            principal,
+            port,
+            drivers.group_resolver,
+            drivers.turn,
+        )),
+        (binding, None) => {
             if let Some(binding) = binding {
                 debug!(
                     channel = %channel,
@@ -553,7 +746,14 @@ pub(crate) struct ChannelBindingSupervisor {
     spawned: std::sync::Mutex<HashSet<(PrincipalId, ChannelId)>>,
     /// Per-principal (turn driver, binding resolver) bundles.
     drivers: tokio::sync::RwLock<
-        HashMap<PrincipalId, (Arc<SubagentResumeDriver>, Arc<SessionStoreBindingResolver>)>,
+        HashMap<
+            PrincipalId,
+            (
+                Arc<SubagentResumeDriver>,
+                Arc<SessionStoreBindingResolver>,
+                Arc<GroupChildResolver>,
+            ),
+        >,
     >,
 }
 
@@ -702,21 +902,22 @@ impl ChannelBindingSupervisor {
                 None
             }
         };
-        let driver = match binding {
-            Some(_) => self.driver_for(principal).await.map(|(turn, resolver)| {
-                (
-                    Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
-                    Arc::clone(&resolver) as Arc<dyn BindingResolver>,
-                )
-            }),
-            None => None,
-        };
+        // ADR-049 Phase 3: the driver bundle is built for bound AND
+        // unbound channels — unbound (group-tier) channels get the
+        // group wake responder from the same bundle.
+        let drivers = self.driver_for(principal).await.map(|(turn, binding_resolver, group_resolver)| {
+            ResponderDrivers {
+                turn: Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
+                binding_resolver: Arc::clone(&binding_resolver) as Arc<dyn BindingResolver>,
+                group_resolver: Arc::clone(&group_resolver) as Arc<dyn BindingResolver>,
+            }
+        });
         select_responder(
             channel.clone(),
             principal.id.clone(),
             Arc::clone(&self.port),
             binding,
-            driver,
+            drivers,
         )
     }
 
@@ -737,7 +938,11 @@ impl ChannelBindingSupervisor {
     async fn driver_for(
         &self,
         principal: &Arc<Principal>,
-    ) -> Option<(Arc<SubagentResumeDriver>, Arc<SessionStoreBindingResolver>)> {
+    ) -> Option<(
+        Arc<SubagentResumeDriver>,
+        Arc<SessionStoreBindingResolver>,
+        Arc<GroupChildResolver>,
+    )> {
         if let Some(bundle) = self.drivers.read().await.get(&principal.id).cloned() {
             return Some(bundle);
         }
@@ -787,8 +992,15 @@ impl ChannelBindingSupervisor {
             Arc::clone(turns.session_manager()),
             owner_root,
         ));
+        // ADR-049 Phase 3: the group-child resolver shares the
+        // principal's session manager; provisioning is keyed by the
+        // channel at resolve time.
+        let group_resolver = Arc::new(GroupChildResolver::new(
+            turns.agent_name().to_string(),
+            Arc::clone(turns.session_manager()),
+        ));
 
-        let bundle = (turn_driver, binding_resolver);
+        let bundle = (turn_driver, binding_resolver, group_resolver);
         drivers.insert(principal.id.clone(), bundle.clone());
         Some(bundle)
     }
@@ -1097,9 +1309,9 @@ mod tests {
         // the log — in production the subscriber only ever hands the
         // responder line ids that exist.
         let other = pid("prin_other");
-        store.invite(&channel, &principal, &other).await.unwrap();
+        store.invite(&channel, &principal, &Subject::from(&other)).await.unwrap();
         let line = store
-            .post(&channel, &other, PostMsg::root("hi"))
+            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
             .await
             .unwrap();
 
@@ -1274,7 +1486,7 @@ mod tests {
 
         // A posts a root post (line 1; Created is line 0).
         let line_a = store_a
-            .post(&channel_a, &principal_a, PostMsg::root("hello from A"))
+            .post(&channel_a, &Subject::from(&principal_a), PostMsg::root("hello from A"))
             .await
             .unwrap();
 
@@ -1393,8 +1605,28 @@ mod tests {
 
     // -- select_responder ---------------------------------------------------
 
+    /// Build a `ResponderDrivers` bundle from stub parts (the group
+    /// resolver is a stub too — provisioning is not what these tests
+    /// exercise).
+    fn stub_drivers(driver: StubDriver, session_id: &str) -> ResponderDrivers {
+        ResponderDrivers {
+            turn: Arc::new(driver),
+            binding_resolver: Arc::new(StubResolver {
+                id: session_id.into(),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            group_resolver: Arc::new(StubResolver {
+                id: session_id.into(),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        }
+    }
+
+    /// ADR-049 Phase 3: an unbound channel with a driver bundle gets
+    /// the group wake responder — it fires on `user:*` root posts and
+    /// stays silent on principal-authored posts.
     #[tokio::test(flavor = "multi_thread")]
-    async fn select_responder_noop_for_unbound_channel() {
+    async fn select_responder_group_wake_for_unbound_channel_with_driver() {
         let (store, _tmp) = test_store("select-unbound");
         let principal = pid("prin_self");
         let channel = store
@@ -1402,21 +1634,15 @@ mod tests {
             .await
             .unwrap();
 
-        // Unbound: Noop even if a driver is somehow available.
         let (driver, calls) = StubDriver::new("r");
         let responder = select_responder(
             channel.clone(),
             principal.clone(),
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             None,
-            Some((
-                Arc::new(driver),
-                Arc::new(StubResolver {
-                    id: "s".into(),
-                    calls: Arc::new(AtomicUsize::new(0)),
-                }),
-            )),
+            Some(stub_drivers(driver, "session-1")),
         );
+        // A principal-authored root post must NOT fire (D4 loop safety).
         responder
             .consider_response(respond_ctx(
                 &principal,
@@ -1428,6 +1654,17 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(calls.lock().unwrap().is_empty());
+        // A user-authored root post MUST fire.
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                "2",
+                posted("user:alice", "hello group"),
+            ))
+            .await
+            .unwrap();
+        assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1480,13 +1717,7 @@ mod tests {
             principal.clone(),
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             Some("/user-a".to_string()),
-            Some((
-                Arc::new(driver),
-                Arc::new(StubResolver {
-                    id: "session-1".into(),
-                    calls: Arc::new(AtomicUsize::new(0)),
-                }),
-            )),
+            Some(stub_drivers(driver, "session-1")),
         );
         responder
             .consider_response(respond_ctx(
@@ -1498,6 +1729,251 @@ mod tests {
             .await
             .unwrap();
         assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
+    }
+
+    // -- GroupWakeResponder (ADR-049 Phase 3, D4) ----------------------------
+
+    /// The D4 trigger: fires on `user:*` ROOT posts only. Principal
+    /// posts (bare id or `principal:<did>`), `public`, threaded
+    /// replies, and non-Posted events never fire.
+    #[test]
+    fn group_trigger_fires_only_on_user_root_posts() {
+        let principal = pid("prin_self");
+
+        // Fires: a user root post (input carries the speaker prefix).
+        let ev = posted("user:alice", "hello group");
+        assert_eq!(
+            GroupWakeResponder::response_trigger(&principal, &ev),
+            Some("user:alice: hello group".to_string())
+        );
+
+        // Never fires: principal-authored root posts — the D4
+        // loop-safety rule (the responder's own replies are
+        // principal-authored, so self-suppression falls out too).
+        for author in [
+            "prin_other",
+            "prin_self",
+            "prin_bob@runtime-B",
+            "principal:did:peko:principal:abc123",
+            "public",
+        ] {
+            let ev = posted(author, "a principal speaking");
+            assert_eq!(
+                GroupWakeResponder::response_trigger(&principal, &ev),
+                None,
+                "author {author} must not trigger a group wake"
+            );
+        }
+
+        // Never fires: a user-authored REPLY (threaded).
+        let ev = posted_reply("user:alice", "3", "threaded follow-up");
+        assert_eq!(
+            GroupWakeResponder::response_trigger(&principal, &ev),
+            None,
+            "replies (parent-bearing posts) must never trigger a group wake"
+        );
+
+        // Never fires: channel bookkeeping events.
+        let channel = chan();
+        for ev in [
+            ChannelEvent::Created {
+                channel: channel.clone(),
+                creator: "prin_other".into(),
+                name: "group".into(),
+                at: "2026-08-15T00:00:00Z".into(),
+            },
+            ChannelEvent::MemberJoined {
+                channel: channel.clone(),
+                member: "user:alice".into(),
+                at: "2026-08-15T00:00:00Z".into(),
+            },
+            ChannelEvent::MemberLeft {
+                channel,
+                member: "user:alice".into(),
+                at: "2026-08-15T00:00:00Z".into(),
+            },
+        ] {
+            assert_eq!(
+                GroupWakeResponder::response_trigger(&principal, &ev),
+                None
+            );
+        }
+    }
+
+    fn group_responder(
+        label_principal: &str,
+        driver: StubDriver,
+        resolver: StubResolver,
+        port: Arc<dyn ChannelPort>,
+        channel: ChannelId,
+    ) -> GroupWakeResponder {
+        GroupWakeResponder::new(
+            channel,
+            pid(label_principal),
+            port,
+            Arc::new(resolver),
+            Arc::new(driver),
+        )
+    }
+
+    /// Group wake end-to-end: a user root post on a group channel
+    /// drives exactly one turn in the resolved per-(principal,
+    /// channel) session, and the reply lands back on the group as the
+    /// principal, threaded onto the triggering post.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_wake_user_post_resumes_session_and_posts_reply() {
+        let (store, _tmp) = test_store("group-wake");
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let principal = pid("prin_self");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        store
+            .invite(&channel, &principal, &Subject::User("alice".to_string()))
+            .await
+            .unwrap();
+
+        let (driver, calls) = StubDriver::new("the group reply");
+        let responder = group_responder(
+            "prin_self",
+            driver,
+            StubResolver {
+                id: "session-1".into(),
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+            port,
+            channel.clone(),
+        );
+
+        // The user posts to the group (Phase 2 path: ChannelPost with
+        // a `user:<id>` sender — posted by the handler, driven by
+        // nobody else, so the subscriber is the ONLY turn driver).
+        let line = store
+            .post(
+                &channel,
+                &Subject::User("alice".to_string()),
+                PostMsg::root("hello group"),
+            )
+            .await
+            .unwrap();
+        let events = store
+            .peek_with_ids(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let (_, user_event) = events
+            .into_iter()
+            .find(|(_, ev)| matches!(ev, ChannelEvent::Posted { author, .. } if author == "user:alice"))
+            .expect("user post is in the log");
+
+        responder
+            .consider_response(respond_ctx(&principal, &channel, &line, user_event))
+            .await
+            .unwrap();
+
+        // One turn, in the resolved session, with the speaker prefix.
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        assert_eq!(
+            calls.lock().unwrap()[0],
+            ("session-1".to_string(), "user:alice: hello group".to_string())
+        );
+
+        // The reply lands on the group as the principal, THREADED
+        // onto the triggering user post.
+        let store2 = Arc::clone(&store);
+        let channel2 = channel.clone();
+        let principal2 = principal.clone();
+        let line2 = line.clone();
+        assert!(
+            eventually(|| async {
+                store2
+                    .peek(&channel2, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|ev| {
+                        matches!(ev, ChannelEvent::Posted { author, text, parent, .. }
+                    if *author == principal2.to_string()
+                        && text == "the group reply"
+                        && parent.as_deref() == Some(line2.as_str()))
+                    })
+            })
+            .await,
+            "reply must land on the group threaded onto the user post"
+        );
+    }
+
+    /// A principal-authored root post on the group channel drives NO
+    /// turn — the D4 loop-safety invariant end-to-end (the group
+    /// responder's own reply must not retrigger it either; that case
+    /// is the same author shape).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_wake_ignores_principal_posts_end_to_end() {
+        let (store, _tmp) = test_store("group-no-wake");
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let principal = pid("prin_self");
+        let other = pid("prin_other");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        store
+            .invite(&channel, &principal, &Subject::from(&other))
+            .await
+            .unwrap();
+
+        let (driver, calls) = StubDriver::new("unused");
+        let responder = group_responder(
+            "prin_self",
+            driver,
+            StubResolver {
+                id: "session-1".into(),
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+            port,
+            channel.clone(),
+        );
+
+        let line = store
+            .post(&channel, &Subject::from(&other), PostMsg::root("agent talking"))
+            .await
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                &line,
+                posted("prin_other", "agent talking"),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "principal-authored posts must never drive a group wake"
+        );
+    }
+
+    /// The production [`GroupChildResolver`] find-or-creates one
+    /// standing child per channel wire id: idempotent per channel,
+    /// distinct across channels (the per-(principal, channel) session
+    /// keying, D4).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_child_resolver_keys_sessions_per_channel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new()
+            .with_sessions_dir_internal(tmp.path().join("sessions"));
+        let resolver =
+            GroupChildResolver::new("test-agent".to_string(), Arc::new(RwLock::new(manager)));
+
+        let eng = resolver.resolve("group:eng-standup").await.unwrap();
+        assert_eq!(
+            eng,
+            resolver.resolve("group:eng-standup").await.unwrap(),
+            "same channel must resolve to the same session"
+        );
+        let ops = resolver.resolve("group:ops").await.unwrap();
+        assert_ne!(eng, ops, "distinct channels must get distinct sessions");
     }
 
     // -- SessionStoreBindingResolver (real session store) -------------------
@@ -1651,9 +2127,9 @@ mod tests {
             )
             .await
             .unwrap();
-        store.invite(&channel, &principal, &other).await.unwrap();
+        store.invite(&channel, &principal, &Subject::from(&other)).await.unwrap();
         store
-            .post(&channel, &other, PostMsg::root("before-restart"))
+            .post(&channel, &Subject::from(&other), PostMsg::root("before-restart"))
             .await
             .unwrap();
 

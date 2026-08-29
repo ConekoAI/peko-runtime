@@ -2902,7 +2902,10 @@ mod tests {
         // the creator is remote on the source runtime.
         let channel_typed = peko_protocol::channel::ChannelId(channel_id.to_string());
         let local_members = local_store.list_members(&channel_typed).await.unwrap();
-        assert_eq!(local_members, vec![principal.id.clone()]);
+        assert_eq!(
+            local_members,
+            vec![peko_subject::Subject::from(&principal.id)]
+        );
         let remote_members = local_store
             .list_remote_members(&channel_typed)
             .await

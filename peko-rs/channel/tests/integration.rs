@@ -21,7 +21,7 @@ use peko_channel::subscription::SubscriptionConfig;
 use peko_channel::{
     ChannelCliRouter, ChannelConfig, ChannelId, ChannelPort, ChannelStore,
 };
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
 use peko_protocol::channel::ChannelEvent;
 use tempfile::TempDir;
 
@@ -89,23 +89,23 @@ async fn two_principals_full_lifecycle() {
 
     // Bob can't post before being invited.
     let err = port
-        .post(&chan, &bob, PostMsg::root("premature"))
+        .post(&chan, &Subject::from(&bob), PostMsg::root("premature"))
         .await
         .expect_err("non-member post must fail");
     assert!(matches!(err, peko_channel::ChannelError::NotMember));
 
     // Invite bob.
-    port.invite(&chan, &alice, &bob).await.expect("invite");
+    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("invite");
 
     // Alice posts a root message.
     let msg1 = port
-        .post(&chan, &alice, PostMsg::root("hello"))
+        .post(&chan, &Subject::from(&alice), PostMsg::root("hello"))
         .await
         .expect("post msg1");
 
     // Bob replies to msg1.
     let msg2 = port
-        .post(&chan, &bob, PostMsg::reply(msg1.clone(), "reply"))
+        .post(&chan, &Subject::from(&bob), PostMsg::reply(msg1.clone(), "reply"))
         .await
         .expect("post msg2");
     // Use msg2 so the binding isn't unused.
@@ -134,10 +134,9 @@ async fn two_principals_full_lifecycle() {
 
     // Membership set is { alice, bob }.
     let members = port.list_members(&chan).await.expect("members");
-    let member_strs: Vec<String> = members.iter().map(|p| p.to_string()).collect();
-    assert_eq!(member_strs.len(), 2);
-    assert!(member_strs.contains(&alice.to_string()));
-    assert!(member_strs.contains(&bob.to_string()));
+    assert_eq!(members.len(), 2);
+    assert!(members.contains(&Subject::from(&alice)));
+    assert!(members.contains(&Subject::from(&bob)));
 
     // Each principal sees exactly one channel.
     let alice_chans = port.list_for_principal(&alice).await.expect("alice chans");
@@ -146,7 +145,7 @@ async fn two_principals_full_lifecycle() {
     assert_eq!(bob_chans, vec![chan.clone()]);
 
     // Idempotent invite is silent (no error, no duplicate member).
-    port.invite(&chan, &alice, &bob).await.expect("idempotent invite");
+    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("idempotent invite");
     let members2 = port.list_members(&chan).await.expect("members after re-invite");
     assert_eq!(members2.len(), 2, "re-invite must not duplicate");
 }
@@ -182,7 +181,7 @@ async fn subscriber_calls_responder_for_each_new_event() {
 
     // Bob joins so he can also subscribe.
     let bob = PrincipalId::generate();
-    port.invite(&chan, &alice, &bob).await.expect("invite bob");
+    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("invite bob");
 
     // Bob subscribes with a counter responder.
     let responder = Arc::new(CountResponder::default());
@@ -203,13 +202,13 @@ async fn subscriber_calls_responder_for_each_new_event() {
 
     // Three posts before the first tick: cursor starts at "begin",
     // so the first tick sees ALL events (created + member_joined + 3 posts).
-    port.post(&chan, &alice, PostMsg::root("a"))
+    port.post(&chan, &Subject::from(&alice), PostMsg::root("a"))
         .await
         .expect("post a");
-    port.post(&chan, &alice, PostMsg::root("b"))
+    port.post(&chan, &Subject::from(&alice), PostMsg::root("b"))
         .await
         .expect("post b");
-    port.post(&chan, &alice, PostMsg::root("c"))
+    port.post(&chan, &Subject::from(&alice), PostMsg::root("c"))
         .await
         .expect("post c");
 
@@ -238,7 +237,7 @@ async fn subscriber_calls_responder_for_each_new_event() {
     );
 
     // A new post causes exactly one more responder call.
-    port.post(&chan, &alice, PostMsg::root("d"))
+    port.post(&chan, &Subject::from(&alice), PostMsg::root("d"))
         .await
         .expect("post d");
     let third = sub.tick_once().await.expect("third tick");
@@ -275,7 +274,7 @@ async fn spawned_subscriber_wakes_on_append_without_waiting_for_tick() {
     // interval far beyond the test's patience — if the wake-up ever
     // regresses to pure polling, the assertions below time out.
     let bob = PrincipalId::generate();
-    port.invite(&chan, &alice, &bob).await.expect("invite bob");
+    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("invite bob");
 
     let responder = Arc::new(CountResponder::default());
     let counters = responder.clone();
@@ -305,7 +304,7 @@ async fn spawned_subscriber_wakes_on_append_without_waiting_for_tick() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    port.post(&chan, &alice, PostMsg::root("ping"))
+    port.post(&chan, &Subject::from(&alice), PostMsg::root("ping"))
         .await
         .expect("post ping");
 
@@ -342,15 +341,15 @@ async fn cli_router_round_trip() {
     let bob = PrincipalId::generate();
 
     let created = router
-        .handle_create(&alice, "demo", None)
+        .handle_create(&alice, "demo", None, None)
         .await
         .expect("create");
     router
-        .handle_invite(&created.channel, &alice, &bob)
+        .handle_invite(&created.channel, &alice, &Subject::from(&bob))
         .await
         .expect("invite");
     let posted = router
-        .handle_post(&created.channel, &alice, "hi", None)
+        .handle_post(&created.channel, &Subject::from(&alice), "hi", None)
         .await
         .expect("post");
     assert!(!posted.task_id.is_empty());
@@ -383,7 +382,7 @@ async fn fan_out_cap_rejects_ninth_member() {
     let mut members: Vec<PrincipalId> = vec![creator.clone()];
     for _ in 0..7 {
         let p = PrincipalId::generate();
-        port.invite(&chan, &creator, &p).await.expect("invite");
+        port.invite(&chan, &creator, &Subject::from(&p)).await.expect("invite");
         members.push(p);
     }
     assert_eq!(port.list_members(&chan).await.unwrap().len(), 8);
@@ -391,7 +390,7 @@ async fn fan_out_cap_rejects_ninth_member() {
     // 9th invite must error with FanOutCap.
     let ninth = PrincipalId::generate();
     let err = port
-        .invite(&chan, &creator, &ninth)
+        .invite(&chan, &creator, &Subject::from(&ninth))
         .await
         .expect_err("9th member must fail");
     match err {
@@ -426,10 +425,70 @@ async fn tier_rule_rejects_non_runtime_in_pr1() {
 }
 
 // ---------------------------------------------------------------------------
+// Test G: ADR-049 Phase 2 (D5) — named group channel end-to-end
+// ---------------------------------------------------------------------------
+
+/// `create --id group:<slug>` mints the channel under the explicit id;
+/// a member user then posts as themselves and the log reads back
+/// through `handle_peek` — the full `peko channel create --id` →
+/// `peko send group:` → `peko log group:` path at the handler level.
+#[tokio::test(flavor = "multi_thread")]
+async fn group_channel_end_to_end_via_router() {
+    let (_tmp, adapter) = adapter_in_tempdir();
+    let port: Arc<dyn ChannelPort> = as_port(adapter.clone());
+    let router = ChannelCliRouter::new(port);
+
+    let creator = PrincipalId::generate();
+    let group_id = ChannelId::for_group("eng-standup");
+
+    // D5: explicit `--id` mints the named group channel.
+    let created = router
+        .handle_create(&creator, "eng-standup", None, Some(group_id.clone()))
+        .await
+        .expect("create with explicit group id");
+    assert_eq!(created.channel, group_id, "create must use the explicit id");
+
+    // The creator invites the user; the user posts as themselves
+    // (Subject membership is the write authorization).
+    let user = Subject::User("local".to_string());
+    router
+        .handle_invite(&created.channel, &creator, &user)
+        .await
+        .expect("invite user");
+    let posted = router
+        .handle_post(&created.channel, &user, "standup notes", None)
+        .await
+        .expect("member user post");
+    assert!(!posted.task_id.is_empty());
+
+    // The log reads back with the canonical user author form.
+    let peeked = router
+        .handle_peek(&created.channel, None)
+        .await
+        .expect("peek");
+    let authored: Vec<&str> = peeked
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            ChannelEvent::Posted { author, text, .. } if text == "standup notes" => {
+                Some(author.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(authored, vec!["user:local"]);
+
+    // A non-member user is still refused with NotMember.
+    let stranger = Subject::User("mallory".to_string());
+    let err = router
+        .handle_post(&created.channel, &stranger, "must not land", None)
+        .await
+        .expect_err("non-member user post must fail");
+    assert!(matches!(err, peko_channel::ChannelError::NotMember));
+}
 
 // ---------------------------------------------------------------------------
-// Test F: PR-3d Shared-tier opt-in
-// ---------------------------------------------------------------------------
+
 
 /// PR-3d: `pin_to_shared` copies `meta.json` + `members.json` to the
 /// Shared root. Initial state (no posts) means zero `plan_*.jsonl`
@@ -480,7 +539,7 @@ async fn shared_pin_copies_log_lines_after_post() {
         .await
         .expect("create");
     let _task_id = port
-        .post(&chan, &creator, PostMsg::root("hello"))
+        .post(&chan, &Subject::from(&creator), PostMsg::root("hello"))
         .await
         .expect("post");
 

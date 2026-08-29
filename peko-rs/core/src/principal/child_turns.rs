@@ -291,6 +291,12 @@ impl PeerChildTurns {
         &self.parent_session_key
     }
 
+    /// The root agent's prompt name, stamped on created sessions
+    /// (ADR-049 Phase 3: group child provisioning).
+    pub(crate) fn agent_name(&self) -> &str {
+        &self.agent_name
+    }
+
     /// Find-or-create the peer's standing child of the trunk and (Phase
     /// 11) surface the peer's DM channel alongside — the ingress
     /// handlers post the inbound message + reply to the returned

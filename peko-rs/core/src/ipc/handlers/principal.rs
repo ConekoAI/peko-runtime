@@ -3917,7 +3917,7 @@ mod tests {
             for i in 0..n {
                 port.post_attributed(
                     &fx.channel,
-                    &fx.principal.id,
+                    &Subject::from(&fx.principal.id),
                     &fx.peer.to_string(),
                     PostMsg::root(format!("question {i}")),
                 )
@@ -3925,7 +3925,7 @@ mod tests {
                 .expect("inbound post");
                 port.post(
                     &fx.channel,
-                    &fx.principal.id,
+                    &Subject::from(&fx.principal.id),
                     PostMsg::root(format!("answer {i}")),
                 )
                 .await
@@ -4175,7 +4175,7 @@ mod tests {
 
             // Live post: forwarded exactly once.
             let port: Arc<dyn ChannelPort> = fx.store.clone();
-            port.post(&fx.channel, &fx.principal.id, PostMsg::root("live answer"))
+            port.post(&fx.channel, &Subject::from(&fx.principal.id), PostMsg::root("live answer"))
                 .await
                 .expect("live post");
             wait_for_packet(&sink, |p| {

@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use serde::{Deserialize, Serialize};
 
@@ -74,25 +74,32 @@ impl ChannelCliRouter {
     /// optional `--bind` value: a session id or `/path` in the creator's
     /// session tree that inbound `Posted` events wake. `None` creates a
     /// purely active (group-tier) channel — today's default.
+    ///
+    /// `id` (ADR-049 Phase 2, D5) is the optional explicit channel id
+    /// (`--id group:<slug>`); `None` mints a fresh `chan_<8 base36>`.
     pub async fn handle_create(
         &self,
         creator: &PrincipalId,
         name: &str,
         passive_binding: Option<String>,
+        id: Option<ChannelId>,
     ) -> Result<CreateResponse> {
         let mut opts = CreateOpts::runtime(name);
         opts.passive_binding = passive_binding;
+        opts.id = id;
         let channel = self.port.create(creator, opts).await?;
         Ok(CreateResponse { channel })
     }
 
     /// `peko channel invite <channel> <invitee>` — add `invitee` to
-    /// `channel` as `inviter`.
+    /// `channel` as `inviter`. ADR-049 Phase 1: the invitee is
+    /// [`Subject`]-typed (principals and users); the inviter stays a
+    /// principal.
     pub async fn handle_invite(
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &PrincipalId,
+        invitee: &Subject,
     ) -> Result<InviteResponse> {
         self.port.invite(channel, inviter, invitee).await?;
         Ok(InviteResponse {
@@ -102,11 +109,14 @@ impl ChannelCliRouter {
     }
 
     /// `peko channel post <channel> [--parent <task_id>] <text>` —
-    /// append a message. Returns the new task id.
+    /// append a message. Returns the new task id. ADR-049 Phase 2:
+    /// the sender is [`Subject`]-typed — a `user:<id>` member posts as
+    /// themselves; store-level Subject membership is the
+    /// authorization.
     pub async fn handle_post(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         text: &str,
         parent: Option<String>,
     ) -> Result<PostResponse> {
@@ -221,7 +231,9 @@ pub struct CreateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InviteResponse {
     pub channel: ChannelId,
-    pub invitee: PrincipalId,
+    /// ADR-049 Phase 1: the invitee is `Subject`-typed (a principal or
+    /// a user).
+    pub invitee: Subject,
 }
 
 /// `--json` output for `peko channel post`.
@@ -249,7 +261,9 @@ pub struct LeaveResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MembersResponse {
     pub channel: ChannelId,
-    pub members: Vec<PrincipalId>,
+    /// ADR-049 Phase 1: members are `Subject`-typed (principals and
+    /// users).
+    pub members: Vec<Subject>,
     /// P1.2 attribution: per-member runtime provenance. Empty for
     /// channels with no remote members; legacy pre-PR-3b
     /// implementations may omit the field entirely

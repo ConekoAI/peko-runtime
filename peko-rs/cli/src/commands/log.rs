@@ -22,7 +22,9 @@
 //!
 //! Group channels (`peko log group:<slug>`) bypass the principal
 //! privacy model: the channel log is read directly via the
-//! `ChannelPeek` IPC, authors rendered verbatim.
+//! `ChannelPeek` IPC, authors rendered verbatim. Reads are
+//! membership-gated against the caller's `-U` user identity
+//! (ADR-049 D6) — a non-member is refused by the daemon.
 
 use crate::commands::{parse_recipient, GlobalPaths, Recipient};
 use anyhow::{Context, Result};
@@ -95,7 +97,7 @@ pub struct LogCommand {
 /// opts into the multi-page drain (bounded so a runaway caller can't
 /// pin the daemon forever); `--cursor` pages older messages manually.
 /// `--watch` streams: replay newer than `--cursor`, then live rows.
-pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Result<()> {
+pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Result<()> {
     let LogCommand {
         principal,
         peer,
@@ -120,8 +122,9 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
     let use_json = cmd_json || json;
 
     // Group recipients (`group:<slug>`) read the channel's log
-    // directly — no principal, no thread privacy check (same posture
-    // as `peko channel peek`; membership gating is a known gap).
+    // directly — no principal, no thread privacy check. Reads are
+    // membership-gated (ADR-049 D6): the daemon refuses unless the
+    // caller's `-U` user identity is a channel member.
     if let Recipient::Group(slug) = parse_recipient(&principal) {
         if peer_subject.is_some() {
             anyhow::bail!("--peer applies to principal threads, not group channels");
@@ -129,7 +132,8 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
         let client = DaemonClient::connect()
             .await
             .context("Daemon is not running. Start it with: peko daemon start")?;
-        return handle_group_log(&client, &slug, limit, since_secs, cursor, all, watch, use_json)
+        let requester = format!("user:{}", paths.user());
+        return handle_group_log(&client, &slug, &requester, limit, since_secs, cursor, all, watch, use_json)
             .await;
     }
 
@@ -263,7 +267,9 @@ async fn watch_principal_log(
 }
 
 /// `peko log group:<slug>`: read the group channel's log directly via
-/// the `ChannelPeek` IPC.
+/// the `ChannelPeek` IPC. `requester` is the caller's `-U` user
+/// identity in Subject wire form — the daemon membership-gates the
+/// read against it (ADR-049 D6).
 ///
 /// Flag mapping onto what ChannelPeek actually supports:
 /// - `--cursor N` → peek's `since` checkpoint (rows strictly newer
@@ -279,6 +285,7 @@ async fn watch_principal_log(
 async fn handle_group_log(
     client: &DaemonClient,
     slug: &str,
+    requester: &str,
     limit: Option<usize>,
     since_secs: Option<u64>,
     cursor: Option<String>,
@@ -293,10 +300,10 @@ async fn handle_group_log(
                 "[peko] group --watch ignores --limit/--since/--all; use --cursor to seed the replay"
             );
         }
-        return watch_group_log(client, &channel, cursor, use_json).await;
+        return watch_group_log(client, &channel, requester, cursor, use_json).await;
     }
 
-    let rows = peek_group_posted_rows(client, &channel, cursor.filter(|c| !c.is_empty())).await?;
+    let rows = peek_group_posted_rows(client, &channel, requester, cursor.filter(|c| !c.is_empty())).await?;
     let cutoff = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s as i64));
     let rows: Vec<&(String, String, String)> = rows
         .iter()
@@ -338,16 +345,24 @@ async fn handle_group_log(
 /// prints rows beyond the ones already shown (the channel log is
 /// append-only, so count-based diffing is exact). Ctrl-C exits via
 /// default SIGINT.
+///
+/// ADR-049 Phase 4 decision: KEEP the poll. `ChannelEventsWatch` is
+/// membership-gated since Phase 2 (and this loop passes the same
+/// `requester`), but it still emits no heartbeats — switching back to
+/// the raw stream would regress quiet-channel watches to a 60s
+/// timeout for no behavioral gain. Revisit only if the watch stream
+/// grows heartbeats.
 async fn watch_group_log(
     client: &DaemonClient,
     channel: &str,
+    requester: &str,
     cursor: Option<String>,
     use_json: bool,
 ) -> Result<()> {
     let mut printed = 0usize;
     let mut since = cursor.filter(|c| !c.is_empty());
     loop {
-        let rows = peek_group_posted_rows(client, channel, since.take()).await?;
+        let rows = peek_group_posted_rows(client, channel, requester, since.take()).await?;
         for (at, author, text) in rows.iter().skip(printed) {
             if use_json {
                 println!("{}", group_row_json(at, author, text));
@@ -367,12 +382,14 @@ async fn watch_group_log(
 async fn peek_group_posted_rows(
     client: &DaemonClient,
     channel: &str,
+    requester: &str,
     cursor: Option<String>,
 ) -> Result<Vec<(String, String, String)>> {
     let packet = RequestPacket::ChannelPeek {
         request_id: 0,
         channel: channel.to_string(),
         since: cursor,
+        requester: Some(requester.to_string()),
     };
     let events = match client.request_response(packet).await? {
         ResponsePacket::ChannelPeekResult { events, .. } => events,
