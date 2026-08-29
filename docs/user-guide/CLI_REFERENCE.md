@@ -114,15 +114,15 @@ Replies render as they stream. A per-turn footer on stderr reports
 iterations, token usage, and failed tool calls. Ctrl-C soft-stops the
 run (see `stop`).
 
-Group channels (`group:<slug>` recipients) are refused: groups are
-principal-authored spaces with no bound run, and the channel IPC has
-no user-authored post path. Post as a member principal instead:
-`peko channel post group:<slug> <sender-principal> "<msg>"`.
-
-> **Note:** ADR-049 supersedes this — groups become multi-principal,
-> multi-user channels and `peko send group:<slug>` posts as the caller's
-> user identity. This paragraph describes the behavior until the ADR-049
-> Phase 2 implementation lands.
+Group channels (`group:<slug>` recipients) post as the caller's user
+identity (ADR-049): `peko send group:<slug> "<msg>"` writes to the
+group channel's log as `user:<id>`; membership is the write
+authorization, so you must be a member of the group. A user root post
+wakes every member principal, each in its own per-`(principal,
+channel)` session, and their replies post back to the group (ADR-049
+D4). `--wait`, `--model`, and `--no-slash` stay refused — a group post
+fans out to one run per member principal, so there is no single run to
+await or steer.
 
 #### Examples
 
@@ -176,9 +176,9 @@ peko stop <PRINCIPAL> [--peer <SUBJECT>]
 
 The privacy contract matches `log` (ADR-042): the caller must be the
 thread's peer or the Principal's owner. Group channels (`group:<slug>`)
-are refused — groups have no bound run. (ADR-049 keeps this refusal: a
-group wake fans out to one run per member principal, so there is no
-single run to stop; per-member stop is future work.)
+are refused (ADR-049 D7): a group wake fans out to one run per member
+principal, so there is no single run to stop — per-member stop is
+future work.
 
 #### Examples
 
@@ -442,9 +442,11 @@ peko search info acme/researcher
 ### `channel` — Multi-Principal Channels
 
 Multi-principal chat primitives (PR-1+). A channel is a small fan-out
-chat room: up to 8 members, file-backed event log keyed at the channel
-id. Members can post, reply, and peek; the engine observes every event
-through the audit ring buffer regardless of who reads.
+chat room: up to 8 principal members (user members are uncapped —
+ADR-049), file-backed event log keyed at the channel id. Members
+(principals and `user:<id>` users alike) can post, reply, and peek;
+the engine observes every event through the audit ring buffer
+regardless of who reads.
 
 ```bash
 peko channel <SUBCOMMAND>
@@ -454,16 +456,14 @@ peko channel <SUBCOMMAND>
 
 | Subcommand | Description |
 |-----------|-------------|
-| `create <CREATOR> <NAME>` | Create a channel owned by `creator`. |
-| `invite <CHANNEL> <INVITER> <INVITEE>` | Add `invitee` to `channel` (inviter must already be a member). |
-| `post <CHANNEL> <SENDER> <TEXT>` | Post a message (optional `--parent` for replies). |
-| `peek <CHANNEL> [--since CURSOR]` | Read events from the log (JSON). |
-| `members <CHANNEL>` | List current members. |
+| `create <CREATOR> <NAME> [--bind PATH] [--id CHANNEL_ID]` | Create a channel owned by `creator`. `--bind` sets a passive binding (DM-tier channel); `--id` pins an explicit id such as `group:<slug>` (omit to mint a fresh `chan_<8 base36>`). |
+| `invite <CHANNEL> <INVITER> <INVITEE>` | Add `invitee` to `channel` (inviter must already be a member). `invitee` is a principal name or a `user:<id>` wire form. |
+| `post <CHANNEL> <SENDER> <TEXT>` | Post a message (optional `--parent` for replies). `sender` is a principal name or a `user:<id>` wire form (must be a member). |
+| `peek <CHANNEL> [--since CURSOR]` | Read events from the log (JSON). Membership-gated against your `-U` user identity (ADR-049 D6). |
+| `members <CHANNEL>` | List current members (principals and users). |
 | `ls <PRINCIPAL>` | List channels where a principal is a member. |
 | `show <CHANNEL>` | Membership snapshot (display name + members). |
-| `config <CHANNEL>` | Per-channel config (model_list, cost ceiling, default subagent type). |
 | `leave <CHANNEL> <PRINCIPAL>` | Remove `principal` from `channel`. |
-| `pin <CHANNEL>` | Pin a channel for the calling principal. |
 | `pin-to-shared <CHANNEL>` | Copy a Runtime-tier channel into the Shared tier (PR-3d). |
 
 All subcommands accept `--json` for machine-readable output.
@@ -651,10 +651,12 @@ than `--cursor` first, then rows as they're posted (heartbeats keep a
 quiet thread's stream alive).
 
 A `group:<slug>` recipient reads that group channel's log directly via
-the channel IPC, bypassing the principal privacy model (same posture
-as `peko channel peek`; membership gating is a known gap — ADR-049 D6
-gates these reads on membership). Authors render verbatim; group
-`--watch` polls every 2s.
+the channel IPC, bypassing the principal privacy model. The read is
+membership-gated (ADR-049 D6): the daemon refuses unless your `-U`
+user identity is a member of the group. Authors render verbatim.
+Group `--watch` polls every 2s (the gated `ChannelEventsWatch` stream
+carries no heartbeats and would die at the CLI's idle timeout on a
+quiet channel — ADR-049 Phase 4 decision).
 
 ```bash
 peko log [OPTIONS] <PRINCIPAL>
@@ -714,7 +716,8 @@ peko log group:eng-standup --watch --json
   (public is not a session peer).
 - The same rule applies to `--watch` (enforced by the
   `principal_log_watch` IPC before the thread is resolved) and to
-  `peko stop`. Group channels have no such check.
+  `peko stop`. Group channels sit outside this thread-privacy model;
+  they gate on channel membership instead (ADR-049 D6).
 
 #### See Also
 

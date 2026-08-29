@@ -818,9 +818,10 @@ pub enum RequestPacket {
     /// `requester` (ADR-049 Phase 2, D6) is the optional Subject wire
     /// form (`user:<id>` / `principal:<did>`) of the reader. When
     /// present, the handler refuses the read unless the requester is a
-    /// channel member. Serde-defaulted so pre-Phase-2 clients decode
-    /// as `None` (ungated — the Phase 4 `CallerContext` authz removes
-    /// that escape).
+    /// channel member; a pekohub JWT caller must name themselves (and
+    /// is gated even when the field is absent — Phase 4). Serde-
+    /// defaulted so pre-Phase-2 clients decode as `None` (ungated for
+    /// Local-trust callers — the desktop carries no identity yet).
     #[serde(rename = "channel_peek")]
     ChannelPeek {
         request_id: u64,

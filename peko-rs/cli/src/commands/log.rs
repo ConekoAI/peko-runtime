@@ -345,6 +345,13 @@ async fn handle_group_log(
 /// prints rows beyond the ones already shown (the channel log is
 /// append-only, so count-based diffing is exact). Ctrl-C exits via
 /// default SIGINT.
+///
+/// ADR-049 Phase 4 decision: KEEP the poll. `ChannelEventsWatch` is
+/// membership-gated since Phase 2 (and this loop passes the same
+/// `requester`), but it still emits no heartbeats — switching back to
+/// the raw stream would regress quiet-channel watches to a 60s
+/// timeout for no behavioral gain. Revisit only if the watch stream
+/// grows heartbeats.
 async fn watch_group_log(
     client: &DaemonClient,
     channel: &str,

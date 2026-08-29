@@ -44,7 +44,8 @@ impl Tool for ChannelReadTool {
     fn description(&self) -> String {
         "Read events from a peko channel the calling principal is a member of.\n\n\
          Parameters:\n\
-         - channel: string (required) — channel id, e.g. 'chan_a1b2c3d4'\n\
+         - channel: string (required) — channel id, e.g. 'chan_a1b2c3d4' or a \
+         named group 'group:<slug>'\n\
          - since:   string (optional) — opaque cursor from a previous read; \
          omit to start from the beginning\n\
          - limit:   int    (optional) — cap the number of events returned\n\n\
@@ -60,7 +61,7 @@ impl Tool for ChannelReadTool {
             "properties": {
                 "channel": {
                     "type": "string",
-                    "description": "Channel id (e.g. 'chan_a1b2c3d4')"
+                    "description": "Channel id (e.g. 'chan_a1b2c3d4' or a named group 'group:<slug>')"
                 },
                 "since": {
                     "type": "string",
@@ -105,7 +106,7 @@ impl Tool for ChannelReadTool {
         let channel_id = ChannelId::parse(channel_str).ok_or_else(|| {
             anyhow::anyhow!(
                 "ChannelRead: '{channel_str}' is not a valid channel id \
-                 (expected 'chan_<8 base36 chars>')"
+                 (expected 'chan_<8 base36 chars>' or 'group:<slug>')"
             )
         })?;
 

@@ -38,7 +38,8 @@ pub trait ChannelPort: Send + Sync + 'static {
 
     /// Add an invitee to a channel. Returns [`ChannelError::NotMember`]
     /// if `inviter` isn't already a member; [`ChannelError::FanOutCap`]
-    /// if the channel already has 8 members (PR-1 cap; PR-3 may lift).
+    /// if the channel already has 8 principal members (PR-1 cap, now
+    /// principal-counted per ADR-049 Phase 4; PR-3 may lift).
     ///
     /// ADR-049 Phase 1: the invitee is [`Subject`]-typed — both
     /// principals (`Subject::Principal`) and users (`Subject::User`)
@@ -449,8 +450,10 @@ pub enum ChannelError {
     #[error("serde: {0}")]
     Serde(#[from] serde_json::Error),
 
-    /// Fan-out cap exceeded. PR-1: hard cap of 8 members per channel.
-    #[error("fan-out cap exceeded ({current}); max 8 members per channel")]
+    /// Fan-out cap exceeded. PR-1: hard cap of 8 principal members per
+    /// channel (ADR-049 Phase 4: user members are uncapped — they add
+    /// no per-post fan-out cost; see `store::FAN_OUT_CAP`).
+    #[error("fan-out cap exceeded ({current}); max 8 principal members per channel")]
     FanOutCap { current: usize },
 
     /// Generic adapter-level error. Avoid for new code; prefer a

@@ -290,8 +290,11 @@ is already consumed by the desktop UI stream
 (`ipc/handlers/channel.rs:561-632`). The `ChannelResponder::
 consider_response` trait (`channel/src/responder.rs:36-40`) is the
 "should I respond?" seam; the daemon selects per channel:
-`NoopChannelResponder` for unbound channels, `PassiveBindingResponder`
-for bound ones (Phase 4, below).
+`PassiveBindingResponder` for bound (DM-tier) channels (Phase 4, below),
+`GroupWakeResponder` for unbound (group-tier) channels (ADR-049 Phase 3 —
+`user:*` root posts wake the member principal; principal posts never
+wake), `NoopChannelResponder` only when the principal has no resolvable
+model.
 
 **(implemented — Phase 7, sprint 2)** Passive DM pickup exists on BOTH
 paths, and both land in children now: an inbound A2A/tunnel or CLI/Hub

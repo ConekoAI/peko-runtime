@@ -67,8 +67,17 @@ use crate::fs::channel_dir_name;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Hard cap on members per channel. PR-1 default. PR-3 may make this
-/// configurable on the channel.
+/// Hard cap on PRINCIPAL members per channel. PR-1 default. PR-3 may
+/// make this configurable on the channel.
+///
+/// ADR-049 Phase 4: the cap counts principal members only, not users.
+/// What the cap actually bounds is per-post fan-out cost: the
+/// cross-runtime `TunnelChannelEvent` fan-out (one envelope per remote
+/// runtime hosting a member principal) and the Phase 3 group wake
+/// (one run per member principal per `user:*` root post, D4). Both
+/// scale with PRINCIPAL membership; user members cost a
+/// `members.json` row and nothing per-post (users are runtime-local
+/// and never wake), so they join uncapped.
 pub const FAN_OUT_CAP: usize = 8;
 
 /// Channel directory under the runtime tier root.
@@ -1085,10 +1094,20 @@ impl ChannelPort for ChannelStore {
             // Idempotent: invitee already a member.
             return Ok(());
         }
-        if members.members.len() >= FAN_OUT_CAP {
-            return Err(ChannelError::FanOutCap {
-                current: members.members.len(),
-            });
+        // ADR-049 Phase 4: the fan-out cap counts principal members
+        // only (see the `FAN_OUT_CAP` doc) — a principal invite past
+        // the cap is refused; user invites are uncapped.
+        if matches!(invitee, Subject::Principal(_)) {
+            let principal_count = members
+                .members
+                .iter()
+                .filter(|m| matches!(member_subject(m), Subject::Principal(_)))
+                .count();
+            if principal_count >= FAN_OUT_CAP {
+                return Err(ChannelError::FanOutCap {
+                    current: principal_count,
+                });
+            }
         }
         members.members.push(subject_wire_form(invitee));
         members.save(&chan_dir).await?;
@@ -1454,8 +1473,7 @@ mod tests {
     /// A `user:<id>` sender who is NOT a member is still rejected
     /// with `NotMember` — Subject-typing the check does not widen it.
     #[tokio::test]
-    async fn non_member_user_post_rejected() {
-        let cfg = tmp_cfg("user-not-member");
+    async fn non_member_user_post_rejected() {        let cfg = tmp_cfg("user-not-member");
         let store = ChannelStore::new(cfg);
         let creator = pid("prin_alice");
         let channel = store
@@ -1486,6 +1504,60 @@ mod tests {
         assert!(
             matches!(err, Err(ChannelError::NotMember)),
             "non-member inviter must be rejected; got: {err:?}"
+        );
+    }
+
+    /// ADR-049 Phase 4: the fan-out cap counts PRINCIPAL members only.
+    /// User invites succeed past the cap; the 9th PRINCIPAL is refused
+    /// even when users padded the member list first.
+    #[tokio::test]
+    async fn fan_out_cap_counts_principals_only() {
+        let cfg = tmp_cfg("cap-principals-only");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_creator");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("capped"))
+            .await
+            .unwrap();
+
+        // Pad to the cap: creator + 7 principals = 8 principal members.
+        for i in 0..7 {
+            store
+                .invite(
+                    &channel,
+                    &creator,
+                    &Subject::from(&pid(&format!("prin_{i}"))),
+                )
+                .await
+                .expect("principal invite up to the cap");
+        }
+        assert_eq!(store.list_members(&channel).await.unwrap().len(), 8);
+
+        // Users join past the cap — they add no per-post fan-out cost.
+        for i in 0..4 {
+            store
+                .invite(
+                    &channel,
+                    &creator,
+                    &Subject::User(format!("user_{i}")),
+                )
+                .await
+                .expect("user invite past the principal cap must succeed");
+        }
+        assert_eq!(store.list_members(&channel).await.unwrap().len(), 12);
+
+        // The 9th principal is still refused, reporting the principal
+        // count (8), not the padded member count (12).
+        let err = store
+            .invite(
+                &channel,
+                &creator,
+                &Subject::from(&pid("prin_ninth")),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ChannelError::FanOutCap { current: 8 })),
+            "9th principal must hit the cap at current=8; got: {err:?}"
         );
     }
 
