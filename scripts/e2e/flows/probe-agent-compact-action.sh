@@ -57,8 +57,7 @@ flow_main() {
   echo
   echo "──── TURN 1 (spawn helper, cleanup=keep) ────"
   peko_iso_run send probe \
-      "Delegate this to a helper agent (use the Agent tool, subagent_type=primary, cleanup=keep): write a single sentence about lighthouses. Tell me the helper's session id when done." \
-      --no-stream
+      "Delegate this to a helper agent (use the Agent tool, subagent_type=primary, cleanup=keep): write a single sentence about lighthouses. Tell me the helper's session id when done."
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
 
@@ -66,8 +65,7 @@ flow_main() {
   echo
   echo "──── TURN 2 (resume helper via action=resume) ────"
   peko_iso_run send probe \
-      "Use the Agent tool with action=resume, session_key=<the helper session id from your previous turn>, subagent_type=primary, and prompt: 'Now add a second sentence about foghorns.' Tell me what the helper returned." \
-      --no-stream
+      "Use the Agent tool with action=resume, session_key=<the helper session id from your previous turn>, subagent_type=primary, and prompt: 'Now add a second sentence about foghorns.' Tell me what the helper returned."
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
 
@@ -93,8 +91,7 @@ flow_main() {
   echo
   echo "──── TURN 3 (Agent action=compact on the helper) ────"
   peko_iso_run send probe \
-      "Use the Agent tool with action=compact and session_key='$helper_id'. No prompt or subagent_type needed. Tell me exactly what the tool returned." \
-      --no-stream
+      "Use the Agent tool with action=compact and session_key='$helper_id'. No prompt or subagent_type needed. Tell me exactly what the tool returned."
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
 

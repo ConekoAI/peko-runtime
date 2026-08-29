@@ -111,8 +111,8 @@ peko send my-first-principal --file prompt.txt
 # Pipe from stdin
 echo "Explain Rust ownership" | peko send my-first-principal --stdin
 
-# Disable streaming (wait for full response)
-peko send my-first-principal "Write a long essay" --no-stream
+# Long replies stream as they're written; Ctrl-C soft-stops the run
+peko send my-first-principal "Write a long essay"
 ```
 
 ---

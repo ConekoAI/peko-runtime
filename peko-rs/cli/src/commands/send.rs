@@ -1,22 +1,30 @@
 //! Send Command - Send a message to a Principal
 //!
-//! The top-level `peko send` command targets a Principal by name and
-//! streams the response from the daemon.
+//! The top-level `peko send` command posts a message onto the caller's
+//! thread with a Principal. If no run is in flight the daemon starts
+//! one and the reply streams back; if a run is already in flight the
+//! message is queued onto the session inbox and folds into the running
+//! turn at the next agentic step ("busy" path — the CLI prints a
+//! notice and exits 0, or blocks for the reply with `--wait`).
 //!
 //! Examples:
 //!   peko send myprincipal "What is the weather?"
 //!   peko send myprincipal --file prompt.txt
 //!   echo "Hello" | peko send myprincipal --stdin
-//!   peko send myprincipal "Hello" --no-stream
+//!   peko send myprincipal "also check the calendar" --wait
 //!   peko send myprincipal "Hello" --model openai-gpt-4o
+//!
+//! Group channels (`group:<slug>` recipients) are refused: groups are
+//! principal-authored spaces with no bound run — post via
+//! `peko channel post` as a member principal instead.
 
-use crate::commands::GlobalPaths;
+use crate::commands::{parse_recipient, GlobalPaths, Recipient};
 use anyhow::Result;
 use clap::Args;
-use peko_core::ipc::packet::PrincipalSendControlMode;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_core::principal::runtime::OutputFormat;
 use std::io::Write;
+use std::str::FromStr;
 use tracing::info;
 
 /// Send a message to a Principal
@@ -37,16 +45,16 @@ pub struct SendArgs {
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
 
-    /// Disable streaming, wait for full response before output
+    /// When the principal is busy (message queued onto the in-flight
+    /// run), block until the principal's next reply on the thread
+    /// instead of exiting right after the queued notice
     #[arg(long)]
-    pub no_stream: bool,
+    pub wait: bool,
 
-    /// Enable streaming (default behaviour). Accepted as a synonym
-    /// for the default path so users who try to force streaming
-    /// don't get an unknown-flag error. Hidden from `--help` because
-    /// it's a no-op, not a real knob. Use `--no-stream` to opt out.
-    #[arg(long, hide = true)]
-    pub stream: bool,
+    /// Send as this peer instead of the global `-U/--user` identity.
+    /// Accepts the wire format `user:<id>`.
+    #[arg(long, value_name = "SUBJECT")]
+    pub peer: Option<String>,
 
     /// Do not treat `/`-prefixed messages as slash commands; pass them to the LLM verbatim
     #[arg(long)]
@@ -58,12 +66,12 @@ pub struct SendArgs {
 }
 
 /// Handle the send command
-pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Result<()> {
     let message = resolve_message(&args).await?;
 
     // Refuse empty messages at the CLI layer — see Bug 4 in
     // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
-    // Without this guard, `peko send scout "" --no-stream` still calls
+    // Without this guard, `peko send scout ""` still calls
     // the LLM with empty content (the 128 input tokens are the system
     // prompt) and returns a canned greeting, silently burning the
     // user's quota. A non-technical user typing this in a shell loop
@@ -77,6 +85,43 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
              echo \"Hello\" | peko send myprincipal --stdin"
         );
     }
+
+    // Group recipients (`group:<slug>`): group channels are
+    // principal-authored spaces — the channel IPC authorizes writes
+    // against a *member principal* sender and has no user-authored
+    // post path, and groups never trigger an agent run. So `send`
+    // can't post here as the CLI user; point at the channel surface.
+    if let Recipient::Group(slug) = parse_recipient(&args.principal) {
+        if args.wait {
+            anyhow::bail!("groups have no bound agent run; nothing to wait on");
+        }
+        if args.model.is_some() {
+            anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
+        }
+        if args.no_slash {
+            anyhow::bail!("--no-slash is meaningless for group channels (no bound agent run)");
+        }
+        anyhow::bail!(
+            "groups are principal-authored channels; `peko send` can't post as a user — \
+             post as a member principal instead: peko channel post group:{slug} <sender-principal> \"<msg>\""
+        );
+    }
+
+    // The thread's peer identity: `--peer user:<id>` overrides the
+    // global `-U/--user` derivation. The daemon wraps the packet's
+    // `user` string as `Subject::User(user)`, so only the user form is
+    // supported here.
+    let user = match args.peer.as_deref() {
+        Some(raw) => match peko_auth::Subject::from_str(raw) {
+            Ok(peko_auth::Subject::User(id)) => id,
+            Ok(other) => {
+                anyhow::bail!("--peer must be a user subject (`user:<id>`), got '{other}'")
+            }
+            Err(e) => anyhow::bail!("invalid --peer value '{raw}': {e}"),
+        },
+        None => paths.user().to_string(),
+    };
+    let peer = peko_auth::Subject::User(user.clone());
 
     info!("Sending message to principal '{}'", args.principal);
 
@@ -92,41 +137,40 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
     // (`CLI_TIMEOUT_SECS`) from firing on long responses — the one-shot
     // `PrincipalSend` path emits nothing until completion, so any answer
     // taking longer than the idle window dies with "Stream closed
-    // unexpectedly". `--no-stream` still buffers before printing.
+    // unexpectedly".
+    //
+    // `sent_at` is the client-side timestamp just before ingress; the
+    // busy-path `--wait` loop uses it to tell the principal's reply
+    // apart from older thread history.
+    let sent_at = chrono::Utc::now();
     let stream = client
         .principal_send_stream(
             &args.principal,
             message,
-            _paths.user(),
+            user,
             args.no_slash,
             output_format,
             args.model.clone(),
         )
         .await?;
 
-    // Print the request_id to stderr before reading the stream so
-    // users can run `peko interrupt <id>` from another terminal to
-    // soft-interrupt the run. The daemon also accepts Ctrl-C via the
-    // `tokio::select!` below, but a separate terminal is the supported
-    // headless path.
-    let request_id = stream.request_id();
-    eprintln!("[peko] request_id={request_id} (run `peko interrupt {request_id}` to stop)");
-
-    process_response_stream(stream, &client, &args, _json).await
+    process_response_stream(stream, &client, &args, &peer, sent_at, _json).await
 }
 
 /// Process the response stream from a `PrincipalSend` request.
 ///
-/// In streaming mode, races the response loop against `tokio::signal::ctrl_c()`
-/// so the user can interrupt a long-running stream from the same
-/// terminal. On Ctrl-C, sends a `PrincipalSendControl { Interrupt }` to
-/// the daemon and returns once the daemon's own `Done`/`Error`
+/// Races the response loop against `tokio::signal::ctrl_c()`
+/// so the user can stop a long-running stream from the same
+/// terminal. On Ctrl-C, sends a `PrincipalStop` to the daemon and
+/// returns once the daemon's own `Done`/`Error`
 /// closes the stream naturally (the loop will fall through with the
-/// "interrupted" error message).
+/// "stopped by user" error message).
 async fn process_response_stream(
     mut stream: peko_core::ipc::PacketStream,
     client: &DaemonClient,
     args: &SendArgs,
+    peer: &peko_auth::Subject,
+    sent_at: chrono::DateTime<chrono::Utc>,
     _json: bool,
 ) -> Result<()> {
     // Spawn a side-channel task that watches for Ctrl-C and signals
@@ -144,101 +188,18 @@ async fn process_response_stream(
         });
     }
     let mut interrupt_sent = false;
-    let request_id = stream.request_id();
-    if args.no_stream {
-        let mut final_text = String::new();
-        // Run summary captured from the daemon's `RunSummary` packet —
-        // printed as a single-line footer on stderr in `Done{success}`
-        // so stdout stays pipe-safe (only the assistant text goes to
-        // stdout). Pre-plan-tool-e2e the footer did not exist; the
-        // daemon dropped `AgenticEvent::Usage` + `ToolEnd{success:false}`
-        // at the IPC boundary per ADR-042, so `--no-stream` callers had
-        // no signal that a tool had failed or how many tokens they used.
-        let mut summary: Option<crate::summary::RunSummaryView> = None;
-        while let Some(packet) = next_or_interrupt(
-            &mut stream,
-            &ctrl_c_signal,
-            &mut interrupt_sent,
-            client,
-            request_id,
-        )
-        .await?
-        {
-            match packet {
-                ResponsePacket::PrincipalSentChunk { delta, .. } => {
-                    final_text.push_str(&delta);
-                }
-                // Authoritative full answer — prefer it over the
-                // accumulated deltas in case the orchestrator buffered.
-                ResponsePacket::PrincipalSentDone { content, .. } => {
-                    final_text = content;
-                }
-                ResponsePacket::PrincipalSent { content, .. }
-                | ResponsePacket::Text { chunk: content, .. } => {
-                    final_text.push_str(&content);
-                }
-                ResponsePacket::RunSummary {
-                    iterations,
-                    usage,
-                    tool_errors,
-                    ..
-                } => {
-                    summary = Some(crate::summary::RunSummaryView {
-                        iterations,
-                        usage: usage.map(|u| crate::summary::UsageView {
-                            prompt_tokens: u.prompt_tokens,
-                            completion_tokens: u.completion_tokens,
-                            total_tokens: u.total_tokens,
-                        }),
-                        tool_errors: tool_errors
-                            .into_iter()
-                            .map(|e| crate::summary::ToolErrorView {
-                                tool_name: e.tool_name,
-                                error_message: e.error_message,
-                            })
-                            .collect(),
-                    });
-                }
-                ResponsePacket::Done { success, error, .. } => {
-                    if success {
-                        println!("{}", final_text.trim());
-                        if let Some(ref s) = summary {
-                            eprintln!("{}", s.format_footer());
-                        }
-                        return Ok(());
-                    }
-                    anyhow::bail!(
-                        "Principal execution failed{}",
-                        error.map(|e| format!(": {e}")).unwrap_or_default()
-                    );
-                }
-                ResponsePacket::Error { message, .. } => {
-                    anyhow::bail!("Principal execution failed: {message}");
-                }
-                ResponsePacket::Heartbeat { .. } => {}
-                _ => {}
-            }
-        }
-        anyhow::bail!("Stream closed unexpectedly");
-    }
 
     let mut has_started_line = false;
     // Run summary captured from the daemon's `RunSummary` packet —
     // printed as a single-line footer on stderr in `Done{success}`
     // so stdout stays pipe-safe (only the assistant text goes to
-    // stdout). Mirrors the --no-stream path. Field-test finding
-    // (2026-08-02): this footer was previously *only* visible in
-    // `--no-stream` mode, hiding per-turn token cost from the
-    // common streaming path.
+    // stdout). Field-test finding (2026-08-02): this footer was
+    // previously *only* visible in `--no-stream` mode, hiding per-turn
+    // token cost from the common streaming path.
     let mut summary: Option<crate::summary::RunSummaryView> = None;
-    while let Some(packet) = next_or_interrupt(
-        &mut stream,
-        &ctrl_c_signal,
-        &mut interrupt_sent,
-        client,
-        request_id,
-    )
-    .await?
+    while let Some(packet) =
+        next_or_interrupt(&mut stream, &ctrl_c_signal, &mut interrupt_sent, client, args, peer)
+            .await?
     {
         match packet {
             ResponsePacket::PrincipalSentChunk { delta: content, .. }
@@ -264,7 +225,7 @@ async fn process_response_stream(
             }
             // RunSummary is emitted by the daemon *before* `Done`.
             // Capture it so we can emit the per-turn footer after the
-            // stream completes (mirrors the --no-stream path).
+            // stream completes.
             ResponsePacket::RunSummary {
                 iterations,
                 usage,
@@ -288,6 +249,24 @@ async fn process_response_stream(
                 });
             }
             ResponsePacket::Done { success, error, .. } => {
+                // Busy path: a run is already in flight on this thread,
+                // so the daemon queued the message onto the session
+                // inbox instead of starting a run. Signalled by a
+                // `[queued]`-prefixed `Done` error (mirrors the
+                // `[not_found]` packet convention); from the user's
+                // perspective this is success — nothing on stdout.
+                if let Some(e) = error.as_deref() {
+                    if e.starts_with("[queued]") {
+                        eprintln!(
+                            "[peko] {} is busy — message queued; it will be picked up at the next step (follow live: peko log {} --watch)",
+                            args.principal, args.principal
+                        );
+                        if args.wait {
+                            wait_for_queued_reply(client, args, peer, sent_at).await?;
+                        }
+                        return Ok(());
+                    }
+                }
                 if has_started_line {
                     println!();
                 }
@@ -312,22 +291,122 @@ async fn process_response_stream(
     anyhow::bail!("Stream closed unexpectedly");
 }
 
+/// Busy-path `--wait`: watch the thread until the principal posts a
+/// reply newer than our queued message.
+///
+/// Uses the `PrincipalLogWatch` stream (replay + live, kept alive by
+/// heartbeats) with a 10-minute cap. The DM channel has exactly two
+/// authors (the peer and the principal), so any non-peer message
+/// newer than `sent_at` is the answer. Peer-authored rows (including
+/// the `⏹ stopped by user` marker) are ignored. If the watch can't be
+/// established or errors mid-stream, fall back to a bounded
+/// `principal_log` poll.
+async fn wait_for_queued_reply(
+    client: &DaemonClient,
+    args: &SendArgs,
+    peer: &peko_auth::Subject,
+    sent_at: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    const WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(600);
+
+    match client
+        .principal_log_watch(args.principal.clone(), Some(peer.clone()), None)
+        .await
+    {
+        Ok(mut stream) => {
+            let watch = async {
+                while let Some(packet) = stream.next().await {
+                    match packet {
+                        ResponsePacket::PrincipalLogAppended { message, .. } => {
+                            if message.timestamp > sent_at && &message.sender != peer {
+                                println!("{}: {}", args.principal, message.text);
+                                return true;
+                            }
+                        }
+                        ResponsePacket::Heartbeat { .. } => {}
+                        ResponsePacket::Error { message, .. } => {
+                            eprintln!("[peko] --wait: log watch error ({message}); polling instead");
+                            return false;
+                        }
+                        _ => {}
+                    }
+                }
+                eprintln!("[peko] --wait: log watch stream closed early; polling instead");
+                false
+            };
+            match tokio::time::timeout(WAIT_CAP, watch).await {
+                Ok(true) => return Ok(()),
+                // Watch failed mid-stream — fall through to the poll.
+                Ok(false) => {}
+                Err(_) => {
+                    eprintln!(
+                        "[peko] still waiting after {}s — giving up; the message stays queued (check `peko log {}`)",
+                        WAIT_CAP.as_secs(),
+                        args.principal
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        Err(e) => eprintln!("[peko] --wait: log watch unavailable ({e}); polling instead"),
+    }
+
+    // Fallback: bounded `principal_log` poll every 2s (the pre-watch
+    // implementation, kept for watch setup/mid-stream failures).
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + WAIT_CAP;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            eprintln!(
+                "[peko] still waiting after {}s — giving up; the message stays queued (check `peko log {}`)",
+                WAIT_CAP.as_secs(),
+                args.principal
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        let resp = client
+            .principal_log(args.principal.clone(), Some(peer.clone()), Some(5), None, None)
+            .await;
+        let messages = match resp {
+            Ok(ResponsePacket::PrincipalLog { messages, .. }) => messages,
+            Ok(other) => {
+                eprintln!("[peko] --wait: unexpected log response {other:?}; retrying");
+                continue;
+            }
+            Err(e) => {
+                eprintln!("[peko] --wait: log poll failed ({e}); retrying");
+                continue;
+            }
+        };
+        if let Some(reply) = messages
+            .iter()
+            .find(|m| m.timestamp > sent_at && &m.sender != peer)
+        {
+            println!("{}: {}", args.principal, reply.text);
+            return Ok(());
+        }
+    }
+}
+
 /// Race `stream.next()` against a Ctrl-C signal. On the first Ctrl-C,
-/// sends a `PrincipalSendControl { Interrupt }` to the daemon and
-/// continues reading the stream (the daemon will eventually emit its
-/// own `Done` with `error: Some("interrupted")` and close it). Returns
-/// the next packet or `None` when the stream is fully closed.
+/// sends a `PrincipalStop` for this send's (principal, peer) thread to
+/// the daemon and continues reading the stream (the daemon will
+/// eventually emit its own `Done` with `error: Some("stopped by
+/// user")` and close it). Returns the next packet or `None` when the
+/// stream is fully closed.
 async fn next_or_interrupt(
     stream: &mut peko_core::ipc::PacketStream,
     ctrl_c_signal: &std::sync::Arc<tokio::sync::Notify>,
     interrupt_sent: &mut bool,
     client: &DaemonClient,
-    request_id: u64,
+    args: &SendArgs,
+    peer: &peko_auth::Subject,
 ) -> Result<Option<ResponsePacket>> {
     // Outer loop so a Ctrl-C that races with a packet still falls back
     // to the next stream.next() call to pick up the daemon's final
     // `Done`. The `if !*interrupt_sent` guard ensures we only send the
-    // interrupt once even if the user mashes Ctrl-C.
+    // stop once even if the user mashes Ctrl-C.
     loop {
         let notified = ctrl_c_signal.notified();
         tokio::pin!(notified);
@@ -336,15 +415,15 @@ async fn next_or_interrupt(
             packet = stream.next() => return Ok(packet),
             () = &mut notified, if !*interrupt_sent => {
                 *interrupt_sent = true;
-                eprintln!("\n[peko] Ctrl-C received — sending interrupt to daemon...");
+                eprintln!("\n[peko] Ctrl-C received — sending stop to daemon...");
                 if let Err(e) = client
-                    .principal_send_control(request_id, PrincipalSendControlMode::Interrupt)
+                    .principal_stop(args.principal.clone(), Some(peer.clone()))
                     .await
                 {
-                    eprintln!("[peko] failed to send interrupt to daemon: {e}");
+                    eprintln!("[peko] failed to send stop to daemon: {e}");
                 }
                 // Loop back and let the stream's next packet be the
-                // daemon's `Done { success: false, error: "interrupted" }`.
+                // daemon's `Done { success: false, error: "stopped by user" }`.
             }
         }
     }
@@ -428,7 +507,8 @@ mod tests {
             Commands::Send(args) => {
                 assert_eq!(args.principal, "myprincipal");
                 assert_eq!(args.message, Some("hello".to_string()));
-                assert!(!args.no_stream);
+                assert!(!args.wait);
+                assert!(args.peer.is_none());
             }
             _other => panic!("expected Send command"),
         }
@@ -471,25 +551,78 @@ mod tests {
         }
     }
 
-    /// Field-test finding (2026-08-02): `peko send --stream` previously
-    /// errored with `unexpected argument '--stream' found` even though
-    /// streaming is the default behaviour. The CLI now accepts `--stream`
-    /// as a hidden synonym so existing scripts don't break.
     #[test]
-    fn send_parses_stream_flag_as_noop_synonym() {
-        let cli = Cli::try_parse_from([
-            "peko", "send", "myprincipal", "hello", "--stream",
-        ])
-        .expect("should parse send command with --stream synonym");
+    fn send_parses_wait_flag() {
+        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "hello", "--wait"])
+            .expect("should parse send command with --wait");
 
         match cli.command {
             Commands::Send(args) => {
-                assert!(args.stream, "--stream flag should parse");
-                assert!(!args.no_stream, "--stream must not imply --no-stream");
+                assert!(args.wait);
                 assert_eq!(args.principal, "myprincipal");
                 assert_eq!(args.message, Some("hello".to_string()));
             }
             _other => panic!("expected Send command"),
         }
+    }
+
+    #[test]
+    fn send_parses_peer_flag() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "send",
+            "myprincipal",
+            "hello",
+            "--peer",
+            "user:alice",
+        ])
+        .expect("should parse send command with --peer");
+
+        match cli.command {
+            Commands::Send(args) => {
+                assert_eq!(args.peer.as_deref(), Some("user:alice"));
+                assert_eq!(args.principal, "myprincipal");
+            }
+            _other => panic!("expected Send command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_group_recipient_refused_with_guidance() {
+        // Groups are principal-authored channels; the channel IPC has
+        // no user-authored post path, so `send` refuses before any IPC.
+        let cli = Cli::try_parse_from(["peko", "send", "group:eng-standup", "hi"])
+            .expect("should parse group recipient");
+        let paths = from_cli(&cli);
+        let args = match cli.command {
+            Commands::Send(args) => args,
+            _ => panic!("expected Send"),
+        };
+        let err = super::handle_send(args, &paths, false)
+            .await
+            .expect_err("group send must be refused before IPC");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("peko channel post group:eng-standup"),
+            "error should point at the channel surface: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_group_recipient_refuses_wait_flag() {
+        let cli = Cli::try_parse_from(["peko", "send", "group:eng", "hi", "--wait"])
+            .expect("should parse");
+        let paths = from_cli(&cli);
+        let args = match cli.command {
+            Commands::Send(args) => args,
+            _ => panic!("expected Send"),
+        };
+        let err = super::handle_send(args, &paths, false)
+            .await
+            .expect_err("--wait on a group must be refused");
+        assert!(
+            format!("{err:#}").contains("nothing to wait on"),
+            "got: {err:#}"
+        );
     }
 }

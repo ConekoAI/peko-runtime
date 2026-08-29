@@ -64,8 +64,7 @@ flow_main() {
   echo "═══ TURN 1 — open ask, polite-but-firm, lease-aware ═══"
   t0=$SECONDS
   peko_iso_run send comms-helper \
-      "Help me write a short email to my landlord. The dishwasher in my apartment has been broken for 10 days. I've reported it twice via text. I'd like a polite but firm email that asks for a specific repair date within the next 7 days. Keep it under 180 words. Use a professional but warm tone — I've lived here 4 years and we have a decent relationship. Don't sign the email with my name; just put [Your Name]." \
-      --no-stream
+      "Help me write a short email to my landlord. The dishwasher in my apartment has been broken for 10 days. I've reported it twice via text. I'd like a polite but firm email that asks for a specific repair date within the next 7 days. Keep it under 180 words. Use a professional but warm tone — I've lived here 4 years and we have a decent relationship. Don't sign the email with my name; just put [Your Name]."
   peko_iso_assert_rc_zero
   dur=$((SECONDS - t0))
   echo
@@ -79,8 +78,7 @@ flow_main() {
   echo "═══ TURN 2 — steer firmer, mention lease clause 4.2 ═══"
   t0=$SECONDS
   peko_iso_run send comms-helper \
-      "Same situation, but make it firmer — I just discovered my lease says 'landlord shall maintain all major appliances in working order within 7 days of written notice'. Reference that as clause 4.2. Keep it under 200 words. Still warm, not legalistic." \
-      --no-stream
+      "Same situation, but make it firmer — I just discovered my lease says 'landlord shall maintain all major appliances in working order within 7 days of written notice'. Reference that as clause 4.2. Keep it under 200 words. Still warm, not legalistic."
   peko_iso_assert_rc_zero
   dur=$((SECONDS - t0))
   echo
@@ -94,8 +92,7 @@ flow_main() {
   echo "═══ TURN 3 — steer back softer, but still clear ═══"
   t0=$SECONDS
   peko_iso_run send comms-helper \
-      "Actually scratch the lease clause — I don't want to escalate. Make it softer. Landlords in my city are stretched thin and I want to keep the relationship good. Just ask nicely, mention the 10 days, and request a rough timeline. Same word count." \
-      --no-stream
+      "Actually scratch the lease clause — I don't want to escalate. Make it softer. Landlords in my city are stretched thin and I want to keep the relationship good. Just ask nicely, mention the 10 days, and request a rough timeline. Same word count."
   peko_iso_assert_rc_zero
   dur=$((SECONDS - t0))
   echo
@@ -109,8 +106,7 @@ flow_main() {
   echo "═══ TURN 4 — short SMS follow-up variant ═══"
   t0=$SECONDS
   peko_iso_run send comms-helper \
-      "Now give me a 2-sentence text-message version of the same ask, ready to paste into iMessage. Casual, one emoji max." \
-      --no-stream
+      "Now give me a 2-sentence text-message version of the same ask, ready to paste into iMessage. Casual, one emoji max."
   peko_iso_assert_rc_zero
   dur=$((SECONDS - t0))
   echo

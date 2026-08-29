@@ -4,7 +4,7 @@
 //!
 //! | Module | Responsibility |
 //! |--------|----------------|
-//! | [`ipc`] | Auth envelope: `AuthCredential`, `PrincipalSendControlMode`, plus the shared packet/timeout constants. |
+//! | [`ipc`] | Auth envelope: `AuthCredential`, `AuthHeader`, plus the shared packet/timeout constants. |
 //!
 //! Future Phase 11 commits lift the bulk of `src/ipc/packet.rs`
 //! (`RequestPacket` / `ResponsePacket` — 5000+ lines) and

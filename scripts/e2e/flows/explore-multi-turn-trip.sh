@@ -43,7 +43,7 @@ flow_main() {
   echo
   echo "─── TURN 1 ─────────────────────────────────────────────"
   t0=$SECONDS
-  peko_iso_run send travel-buddy "Hi! I'm planning a 3-day weekend trip to Lisbon in mid-September. I like walking, local food, and not-too-touristy neighbourhoods. Can you sketch a high-level itinerary? Keep it to ~5 lines." --no-stream
+  peko_iso_run send travel-buddy "Hi! I'm planning a 3-day weekend trip to Lisbon in mid-September. I like walking, local food, and not-too-touristy neighbourhoods. Can you sketch a high-level itinerary? Keep it to ~5 lines."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
@@ -52,7 +52,7 @@ flow_main() {
   echo
   echo "─── TURN 2 ─────────────────────────────────────────────"
   t0=$SECONDS
-  peko_iso_run send travel-buddy "For day 2, can you give me 2-3 specific food spots you'd actually recommend? Nothing fancy — I'm happy with €10-15 mains, tascas and the like. Drop addresses if you can." --no-stream
+  peko_iso_run send travel-buddy "For day 2, can you give me 2-3 specific food spots you'd actually recommend? Nothing fancy — I'm happy with €10-15 mains, tascas and the like. Drop addresses if you can."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
@@ -61,7 +61,7 @@ flow_main() {
   echo
   echo "─── TURN 3 ─────────────────────────────────────────────"
   t0=$SECONDS
-  peko_iso_run send travel-buddy "Actually scratch the day-2 food list — I'm vegetarian. Same vibe (casual tasca, €10-15 mains), but with good vegetarian options. Two or three spots only." --no-stream
+  peko_iso_run send travel-buddy "Actually scratch the day-2 food list — I'm vegetarian. Same vibe (casual tasca, €10-15 mains), but with good vegetarian options. Two or three spots only."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
@@ -82,9 +82,12 @@ flow_main() {
   echo "(quota status --json rc=$_peko_iso_capture_rc, stdout bytes=$(printf %s "$_peko_iso_capture_out" | wc -c | tr -d ' '))"
 
   echo
-  echo "─── TURN 6 — interrupt sanity (no active stream) ───────"
-  peko_iso_run interrupt nonexistent-request-id
-  echo "(interrupt ghost rc=$_peko_iso_capture_rc)"
+  echo "─── TURN 6 — stop sanity (idle thread) ─────────────────"
+  # `peko stop` is idempotent: with nothing in flight it prints a
+  # friendly "no running turn" notice and exits 0 (scripting-safe).
+  peko_iso_run stop travel-buddy
+  peko_iso_assert_rc_zero
+  peko_iso_assert_contains "No running turn on thread 'owner' with principal 'travel-buddy'"
 
   peko_iso_done 0
 }

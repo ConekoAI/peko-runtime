@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::trace;
 
 use super::connection::{ConnectionHandle, ConnectionManager};
-use super::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
+use super::packet::{RequestPacket, ResponsePacket};
 use super::stream::{PacketStream, StreamRouter};
 
 /// Client for communicating with the peko daemon
@@ -255,6 +255,28 @@ impl DaemonClient {
         }
     }
 
+    /// Open a `PrincipalLogWatch` stream for the (principal, peer)
+    /// thread: replay of `Posted` rows newer than `since_cursor`
+    /// followed by live `PrincipalLogAppended` packets + heartbeats.
+    /// The caller drains the returned `PacketStream` until it closes
+    /// (daemon shutdown) or an `Error` packet arrives (privacy
+    /// rejection, lagged broadcast).
+    pub async fn principal_log_watch(
+        &self,
+        name: impl Into<String>,
+        peer: Option<peko_auth::Subject>,
+        since_cursor: Option<String>,
+    ) -> anyhow::Result<PacketStream> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalLogWatch {
+            request_id,
+            name: name.into(),
+            peer,
+            since_cursor,
+        };
+        self.send_request(packet).await
+    }
+
     // ── Tunnel (ADR-035) ──
 
     /// Stop the PekoHub tunnel
@@ -403,26 +425,24 @@ impl DaemonClient {
         self.send_request(packet).await
     }
 
-    /// Send a `PrincipalSendControl` (soft interrupt or steer) to the
-    /// running stream identified by `target_request_id`. Returns the
-    /// server's `ResponsePacket::Done` directly — the caller is
-    /// expected to inspect `success`/`error` and surface a useful
-    /// message to the user (the CLI's `peko interrupt` command does
-    /// this).
-    ///
-    /// `target_request_id` is the `request_id` of the original
-    /// `PrincipalSendStream` request, surfaced by `peko send --stream`
-    /// on stderr at start.
-    pub async fn principal_send_control(
+    /// Send a `PrincipalStop` for the run bound to the (principal,
+    /// peer) thread. Returns the server's `ResponsePacket::Done`
+    /// directly — the caller is expected to inspect `success`/`error`
+    /// and surface a useful message to the user (the CLI's `peko stop`
+    /// command does this). `peer: None` targets the principal owner's
+    /// thread; no in-flight run yields `success: false` with a
+    /// "no running turn…" error so callers can treat it as an
+    /// idempotent no-op.
+    pub async fn principal_stop(
         &self,
-        target_request_id: u64,
-        mode: PrincipalSendControlMode,
+        name: impl Into<String>,
+        peer: Option<peko_auth::Subject>,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        let packet = RequestPacket::PrincipalSendControl {
+        let packet = RequestPacket::PrincipalStop {
             request_id,
-            target_request_id,
-            mode,
+            name: name.into(),
+            peer,
         };
         self.request_response(packet).await
     }

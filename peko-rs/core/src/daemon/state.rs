@@ -251,20 +251,24 @@ pub(crate) struct AppState {
     /// to surface the `disconnected` state with a non-zero attempt count.
     tunnel_attempts: Arc<RwLock<u32>>,
 
-    /// In-flight principal-send runs, keyed by the original
-    /// `request_id`. Both IPC variants — `RequestPacket::PrincipalSend`
-    /// and `RequestPacket::PrincipalSendStream` — register here, so
-    /// `peko interrupt <id>` and `peko steer <id>` work uniformly. The
-    /// shared `run_principal_send` helper inserts on spawn (with a
-    /// cancel token + peer for steer session-id derivation) and
-    /// removes on natural completion via the `StreamingRunGuard`
-    /// RAII. The `PrincipalSendControl` IPC handler looks up entries
-    /// here to issue soft-interrupt or push a steering message into
-    /// the run's session inbox.
+    /// In-flight principal-send runs, keyed by the peer child
+    /// session id. One run per session is enforced by the per-session
+    /// run permit (`InboxRegistry::try_acquire_run`), so the session
+    /// id is a collision-free key — unlike the client-minted
+    /// `request_id` previously used, which restarts at 1 in every
+    /// CLI process. Both IPC variants — `RequestPacket::PrincipalSend`
+    /// and `RequestPacket::PrincipalSendStream` — register here, and
+    /// steering-successor runs register under the same session key,
+    /// so `peko stop` works uniformly. The shared
+    /// `run_principal_send` helper inserts on spawn (with a cancel
+    /// token + peer) and removes on natural completion via the
+    /// `StreamingRunGuard` RAII. The `PrincipalStop` IPC handler
+    /// resolves (principal, peer) → child session id, then looks the
+    /// run up here by session id to fire its cancel token.
     ///
     /// `std::sync::Mutex` (not the tokio one): every operation is
     /// hash-map-only, no `.await` is held across the lock.
-    streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>>,
+    streaming_runs: Arc<std::sync::Mutex<HashMap<String, StreamingRunHandle>>>,
 
     /// Slot for the live outbound tunnel handle. The
     /// `TunnelDispatcher` writes the freshest handle on every
@@ -285,20 +289,20 @@ pub(crate) struct AppState {
     tunnel_degraded: Arc<RwLock<bool>>,
 }
 
-/// Per-run control handle for an in-flight `PrincipalSendStream`.
+/// Per-run control handle for an in-flight principal-send run.
 ///
 /// Inserted by the streaming handler when it spawns the root agent
-/// task, removed on natural completion. Looked up by
-/// `handle_principal_send_control` to either cancel the run (Interrupt
-/// mode) or push a steering message into its session inbox (Steer
-/// mode). See `src/ipc/server.rs` for the streaming handler and the
-/// `PrincipalSendControl` IPC handler.
+/// task (and by steering-successor runs), removed on natural
+/// completion. Registry entries are keyed by the peer child session
+/// id. Looked up by the `PrincipalStop` IPC handler to cancel the
+/// run. See `src/ipc/server.rs` for the streaming handler and the
+/// `PrincipalStop` IPC handler.
 #[allow(dead_code)] // field-by-field — kept as public-ish surface for tests.
 pub(crate) struct StreamingRunHandle {
-    /// Principal name — diagnostic only, included in control responses.
+    /// Principal name — diagnostic only.
     pub principal_name: String,
-    /// Peer subject — needed to derive `session_id` for steer pushes.
-    /// Cloned into the IPC handler's scope (cheap, `Subject` is small).
+    /// Peer subject whose thread this run belongs to — diagnostic
+    /// only (cheap, `Subject` is small).
     pub peer: peko_auth::Subject,
     /// Cancellation token for soft-interrupt. Setting this signals
     /// the agentic loop to finish the current step and exit cleanly.
@@ -552,7 +556,7 @@ impl AppState {
         // wrapper.
         #[allow(unused_assignments)]
         let mut tunnel_channel_port: Option<Arc<crate::tunnel::TunnelChannelPort>> = None;
-        let streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> =
+        let streaming_runs: Arc<std::sync::Mutex<HashMap<String, StreamingRunHandle>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let trust_store = crate::registry::packaging::TrustStore::load_or_create(&path_resolver)?;
         let trust_store = std::sync::Arc::new(tokio::sync::RwLock::new(trust_store));
@@ -1551,11 +1555,11 @@ impl AppState {
         *connected
     }
 
-    /// In-flight `PrincipalSendStream` run registry. Looked up by the
-    /// `PrincipalSendControl` IPC handler for soft-interrupt and
-    /// steer operations. Returns a clone of the inner `Arc<Mutex>`
-    /// so call sites can hold a cheap reference.
-    pub fn streaming_runs(&self) -> Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> {
+    /// In-flight `PrincipalSendStream` run registry, keyed by peer
+    /// child session id. Looked up by the `PrincipalStop` IPC handler
+    /// for soft-stop. Returns a clone of the inner `Arc<Mutex>` so
+    /// call sites can hold a cheap reference.
+    pub fn streaming_runs(&self) -> Arc<std::sync::Mutex<HashMap<String, StreamingRunHandle>>> {
         self.streaming_runs.clone()
     }
 
@@ -3099,7 +3103,7 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 
     fn streaming_runs(
         &self,
-    ) -> Arc<std::sync::Mutex<std::collections::HashMap<u64, StreamingRunHandle>>> {
+    ) -> Arc<std::sync::Mutex<std::collections::HashMap<String, StreamingRunHandle>>> {
         AppState::streaming_runs(self)
     }
 

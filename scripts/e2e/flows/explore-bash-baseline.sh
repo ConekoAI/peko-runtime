@@ -34,8 +34,7 @@ flow_main() {
   echo "─── 1: echo hello (does Bash run at all?) ─────────────"
   t0=$SECONDS
   peko_iso_run send probe \
-      "Use the Bash tool to run: echo HELLO_FROM_BASH. Then tell me what you got back, verbatim." \
-      --no-stream
+      "Use the Bash tool to run: echo HELLO_FROM_BASH. Then tell me what you got back, verbatim."
   dur=$((SECONDS - t0))
   echo "rc=$_peko_iso_capture_rc, wall=${dur}s"
   echo "$_peko_iso_capture_out"
@@ -44,8 +43,7 @@ flow_main() {
   echo "─── 2: which curl (is curl in PATH?) ──────────────────"
   t0=$SECONDS
   peko_iso_run send probe \
-      "Use the Bash tool to run: which curl. Tell me what stdout and stderr said." \
-      --no-stream
+      "Use the Bash tool to run: which curl. Tell me what stdout and stderr said."
   dur=$((SECONDS - t0))
   echo "rc=$_peko_iso_capture_rc, wall=${dur}s"
   echo "$_peko_iso_capture_out"
@@ -54,8 +52,7 @@ flow_main() {
   echo "─── 3: curl -sS https://example.com ────────────────────"
   t0=$SECONDS
   peko_iso_run send probe \
-      "Use the Bash tool to run: curl -sS --max-time 8 https://example.com. Show me the first 500 bytes of stdout (or the full error if any)." \
-      --no-stream
+      "Use the Bash tool to run: curl -sS --max-time 8 https://example.com. Show me the first 500 bytes of stdout (or the full error if any)."
   dur=$((SECONDS - t0))
   echo "rc=$_peko_iso_capture_rc, wall=${dur}s"
   echo "$_peko_iso_capture_out"
@@ -64,8 +61,7 @@ flow_main() {
   echo "─── 4: curl -sS https://api.allorigins.win/raw?url=… ───"
   t0=$SECONDS
   peko_iso_run send probe \
-      "Use the Bash tool to run: curl -sS --max-time 8 'https://api.allorigins.win/raw?url=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FLisbon'. Show me the first 500 bytes of stdout, or the exact error." \
-      --no-stream
+      "Use the Bash tool to run: curl -sS --max-time 8 'https://api.allorigins.win/raw?url=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FLisbon'. Show me the first 500 bytes of stdout, or the exact error."
   dur=$((SECONDS - t0))
   echo "rc=$_peko_iso_capture_rc, wall=${dur}s"
   echo "$_peko_iso_capture_out"

@@ -56,11 +56,11 @@ flow_main() {
   echo
 
   # ---- 4. Real coding task: write a small Python CLI ----
-  echo "─── Step 4: ask for a small Python CLI utility (--no-stream) ───"
+  echo "─── Step 4: ask for a small Python CLI utility ───"
   local prompt1
   prompt1="Write a tiny Python 3.10+ CLI script named wc_tool.py that emulates a subset of `wc`: --lines, --words, --bytes, --chars, and --help. Read from a file path argument or stdin. Include a main() and an if __name__ == '__main__' guard. Use only stdlib. Add type hints. Print the result like GNU wc (lines\\twords\\tbytes filename). Reply with ONLY the script body, no commentary."
   t0=$SECONDS
-  peko_iso_run send pyhelper "$prompt1" --no-stream
+  peko_iso_run send pyhelper "$prompt1"
   peko_iso_assert_rc_zero || peko_iso_done 1
   t1=$SECONDS
   echo "first task wall time: $((t1 - t0)) s"
@@ -76,7 +76,7 @@ flow_main() {
   local prompt2
   prompt2="Now write test_wc_tool.py using unittest, covering: --lines, --words, --bytes, --chars, stdin mode, and missing-file behavior. Use only stdlib. Reply with ONLY the test file body."
   t0=$SECONDS
-  peko_iso_run send pyhelper "$prompt2" --no-stream
+  peko_iso_run send pyhelper "$prompt2"
   peko_iso_assert_rc_zero || peko_iso_done 1
   t1=$SECONDS
   echo "follow-up wall time: $((t1 - t0)) s"
@@ -89,7 +89,7 @@ flow_main() {
   local prompt3
   prompt3="Refactor wc_tool.py to read input files using pathlib.Path instead of open(). Reply with ONLY the refactored script."
   t0=$SECONDS
-  peko_iso_run send pyhelper "$prompt3" --no-stream
+  peko_iso_run send pyhelper "$prompt3"
   peko_iso_assert_rc_zero || peko_iso_done 1
   t1=$SECONDS
   echo "refactor wall time: $((t1 - t0)) s"

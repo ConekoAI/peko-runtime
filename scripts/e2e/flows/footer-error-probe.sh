@@ -2,7 +2,7 @@
 # scripts/e2e/flows/footer-error-probe.sh
 #
 # Force a tool-call error to verify Fix D surfaces `tools_failed > 0` in
-# the `--no-stream` footer. Asks the LLM to call PlanCreate with two
+# the `RunSummary` footer. Asks the LLM to call PlanCreate with two
 # nodes sharing the same explicit nodeId — Fix B rejects this with
 # `PlanError::InvalidNodeId`, which the daemon captures and forwards
 # on the `RunSummary` packet.
@@ -32,7 +32,7 @@ flow_main() {
   peko_iso_run send probe 'Call PlanCreate with title="Dup" and nodes=[
     {"nodeId":"node_same","step":"first"},
     {"nodeId":"node_same","step":"second"}
-  ]. Then reply with the tool error message verbatim.' --no-stream
+  ]. Then reply with the tool error message verbatim.'
   peko_iso_assert_rc_zero
 
   echo "=== stderr (footer — tools_failed should be >= 1) ==="

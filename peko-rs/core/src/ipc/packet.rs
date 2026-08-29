@@ -14,12 +14,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 // Auth envelope types are `pub use` (not internal `use`) because the CLI
-// crate depends on `peko_core::ipc::packet::{AuthCredential, AuthHeader,
-// PrincipalSendControlMode}` paths and does not yet depend on `peko-protocol`.
+// crate depends on `peko_core::ipc::packet::{AuthCredential, AuthHeader}`
+// paths and does not yet depend on `peko-protocol`.
 // `MAX_PACKET_SIZE` is internal-use only (the in-tree `if json.len() >
 // MAX_PACKET_SIZE` checks at packet serialize time).
 use peko_protocol::ipc::MAX_PACKET_SIZE;
-pub use peko_protocol::ipc::{AuthCredential, AuthHeader, PrincipalSendControlMode};
+pub use peko_protocol::ipc::{AuthCredential, AuthHeader};
 
 /// Authenticated request envelope (ADR-034).
 ///
@@ -533,23 +533,25 @@ pub enum RequestPacket {
         override_model: Option<String>,
     },
 
-    /// Soft-cancel or steer an in-flight `PrincipalSendStream` run.
+    /// Soft-stop the run bound to a (principal, peer) thread.
     ///
-    /// The `mode` enum selects between two behaviours:
-    /// - `Interrupt`: set the run's cancel token. The run finishes its
-    ///   current step (LLM stream chunk, in-flight tool call), emits a
-    ///   final `PrincipalSentDone` + `Lifecycle::Interrupted`, then exits.
-    /// - `Steer`: push a new user-role turn into the run's session
-    ///   inbox; the agentic loop drains it at the next iteration.
-    ///
-    /// `target_request_id` is the `request_id` of the original
-    /// `PrincipalSendStream` request. The response is a single
-    /// `Done { success, error }` (mirrors `AsyncCancel`).
-    #[serde(rename = "principal_send_control")]
-    PrincipalSendControl {
+    /// The stop complement to `PrincipalSend`/`PrincipalSendStream`:
+    /// the server resolves the peer's child session, fires the run's
+    /// cancel token (the agentic loop exits at the next iteration
+    /// boundary), posts a `⏹ stopped by user` marker to the peer's DM
+    /// channel, and leaves a stop-context note in the session inbox
+    /// for the next run. `peer: None` means the principal's owner
+    /// thread. The server enforces the same privacy rule as
+    /// `PrincipalLog` (`caller == peer || caller == principal.owner`).
+    /// Idempotent: no in-flight run ⇒ `Done { success: false,
+    /// error: "no running turn…" }` so the CLI can print a notice and
+    /// exit 0.
+    #[serde(rename = "principal_stop")]
+    PrincipalStop {
         request_id: u64,
-        target_request_id: u64,
-        mode: PrincipalSendControlMode,
+        name: String,
+        /// None means "the principal's owner" (default thread).
+        peer: Option<peko_auth::Subject>,
     },
 
     /// Read a peer's conversation thread with a Principal.
@@ -579,6 +581,35 @@ pub enum RequestPacket {
         cursor: Option<String>,
     },
 
+    /// Watch a peer's conversation thread with a Principal: replay
+    /// `Posted` events newer than `since_cursor`, then stream new
+    /// messages live.
+    ///
+    /// The privacy-checked sibling of `ChannelEventsWatch` (ADR-042):
+    /// the server resolves `(name, peer)` to the peer's DM channel and
+    /// enforces the same rule as `PrincipalLog` (`caller == peer ||
+    /// caller == principal.owner`, plus the `Chat` grant). The
+    /// response is a stream of `PrincipalLogAppended` packets
+    /// interleaved with `Heartbeat` ticks (every
+    /// `HEARTBEAT_INTERVAL_SECS`) so a quiet thread never trips the
+    /// client's per-packet idle timeout. No `Done` on close — the
+    /// stream ends when the client disconnects or the daemon shuts
+    /// down.
+    ///
+    /// `since_cursor` reuses the log command's line-number cursor:
+    /// only rows with line number greater than the cursor replay.
+    /// `None` replays the whole thread.
+    #[serde(rename = "principal_log_watch")]
+    PrincipalLogWatch {
+        request_id: u64,
+        name: String,
+        /// None means "the principal's owner" (default thread).
+        peer: Option<peko_auth::Subject>,
+        /// Replay seed — rows strictly newer than this line-number
+        /// cursor. `None` replays from the start.
+        #[serde(default)]
+        since_cursor: Option<String>,
+    },
     #[serde(rename = "principal_export")]
     PrincipalExport {
         request_id: u64,
@@ -885,6 +916,7 @@ impl RequestPacket {
             | Self::PrincipalSend { request_id, .. }
             | Self::PrincipalSendStream { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
+            | Self::PrincipalLogWatch { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalImportPreview { request_id, .. }
@@ -898,7 +930,7 @@ impl RequestPacket {
             | Self::PrincipalPermissions { request_id, .. }
             | Self::PrincipalMintInvite { request_id, .. }
             | Self::PrincipalRevokeInvite { request_id, .. }
-            | Self::PrincipalSendControl { request_id, .. }
+            | Self::PrincipalStop { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
             | Self::QuotaReset { request_id, .. }
@@ -1654,6 +1686,16 @@ pub enum ResponsePacket {
         has_more: bool,
     },
 
+    /// One message on a `PrincipalLogWatch` stream — a replayed or
+    /// freshly posted row of the peer's DM channel, in the same shape
+    /// `PrincipalLog` pages carry. Heartbeats ride the same stream as
+    /// `Heartbeat` packets; the stream has no terminal `Done`.
+    #[serde(rename = "principal_log_appended")]
+    PrincipalLogAppended {
+        request_id: u64,
+        message: PrincipalLogMessage,
+    },
+
     #[serde(rename = "principal_exported")]
     PrincipalExported {
         request_id: u64,
@@ -2345,6 +2387,7 @@ impl ResponsePacket {
             | Self::PrincipalSentSuccessor { request_id, .. }
             | Self::RunSummary { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
+            | Self::PrincipalLogAppended { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalImportPreviewed { request_id, .. }
@@ -2424,6 +2467,7 @@ impl ResponsePacket {
             Self::PrincipalSentSuccessor { .. } => "PrincipalSentSuccessor",
             Self::RunSummary { .. } => "RunSummary",
             Self::PrincipalLog { .. } => "PrincipalLog",
+            Self::PrincipalLogAppended { .. } => "PrincipalLogAppended",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",
@@ -2522,77 +2566,65 @@ mod tests {
     }
 
     #[test]
-    fn test_principal_send_control_interrupt_roundtrip() {
-        let req = RequestPacket::PrincipalSendControl {
+    fn test_principal_stop_roundtrip() {
+        // `peko stop <principal>` — owner thread (peer omitted).
+        let req = RequestPacket::PrincipalStop {
             request_id: 1,
-            target_request_id: 99,
-            mode: PrincipalSendControlMode::Interrupt,
+            name: "scout".to_string(),
+            peer: None,
         };
         let bytes = req.to_bytes().unwrap();
-        // The on-wire payload must be the snake_case `principal_send_control`
+        // The on-wire payload must be the snake_case `principal_stop`
         // variant so a pre-launch CLI never sends an unknown variant to
         // an older daemon.
         let json = std::str::from_utf8(&bytes).unwrap();
         assert!(
-            json.contains("\"principal_send_control\""),
-            "expected `principal_send_control` in serialized payload, got: {json}"
-        );
-        assert!(
-            json.contains("\"mode\":\"interrupt\""),
-            "expected `interrupt` mode, got: {json}"
+            json.contains("\"principal_stop\""),
+            "expected `principal_stop` in serialized payload, got: {json}"
         );
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::PrincipalSendControl {
+            RequestPacket::PrincipalStop {
                 request_id,
-                target_request_id,
-                mode,
+                name,
+                peer,
             } => {
                 assert_eq!(request_id, 1);
-                assert_eq!(target_request_id, 99);
-                assert!(matches!(mode, PrincipalSendControlMode::Interrupt));
+                assert_eq!(name, "scout");
+                assert!(peer.is_none());
             }
             _ => panic!("Wrong variant"),
         }
     }
 
     #[test]
-    fn test_principal_send_control_steer_roundtrip() {
-        let req = RequestPacket::PrincipalSendControl {
+    fn test_principal_stop_with_peer_roundtrip() {
+        // `peko stop <principal> --peer user:alice` — owner stopping
+        // another peer's thread.
+        let req = RequestPacket::PrincipalStop {
             request_id: 2,
-            target_request_id: 100,
-            mode: PrincipalSendControlMode::Steer {
-                text: "actually do X instead".to_string(),
-            },
+            name: "scout".to_string(),
+            peer: Some(peko_auth::Subject::User("alice".to_string())),
         };
         let bytes = req.to_bytes().unwrap();
-        let json = std::str::from_utf8(&bytes).unwrap();
-        assert!(
-            json.contains("\"mode\":\"steer\""),
-            "expected `steer` mode, got: {json}"
-        );
-        assert!(
-            json.contains("\"text\":\"actually do X instead\""),
-            "expected steered text in payload, got: {json}"
-        );
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::PrincipalSendControl {
+            RequestPacket::PrincipalStop {
                 request_id,
-                target_request_id,
-                mode,
+                name,
+                peer,
             } => {
                 assert_eq!(request_id, 2);
-                assert_eq!(target_request_id, 100);
-                match mode {
-                    PrincipalSendControlMode::Steer { text } => {
-                        assert_eq!(text, "actually do X instead");
-                    }
-                    _ => panic!("expected Steer mode"),
-                }
+                assert_eq!(name, "scout");
+                assert_eq!(peer, Some(peko_auth::Subject::User("alice".to_string())));
             }
             _ => panic!("Wrong variant"),
         }
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains(r#""peer":{"kind":"user","id":"alice"}"#),
+            "expected peer subject wire form in payload, got: {json}"
+        );
     }
 
     #[test]
@@ -4625,6 +4657,80 @@ mod tests {
         let raw = String::from_utf8(bytes).unwrap();
         assert!(
             raw.contains("\"type\":\"principal_log\""),
+            "wire tag missing: {raw}"
+        );
+    }
+
+    #[test]
+    fn test_principal_log_watch_request_roundtrip() {
+        // `peko log --watch` IPC shape: snake_case wire tag, peer +
+        // since_cursor preserved, both defaultable when omitted.
+        let req = RequestPacket::PrincipalLogWatch {
+            request_id: 5300,
+            name: "helper".to_string(),
+            peer: Some(peko_auth::Subject::User("alice".to_string())),
+            since_cursor: Some("42".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalLogWatch {
+                request_id,
+                name,
+                peer,
+                since_cursor,
+            } => {
+                assert_eq!(request_id, 5300);
+                assert_eq!(name, "helper");
+                assert_eq!(peer, Some(peko_auth::Subject::User("alice".to_string())));
+                assert_eq!(since_cursor.as_deref(), Some("42"));
+            }
+            _ => panic!("Wrong variant"),
+        }
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(
+            raw.contains("\"type\":\"principal_log_watch\""),
+            "wire tag missing: {raw}"
+        );
+
+        // Omitted optional fields default to None.
+        let bare = r#"{"type":"principal_log_watch","request_id":1,"name":"helper"}"#;
+        match RequestPacket::from_bytes(bare.as_bytes()).unwrap() {
+            RequestPacket::PrincipalLogWatch {
+                peer, since_cursor, ..
+            } => {
+                assert!(peer.is_none());
+                assert!(since_cursor.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_log_appended_response_roundtrip() {
+        // One packet per chat message on the watch stream, carrying the
+        // same `PrincipalLogMessage` shape the log command renders.
+        let resp = ResponsePacket::PrincipalLogAppended {
+            request_id: 5300,
+            message: PrincipalLogMessage::new(
+                peko_auth::Subject::User("alice".to_string()),
+                "hi",
+                None,
+            ),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalLogAppended { request_id, message } => {
+                assert_eq!(request_id, 5300);
+                assert_eq!(message.text, "hi");
+                assert_eq!(message.sender, peko_auth::Subject::User("alice".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(
+            raw.contains("\"type\":\"principal_log_appended\""),
             "wire tag missing: {raw}"
         );
     }

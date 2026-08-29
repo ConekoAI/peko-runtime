@@ -105,7 +105,7 @@ You must use the Plan* tools to build, mutate, and close a single plan. Do not d
 
 After step 8, reply with a one-line summary including the final planId.
 PROMPT
-  )" --no-stream
+  )"
   peko_iso_assert_rc_zero
 
   # --- step 5: assert on-disk state --------------------------------------

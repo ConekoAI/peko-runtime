@@ -80,7 +80,7 @@ flow_main() {
   local q="In one short paragraph, what is the rust borrow checker and why does it matter?"
   local t0
   t0=$(date +%s%N)
-  peko_iso_run send "$principal_name" "$q" --no-stream
+  peko_iso_run send "$principal_name" "$q"
   local rc=$_peko_iso_capture_rc
   local t1
   t1=$(date +%s%N)
@@ -111,7 +111,7 @@ flow_main() {
   echo "=========================================="
   echo "STEP 7: Multi-turn follow-up"
   echo "=========================================="
-  peko_iso_run send "$principal_name" "Can you give me a concrete example of a borrow-check error and the fix?" --no-stream
+  peko_iso_run send "$principal_name" "Can you give me a concrete example of a borrow-check error and the fix?"
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT:"
   echo "$_peko_iso_capture_out"

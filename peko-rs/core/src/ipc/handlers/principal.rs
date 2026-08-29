@@ -2,7 +2,8 @@
 //!
 //! Owns the principal lifecycle IPC variants: `PrincipalList`,
 //! `PrincipalGet`, `PrincipalSend`, `PrincipalSendStream`,
-//! `PrincipalSendControl`, `PrincipalLog`, `PrincipalExport`,
+//! `PrincipalStop`, `PrincipalLog`, `PrincipalLogWatch`,
+//! `PrincipalExport`,
 //! `PrincipalImportPreview`, `PrincipalImport`, `PrincipalPush`,
 //! `PrincipalPullPreview`, `PrincipalPull`, `PrincipalGrantPermission`,
 //! `PrincipalRevokePermission`, `PrincipalPermissions`,
@@ -43,14 +44,14 @@ use crate::daemon::state::StreamingRunHandle;
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
-    PrincipalLogMessage, PrincipalSendControlMode, RequestPacket, ResponsePacket, RunUsageSummary,
-    ToolErrorEntry, PRINCIPAL_LOG_SCHEMA_VERSION,
+    PrincipalLogMessage, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry,
+    PRINCIPAL_LOG_SCHEMA_VERSION,
 };
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use crate::principal::manager::{IngressError, IngressMode, IngressOutcome, PrincipalManager};
-use crate::principal::peer_dm::{find_peer_dm_channel, post_peer_dm_reply};
+use crate::principal::peer_dm::{find_peer_dm_channel, post_peer_dm_inbound, post_peer_dm_reply};
 use crate::principal::router::{ChannelContext, ChannelKind};
 use crate::principal::Principal;
 use crate::registry::packaging::TrustStore;
@@ -118,14 +119,14 @@ struct PrincipalLogResponse {
 /// every return path — natural completion, sink-write error, panic —
 /// without needing a removal call at every `?`/`return` site.
 struct StreamingRunGuard {
-    registry: Arc<Mutex<HashMap<u64, StreamingRunHandle>>>,
-    request_id: u64,
+    registry: Arc<Mutex<HashMap<String, StreamingRunHandle>>>,
+    session_id: String,
 }
 
 impl Drop for StreamingRunGuard {
     fn drop(&mut self) {
         if let Ok(mut runs) = self.registry.lock() {
-            runs.remove(&self.request_id);
+            runs.remove(&self.session_id);
         }
     }
 }
@@ -143,9 +144,9 @@ impl Drop for StreamingRunGuard {
 ///   packets followed by `PrincipalSentDone { content }` and `Done`.
 ///   Used by the `RequestPacket::PrincipalSendStream` handler.
 ///
-/// Both variants are interrupt-capable: the cancel token is registered
+/// Both variants are stoppable: the cancel token is registered
 /// in `streaming_runs` regardless of which variant the caller chose,
-/// so `peko interrupt <id>` works uniformly.
+/// so `peko stop` works uniformly.
 #[derive(Copy, Clone)]
 enum PrincipalSendResponseKind {
     OneShot,
@@ -173,14 +174,15 @@ pub(crate) trait PrincipalHost: Send + Sync {
     fn principal_manager(&self) -> &Arc<PrincipalManager>;
 
     /// Soft-interrupt cancel-token registry for in-flight root-agent
-    /// runs. The handler inserts on start, removes on drop
-    /// (StreamingRunGuard), and consults on `PrincipalSendControl`
-    /// (`Interrupt` flips the token; `Steer` pushes a `SteeringMessage`
-    /// into the inbox keyed on the principal's session id).
-    fn streaming_runs(&self) -> Arc<Mutex<HashMap<u64, StreamingRunHandle>>>;
+    /// runs, keyed by peer child session id. The handler inserts on
+    /// start, removes on drop (StreamingRunGuard), and
+    /// `PrincipalStop` looks up the run by session id and flips the
+    /// cancel token.
+    fn streaming_runs(&self) -> Arc<Mutex<HashMap<String, StreamingRunHandle>>>;
 
-    /// Principal-session inbox registry used to deliver `Steer`
-    /// pushes (`PrincipalSendControl { mode: Steer }`).
+    /// Principal-session inbox registry. Used by `PrincipalStop` to
+    /// leave a stop-context note for the next run, and by the Gap-2
+    /// steering drain at the end of a send run.
     fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry>;
 
     /// On-disk extension store used by `PrincipalImport`'s
@@ -297,8 +299,9 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalGet { .. }
                 | RequestPacket::PrincipalSend { .. }
                 | RequestPacket::PrincipalSendStream { .. }
-                | RequestPacket::PrincipalSendControl { .. }
+                | RequestPacket::PrincipalStop { .. }
                 | RequestPacket::PrincipalLog { .. }
+                | RequestPacket::PrincipalLogWatch { .. }
                 | RequestPacket::PrincipalExport { .. }
                 | RequestPacket::PrincipalImportPreview { .. }
                 | RequestPacket::PrincipalImport { .. }
@@ -372,13 +375,12 @@ impl RequestHandler for PrincipalHandler {
                 send_response(sink, response).await?;
             }
 
-            RequestPacket::PrincipalSendControl {
+            RequestPacket::PrincipalStop {
                 request_id,
-                target_request_id,
-                mode,
+                name,
+                peer,
             } => {
-                handle_principal_send_control(request_id, target_request_id, mode, host, sink)
-                    .await?;
+                handle_principal_stop(request_id, &name, peer, caller, host, sink).await?;
             }
 
             RequestPacket::PrincipalSend {
@@ -475,6 +477,16 @@ impl RequestHandler for PrincipalHandler {
                     },
                 };
                 send_response(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalLogWatch {
+                request_id,
+                name,
+                peer,
+                since_cursor,
+            } => {
+                handle_principal_log_watch(request_id, &name, peer, since_cursor, caller, host, sink)
+                    .await?;
             }
 
             RequestPacket::PrincipalExport {
@@ -1770,96 +1782,181 @@ impl RequestHandler for PrincipalHandler {
 
 // ─── Helpers (free functions) ─────────────────────────────────────────
 
-/// Server-side handler for `RequestPacket::PrincipalSendControl`.
-async fn handle_principal_send_control(
+/// Server-side handler for `RequestPacket::PrincipalStop`.
+///
+/// Soft-stops the run bound to the (principal, peer) thread: resolves
+/// the peer's standing child session, fires its cancel token (the
+/// agentic loop exits at the next iteration boundary), posts a
+/// `⏹ stopped by user` marker to the peer's DM channel, and pushes a
+/// stop-context note into the session inbox so the NEXT run's
+/// first-iteration drain sees it as context (the stopped run's own
+/// Gap-2 drain is skipped — cancel ends the turn in the `Err` arm,
+/// which never drains).
+///
+/// Privacy mirrors `peko log` (ADR-042): caller must be the thread's
+/// peer or the principal owner, and holds `Chat` on the principal.
+/// Idempotent: no in-flight run ⇒ `Done { success: false, error:
+/// "no running turn…" }` so the CLI can print a notice and exit 0.
+async fn handle_principal_stop(
     request_id: u64,
-    target_request_id: u64,
-    mode: PrincipalSendControlMode,
+    name: &str,
+    peer: Option<Subject>,
+    caller: &CallerContext,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
 ) -> anyhow::Result<()> {
-    // Snapshot the handle under the lock and drop the guard before
-    // doing any work — never hold the lock across an `.await` or a
-    // steering push (which takes its own inbox lock).
-    let snapshot = {
-        let runs_registry = host.streaming_runs();
-        let runs = runs_registry.lock().unwrap();
-        runs.get(&target_request_id)
-            .map(|h| (h.cancel.clone(), h.peer.clone(), h.principal_name.clone()))
+    // ── Resolve the principal ─────────────────────────────────────
+    let Some(principal) = load_principal(host, name).await else {
+        let response = ResponsePacket::Error {
+            request_id,
+            message: format!("[not_found] Principal '{name}' not found"),
+        };
+        send_response(sink, response).await?;
+        return Ok(());
     };
 
-    let (success, error) = match (snapshot, mode) {
-        (Some((cancel, _peer, _name)), PrincipalSendControlMode::Interrupt) => {
-            cancel.cancel();
-            (true, None)
-        }
-        (Some((_cancel, peer, principal_name)), PrincipalSendControlMode::Steer { text }) => {
-            // Gap-3 (Phase 11 form): post the steered turn to the
-            // peer's DM channel (peer-attributed) before queuing it,
-            // so the user sees their own message in `peko log`. The
-            // agentic loop's skip-user-add path assumes the IPC handler
-            // has already recorded the user turn (see
-            // `agentic_loop.rs:604-613` and `agent.rs:1310-1318`).
-            //
-            // Fail-closed: if the principal has been removed between
-            // the run starting and the Steer arriving, or if the DM
-            // channel post fails (disk full, shard locked), the
-            // steering push is rejected so the client can react. The
-            // inbox push is also skipped — silently accepting a
-            // message whose persistence we couldn't honour would be a
-            // silent-data-loss bug.
-            //
-            // B8c.4: Steer is by definition `SteerOnly` mode — the
-            // in-flight run consumes the steering push at its next
-            // iteration boundary. We never try_acquire_run a new
-            // permit here (would race with the in-flight run).
-            let principal = host.principal_manager().get_by_name(&principal_name).await;
-            match principal {
-                Some(p) => match host
-                    .principal_manager()
-                    .drive_principal_ingress(&p, &peer, &text, IngressMode::SteerOnly)
+    // ── Permission + privacy (mirrors `read_principal_log`) ───────
+    let (owner, permissions, exposure) = {
+        let cfg = principal.config.read().await;
+        (cfg.owner.clone(), cfg.permissions.clone(), cfg.exposure)
+    };
+    let resource = Resource::Principal {
+        name: name.to_string(),
+        owner: owner.clone(),
+        permissions,
+        exposure,
+    };
+    let caller_subject = caller.subject();
+    if check_permission(&resource, Permission::Chat, &caller_subject).is_err() {
+        let response = ResponsePacket::Error {
+            request_id,
+            message: format!(
+                "[forbidden] caller '{caller_subject}' lacks Chat permission on principal '{name}'"
+            ),
+        };
+        send_response(sink, response).await?;
+        return Ok(());
+    }
+
+    // Default is the principal's owner (the owner-root thread), same
+    // convention as `PrincipalLog`'s `peer: None`.
+    let target_peer = peer.unwrap_or_else(|| owner.clone());
+    if !target_peer.is_session_peer() {
+        let response = ResponsePacket::Error {
+            request_id,
+            message: format!("[forbidden] subject '{target_peer}' is not a session peer"),
+        };
+        send_response(sink, response).await?;
+        return Ok(());
+    }
+    if caller_subject != target_peer && caller_subject != owner {
+        let response = ResponsePacket::Error {
+            request_id,
+            message: "[forbidden] you can only stop your own conversation; ask the owner to stop on your behalf".to_string(),
+        };
+        send_response(sink, response).await?;
+        return Ok(());
+    }
+
+    // ── Resolve the peer child session ────────────────────────────
+    // A peer that has never messaged has no child and no run.
+    let mut session_manager = peko_session::manager::SessionManager::new()
+        .with_sessions_dir_internal(principal.memory.sessions_dir());
+    let metas = session_manager
+        .list_all_sessions(false)
+        .await
+        .map_err(|e| anyhow::anyhow!("session listing failed: {e}"))?;
+    let Some(session_id) = crate::principal::peer_children::find_peer_child(&metas, &target_peer)
+    else {
+        let response = ResponsePacket::Done {
+            request_id,
+            success: false,
+            error: Some(format!(
+                "no running turn on thread '{target_peer}' with principal '{name}'"
+            )),
+        };
+        send_response(sink, response).await?;
+        return Ok(());
+    };
+
+    // ── Look up the in-flight run by session id ───────────────────
+    // Snapshot under the lock and drop the guard before any `.await`.
+    let cancel = {
+        let runs_registry = host.streaming_runs();
+        let runs = runs_registry.lock().unwrap();
+        runs.get(&session_id).map(|h| h.cancel.clone())
+    };
+    let Some(cancel) = cancel else {
+        let response = ResponsePacket::Done {
+            request_id,
+            success: false,
+            error: Some(format!(
+                "no running turn on thread '{target_peer}' with principal '{name}'"
+            )),
+        };
+        send_response(sink, response).await?;
+        return Ok(());
+    };
+    cancel.cancel();
+
+    // ── DM-channel stop marker (best-effort) ──────────────────────
+    // Peer-authored via the inbound poster so the responder's
+    // author-based skip rule applies — the marker never triggers an
+    // agent turn. Failure is warn-only: the cancel already landed,
+    // and the marker is a projection, not the stop mechanism.
+    if let Some(port) = host.principal_manager().channel_port() {
+        let slug = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == session_id)
+            .and_then(|m| m.slug.clone());
+        if let Some(slug) = slug {
+            match find_peer_dm_channel(&port, &principal.id, &format!("/{slug}")).await {
+                Ok(Some(channel)) => {
+                    if let Err(e) = post_peer_dm_inbound(
+                        &port,
+                        &principal.id,
+                        &channel,
+                        &target_peer.to_string(),
+                        "⏹ stopped by user",
+                    )
                     .await
-                {
-                    Ok(IngressOutcome::Queued { .. }) => (true, None),
-                    Ok(IngressOutcome::Ready { .. }) => {
-                        // SteerOnly mode should never return Ready —
-                        // the helper unconditionally queues. Treat
-                        // this as a hard invariant violation rather
-                        // than silently dropping.
-                        (
-                            false,
-                            Some("Steer path returned Ready (expected Queued); helper invariant violation".to_string()),
-                        )
+                    {
+                        warn!(
+                            principal = %name,
+                            "stop marker DM post failed (stop already applied): {e}"
+                        );
                     }
-                    Err(IngressError::Resolve(_)) => (
-                        false,
-                        Some("Failed to resolve peer child session".to_string()),
-                    ),
-                    Err(IngressError::Post(e)) => (
-                        false,
-                        Some(format!("Failed to persist steered chat input: {e}")),
-                    ),
-                },
-                None => (
-                    false,
-                    Some(format!(
-                        "Principal '{principal_name}' no longer registered; cannot persist steered input"
-                    )),
-                ),
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(
+                        principal = %name,
+                        "stop marker DM channel lookup failed (stop already applied): {e}"
+                    );
+                }
             }
         }
-        (None, _) => (
-            false,
-            Some(format!(
-                "Stream run {target_request_id} not found (already completed or unknown id)"
-            )),
-        ),
-    };
+    }
+
+    // ── Stop-context note for the next run ────────────────────────
+    // Pushed as an ordinary steering item: the cancelled run never
+    // drains it (cancel short-circuits before Gap-2), so the NEXT
+    // run's first-iteration drain picks it up as context.
+    let inbox = host.inbox_registry().get_or_create(&session_id).await;
+    inbox
+        .push(
+            SteeringMessage::new(
+                "The user stopped your previous turn. When you next respond, briefly \
+                 acknowledge what was interrupted and any partial state worth keeping.",
+            )
+            .into(),
+        )
+        .await;
 
     let response = ResponsePacket::Done {
         request_id,
-        success,
-        error,
+        success: true,
+        error: None,
     };
     send_response(sink, response).await?;
     Ok(())
@@ -1870,7 +1967,7 @@ async fn handle_principal_send_control(
 /// peer's standing child turn via the streaming machinery
 /// (`PeerChildTurns::drive_turn_streaming` — Phase 7) and register a
 /// `CancellationToken` in `streaming_runs`, so the
-/// `PrincipalSendControl` IPC works uniformly regardless of which
+/// `PrincipalStop` IPC works uniformly regardless of which
 /// variant the caller chose. The only difference at the wire level is
 /// the success packet — `PrincipalSent` for `OneShot` and
 /// `PrincipalSentDone` for `Streaming` — selected by `response_kind`.
@@ -2037,24 +2134,41 @@ async fn run_principal_send(
             // Phase 11: the "Queued…" notice is transport UX — no DM
             // channel row; the inbound post above is the durable
             // record.
-            let queued = format!("Queued for root agent session {child_id}.");
-            let final_packet = match response_kind {
-                PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
-                    request_id,
-                    content: queued.clone(),
-                },
-                PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
-                    request_id,
-                    content: queued,
-                },
-            };
-            send_response(sink, final_packet).await?;
-            let done = ResponsePacket::Done {
-                request_id,
-                success: true,
-                error: None,
-            };
-            send_response(sink, done).await?;
+            //
+            // The streaming variant (the CLI's path) signals the busy
+            // path distinguishably: no content packet, just
+            // `Done { success: false }` with a `[queued]`-prefixed
+            // error (mirrors the `[not_found]` convention on
+            // `PrincipalLog` errors). The CLI prints a busy notice and
+            // exits 0, or enters its `--wait` loop. The one-shot
+            // variant (peko-desktop) keeps the legacy
+            // `PrincipalSent { content }` shape unchanged.
+            match response_kind {
+                PrincipalSendResponseKind::Streaming => {
+                    let done = ResponsePacket::Done {
+                        request_id,
+                        success: false,
+                        error: Some(format!(
+                            "[queued] principal '{name}' is busy — message queued for session {child_id}"
+                        )),
+                    };
+                    send_response(sink, done).await?;
+                }
+                PrincipalSendResponseKind::OneShot => {
+                    let queued = format!("Queued for root agent session {child_id}.");
+                    let final_packet = ResponsePacket::PrincipalSent {
+                        request_id,
+                        content: queued,
+                    };
+                    send_response(sink, final_packet).await?;
+                    let done = ResponsePacket::Done {
+                        request_id,
+                        success: true,
+                        error: None,
+                    };
+                    send_response(sink, done).await?;
+                }
+            }
             host.record_principal_activity(&name).await;
             return Ok(());
         }
@@ -2119,10 +2233,11 @@ async fn run_principal_send(
 
     // Soft-interrupt plumbing. The cancel token is shared between the
     // spawned agentic loop (observed at iteration boundaries) and the
-    // in-flight run registry (the `PrincipalSendControl` IPC handler
-    // flips it). The Drop guard removes the registry entry on every
-    // return path, including the early sink-error return below and
-    // panics.
+    // in-flight run registry (the `PrincipalStop` IPC handler flips
+    // it). The registry is keyed by the peer child session id; the
+    // per-session run permit guarantees at most one run per key. The
+    // Drop guard removes the registry entry on every return path,
+    // including the early sink-error return below and panics.
     let cancel = tokio_util::sync::CancellationToken::new();
     let interrupt_acked = Arc::new(tokio::sync::Notify::new());
     let run_handle = StreamingRunHandle {
@@ -2134,11 +2249,11 @@ async fn run_principal_send(
     {
         let runs_registry = host.streaming_runs();
         let mut runs = runs_registry.lock().unwrap();
-        runs.insert(request_id, run_handle);
+        runs.insert(session_id.clone(), run_handle);
     }
     let _run_guard = StreamingRunGuard {
         registry: host.streaming_runs(),
-        request_id,
+        session_id: session_id.clone(),
     };
 
     // Run the peer-child turn in a background task. When the task
@@ -2435,16 +2550,35 @@ async fn run_principal_send(
             }
         }
         Err(e) => {
-            let message = e.to_string();
+            // Distinguish a user stop from a real failure: when the
+            // run's cancel token was fired (by `PrincipalStop`), the
+            // stop handler already posted a `⏹ stopped by user`
+            // marker to the DM channel — don't double-post a
+            // misleading "Run failed" row, and surface a clean
+            // "stopped by user" instead of the executor's internal
+            // "Subagent was cancelled". The registry entry is still
+            // present here (`_run_guard` drops at function end).
+            let user_stopped = {
+                let runs_registry = host.streaming_runs();
+                let runs = runs_registry.lock().unwrap();
+                runs.get(&session_id).is_some_and(|h| h.cancel.is_cancelled())
+            };
+            let message = if user_stopped {
+                "stopped by user".to_string()
+            } else {
+                e.to_string()
+            };
             // Finding 8 (2026-08-07 field test): persist the failure so
             // `peko log` shows it instead of a question with no answer.
-            post_dm_reply(
-                channel_port.as_ref(),
-                &principal,
-                dm_channel.as_ref(),
-                &format!("⚠ Run failed: {message}"),
-            )
-            .await;
+            if !user_stopped {
+                post_dm_reply(
+                    channel_port.as_ref(),
+                    &principal,
+                    dm_channel.as_ref(),
+                    &format!("⚠ Run failed: {message}"),
+                )
+                .await;
+            }
             // Emit any accumulated tool errors + usage even on
             // failure — `--no-stream` users still want to know "did
             // any tools fail?" before they see the failure banner.
@@ -2514,15 +2648,18 @@ async fn drain_pending_steering(
 /// Run a successor agent for a steering message that landed during the
 /// predecessor's final-iteration drain. Emits one
 /// `PrincipalSentSuccessor` packet per successor content. The steered
-/// user turn was already posted to the peer's DM channel by
-/// `handle_principal_send_control` (or by Gap-1's queued branch), so
+/// user turn was already posted to the peer's DM channel by the
+/// ingress path (`drive_principal_ingress`), so
 /// only the principal's response is posted here (Phase 11; the
 /// `channel_port` / `dm_channel` pair comes from the predecessor's
 /// ingress resolution).
 ///
 /// Phase 7: the successor runs in the same peer-child session as the
 /// predecessor (`child_id`), driven via the shared `PeerChildTurns`
-/// bundle — the retired root router is no longer involved.
+/// bundle — the retired root router is no longer involved. The
+/// successor registers in `streaming_runs` under the same session-id
+/// key as the predecessor (permit-guaranteed unique) with a fresh
+/// cancel token, so it is interruptible like any other run.
 #[allow(clippy::too_many_arguments)]
 async fn run_steering_successor(
     host: &dyn PrincipalHost,
@@ -2590,10 +2727,43 @@ async fn run_steering_successor(
         return Ok(());
     }
 
-    let outcome = match turns
-        .drive_turn(session_id, &steering.content, override_model)
-        .await
-    {
+    let outcome = match {
+        // Register in `streaming_runs` under the same session key as
+        // the predecessor (the permit guarantees one run per session,
+        // and the predecessor's entry is still present — we overwrite
+        // it) so `peko stop` / Ctrl-C can cancel a successor like any
+        // other run. The guard removes the entry on every return path
+        // below; the predecessor's own guard drops after all
+        // successors complete, so ordering is safe.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let run_handle = StreamingRunHandle {
+            principal_name: principal.name().await,
+            peer: peer.clone(),
+            cancel: cancel.clone(),
+            interrupt_acked: Arc::new(tokio::sync::Notify::new()),
+        };
+        {
+            let runs_registry = host.streaming_runs();
+            let mut runs = runs_registry.lock().unwrap();
+            runs.insert(session_id.to_string(), run_handle);
+        }
+        let _run_guard = StreamingRunGuard {
+            registry: host.streaming_runs(),
+            session_id: session_id.to_string(),
+        };
+        // `drive_turn_streaming` with a drop-everything event sink so
+        // the fresh cancel token is observed by the successor's
+        // agentic loop at iteration boundaries.
+        turns
+            .drive_turn_streaming(
+                session_id,
+                &steering.content,
+                Arc::new(|_| {}),
+                Some(cancel),
+                override_model,
+            )
+            .await
+    } {
         Ok(o) => o,
         Err(e) => {
             let error = ResponsePacket::Error {
@@ -2629,16 +2799,17 @@ async fn run_steering_successor(
 
 /// Mint a fresh synthetic `request_id` for a successor run. Successor
 /// runs are introduced when steering messages arrive during the
-/// final-iteration drain (Gap-2); they are not registered in the
-/// `streaming_runs` registry and never see a `PrincipalSendControl`
-/// IPC — the id is purely for client-side correlation. Salted with
-/// a process-local offset so they cannot collide with client-minted
-/// ids even on a busy daemon.
+/// final-iteration drain (Gap-2); they register in `streaming_runs`
+/// under the session-id key like any run. The id is purely for
+/// client-side correlation on the `PrincipalSentSuccessor` packet —
+/// runs are stopped by (principal, peer) via `PrincipalStop`, never
+/// by id. Salted with a process-local offset so they cannot collide
+/// with client-minted ids even on a busy daemon.
 fn next_successor_request_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
-    // 2^63 is the boundary between user-minted (random u64) and
-    // successor-minted ids. Clients in practice use small random ids;
-    // the high bit is a safe differentiator.
+    // 2^63 is the boundary between client-minted and successor-minted
+    // ids. Client ids are sequential from 1 per IPC connection
+    // (`ipc/client.rs`), so the high bit is a safe differentiator.
     const SUCCESSOR_BASE: u64 = 1u64 << 63;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -3072,15 +3243,26 @@ async fn pull_principal_package(
 
 // ─── peko log read path ───────────────────────────────────────────────
 
-async fn read_principal_log(
+/// Resolution shared by `read_principal_log` and
+/// `handle_principal_log_watch`: in-memory principal lookup, the
+/// `Chat` grant, the ADR-042 peer-privacy rule, the peer child
+/// session scan, and the DM-channel binding lookup.
+/// `port: None` means non-daemon context (no channel port attached);
+/// `channel: None` means the peer has never messaged (no child or no
+/// provisioned channel).
+struct ResolvedLogThread {
+    principal: Arc<Principal>,
+    target_peer: Subject,
+    port: Option<Arc<dyn ChannelPort>>,
+    channel: Option<ChannelId>,
+}
+
+async fn resolve_log_thread(
     host: &dyn PrincipalHost,
     name: &str,
     peer: Option<Subject>,
-    limit: Option<usize>,
-    since_secs: Option<u64>,
-    cursor: Option<String>,
-    caller: Subject,
-) -> Result<PrincipalLogResponse, PrincipalLogError> {
+    caller: &Subject,
+) -> Result<ResolvedLogThread, PrincipalLogError> {
     // ── Resolve the principal ─────────────────────────────────────
     let manager = host.principal_manager();
     let principal = manager
@@ -3101,7 +3283,7 @@ async fn read_principal_log(
     };
 
     // ── Chat permission ───────────────────────────────────────────
-    if check_permission(&resource, Permission::Chat, &caller).is_err() {
+    if check_permission(&resource, Permission::Chat, caller).is_err() {
         return Err(PrincipalLogError::Forbidden(format!(
             "caller '{caller}' lacks Chat permission on principal '{name}'"
         )));
@@ -3121,42 +3303,25 @@ async fn read_principal_log(
     }
 
     // ── Peer-privacy match ────────────────────────────────────────
-    if caller != target_peer && caller != owner {
+    if *caller != target_peer && *caller != owner {
         return Err(PrincipalLogError::Forbidden(
             "you can only read your own conversation; ask the owner to read on your behalf"
                 .to_string(),
         ));
     }
 
-    // ── Read one DM-channel page (Phase 11) ─────────────────────
-    // The peer conversation's durable home is now the peer's DM
-    // channel (`principal::peer_dm`), not the runtime chat log: this
-    // view walks the channel's `Posted` events. Session internals
-    // (tool calls, thinking, compactions, provider roles) never appear
-    // in this surface — only `Posted` rows are mapped. Pre-Phase-11
-    // chat-log history stays on disk unread (accepted; Phase 13
-    // decides migration).
-    let effective_limit = limit.unwrap_or(50).clamp(1, 1000);
-    let cutoff = since_secs.map(|s| Utc::now() - chrono::Duration::seconds(s as i64));
-
-    // No channel port (non-daemon context) ⇒ empty page + debug log.
+    // No channel port (non-daemon context) ⇒ no channel to resolve.
     let Some(port) = manager.channel_port() else {
-        tracing::debug!(
-            principal = %name,
-            "peko log: no channel port attached; returning empty page"
-        );
-        return Ok(PrincipalLogResponse {
-            name: name.to_string(),
-            peer: target_peer,
-            messages: Vec::new(),
-            next_cursor: None,
-            has_more: false,
+        return Ok(ResolvedLogThread {
+            principal,
+            target_peer,
+            port: None,
+            channel: None,
         });
     };
 
     // Resolve the peer's DM channel via the peer child's binding path.
-    // A peer that has never messaged has no child and no channel —
-    // empty page.
+    // A peer that has never messaged has no child and no channel.
     let mut session_manager = peko_session::manager::SessionManager::new()
         .with_sessions_dir_internal(principal.memory.sessions_dir());
     let metas = session_manager
@@ -3180,14 +3345,88 @@ async fn read_principal_log(
         }
         None => None,
     };
-    let Some(channel) = channel else {
-        return Ok(PrincipalLogResponse {
-            name: name.to_string(),
-            peer: target_peer,
-            messages: Vec::new(),
-            next_cursor: None,
-            has_more: false,
-        });
+
+    Ok(ResolvedLogThread {
+        principal,
+        target_peer,
+        port: Some(port),
+        channel,
+    })
+}
+
+/// Map a `Posted` channel event onto the `PrincipalLogMessage` chat
+/// shape: the principal's raw-id author becomes
+/// `Subject::Principal(did)`, anything else parses as a Subject wire
+/// form with a `Subject::User` fallback (mirrored `x@runtime` authors).
+/// Unparseable timestamps surface as "now".
+fn map_posted_to_log_message(
+    id: String,
+    author: &str,
+    at: &str,
+    text: String,
+    principal_author: &str,
+    principal_subject: &Subject,
+) -> PrincipalLogMessage {
+    let parsed_at = chrono::DateTime::parse_from_rfc3339(at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    let sender = if author == principal_author {
+        principal_subject.clone()
+    } else {
+        Subject::from_str(author).unwrap_or(Subject::User(author.to_string()))
+    };
+    PrincipalLogMessage {
+        schema_version: PRINCIPAL_LOG_SCHEMA_VERSION,
+        id,
+        sender,
+        timestamp: parsed_at,
+        text,
+        correlation_id: None,
+    }
+}
+
+async fn read_principal_log(
+    host: &dyn PrincipalHost,
+    name: &str,
+    peer: Option<Subject>,
+    limit: Option<usize>,
+    since_secs: Option<u64>,
+    cursor: Option<String>,
+    caller: Subject,
+) -> Result<PrincipalLogResponse, PrincipalLogError> {
+    let resolved = resolve_log_thread(host, name, peer, &caller).await?;
+    let principal = resolved.principal;
+    let target_peer = resolved.target_peer;
+
+    // ── Read one DM-channel page (Phase 11) ─────────────────────
+    // The peer conversation's durable home is now the peer's DM
+    // channel (`principal::peer_dm`), not the runtime chat log: this
+    // view walks the channel's `Posted` events. Session internals
+    // (tool calls, thinking, compactions, provider roles) never appear
+    // in this surface — only `Posted` rows are mapped. Pre-Phase-11
+    // chat-log history stays on disk unread (accepted; Phase 13
+    // decides migration).
+    let effective_limit = limit.unwrap_or(50).clamp(1, 1000);
+    let cutoff = since_secs.map(|s| Utc::now() - chrono::Duration::seconds(s as i64));
+
+    let empty_page = || PrincipalLogResponse {
+        name: name.to_string(),
+        peer: target_peer.clone(),
+        messages: Vec::new(),
+        next_cursor: None,
+        has_more: false,
+    };
+
+    // No channel port (non-daemon context) ⇒ empty page + debug log.
+    let Some(port) = resolved.port else {
+        tracing::debug!(
+            principal = %name,
+            "peko log: no channel port attached; returning empty page"
+        );
+        return Ok(empty_page());
+    };
+    let Some(channel) = resolved.channel else {
+        return Ok(empty_page());
     };
 
     // Walk the channel log oldest→newest; `Posted` events only.
@@ -3210,32 +3449,22 @@ async fn read_principal_log(
         let Ok(line_num) = line.parse::<u64>() else {
             continue;
         };
-        // Unparseable timestamps are kept (surfaced as "now"); the
-        // `since` cutoff then admits them (now ≥ cutoff).
-        let parsed_at = chrono::DateTime::parse_from_rfc3339(&at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+        let message = map_posted_to_log_message(
+            format!("chan_{line_num}"),
+            &author,
+            &at,
+            text,
+            &principal_author,
+            &principal_subject,
+        );
+        // The `since` cutoff admits unparseable timestamps (surfaced
+        // as "now" by the mapper — now ≥ cutoff).
         if let Some(cut) = cutoff {
-            if parsed_at < cut {
+            if message.timestamp < cut {
                 continue;
             }
         }
-        let sender = if author == principal_author {
-            principal_subject.clone()
-        } else {
-            Subject::from_str(&author).unwrap_or(Subject::User(author.clone()))
-        };
-        rows.push((
-            line_num,
-            PrincipalLogMessage {
-                schema_version: PRINCIPAL_LOG_SCHEMA_VERSION,
-                id: format!("chan_{line_num}"),
-                sender,
-                timestamp: parsed_at,
-                text,
-                correlation_id: None,
-            },
-        ));
+        rows.push((line_num, message));
     }
 
     // In-memory paging is fine at DM-channel scale. The cursor is the
@@ -3265,6 +3494,221 @@ async fn read_principal_log(
         has_more,
     })
 }
+
+// ─── peko log --watch stream ────────────────────────────────────────
+
+/// Server-side handler for `RequestPacket::PrincipalLogWatch` — the
+/// privacy-checked sibling of `ChannelEventsWatch` (ADR-042). Same
+/// resolution + privacy rule as `read_principal_log`; failures map to
+/// the same `[kind]`-prefixed `Error` packets. Unlike the raw watch,
+/// a thread that doesn't exist yet is an error (`[not_found]`) — a
+/// DM channel is provisioned on first contact, so "watch before first
+/// contact" has nothing to subscribe to.
+async fn handle_principal_log_watch(
+    request_id: u64,
+    name: &str,
+    peer: Option<Subject>,
+    since_cursor: Option<String>,
+    caller: &CallerContext,
+    host: &dyn PrincipalHost,
+    sink: &dyn ResponseSink,
+) -> anyhow::Result<()> {
+    let caller_subject = caller.subject();
+    let resolved = match resolve_log_thread(host, name, peer, &caller_subject).await {
+        Ok(r) => r,
+        Err(e) => {
+            let message = match e {
+                PrincipalLogError::NotFound(msg) => format!("[not_found] {msg}"),
+                PrincipalLogError::Forbidden(msg) => format!("[forbidden] {msg}"),
+                PrincipalLogError::BadCursor(msg) => format!("[bad_cursor] {msg}"),
+                PrincipalLogError::Internal(msg) => format!("[internal_error] {msg}"),
+            };
+            send_response(sink, ResponsePacket::Error { request_id, message }).await?;
+            return Ok(());
+        }
+    };
+
+    let (Some(port), Some(channel)) = (resolved.port, resolved.channel) else {
+        let response = ResponsePacket::Error {
+            request_id,
+            message: format!(
+                "[not_found] no conversation thread for peer '{}' on principal '{name}' yet",
+                resolved.target_peer
+            ),
+        };
+        send_response(sink, response).await?;
+        return Ok(());
+    };
+
+    // Cursor semantics: the log command's line-number cursor — replay
+    // rows with line number STRICTLY greater than it. `None` replays
+    // the whole thread. Malformed cursors are rejected like the read
+    // path's.
+    let since_line: u64 = match since_cursor.as_deref() {
+        Some(c) => match c.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("[bad_cursor] invalid cursor: {c}"),
+                };
+                send_response(sink, response).await?;
+                return Ok(());
+            }
+        },
+        None => 0,
+    };
+
+    run_principal_log_watch(
+        request_id,
+        &resolved.principal,
+        port,
+        channel,
+        since_line,
+        sink,
+    )
+    .await
+}
+
+/// Replay + live-forward loop for `PrincipalLogWatch`. Wire shape:
+/// zero or more `PrincipalLogAppended` packets interleaved with
+/// `Heartbeat` ticks; no terminal `Done` (the stream ends on client
+/// disconnect, daemon shutdown, or a lagged-broadcast `Error`).
+///
+/// Ordering: subscribe BEFORE the replay peek so an event posted in
+/// between can't fall through the gap (the raw `ChannelEventsWatch`
+/// peeks first and has that gap). Events posted in the
+/// subscribe→peek window then arrive twice — once in the replay, once
+/// on the broadcast — so live events are deduped against the replayed
+/// `(author, at, text)` tuples (broadcast events carry no line
+/// number; the residual risk is a same-author same-second duplicate
+/// post, accepted at DM-channel scale).
+async fn run_principal_log_watch(
+    request_id: u64,
+    principal: &Arc<Principal>,
+    port: Arc<dyn ChannelPort>,
+    channel: ChannelId,
+    since_line: u64,
+    sink: &dyn ResponseSink,
+) -> anyhow::Result<()> {
+    let mut rx = port.subscribe_events(&channel).await;
+
+    // Replay rows strictly newer than the cursor, oldest→newest.
+    let events = match port
+        .peek_with_ids(&channel, &peko_channel::Checkpoint::zero())
+        .await
+    {
+        Ok(events) => events,
+        Err(e) => {
+            let response = ResponsePacket::Error {
+                request_id,
+                message: format!("[internal_error] log watch replay failed: {e}"),
+            };
+            send_response(sink, response).await?;
+            return Ok(());
+        }
+    };
+    let principal_author = principal.id.to_string();
+    let principal_subject = Subject::Principal(principal.did().await);
+    let mut replayed: Vec<(String, String, String)> = Vec::new();
+    for (line, event) in events {
+        let ChannelEvent::Posted {
+            author, text, at, ..
+        } = event
+        else {
+            continue;
+        };
+        let Ok(line_num) = line.parse::<u64>() else {
+            continue;
+        };
+        if line_num <= since_line {
+            continue;
+        }
+        replayed.push((author.clone(), at.clone(), text.clone()));
+        let message = map_posted_to_log_message(
+            format!("chan_{line_num}"),
+            &author,
+            &at,
+            text,
+            &principal_author,
+            &principal_subject,
+        );
+        let packet = ResponsePacket::PrincipalLogAppended { request_id, message };
+        if send_response(sink, packet).await.is_err() {
+            // Client disconnected mid-replay — drop the stream.
+            return Ok(());
+        }
+    }
+
+    // Heartbeat ticker: the CLI applies a per-packet idle timeout
+    // (`CLI_TIMEOUT_SECS`, 60s) to this stream, and a quiet thread
+    // emits nothing — ticking every `HEARTBEAT_INTERVAL_SECS` keeps
+    // the stream alive (same pattern as the send-stream handler).
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            ev = rx.recv() => match ev {
+                Ok(ChannelEvent::Posted {
+                    author, text, at, ..
+                }) => {
+                    // Skip events already covered by the replay
+                    // (subscribe→peek overlap window).
+                    let tuple = (author.clone(), at.clone(), text.clone());
+                    if let Some(pos) = replayed.iter().position(|t| *t == tuple) {
+                        replayed.remove(pos);
+                        continue;
+                    }
+                    // Live rows have no store line number (the
+                    // broadcast event doesn't carry one), so they get
+                    // a generated `chat_*` id rather than the read
+                    // path's `chan_<line>` — watch consumers don't
+                    // page, so the id is display-only here.
+                    let message = map_posted_to_log_message(
+                        format!("chat_{}", uuid::Uuid::new_v4().simple()),
+                        &author,
+                        &at,
+                        text,
+                        &principal_author,
+                        &principal_subject,
+                    );
+                    let packet = ResponsePacket::PrincipalLogAppended { request_id, message };
+                    if send_response(sink, packet).await.is_err() {
+                        // Sink closed (client disconnected).
+                        return Ok(());
+                    }
+                }
+                // Non-`Posted` events (joins, pins, …) are not part of
+                // the log surface.
+                Ok(_) => {}
+                // `Lagged` means the receiver fell behind the
+                // broadcast buffer — tell the client to resync and
+                // close, mirroring the raw watch.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!(
+                            "log watch lagged; re-run peko log --watch (skipped {skipped} events)"
+                        ),
+                    };
+                    let _ = send_response(sink, response).await;
+                    return Ok(());
+                }
+                // `Closed` — every sender dropped (daemon shutdown).
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Ok(());
+                }
+            },
+            _ = heartbeat.tick() => {
+                let beat = ResponsePacket::Heartbeat { request_id };
+                if send_response(sink, beat).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3323,7 +3767,7 @@ mod tests {
             fn principal_manager(&self) -> &Arc<PrincipalManager> {
                 &self.manager
             }
-            fn streaming_runs(&self) -> Arc<Mutex<HashMap<u64, StreamingRunHandle>>> {
+            fn streaming_runs(&self) -> Arc<Mutex<HashMap<String, StreamingRunHandle>>> {
                 unimplemented!("not reached by read_principal_log")
             }
             fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
@@ -3660,6 +4104,184 @@ mod tests {
             assert!(page.messages.is_empty());
             assert!(!page.has_more);
             assert_eq!(page.next_cursor, None);
+        }
+
+        // ─── PrincipalLogWatch ────────────────────────────────────
+
+        /// Collecting sink for the watch tests — never errors; the
+        /// watch task is aborted once the expected packets landed
+        /// (the live-forward loop never terminates on its own).
+        #[derive(Default)]
+        struct CollectSink {
+            seen: Mutex<Vec<ResponsePacket>>,
+        }
+
+        impl CollectSink {
+            fn observed(&self) -> Vec<ResponsePacket> {
+                self.seen.lock().unwrap().clone()
+            }
+        }
+
+        #[async_trait]
+        impl crate::ipc::response_sink::ResponseSink for CollectSink {
+            async fn send_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+                let packet: ResponsePacket = serde_json::from_slice(bytes)
+                    .map_err(|e| std::io::Error::other(format!("decode: {e}")))?;
+                self.seen.lock().unwrap().push(packet);
+                Ok(())
+            }
+        }
+
+        /// Wait until `pred` holds over the observed packets (2s cap).
+        async fn wait_for_packet(
+            sink: &CollectSink,
+            pred: impl Fn(&ResponsePacket) -> bool,
+            what: &str,
+        ) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !sink.observed().iter().any(&pred) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+
+        /// The watch replays rows strictly newer than the cursor
+        /// (oldest→newest), then forwards live posts, with heartbeats
+        /// interleaved (the interval's first tick fires immediately).
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn log_watch_replays_newer_than_cursor_then_streams_live() {
+            let fx = fixture(true).await;
+            post_turns(&fx, 2).await; // lines 1..=4 (q0,a0,q1,a1)
+
+            let sink = Arc::new(CollectSink::default());
+            let port: Arc<dyn ChannelPort> = fx.store.clone();
+            let principal = fx.principal.clone();
+            let channel = fx.channel.clone();
+            let sink_for_task = Arc::clone(&sink);
+            let handle = tokio::spawn(async move {
+                // since_line = 2: replay only rows 3,4.
+                run_principal_log_watch(42, &principal, port, channel, 2, sink_for_task.as_ref())
+                    .await
+            });
+
+            wait_for_packet(&sink, |p| {
+                matches!(p, ResponsePacket::PrincipalLogAppended { message, .. } if message.text == "answer 1")
+            }, "replay rows")
+            .await;
+
+            // Live post: forwarded exactly once.
+            let port: Arc<dyn ChannelPort> = fx.store.clone();
+            port.post(&fx.channel, &fx.principal.id, PostMsg::root("live answer"))
+                .await
+                .expect("live post");
+            wait_for_packet(&sink, |p| {
+                matches!(p, ResponsePacket::PrincipalLogAppended { message, .. } if message.text == "live answer")
+            }, "live row")
+            .await;
+            handle.abort();
+
+            let observed = sink.observed();
+            let appended: Vec<&PrincipalLogMessage> = observed
+                .iter()
+                .filter_map(|p| match p {
+                    ResponsePacket::PrincipalLogAppended { message, .. } => Some(message),
+                    _ => None,
+                })
+                .collect();
+            let texts: Vec<&str> = appended.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(
+                texts,
+                vec!["question 1", "answer 1", "live answer"],
+                "replay (rows newer than the cursor) then the live row, in order"
+            );
+            // Sender mapping on the live row: the principal's raw-id
+            // author maps to Subject::Principal.
+            assert_eq!(
+                appended[2].sender,
+                Subject::Principal(fx.principal.did().await)
+            );
+            assert!(
+                observed
+                    .iter()
+                    .any(|p| matches!(p, ResponsePacket::Heartbeat { .. })),
+                "heartbeats must ride the watch stream"
+            );
+        }
+
+        /// Handler-level privacy: a caller who is neither the owner
+        /// nor the thread's peer is rejected with `[forbidden]`.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn log_watch_forbidden_for_non_owner_non_peer() {
+            let fx = fixture(true).await;
+            let sink = CollectSink::default();
+            // Local caller (subject "local") is neither the owner
+            // ("test-owner") nor the requested peer ("alice").
+            handle_principal_log_watch(
+                7,
+                "loggable",
+                Some(fx.peer.clone()),
+                None,
+                &CallerContext::local(),
+                &fx.host,
+                &sink,
+            )
+            .await
+            .expect("handler ok");
+            let observed = sink.observed();
+            assert_eq!(observed.len(), 1);
+            match &observed[0] {
+                ResponsePacket::Error { message, .. } => {
+                    assert!(message.starts_with("[forbidden]"), "got {message}")
+                }
+                other => panic!("expected Error, got {other:?}"),
+            }
+        }
+
+        /// Watching a thread that doesn't exist yet (peer never
+        /// messaged) errors `[not_found]` — caller == peer, so
+        /// privacy passes and the missing channel is the failure.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn log_watch_not_found_when_thread_missing() {
+            let fx = fixture(true).await;
+            // Grant Chat to the local caller (a non-owner) so the
+            // privacy pass reaches the missing-thread check.
+            fx.principal
+                .config
+                .write()
+                .await
+                .permissions
+                .push(PermissionGrant {
+                    subject: Subject::User("local".to_string()),
+                    permission: Permission::Chat,
+                    granted_at: Utc::now().to_rfc3339(),
+                    granted_by: fx.owner.clone(),
+                });
+            let sink = CollectSink::default();
+            handle_principal_log_watch(
+                7,
+                "loggable",
+                Some(Subject::User("local".to_string())),
+                None,
+                &CallerContext::local(),
+                &fx.host,
+                &sink,
+            )
+            .await
+            .expect("handler ok");
+            let observed = sink.observed();
+            assert_eq!(observed.len(), 1);
+            match &observed[0] {
+                ResponsePacket::Error { message, .. } => {
+                    assert!(message.starts_with("[not_found]"), "got {message}")
+                }
+                other => panic!("expected Error, got {other:?}"),
+            }
         }
     }
 }

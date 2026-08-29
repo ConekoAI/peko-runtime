@@ -73,8 +73,7 @@ flow_main() {
   echo
   echo "──── TURN 1 (spawn helper with a >2 KiB bash result) ────"
   peko_iso_run send probe \
-      "Use the Agent tool (subagent_type=primary, cleanup=keep) to delegate this exact task: run 'yes | head -c 5000' in bash and report the exact output verbatim. Don't summarise — I want the full text. Tell me the helper's session id when done." \
-      --no-stream
+      "Use the Agent tool (subagent_type=primary, cleanup=keep) to delegate this exact task: run 'yes | head -c 5000' in bash and report the exact output verbatim. Don't summarise — I want the full text. Tell me the helper's session id when done."
   if [[ $_peko_iso_capture_rc -ne 0 ]]; then
     echo "⚠ send returned rc=$_peko_iso_capture_rc — continuing (disk assertions are the point)"
     echo "   stderr: $_peko_iso_capture_err"
@@ -172,8 +171,7 @@ flow_main() {
   echo "ASSERTION 4: paged session still responds to status/history (stitched)"
   echo "═══════════════════════════════════════════════════════════════"
   peko_iso_run send probe \
-      "Use the session tool with action=status on session_key='$paged_id', then action=history on the same session_key (include_tools=true). Tell me: (a) the total message count, and (b) whether you can see the helper's original task in the history — it mentions the command 'yes | head -c 5000'. Answer both explicitly." \
-      --no-stream
+      "Use the session tool with action=status on session_key='$paged_id', then action=history on the same session_key (include_tools=true). Tell me: (a) the total message count, and (b) whether you can see the helper's original task in the history — it mentions the command 'yes | head -c 5000'. Answer both explicitly."
   peko_iso_assert_rc_zero
   echo "$_peko_iso_capture_out"
   local raw="$_peko_iso_capture_out"

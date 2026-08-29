@@ -51,7 +51,7 @@ flow_main() {
   echo
   echo "─── TURN 1 (memory seed) ─────────────────────────────────────"
   t0=$SECONDS
-  peko_iso_run send sam "Remember: my studio is called Clay & Ember, I teach a beginner wheel class every Saturday at 10am, and my favorite glaze is celadon. Reply with a one-line confirmation." --no-stream
+  peko_iso_run send sam "Remember: my studio is called Clay & Ember, I teach a beginner wheel class every Saturday at 10am, and my favorite glaze is celadon. Reply with a one-line confirmation."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -64,7 +64,7 @@ flow_main() {
   # "I don't have a session tool".
   echo "─── TURN 2 (session list — F1 smoke check) ────────────────────"
   t0=$SECONDS
-  peko_iso_run send sam "Can you see what sessions exist right now? Use the session tool to list them and tell me what you see." --no-stream
+  peko_iso_run send sam "Can you see what sessions exist right now? Use the session tool to list them and tell me what you see."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -74,7 +74,7 @@ flow_main() {
   # ── TURN 3: ask for session history ───────────────────────────────
   echo "─── TURN 3 (session history on current) ───────────────────────"
   t0=$SECONDS
-  peko_iso_run send sam "Show me the history of this current session — what we have said so far." --no-stream
+  peko_iso_run send sam "Show me the history of this current session — what we have said so far."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -84,7 +84,7 @@ flow_main() {
   # ── TURN 4: rotate to a fresh chapter (session new) ───────────────
   echo "─── TURN 4 (start a fresh conversation — session new) ──────────"
   t0=$SECONDS
-  peko_iso_run send sam "Let's start a fresh chapter in our conversation. I want to ask you something unrelated — use the session tool with action=new to rotate this conversation into a new chapter so the old topic doesn't clutter the new one." --no-stream
+  peko_iso_run send sam "Let's start a fresh chapter in our conversation. I want to ask you something unrelated — use the session tool with action=new to rotate this conversation into a new chapter so the old topic doesn't clutter the new one."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -98,7 +98,7 @@ flow_main() {
   # session JSONL won't have it.)
   echo "─── TURN 5 (chapter isolation probe) ──────────────────────────"
   t0=$SECONDS
-  peko_iso_run send sam "Without looking at any earlier context, what's my studio's name? Reply based only on what's in front of you right now." --no-stream
+  peko_iso_run send sam "Without looking at any earlier context, what's my studio's name? Reply based only on what's in front of you right now."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -108,7 +108,7 @@ flow_main() {
   # ── TURN 6: delegate to a subagent ────────────────────────────────
   echo "─── TURN 6 (Agent subagent delegation) ────────────────────────"
   t0=$SECONDS
-  peko_iso_run send sam "Delegate this to a helper agent: write a one-paragraph marketing blurb for a Saturday wheel class, suitable for posting on Instagram. Don't do it yourself." --no-stream
+  peko_iso_run send sam "Delegate this to a helper agent: write a one-paragraph marketing blurb for a Saturday wheel class, suitable for posting on Instagram. Don't do it yourself."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -118,7 +118,7 @@ flow_main() {
   # ── TURN 7: list sessions — expect spawned kind ───────────────────
   echo "─── TURN 7 (session list — looking for spawned kind) ──────────"
   t0=$SECONDS
-  peko_iso_run send sam "List ALL of your sessions now, including spawned ones from the helper. Show me the kinds." --no-stream
+  peko_iso_run send sam "List ALL of your sessions now, including spawned ones from the helper. Show me the kinds."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -128,7 +128,7 @@ flow_main() {
   # ── TURN 8: try to delete the running session — should refuse ────
   echo "─── TURN 8 (delete current — should refuse per #351 ownership) "
   t0=$SECONDS
-  peko_iso_run send sam "Use the session tool with action=delete to delete this current session. Show me what the tool returns." --no-stream
+  peko_iso_run send sam "Use the session tool with action=delete to delete this current session. Show me what the tool returns."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -138,7 +138,7 @@ flow_main() {
   # ── TURN 9: compact (non-destructive safety check) ───────────────
   echo "─── TURN 9 (compact current session — fire-and-forget flag) ───"
   t0=$SECONDS
-  peko_iso_run send sam "Use the session tool with action=compact to schedule a compaction of this current session. Don't worry about the result, just call it." --no-stream
+  peko_iso_run send sam "Use the session tool with action=compact to schedule a compaction of this current session. Don't worry about the result, just call it."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"
@@ -148,7 +148,7 @@ flow_main() {
   # ── TURN 10: subagent cleanup via the Agent tool ─────────────────
   echo "─── TURN 10 (subagent session should be re-routable via list) ─"
   t0=$SECONDS
-  peko_iso_run send sam "Show me a one-line summary of what the helper agent produced in the previous turn, and confirm what session id it ran in." --no-stream
+  peko_iso_run send sam "Show me a one-line summary of what the helper agent produced in the previous turn, and confirm what session id it ran in."
   dur=$((SECONDS - t0))
   peko_iso_assert_rc_zero
   echo "wall time: ${dur}s"

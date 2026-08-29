@@ -159,7 +159,7 @@ flow_main() {
   # only assert ONE of the borrow-checker tells.
   peko_iso_run send blank \
       "review this: fn main() { let mut v = vec![1]; let a = &mut v; let b = &mut v; a.push(2); }" \
-      --no-stream || true
+      || true
   # send may exit non-zero on streaming-timeout races; the
   # assertion is on the output content, not the rc.
   if grep -qiE "borrow|lifetime|&mut|error.E0" <<<"$_peko_iso_capture_out$_peko_iso_capture_err"; then

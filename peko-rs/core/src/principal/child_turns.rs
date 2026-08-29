@@ -378,7 +378,7 @@ impl PeerChildTurns {
     /// the caller, and standing children outlive their runs. The turn
     /// has no wall-clock timeout (`timeout_seconds: 0`) — parity with
     /// the retired root-agent ingress path; cancellation is via
-    /// `cancel` (the IPC `PrincipalSendControl::Interrupt` token).
+    /// `cancel` (the IPC `PrincipalStop` token).
     pub(crate) async fn drive_turn_streaming(
         &self,
         session_id: &str,
@@ -402,19 +402,6 @@ impl PeerChildTurns {
                 on_event,
                 cancel,
             )
-            .await
-    }
-
-    /// Blocking variant of [`Self::drive_turn_streaming`] for the
-    /// one-shot `PrincipalManager::receive` path and steering
-    /// successor runs: events are dropped, no cancel token.
-    pub(crate) async fn drive_turn(
-        &self,
-        session_id: &str,
-        message: &str,
-        override_model: Option<String>,
-    ) -> Result<StreamingResumeOutcome> {
-        self.drive_turn_streaming(session_id, message, Arc::new(|_| {}), None, override_model)
             .await
     }
 }

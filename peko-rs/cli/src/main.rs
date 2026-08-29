@@ -13,7 +13,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crate::commands::{
     audit, auth, channel, config, credential, daemon, from_cli,
-    init_logging, interrupt, log, model, principal, quota, registry, runtime, search, send,
+    init_logging, log, model, principal, quota, registry, runtime, search, send, stop,
     system, tunnel, update, vault, version, Cli, Commands, GlobalPaths,
 };
 
@@ -124,7 +124,7 @@ async fn run_command(
     match command {
         Commands::Principal(cmd) => principal::handle_principal(cmd, paths, json).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
-        Commands::Interrupt(args) => interrupt::handle_interrupt(args, paths, json).await,
+        Commands::Stop(args) => stop::handle_stop(args, paths, json).await,
         Commands::Log(cmd) => log::handle_log(cmd, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
         Commands::Credential(cmd) => credential::execute(cmd, paths).await,

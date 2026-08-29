@@ -1579,7 +1579,7 @@ impl SubagentExecutor {
     /// `parent_cancel` is forwarded to `spawn_and_execute` so the
     /// sub-agent's `AgenticLoop` observes the parent's cancel token at
     /// iteration boundaries. When the parent is interrupted via
-    /// `PrincipalSendControl`, the sub-agent exits cleanly with
+    /// `PrincipalStop`, the sub-agent exits cleanly with
     /// `interrupted: true` and the wait unblocks promptly. `None` for
     /// legacy non-cancelable call sites.
     pub async fn execute_and_wait(

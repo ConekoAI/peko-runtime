@@ -64,9 +64,8 @@ pub enum PrincipalManagerError {
 
 /// B8c.4: outcome of [`PrincipalManager::drive_principal_ingress`].
 ///
-/// The three principal ingress sites (`receive_streaming`,
-/// `handle_principal_send`, the `Steer` arm of
-/// `handle_principal_send_control`) each format the outcome
+/// The two principal ingress sites (`receive_streaming`,
+/// `handle_principal_send`) each format the outcome
 /// differently — `PrincipalResponse::text(...)` vs `PrincipalSent` vs
 /// `(success: bool, error: Option<String>)` — but the upstream
 /// sequence (resolve child + DM channel, post inbound, acquire or
@@ -81,8 +80,8 @@ pub enum IngressOutcome {
         dm_channel: Option<peko_channel::ChannelId>,
         permit: RunPermitGuard,
     },
-    /// No run permit (interactive mode conflict, or SteerOnly
-    /// mode). The message was pushed to the child's inbox as a
+    /// No run permit (a run is already active for this child
+    /// session). The message was pushed to the child's inbox as a
     /// `SteeringMessage`; caller emits a "Queued..." notice.
     Queued { child_id: String },
 }
@@ -92,9 +91,6 @@ pub enum IngressMode {
     /// Acquire a run permit; queue on conflict. Used by
     /// `receive_streaming` and the principal IPC ingress.
     Interactive,
-    /// Always queue (Steer path — the in-flight run consumes the
-    /// steering push at its next iteration boundary).
-    SteerOnly,
 }
 
 /// B8c.4: failure modes from [`PrincipalManager::drive_principal_ingress`].
@@ -791,9 +787,8 @@ impl PrincipalManager {
         })
     }
 
-    /// B8c.4: shared body for [`Self::receive_streaming`],
-    /// `handle_principal_send`, and the `Steer` arm of
-    /// `handle_principal_send_control`. Three call sites previously
+    /// B8c.4: shared body for [`Self::receive_streaming`] and
+    /// `handle_principal_send`. Two call sites previously
     /// inlined the same five-step sequence (resolve peer's standing
     /// child + DM channel → post inbound message attributed to the
     /// peer → acquire a run permit OR queue a steering message →
@@ -803,10 +798,7 @@ impl PrincipalManager {
     ///
     /// `mode = Interactive` acquires a run permit and queues on
     /// conflict (used by `receive_streaming` and the principal IPC
-    /// ingress). `mode = SteerOnly` always queues (the `Steer` arm
-    /// targets the child session's inbox — the in-flight run drains
-    /// it at the next iteration boundary, so acquiring a permit
-    /// would be wrong).
+    /// ingress).
     pub(crate) async fn drive_principal_ingress(
         &self,
         principal: &Arc<Principal>,
@@ -837,16 +829,6 @@ impl PrincipalManager {
         }
 
         match mode {
-            IngressMode::SteerOnly => {
-                // Steer is by definition a queue-only path — the
-                // in-flight run drains the steering push at its next
-                // iteration boundary. No permit acquisition.
-                let inbox = self.inbox_registry.get_or_create(&child_id).await;
-                inbox
-                    .push(SteeringMessage::new(message.to_string()).into())
-                    .await;
-                Ok(IngressOutcome::Queued { child_id })
-            }
             IngressMode::Interactive => {
                 match self.inbox_registry.try_acquire_run(&child_id).await {
                     Some(permit) => Ok(IngressOutcome::Ready {
@@ -2250,8 +2232,9 @@ mod tests {
     }
 
     // ===================================================================
-    // Gap-3 (Phase 11 form): a `SteeringMessage` arriving via
-    // `PrincipalSendControl::Steer` is posted to the peer's DM channel
+    // Gap-3 (Phase 11 form): a `SteeringMessage` arriving while a run
+    // is in flight (queued by `drive_principal_ingress`) is posted to
+    // the peer's DM channel
     // (peer-attributed) so the user sees their own message in
     // `peko log`. The handler resolves the peer child + DM channel via
     // `ensure_peer_child_ingress` and posts through

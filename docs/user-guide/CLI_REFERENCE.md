@@ -19,7 +19,7 @@ peko [OPTIONS] <COMMAND>
 | `-q, --quiet` | Suppress non-error output |
 | `-v, --verbose...` | Enable verbose logging (-v=info, -vv=debug, -vvv=trace) |
 | `--debug` | Show debug information including stack traces |
-| `-U, --user <USER>` | Caller Subject for `peko send` / `peko log` (peer axis on a Principal's thread) |
+| `-U, --user <USER>` | Caller Subject for `peko send` / `peko stop` / `peko log` (peer axis on a Principal's thread) |
 
 ---
 
@@ -81,7 +81,12 @@ peko principal agent list my-principal
 
 ### `send` — Send Message to a Principal
 
-Send a message to a Principal. This is the primary way to interact with Peko.
+Post a message onto your thread with a Principal. This is the primary
+way to interact with Peko. If the Principal is idle, a run starts and
+the reply streams back; if a run is already in flight, the message is
+queued onto the session inbox and folds into the running turn at the
+next agentic iteration — the CLI prints a busy notice to stderr and
+exits 0 (use `--wait` to block for the reply instead).
 
 ```bash
 peko send <PRINCIPAL> [MESSAGE]
@@ -100,10 +105,19 @@ peko send <PRINCIPAL> [MESSAGE]
 |--------|-------|-------------|
 | `-f, --file <PATH>` | - | Read message from file |
 | `--stdin` | - | Read message from stdin |
-| `--no-stream` | - | Disable streaming, wait for full response |
-| `--provider <PROVIDER_ID>` | - | Override the provider for this message only |
-| `--model <MODEL_ID>` | - | Override the model for this message only (requires `--provider`) |
+| `--wait` | - | On the busy path, block until the Principal's next reply on the thread (10-minute cap) |
+| `--peer <SUBJECT>` | - | Send as this peer instead of `-U/--user` (wire form `user:<id>`) |
+| `--model <MODEL_ID>` | - | Override the configured model for this message only |
 | `--no-slash` | - | Do not treat `/`-prefixed messages as slash commands |
+
+Replies render as they stream. A per-turn footer on stderr reports
+iterations, token usage, and failed tool calls. Ctrl-C soft-stops the
+run (see `stop`).
+
+Group channels (`group:<slug>` recipients) are refused: groups are
+principal-authored spaces with no bound run, and the channel IPC has
+no user-authored post path. Post as a member principal instead:
+`peko channel post group:<slug> <sender-principal> "<msg>"`.
 
 #### Examples
 
@@ -117,11 +131,56 @@ peko send my-principal --file prompt.txt
 # Pipe from stdin
 echo "Hello!" | peko send my-principal --stdin
 
-# Disable streaming
-peko send my-principal "Hello!" --no-stream
+# Follow up while the Principal is busy (queued; block for the reply)
+peko send my-principal "also check the calendar" --wait
 
-# Override provider/model for a single message
-peko send my-principal "Hello!" --provider openai --model gpt-4o
+# Override the model for a single message
+peko send my-principal "Hello!" --model anthropic-claude-sonnet-4-5
+```
+
+---
+
+### `stop` — Stop the Running Turn
+
+Soft-stop the run bound to your thread with a Principal: the agentic
+loop exits at the next iteration boundary, subagents observe the
+cancel cascade at their own boundaries, a `⏹ stopped by user` marker
+is posted to the thread (visible in `peko log`), and a stop-context
+note is left for the next turn so the Principal acknowledges what was
+interrupted.
+
+Idempotent: with no run in flight it prints "no running turn" and
+exits 0 — safe to call from scripts. Replaces the retired
+`peko interrupt <request-id>` (ADR-048).
+
+```bash
+peko stop <PRINCIPAL> [--peer <SUBJECT>]
+```
+
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<PRINCIPAL>` | Principal name |
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `--peer <SUBJECT>` | Stop the run on this peer's thread instead of your own (owner only). Wire form `user:<id>` or `principal:<did>`. |
+
+The privacy contract matches `log` (ADR-042): the caller must be the
+thread's peer or the Principal's owner. Group channels (`group:<slug>`)
+are refused — groups have no bound run.
+
+#### Examples
+
+```bash
+# Stop the run on your thread
+peko stop my-principal
+
+# Owner stopping another peer's thread
+peko stop my-principal --peer user:alice
 ```
 
 ---
@@ -572,15 +631,22 @@ peko daemon restart
 
 ### `log` — Inspect Principal Activity
 
-Read a Principal's conversation history. There is no `peko session`
-command and there will never be one (ADR-042); this command is the
-only way to inspect a Principal's working state without running a turn.
+Read (or follow) a Principal's conversation thread. There is no
+`peko session` command and there will never be one (ADR-042); this
+command is the only way to inspect a Principal's working state without
+running a turn.
 
 The **default view** is the **owner-root view**: the conversation
-running on the Principal's owner's behalf, plus any wake messages,
-cron completions, and async-task steers addressed to the owner. Use
-`--peer` to read a specific peer's thread (subject to the privacy
-contract below).
+running on the Principal's owner's behalf. Use `--peer` to read a
+specific peer's thread (subject to the privacy contract below).
+`--watch` blocks and streams new messages live — replay of rows newer
+than `--cursor` first, then rows as they're posted (heartbeats keep a
+quiet thread's stream alive).
+
+A `group:<slug>` recipient reads that group channel's log directly via
+the channel IPC, bypassing the principal privacy model (same posture
+as `peko channel peek`; membership gating is a known gap). Authors
+render verbatim; group `--watch` polls every 2s.
 
 ```bash
 peko log [OPTIONS] <PRINCIPAL>
@@ -590,16 +656,19 @@ peko log [OPTIONS] <PRINCIPAL>
 
 | Argument | Description |
 |----------|-------------|
-| `<PRINCIPAL>` | Principal name (required) |
+| `<PRINCIPAL>` | Principal name or `group:<slug>` (required) |
 
 #### Options
 
 | Option | Description |
 |--------|-------------|
-| `--peer <SUBJECT>` | A specific peer's conversation thread. Defaults to the Principal's owner. Subject parse: `user:<id>`, `principal:<did>`, or `public`. |
-| `--limit <N>` | Cap on number of events returned (default 50, max 1000). |
+| `--peer <SUBJECT>` | A specific peer's conversation thread. Defaults to the Principal's owner. Subject parse: `user:<id>`, `principal:<did>`, or `public`. Principal threads only. |
+| `--limit <N>` | Hard cap on the number of messages returned (default 50, max 1000) — a single page. |
+| `--all` | Drain all pages (bounded multi-page loop) instead of a single page. |
 | `--since <DURATION>` | Only entries newer than the duration. Accepts `<N>h`, `<N>d`, `<N>m`, `<N>s` (e.g. `24h`, `7d`, `30m`, `3600s`). |
-| `--json` | Emit the raw `HistoryEvent` array as JSON. |
+| `--cursor <CURSOR>` | Opaque pagination cursor from a prior call's `next_cursor`. With `--watch`, seeds the replay start. |
+| `--watch` | Block and stream new messages live (replay newer than `--cursor` first). Ignores `--limit`/`--since`/`--all`. |
+| `--json` | Emit messages as JSON (pretty array; with `--watch`: NDJSON — one message object per line). Group threads emit `{at, author, text}` rows. |
 
 #### Examples
 
@@ -607,15 +676,24 @@ peko log [OPTIONS] <PRINCIPAL>
 # Owner-root activity feed (most common invocation)
 peko log my-principal
 
+# Follow the thread live
+peko log my-principal --watch
+
 # Last 24 hours
 peko log my-principal --since 24h
+
+# Drain all pages
+peko log my-principal --all
 
 # A specific peer's thread
 # (caller must equal <peer> or be the principal's owner)
 peko log my-principal --peer user:bob --limit 100
 
 # Machine-readable output for downstream tooling
-peko log my-principal --json | jq '.events[].role'
+peko log my-principal --json | jq '.messages[].sender'
+
+# A group channel's log, followed live as NDJSON
+peko log group:eng-standup --watch --json
 ```
 
 #### Privacy Contract (ADR-042)
@@ -626,13 +704,20 @@ peko log my-principal --json | jq '.events[].role'
 - A **stranger** (no `Chat` grant) is rejected regardless of `--peer`.
 - `Subject::Public` cannot be used as a peer argument for `peko log`
   (public is not a session peer).
+- The same rule applies to `--watch` (enforced by the
+  `principal_log_watch` IPC before the thread is resolved) and to
+  `peko stop`. Group channels have no such check.
 
 #### See Also
 
 - [ADR-042](../architecture/adr/ADR-042-no-external-session-concept.md)
   — the no-session-externally contract this command enforces.
-- [`send`](#send--send-a-message-to-a-principal) — drive a
+- [ADR-048](../architecture/adr/ADR-048-channel-native-cli-surface.md)
+  — the channel-native send/stop/log surface, including `--watch`.
+- [`send`](#send--send-message-to-a-principal) — drive a
   conversation.
+- [`stop`](#stop--stop-the-running-turn) — stop the running turn on
+  a thread.
 
 ---
 

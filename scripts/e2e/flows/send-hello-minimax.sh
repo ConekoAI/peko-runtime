@@ -47,9 +47,9 @@ flow_main() {
   peko_iso_start_daemon || return 1
 
   # --- step 4: send hello world ---
-  # Use --no-stream to keep the test deterministic — we want one
-  # response, not a stream of partial chunks.
-  peko_iso_run send hello "hello world" --no-stream
+  # Streaming render is the default (and only) mode — the reply
+  # prints to stdout as it completes.
+  peko_iso_run send hello "hello world"
   peko_iso_assert_rc_zero
 
   # Assert the response is non-empty AND not just a CLI error message.
