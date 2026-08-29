@@ -114,9 +114,18 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
 /// walk going; the first unclaimed candidate ends it (`None`).
 pub fn find_peer_child(metas: &[SessionMetadata], peer: &Subject) -> Option<String> {
     let base_slug = peer_child_slug(peer).ok()?;
+    find_standing_child(metas, &base_slug, peer)
+}
+
+/// The shared find half of the standing-child match rule: walk
+/// `base`, `base-2`, … under the trunk for a standing spawn child
+/// stamped with THIS peer. Factored out of [`find_peer_child`] so
+/// [`ensure_group_child`] (ADR-049 Phase 3) matches on its own slug
+/// space instead of the peer-derived one.
+fn find_standing_child(metas: &[SessionMetadata], base_slug: &str, peer: &Subject) -> Option<String> {
     let trunk = trunk_session_id();
     for attempt in 0..MAX_SLUG_ATTEMPTS {
-        let candidate = suffixed_slug(&base_slug, attempt);
+        let candidate = suffixed_slug(base_slug, attempt);
         match find_declared_child(metas, &trunk, &candidate) {
             Some(m) if peer_matches(m, peer) => return Some(m.session_id.to_string()),
             Some(_) => continue,
@@ -148,8 +157,63 @@ pub async fn ensure_peer_child(
     session_manager: &Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
     let base_slug = peer_child_slug(peer)?;
-    let trunk = trunk_session_id();
     let privileged = peer == owner;
+    ensure_standing_child(
+        agent_name,
+        peer,
+        &base_slug,
+        privileged,
+        &peer.to_string(),
+        session_manager,
+    )
+    .await
+}
+
+/// ADR-049 Phase 3 (D4): find-or-create the principal's standing
+/// child session for a GROUP channel — the per-(principal, channel)
+/// working memory a group wake run resumes. Idempotent per channel,
+/// never privileged (a group is not the owner).
+///
+/// `channel` is the channel's wire id (`group:eng-standup`, or a bare
+/// `chan_*` id for an unbound legacy group). The slug strips a leading
+/// `group:` prefix before sanitizing, so `group:eng-standup` →
+/// `/group-eng-standup` and `chan_ab12cd34` → `/group-chan-ab12cd34`.
+///
+/// `Subject` has no channel kind, so the child is stamped with the
+/// channel wire id carried as a User-typed peer id (metadata only —
+/// no ingress path resolves it back to a real user). The slug spaces
+/// cannot collide with a real peer child: a hypothetical user named
+/// `group:eng` slugs to `user-group-eng`, not `group-eng`.
+pub async fn ensure_group_child(
+    agent_name: &str,
+    channel: &str,
+    session_manager: &Arc<RwLock<SessionManager>>,
+) -> Result<String> {
+    let stripped = channel.strip_prefix("group:").unwrap_or(channel);
+    let sanitized = sanitize_slug_segment(stripped);
+    let base_slug = if sanitized.is_empty() {
+        "group".to_string()
+    } else {
+        cap_slug(&format!("group-{sanitized}"))
+    };
+    peko_session::path::validate_slug(&base_slug)?;
+    let peer = Subject::User(channel.to_string());
+    ensure_standing_child(agent_name, &peer, &base_slug, false, channel, session_manager).await
+}
+
+/// The shared find-or-create core for standing children of the trunk.
+/// Holds the session-manager write lock across the whole operation so
+/// concurrent first-contact for the same peer/channel serializes
+/// (module docs, "Concurrency").
+async fn ensure_standing_child(
+    agent_name: &str,
+    peer: &Subject,
+    base_slug: &str,
+    privileged: bool,
+    title: &str,
+    session_manager: &Arc<RwLock<SessionManager>>,
+) -> Result<String> {
+    let trunk = trunk_session_id();
 
     // Hold the write lock across find-or-create so concurrent ingress
     // for the same peer serializes here (module docs, "Concurrency").
@@ -160,12 +224,12 @@ pub async fn ensure_peer_child(
     // reused (idempotent). Otherwise walk `base`, `base-2`, … for the
     // first candidate not claimed by a DIFFERENT peer's child
     // (sanitized collisions like `user:Foo Bar` vs `user:foo-bar`).
-    if let Some(existing) = find_peer_child(&metas, peer) {
+    if let Some(existing) = find_standing_child(&metas, base_slug, peer) {
         return Ok(existing);
     }
     let mut create_slug = None;
     for attempt in 0..MAX_SLUG_ATTEMPTS {
-        let candidate = suffixed_slug(&base_slug, attempt);
+        let candidate = suffixed_slug(base_slug, attempt);
         match find_declared_child(&metas, &trunk, &candidate) {
             Some(_) => continue,
             None => {
@@ -189,7 +253,7 @@ pub async fn ensure_peer_child(
         // must be applied after it (spawn semantics — the resume guard
         // stack keys on `trigger == "spawn"`).
         .with_trigger("spawn")
-        .with_title(peer.to_string());
+        .with_title(title);
     let handle = mgr.create_session(agent_name, peer, options).await?;
     let child_id = handle.session_id().to_string();
 
@@ -199,7 +263,7 @@ pub async fn ensure_peer_child(
     let mut assigned = false;
     for attempt in 0..MAX_SLUG_ATTEMPTS {
         if attempt > 0 {
-            slug = suffixed_slug(&base_slug, attempt);
+            slug = suffixed_slug(base_slug, attempt);
         }
         match mgr.set_session_slug(&child_id, Some(slug.clone())).await {
             Ok(()) => {
@@ -219,7 +283,7 @@ pub async fn ensure_peer_child(
     mgr.set_standing(&child_id, true).await?;
     mgr.set_privileged(&child_id, privileged).await?;
     tracing::info!(
-        "ensure_peer_child: provisioned peer child '/{slug}' for {peer} as session {child_id} \
+        "ensure_standing_child: provisioned peer child '/{slug}' for {peer} as session {child_id} \
          under {trunk} (privileged={privileged})"
     );
     Ok(child_id)
@@ -564,5 +628,97 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("not a session peer"), "{err}");
         assert!(metas_of(&manager).await.is_empty());
+    }
+
+    // ─── ensure_group_child (ADR-049 Phase 3) ────────────────────────
+
+    /// The group child is a standing, non-privileged spawn child of
+    /// the trunk, keyed by the channel wire id: `group:eng-standup`
+    /// slugs to `group-eng-standup` and the channel wire id is stamped
+    /// as the (User-typed) peer id. Idempotent per channel; distinct
+    /// channels get distinct children.
+    #[tokio::test]
+    async fn group_child_is_keyed_per_channel_and_idempotent() {
+        let (_dir, manager) = fixture().await;
+
+        let eng = ensure_group_child("root", "group:eng-standup", &manager)
+            .await
+            .unwrap();
+        let eng_again = ensure_group_child("root", "group:eng-standup", &manager)
+            .await
+            .unwrap();
+        assert_eq!(eng, eng_again, "same channel must resolve to the same child");
+
+        let ops = ensure_group_child("root", "group:ops", &manager)
+            .await
+            .unwrap();
+        assert_ne!(eng, ops, "distinct channels must get distinct children");
+
+        let metas = metas_of(&manager).await;
+        assert_eq!(metas.len(), 2, "exactly one child per channel; got {metas:?}");
+        let child = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == eng)
+            .expect("group child metadata exists");
+        assert_eq!(child.slug.as_deref(), Some("group-eng-standup"));
+        assert!(child.standing, "group child must be standing");
+        assert!(!child.privileged, "group child is never privileged");
+        assert_eq!(child.trigger, "spawn");
+        assert_eq!(
+            child.parent_session_id.map(|id| id.to_string()),
+            Some(peko_session::SessionId::from("root:self").to_string()),
+            "group child must be parented at the trunk"
+        );
+        assert_eq!(child.title.as_deref(), Some("group:eng-standup"));
+        // The channel wire id is stamped as the (User-typed) peer id.
+        assert_eq!(child.peer_type.as_deref(), Some("user"));
+        assert_eq!(child.peer_id.as_deref(), Some("group:eng-standup"));
+    }
+
+    /// A bare `chan_*` id (an unbound legacy group channel) slugs into
+    /// the same `group-*` space without colliding with `group:<slug>`
+    /// channels.
+    #[tokio::test]
+    async fn group_child_for_bare_channel_id() {
+        let (_dir, manager) = fixture().await;
+        let child = ensure_group_child("root", "chan_ab12cd34", &manager)
+            .await
+            .unwrap();
+        let metas = metas_of(&manager).await;
+        let meta = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == child)
+            .unwrap();
+        assert_eq!(meta.slug.as_deref(), Some("group-chan-ab12cd34"));
+    }
+
+    /// The group child slug space cannot collide with a real peer
+    /// child: a user whose id contains the channel wire form slugs to
+    /// `user-group-...`, not `group-...`.
+    #[tokio::test]
+    async fn group_child_does_not_collide_with_peer_children() {
+        let (_dir, manager) = fixture().await;
+        let owner = Subject::User("local".to_string());
+        let peer = Subject::User("group:eng".to_string());
+
+        let group = ensure_group_child("root", "group:eng", &manager)
+            .await
+            .unwrap();
+        let user = ensure_peer_child("root", &owner, &peer, &manager)
+            .await
+            .unwrap();
+        assert_ne!(group, user);
+
+        let metas = metas_of(&manager).await;
+        let g = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == group)
+            .unwrap();
+        let u = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == user)
+            .unwrap();
+        assert_eq!(g.slug.as_deref(), Some("group-eng"));
+        assert_eq!(u.slug.as_deref(), Some("user-group-eng"));
     }
 }

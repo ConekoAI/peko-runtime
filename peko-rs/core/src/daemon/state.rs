@@ -2128,9 +2128,9 @@ impl crate::tunnel::TunnelHost for AppState {
 
         // 4. Live subscriber — closes the Phase 10 live-hook gap:
         //    bound mirrors get their `PassiveBindingResponder`
-        //    immediately; unbound mirrors get the meter-only `Noop`
-        //    responder, matching the boot sweep's treatment of
-        //    unbound channels (`select_responder`).
+        //    immediately; unbound mirrors get the ADR-049 Phase 3
+        //    `GroupWakeResponder`, matching the boot sweep's treatment
+        //    of unbound channels (`select_responder`).
         self.channel_binding_supervisor()
             .ensure_subscriber(principal.id.clone(), channel);
         Ok(())

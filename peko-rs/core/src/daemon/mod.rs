@@ -238,8 +238,11 @@ impl Daemon {
         // `meta.json` declares a `passive_binding` additionally get a
         // `PassiveBindingResponder` that wakes the bound session on
         // inbound posts (DM-tier, paradigm §3.1 type 1). Unbound
-        // channels keep the `NoopChannelResponder` — agents read them
-        // actively via the `ChannelRead` tool (PR-4a).
+        // (group-tier) channels get the ADR-049 Phase 3
+        // `GroupWakeResponder` — `user:*` root posts wake the member
+        // principal (D4); principal posts never wake, so
+        // principal-only channels behave exactly as before (agents
+        // read them actively via the `ChannelRead` tool, PR-4a).
         // Spawn-and-forget so a subscriber crash doesn't block daemon
         // boot; the `ChannelSubscriber::spawn` loop handles transient
         // errors internally (logs and continues; only `NotFound` /
@@ -574,12 +577,12 @@ mod e2e_tests;
 /// held on `AppState` (Phase 4, agent-session paradigm sprint): channels
 /// whose `meta.json` carries a `passive_binding` get a
 /// `PassiveBindingResponder` (DM-tier — inbound posts wake the bound
-/// session and the reply posts back); all others keep the
-/// `NoopChannelResponder` and behave exactly as before (meter-only,
-/// active reads via the `ChannelRead` tool). Post-boot channels (created
-/// or joined after this enumeration) are covered by the supervisor's
-/// `ensure_subscriber`, wired to the `ChannelHost::channel_created` /
-/// `ensure_invitee_subscriber` hooks.
+/// session and the reply posts back); unbound (group-tier) channels get
+/// the ADR-049 Phase 3 `GroupWakeResponder` (D4 — `user:*` root posts
+/// wake the member principal; principal posts never wake). Post-boot
+/// channels (created or joined after this enumeration) are covered by
+/// the supervisor's `ensure_subscriber`, wired to the
+/// `ChannelHost::channel_created` / `ensure_invitee_subscriber` hooks.
 ///
 /// `app_state` must already be constructed (drift check ran, principals
 /// are loaded). The function returns the `JoinHandle`s so a future
