@@ -123,6 +123,59 @@ impl ChannelHandler {
             })
         })
     }
+
+    /// ADR-049 Phase 2 (D6): membership gate for channel reads
+    /// (`ChannelPeek`, `ChannelEventsWatch`). When `requester` is
+    /// present it must parse as a Subject wire form and be a member
+    /// of the channel; on failure the error response is sent here
+    /// and `Ok(false)` tells the caller to stop. When `requester`
+    /// is absent (peko-desktop's calls carry no identity yet) the
+    /// read stays ungated, matching pre-Phase-2 behavior.
+    // TODO(ADR-049 Phase 4): drop the absent-requester escape once
+    // `CallerContext`-based authz lands.
+    async fn gate_channel_read(
+        &self,
+        channel: &ChannelId,
+        requester: Option<&str>,
+        request_id: u64,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<bool> {
+        let Some(raw) = requester else {
+            return Ok(true);
+        };
+        let requester = match Subject::from_str(raw) {
+            Ok(s) => s,
+            Err(e) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("invalid requester subject '{raw}': {e}"),
+                };
+                send_response(sink, response).await?;
+                return Ok(false);
+            }
+        };
+        match self.host.channel_port().list_members(channel).await {
+            Ok(members) if members.iter().any(|m| *m == requester) => Ok(true),
+            Ok(_) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!(
+                        "requester '{raw}' is not a member of the channel"
+                    ),
+                };
+                send_response(sink, response).await?;
+                Ok(false)
+            }
+            Err(e) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("channel read failed: {e}"),
+                };
+                send_response(sink, response).await?;
+                Ok(false)
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -159,6 +212,7 @@ impl RequestHandler for ChannelHandler {
                 creator_name,
                 name,
                 passive_binding,
+                id,
             } => {
                 let Some(creator) = self.resolve_principal(&creator_name) else {
                     let response = ResponsePacket::Error {
@@ -168,9 +222,27 @@ impl RequestHandler for ChannelHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 };
+                // ADR-049 Phase 2 (D5): an explicit id (e.g.
+                // `group:<slug>`) is validated here so a malformed
+                // `--id` surfaces as a clean error, not a store-layer
+                // surprise.
+                let id = match id.as_deref() {
+                    Some(raw) => match ChannelId::parse(raw) {
+                        Some(parsed) => Some(parsed),
+                        None => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("invalid ChannelId: {raw}"),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
+                    None => None,
+                };
                 match self
                     .router()
-                    .handle_create(&creator, &name, passive_binding)
+                    .handle_create(&creator, &name, passive_binding, id)
                     .await
                 {
                     Ok(resp) => {
@@ -287,18 +359,26 @@ impl RequestHandler for ChannelHandler {
                 text,
                 parent,
             } => {
-                let sender = match self.resolve_principal(&sender_name) {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!(
-                                "Sender principal '{sender_name}' is not loaded"
-                            ),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
+                // ADR-049 Phase 2: a `user:<id>` sender is accepted
+                // verbatim (wire-form validated only); store-level
+                // Subject membership is the write authorization.
+                // Anything else is resolved as a principal name, as
+                // before.
+                let sender = match Subject::from_str(&sender_name) {
+                    Ok(s @ Subject::User(_)) => s,
+                    _ => match self.resolve_principal(&sender_name) {
+                        Some(p) => Subject::from(&p),
+                        None => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!(
+                                    "Sender principal '{sender_name}' is not loaded"
+                                ),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
                 };
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -338,6 +418,7 @@ impl RequestHandler for ChannelHandler {
                 request_id,
                 channel,
                 since,
+                requester,
             } => {
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -350,6 +431,10 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
+                // ADR-049 Phase 2 (D6): membership-gated read.
+                if !self.gate_channel_read(&ch, requester.as_deref(), request_id, sink).await? {
+                    return Ok(());
+                }
                 match self.router().handle_peek(&ch, since).await {
                     Ok(resp) => {
                         let response = ResponsePacket::ChannelPeekResult {
@@ -524,6 +609,7 @@ impl RequestHandler for ChannelHandler {
                 request_id,
                 channel,
                 since,
+                requester,
             } => {
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -536,6 +622,12 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
+                // ADR-049 Phase 2 (D6): same membership gate as
+                // `ChannelPeek` (the replay half of this stream reads
+                // the same log).
+                if !self.gate_channel_read(&ch, requester.as_deref(), request_id, sink).await? {
+                    return Ok(());
+                }
                 run_channel_events_watch(
                     request_id,
                     ch,
@@ -888,11 +980,13 @@ mod tests {
             creator_name: "p".into(),
             name: "n".into(),
             passive_binding: None,
+            id: None,
         }));
         assert!(handler.matches(&RequestPacket::ChannelPeek {
             request_id: 1,
             channel: "chan_x".into(),
             since: None,
+            requester: None,
         }));
         assert!(handler.matches(&RequestPacket::ChannelLeave {
             request_id: 1,
@@ -918,6 +1012,7 @@ mod tests {
             creator_name: "ghost".into(),
             name: "n".into(),
             passive_binding: None,
+            id: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
         let sink: &dyn crate::ipc::response_sink::ResponseSink =
@@ -956,6 +1051,7 @@ mod tests {
             request_id: 1,
             channel: ch.to_string(),
             since: None,
+            requester: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
         let sink: &dyn crate::ipc::response_sink::ResponseSink =
@@ -982,6 +1078,234 @@ mod tests {
                 assert!(matches!(events[1], ChannelEvent::Posted { .. }));
             }
             other => panic!("expected ChannelPeekResult, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // ADR-049 Phase 2: user senders + membership-gated reads
+    // -----------------------------------------------------------------
+
+    /// Seed a channel with a principal creator and `user:alice` as an
+    /// invited member. Returns the adapter (for log assertions) and
+    /// the channel id.
+    async fn seed_channel_with_user_member(host: &TestChannelHost) -> (ChannelStore, ChannelId) {
+        let runtime_dir = host.path_resolver.runtime_dir();
+        let adapter = ChannelStore::new(ChannelConfig { runtime_dir, shared_dir: None });
+        let creator = PrincipalId::generate();
+        let ch = adapter
+            .create(&creator, CreateOpts::runtime("seed"))
+            .await
+            .expect("create");
+        adapter
+            .invite(&ch, &creator, &Subject::User("alice".to_string()))
+            .await
+            .expect("invite user");
+        (adapter, ch)
+    }
+
+    fn capture_sink() -> (Arc<Mutex<Vec<ResponsePacket>>>, CaptureSink) {
+        let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
+        (captured.clone(), CaptureSink(captured))
+    }
+
+    /// Phase 2: a `user:<id>` sender skips `PrincipalManager`
+    /// resolution and posts as themselves — the store's Subject
+    /// membership is the write authorization.
+    #[tokio::test]
+    async fn handler_post_accepts_member_user_sender() {
+        let (tmp, host) = test_host();
+        let _ = tmp;
+        let handler = ChannelHandler::new(host.clone());
+        let (adapter, ch) = seed_channel_with_user_member(&host).await;
+
+        let req = RequestPacket::ChannelPost {
+            request_id: 5,
+            channel: ch.to_string(),
+            sender_name: "user:alice".into(),
+            text: "hello from alice".into(),
+            parent: None,
+        };
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                req,
+                &peko_auth::caller::CallerContext::local(),
+                &sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
+            .await
+            .expect("handle");
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        match &captured[0] {
+            ResponsePacket::ChannelPosted { request_id, task_id, .. } => {
+                assert_eq!(*request_id, 5);
+                assert_eq!(task_id, "2", "Created=0, MemberJoined=1, Posted=2");
+            }
+            other => panic!("expected ChannelPosted, got {other:?}"),
+        }
+        drop(captured);
+
+        // The event's author is the canonical user wire form.
+        let events = adapter
+            .peek(&ch, &Checkpoint::default())
+            .await
+            .expect("peek");
+        let authors: Vec<&str> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { author, .. } => Some(author.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(authors, vec!["user:alice"]);
+    }
+
+    /// Phase 2: a `user:<id>` sender who is NOT a member is refused
+    /// with the store's `NotMember` error.
+    #[tokio::test]
+    async fn handler_post_rejects_non_member_user_sender() {
+        let (tmp, host) = test_host();
+        let _ = tmp;
+        let handler = ChannelHandler::new(host.clone());
+        let (_adapter, ch) = seed_channel_with_user_member(&host).await;
+
+        let req = RequestPacket::ChannelPost {
+            request_id: 6,
+            channel: ch.to_string(),
+            sender_name: "user:mallory".into(),
+            text: "must not land".into(),
+            parent: None,
+        };
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                req,
+                &peko_auth::caller::CallerContext::local(),
+                &sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
+            .await
+            .expect("handle");
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        match &captured[0] {
+            ResponsePacket::Error { request_id, message } => {
+                assert_eq!(*request_id, 6);
+                assert!(message.contains("not a member"), "got {message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// Phase 2 (D6): `ChannelPeek` is membership-gated when the
+    /// caller supplies a `requester`; a member reads, a non-member
+    /// and a malformed subject are refused, and an absent requester
+    /// keeps the pre-Phase-2 ungated behavior (the Phase 4 escape).
+    #[tokio::test]
+    async fn handler_peek_gates_on_requester_membership() {
+        let (tmp, host) = test_host();
+        let _ = tmp;
+        let handler = ChannelHandler::new(host.clone());
+        let (_adapter, ch) = seed_channel_with_user_member(&host).await;
+
+        let peek = |requester: Option<&str>| RequestPacket::ChannelPeek {
+            request_id: 1,
+            channel: ch.to_string(),
+            since: None,
+            requester: requester.map(str::to_string),
+        };
+        let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
+
+        // Member requester → events.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(peek(Some("user:alice")), &test_caller(), &sink, &peer)
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPeekResult { .. }]
+            ),
+            "member requester must read; got {:?}",
+            captured.lock().unwrap()
+        );
+
+        // Non-member requester → permission error.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(peek(Some("user:mallory")), &test_caller(), &sink, &peer)
+            .await
+            .expect("handle");
+        let guard = captured.lock().unwrap();
+        match guard.as_slice() {
+            [ResponsePacket::Error { message, .. }] => {
+                assert!(message.contains("not a member"), "got {message}");
+            }
+            other => panic!("expected Error for non-member requester; got {other:?}"),
+        }
+        drop(guard);
+
+        // Malformed requester subject → validation error.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(peek(Some("not-a-subject")), &test_caller(), &sink, &peer)
+            .await
+            .expect("handle");
+        let guard = captured.lock().unwrap();
+        match guard.as_slice() {
+            [ResponsePacket::Error { message, .. }] => {
+                assert!(message.contains("invalid requester subject"), "got {message}");
+            }
+            other => panic!("expected Error for malformed requester; got {other:?}"),
+        }
+        drop(guard);
+
+        // Absent requester → ungated (Phase 4 escape hatch).
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(peek(None), &test_caller(), &sink, &peer)
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPeekResult { .. }]
+            ),
+            "absent requester must keep the ungated behavior; got {:?}",
+            captured.lock().unwrap()
+        );
+    }
+
+    /// Phase 2 (D6): the same gate applies to `ChannelEventsWatch`
+    /// (its replay half reads the same log).
+    #[tokio::test]
+    async fn handler_events_watch_gates_on_requester_membership() {
+        let (tmp, host) = test_host();
+        let _ = tmp;
+        let handler = ChannelHandler::new(host.clone());
+        let (_adapter, ch) = seed_channel_with_user_member(&host).await;
+
+        let req = RequestPacket::ChannelEventsWatch {
+            request_id: 9,
+            channel: ch.to_string(),
+            since: None,
+            requester: Some("user:mallory".into()),
+        };
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(req, &test_caller(), &sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")))
+            .await
+            .expect("handle");
+        let guard = captured.lock().unwrap();
+        match guard.as_slice() {
+            [ResponsePacket::Error { request_id, message }] => {
+                assert_eq!(*request_id, 9);
+                assert!(message.contains("not a member"), "got {message}");
+            }
+            other => panic!("expected Error for non-member watch requester; got {other:?}"),
         }
     }
 
@@ -1154,6 +1478,7 @@ mod tests {
             request_id: 31,
             channel: "chan_abcdefgh".into(),
             since: None,
+            requester: None,
         };
         let json = serde_json::to_string(&req).expect("encode");
         assert!(
@@ -1166,6 +1491,7 @@ mod tests {
                 request_id,
                 channel,
                 since,
+                ..
             } => {
                 assert_eq!(request_id, 31);
                 assert_eq!(channel, "chan_abcdefgh");
@@ -1217,6 +1543,7 @@ mod tests {
             request_id: 1,
             channel: "chan_x".into(),
             since: None,
+            requester: None,
         }));
     }
 

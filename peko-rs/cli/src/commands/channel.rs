@@ -50,6 +50,11 @@ pub enum ChannelCommands {
         /// session and the reply is posted back (DM-tier channel).
         #[arg(long)]
         bind: Option<String>,
+        /// Optional explicit channel id (ADR-049 Phase 2, D5), e.g.
+        /// `group:<slug>` for a named group channel. Omit to mint a
+        /// fresh `chan_<8 base36>` id.
+        #[arg(long, value_name = "CHANNEL_ID")]
+        id: Option<String>,
         /// Output the new channel id as JSON.
         #[arg(long)]
         json: bool,
@@ -75,7 +80,9 @@ pub enum ChannelCommands {
     Post {
         /// Channel id.
         channel: String,
-        /// Sender principal name (must be a member).
+        /// Sender principal name (must be a member), or a `user:<id>`
+        /// Subject wire form (ADR-049 Phase 2 — a member user posts as
+        /// themselves).
         sender: String,
         /// Message text.
         text: String,
@@ -181,6 +188,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             creator,
             name,
             bind,
+            id,
             ..
         } => {
             let packet = RequestPacket::ChannelCreate {
@@ -188,6 +196,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 creator_name: creator.clone(),
                 name: name.clone(),
                 passive_binding: bind.clone(),
+                id: id.clone(),
             };
             let ch = run_daemon_or(
                 paths,
@@ -201,7 +210,10 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         .with_context(|| {
                             format!("Creator principal '{creator}' not found on disk")
                         })?;
-                    let resp = router.handle_create(&creator_id, &name, bind).await?;
+                    // ADR-049 Phase 2 (D5): validate the explicit id
+                    // up front; `None` keeps the chan_* mint.
+                    let id = id.map(|raw| parse_channel_id(&raw)).transpose()?;
+                    let resp = router.handle_create(&creator_id, &name, bind, id).await?;
                     Ok(resp.channel)
                 })
             )
@@ -287,14 +299,23 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 move |port, paths| Box::pin(async move {
                     let router = ChannelCliRouter::new(port);
                     let ch = parse_channel_id(&channel)?;
-                    let sender_id = paths
-                        .resolver()
-                        .lookup_principal_id_by_name(&sender)
-                        .with_context(|| {
-                            format!("Sender principal '{sender}' not found on disk")
-                        })?;
+                    // ADR-049 Phase 2: a `user:<id>` sender is taken
+                    // verbatim (the daemon path does the same);
+                    // anything else resolves as a principal name.
+                    let sender_subject = match Subject::from_str(&sender) {
+                        Ok(s @ Subject::User(_)) => s,
+                        _ => {
+                            let id = paths
+                                .resolver()
+                                .lookup_principal_id_by_name(&sender)
+                                .with_context(|| {
+                                    format!("Sender principal '{sender}' not found on disk")
+                                })?;
+                            Subject::from(&id)
+                        }
+                    };
                     let resp = router
-                        .handle_post(&ch, &sender_id, &text, parent)
+                        .handle_post(&ch, &sender_subject, &text, parent)
                         .await?;
                     Ok(resp.task_id)
                 })
@@ -312,6 +333,9 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 request_id: 0,
                 channel: channel.clone(),
                 since: since.clone(),
+                // ADR-049 Phase 2 (D6): reads are membership-gated;
+                // the CLI always identifies itself as the `-U` user.
+                requester: Some(format!("user:{}", paths.user())),
             };
             let events = run_daemon_or(
                 paths,

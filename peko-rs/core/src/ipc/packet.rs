@@ -772,6 +772,11 @@ pub enum RequestPacket {
     /// optional `--bind` value (session id or `/path`). Serde-defaulted
     /// so pre-Phase-4 clients decode as `None` (unbound) and older
     /// daemons silently ignore the field.
+    ///
+    /// `id` (ADR-049 Phase 2, D5) is the optional explicit channel id
+    /// (e.g. `group:<slug>`), validated by the handler via
+    /// `ChannelId::parse`. Serde-defaulted so pre-Phase-2 clients
+    /// decode as `None` (the store mints a fresh `chan_<8 base36>`).
     #[serde(rename = "channel_create")]
     ChannelCreate {
         request_id: u64,
@@ -779,6 +784,8 @@ pub enum RequestPacket {
         name: String,
         #[serde(default)]
         passive_binding: Option<String>,
+        #[serde(default)]
+        id: Option<String>,
     },
 
     /// Add `invitee_name` to `channel` (invited by `inviter_name`).
@@ -792,6 +799,11 @@ pub enum RequestPacket {
 
     /// Post a message to `channel` from `sender_name`. `parent` is
     /// the optional task_id of the message being replied to.
+    ///
+    /// `sender_name` is a principal name, or (ADR-049 Phase 2) a
+    /// `user:<id>` Subject wire form — the handler takes user senders
+    /// verbatim and lets store-level Subject membership authorize
+    /// the write.
     #[serde(rename = "channel_post")]
     ChannelPost {
         request_id: u64,
@@ -802,11 +814,20 @@ pub enum RequestPacket {
     },
 
     /// List events for `channel` since `since` (None = from start).
+    ///
+    /// `requester` (ADR-049 Phase 2, D6) is the optional Subject wire
+    /// form (`user:<id>` / `principal:<did>`) of the reader. When
+    /// present, the handler refuses the read unless the requester is a
+    /// channel member. Serde-defaulted so pre-Phase-2 clients decode
+    /// as `None` (ungated — the Phase 4 `CallerContext` authz removes
+    /// that escape).
     #[serde(rename = "channel_peek")]
     ChannelPeek {
         request_id: u64,
         channel: String,
         since: Option<String>,
+        #[serde(default)]
+        requester: Option<String>,
     },
 
     /// PR-2b: subscribe to live events for `channel`. The daemon
@@ -820,11 +841,16 @@ pub enum RequestPacket {
     /// (request → stream of packets → `Done` on close) so the
     /// desktop Tauri backend can reuse the existing stream-forwarding
     /// path that already emits `peko-stream` events for the chat.
+    ///
+    /// `requester` (ADR-049 Phase 2, D6): same optional membership
+    /// gate as `ChannelPeek` — see that variant's doc.
     #[serde(rename = "channel_events_watch")]
     ChannelEventsWatch {
         request_id: u64,
         channel: String,
         since: Option<String>,
+        #[serde(default)]
+        requester: Option<String>,
     },
 
     /// List members of `channel`.

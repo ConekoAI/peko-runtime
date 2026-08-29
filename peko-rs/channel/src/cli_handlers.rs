@@ -74,14 +74,19 @@ impl ChannelCliRouter {
     /// optional `--bind` value: a session id or `/path` in the creator's
     /// session tree that inbound `Posted` events wake. `None` creates a
     /// purely active (group-tier) channel — today's default.
+    ///
+    /// `id` (ADR-049 Phase 2, D5) is the optional explicit channel id
+    /// (`--id group:<slug>`); `None` mints a fresh `chan_<8 base36>`.
     pub async fn handle_create(
         &self,
         creator: &PrincipalId,
         name: &str,
         passive_binding: Option<String>,
+        id: Option<ChannelId>,
     ) -> Result<CreateResponse> {
         let mut opts = CreateOpts::runtime(name);
         opts.passive_binding = passive_binding;
+        opts.id = id;
         let channel = self.port.create(creator, opts).await?;
         Ok(CreateResponse { channel })
     }
@@ -104,13 +109,14 @@ impl ChannelCliRouter {
     }
 
     /// `peko channel post <channel> [--parent <task_id>] <text>` —
-    /// append a message. Returns the new task id. The sender is
-    /// principal-typed at this layer (the user write path via CLI/IPC
-    /// is ADR-049 Phase 2); the port call bridges to `Subject`.
+    /// append a message. Returns the new task id. ADR-049 Phase 2:
+    /// the sender is [`Subject`]-typed — a `user:<id>` member posts as
+    /// themselves; store-level Subject membership is the
+    /// authorization.
     pub async fn handle_post(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         text: &str,
         parent: Option<String>,
     ) -> Result<PostResponse> {
@@ -118,7 +124,7 @@ impl ChannelCliRouter {
             Some(p) => PostMsg::reply(p, text),
             None => PostMsg::root(text),
         };
-        let task_id = self.port.post(channel, &Subject::from(sender), msg).await?;
+        let task_id = self.port.post(channel, sender, msg).await?;
         Ok(PostResponse {
             channel: channel.clone(),
             task_id,
