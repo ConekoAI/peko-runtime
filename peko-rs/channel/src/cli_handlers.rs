@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use serde::{Deserialize, Serialize};
 
@@ -87,12 +87,14 @@ impl ChannelCliRouter {
     }
 
     /// `peko channel invite <channel> <invitee>` — add `invitee` to
-    /// `channel` as `inviter`.
+    /// `channel` as `inviter`. ADR-049 Phase 1: the invitee is
+    /// [`Subject`]-typed (principals and users); the inviter stays a
+    /// principal.
     pub async fn handle_invite(
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &PrincipalId,
+        invitee: &Subject,
     ) -> Result<InviteResponse> {
         self.port.invite(channel, inviter, invitee).await?;
         Ok(InviteResponse {
@@ -102,7 +104,9 @@ impl ChannelCliRouter {
     }
 
     /// `peko channel post <channel> [--parent <task_id>] <text>` —
-    /// append a message. Returns the new task id.
+    /// append a message. Returns the new task id. The sender is
+    /// principal-typed at this layer (the user write path via CLI/IPC
+    /// is ADR-049 Phase 2); the port call bridges to `Subject`.
     pub async fn handle_post(
         &self,
         channel: &ChannelId,
@@ -114,7 +118,7 @@ impl ChannelCliRouter {
             Some(p) => PostMsg::reply(p, text),
             None => PostMsg::root(text),
         };
-        let task_id = self.port.post(channel, sender, msg).await?;
+        let task_id = self.port.post(channel, &Subject::from(sender), msg).await?;
         Ok(PostResponse {
             channel: channel.clone(),
             task_id,
@@ -221,7 +225,9 @@ pub struct CreateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InviteResponse {
     pub channel: ChannelId,
-    pub invitee: PrincipalId,
+    /// ADR-049 Phase 1: the invitee is `Subject`-typed (a principal or
+    /// a user).
+    pub invitee: Subject,
 }
 
 /// `--json` output for `peko channel post`.
@@ -249,7 +255,9 @@ pub struct LeaveResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MembersResponse {
     pub channel: ChannelId,
-    pub members: Vec<PrincipalId>,
+    /// ADR-049 Phase 1: members are `Subject`-typed (principals and
+    /// users).
+    pub members: Vec<Subject>,
     /// P1.2 attribution: per-member runtime provenance. Empty for
     /// channels with no remote members; legacy pre-PR-3b
     /// implementations may omit the field entirely

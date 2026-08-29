@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, MemberProvenance};
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -39,18 +39,29 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// Add an invitee to a channel. Returns [`ChannelError::NotMember`]
     /// if `inviter` isn't already a member; [`ChannelError::FanOutCap`]
     /// if the channel already has 8 members (PR-1 cap; PR-3 may lift).
+    ///
+    /// ADR-049 Phase 1: the invitee is [`Subject`]-typed — both
+    /// principals (`Subject::Principal`) and users (`Subject::User`)
+    /// can be channel members. The inviter stays principal-typed (only
+    /// principals hold agency to invite in this phase). User invitees
+    /// are validated by wire form only; no `PrincipalManager`
+    /// resolution happens at this layer.
     async fn invite(
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &PrincipalId,
+        invitee: &Subject,
     ) -> Result<()>;
 
     /// Post a message. The adapter enforces the at-most-one-parent
     /// convention — `msg.parent` references the line number of the
     /// message being replied to. Returns the new message's [`TaskId`]
     /// (the line number it was assigned in the channel's event log).
-    async fn post(&self, channel: &ChannelId, sender: &PrincipalId, msg: PostMsg)
+    ///
+    /// ADR-049 Phase 1: `sender` is [`Subject`]-typed; membership
+    /// itself is the write authorization, so a member user posts as
+    /// themselves — no vouching member principal is required.
+    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg)
         -> Result<TaskId>;
 
     /// Phase 11 (agent-session paradigm sprint): like [`Self::post`]
@@ -73,7 +84,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     async fn post_attributed(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         author: &str,
         msg: PostMsg,
     ) -> Result<TaskId> {
@@ -109,8 +120,12 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// `MemberLeft` event. PR-1: leaves are always permitted.
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()>;
 
-    /// All current members of the channel.
-    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<PrincipalId>>;
+    /// All current members of the channel. ADR-049 Phase 1: members
+    /// are [`Subject`]-typed — the returned list can contain both
+    /// principals and users. Legacy on-disk member rows (bare
+    /// principal ids, no `kind:` prefix) parse as
+    /// `Subject::Principal`.
+    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<Subject>>;
 
     /// All channels where `principal` is a member. Walks each channel's
     /// member set; cheap in PR-1's small fan-out cap (≤ 8 channels).
@@ -475,7 +490,7 @@ impl ChannelPort for NoopChannelPort {
         &self,
         _channel: &ChannelId,
         _inviter: &PrincipalId,
-        _invitee: &PrincipalId,
+        _invitee: &Subject,
     ) -> Result<()> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
@@ -485,7 +500,7 @@ impl ChannelPort for NoopChannelPort {
     async fn post(
         &self,
         _channel: &ChannelId,
-        _sender: &PrincipalId,
+        _sender: &Subject,
         _msg: PostMsg,
     ) -> Result<TaskId> {
         Err(ChannelError::Adapter(
@@ -515,7 +530,7 @@ impl ChannelPort for NoopChannelPort {
         ))
     }
 
-    async fn list_members(&self, _channel: &ChannelId) -> Result<Vec<PrincipalId>> {
+    async fn list_members(&self, _channel: &ChannelId) -> Result<Vec<Subject>> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))

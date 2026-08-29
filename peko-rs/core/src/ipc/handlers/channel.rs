@@ -26,7 +26,8 @@ use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use peko_auth::caller::CallerContext;
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
+use std::str::FromStr;
 
 /// Narrow port the `channel` handler uses to reach daemon state.
 ///
@@ -214,18 +215,26 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
-                let invitee = match self.resolve_principal(&invitee_name) {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!(
-                                "Invitee principal '{invitee_name}' is not loaded"
-                            ),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
+                // ADR-049 Phase 1: a `user:<id>` invitee is accepted
+                // verbatim (validated by wire form only — no
+                // `PrincipalManager` resolution at this layer).
+                // Anything else is resolved as a principal name, as
+                // before.
+                let invitee = match Subject::from_str(&invitee_name) {
+                    Ok(s @ Subject::User(_)) => s,
+                    _ => match self.resolve_principal(&invitee_name) {
+                        Some(p) => Subject::from(&p),
+                        None => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!(
+                                    "Invitee principal '{invitee_name}' is not loaded"
+                                ),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
                 };
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -251,8 +260,15 @@ impl RequestHandler for ChannelHandler {
                         // `AppState` overrides to record the join
                         // trigger in the audit ring buffer. Log +
                         // swallow on failure — invite must not depend
-                        // on kickoff success.
-                        self.host.ensure_invitee_subscriber(&resp.invitee, &resp.channel);
+                        // on kickoff success. ADR-049 Phase 1: the hook
+                        // stays principal-typed — a user invitee has no
+                        // subscriber to ensure.
+                        if let Subject::Principal(did) = &resp.invitee {
+                            self.host.ensure_invitee_subscriber(
+                                &PrincipalId::from_did(did),
+                                &resp.channel,
+                            );
+                        }
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
@@ -768,7 +784,7 @@ mod tests {
             .await
             .expect("create");
         adapter
-            .post(&ch, &creator, PostMsg::root("hi"))
+            .post(&ch, &Subject::from(&creator), PostMsg::root("hi"))
             .await
             .expect("post");
         ch
@@ -1232,7 +1248,7 @@ mod tests {
             .await
             .expect("create");
         adapter
-            .post(&ch, &creator, PostMsg::root("hello"))
+            .post(&ch, &Subject::from(&creator), PostMsg::root("hello"))
             .await
             .expect("post 1");
 
@@ -1264,7 +1280,7 @@ mod tests {
             // Small delay so the streaming task subscribes first.
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             live_port
-                .post(&live_ch, &live_creator, PostMsg::root("live"))
+                .post(&live_ch, &Subject::from(&live_creator), PostMsg::root("live"))
                 .await
                 .expect("post 2");
         });

@@ -116,7 +116,7 @@ use peko_channel::{
 };
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::extensions::framework::async_exec::executor::registry::TaskMetadata;
@@ -293,7 +293,7 @@ impl ResponderInner {
                     .port
                     .post(
                         &self.channel,
-                        &self.principal,
+                        &Subject::from(&self.principal),
                         PostMsg::reply(event_id, reply),
                     )
                     .await
@@ -1097,9 +1097,9 @@ mod tests {
         // the log — in production the subscriber only ever hands the
         // responder line ids that exist.
         let other = pid("prin_other");
-        store.invite(&channel, &principal, &other).await.unwrap();
+        store.invite(&channel, &principal, &Subject::from(&other)).await.unwrap();
         let line = store
-            .post(&channel, &other, PostMsg::root("hi"))
+            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
             .await
             .unwrap();
 
@@ -1274,7 +1274,7 @@ mod tests {
 
         // A posts a root post (line 1; Created is line 0).
         let line_a = store_a
-            .post(&channel_a, &principal_a, PostMsg::root("hello from A"))
+            .post(&channel_a, &Subject::from(&principal_a), PostMsg::root("hello from A"))
             .await
             .unwrap();
 
@@ -1651,9 +1651,9 @@ mod tests {
             )
             .await
             .unwrap();
-        store.invite(&channel, &principal, &other).await.unwrap();
+        store.invite(&channel, &principal, &Subject::from(&other)).await.unwrap();
         store
-            .post(&channel, &other, PostMsg::root("before-restart"))
+            .post(&channel, &Subject::from(&other), PostMsg::root("before-restart"))
             .await
             .unwrap();
 

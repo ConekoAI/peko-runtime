@@ -359,7 +359,7 @@ impl ChannelSendTool {
         };
         let own_line = match ctx
             .channel_port
-            .post(&own_channel, &caller.id, PostMsg::root(message))
+            .post(&own_channel, &Subject::from(&caller.id), PostMsg::root(message))
             .await
         {
             Ok(l) => l,
@@ -401,7 +401,7 @@ impl ChannelSendTool {
         };
         if let Err(e) = ctx
             .channel_port
-            .invite(&target_channel, &target.id, &caller.id)
+            .invite(&target_channel, &target.id, &Subject::from(&caller.id))
             .await
         {
             return Ok(self.error_value(
@@ -412,7 +412,7 @@ impl ChannelSendTool {
         let mut rx = ctx.channel_port.subscribe_events(&target_channel).await;
         let line = match ctx
             .channel_port
-            .post(&target_channel, &caller.id, PostMsg::root(message))
+            .post(&target_channel, &Subject::from(&caller.id), PostMsg::root(message))
             .await
         {
             Ok(l) => l,
@@ -468,7 +468,7 @@ impl ChannelSendTool {
             .channel_port
             .post_attributed(
                 &own_channel,
-                &caller.id,
+                &Subject::from(&caller.id),
                 &target.id.0,
                 PostMsg::reply(own_line, &text),
             )
@@ -574,7 +574,7 @@ impl ChannelSendTool {
         //    fan-out lands on the target's mirror.
         let line = match ctx
             .channel_port
-            .post(&channel, &caller.id, PostMsg::root(message))
+            .post(&channel, &Subject::from(&caller.id), PostMsg::root(message))
             .await
         {
             Ok(l) => l,
@@ -855,7 +855,7 @@ impl ChannelSendTool {
             Some(p) => PostMsg::reply(p, text.to_string()),
             None => PostMsg::root(text.to_string()),
         };
-        let sender = PrincipalId(principal_str.to_string());
+        let sender = Subject::from(&PrincipalId(principal_str.to_string()));
         match self.port.post(channel_id, &sender, msg).await {
             Ok(task_id) => Ok(serde_json::to_value(ChannelSendResult {
                 success: true,
@@ -1014,7 +1014,7 @@ impl ChannelSendTool {
 mod tests {
     use super::*;
     use peko_channel::{ChannelError, ChannelEvent, ChannelId, Checkpoint, CreateOpts};
-    use peko_subject::PrincipalId;
+    use peko_subject::{PrincipalId, Subject};
     use peko_tools_core::ToolContext;
     use serde_json::json;
     use std::collections::HashMap;
@@ -1028,18 +1028,18 @@ mod tests {
     #[derive(Default)]
     struct TestChannelPort {
         events: Mutex<HashMap<ChannelId, Vec<ChannelEvent>>>,
-        members: AsyncMutex<HashMap<ChannelId, Vec<PrincipalId>>>,
+        members: AsyncMutex<HashMap<ChannelId, Vec<Subject>>>,
         next_line: AsyncMutex<HashMap<ChannelId, u64>>,
     }
 
     impl TestChannelPort {
-        fn is_member(&self, channel: &ChannelId, principal: &PrincipalId) -> bool {
+        fn is_member(&self, channel: &ChannelId, subject: &Subject) -> bool {
             // Sync lookup against the snapshot taken under the async
             // lock — fine for tests, since TestChannelPort is only
             // exercised from a single-threaded tokio runtime here.
             if let Ok(g) = self.members.try_lock() {
                 g.get(channel)
-                    .map(|m| m.iter().any(|p| p == principal))
+                    .map(|m| m.iter().any(|p| p == subject))
                     .unwrap_or(false)
             } else {
                 false
@@ -1063,7 +1063,7 @@ mod tests {
             &self,
             _channel: &ChannelId,
             _inviter: &PrincipalId,
-            _invitee: &PrincipalId,
+            _invitee: &Subject,
         ) -> peko_channel::Result<()> {
             Ok(())
         }
@@ -1071,7 +1071,7 @@ mod tests {
         async fn post(
             &self,
             channel: &ChannelId,
-            sender: &PrincipalId,
+            sender: &Subject,
             msg: PostMsg,
         ) -> peko_channel::Result<String> {
             if !self.is_member(channel, sender) {
@@ -1083,7 +1083,7 @@ mod tests {
             drop(lines);
             let ev = ChannelEvent::Posted {
                 channel: channel.clone(),
-                author: sender.to_string(),
+                author: peko_channel::subject_wire_form(sender),
                 parent: msg.parent,
                 text: msg.text,
                 at: "2026-08-06T12:00:00Z".into(),
@@ -1128,7 +1128,7 @@ mod tests {
         async fn list_members(
             &self,
             channel: &ChannelId,
-        ) -> peko_channel::Result<Vec<PrincipalId>> {
+        ) -> peko_channel::Result<Vec<Subject>> {
             let g = self.members.lock().await;
             Ok(g.get(channel).cloned().unwrap_or_default())
         }
@@ -1166,7 +1166,7 @@ mod tests {
         let alice = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![alice.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
         }
 
         let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
@@ -1189,7 +1189,7 @@ mod tests {
         let alice = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![alice.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
         }
 
         let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
@@ -1218,7 +1218,7 @@ mod tests {
         let alice = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![alice.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
         }
 
         let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
@@ -1265,7 +1265,7 @@ mod tests {
         let bob = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![bob.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&bob)]);
         }
         let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
 
@@ -1287,7 +1287,7 @@ mod tests {
         let alice = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![alice.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
         }
         let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
 
@@ -1344,7 +1344,7 @@ mod tests {
         let alice = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![alice.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
         }
         let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
 

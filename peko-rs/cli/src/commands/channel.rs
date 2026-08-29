@@ -29,7 +29,8 @@ use peko_channel::{ChannelCliRouter, ChannelConfig, ChannelStore};
 use peko_core::ipc::packet::{RequestPacket, ResponsePacket};
 use peko_core::ipc::DaemonClient;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
+use std::str::FromStr;
 
 use crate::commands::GlobalPaths;
 
@@ -60,7 +61,10 @@ pub enum ChannelCommands {
         channel: String,
         /// Inviter principal name (must already be a member).
         inviter: String,
-        /// Invitee principal name (must exist on disk).
+        /// Invitee principal name (must exist on disk), or a
+        /// `user:<id>` Subject wire form to invite a user (ADR-049
+        /// Phase 1 — validated by wire form only, no principal
+        /// lookup).
         invitee: String,
         /// Output as JSON.
         #[arg(long)]
@@ -229,13 +233,22 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         .with_context(|| {
                             format!("Inviter principal '{inviter}' not found on disk")
                         })?;
-                    let invitee_id = paths
-                        .resolver()
-                        .lookup_principal_id_by_name(&invitee)
-                        .with_context(|| {
-                            format!("Invitee principal '{invitee}' not found on disk")
-                        })?;
-                    let resp = router.handle_invite(&ch, &inviter_id, &invitee_id).await?;
+                    // ADR-049 Phase 1: a `user:<id>` invitee is taken
+                    // verbatim (validated by wire form only); anything
+                    // else resolves as a principal name.
+                    let invitee_subject = match Subject::from_str(&invitee) {
+                        Ok(s @ Subject::User(_)) => s,
+                        _ => {
+                            let id = paths
+                                .resolver()
+                                .lookup_principal_id_by_name(&invitee)
+                                .with_context(|| {
+                                    format!("Invitee principal '{invitee}' not found on disk")
+                                })?;
+                            Subject::from(&id)
+                        }
+                    };
+                    let resp = router.handle_invite(&ch, &inviter_id, &invitee_subject).await?;
                     Ok((resp.channel, resp.invitee))
                 })
             )
@@ -507,8 +520,8 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
 /// path we decode the wire `ResponsePacket` by serializing it and
 /// deserializing into T — the response shapes in
 /// `peko_channel::cli_handlers` and `peko_core::ipc::packet::ResponsePacket`
-/// overlap structurally (ChannelId ↔ ChannelId, Vec<PrincipalId> ↔
-/// Vec<PrincipalId>, etc.).
+/// overlap structurally (ChannelId ↔ ChannelId, Vec<Subject> ↔
+/// Vec<Subject>, etc.).
 async fn run_daemon_or<'a, T, F>(
     paths: &'a GlobalPaths,
     packet: RequestPacket,

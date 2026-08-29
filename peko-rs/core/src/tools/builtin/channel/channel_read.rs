@@ -135,7 +135,13 @@ impl Tool for ChannelReadTool {
         // `success=false`.
         match self.port.list_members(&channel_id).await {
             Ok(members) => {
-                let is_member = members.iter().any(|p| p.0 == principal_str);
+                // ADR-049 Phase 1: members are Subject-typed. Compare
+                // against the caller's principal Subject exactly (no
+                // cross-kind match on the bare id string).
+                let caller = peko_subject::Subject::from(&peko_subject::PrincipalId(
+                    principal_str.clone(),
+                ));
+                let is_member = members.iter().any(|m| *m == caller);
                 if !is_member {
                     return Ok(serde_json::json!({
                         "error": "caller is not a member of this channel",
@@ -175,7 +181,7 @@ mod tests {
     use super::*;
     use peko_channel::{ChannelError, ChannelEvent};
     use peko_protocol::channel::ChannelId as ProtoChannelId;
-    use peko_subject::PrincipalId;
+    use peko_subject::{PrincipalId, Subject};
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -187,7 +193,7 @@ mod tests {
     #[derive(Default)]
     struct TestChannelPort {
         events: Mutex<HashMap<ChannelId, Vec<ChannelEvent>>>,
-        members: AsyncMutex<HashMap<ChannelId, Vec<PrincipalId>>>,
+        members: AsyncMutex<HashMap<ChannelId, Vec<Subject>>>,
     }
 
     #[async_trait]
@@ -206,7 +212,7 @@ mod tests {
             &self,
             _channel: &ChannelId,
             _inviter: &PrincipalId,
-            _invitee: &PrincipalId,
+            _invitee: &Subject,
         ) -> peko_channel::Result<()> {
             Ok(())
         }
@@ -214,7 +220,7 @@ mod tests {
         async fn post(
             &self,
             _channel: &ChannelId,
-            _sender: &PrincipalId,
+            _sender: &Subject,
             _msg: peko_channel::PostMsg,
         ) -> peko_channel::Result<String> {
             Err(ChannelError::Adapter("post not implemented in test".into()))
@@ -263,7 +269,7 @@ mod tests {
         async fn list_members(
             &self,
             channel: &ChannelId,
-        ) -> peko_channel::Result<Vec<PrincipalId>> {
+        ) -> peko_channel::Result<Vec<Subject>> {
             let g = self.members.lock().await;
             Ok(g.get(channel).cloned().unwrap_or_default())
         }
@@ -301,7 +307,7 @@ mod tests {
         let alice = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![alice.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
         }
         {
             let mut events = port.events.lock().unwrap();
@@ -333,7 +339,7 @@ mod tests {
         let alice = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![alice.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
         }
         // 3 events.
         {
@@ -407,7 +413,7 @@ mod tests {
         let bob = PrincipalId::generate();
         {
             let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![bob.clone()]);
+            members.insert(channel.clone(), vec![Subject::from(&bob)]);
         }
         let tool = ChannelReadTool::new(port);
 

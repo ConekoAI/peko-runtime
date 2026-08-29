@@ -40,11 +40,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use peko_channel::{
-    ChannelId, ChannelMembership, ChannelPort, Checkpoint, CreateOpts, PostMsg, Result,
+    subject_wire_form, ChannelId, ChannelMembership, ChannelPort, Checkpoint, CreateOpts, PostMsg,
+    Result,
 };
 use tokio::sync::RwLock;
 use peko_protocol::channel::ChannelEvent;
-use peko_subject::PrincipalId;
+use peko_subject::{PrincipalId, Subject};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -173,17 +174,20 @@ impl TunnelChannelPort {
     /// returned as a single string error so the caller can decide
     /// whether to log / escalate.
     ///
-    /// `source_principal_did` is the local principal who authored
-    /// the event (the `sender` for `Posted`, the `invitee` /
-    /// `inviter` for `MemberJoined`/`MemberLeft`). The signature
-    /// pre-image always carries the runtime-level identity
-    /// (`source_runtime_id`); the principal-DID is recorded for
-    /// audit correlation on the receiving runtime.
+    /// `source` is the local subject who authored the event (the
+    /// `sender` for `Posted`, the `invitee` / `inviter` for
+    /// `MemberJoined`/`MemberLeft`). The signature pre-image always
+    /// carries the runtime-level identity (`source_runtime_id`); the
+    /// subject id is recorded for audit correlation on the receiving
+    /// runtime. ADR-049 Phase 1: principal senders keep the legacy
+    /// bare-id form here (via [`subject_wire_form`]) so the signed
+    /// pre-image is byte-identical to the pre-ADR-049 shape; user
+    /// senders (Phase 2+) take the canonical `user:<id>` form.
     async fn fanout_event(
         &self,
         channel: &ChannelId,
         ev: &ChannelEvent,
-        source_principal_did: &PrincipalId,
+        source: &Subject,
     ) -> std::result::Result<(), String> {
         let ctx = match self.ctx.read().await.clone() {
             Some(c) => c,
@@ -244,6 +248,7 @@ impl TunnelChannelPort {
             .map_err(|e| format!("serialize ChannelEvent: {e}"))?;
 
         let mut failures: Vec<String> = Vec::new();
+        let source_wire_id = subject_wire_form(source);
         for recipient_runtime_id in unique_runtimes {
             // Fresh request_id per recipient — the hub can scope
             // replay protection per request id and the audit rows
@@ -254,7 +259,7 @@ impl TunnelChannelPort {
                 request_id: &request_id,
                 source_runtime_id: &ctx.caller_runtime_id,
                 recipient_runtime_id: &recipient_runtime_id,
-                source_principal_did: &source_principal_did.to_string(),
+                source_principal_did: &source_wire_id,
                 channel_id: channel.as_str(),
                 event_bytes: &event_bytes,
             };
@@ -269,7 +274,7 @@ impl TunnelChannelPort {
             crate::tunnel::emit_forwarded_outbound(
                 &request_id,
                 &ctx.caller_runtime_id,
-                &source_principal_did.to_string(),
+                &source_wire_id,
                 channel.as_str(),
                 event_kind,
                 &crate::tunnel::tunnel_channel_audit::preview_event_payload(
@@ -281,7 +286,7 @@ impl TunnelChannelPort {
                 request_id,
                 source_runtime_id: ctx.caller_runtime_id.clone(),
                 recipient_runtime_id: recipient_runtime_id.clone(),
-                source_principal_did: source_principal_did.to_string(),
+                source_principal_did: source_wire_id.clone(),
                 channel_id: channel.as_str().to_string(),
                 event: ev.clone(),
                 signature,
@@ -490,9 +495,9 @@ impl TunnelChannelPort {
         })?;
         let initial_members: Vec<peko_protocol::channel::InitialMember> = local
             .iter()
-            .filter(|p| p.0 != invitee.0)
+            .filter(|p| p.subject_id() != invitee.0)
             .map(|p| peko_protocol::channel::InitialMember {
-                principal_did: p.0.clone(),
+                principal_did: subject_wire_form(p),
                 runtime_id: Some(ctx.caller_runtime_id.clone()),
             })
             .chain(
@@ -633,7 +638,7 @@ impl ChannelPort for TunnelChannelPort {
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &PrincipalId,
+        invitee: &Subject,
     ) -> Result<()> {
         // 1. Local-only invite — delegate straight to the store.
         // The store records the `MemberJoined` event and updates
@@ -668,19 +673,25 @@ impl ChannelPort for TunnelChannelPort {
         // here; the DM provisioning path (Phase 12b) calls
         // `fanout_dm_invite` directly with the principal's real DID.
         //
+        // ADR-049 Phase 1: fan-out is principal-only. A user invitee
+        // is runtime-local (there is no cross-runtime user routing
+        // yet), so the local invite above is the whole operation.
+        //
         // Failures here never error the local invite — the local
         // mirror is authoritative; remote runtimes hydrate off the
         // next event or via a follow-up invite.
-        if let Err(e) = self
-            .fanout_dm_invite(channel, inviter, &inviter.to_string(), invitee)
-            .await
-        {
-            warn!(
-                "outbound TunnelChannelInvite fan-out partial-failure for channel={} \
-                 (local invite succeeded): {}",
-                channel.as_str(),
-                e
-            );
+        if let Subject::Principal(did) = invitee {
+            if let Err(e) = self
+                .fanout_dm_invite(channel, inviter, &inviter.to_string(), &PrincipalId::from_did(did))
+                .await
+            {
+                warn!(
+                    "outbound TunnelChannelInvite fan-out partial-failure for channel={} \
+                     (local invite succeeded): {}",
+                    channel.as_str(),
+                    e
+                );
+            }
         }
 
         Ok(())
@@ -689,7 +700,7 @@ impl ChannelPort for TunnelChannelPort {
     async fn post(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         msg: PostMsg,
     ) -> Result<TaskId> {
         // 1. Local write — same path the bare `ChannelStore` would
@@ -721,7 +732,7 @@ impl ChannelPort for TunnelChannelPort {
     async fn post_attributed(
         &self,
         channel: &ChannelId,
-        sender: &PrincipalId,
+        sender: &Subject,
         author: &str,
         msg: PostMsg,
     ) -> Result<TaskId> {
@@ -775,14 +786,14 @@ impl ChannelPort for TunnelChannelPort {
     async fn list_members(
         &self,
         channel: &ChannelId,
-    ) -> Result<Vec<PrincipalId>> {
-        // Merge local + remote. The `RemoteMember.principal_id` is
-        // already a stringified `PrincipalId` (the on-disk shape is
-        // the same as the local `members` rows), so a parse-free
-        // re-wrap suffices.
+    ) -> Result<Vec<Subject>> {
+        // Merge local + remote. The `RemoteMember.principal_id` is a
+        // stringified principal id (the on-disk shape matches the
+        // legacy bare local member rows), so each remote row wraps as
+        // a `Subject::Principal`.
         let mut out = self.local.list_members(channel).await?;
         for rm in self.local.list_remote_members(channel).await? {
-            out.push(PrincipalId(rm.principal_id));
+            out.push(Subject::Principal(rm.principal_id.into()));
         }
         Ok(out)
     }
@@ -915,7 +926,7 @@ mod tests {
         port.invite(
             &channel,
             &creator,
-            &PrincipalId("prin_carol".into()),
+            &Subject::from(&PrincipalId("prin_carol".into())),
         )
         .await
         .unwrap();
@@ -923,7 +934,7 @@ mod tests {
         let line = port
             .post(
                 &channel,
-                &creator,
+                &Subject::from(&creator),
                 PostMsg::root("hello world"),
             )
             .await
@@ -931,7 +942,7 @@ mod tests {
         assert_eq!(line, "2", "Created=0, MemberJoined=1, Posted=2");
 
         let members = port.list_members(&channel).await.unwrap();
-        let member_strs: Vec<&str> = members.iter().map(|p| p.0.as_str()).collect();
+        let member_strs: Vec<&str> = members.iter().map(|p| p.subject_id()).collect();
         assert_eq!(member_strs, vec!["prin_alice", "prin_carol"]);
     }
 
@@ -1044,7 +1055,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &PrincipalId("prin_alice".into()),
+            &Subject::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("hello"),
         )
         .await
@@ -1158,7 +1169,7 @@ mod tests {
         let line = port
             .post(
                 &channel,
-                &PrincipalId("prin_alice".into()),
+                &Subject::from(&PrincipalId("prin_alice".into())),
                 PostMsg::root("hello from A"),
             )
             .await
@@ -1282,7 +1293,7 @@ mod tests {
 
         port.post(
             &channel,
-            &PrincipalId("prin_alice".into()),
+            &Subject::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("hello"),
         )
         .await
@@ -1333,7 +1344,7 @@ mod tests {
 
         port.post(
             &channel,
-            &PrincipalId("prin_alice".into()),
+            &Subject::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("hi all"),
         )
         .await
@@ -1389,7 +1400,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &PrincipalId("prin_alice".into()),
+            &Subject::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("solo"),
         )
         .await
@@ -1445,7 +1456,7 @@ mod tests {
         let line = port
             .post(
                 &channel,
-                &PrincipalId("prin_alice".into()),
+                &Subject::from(&PrincipalId("prin_alice".into())),
                 PostMsg::root("patience"),
             )
             .await
@@ -1508,7 +1519,7 @@ mod tests {
         port.invite(
             &channel,
             &PrincipalId("prin_alice".into()),
-            &PrincipalId("prin_bob@did:key:zRuntimeB".into()),
+            &Subject::from(&PrincipalId("prin_bob@did:key:zRuntimeB".into())),
         )
         .await
         .expect("local invite must succeed before fan-out");
@@ -1635,7 +1646,7 @@ mod tests {
         // fans out — before the fix this was a silent no-op.
         port.post(
             &channel,
-            &PrincipalId("prin_alice".into()),
+            &Subject::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("after-invite post"),
         )
         .await
@@ -1800,7 +1811,7 @@ mod tests {
         // The receiver posts a reply on its mirror...
         port.post(
             &channel,
-            &PrincipalId("prin_bob_local".into()),
+            &Subject::from(&PrincipalId("prin_bob_local".into())),
             PostMsg::root("hello back"),
         )
         .await

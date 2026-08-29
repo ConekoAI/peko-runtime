@@ -247,7 +247,7 @@ impl PeerMessenger for PrincipalPeerMessenger {
                         if let Err(e) = port
                             .post(
                                 &channel,
-                                &principal.id,
+                                &Subject::from(&principal.id),
                                 peko_channel::PostMsg::root(note),
                             )
                             .await

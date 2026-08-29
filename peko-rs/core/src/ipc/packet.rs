@@ -1142,12 +1142,13 @@ pub enum ResponsePacket {
         channel: peko_protocol::channel::ChannelId,
     },
 
-    /// Invite acknowledged.
+    /// Invite acknowledged. ADR-049 Phase 1: the invitee is
+    /// `Subject`-typed (a principal or a `user:<id>` user).
     #[serde(rename = "channel_invited")]
     ChannelInvited {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
-        invitee: peko_subject::PrincipalId,
+        invitee: peko_subject::Subject,
     },
 
     /// Post acknowledged — returns the new task id.
@@ -1178,12 +1179,13 @@ pub enum ResponsePacket {
         event: peko_protocol::channel::ChannelEvent,
     },
 
-    /// Members list.
+    /// Members list. ADR-049 Phase 1: members are `Subject`-typed
+    /// (principals and users).
     #[serde(rename = "channel_members_result")]
     ChannelMembersResult {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
-        members: Vec<peko_subject::PrincipalId>,
+        members: Vec<peko_subject::Subject>,
         /// P1.2 attribution: per-member runtime provenance (`runtime_id
         /// = None` for local members). Default empty so pre-PR-3b
         /// consumers that don't read this field see no change to the

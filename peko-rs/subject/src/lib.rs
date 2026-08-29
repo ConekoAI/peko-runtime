@@ -129,6 +129,22 @@ impl Default for Subject {
     }
 }
 
+impl From<&PrincipalId> for Subject {
+    /// Bridge a `PrincipalId` to its actor form. Both newtypes wrap the
+    /// same canonical id string (see [`PrincipalId::from_did`]) — this
+    /// is the inverse direction, needed wherever a principal-typed API
+    /// meets a `Subject`-typed one (ADR-049 channel membership).
+    fn from(id: &PrincipalId) -> Self {
+        Subject::Principal(PrincipalDID(id.0.clone()))
+    }
+}
+
+impl From<PrincipalId> for Subject {
+    fn from(id: PrincipalId) -> Self {
+        Subject::Principal(PrincipalDID(id.0))
+    }
+}
+
 /// Stable string tag for a `Subject` (used in session keys and logging).
 ///
 /// Distinct from `Subject::kind()` so the in-memory kind enum isn't
@@ -329,6 +345,19 @@ mod tests {
         // Generated ids cannot collide with the sentinel.
         let generated = PrincipalId::generate().to_string();
         assert!(!generated.starts_with("__system__"));
+    }
+
+    #[test]
+    fn test_principal_id_into_subject() {
+        let id = PrincipalId("prin_abc".to_string());
+        assert_eq!(
+            Subject::from(&id),
+            Subject::Principal(PrincipalDID("prin_abc".to_string()))
+        );
+        assert_eq!(
+            Subject::from(id),
+            Subject::Principal(PrincipalDID("prin_abc".to_string()))
+        );
     }
 
     #[test]
