@@ -4,6 +4,42 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Capabilities as workspace files + per-turn prompt catalog (2026-08-30, ADR-050)
+
+Removes the CLI/IPC sugar around workspace capabilities and makes the
+system prompt's agents/skills sections live views of the workspace.
+
+#### Removed
+- **`peko principal agent|persona|tool|hook|skill|mcp`** — the entire
+  per-category extension-management tree (list/install/remove/set/show)
+  is gone, along with the `principal_workspace` CLI module. Capabilities
+  are plain files in the principal workspace
+  (`agents/`, `skills/`, `tools/`, `mcp/`, `hooks/`); manage them by
+  editing files directly (e.g. add a skill: create
+  `<workspace>/skills/<name>/SKILL.md`).
+- **Persona drafting IPC** — `RequestPacket::PersonaDraft` /
+  `ResponsePacket::PersonaDrafted`, the `ipc/handlers/persona.rs`
+  handler, and the client method. The `persona` config field on
+  principals stays.
+
+#### Changed
+- **Per-turn workspace capability catalog** — the `{{agents}}` and
+  `{{skills}}` system-prompt sections moved from the cache-stable prefix
+  to the per-turn volatile suffix
+  (`peko-rs/engine/src/prompt/renderer.rs::render_per_turn`), rendered by
+  two new scanning hook handlers (`WorkspaceAgentsPromptHandler`,
+  `WorkspaceSkillsPromptHandler`) that scan the workspace `agents/` and
+  `skills/` directories at prompt-build time with an mtime-keyed cache.
+  Dropping a new `agents/foo.md` or `skills/foo/SKILL.md` into the
+  workspace makes it visible in the system prompt on the next iteration
+  — no restart, no re-registration.
+- **Presence = visibility** — a capability is in the catalog iff its
+  file is in the workspace; there is no capability/active-extension
+  filter on the prompt sections. The catalog is name + description lines
+  only (progressive disclosure: the model reads files with fs tools and
+  invokes skills via the `Skill` tool). The skills catalog caps at 8 KB,
+  then truncates with a pointer to list the directory.
+
 ### Channel-native CLI surface: `send` / `stop` / `log` (2026-08-27, ADR-048)
 
 Reshapes the user-facing surface around one mental model — "I'm

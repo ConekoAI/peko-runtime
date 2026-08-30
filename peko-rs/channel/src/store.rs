@@ -2498,7 +2498,7 @@ mod tests {
             .create(&creator, CreateOpts::runtime("team"))
             .await
             .unwrap();
-        assert_eq!(bare_id.as_str().is_empty(), false); // sanity
+        assert!(!bare_id.as_str().is_empty()); // sanity
 
         let listed = store.list_for_principal(&creator).await.unwrap();
         assert!(

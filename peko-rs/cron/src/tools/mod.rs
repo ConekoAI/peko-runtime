@@ -41,7 +41,6 @@ use chrono::{DateTime, Utc};
 use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
-use uuid::Uuid;
 
 /// Default retry budget for cron jobs that have `max_retries: None` on
 /// disk (legacy records serialized before this field was added) or
@@ -859,7 +858,10 @@ mod tests {
             ..
         } = &back.action
         else {
-            panic!("expected SpawnTool action, got {:?}", back.action.kind_label())
+            panic!(
+                "expected SpawnTool action, got {:?}",
+                back.action.kind_label()
+            )
         };
         assert_eq!(tool_name, "ChannelRead", "tool name must be ChannelRead");
         assert_eq!(tool_params["channel"], "chan_a1b2c3d4");

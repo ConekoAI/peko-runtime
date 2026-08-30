@@ -95,9 +95,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            format!(
-                "---\nname: {id}\ndescription: {body}\n---\n\n# {id}\n\nbody\n"
-            ),
+            format!("---\nname: {id}\ndescription: {body}\n---\n\n# {id}\n\nbody\n"),
         )
         .unwrap();
     }

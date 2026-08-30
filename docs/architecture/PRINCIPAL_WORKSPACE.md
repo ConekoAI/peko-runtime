@@ -58,18 +58,25 @@ the only source of tools the principal can use.
 
 ---
 
-## CLI surface
+## Managing workspace tooling
 
-ADR-047 §5 introduces a per-category CLI for managing workspace tooling:
+ADR-050 (2026-08-30) removed the per-category CLI that ADR-047 §5 had
+introduced (`peko principal tool|skill|mcp|hook list / install /
+remove`, plus the `agent` / `persona` variants). It was pure filesystem
+sugar over the workspace — the files are the truth, so manage them
+directly:
 
 ```
-peko principal tool list / install / remove
-peko principal skill list / install / remove
-peko principal mcp list / install / remove
-peko principal hook list / install / remove
-peko principal plugin list / install / remove
+ls ~/.peko/principal/<name>/{tools,skills,mcp,hooks,plugins}/   # list
+cp -r ./my-skill ~/.peko/principal/<name>/skills/<id>/          # install
+rm -r ~/.peko/principal/<name>/skills/<id>                      # remove
 peko principal show                  # includes catalog summary
 ```
+
+The system prompt renders the workspace `agents/` and `skills/`
+catalogs **per turn** (volatile prompt suffix, mtime-keyed scan), so a
+file added to either directory is visible to the model on the next
+iteration — no restart. Presence in the workspace = visibility.
 
 The legacy `peko ext *` command tree was retired in Phase 5.
 
@@ -136,17 +143,19 @@ Info.
 ## Migration from the extension system
 
 If you have existing extensions installed under the legacy
-`~/.peko/extensions/` layout, run:
+`~/.peko/extensions/` layout, copy them into the per-principal
+workspace by hand (the install CLI was removed in ADR-050):
 
 ```
-peko principal tool install <path>
-peko principal skill install <path>
-peko principal mcp install <path>
-peko principal hook install <path>
+cp <path>/tool.toml   ~/.peko/principal/<name>/tools/<id>/tool.toml
+cp -r <skill-dir>     ~/.peko/principal/<name>/skills/<id>/      # SKILL.md inside
+cp <path>/server.json ~/.peko/principal/<name>/mcp/<id>/server.json
+cp <path>/hook.toml   ~/.peko/principal/<name>/hooks/<id>/hook.toml
 ```
 
-to copy them into the per-principal workspace. The catalog rebuild on
-the next boot picks them up automatically.
+The catalog rebuild on the next boot picks them up automatically, and
+`agents/` / `skills/` additions are visible in the system prompt on the
+next iteration (ADR-050).
 
 The legacy `peko ext *` CLI surface is gone. There is no compatibility
 shim — packages with embedded extensions are still importable, but
@@ -158,6 +167,7 @@ flow.
 ## Related documentation
 
 - [ADR-047: Principal Workspace as the Tooling Trust Boundary](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) — design rationale
+- [ADR-050: Capabilities as Workspace Files](adr/ADR-050-capabilities-as-workspace-files.md) — file-only management + per-turn prompt catalog
 - [ADR-046: Trust and Audit](adr/ADR-046-trust-and-audit.md) — audit posture
 - [ADR-027: Unified Packaging](adr/ADR-027-unified-packaging.md) — `plugins/` layer
 - [ADR-039: Principal Model](adr/ADR-039-principal-model.md) — principal-as-actor
@@ -165,4 +175,4 @@ flow.
 
 ---
 
-*Version 0.1.0 · Principal Workspace · 2026-08-25*
+*Version 0.1.0 · Principal Workspace · 2026-08-30 (ADR-050)*

@@ -67,7 +67,7 @@ use crate::ProviderView;
 
 /// Auto-charging wrapper that charges every meter in the active
 /// `QuotaScope` stack. Used by F19 callers that want per-principal
-/// + per-agent attribution: the agentic loop opens exactly one
+/// and per-agent attribution: the agentic loop opens exactly one
 /// `principal_meter` scope, and `SubagentExecutor` (B5e) nests an
 /// `agent_meter` scope so a child run's LLM calls charge BOTH
 /// meters — principal as audit-attribution aggregate, agent as
@@ -183,8 +183,7 @@ impl StackedMeteredProvider {
             .chat_with_tools(model_id, messages, tools, options)
             .await?;
         let pricing = self.inner.spec().and_then(|s| s.pricing);
-        let cost_usd =
-            compute_cost_usd(pricing, response.usage.input, response.usage.output);
+        let cost_usd = compute_cost_usd(pricing, response.usage.input, response.usage.output);
         self.charge_stack(&response.usage, cost_usd).await?;
         Ok(response)
     }

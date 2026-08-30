@@ -41,7 +41,6 @@ peko principal <COMMAND>
 | `create <NAME>` | Create a new Principal |
 | `list` | List all Principals |
 | `show <NAME>` | Show Principal configuration and agent prompts |
-| `send <NAME> <MESSAGE>` | Send a message to a Principal |
 | `export <NAME>` | Export a Principal to a `.principal` package |
 | `import <PATH>` | Import a Principal from a `.principal` package |
 | `push <NAME>` | Push a Principal package to a registry |
@@ -49,8 +48,10 @@ peko principal <COMMAND>
 | `permit <NAME> <SUBJECT> <PERMISSION>` | Grant a permission on a Principal |
 | `revoke <NAME> <SUBJECT> <PERMISSION>` | Revoke a permission from a Principal |
 | `permissions <NAME>` | List permissions on a Principal |
-| `agent list <NAME>` | List agent prompts inside a Principal |
-| `agent show <NAME> <AGENT>` | Show an agent prompt inside a Principal |
+
+> Messaging is `peko send` / `peko log` (ADR-048). Agent prompts are
+> workspace files (`agents/<name>.md`) managed by editing files, not CLI
+> commands (ADR-050); `peko principal show` lists them.
 
 #### Examples
 
@@ -65,7 +66,7 @@ peko principal list
 peko principal show my-principal
 
 # Send a message
-peko principal send my-principal "Hello!"
+peko send my-principal "Hello!"
 
 # Export with extensions embedded
 peko principal export my-principal --with-extensions
@@ -73,8 +74,8 @@ peko principal export my-principal --with-extensions
 # Push to the default registry
 peko principal push my-principal:v1.0
 
-# List agent prompts in a Principal
-peko principal agent list my-principal
+# Show a Principal (includes the workspace agents/skills catalog)
+peko principal show my-principal
 ```
 
 ---
@@ -517,18 +518,13 @@ principal boundary stays intact even when no one is reading.
 
 ### `ext` — Extension Management
 
-> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` command
-> tree was retired. Tooling lives directly in the principal's
-> workspace (`tools/`, `skills/`, `mcp/`, `hooks/`, `plugins/`); use
-> the per-category CLI:
->
-> ```bash
-> peko principal tool   list / install / remove
-> peko principal skill  list / install / remove
-> peko principal mcp    list / install / remove
-> peko principal hook   list / install / remove
-> peko principal plugin list / install / remove
-> ```
+> **Retired.** The `peko ext *` command tree (ADR-047, 2026-08-25) and
+> the per-category `peko principal tool|skill|mcp|hook|agent|persona`
+> CLI (ADR-050, 2026-08-30) are both gone. Tooling lives directly in
+> the principal's workspace (`tools/`, `skills/`, `mcp/`, `hooks/`,
+> `plugins/`) as plain files — list with `ls`, install by copying files
+> in, remove with `rm`. New `agents/` / `skills/` files appear in the
+> principal's system prompt on the next iteration (ADR-050).
 >
 > See [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md)
 > for the full layout. The subcommand table below is retained for
@@ -817,9 +813,8 @@ peko model add --template anthropic --model claude-sonnet-4-5 \
 peko credential set llm anthropic-claude-sonnet-4-5 \
   --kind api_key --material "$ANTHROPIC_API_KEY"
 
-# Extensions (deprecated — ADR-047; use `peko principal <category> list/install`)
-peko principal tool list
-peko principal skill install <path>
+# Extensions are workspace files (ADR-050) — list them on disk
+ls ~/.peko/principal/my-principal/{tools,skills,mcp,hooks}/
 
 # Daemon
 peko daemon start --foreground

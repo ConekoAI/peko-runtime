@@ -1,32 +1,39 @@
 //! Agent adapter for the Extension system
 //!
-//! Discovers `AGENT.md` files in the principal's workspace and
-//! registers an `AgentPromptHandler` per agent against the canonical
-//! `ExtensionCore` `PromptSystemSection { section: "agents" }` hook.
-//! The engine prompt renderer dispatches that hook and renders the
-//! agent list into the system prompt (see
-//! `peko-rs/engine/src/prompt/renderer.rs`).
+//! Discovers `AGENT.md` files in the principal's workspace
+//! (`<workspace>/agents/<id>.md` or `<workspace>/agents/<id>/AGENT.md`)
+//! and renders them into the `agents` system-prompt section via the
+//! workspace-scanning [`WorkspaceAgentsPromptHandler`]. The engine
+//! prompt renderer dispatches that hook on every iteration as part of
+//! the per-turn volatile suffix (see
+//! `peko-rs/engine/src/prompt/renderer.rs`), so agents added to the
+//! workspace appear in the prompt on the next iteration.
 //!
 //! PR-C.4: `ExtensionTypeAdapter` trait impl + `AgentPromptHandlerFactory`
 //! deleted. The trait impl was the framework-coupling path; both it
 //! and the factory that wrapped `AgentPromptHandler` had zero callers
-//! once `BuiltInAdapters` was gutted (PR-C.1). The remaining surface
-//! is `discover_agents` (called from `principal/context.rs` and
-//! `principal/manager.rs`) + `register_agents_with_core` (the only
-//! emitter of the "agents" prompt section) + the data types they
-//! produce/consume.
+//! once `BuiltInAdapters` was gutted (PR-C.1).
+//!
+//! Part B (dynamic per-turn workspace catalog): the static per-agent
+//! `AgentPromptHandler` + `register_agents_with_core` registration was
+//! replaced by the single scanning `WorkspaceAgentsPromptHandler`,
+//! which resolves the workspace from the hook context at invoke time
+//! and re-scans `agents/` whenever the directory mtime changes.
+//! Presence in the workspace = visible (ADR-047) — no capability or
+//! active-extension filter. The remaining surface is
+//! `AgentAdapter::discover_agents` (also called from
+//! `principal/manager.rs`) + the data types it produces.
 
 use crate::extensions::framework::adapters::parsing;
 use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{
-    ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
-};
+use crate::extensions::framework::types::{ExtensionManifest, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tracing::{debug, info, warn};
+use std::sync::Mutex;
+use std::time::SystemTime;
+use tracing::{debug, warn};
 
 /// Agent extension type identifier
 pub const AGENT_EXTENSION_TYPE: &str = "agent";
@@ -203,53 +210,90 @@ struct AgentFrontmatter {
     color: Option<String>,
 }
 
-/// Handler that injects agent into prompt
-#[derive(Debug, Clone)]
-struct AgentPromptHandler {
-    agent_id: String,
-    agent_name: String,
-    description: String,
-    file_path: PathBuf,
+/// Workspace-scanning handler for the `agents` prompt section.
+///
+/// Registered **once** per core (see `principal/context.rs`), not per
+/// agent: at invoke time it reads the workspace from the hook context's
+/// `ToolRuntimeContext`, scans `<workspace>/agents/` via
+/// [`AgentAdapter::discover_agents`], and renders one line per agent in
+/// the format `- {name} (id: {id}): {description} (location: {path})`.
+///
+/// Presence in the workspace = visible (ADR-047): there is deliberately
+/// **no** capability or active-extension filter. A missing workspace or
+/// an empty `agents/` directory yields [`HookResult::PassThrough`] so
+/// the section is stripped from the prompt.
+///
+/// The scan result is cached in a `Mutex` keyed on the `agents/`
+/// directory's mtime — each call `stat`s the directory (cheap) and only
+/// re-reads the agent files when the mtime changed. That keeps the
+/// handler well within the renderer's 2-second hook timeout.
+#[derive(Debug, Default)]
+pub struct WorkspaceAgentsPromptHandler {
+    cache: Mutex<Option<(SystemTime, String)>>,
+}
+
+impl WorkspaceAgentsPromptHandler {
+    /// Create a new workspace-scanning agents handler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Render the agents catalog for `workspace`, using the mtime-keyed
+    /// cache. Returns `None` when there is nothing to render (no
+    /// `agents/` dir, or no agents discovered).
+    fn render_catalog(&self, workspace: &str) -> Option<String> {
+        let agents_dir = Path::new(workspace).join("agents");
+        let mtime = std::fs::metadata(&agents_dir)
+            .and_then(|m| m.modified())
+            .ok()?;
+
+        {
+            let cache = self.cache.lock().expect("agents catalog cache poisoned");
+            if let Some((cached_mtime, text)) = &*cache {
+                if *cached_mtime == mtime {
+                    return (!text.is_empty()).then(|| text.clone());
+                }
+            }
+        }
+
+        let agents = AgentAdapter::new().discover_agents(&agents_dir);
+        let text = agents
+            .iter()
+            .map(|a| {
+                format!(
+                    "- {} (id: {}): {} (location: {})",
+                    a.manifest.name,
+                    a.manifest.id.0,
+                    a.manifest.description,
+                    a.file_path.to_string_lossy()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut cache = self.cache.lock().expect("agents catalog cache poisoned");
+        *cache = Some((mtime, text.clone()));
+
+        (!text.is_empty()).then_some(text)
+    }
 }
 
 #[async_trait]
-impl HookHandler for AgentPromptHandler {
+impl HookHandler for WorkspaceAgentsPromptHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Filter at handle-time using the principal's capability grants and
-        // active extension snapshot carried in `ctx.state["tool_context"]`.
-        let runtime_ctx = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
+        let workspace = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .and_then(|rtc| rtc.workspace.clone());
 
-        let enabled = runtime_ctx.map_or(false, |rtc| {
-            if let Some(ref active) = rtc.active_extensions {
-                if active.iter().any(|id| id == &self.agent_id) {
-                    return true;
-                }
-            }
-            if let Some(ref caps) = rtc.capabilities {
-                let required_id = format!("agent:{}", self.agent_id);
-                let required_name = format!("agent:{}", self.agent_name);
-                if caps
-                    .iter()
-                    .any(|c| c == &required_id || c == &required_name)
-                {
-                    return true;
-                }
-            }
-            false
-        });
-
-        if !enabled {
+        let Some(workspace) = workspace.filter(|w| !w.is_empty()) else {
             return HookResult::PassThrough;
+        };
+
+        match self.render_catalog(&workspace) {
+            Some(text) => HookResult::Continue(HookOutput::Text(text)),
+            None => HookResult::PassThrough,
         }
-
-        let path_display = self.file_path.to_string_lossy();
-        let text = format!(
-            "- {} (id: {}): {} (location: {})",
-            self.agent_name, self.agent_id, self.description, path_display
-        );
-
-        HookResult::Continue(HookOutput::Text(text))
     }
 
     fn hook_point(&self) -> HookPoint {
@@ -264,7 +308,7 @@ impl HookHandler for AgentPromptHandler {
     }
 
     fn name(&self) -> String {
-        format!("AgentPromptHandler({})", self.agent_id)
+        "WorkspaceAgentsPromptHandler".to_string()
     }
 }
 
@@ -275,50 +319,11 @@ pub fn load_agents_from_directory(path: &Path) -> Vec<DiscoveredAgent> {
     adapter.discover_agents(path)
 }
 
-/// Register agents with an `ExtensionCore`
-pub async fn register_agents_with_core(
-    core: &crate::extensions::framework::core::ExtensionCore,
-    agents: Vec<DiscoveredAgent>,
-) -> Result<Vec<HookId>> {
-    let mut hook_ids = Vec::new();
-
-    for agent in agents {
-        let extension_id =
-            ExtensionId::new(format!("{}:{}", AGENT_EXTENSION_TYPE, agent.manifest.id.0));
-
-        let handler = Arc::new(AgentPromptHandler {
-            agent_id: agent.manifest.id.0.clone(),
-            agent_name: agent.manifest.name.clone(),
-            description: agent.manifest.description.clone(),
-            file_path: agent.file_path,
-        });
-
-        let registration = core
-            .register_hook(
-                HookPoint::PromptSystemSection {
-                    section: "agents".to_string(),
-                    priority: AGENT_HOOK_PRIORITY,
-                },
-                handler,
-                &extension_id,
-            )
-            .await?;
-
-        hook_ids.push(registration.id);
-        info!(
-            agent_name = %agent.manifest.name,
-            hook_id = %registration.id,
-            "Registered agent with ExtensionCore"
-        );
-    }
-
-    Ok(hook_ids)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::extensions::framework::core::ExtensionServices;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn create_test_agent(dir: &Path, name: &str, description: &str) -> PathBuf {
@@ -454,35 +459,9 @@ color: '#ff0000'
         assert_eq!(manifest.description, "Premium implementation specialist");
     }
 
-    #[tokio::test]
-    async fn test_register_agents_with_core() {
-        let temp = TempDir::new().unwrap();
-        create_test_agent(temp.path(), "agent1", "First agent");
-        create_test_agent(temp.path(), "agent2", "Second agent");
-
-        let core = crate::extensions::framework::core::ExtensionCore::new();
-        let agents = load_agents_from_directory(temp.path());
-
-        assert_eq!(agents.len(), 2);
-
-        let hook_ids = register_agents_with_core(&core, agents).await.unwrap();
-
-        assert_eq!(hook_ids.len(), 2);
-        assert_eq!(core.hook_count().await, 2);
-    }
-
-    #[tokio::test]
-    async fn test_agent_handler_emits_when_enabled() {
-        let temp = TempDir::new().unwrap();
-        let agent_md = create_test_agent(temp.path(), "math", "Math operations");
-
-        let handler = AgentPromptHandler {
-            agent_id: "math".to_string(),
-            agent_name: "math".to_string(),
-            description: "Math operations".to_string(),
-            file_path: agent_md,
-        };
-
+    /// Build a `PromptSystemSection { section: "agents" }` hook context,
+    /// optionally carrying a workspace in the `tool_context` state.
+    fn agents_hook_ctx(workspace: Option<&str>) -> HookContext {
         let mut ctx = HookContext::new(
             HookPoint::PromptSystemSection {
                 section: "agents".to_string(),
@@ -491,142 +470,105 @@ color: '#ff0000'
             crate::extensions::framework::types::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
+        if let Some(ws) = workspace {
+            ctx.set_state(
+                "tool_context",
+                crate::extensions::framework::types::ToolRuntimeContext::new()
+                    .with_workspace(ws)
+                    .with_principal_id("test-principal"),
+            );
+        }
+        ctx
+    }
 
-        ctx.set_state(
-            "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
-                .with_principal_id("test-handler")
-                .with_capabilities(["agent:math"]),
-        );
+    #[tokio::test]
+    async fn workspace_agents_handler_renders_catalog() {
+        let temp = TempDir::new().unwrap();
+        let agents_dir = temp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+        create_test_agent(&agents_dir, "math", "Math operations");
+        create_test_agent_flat(&agents_dir, "reviewer", "Reviews code");
 
-        let result = handler.handle(ctx).await;
+        let handler = WorkspaceAgentsPromptHandler::new();
+        let result = handler
+            .handle(agents_hook_ctx(Some(&temp.path().to_string_lossy())))
+            .await;
 
         match result {
             HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(text.contains("math"));
-                assert!(text.contains("Math operations"));
-                assert!(text.contains("(id: math)"));
+                assert!(
+                    text.contains("- math (id: math): Math operations"),
+                    "got: {text}"
+                );
+                assert!(
+                    text.contains("- reviewer (id: reviewer): Reviews code"),
+                    "got: {text}"
+                );
+                assert!(text.contains("(location: "), "got: {text}");
+                assert!(text.contains("agents/math/AGENT.md"), "got: {text}");
+                assert!(text.contains("agents/reviewer.md"), "got: {text}");
             }
             _ => panic!("Expected Continue with Text, got {result:?}"),
         }
     }
 
     #[tokio::test]
-    async fn test_agent_handler_uses_canonical_id_for_allowlist() {
+    async fn workspace_agents_handler_passes_through_without_workspace() {
+        let handler = WorkspaceAgentsPromptHandler::new();
+        // No tool_context state at all → PassThrough.
+        let result = handler.handle(agents_hook_ctx(None)).await;
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected PassThrough without workspace, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_agents_handler_passes_through_on_empty_dir() {
         let temp = TempDir::new().unwrap();
-        let agent_dir = temp.path().join("senior-developer");
-        std::fs::create_dir(&agent_dir).unwrap();
-        let agent_md = agent_dir.join("AGENT.md");
-        std::fs::write(
-            &agent_md,
-            r"---
-name: Senior Developer
-description: Premium dev
-color: '#ff0000'
----
+        std::fs::create_dir(temp.path().join("agents")).unwrap();
 
-# Test Agent
-",
-        )
-        .unwrap();
-
-        let handler = AgentPromptHandler {
-            agent_id: "senior-developer".to_string(),
-            agent_name: "Senior Developer".to_string(),
-            description: "Premium dev".to_string(),
-            file_path: agent_md,
-        };
-
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "agents".to_string(),
-                priority: AGENT_HOOK_PRIORITY,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
+        let handler = WorkspaceAgentsPromptHandler::new();
+        let result = handler
+            .handle(agents_hook_ctx(Some(&temp.path().to_string_lossy())))
+            .await;
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected PassThrough for empty agents dir, got {result:?}"
         );
+    }
 
-        // Allowlist contains the canonical id, not the human-readable name.
-        ctx.set_state(
-            "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
-                .with_principal_id("test-canonical")
-                .with_capabilities(["agent:senior-developer"]),
-        );
+    #[tokio::test]
+    async fn workspace_agents_handler_rescans_on_dir_mtime_change() {
+        let temp = TempDir::new().unwrap();
+        let agents_dir = temp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+        create_test_agent(&agents_dir, "math", "Math operations");
 
-        let result = handler.handle(ctx).await;
+        let handler = WorkspaceAgentsPromptHandler::new();
+        let ws = temp.path().to_string_lossy().to_string();
 
-        match result {
+        // First call scans and caches.
+        let first = handler.handle(agents_hook_ctx(Some(&ws))).await;
+        match &first {
             HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(text.contains("Senior Developer"));
-                assert!(text.contains("(id: senior-developer)"));
+                assert!(text.contains("math"), "got: {text}");
+                assert!(!text.contains("reviewer"), "got: {text}");
             }
-            _ => panic!("Expected Continue with Text, got {result:?}"),
+            _ => panic!("Expected Continue with Text, got {first:?}"),
         }
-    }
 
-    #[tokio::test]
-    async fn test_agent_handler_filters_disabled_agents() {
-        let temp = TempDir::new().unwrap();
-        let agent_md = create_test_agent(temp.path(), "math", "Math operations");
+        // Adding an agent bumps the `agents/` dir mtime → the next call
+        // must re-scan rather than serve the cached catalog.
+        create_test_agent_flat(&agents_dir, "reviewer", "Reviews code");
 
-        let handler = AgentPromptHandler {
-            agent_id: "math".to_string(),
-            agent_name: "math".to_string(),
-            description: "Math operations".to_string(),
-            file_path: agent_md,
-        };
-
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "agents".to_string(),
-                priority: AGENT_HOOK_PRIORITY,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-
-        ctx.set_state(
-            "tool_context",
-            crate::extensions::framework::types::ToolRuntimeContext::new()
-                .with_principal_id("test-filter")
-                .with_capabilities(["agent:other"]),
-        );
-
-        let result = handler.handle(ctx).await;
-
-        assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected disabled agent to emit nothing, got {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_agent_handler_fail_closed_without_principal_id() {
-        let temp = TempDir::new().unwrap();
-        let agent_md = create_test_agent(temp.path(), "math", "Math operations");
-
-        let handler = AgentPromptHandler {
-            agent_id: "math".to_string(),
-            agent_name: "math".to_string(),
-            description: "Math operations".to_string(),
-            file_path: agent_md,
-        };
-
-        let ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "agents".to_string(),
-                priority: AGENT_HOOK_PRIORITY,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-
-        let result = handler.handle(ctx).await;
-
-        assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected no principal_id to emit nothing, got {result:?}"
-        );
+        let second = handler.handle(agents_hook_ctx(Some(&ws))).await;
+        match &second {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("math"), "got: {text}");
+                assert!(text.contains("reviewer"), "got: {text}");
+            }
+            _ => panic!("Expected Continue with Text, got {second:?}"),
+        }
     }
 }

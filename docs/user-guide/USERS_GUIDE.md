@@ -278,23 +278,26 @@ trust boundary for tooling.
 
 ### List Installed Tooling
 
+Tooling is plain files — list the workspace directories directly:
+
 ```bash
-peko principal tool list
-peko principal skill list
-peko principal mcp list
-peko principal hook list
-peko principal plugin list
+ls ~/.peko/principal/<name>/{tools,skills,mcp,hooks,plugins}/
+peko principal show <name>          # catalog summary
 ```
 
 ### Install a Plugin
 
+Copy the tooling into the workspace (ADR-050 — there is no install CLI):
+
 ```bash
-peko principal tool install <path>
-peko principal skill install <path>
-peko principal mcp install <path>
-peko principal hook install <path>
-peko principal plugin install <path>
+cp ./my-tool.toml        ~/.peko/principal/<name>/tools/<id>/tool.toml
+cp -r ./my-skill         ~/.peko/principal/<name>/skills/<id>/   # contains SKILL.md
+cp ./server.json         ~/.peko/principal/<name>/mcp/<id>/server.json
+cp ./hook.toml           ~/.peko/principal/<name>/hooks/<id>/hook.toml
 ```
+
+New `agents/` and `skills/` files appear in the principal's system
+prompt on the next agentic iteration — no restart required.
 
 ### Grant/Revoke Capabilities
 
@@ -319,8 +322,10 @@ MCP (Model Context Protocol) servers live in the principal workspace
 under `~/.peko/principal/<name>/mcp/<server-id>/server.json`:
 
 ```bash
-# MCP servers are installed into the principal's workspace
-peko principal mcp install <server-path>
+# MCP servers live in the principal's workspace — install by copying
+# the manifest in (there is no install CLI, ADR-050)
+mkdir -p ~/.peko/principal/<name>/mcp/<server-id>
+cp <server-path>/server.json ~/.peko/principal/<name>/mcp/<server-id>/server.json
 
 # Grant MCP capabilities to a Principal
 peko capability grant --principal <principal-name> mcp:<server-id>
@@ -441,8 +446,8 @@ tools from inside the owning principal's agent turn.
 # Show command-specific help
 ./target/release/peko principal --help
 ./target/release/peko send --help
-# peko ext was retired in ADR-047 — use `peko principal <category> --help`
-./target/release/peko principal tool --help
+# peko ext and the per-category install CLI were retired (ADR-047 / ADR-050) —
+# workspace tooling is managed as plain files; see PRINCIPAL_WORKSPACE.md
 ```
 
 ---

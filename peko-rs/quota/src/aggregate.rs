@@ -127,7 +127,7 @@ mod tests {
             request_count: 3,
             cost_usd: Some(0.01),
         };
-        let total = sum_states(&[s.clone()], now);
+        let total = sum_states(std::slice::from_ref(&s), now);
         assert_eq!(total.input_tokens, 100);
         assert_eq!(total.output_tokens, 50);
         assert_eq!(total.request_count, 3);

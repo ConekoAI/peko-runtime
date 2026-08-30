@@ -1,13 +1,16 @@
 # MCP (Model Context Protocol) Support
 
-> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` flow this
-> document describes has been retired. MCP servers now live directly in
-> the principal's workspace under `~/.peko/principal/<name>/mcp/<id>/server.json`
-> and are installed via:
+> **Note (ADR-047 / ADR-050).** The `peko ext *` flow this document
+> originally described has been retired, and the per-category
+> `peko principal mcp` CLI that replaced it was removed in ADR-050
+> (2026-08-30). MCP servers now live directly in the principal's
+> workspace under `~/.peko/principal/<name>/mcp/<id>/server.json` —
+> install by copying the manifest in, list with `ls`:
 >
 > ```bash
-> peko principal mcp install <server-path>     # copy server.json into the workspace
-> peko principal mcp list                     # list workspace MCP servers
+> mkdir -p ~/.peko/principal/<name>/mcp/<id>
+> cp <server-path>/server.json ~/.peko/principal/<name>/mcp/<id>/server.json
+> ls ~/.peko/principal/<name>/mcp/              # list workspace MCP servers
 > ```
 >
 > No `start` / `stop` / `restart` / `status` step is required — the
@@ -31,35 +34,36 @@ MCP is an open protocol that standardizes how applications provide context to LL
 
 ### 1. Install an MCP Server
 
-MCP servers are managed as workspace plugins. For example, to use an MCP filesystem server:
+MCP servers are managed as workspace files. For example, to use an MCP filesystem server:
 
 ```bash
-# Install the MCP server into the principal's workspace (ADR-047)
-peko principal mcp install <server-path>
+# Install the MCP server into the principal's workspace (ADR-047/050):
+# copy its manifest under mcp/<id>/server.json
+mkdir -p ~/.peko/principal/<name>/mcp/<id>
+cp <server-path>/server.json ~/.peko/principal/<name>/mcp/<id>/server.json
 ```
 
 ### 2. Verify It's Working
 
 ```bash
 # List MCP servers installed in the workspace
-peko principal mcp list
+ls ~/.peko/principal/<name>/mcp/
 ```
 
 ## Managing MCP via the Principal Workspace
 
 Peko manages MCP servers through the principal workspace (ADR-047); the
-`peko ext *` surface was retired.
+`peko ext *` and `peko principal mcp` CLI surfaces were retired
+(ADR-050).
 
 ### Install an MCP Server
 
-```bash
-peko principal mcp install <server-path>
-```
+Copy the server's `server.json` into `~/.peko/principal/<name>/mcp/<id>/`.
 
 ### List MCP Servers
 
 ```bash
-peko principal mcp list
+ls ~/.peko/principal/<name>/mcp/
 ```
 
 ### Grant/Revoke MCP Capabilities
@@ -77,8 +81,8 @@ peko capability revoke --principal <principal-name> mcp:<mcp-server>
 ## Configuration
 
 MCP server settings live in `server.json` inside the workspace
-directory; edit the file directly or re-run
-`peko principal mcp install` with a new manifest.
+directory; edit the file directly and restart the principal (or the
+daemon) to pick up changes.
 
 ## Using MCP Tools with Agents
 

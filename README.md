@@ -127,10 +127,9 @@ peko principal push <NAME>:<TAG>                    # Push to registry
 peko principal pull <REF>                           # Pull from registry
 peko principal permit <NAME> <SUBJECT> <PERMISSION> # Grant permission
 peko principal revoke <NAME> <SUBJECT> <PERMISSION> # Revoke permission
-peko principal agent list <NAME>                    # List agent prompts in a Principal
 ```
 
-> **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a Principal; teams were removed in favor of Principal-to-Principal interaction.
+> **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a Principal's workspace (`agents/<name>.md`); teams were removed in favor of Principal-to-Principal interaction. Agent prompts are listed via `peko principal show <NAME>` and managed as files (ADR-050).
 
 #### Talk to a Principal (Primary Interaction)
 ```bash
@@ -172,18 +171,18 @@ peko logout
 
 #### Extension Management
 
-> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` command
-> tree was retired; tooling lives directly in the principal's workspace.
-> Use the per-category CLI:
+> **Retired.** The `peko ext *` command tree (ADR-047) and the
+> per-category `peko principal tool|skill|mcp|hook|agent|persona` CLI
+> (ADR-050) are both gone. Tooling is plain files in the principal's
+> workspace — manage it with your editor and the filesystem:
 >
 > ```bash
-> peko principal tool list / install / remove
-> peko principal skill list / install / remove
-> peko principal mcp list / install / remove
-> peko principal hook list / install / remove
-> peko principal plugin list / install / remove
+> ls ~/.peko/principal/<name>/{tools,skills,mcp,hooks}/   # list
+> cp -r ./my-skill ~/.peko/principal/<name>/skills/       # install
+> rm -r ~/.peko/principal/<name>/skills/my-skill          # remove
 > ```
 >
+> See [Principal Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md).
 > The lines below are retained for historical reference.
 
 ```bash
@@ -295,14 +294,11 @@ All capabilities — tools, skills, MCP servers, and channels — are implemente
 
 ### Managing Extensions
 
-> **Deprecated as of ADR-047 (2026-08-25).** The `peko ext *` flow was
-> retired; tooling lives directly in the principal's workspace. Use:
->
-> ```bash
-> peko principal tool install <path>
-> peko principal mcp install <path>
-> peko principal hook install <path>
-> ```
+> **Retired.** The `peko ext *` flow (ADR-047) and the per-category
+> install CLI (ADR-050) are both gone. Tooling lives directly in the
+> principal's workspace — copy files into
+> `~/.peko/principal/<name>/{tools,skills,mcp,hooks}/` and edit them
+> there.
 >
 > The block below is retained for historical reference.
 
@@ -493,7 +489,7 @@ MIT
 - [Principal Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md) — Per-principal tooling layout (ADR-047)
 - [PEKO Primitive](docs/architecture/PEKO.md) — Canonical term: Persistent Entity with Keepalive Orchestration
 - [Agent–Session Paradigm](docs/architecture/AGENT_SESSION_PARADIGM.md) — Full design rationale, gap audit, build order
-- [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-042
+- [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-050
 - [MCP Overview](docs/mcp/MCP.md) — Model Context Protocol integration
 - [Agent Guide](AGENTS.md) — Build, test, code-style rules for contributors
 - [API Surface](API_SURFACE.md) — Public Rust API contracts

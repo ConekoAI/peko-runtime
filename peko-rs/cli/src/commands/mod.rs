@@ -4,7 +4,6 @@
 //! Each submodule handles a specific command category:
 //!
 //! - `principal`: Principal (top-level AI actor) lifecycle management
-//! - `ext`: Extension management (tools, skills, MCP servers)
 //! - `config`: Configuration management
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Long-running daemon mode (cron engine + IPC server)
@@ -20,7 +19,6 @@ pub mod daemon;
 pub mod log;
 pub mod model;
 pub mod principal;
-pub mod principal_workspace;
 pub mod quota;
 pub mod registry;
 pub mod runtime;
@@ -51,7 +49,6 @@ use std::path::PathBuf;
   peko principal export myprincipal -o myprincipal.principal  # Export Principal
   peko send myprincipal \"Hello\"             # Send message to a Principal
   peko log myprincipal                       # Read principal activity (owner-root view)
-  peko principal agent list myprincipal      # List agents in a Principal
 ")]
 pub struct Cli {
     /// Configuration directory override
