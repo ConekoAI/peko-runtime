@@ -68,7 +68,7 @@ pub struct SendArgs {
 }
 
 /// Handle the send command
-pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     let message = resolve_message(&args).await?;
 
     // Refuse empty messages at the CLI layer — see Bug 4 in
@@ -146,7 +146,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         )
         .await?;
 
-    process_response_stream(stream, &client, &args, &peer, sent_at, _json).await
+    process_response_stream(stream, &client, &args, &peer, sent_at).await
 }
 
 /// `peko send group:<slug>` (ADR-049 Phase 2, D7): post `message` to
@@ -215,7 +215,6 @@ async fn process_response_stream(
     args: &SendArgs,
     peer: &peko_auth::Subject,
     sent_at: chrono::DateTime<chrono::Utc>,
-    _json: bool,
 ) -> Result<()> {
     // Spawn a side-channel task that watches for Ctrl-C and signals
     // the main loop. We can't await `ctrl_c()` directly inside the
@@ -518,7 +517,7 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("empty message must be rejected before IPC");
         let msg = format!("{err:#}");
@@ -537,7 +536,7 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("whitespace-only message must be rejected before IPC");
         assert!(format!("{err:#}").contains("Message is empty"));
@@ -687,7 +686,7 @@ mod tests {
         let paths = test_paths(&tmp);
         let store = seed_group(&paths, "eng-standup", &["local"]).await;
 
-        super::handle_send(group_send_args("group:eng-standup", "hi all"), &paths, false)
+        super::handle_send(group_send_args("group:eng-standup", "hi all"), &paths)
             .await
             .expect("group send must succeed for a member user");
 
@@ -722,7 +721,7 @@ mod tests {
 
         let mut args = group_send_args("group:eng", "hello from alice");
         args.peer = Some("user:alice".to_string());
-        super::handle_send(args, &paths, false)
+        super::handle_send(args, &paths)
             .await
             .expect("group send as --peer user must succeed");
 
@@ -754,7 +753,7 @@ mod tests {
         let paths = test_paths(&tmp);
         let _store = seed_group(&paths, "eng", &[]).await;
 
-        let err = super::handle_send(group_send_args("group:eng", "must not land"), &paths, false)
+        let err = super::handle_send(group_send_args("group:eng", "must not land"), &paths)
             .await
             .expect_err("non-member user must be refused");
         assert!(
@@ -772,7 +771,7 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("--wait on a group must be refused");
         assert!(
@@ -792,7 +791,7 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("--model on a group must be refused");
         assert!(
