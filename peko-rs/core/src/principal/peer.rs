@@ -13,14 +13,17 @@
 //! discovered mid-run materialize their directory + state file via
 //! [`PeerRegistry::get_or_create`]. Mirrors [`PrincipalManager`](super::manager::PrincipalManager).
 //!
-//! ## Stacking
+//! ## Attribution, not stacking (post-B6)
 //!
-//! `PeerRegistry::get_or_create(peer_id)` returns `Arc<Peer>` whose
-//! `quota_meter` is one of the meters in the active `QuotaScope`
-//! stack at the call site. Per-peer meters are stacked alongside
-//! per-principal meters via nested `QuotaScope::with` calls; see
-//! [`StackedMeteredProvider`](peko_engine::StackedMeteredProvider)
-//! for the wrapper that charges every meter in the stack.
+//! Each `Peer` owns a standalone `Arc<QuotaMeter>`. F19's
+//! `QuotaScope` + `StackedMeteredProvider` still charge every meter
+//! in the task-local stack for the principal half of attribution,
+//! but per-peer attribution is read from this registry directly via
+//! [`PeerRegistry::get`] / [`PeerRegistry::snapshot`]. The earlier
+//! peer-side stacking plumbing was removed in B6 (the engine / Agent
+//! path no longer wraps peer meters); this registry remains the
+//! authoritative source of peer counters and the surface the
+//! `peko quota` IPC queries.
 //!
 //! ## Storage layout
 //!

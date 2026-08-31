@@ -246,7 +246,7 @@ async fn process_response_stream(
             }
         });
     }
-    let mut interrupt_sent = false;
+    let mut stop_sent = false;
 
     let mut has_started_line = false;
     // Run summary captured from the daemon's `RunSummary` packet —
@@ -257,7 +257,7 @@ async fn process_response_stream(
     // token cost from the common streaming path.
     let mut summary: Option<crate::summary::RunSummaryView> = None;
     while let Some(packet) =
-        next_or_interrupt(&mut stream, &ctrl_c_signal, &mut interrupt_sent, client, args, peer)
+        next_or_stop(&mut stream, &ctrl_c_signal, &mut stop_sent, client, args, peer)
             .await?
     {
         match packet {
@@ -454,17 +454,17 @@ async fn wait_for_queued_reply(
 /// eventually emit its own `Done` with `error: Some("stopped by
 /// user")` and close it). Returns the next packet or `None` when the
 /// stream is fully closed.
-async fn next_or_interrupt(
+async fn next_or_stop(
     stream: &mut peko_core::ipc::PacketStream,
     ctrl_c_signal: &std::sync::Arc<tokio::sync::Notify>,
-    interrupt_sent: &mut bool,
+    stop_sent: &mut bool,
     client: &DaemonClient,
     args: &SendArgs,
     peer: &peko_auth::Subject,
 ) -> Result<Option<ResponsePacket>> {
     // Outer loop so a Ctrl-C that races with a packet still falls back
     // to the next stream.next() call to pick up the daemon's final
-    // `Done`. The `if !*interrupt_sent` guard ensures we only send the
+    // `Done`. The `if !*stop_sent` guard ensures we only send the
     // stop once even if the user mashes Ctrl-C.
     loop {
         let notified = ctrl_c_signal.notified();
@@ -472,8 +472,8 @@ async fn next_or_interrupt(
         tokio::select! {
             biased;
             packet = stream.next() => return Ok(packet),
-            () = &mut notified, if !*interrupt_sent => {
-                *interrupt_sent = true;
+            () = &mut notified, if !*stop_sent => {
+                *stop_sent = true;
                 eprintln!("\n[peko] Ctrl-C received — sending stop to daemon...");
                 if let Err(e) = client
                     .principal_stop(args.principal.clone(), Some(peer.clone()))

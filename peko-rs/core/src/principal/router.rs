@@ -219,12 +219,12 @@ pub trait PrincipalRouter: Send + Sync {
     /// root-agent router, and any extension that wants live tokens) override
     /// this and forward events to the caller as they happen.
     ///
-    /// `cancel` is an optional soft-interrupt token for the in-flight
+    /// `cancel` is an optional soft-stop token for the in-flight
     /// run. When set, the agentic loop observes it at iteration
     /// boundaries and exits cleanly with `Lifecycle::Interrupted` when
     /// signalled. Routers that don't support streaming (the default
     /// impl) can ignore it — the non-streaming `route()` path doesn't
-    /// have iteration boundaries to interrupt at.
+    /// have iteration boundaries to stop at.
     ///
     /// Returns the same final `RouteDecision` that the non-streaming
     /// `route()` would have produced.
