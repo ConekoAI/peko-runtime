@@ -17,6 +17,14 @@ pub const HELP_DESCRIPTION: &str =
     "Show built-in slash commands, enabled skills, and principal metadata";
 
 /// Handle `/help` for the given principal and output format.
+///
+/// ADR-050 D3 ("Presence = Visibility"): the catalog surfaced here is
+/// unfiltered — every enabled/installed extension appears. Capability
+/// grants still gate tool *execution* through the F37 funnel
+/// (`tool_registry::is_tool_enabled`), so a default principal can see
+/// the catalog but cannot invoke tools they haven't been granted. The
+/// "Allowed extensions (N): …" line summarizes active grants so the
+/// user can tell availability from authorization.
 pub async fn handle_help(
     principal: &Principal,
     extension_store: &Arc<ExtensionStore>,
@@ -29,14 +37,11 @@ pub async fn handle_help(
     let config = principal.config.read().await.clone();
     let allowed = &config.capabilities;
     let extensions = list_enabled_extensions(extension_store, extension_services).await?;
-    let filtered: Vec<&ExtensionSummary> = extensions
-        .iter()
-        .filter(|ext| is_extension_allowed(ext, allowed))
-        .collect();
+    let borrowed: Vec<&ExtensionSummary> = extensions.iter().collect();
 
     match format {
-        OutputFormat::Human => Ok(render_human(&config.name, &config, allowed, &filtered)),
-        OutputFormat::Json => render_json(&config.name, &config, allowed, &filtered),
+        OutputFormat::Human => Ok(render_human(&config.name, &config, allowed, &borrowed)),
+        OutputFormat::Json => render_json(&config.name, &config, allowed, &borrowed),
     }
 }
 
@@ -91,21 +96,6 @@ async fn list_enabled_extensions(
     }
 
     Ok(extensions)
-}
-
-/// Returns true if the extension id or name is granted by the principal's
-/// capabilities. An empty capability set is treated as allow-nothing,
-/// consistent with the rest of the runtime.
-fn is_extension_allowed(ext: &ExtensionSummary, allowed: &Capabilities) -> bool {
-    if allowed.is_empty() {
-        return false;
-    }
-
-    let kind = crate::principal::catalog::capability_kind_for_extension_type(&ext.ext_type);
-    let id_required = Capability::new(format!("{kind}:{}", ext.id));
-    let name_required = Capability::new(format!("{kind}:{}", ext.name));
-
-    allowed.is_granted(&id_required) || allowed.is_granted(&name_required)
 }
 
 fn render_human(
@@ -272,31 +262,96 @@ mod tests {
         }
     }
 
-    #[test]
-    fn is_extension_allowed_matches_id_case_insensitive() {
-        let allowed = Capabilities::with_grants(["skill:docker"]);
-        let ext = sample_summary("docker", "Docker", "skill");
-        assert!(is_extension_allowed(&ext, &allowed));
+    fn allowed_caps() -> Capabilities {
+        Capabilities::starter_bundle()
+    }
+
+    /// ADR-050 D3 ("Presence = Visibility"): the `/help` catalog is
+    /// unfiltered. A default principal (only cross-actor grants in
+    /// `Capabilities::starter_bundle()`) sees every installed
+    /// extension in the rendered output. Execution gating is the F37
+    /// funnel's job, not `/help`'s.
+    fn minimal_config(name: &str) -> PrincipalConfig {
+        PrincipalConfig {
+            name: name.to_string(),
+            did: None,
+            owner: Default::default(),
+            identity: Default::default(),
+            intent: Default::default(),
+            governance: Default::default(),
+            memory: Default::default(),
+            routing: Default::default(),
+            capabilities: Default::default(),
+            exposure: Default::default(),
+            status: None,
+            permissions: Vec::new(),
+            preferred_model_id: None,
+            transport_preference: crate::principal::config::TransportPreference::Auto,
+            quota: None,
+            children: Default::default(),
+        }
     }
 
     #[test]
-    fn is_extension_allowed_matches_name() {
-        let allowed = Capabilities::with_grants(["skill:docker"]);
-        let ext = sample_summary("pkg", "docker", "skill");
-        assert!(is_extension_allowed(&ext, &allowed));
+    fn help_human_lists_all_extensions_under_starter_bundle() {
+        let extensions = vec![
+            sample_summary("Bash", "Bash", "tool"),
+            sample_summary("Read", "Read", "tool"),
+            sample_summary("docker", "Docker", "skill"),
+            sample_summary("remote-mcp", "Remote MCP", "mcp"),
+        ];
+        let config = minimal_config("test");
+        let out = render_human(
+            "test",
+            &config,
+            &allowed_caps(),
+            &extensions.iter().collect::<Vec<_>>(),
+        );
+        // Starter bundle grants alone (no `tool:*` / `skill:*` / `mcp:*`)
+        // must not hide any extension from the catalog.
+        assert!(out.contains("Bash"), "missing Bash in /help output:\n{out}");
+        assert!(out.contains("Read"), "missing Read in /help output:\n{out}");
+        assert!(out.contains("docker"), "missing docker in /help output:\n{out}");
+        assert!(out.contains("remote-mcp"), "missing remote-mcp in /help output:\n{out}");
+        // The capabilities summary line is still present.
+        assert!(
+            out.contains("Allowed extensions"),
+            "missing capability summary:\n{out}"
+        );
     }
 
+    /// Same posture for the JSON envelope — every extension surfaces,
+    /// regardless of starter_bundle.
     #[test]
-    fn is_extension_allowed_empty_allowlist_denies_all() {
-        let allowed = Capabilities::new();
-        let ext = sample_summary("docker", "Docker", "skill");
-        assert!(!is_extension_allowed(&ext, &allowed));
-    }
-
-    #[test]
-    fn is_extension_allowed_unlisted_denied() {
-        let allowed = Capabilities::with_grants(["tool:bash"]);
-        let ext = sample_summary("docker", "Docker", "skill");
-        assert!(!is_extension_allowed(&ext, &allowed));
+    fn help_json_lists_all_extensions_under_starter_bundle() {
+        let extensions = vec![
+            sample_summary("Bash", "Bash", "tool"),
+            sample_summary("docker", "Docker", "skill"),
+        ];
+        let config = minimal_config("test");
+        let out = render_json(
+            "test",
+            &config,
+            &allowed_caps(),
+            &extensions.iter().collect::<Vec<_>>(),
+        )
+        .expect("json render");
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        let tool_ids: Vec<&str> = parsed["enabled_extensions"]["tool"]
+            .as_array()
+            .expect("tool array")
+            .iter()
+            .map(|v| v["id"].as_str().expect("id str"))
+            .collect();
+        let skill_ids: Vec<&str> = parsed["enabled_extensions"]["skill"]
+            .as_array()
+            .expect("skill array")
+            .iter()
+            .map(|v| v["id"].as_str().expect("id str"))
+            .collect();
+        assert_eq!(tool_ids, vec!["Bash"]);
+        assert_eq!(skill_ids, vec!["docker"]);
+        // Capabilities field still carried for scripts that read it.
+        assert!(parsed["capabilities"].is_array());
     }
 }

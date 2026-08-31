@@ -4,9 +4,21 @@
 # Offline probe: does a freshly-created default principal actually have
 # access to the new `session` tool? The session tool is wired into
 # BuiltinToolAdapter (peko-rs/core/src/extensions/builtin/adapter.rs:252)
-# but a `tool:session` grant may or may not be in starter_bundle.
-# Reproduces (or refutes) the same shape as the 2026-08-07 Finding 2
-# (cron tools described but not bound). No LLM API required.
+# but `tool:session` may or may not be in starter_bundle.
+#
+# ADR-050 (capabilities as workspace files, #368) cleared the
+# catalog-visibility half of the original F351 finding by making the
+# prompt sections unfiltered (D3: presence = visibility). However,
+# ADR-050 did NOT change the F37 funnel:
+# `tool_registry::is_tool_enabled` still requires `tool:<name>` for
+# tool *execution*, and `starter_bundle()` carries only the cross-actor
+# `principal:write_*` grants. So a default principal can SEE the session
+# tool in the model tool catalog but still cannot INVOKE it without an
+# explicit grant. This probe remains useful as a regression check that
+# surfaces the gap.
+#
+# Reproduces the same shape as the 2026-08-07 Finding 2 (cron tools
+# described but not bound). No LLM API required.
 
 flow_main() {
   peko_iso_init "probe-session-grant" || return 1
