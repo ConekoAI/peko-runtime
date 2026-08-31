@@ -5,7 +5,7 @@
 # would hit when first exploring the CLI after the persona-builder +
 # fixes. Touches:
 #   - quota surfaces (status / list / --json / --peer)
-#   - principal persona surfaces (show / set --help / persona --help)
+#   - principal persona surfaces (RETIRED ADR-050 — now file-based)
 #   - ext list / ext --help
 #   - send --file (attach file-based input)
 #   - log windowing
@@ -66,23 +66,8 @@ flow_main() {
   echo
 
   echo "--- B. principal persona surfaces ---"
-  echo "B1. does 'principal persona show' exist?"
-  peko_iso_run principal persona show probe || true
-  echo "rc=$_peko_iso_capture_rc"
-  echo "stdout:"
-  echo "$_peko_iso_capture_out"
-  echo "stderr:"
-  echo "$_peko_iso_capture_err"
-  echo
-  echo "B2. principal persona set --help:"
-  peko_iso_run principal persona set --help
-  echo "$_peko_iso_capture_out"
-  echo
-  echo "B3. principal persona --help:"
-  peko_iso_run principal persona --help
-  echo "rc=$_peko_iso_capture_rc"
-  echo "$_peko_iso_capture_out"
-  echo
+  echo "B1-B3 retired (ADR-050): 'principal persona' subcommands removed;"
+  echo "persona is edited directly in <workspace>/principal.toml / agents/primary.md."
   echo "B4. principal --help:"
   peko_iso_run principal --help
   echo "$_peko_iso_capture_out"

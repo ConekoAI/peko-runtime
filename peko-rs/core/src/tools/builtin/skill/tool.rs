@@ -4,8 +4,8 @@
 //! with argument substitution. The skill list is gated by the principal's
 //! `capabilities` grants and active extension snapshot, both carried in the
 //! tool execution context. Skill locations are resolved through the
-//! injected [`SkillRuntime`] port (the daemon side wraps the global
-//! `SkillCatalog`).
+//! injected [`SkillRuntime`] port (production uses the workspace-scanning
+//! `WorkspaceSkillRuntime` from `crate::extensions::skill::reader`).
 //!
 //! Argument substitution matches Claude Code's skill syntax:
 //! - `$ARGUMENTS` — the full args array joined with single spaces
@@ -73,10 +73,11 @@ fn scan_max_positional_index(body: &str) -> usize {
 /// Tool for invoking a SKILL.md body with argument substitution.
 ///
 /// The `Skill` tool resolves skill bodies via the injected
-/// [`SharedSkillRuntime`] port. Production wiring uses a
-/// `SkillCatalogRuntime` (root's `src/extensions/skill/skill_runtime_impl.rs`)
-/// which wraps the global `SkillCatalog` populated by the
-/// `ExtensionStore`. Tests substitute an in-memory mock.
+/// [`SharedSkillRuntime`] port. Production wiring uses the
+/// workspace-scanning `WorkspaceSkillRuntime`
+/// (`crate::extensions::skill::reader`), which resolves skills from
+/// the principal's workspace `skills/` directory. Tests substitute an
+/// in-memory mock.
 pub struct SkillTool {
     runtime: SharedSkillRuntime,
 }

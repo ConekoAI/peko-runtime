@@ -322,7 +322,7 @@ mod tests {
     /// `validate_send_target` from this module's imports). The CLI's
     /// `peko cron add --target` continues to call `validate_send_target`
     /// on the CLI side; see `peko-rs/cli/src/commands/cron.rs`.
-
+    ///
     /// Round-4 verification finding (2026-08-08): `at` jobs must default
     /// to one-shot when the caller passes no recurrence hint — a fired
     /// `at` job can never fire again, so a recurring default parks it on

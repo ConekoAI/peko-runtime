@@ -11,6 +11,7 @@
 //! parse_yaml_frontmatter_typed}` paths used by other parts of the
 //! codebase (validation, the builtin `Skill` tool, etc.).
 
+pub mod prompt;
 pub mod reader;
 
 // Canonical DTOs and parser re-exports — `peko_tools_builtin::skill`
@@ -18,4 +19,5 @@ pub mod reader;
 pub use crate::tools::builtin::skill::{
     parse_yaml_frontmatter, parse_yaml_frontmatter_typed, SkillFrontmatter,
 };
+pub use prompt::{WorkspaceSkillsPromptHandler, SKILL_CATALOG_HOOK_PRIORITY};
 pub use reader::WorkspaceSkillRuntime;

@@ -23,9 +23,11 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
+use crate::extensions::agent::{WorkspaceAgentsPromptHandler, AGENT_HOOK_PRIORITY};
 use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::extensions::framework::core::{global_core, ExtensionCore};
+use crate::extensions::framework::core::{global_core, ExtensionCore, HookHandler, HookPoint};
+use crate::extensions::framework::types::ExtensionId;
+use crate::extensions::skill::{WorkspaceSkillsPromptHandler, SKILL_CATALOG_HOOK_PRIORITY};
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
 use crate::principal::seen_models::{seen_models_path, SeenModels};
@@ -165,17 +167,14 @@ impl PrincipalContext {
         // cleanly), so dropping the corrupted content is preferable
         // to refusing the principal.
         let seen_path = seen_models_path(&workspace_path);
-        let initial_seen = SeenModels::load(&seen_path).map_or_else(
-            |e| {
-                tracing::warn!(
-                    "failed to parse seen_models.json at {}: {e}; \
+        let initial_seen = SeenModels::load(&seen_path).unwrap_or_else(|e| {
+            tracing::warn!(
+                "failed to parse seen_models.json at {}: {e}; \
                      starting with empty set (next mark_model_seen will rewrite)",
-                    seen_path.display()
-                );
-                SeenModels::empty()
-            },
-            |seen| seen,
-        );
+                seen_path.display()
+            );
+            SeenModels::empty()
+        });
         Self {
             workspace_path,
             sessions_dir,
@@ -313,10 +312,7 @@ impl PrincipalContext {
     /// the caller wants to record the use.
     #[must_use]
     pub fn has_model_seen(&self, model_id: &str) -> bool {
-        let guard = self
-            .seen_models
-            .lock()
-            .expect("seen_models mutex poisoned");
+        let guard = self.seen_models.lock().expect("seen_models mutex poisoned");
         guard.contains(model_id)
     }
 
@@ -354,32 +350,27 @@ impl PrincipalContext {
     /// failure, which is acceptable.
     pub fn mark_model_seen(&self, model_id: &str) -> bool {
         let path = seen_models_path(&self.workspace_path);
-        let mut guard = self
-            .seen_models
-            .lock()
-            .expect("seen_models mutex poisoned");
+        let mut guard = self.seen_models.lock().expect("seen_models mutex poisoned");
         let mut snapshot = SeenModels {
             version: 1,
             models: guard.clone(),
         };
-        let fresh = snapshot
-            .add_then_save(model_id, &path)
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    "failed to persist seen_models.json at {}: {e}; \
+        let fresh = snapshot.add_then_save(model_id, &path).unwrap_or_else(|e| {
+            tracing::warn!(
+                "failed to persist seen_models.json at {}: {e}; \
                      in-memory state remains authoritative",
-                    path.display()
-                );
-                // `add_then_save` returned Err only after
-                // successfully inserting into the in-memory set.
-                // We don't have the boolean separately, but if
-                // we hit this branch, the in-memory insert did
-                // happen — assume fresh=true so the caller still
-                // gets the audit warning. The next call on the
-                // same id will short-circuit on the in-memory
-                // set and return `false`.
-                true
-            });
+                path.display()
+            );
+            // `add_then_save` returned Err only after
+            // successfully inserting into the in-memory set.
+            // We don't have the boolean separately, but if
+            // we hit this branch, the in-memory insert did
+            // happen — assume fresh=true so the caller still
+            // gets the audit warning. The next call on the
+            // same id will short-circuit on the in-memory
+            // set and return `false`.
+            true
+        });
         // Always sync the in-memory set, even when the save
         // failed — keeps `mark_model_seen` consistent with what
         // the caller would observe on the next call.
@@ -410,11 +401,6 @@ impl PrincipalContext {
             Arc::new(ExtensionCore::new())
         });
         if !core.universal_extensions_loaded() {
-            // Phase A: derive the typed agents dir from the
-            // principal's Shared layout. `self.workspace_path` is
-            // the Shared tier root, so the agents dir is exactly
-            // `workspace_path.join("agents")`.
-            let agents_dir = self.workspace_path.join("agents");
             // Phase 2 PR 1 (ADR-047): skills live under
             // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
             // runtime reads from that directory.
@@ -455,7 +441,6 @@ impl PrincipalContext {
             let channel_port = resolve_channel_port();
             if let Err(e) = install_principal_tool_bag(
                 Arc::clone(&core),
-                &agents_dir,
                 &skills_dir,
                 &mcp_dir,
                 &tools_dir,
@@ -515,20 +500,21 @@ impl PrincipalContext {
 /// standalone contexts where no daemon has installed one. Kept as a
 /// tiny free function so the fallback behavior is unit-testable.
 fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
-    peko_channel::global_channel_port()
-        .unwrap_or_else(|| Arc::new(peko_channel::NoopChannelPort))
+    peko_channel::global_channel_port().unwrap_or_else(|| Arc::new(peko_channel::NoopChannelPort))
 }
 
 /// Wire the principal's tool bag onto the daemon-global `ExtensionCore`.
 ///
-/// Built-ins (Read, Bash, glob, grep, Cron*, Task*, Async*, …) and
-/// the principal's discovered `<workspace>/agents/` entries are
-/// registered. The `agent_catalog` tool is *not* installed here — it
-/// is the only per-call tool and the runner installs it via
-/// [`install_agent_catalog`] on each message.
-/// Phase A: caller passes the typed `SharedLayout::agents_dir`
-/// directly so the hand-rolled `workspace_path.join("agents")`
-/// join inside this function is gone.
+/// Built-ins (Read, Bash, glob, grep, Cron*, Task*, Async*, …) are
+/// registered, along with the workspace-scanning prompt handlers that
+/// render the `agents` / `skills` system-prompt sections
+/// ([`WorkspaceAgentsPromptHandler`] / [`WorkspaceSkillsPromptHandler`]).
+/// The handlers resolve the workspace from the hook context at invoke
+/// time and re-scan `<workspace>/agents/` / `<workspace>/skills/`
+/// whenever the directory mtime changes, so one registration on this
+/// daemon-global core serves all principals. The `agent_catalog` tool
+/// is *not* installed here — it is the only per-call tool and the
+/// runner installs it via [`install_agent_catalog`] on each message.
 ///
 /// Phase 2 PR 2 (ADR-047 §2.3) also takes the typed `mcp_dir` and
 /// scans `<workspace>/mcp/<id>/server.json` (or `manifest.yaml`) for
@@ -546,7 +532,6 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 #[allow(clippy::too_many_arguments)]
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
-    agents_dir: &Path,
     skills_dir: &Path,
     mcp_dir: &Path,
     tools_dir: &Path,
@@ -556,13 +541,12 @@ async fn install_principal_tool_bag(
 ) -> anyhow::Result<()> {
     // Built-in tools.
     let path_resolver = crate::common::paths::PathResolver::new();
-    if let Err(e) =
-        crate::engine::tool_runtime::ToolRuntime::register_builtins(
-            &core,
-            &path_resolver,
-            channel_port,
-        )
-        .await
+    if let Err(e) = crate::engine::tool_runtime::ToolRuntime::register_builtins(
+        &core,
+        &path_resolver,
+        channel_port,
+    )
+    .await
     {
         tracing::warn!("ToolRuntime::register_builtins failed during core build: {e}");
     }
@@ -588,12 +572,36 @@ async fn install_principal_tool_bag(
         tracing::warn!("SkillTool registration failed during core build: {e}");
     }
 
-    // Phase A: caller passes the typed `agents_dir` directly.
-    if agents_dir.exists() {
-        let adapter = AgentAdapter::new();
-        let discovered = adapter.discover_agents(agents_dir);
-        if let Err(e) = register_agents_with_core(&core, discovered).await {
-            tracing::warn!("register_agents_with_core failed during core build: {e}");
+    // Part B (dynamic per-turn workspace catalog): register the
+    // workspace-scanning `agents` / `skills` prompt-section handlers
+    // once on the daemon-global core. The handlers resolve the
+    // workspace from the hook context at invoke time and re-scan
+    // `<workspace>/agents/` / `<workspace>/skills/` whenever the
+    // directory mtime changes, so agents/skills added to any
+    // principal's workspace appear in the per-turn prompt suffix on
+    // the next iteration. Presence in the workspace = visible
+    // (ADR-047) — no capability or active-extension filter.
+    let catalog_hooks: [(HookPoint, Arc<dyn HookHandler>, ExtensionId); 2] = [
+        (
+            HookPoint::PromptSystemSection {
+                section: "agents".to_string(),
+                priority: AGENT_HOOK_PRIORITY,
+            },
+            Arc::new(WorkspaceAgentsPromptHandler::new()),
+            ExtensionId::new("agent:workspace-catalog"),
+        ),
+        (
+            HookPoint::PromptSystemSection {
+                section: "skills".to_string(),
+                priority: SKILL_CATALOG_HOOK_PRIORITY,
+            },
+            Arc::new(WorkspaceSkillsPromptHandler::new()),
+            ExtensionId::new("skill:workspace-catalog"),
+        ),
+    ];
+    for (point, handler, extension_id) in catalog_hooks {
+        if let Err(e) = core.register_hook(point, handler, &extension_id).await {
+            tracing::warn!("workspace catalog hook registration failed for {extension_id}: {e}");
         }
     }
 
@@ -611,12 +619,7 @@ async fn install_principal_tool_bag(
     // there races `peko ext start`).
     if let Some(mcp_manager) = crate::extensions::mcp::global_mcp_manager() {
         if mcp_dir.exists() {
-            match crate::extensions::mcp::load_workspace_mcp_servers(
-                mcp_dir,
-                &mcp_manager,
-            )
-            .await
-            {
+            match crate::extensions::mcp::load_workspace_mcp_servers(mcp_dir, &mcp_manager).await {
                 Ok(loaded) => {
                     if loaded > 0 {
                         tracing::info!(
@@ -625,10 +628,9 @@ async fn install_principal_tool_bag(
                         );
                     }
                 }
-                Err(e) => tracing::warn!(
-                    "MCP workspace scan failed for {}: {e}",
-                    mcp_dir.display()
-                ),
+                Err(e) => {
+                    tracing::warn!("MCP workspace scan failed for {}: {e}", mcp_dir.display())
+                }
             }
         }
 
@@ -642,12 +644,8 @@ async fn install_principal_tool_bag(
         let proxy_tools = mgr.get_tools().await;
         drop(mgr);
         for tool in proxy_tools {
-            if let Err(e) = BuiltinToolAdapter::register_tool(
-                core.as_ref(),
-                tool,
-                principal_id,
-            )
-            .await
+            if let Err(e) =
+                BuiltinToolAdapter::register_tool(core.as_ref(), tool, principal_id).await
             {
                 tracing::warn!("MCP tool registration failed during core build: {e}");
             }
@@ -1017,9 +1015,7 @@ mod tests {
         // Seed the file by writing through `SeenModels::save`.
         let path = seen_models_path(dir.path());
         let mut prior = SeenModels::empty();
-        prior
-            .add_then_save("claude-sonnet-4-6", &path)
-            .unwrap();
+        prior.add_then_save("claude-sonnet-4-6", &path).unwrap();
         assert!(path.exists());
 
         // Build a context pointing at the seeded workspace.

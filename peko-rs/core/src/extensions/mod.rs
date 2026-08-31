@@ -46,12 +46,11 @@ pub mod framework;
 /// Built-in tool adapter — registers native Tool trait implementations with ExtensionCore.
 pub mod builtin;
 
-/// Sprint 9 Commit 3: the gateway extension was retired. The
-/// chat-gateway adapter framework (HTTP/WebSocket bridges) never
-/// shipped a concrete integration and is no longer wired into the
-/// daemon. All external ingress lands in per-peer standing children
-/// under the agent-session paradigm (Phase 7 of sprint 2).
-
+// Sprint 9 Commit 3: the gateway extension was retired. The
+// chat-gateway adapter framework (HTTP/WebSocket bridges) never
+// shipped a concrete integration and is no longer wired into the
+// daemon. All external ingress lands in per-peer standing children
+// under the agent-session paradigm (Phase 7 of sprint 2).
 // PR-C.5: `extensions::general` deleted (was 850 lines including
 // `adapter.rs` 832L + `command_handler.rs` 503L — the latter
 // moved to `extensions::command_handler` in PR-C.3). The general
@@ -121,9 +120,10 @@ pub mod workspace_hooks;
 //
 // PR-C.5 follow-up: both single call sites were deleted once their
 // adapters were gutted. The `agent/adapter.rs` shell still hosts
-// `discover_agents` + `register_agents_with_core` (the only
-// production emitter of the "agents" prompt section); the
-// `general/` directory was deleted entirely.
+// `discover_agents`; the "agents" prompt section is now emitted by
+// `WorkspaceAgentsPromptHandler` (Part B — registered once in
+// `principal/context.rs`, scanning `<workspace>/agents/` at invoke
+// time); the `general/` directory was deleted entirely.
 
 // PR-C: the `test_built_in_adapters` assertion
 // (`adapters.len() == 2`) lived here because `BuiltInAdapters`

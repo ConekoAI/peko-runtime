@@ -8,7 +8,6 @@
 //! Larger payloads are chunked at the application layer.
 
 use crate::principal::runtime::OutputFormat;
-use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -154,28 +153,6 @@ pub enum RequestPacket {
     /// `ManageSettings` permission on the principal.
     #[serde(rename = "principal_remove")]
     PrincipalRemove { request_id: u64, name: String },
-
-    /// Draft a persona for a Principal from a one-sentence
-    /// description. The daemon calls a configured model via
-    /// `Provider::chat_with_system` and returns the LLM's raw text
-    /// in [`ResponsePacket::PersonaDrafted::content`]. No session,
-    /// no memory, no streaming — this is a single-shot draft.
-    ///
-    /// Backed by the `peko principal persona set <name> --from "…"`
-    /// CLI subcommand (see `scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md`
-    /// "Top feature wish — guided persona builder"). The CLI parses
-    /// the LLM JSON and writes `principal.toml` + `agents/primary.md`.
-    #[serde(rename = "persona_draft")]
-    PersonaDraft {
-        request_id: u64,
-        /// Configured model id to call. Validated server-side
-        /// against the catalog before the LLM call.
-        model_id: String,
-        /// Free-form one-sentence description from the user
-        /// (e.g. "a senior rust engineer who reviews PRs for
-        /// idiomatic patterns and safety").
-        from: String,
-    },
 
     // ─── Model catalog listing ──────────────────────────────────────
     #[serde(rename = "model_list")]
@@ -420,7 +397,6 @@ pub enum RequestPacket {
     // workspace-resident and have no on-disk store, no packager, no
     // runtime lifecycle. Workspace plugins are discovered by the
     // principal's catalog builder instead.
-
     #[serde(rename = "system_clean")]
     SystemClean {
         request_id: u64,
@@ -765,7 +741,6 @@ pub enum RequestPacket {
     // the handler takes a `PrincipalId`, the wire carries the
     // principal's display name (the daemon resolves it back to a
     // `PrincipalId` via `ChannelHost::principal_manager`).
-
     /// Create a new channel owned by `creator_name`.
     ///
     /// `passive_binding` (Phase 4, agent-session paradigm sprint) is the
@@ -856,10 +831,7 @@ pub enum RequestPacket {
 
     /// List members of `channel`.
     #[serde(rename = "channel_members")]
-    ChannelMembers {
-        request_id: u64,
-        channel: String,
-    },
+    ChannelMembers { request_id: u64, channel: String },
 
     /// List channels where `principal_name` is a member.
     #[serde(rename = "channel_list")]
@@ -883,10 +855,7 @@ pub enum RequestPacket {
     /// daemon handler; the in-process CLI fallback path performs
     /// the same check via `RuntimeAuthority`.
     #[serde(rename = "channel_pin_to_shared")]
-    ChannelPinToShared {
-        request_id: u64,
-        channel: String,
-    },
+    ChannelPinToShared { request_id: u64, channel: String },
 }
 
 impl RequestPacket {
@@ -903,7 +872,6 @@ impl RequestPacket {
             | Self::PrincipalCreate { request_id, .. }
             | Self::PrincipalUpdate { request_id, .. }
             | Self::PrincipalRemove { request_id, .. }
-            | Self::PersonaDraft { request_id, .. }
             | Self::ModelList { request_id }
             | Self::ModelReload { request_id }
             | Self::ModelTemplates { request_id }
@@ -1329,18 +1297,6 @@ pub enum ResponsePacket {
         request_id: u64,
         name: String,
         removed: bool,
-    },
-
-    /// Reply to [`RequestPacket::PersonaDraft`]. `content` carries
-    /// the LLM's raw text. The handler instructs the model to emit a
-    /// JSON object matching the persona schema; the CLI parses it.
-    /// If the model returned non-JSON, `parse_ok` is `false` and
-    /// `content` is the raw prose for fallback rendering.
-    #[serde(rename = "persona_drafted")]
-    PersonaDrafted {
-        request_id: u64,
-        content: String,
-        parse_ok: bool,
     },
 
     /// Result of `CredentialList`. One row per provider id that the
@@ -2382,7 +2338,6 @@ impl ResponsePacket {
             | Self::PrincipalCreated { request_id, .. }
             | Self::PrincipalUpdated { request_id, .. }
             | Self::PrincipalRemoved { request_id, .. }
-            | Self::PersonaDrafted { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ModelList { request_id, .. }
@@ -2462,7 +2417,6 @@ impl ResponsePacket {
             Self::PrincipalCreated { .. } => "PrincipalCreated",
             Self::PrincipalUpdated { .. } => "PrincipalUpdated",
             Self::PrincipalRemoved { .. } => "PrincipalRemoved",
-            Self::PersonaDrafted { .. } => "PersonaDrafted",
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ModelList { .. } => "ModelList",
@@ -3570,84 +3524,6 @@ mod tests {
         }
     }
 
-    /// Pin the `persona_draft` wire envelope so a future change to the
-    /// JSON keys surfaces as a test failure rather than the CLI's
-    /// `peko principal persona set` subcommand silently timing out.
-    /// Backed by the persona builder (2026-08-01 field-test top wish).
-    #[test]
-    fn test_persona_draft_request_roundtrip() {
-        let req = RequestPacket::PersonaDraft {
-            request_id: 1301,
-            model_id: "minimax-MiniMax-M3".to_string(),
-            from: "a senior rust reviewer who cites the borrow checker".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            json.get("type").and_then(|v| v.as_str()),
-            Some("persona_draft")
-        );
-        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(1301));
-        assert_eq!(
-            json.get("model_id").and_then(|v| v.as_str()),
-            Some("minimax-MiniMax-M3")
-        );
-        assert_eq!(
-            json.get("from").and_then(|v| v.as_str()),
-            Some("a senior rust reviewer who cites the borrow checker")
-        );
-
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::PersonaDraft {
-                request_id,
-                model_id,
-                from,
-            } => {
-                assert_eq!(request_id, 1301);
-                assert_eq!(model_id, "minimax-MiniMax-M3");
-                assert_eq!(from, "a senior rust reviewer who cites the borrow checker");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    /// Pin the `persona_drafted` wire envelope. `parse_ok` lets the
-    /// CLI distinguish JSON success from a non-JSON LLM fallback.
-    #[test]
-    fn test_persona_drafted_response_roundtrip() {
-        let resp = ResponsePacket::PersonaDrafted {
-            request_id: 1302,
-            content: r#"{"display_name":"Rust Reviewer"}"#.to_string(),
-            parse_ok: true,
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            json.get("type").and_then(|v| v.as_str()),
-            Some("persona_drafted")
-        );
-        assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(1302));
-        assert_eq!(json.get("parse_ok").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(
-            json.get("content").and_then(|v| v.as_str()),
-            Some(r#"{"display_name":"Rust Reviewer"}"#)
-        );
-
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::PersonaDrafted {
-                request_id,
-                content,
-                parse_ok,
-            } => {
-                assert_eq!(request_id, 1302);
-                assert!(parse_ok);
-                assert_eq!(content, r#"{"display_name":"Rust Reviewer"}"#);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
     #[test]
     fn test_credential_set_request_roundtrip() {
         let req = RequestPacket::CredentialSet {
@@ -4750,10 +4626,16 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::PrincipalLogAppended { request_id, message } => {
+            ResponsePacket::PrincipalLogAppended {
+                request_id,
+                message,
+            } => {
                 assert_eq!(request_id, 5300);
                 assert_eq!(message.text, "hi");
-                assert_eq!(message.sender, peko_auth::Subject::User("alice".to_string()));
+                assert_eq!(
+                    message.sender,
+                    peko_auth::Subject::User("alice".to_string())
+                );
             }
             _ => panic!("Wrong variant"),
         }
@@ -4940,5 +4822,4 @@ mod tests {
             "PrincipalSent and PrincipalSentDone must have distinct wire shapes"
         );
     }
-
-    }
+}

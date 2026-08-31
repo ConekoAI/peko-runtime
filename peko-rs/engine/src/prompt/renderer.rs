@@ -14,9 +14,9 @@
 //! - **Stateless.** The renderer carries no per-iteration state. The
 //!   capability-diff tracker lives on the loop and is observed upstream
 //!   of the renderer call.
-//! - **Parallel hook dispatch.** The three hook-driven sections (`skills`,
-//!   `agents`, `mcp_context`) and the per-turn `SessionContextBuild` hook
-//!   all fire concurrently via [`tokio::join!`]. Each handler is wrapped
+//! - **Parallel hook dispatch.** The `mcp_context` section and the
+//!   per-turn `SessionContextBuild` / `skills` / `agents` hooks all fire
+//!   concurrently via [`tokio::join!`]. Each handler is wrapped
 //!   in a 2-second timeout; a slow or stuck handler soft-fails to empty so
 //!   a single misbehaving extension can't stall the loop. The `tools`
 //!   section is intentionally not dispatched — tool catalogs travel on
@@ -24,6 +24,12 @@
 //!   `crate::agentic_loop::build_tool_definitions` and the
 //!   `list_tool_definitions_with_allowlist` filter in
 //!   `peko_core::extensions::framework::core::registry`).
+//! - **`skills` / `agents` are volatile.** Both sections render in the
+//!   per-turn suffix ([`PromptRenderer::render_per_turn`]), not the
+//!   cache-stable prefix, so agents/skills added to the workspace appear
+//!   on the very next iteration. The suffix already changes every
+//!   iteration via `{{current_time}}`, so this costs nothing in
+//!   provider-cache stability and makes the prefix strictly more stable.
 //! - **`mcp_context` normalized.** This section previously used plain
 //!   `invoke_hook_text`; the rest use the trait-port
 //!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_api::ToolFunnel::invoke_prompt_section_hook).
@@ -184,16 +190,20 @@ impl PromptRenderer {
     /// F23: render only the cache-stable prefix of the system prompt.
     ///
     /// Includes the agent body, inline identity / runtime / sandbox
-    /// fields, and the three hook-driven sections (`skills`, `agents`,
-    /// `mcp_context`) — i.e. everything that is byte-stable across
-    /// iterations within a session unless the profile mutates.
-    /// Excludes per-iteration fields like `{{iteration_budget}}`,
+    /// fields, and the `mcp_context` section — i.e. everything that is
+    /// byte-stable across iterations within a session unless the profile
+    /// mutates. Excludes per-iteration fields like `{{iteration_budget}}`,
     /// `{{quota_state}}`, `{{session_context}}`, `{{memory}}`,
     /// `{{current_time}}`, `{{timezone}}`, `{{soft_cancel}}`, and
-    /// `{{capability_diff}}`
-    /// (those go in [`render_per_turn`]). Tool catalogs are not part of
-    /// the prefix; they reach the model on the wire as the `tools[]`
-    /// JSON-schema array.
+    /// `{{capability_diff}}` (those go in [`render_per_turn`]).
+    /// `{{skills}}` and `{{agents}}` also go in [`render_per_turn`]:
+    /// they are workspace-scanned catalogs, so rendering them in the
+    /// volatile suffix lets new workspace files appear on the next
+    /// iteration (the suffix already changes every iteration via
+    /// `{{current_time}}`, so this costs nothing in provider-cache
+    /// stability and makes the prefix strictly more stable). Tool
+    /// catalogs are not part of the prefix; they reach the model on the
+    /// wire as the `tools[]` JSON-schema array.
     ///
     /// The engine loop caches the returned string in an `Arc<String>`
     /// and re-renders on profile changes. Adapter cache markers on
@@ -201,21 +211,17 @@ impl PromptRenderer {
     /// turn-over-turn.
     #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name))]
     pub async fn render_cache_stable(&self, ctx: &TurnPromptContext) -> String {
-        // Parallel hook dispatch — same as the full render, but we only
-        // consume the three stable-section hooks. The session-context
-        // hook is volatile (it runs every iteration); we ignore its
-        // result by reading an empty string into the values map.
+        // `mcp_context` is the only hook-driven section left in the
+        // prefix — `skills` / `agents` moved to the volatile suffix
+        // (see the doc above). The session-context hook is volatile
+        // (it runs every iteration); we ignore its result by reading
+        // an empty string into the values map.
         //
         // Phase 2 PR 2: `mcp_context` sourced from the provider field,
         // not from a framework hook.
-        let (skills, agents, mcp) = tokio::join!(
-            self.dispatch_text("skills", ctx),
-            self.dispatch_text("agents", ctx),
-            self.mcp_context_provider.render_mcp_context(),
-        );
+        let mcp = self.mcp_context_provider.render_mcp_context().await;
 
-        let empty_session = String::new();
-        let values = build_stable_placeholder_values(ctx, &skills, &agents, &mcp, &empty_session);
+        let values = build_stable_placeholder_values(ctx, &mcp);
         replace_placeholders(&ctx.body, &values, true)
     }
 
@@ -224,12 +230,16 @@ impl PromptRenderer {
     /// Complements [`render_cache_stable`]: produces the trailing
     /// section of the system prompt that changes every iteration
     /// (`{{current_time}}`, `{{timezone}}`, `{{memory}}`,
-    /// `{{session_context}}`,
+    /// `{{session_context}}`, `{{agents}}`, `{{skills}}`,
     /// `{{iteration_budget}}`, `{{quota_state}}`, `{{soft_cancel}}`,
     /// `{{capability_diff}}`). The engine loop concatenates this with
     /// the cached prefix via [`assemble_system_prompt`]; the result is
     /// byte-stable across the prefix (cache hit) plus a fresh suffix
     /// each iteration.
+    ///
+    /// `{{agents}}` / `{{skills}}` live here (not in the prefix) so a
+    /// workspace-scanned catalog picks up new files on the next
+    /// iteration instead of being frozen for the loop's lifetime.
     #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
     pub async fn render_per_turn(&self, ctx: &TurnPromptContext) -> String {
         // The per-turn suffix is built from a stripped-down body that
@@ -248,13 +258,23 @@ impl PromptRenderer {
             {{timezone}}\n\
             {{memory}}\n\
             {{session_context}}\n\
+            {{agents}}\n\
+            {{skills}}\n\
             {{iteration_budget}}\n\
             {{quota_state}}\n\
             {{soft_cancel}}\n\
             {{capability_diff}}";
 
-        let session_ctx = self.dispatch_session_context(ctx).await;
-        let values = build_per_turn_placeholder_values(ctx, &session_ctx);
+        // Parallel hook dispatch: the workspace-catalog sections
+        // (`agents`, `skills`) and `SessionContextBuild` are independent,
+        // so fire them concurrently. Each `dispatch_text` carries its
+        // own 2s timeout.
+        let (agents, skills, session_ctx) = tokio::join!(
+            self.dispatch_text("agents", ctx),
+            self.dispatch_text("skills", ctx),
+            self.dispatch_session_context(ctx),
+        );
+        let values = build_per_turn_placeholder_values(ctx, &agents, &skills, &session_ctx);
         replace_placeholders(VOLATILE_BODY, &values, true)
     }
 
@@ -440,16 +460,15 @@ fn build_placeholder_values(
 /// Same shape as `build_placeholder_values`, but only fills the
 /// placeholders that are byte-stable across iterations: inline
 /// identity, runtime, sandbox, model aliases, self-update, and the
-/// three hook-driven section placeholders. Volatile placeholders
+/// `mcp_context` section. `skills` and `agents` moved to the volatile
+/// suffix ([`PromptRenderer::render_per_turn`]) so new workspace files
+/// appear on the next iteration; the other volatile placeholders
 /// (`timezone`, `memory`, `session_context`, `iteration_budget`,
-/// `quota_state`, `soft_cancel`, `capability_diff`) are omitted —
-/// `remove_missing=true` strips them on render.
+/// `quota_state`, `soft_cancel`, `capability_diff`) are omitted as
+/// before — `remove_missing=true` strips them on render.
 fn build_stable_placeholder_values(
     ctx: &TurnPromptContext,
-    skills: &str,
-    agents: &str,
     mcp: &str,
-    _session_ctx: &str,
 ) -> HashMap<Placeholder, String> {
     let mut values = HashMap::new();
 
@@ -460,9 +479,8 @@ fn build_stable_placeholder_values(
     values.insert(Placeholder::ThinkingLevel, ctx.thinking_level.clone());
     // Placeholder::Timezone intentionally omitted — volatile.
 
-    // Hook-driven sections. Tools are wire-only.
-    values.insert(Placeholder::Skills, format_skills_section(skills));
-    values.insert(Placeholder::Agents, format_agents_section(agents));
+    // Hook-driven sections. Tools are wire-only. Skills / Agents
+    // intentionally omitted — they moved to the volatile suffix.
     values.insert(Placeholder::Runtime, format_runtime_section(ctx));
     values.insert(Placeholder::Sandbox, format_sandbox_section(ctx));
     values.insert(Placeholder::ModelAliases, format_model_aliases_section(ctx));
@@ -479,11 +497,14 @@ fn build_stable_placeholder_values(
 
 /// F23: build the placeholder → value map for the per-turn suffix.
 ///
-/// Only fills the volatile placeholders. Stable placeholders are
-/// omitted; `remove_missing=true` strips any leftover references in
-/// the synthetic body.
+/// Only fills the volatile placeholders — including the `agents` /
+/// `skills` workspace catalogs, which refresh every iteration. Stable
+/// placeholders are omitted; `remove_missing=true` strips any leftover
+/// references in the synthetic body.
 fn build_per_turn_placeholder_values(
     ctx: &TurnPromptContext,
+    agents: &str,
+    skills: &str,
     session_ctx: &str,
 ) -> HashMap<Placeholder, String> {
     let mut values = HashMap::new();
@@ -505,6 +526,10 @@ fn build_per_turn_placeholder_values(
         Placeholder::SessionContext,
         format_session_context_section(session_ctx),
     );
+    // Workspace catalogs — refreshed per iteration so newly added
+    // workspace files appear immediately.
+    values.insert(Placeholder::Agents, format_agents_section(agents));
+    values.insert(Placeholder::Skills, format_skills_section(skills));
 
     values.insert(
         Placeholder::IterationBudget,
@@ -665,9 +690,15 @@ mod tests {
     /// That keeps the existing test assertions (placeholder stripping
     /// with no handlers) valid. `SessionContextBuild` snapshots are
     /// captured for inspection (the session-id plumbing test).
+    ///
+    /// Tests that need a prompt section to render text populate
+    /// `section_texts` (keyed by section name, e.g. `"agents"`) —
+    /// `invoke_prompt_section_hook` then returns that text, mimicking
+    /// a registered `PromptSystemSection` handler.
     #[derive(Default)]
     struct EmptyExtensionCore {
         session_context_snapshots: std::sync::Mutex<Vec<SessionSnapshot>>,
+        section_texts: std::sync::Mutex<HashMap<String, String>>,
     }
 
     #[async_trait]
@@ -753,14 +784,18 @@ mod tests {
         }
         async fn invoke_prompt_section_hook(
             &self,
-            _section: &str,
+            section: &str,
             _priority: i32,
             _principal_id: Option<&str>,
             _capabilities: Option<Vec<String>>,
             _active_extensions: Option<Vec<String>>,
             _workspace: Option<String>,
         ) -> Option<String> {
-            None
+            self.section_texts
+                .lock()
+                .expect("section_texts mutex poisoned")
+                .get(section)
+                .cloned()
         }
         async fn invoke_session_context_build_hook(
             &self,
@@ -780,6 +815,26 @@ mod tests {
 
     fn empty_funnel() -> Arc<dyn ToolFunnel> {
         Arc::new(EmptyExtensionCore::default())
+    }
+
+    /// Funnel with `agents` / `skills` prompt-section handlers that
+    /// return fixed catalog text — mimics the workspace-scanning
+    /// handlers registered in root.
+    fn catalog_funnel() -> Arc<dyn ToolFunnel> {
+        let core = EmptyExtensionCore::default();
+        {
+            let mut texts = core.section_texts.lock().expect("section_texts poisoned");
+            texts.insert(
+                "agents".to_string(),
+                "- Reviewer (id: reviewer): reviews code (location: /w/agents/reviewer/AGENT.md)"
+                    .to_string(),
+            );
+            texts.insert(
+                "skills".to_string(),
+                "- docker: Docker ops (skills/docker/SKILL.md)".to_string(),
+            );
+        }
+        Arc::new(core)
     }
 
     fn empty_ctx() -> TurnPromptContext {
@@ -1078,6 +1133,86 @@ mod tests {
         // prefix being byte-stable across turns).
         let prefix = renderer.render_cache_stable(&ctx).await;
         assert!(!prefix.contains("Current time:"), "prefix was: {prefix}");
+    }
+
+    /// The `agents` / `skills` workspace catalogs render in the
+    /// per-turn suffix when a `PromptSystemSection` handler returns
+    /// text for them.
+    #[tokio::test]
+    async fn render_per_turn_includes_agents_and_skills_sections() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let ctx = empty_ctx();
+        let suffix = renderer.render_per_turn(&ctx).await;
+        assert!(
+            suffix.contains("## Available Agents"),
+            "suffix was: {suffix}"
+        );
+        assert!(
+            suffix.contains("<available_agents>"),
+            "suffix was: {suffix}"
+        );
+        assert!(
+            suffix.contains("- Reviewer (id: reviewer): reviews code"),
+            "suffix was: {suffix}"
+        );
+        assert!(
+            suffix.contains("## Skills (mandatory)"),
+            "suffix was: {suffix}"
+        );
+        assert!(
+            suffix.contains("<available_skills>"),
+            "suffix was: {suffix}"
+        );
+        assert!(
+            suffix.contains("- docker: Docker ops"),
+            "suffix was: {suffix}"
+        );
+    }
+
+    /// The `agents` / `skills` catalogs must NOT leak into the
+    /// cache-stable prefix — they moved to the volatile suffix so new
+    /// workspace files appear on the next iteration and the prefix
+    /// stays byte-stable.
+    #[tokio::test]
+    async fn render_cache_stable_omits_agents_and_skills_sections() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut ctx = empty_ctx();
+        // Even when the template references the placeholders, the
+        // prefix strips them (`remove_missing=true`) — the sections
+        // only ever render via the per-turn suffix.
+        ctx.body = "{{agents}}\n{{skills}}\nYou are {{agent_name}}.".to_string();
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        assert!(
+            !prefix.contains("## Available Agents"),
+            "prefix was: {prefix}"
+        );
+        assert!(
+            !prefix.contains("## Skills (mandatory)"),
+            "prefix was: {prefix}"
+        );
+        assert!(!prefix.contains("reviewer"), "prefix was: {prefix}");
+        assert!(!prefix.contains("docker"), "prefix was: {prefix}");
+        assert!(
+            prefix.contains("You are test-agent."),
+            "prefix was: {prefix}"
+        );
+    }
+
+    /// Without registered section handlers the suffix omits the
+    /// catalog sections entirely (no empty headers).
+    #[tokio::test]
+    async fn render_per_turn_omits_catalogs_without_handlers() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let ctx = empty_ctx();
+        let suffix = renderer.render_per_turn(&ctx).await;
+        assert!(
+            !suffix.contains("## Available Agents"),
+            "suffix was: {suffix}"
+        );
+        assert!(
+            !suffix.contains("## Skills (mandatory)"),
+            "suffix was: {suffix}"
+        );
     }
 
     /// Prompt identity: the `SessionContextBuild` hook receives the

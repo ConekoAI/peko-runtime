@@ -223,5 +223,4 @@ peko ext info my-mcp-extension
 
 - [MCP Specification](https://modelcontextprotocol.io/)
 - [MCP Overview](MCP.md)
-- [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) (ADR-047)
-- `peko principal mcp --help`
+- [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) (ADR-047; file-based management per ADR-050)

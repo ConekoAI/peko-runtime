@@ -28,7 +28,6 @@ pub(crate) mod auth;
 pub(crate) mod channel;
 pub(crate) mod credential;
 pub(crate) mod instance;
-pub(crate) mod persona;
 pub(crate) mod principal;
 pub(crate) mod provider_add;
 pub(crate) mod provider_edit;
@@ -45,7 +44,6 @@ use auth::AuthHandler;
 use channel::ChannelHandler;
 use credential::CredentialHandler;
 use instance::InstanceHandler;
-use persona::PersonaHandler;
 use principal::PrincipalHandler;
 use provider_add::ProviderAddHandler;
 use provider_edit::ProviderEditHandler;
@@ -115,7 +113,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 16] = [
+        let handlers: [Arc<dyn RequestHandler>; 15] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -137,13 +135,6 @@ impl RequestDispatcher {
             // the add handler so the whole catalog-mutation surface is
             // routed as one group.
             Arc::new(ProviderEditHandler::new(host.clone())),
-            // Fix D: `PersonaDraft` is a single-shot LLM call that
-            // has nothing to do with the principal_manager or any
-            // other long-running service. It lives next to
-            // `PrincipalHandler` because it shares the principal
-            // namespace semantically (it writes principal.toml +
-            // primary.md via the CLI) but the IPC shape is its own.
-            Arc::new(PersonaHandler::new(host.clone())),
             // PR-2c: the `channel` handler exposes the
             // `peko-channel` runtime-tier port (create / invite /
             // post / peek / members / list / leave / pin-to-shared)
