@@ -17,9 +17,9 @@
 //! Group channels (`group:<slug>` recipients) post as the caller's
 //! user identity (ADR-049 Phase 2, D7): `peko send group:eng "hi"`
 //! writes to the group channel's log as `user:<id>`; store-level
-//! Subject membership is the write authorization. `--wait`, `--model`
-//! and `--no-slash` stay refused — a group post fans out to one run
-//! per member principal, so there is no single run to await or steer.
+//! Subject membership is the write authorization. `--wait` and `--model`
+//! stay refused — a group post fans out to one run per member
+//! principal, so there is no single run to await or steer.
 
 use crate::commands::{parse_recipient, GlobalPaths, Recipient};
 use anyhow::{Context, Result};
@@ -27,7 +27,6 @@ use clap::Args;
 use peko_channel::{ChannelCliRouter, ChannelConfig, ChannelStore};
 use peko_core::ipc::packet::RequestPacket;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
-use peko_core::principal::runtime::OutputFormat;
 use peko_protocol::channel::ChannelId;
 use std::io::Write;
 use std::str::FromStr;
@@ -62,10 +61,6 @@ pub struct SendArgs {
     /// Accepts the wire format `user:<id>`.
     #[arg(long, value_name = "SUBJECT")]
     pub peer: Option<String>,
-
-    /// Do not treat `/`-prefixed messages as slash commands; pass them to the LLM verbatim
-    #[arg(long)]
-    pub no_slash: bool,
 
     /// Override the configured model for this message only
     #[arg(long, value_name = "MODEL_ID")]
@@ -113,18 +108,15 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     // Group recipients (`group:<slug>`): post to the group channel as
     // the caller's user identity (ADR-049 Phase 2, D7). Membership is
     // the write authorization — a non-member user is refused by the
-    // store with `NotMember`. `--wait` / `--model` / `--no-slash` stay
-    // refused: a group post fans out to one run per member principal,
-    // so there is no single run to await or steer.
+    // store with `NotMember`. `--wait` / `--model` stay refused: a
+    // group post fans out to one run per member principal, so there
+    // is no single run to await or steer.
     if let Recipient::Group(slug) = parse_recipient(&args.principal) {
         if args.wait {
             anyhow::bail!("groups have no bound agent run; nothing to wait on");
         }
         if args.model.is_some() {
             anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
-        }
-        if args.no_slash {
-            anyhow::bail!("--no-slash is meaningless for group channels (no bound agent run)");
         }
         let channel = format!("group:{slug}");
         return post_to_group(paths, &channel, &message, &user).await;
@@ -133,11 +125,6 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     info!("Sending message to principal '{}'", args.principal);
 
     let client = DaemonClient::connect().await?;
-    let output_format = if _json {
-        OutputFormat::Json
-    } else {
-        OutputFormat::Human
-    };
     // Always use the streaming request. It emits `PrincipalSentChunk`
     // deltas as the root agent produces text, which (a) lets us print
     // incrementally and (b) keeps the per-packet idle timeout
@@ -155,8 +142,6 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
             &args.principal,
             message,
             user,
-            args.no_slash,
-            output_format,
             args.model.clone(),
         )
         .await?;
@@ -575,21 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn send_parses_no_slash_flag() {
-        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "--no-slash", "/help"])
-            .expect("should parse send command with --no-slash");
-
-        match cli.command {
-            Commands::Send(args) => {
-                assert_eq!(args.principal, "myprincipal");
-                assert!(args.no_slash);
-                assert_eq!(args.message, Some("/help".to_string()));
-            }
-            _other => panic!("expected Send command"),
-        }
-    }
-
-    #[test]
     fn send_parses_model_override_flag() {
         let cli = Cli::try_parse_from([
             "peko",
@@ -663,7 +633,6 @@ mod tests {
             stdin: false,
             wait: false,
             peer: None,
-            no_slash: false,
             model: None,
         }
     }
@@ -828,24 +797,6 @@ mod tests {
             .expect_err("--model on a group must be refused");
         assert!(
             format!("{err:#}").contains("--model is meaningless"),
-            "got: {err:#}"
-        );
-    }
-
-    #[tokio::test]
-    async fn send_group_recipient_refuses_no_slash_flag() {
-        let cli = Cli::try_parse_from(["peko", "send", "group:eng", "/help", "--no-slash"])
-            .expect("should parse");
-        let paths = from_cli(&cli);
-        let args = match cli.command {
-            Commands::Send(args) => args,
-            _ => panic!("expected Send"),
-        };
-        let err = super::handle_send(args, &paths, false)
-            .await
-            .expect_err("--no-slash on a group must be refused");
-        assert!(
-            format!("{err:#}").contains("--no-slash is meaningless"),
             "got: {err:#}"
         );
     }

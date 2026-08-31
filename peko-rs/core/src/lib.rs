@@ -231,9 +231,11 @@ pub mod identity_compat;
 pub mod auth_compat;
 
 // [extract:phase-14-c.2a] peko-principal lifted capability_evaluator +
-// catalog (formerly extension_store; pure-data helpers) + OutputFormat + builtin_tools + the
-// PrincipalExtensionRow re-type. The runtime cluster (manager/context/
-// agent_runner/routers/slash dispatcher impl) still in root pending 14.c.2b
+// catalog (formerly extension_store; pure-data helpers) + builtin_tools +
+// (OutputFormat was part of this lift and has since been retired
+// post-slash-removal; PrincipalExtensionRow re-type also retired with
+// the slash module). The runtime cluster (manager/context/agent_runner/
+// routers) still in root pending 14.c.2b
 // port traits (RootAgentRunner + ExtensionCoreProvider).
 pub mod principal;
 

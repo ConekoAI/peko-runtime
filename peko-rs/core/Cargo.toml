@@ -157,10 +157,11 @@ peko-plan = { path = "../plan" }
 peko-cron = { path = "../cron" }
 # Phase F3 (foldback): peko-principal sat is deleted; the 11 pure-deps
 # files (config, peer, memory, agent_prompt, capability_evaluator,
-# extension_store, runtime::*, slash::extension_row) all live in
+# extension_store, runtime::*) all live in
 # `peko-rs/core/src/principal/` directly now. The runtime-coupled
-# subset (manager, context, agent_runner, routers, slash dispatcher
-# impl) continues to live alongside the `Principal` struct.
+# subset (manager, context, agent_runner, routers) continues to live
+# alongside the `Principal` struct. (`slash::extension_row` was part
+# of this lift; retired post-slash-removal.)
 # Phase 7 — peko-session owns the session persistence domain
 # (JSONL storage, metadata, recovery, compaction persistence,
 # InboxRegistry). Root re-exports the historical `crate::session::*`

@@ -388,8 +388,6 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 message,
                 user,
-                no_slash,
-                output_format,
                 override_model,
             } => {
                 run_principal_send(
@@ -397,8 +395,6 @@ impl RequestHandler for PrincipalHandler {
                     name,
                     message,
                     user,
-                    no_slash,
-                    output_format,
                     override_model,
                     host,
                     sink,
@@ -412,8 +408,6 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 message,
                 user,
-                no_slash,
-                output_format,
                 override_model,
             } => {
                 run_principal_send(
@@ -421,8 +415,6 @@ impl RequestHandler for PrincipalHandler {
                     name,
                     message,
                     user,
-                    no_slash,
-                    output_format,
                     override_model,
                     host,
                     sink,
@@ -1977,8 +1969,6 @@ async fn run_principal_send(
     name: String,
     message: String,
     user: String,
-    no_slash: bool,
-    output_format: crate::principal::runtime::OutputFormat,
     override_model: Option<String>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
@@ -2004,52 +1994,6 @@ async fn run_principal_send(
             return Ok(());
         }
     };
-
-    // Intercept slash commands before acquiring the run permit or
-    // building a router context. This keeps the behavior uniform across
-    // CLI, GUI, and tunnel callers.
-    let (slash_response, message) = match host
-        .principal_manager()
-        .preprocess_slash(&principal, message, no_slash, output_format)
-        .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            let response = ResponsePacket::Error {
-                request_id,
-                message: e.to_string(),
-            };
-            send_response(sink, response).await?;
-            let done = ResponsePacket::Done {
-                request_id,
-                success: false,
-                error: Some(e.to_string()),
-            };
-            send_response(sink, done).await?;
-            return Ok(());
-        }
-    };
-
-    if let Some(content) = slash_response {
-        let final_packet = match response_kind {
-            PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
-                request_id,
-                content,
-            },
-            PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
-                request_id,
-                content,
-            },
-        };
-        send_response(sink, final_packet).await?;
-        let done = ResponsePacket::Done {
-            request_id,
-            success: true,
-            error: None,
-        };
-        send_response(sink, done).await?;
-        return Ok(());
-    }
 
     let peer = Subject::User(user);
     let channel = ChannelContext {
