@@ -23,7 +23,7 @@ The north-star goal is to make peko feel like a capability-based operating syste
 
 ## 2. Design Principles
 
-1. **Everything is an extension.** Agents, skills, tools, MCP servers, prompt fragments, memory fragments, and slash commands all share one manifest schema and one runtime model.
+1. **Everything is an extension.** Agents, skills, tools, MCP servers, prompt fragments, and memory fragments all share one manifest schema and one runtime model.
 2. **Authority is capability-based, not ID-based.** A Principal grants capabilities (e.g., `tool:Read`, `agent:researcher`, `filesystem.read:/path`). Extensions declare required capabilities. The runtime activates an extension only when all required capabilities are satisfied.
 3. **Authority has one human-editable source of truth.** The Principal’s `principal.toml` contains `[capabilities] grants = [...]`. All other stores are indexes or caches derived from this file.
 4. **Installation is global; authorization is per-Principal.** `peko ext install/uninstall` manages the global extension cache. `peko capability grant/revoke --principal <name>` mutates the Principal’s capability grants.
@@ -72,7 +72,7 @@ dependencies:
     version: ">=1.0.0"
 ```
 
-`type` can be `agent`, `skill`, `tool`, `mcp`, `prompt`, `memory`, `slash`, `extension-pack`, or custom extension types added later.
+`type` can be `agent`, `skill`, `tool`, `mcp`, `prompt`, `memory`, `extension-pack`, or custom extension types added later.
 
 An extension is therefore a **bundle of capabilities**. A Principal can grant the whole bundle (`agent:agency-agents/*`) or individual capabilities (`agent:agency-agents/researcher`), enabling fine-grained control without requiring hundreds of flat extension IDs.
 

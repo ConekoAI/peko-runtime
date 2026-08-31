@@ -133,7 +133,10 @@ Historical record (pre-ADR-049 behavior at the time of this ADR):
 
 - `peko send group:<slug> …` was **refused** with a pointer to
   `peko channel post group:<slug> <sender-principal> "<msg>"`.
-  (`--wait`/`--model`/`--no-slash` got their own clear refusals.)
+  (`--wait`/`--model` got their own clear refusals. `--no-slash`
+  was also refused at this point but has since been retired
+  entirely along with the slash command subsystem; see
+  [ADR-049 D7](#d7--cli-outcomes) for the current rule.)
 - `peko stop group:<slug>` was refused ("groups have no bound run").
 - `peko log group:<slug> [--watch]` read the channel directly via
   `ChannelPeek` (no principal privacy check — same posture as `peko

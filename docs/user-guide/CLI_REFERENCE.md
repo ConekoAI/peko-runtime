@@ -109,7 +109,6 @@ peko send <PRINCIPAL> [MESSAGE]
 | `--wait` | - | On the busy path, block until the Principal's next reply on the thread (10-minute cap) |
 | `--peer <SUBJECT>` | - | Send as this peer instead of `-U/--user` (wire form `user:<id>`) |
 | `--model <MODEL_ID>` | - | Override the configured model for this message only |
-| `--no-slash` | - | Do not treat `/`-prefixed messages as slash commands |
 
 Replies render as they stream. A per-turn footer on stderr reports
 iterations, token usage, and failed tool calls. Ctrl-C soft-stops the
@@ -121,9 +120,9 @@ group channel's log as `user:<id>`; membership is the write
 authorization, so you must be a member of the group. A user root post
 wakes every member principal, each in its own per-`(principal,
 channel)` session, and their replies post back to the group (ADR-049
-D4). `--wait`, `--model`, and `--no-slash` stay refused — a group post
-fans out to one run per member principal, so there is no single run to
-await or steer.
+D4). `--wait` and `--model` stay refused — a group post fans out to
+one run per member principal, so there is no single run to await or
+steer.
 
 #### Examples
 

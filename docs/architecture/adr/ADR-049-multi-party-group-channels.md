@@ -116,9 +116,9 @@ checks).
 ### D7 — CLI outcomes
 
 - `peko send group:<slug> <msg>` posts as the caller's user identity
-  (`-U/--user`). `--wait` / `--model` / `--no-slash` stay refused (a wake
-  fans out to one run per member principal — there is no single run to
-  await or steer).
+  (`-U/--user`). `--wait` / `--model` stay refused (a wake fans out
+  to one run per member principal — there is no single run to await
+  or steer).
 - `peko log group:<slug> [--watch]` is unchanged in shape, now
   membership-gated per D6.
 - `peko stop group:<slug>` stays refused for now: a wake creates one run
