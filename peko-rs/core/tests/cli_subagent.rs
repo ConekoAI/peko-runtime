@@ -199,7 +199,7 @@ fn setup_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
         cli,
         name,
         mock_llm_url,
-        &["Agent", "Write", "Read", "Bash", WORKER],
+        &["Agent", "Write", "Read", "Bash", "agent:worker"],
     );
     write_worker_subagent(cli, name, WORKER);
 }
@@ -210,7 +210,7 @@ fn setup_principal_flat(cli: &PekoCli, name: &str, mock_llm_url: &str) {
         cli,
         name,
         mock_llm_url,
-        &["Agent", "Write", "Read", "Bash", WORKER],
+        &["Agent", "Write", "Read", "Bash", "agent:worker"],
     );
     write_worker_subagent_flat(cli, name, WORKER);
 }
