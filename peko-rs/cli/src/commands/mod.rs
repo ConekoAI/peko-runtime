@@ -104,7 +104,6 @@ pub enum Commands {
     ///   peko send myprincipal "Hello"
     ///   peko send myprincipal --file prompt.txt
     ///   echo "Hello" | peko send myprincipal --stdin
-    ///   peko send myprincipal "Hello" --no-stream
     Send(send::SendArgs),
 
     /// Soft-stop the running turn on your thread with a Principal.

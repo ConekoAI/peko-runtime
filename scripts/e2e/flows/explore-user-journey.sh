@@ -75,7 +75,7 @@ flow_main() {
   # ----- send a REAL question (not just hello) -----
   echo
   echo "=========================================="
-  echo "STEP 5: Send a real question (no-stream)"
+  echo "STEP 5: Send a real question"
   echo "=========================================="
   local q="In one short paragraph, what is the rust borrow checker and why does it matter?"
   local t0

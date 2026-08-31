@@ -22,6 +22,11 @@
 //!    production path (the runtime port's `session_id()` accessor is
 //!    the fallback).
 //!
+//! B5 cleanup: [`runtime_from_executor`] was inlined — it had no
+//! external consumers; the only call was the one inside
+//! [`new_agent_tool`]. The `pub use` re-export of it from
+//! `messaging/mod.rs` is gone too.
+//!
 //! B4 cleanup: [`DynamicSessionKeyProvider`] was deleted — only
 //! `set_session_key` was called (once per subagent, in
 //! `subagent_executor.rs`); the `get_session_key` reader had no
@@ -41,14 +46,6 @@ use crate::agents::subagent_runtime_impl::SubagentExecutorRuntime;
 pub use crate::agents::agent_config::AgentConfig;
 pub use crate::agents::subagent_error::SpawnError;
 
-/// Build the runtime port from a `SubagentExecutor` handle.
-#[must_use]
-pub fn runtime_from_executor(executor: Arc<SubagentExecutor>) -> SharedSubagentRuntime {
-    Arc::new(SubagentExecutorRuntime::new(executor))
-}
-
-// ─── Executor-typed constructor shim (preserves root API shape) ──
-
 /// Create an `AgentTool` with an executor-backed runtime.
 ///
 /// Sprint 7: the previous constructor also accepted a `workspace`
@@ -60,5 +57,5 @@ pub fn runtime_from_executor(executor: Arc<SubagentExecutor>) -> SharedSubagentR
 /// the executor; the tool reads it via the runtime port.
 #[must_use]
 pub fn new_agent_tool(executor: Arc<SubagentExecutor>) -> AgentTool {
-    AgentTool::new(runtime_from_executor(executor))
+    AgentTool::new(Arc::new(SubagentExecutorRuntime::new(executor)))
 }

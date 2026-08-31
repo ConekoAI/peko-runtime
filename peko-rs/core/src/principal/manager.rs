@@ -7,7 +7,6 @@ use tokio::sync::RwLock;
 use super::{
     factory::{PrincipalMemoryFactory, PrincipalRouterFactory},
     router::{ChannelContext, ChannelKind, RouteDecision, RouterContext, RouterError},
-    slash::{SlashDispatcher, SlashError},
     Principal, PrincipalId,
 };
 use crate::common::paths::PathResolver;
@@ -16,7 +15,6 @@ use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::agent_prompt::load_agent_prompt;
 use crate::principal::child_turns::PeerChildIngress;
 use crate::principal::peer_dm::{post_peer_dm_inbound, post_peer_dm_reply};
-use crate::principal::runtime::OutputFormat;
 use crate::principal::AgentPrompt;
 use crate::principal::PrincipalConfig;
 use peko_auth::ownership::{check_permission, Permission, Resource};
@@ -58,8 +56,6 @@ pub enum PrincipalManagerError {
     Identity(String),
     #[error("permission denied: {0}")]
     PermissionDenied(String),
-    #[error("slash command error: {0}")]
-    Slash(#[from] SlashError),
 }
 
 /// B8c.4: outcome of [`PrincipalManager::drive_principal_ingress`].
@@ -142,11 +138,6 @@ pub struct PrincipalManager {
     /// Per-principal lock guarding first-time session creation/open so
     /// concurrent peers do not race on shared metadata/index writes.
     session_creation_locks: tokio::sync::RwLock<HashMap<PrincipalId, Arc<tokio::sync::Mutex<()>>>>,
-    /// Optional slash-command dispatcher. When set, incoming messages are
-    /// inspected for `/`-prefixed slash commands before reaching the root
-    /// agent. This is optional so tests and non-daemon contexts can build a
-    /// PrincipalManager without extension state.
-    slash_dispatcher: Arc<RwLock<Option<Arc<SlashDispatcher>>>>,
     /// Optional daemon extension store. When present, the per-message
     /// `PrincipalCatalog` includes installed extensions as well as built-ins
     /// and principal-scoped agents.
@@ -213,7 +204,6 @@ impl PrincipalManager {
             resolver: None,
             inbox_registry,
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
-            slash_dispatcher: Arc::new(RwLock::new(None)),
             extension_store: None,
             observability: None,
             peer_registry: None,
@@ -225,14 +215,6 @@ impl PrincipalManager {
 
     pub fn with_resolver(mut self, resolver: Arc<LlmResolver>) -> Self {
         self.resolver = Some(resolver);
-        self
-    }
-
-    /// Attach a slash-command dispatcher. The dispatcher is shared by all
-    /// principals managed by this instance.
-    #[must_use]
-    pub fn with_slash_dispatcher(mut self, dispatcher: Arc<SlashDispatcher>) -> Self {
-        self.slash_dispatcher = Arc::new(RwLock::new(Some(dispatcher)));
         self
     }
 
@@ -1061,43 +1043,6 @@ impl PrincipalManager {
         })
     }
 
-    /// Inspect `message` for slash commands. If a slash command is handled,
-    /// returns `(Some(rendered_response), _)`. If the message is not a slash
-    /// command (or is escaped with `\/`, or `no_slash` is true), returns
-    /// `(None, processed_message)` where `processed_message` has the escape
-    /// stripped so the literal `/...` text reaches the root agent.
-    pub async fn preprocess_slash(
-        &self,
-        principal: &Arc<Principal>,
-        message: String,
-        no_slash: bool,
-        format: OutputFormat,
-    ) -> Result<(Option<String>, String), PrincipalManagerError> {
-        let (message, escaped) = if let Some(rest) = message.strip_prefix("\\/") {
-            (format!("/{rest}"), true)
-        } else {
-            (message, false)
-        };
-
-        if escaped || no_slash {
-            return Ok((None, message));
-        }
-
-        let dispatcher = self.slash_dispatcher.read().await;
-        if let Some(dispatcher) = dispatcher.as_ref() {
-            match dispatcher
-                .dispatch(principal, &message, false, format)
-                .await
-            {
-                Ok(Some(response)) => Ok((Some(response.content), message)),
-                Ok(None) => Ok((None, message)),
-                Err(e) => Err(PrincipalManagerError::Slash(e)),
-            }
-        } else {
-            Ok((None, message))
-        }
-    }
-
     /// The main entry point: a message arrives at a Principal boundary.
     ///
     /// Sprint 2 Phase 7 routing: peer channels (Cli/Http/Hub/A2a/P2p/
@@ -1147,15 +1092,6 @@ impl PrincipalManager {
             .get(principal_id)
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
-
-        let (slash_response, message) = self
-            .preprocess_slash(&principal, message, false, OutputFormat::Human)
-            .await?;
-        if let Some(content) = slash_response.as_ref() {
-            // Phase 11: slash responses are no longer persisted
-            // anywhere (see `receive`).
-            return Ok(PrincipalResponse::text(content.clone()));
-        }
 
         let ctx = self
             .build_router_context(
@@ -1241,8 +1177,6 @@ impl PrincipalManager {
     ///   the per-peer DM channels). The trunk session JSONL remains
     ///   the durable record; the cron `Send` outcome surfaces via the
     ///   messenger's `deliver_note` on the owner's DM channel.
-    /// - **No slash preprocessing.** Trunk messages are agent-bound
-    ///   automation prompts (cron payloads), not interactive commands.
     /// - **Same run discipline as `receive`.** The per-session run
     ///   permit is acquired on `root:self`; a second trunk turn
     ///   arriving while a run is active is queued as a steering

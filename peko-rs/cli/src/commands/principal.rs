@@ -25,7 +25,6 @@ use peko_core::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     PrincipalManager,
 };
-use peko_extension_api::Capabilities;
 
 /// Subcommands for `peko principal`.
 #[derive(Subcommand)]
@@ -1468,16 +1467,6 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
     )
 }
 
-/// Minimal safe built-in extension bundle for a freshly-created Principal.
-///
-/// With deny-all semantics an empty allowlist would leave the root agent
-/// unable to do anything useful. This starter set is intentionally small:
-/// file/tools, shell execution, task management, the Agent tool, and the
-/// agent_catalog needed to discover subagents.
-fn starter_extensions() -> Capabilities {
-    Capabilities::starter_bundle()
-}
-
 fn default_principal_config(name: &str) -> PrincipalConfig {
     PrincipalConfig {
         name: name.to_string(),
@@ -1492,7 +1481,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
-        capabilities: starter_extensions(),
+        capabilities: peko_extension_api::Capabilities::starter_bundle(),
         exposure: peko_auth::Exposure::Private,
         status: None,
         permissions: Vec::new(),
@@ -1730,8 +1719,7 @@ mod tests {
     /// `principal send` was a duplicate of the top-level `send` command.
     /// Removed in 2026-08-01 v2 fixes. Migration: `principal send foo bar`
     /// becomes `send foo bar`. The top-level `send` is the canonical
-    /// command and supports `--no-stream`, `--file`, `--stdin`, `--model`,
-    /// `--no-slash`.
+    /// command and supports `--file`, `--stdin`, `--model`.
     #[test]
     fn principal_no_send_subcommand() {
         let result = Cli::try_parse_from(["peko", "principal", "send", "x", "y"]);

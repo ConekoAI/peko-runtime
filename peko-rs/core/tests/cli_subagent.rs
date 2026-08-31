@@ -41,7 +41,7 @@
 //!   4. Spawns a plain `DaemonGuard` (no `--interval` — subagent tests
 //!      don't poll, and the child subagent's blocking LLM call goes
 //!      straight through the same mock endpoint).
-//!   5. Runs `peko send <principal> <prompt> --no-stream` and asserts on the
+//!   5. Runs `peko send <principal> <prompt>` and asserts on the
 //!      parent's final stdout plus, where applicable, on the file the
 //!      child wrote into the tool workspace.
 //!
@@ -199,7 +199,7 @@ fn setup_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
         cli,
         name,
         mock_llm_url,
-        &["Agent", "Write", "Read", "Bash", WORKER],
+        &["Agent", "Write", "Read", "Bash", "agent:worker"],
     );
     write_worker_subagent(cli, name, WORKER);
 }
@@ -210,7 +210,7 @@ fn setup_principal_flat(cli: &PekoCli, name: &str, mock_llm_url: &str) {
         cli,
         name,
         mock_llm_url,
-        &["Agent", "Write", "Read", "Bash", WORKER],
+        &["Agent", "Write", "Read", "Bash", "agent:worker"],
     );
     write_worker_subagent_flat(cli, name, WORKER);
 }
@@ -281,7 +281,7 @@ async fn subagent_blocking_t1_write_file() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -361,7 +361,7 @@ async fn subagent_blocking_t2_isolated() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -446,7 +446,7 @@ async fn subagent_blocking_t4_inline_read() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);
@@ -534,7 +534,7 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(60),
     );
     assert_ok(&out, &err, &status);
@@ -627,7 +627,7 @@ async fn subagent_nesting_t2_depth_limit() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(60),
     );
     assert_ok(&out, &err, &status);
@@ -700,7 +700,7 @@ async fn subagent_isolation_t1_shared_workspace() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);
@@ -768,7 +768,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -838,7 +838,7 @@ async fn subagent_blocking_t1_flat_file() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);

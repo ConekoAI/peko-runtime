@@ -7,13 +7,13 @@
 // Modules lifted back into root (under `crate::principal::*`):
 //   config, peer, memory, agent_prompt, capability_evaluator — pure
 //     data types + DTOs (F14.c.1 surface)
-//   runtime::{mod, builtin_tools, output_format} — shared const
-//     lists + `OutputFormat` enum (F14.c.2a)
-//   slash::extension_row — IPC re-type
+//   runtime::{mod, builtin_tools} — shared const lists (F14.c.2a;
+//     `OutputFormat` enum was part of this lift and has since been
+//     retired post-slash-removal)
 //
 // The runtime-coupled files (manager, context, agent_runner,
-// routers, slash dispatcher impl) continue to live alongside the
-// `Principal` struct definition here.
+// routers) continue to live alongside the `Principal` struct
+// definition here.
 
 pub mod agent_prompt;
 pub mod agent_runner;
@@ -38,7 +38,6 @@ pub mod runtime;
 // `seen_models.json` persistence + the `PrincipalContext::mark_model_seen`
 // helper that powers the first-use-per-model audit-warning UX.
 pub mod seen_models;
-pub mod slash;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
@@ -65,8 +64,7 @@ pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
-pub use runtime::{builtin_tools, OutputFormat};
-pub use slash::extension_row::PrincipalExtensionRow;
+pub use runtime::builtin_tools;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -81,9 +79,9 @@ use peko_subject::{PrincipalDID, PrincipalId};
 // Phase 14.c.1/14.c.2a: pure-deps types lifted into `peko-principal`
 // (config, peer, memory, factory, agent_prompt, capability_evaluator,
 // catalog — formerly `extension_store`). The runtime-coupled files in root that compose
-// a `Principal` (manager, context, agent_runner, routers, slash)
-// continue to live alongside the `Principal` struct definition here,
-// so they reach for the same DTOs.
+// a `Principal` (manager, context, agent_runner, routers) continue
+// to live alongside the `Principal` struct definition here, so they
+// reach for the same DTOs.
 use peko_quota::QuotaMeter;
 
 /// Runtime representation of a Principal.

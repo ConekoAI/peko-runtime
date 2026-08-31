@@ -46,64 +46,40 @@ flow_main() {
   echo "STDERR:"
   echo "$_peko_iso_capture_err"
 
-  # ----- 3. Slash command -----
+  # ----- 3. JSON log output -----
   echo
   echo "=========================================="
-  echo "EDGE 3: Slash command '/help'"
-  echo "=========================================="
-  peko_iso_run send scout "/help"
-  echo "rc=$_peko_iso_capture_rc"
-  echo "STDOUT (first 50 lines):"
-  echo "$_peko_iso_capture_out" | head -50
-  echo "STDERR:"
-  echo "$_peko_iso_capture_err"
-
-  # ----- 4. Slash command bypassed -----
-  echo
-  echo "=========================================="
-  echo "EDGE 4: Slash with --no-slash (treated as LLM input)"
-  echo "=========================================="
-  peko_iso_run send scout "/help" --no-slash
-  echo "rc=$_peko_iso_capture_rc"
-  echo "STDOUT (first 30 lines):"
-  echo "$_peko_iso_capture_out" | head -30
-  echo "STDERR:"
-  echo "$_peko_iso_capture_err"
-
-  # ----- 5. JSON log output -----
-  echo
-  echo "=========================================="
-  echo "EDGE 5: peko log --json"
+  echo "EDGE 3: peko log --json"
   echo "=========================================="
   peko_iso_run log scout --since 1h --json
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT (first 30 lines):"
   echo "$_peko_iso_capture_out" | head -30
 
-  # ----- 6. Cron list (should be empty) -----
+  # ----- 4. Cron list (should be empty) -----
   echo
   echo "=========================================="
-  echo "EDGE 6: peko cron list"
+  echo "EDGE 4: peko cron list"
   echo "=========================================="
   peko_iso_run cron list
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT:"
   echo "$_peko_iso_capture_out"
 
-  # ----- 7. Slash with --json to see the protocol -----
+  # ----- 5. Protocol view via --json -----
   echo
   echo "=========================================="
-  echo "EDGE 7: peko send --json (protocol view)"
+  echo "EDGE 5: peko send --json (protocol view)"
   echo "=========================================="
   peko_iso_run send scout "say ok" --json
   echo "rc=$_peko_iso_capture_rc"
   echo "STDOUT (first 30 lines):"
   echo "$_peko_iso_capture_out" | head -30
 
-  # ----- 8. system doctor -----
+  # ----- 6. system doctor -----
   echo
   echo "=========================================="
-  echo "EDGE 8: peko system doctor"
+  echo "EDGE 6: peko system doctor"
   echo "=========================================="
   peko_iso_run system doctor
   echo "rc=$_peko_iso_capture_rc"
@@ -112,10 +88,10 @@ flow_main() {
   echo "STDERR:"
   echo "$_peko_iso_capture_err"
 
-  # ----- 9. ext list (extensions) -----
+  # ----- 7. ext list (extensions) -----
   echo
   echo "=========================================="
-  echo "EDGE 9: peko ext list"
+  echo "EDGE 7: peko ext list"
   echo "=========================================="
   peko_iso_run ext list
   echo "rc=$_peko_iso_capture_rc"

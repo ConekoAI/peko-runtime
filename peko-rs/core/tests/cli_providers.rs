@@ -210,7 +210,6 @@ async fn cli_providers_minimax_smoke() {
             "send",
             principal,
             "Hello, can you tell me a short joke?",
-            "--no-stream",
         ],
         Duration::from_secs(45),
     );
@@ -244,7 +243,7 @@ async fn cli_providers_kimi_smoke() {
     // PS script: `peko send <principal> "Hi"`
     let (out, err, status) = run(
         &cli,
-        &["send", principal, "Hi", "--no-stream"],
+        &["send", principal, "Hi"],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);
@@ -292,7 +291,7 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     let prompt = "Read the file tool_test.txt in your workspace and report its exact contents.";
     let (out, err, status) = run(
         &cli,
-        &["send", principal, prompt, "--no-stream"],
+        &["send", principal, prompt],
         Duration::from_secs(120),
     );
     assert_ok(&out, &err, &status);

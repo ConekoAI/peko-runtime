@@ -76,14 +76,12 @@ pub mod skill;
 /// Agent extension adapter — AGENT.md-based prompt extensions with YAML frontmatter.
 pub mod agent;
 
-// Phase 2 PR 4 (ADR-047 §2.4): the framework `slash` adapter was
-// removed. Slash dispatch is handled daemon-side by
-// `crate::principal::slash::SlashDispatcher`, which only resolves
-// `/help` in v0. The framework `SlashAdapter` was a no-op wrapper:
-// its `register_commands_with_core` returned `Vec::new()` and no
-// `COMMAND.md` installer ever wired its discovered manifests into
-// the dispatcher. No behavior change after removal — same `/help`
-// semantics, fewer indirections.
+// Slash dispatch retired entirely (post-slash-removal): both the
+// framework `SlashAdapter` (Phase 2 PR 4) and the daemon-side
+// `SlashDispatcher` (the only consumer was `/help`, which is now
+// answered by the model itself from its visible prompt catalog).
+// Historical `COMMAND.md` ecosystem-standard files fail
+// `extension_types::is_valid_type` and surface as install errors.
 
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
@@ -147,9 +145,6 @@ pub mod extension_types {
     /// MCP server extension type
     pub const MCP: &str = "mcp";
 
-    /// Slash command extension type
-    pub const SLASH: &str = "slash";
-
     /// Universal tool extension type
     pub const UNIVERSAL_TOOL: &str = "universal-tool";
 
@@ -161,6 +156,13 @@ pub mod extension_types {
     // manifest bytes in users' `extensions/` directories will fail
     // `is_valid_type` and surface as install errors, which is the
     // intended forward-only behavior.
+    //
+    // Post-slash-removal: `SLASH` constant retired alongside the
+    // `SlashDispatcher` runtime (and the orphan `SlashAdapter` that
+    // Phase 2 PR 4 had already removed). Historical "slash"
+    // manifest bytes — including `COMMAND.md` files detected at
+    // Tier 1 ecosystem standard in `store.rs` — fail `is_valid_type`
+    // and surface as install errors, matching the GATEWAY precedent.
 
     /// Custom extension type prefix
     pub const CUSTOM_PREFIX: &str = "custom:";
@@ -173,14 +175,14 @@ pub mod extension_types {
     pub fn is_valid_type(ext_type: &str) -> bool {
         matches!(
             ext_type,
-            SKILL | AGENT | SLASH | MCP | UNIVERSAL_TOOL | GENERAL
+            SKILL | AGENT | MCP | UNIVERSAL_TOOL | GENERAL
         ) || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
     #[must_use]
     pub fn standard_types() -> Vec<&'static str> {
-        vec![SKILL, AGENT, SLASH, MCP, UNIVERSAL_TOOL, GENERAL]
+        vec![SKILL, AGENT, MCP, UNIVERSAL_TOOL, GENERAL]
     }
 }
 
@@ -191,9 +193,9 @@ mod tests {
     #[test]
     fn test_extension_type_constants() {
         // Sprint 9 Commit 3: GATEWAY constant retired.
+        // Post-slash-removal: SLASH constant retired alongside SlashDispatcher.
         assert_eq!(extension_types::SKILL, "skill");
         assert_eq!(extension_types::AGENT, "agent");
-        assert_eq!(extension_types::SLASH, "slash");
         assert_eq!(extension_types::MCP, "mcp");
         assert_eq!(extension_types::UNIVERSAL_TOOL, "universal-tool");
         assert_eq!(extension_types::GENERAL, "general");
@@ -202,23 +204,25 @@ mod tests {
     #[test]
     fn test_extension_type_validation() {
         // Sprint 9 Commit 3: "gateway" is no longer a valid type.
+        // Post-slash-removal: "slash" is no longer a valid type.
         assert!(extension_types::is_valid_type("skill"));
         assert!(extension_types::is_valid_type("agent"));
-        assert!(extension_types::is_valid_type("slash"));
         assert!(extension_types::is_valid_type("mcp"));
         assert!(extension_types::is_valid_type("custom:internal"));
         assert!(!extension_types::is_valid_type("invalid"));
         assert!(!extension_types::is_valid_type("gateway"));
+        assert!(!extension_types::is_valid_type("slash"));
     }
 
     #[test]
     fn test_standard_types() {
         // Sprint 9 Commit 3: gateway retired from standard types.
+        // Post-slash-removal: slash retired from standard types.
         let types = extension_types::standard_types();
         assert!(types.contains(&"skill"));
         assert!(types.contains(&"agent"));
-        assert!(types.contains(&"slash"));
         assert!(types.contains(&"mcp"));
         assert!(!types.contains(&"gateway"));
+        assert!(!types.contains(&"slash"));
     }
 }

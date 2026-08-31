@@ -388,8 +388,6 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 message,
                 user,
-                no_slash,
-                output_format,
                 override_model,
             } => {
                 run_principal_send(
@@ -397,8 +395,6 @@ impl RequestHandler for PrincipalHandler {
                     name,
                     message,
                     user,
-                    no_slash,
-                    output_format,
                     override_model,
                     host,
                     sink,
@@ -412,8 +408,6 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 message,
                 user,
-                no_slash,
-                output_format,
                 override_model,
             } => {
                 run_principal_send(
@@ -421,8 +415,6 @@ impl RequestHandler for PrincipalHandler {
                     name,
                     message,
                     user,
-                    no_slash,
-                    output_format,
                     override_model,
                     host,
                     sink,
@@ -1977,8 +1969,6 @@ async fn run_principal_send(
     name: String,
     message: String,
     user: String,
-    no_slash: bool,
-    output_format: crate::principal::runtime::OutputFormat,
     override_model: Option<String>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
@@ -2004,52 +1994,6 @@ async fn run_principal_send(
             return Ok(());
         }
     };
-
-    // Intercept slash commands before acquiring the run permit or
-    // building a router context. This keeps the behavior uniform across
-    // CLI, GUI, and tunnel callers.
-    let (slash_response, message) = match host
-        .principal_manager()
-        .preprocess_slash(&principal, message, no_slash, output_format)
-        .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            let response = ResponsePacket::Error {
-                request_id,
-                message: e.to_string(),
-            };
-            send_response(sink, response).await?;
-            let done = ResponsePacket::Done {
-                request_id,
-                success: false,
-                error: Some(e.to_string()),
-            };
-            send_response(sink, done).await?;
-            return Ok(());
-        }
-    };
-
-    if let Some(content) = slash_response {
-        let final_packet = match response_kind {
-            PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
-                request_id,
-                content,
-            },
-            PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
-                request_id,
-                content,
-            },
-        };
-        send_response(sink, final_packet).await?;
-        let done = ResponsePacket::Done {
-            request_id,
-            success: true,
-            error: None,
-        };
-        send_response(sink, done).await?;
-        return Ok(());
-    }
 
     let peer = Subject::User(user);
     let channel = ChannelContext {
@@ -2294,8 +2238,8 @@ async fn run_principal_send(
     // stay backend-only and are dropped — the bubble break is driven
     // solely by the iteration counter, not by re-emitting those events.
     //
-    // For the `--no-stream` UX (and any thin consumer that doesn't
-    // persist the session JSONL) we still *accumulate* the run summary
+    // For thin consumers that don't persist the session JSONL we
+    // still *accumulate* the run summary
     // — `ToolStart` / `ToolEnd` / `Usage` events are correlated into
     // `iteration`, `tool_errors`, and `usage` and emitted as a single
     // `RunSummary` packet right before the final `Done`. ADR-042 keeps
@@ -2580,8 +2524,8 @@ async fn run_principal_send(
                 .await;
             }
             // Emit any accumulated tool errors + usage even on
-            // failure — `--no-stream` users still want to know "did
-            // any tools fail?" before they see the failure banner.
+            // failure — thin consumers still want to know "did any
+            // tools fail?" before they see the failure banner.
             let summary = ResponsePacket::RunSummary {
                 request_id,
                 iterations: iteration,

@@ -123,7 +123,7 @@ async fn run_command(
 ) -> anyhow::Result<()> {
     match command {
         Commands::Principal(cmd) => principal::handle_principal(cmd, paths, json).await,
-        Commands::Send(args) => send::handle_send(args, paths, json).await,
+        Commands::Send(args) => send::handle_send(args, paths).await,
         Commands::Stop(args) => stop::handle_stop(args, paths, json).await,
         Commands::Log(cmd) => log::handle_log(cmd, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),

@@ -22,7 +22,6 @@ use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use crate::principal::{
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
-    slash::SlashDispatcher,
     PrincipalManager,
 };
 use crate::registry::{load_from_workspace, RegistryConfig};
@@ -807,12 +806,6 @@ impl AppState {
         )?);
 
         // Initialize the PrincipalManager and load any existing principals.
-        // This happens after the extension manager is built so we can inject
-        // the slash-command dispatcher, which needs extension state.
-        let slash_dispatcher = Arc::new(SlashDispatcher::new(
-            Arc::clone(&extension_store),
-            Arc::clone(&extension_services),
-        ));
         let principal_manager = {
             let root = path_resolver.principals_root_dir();
             let _ = std::fs::create_dir_all(&root);
@@ -825,7 +818,6 @@ impl AppState {
                 Arc::clone(&inbox_registry),
             )
             .with_resolver(resolver.clone())
-            .with_slash_dispatcher(slash_dispatcher)
             .with_extension_store(Arc::clone(&extension_store))
             .with_observability(Arc::clone(&observability))
             // Sprint 3 Phase 10: peer ingress auto-provisions the

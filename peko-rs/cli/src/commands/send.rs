@@ -17,9 +17,9 @@
 //! Group channels (`group:<slug>` recipients) post as the caller's
 //! user identity (ADR-049 Phase 2, D7): `peko send group:eng "hi"`
 //! writes to the group channel's log as `user:<id>`; store-level
-//! Subject membership is the write authorization. `--wait`, `--model`
-//! and `--no-slash` stay refused — a group post fans out to one run
-//! per member principal, so there is no single run to await or steer.
+//! Subject membership is the write authorization. `--wait` and `--model`
+//! stay refused — a group post fans out to one run per member
+//! principal, so there is no single run to await or steer.
 
 use crate::commands::{parse_recipient, GlobalPaths, Recipient};
 use anyhow::{Context, Result};
@@ -27,7 +27,6 @@ use clap::Args;
 use peko_channel::{ChannelCliRouter, ChannelConfig, ChannelStore};
 use peko_core::ipc::packet::RequestPacket;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
-use peko_core::principal::runtime::OutputFormat;
 use peko_protocol::channel::ChannelId;
 use std::io::Write;
 use std::str::FromStr;
@@ -63,17 +62,13 @@ pub struct SendArgs {
     #[arg(long, value_name = "SUBJECT")]
     pub peer: Option<String>,
 
-    /// Do not treat `/`-prefixed messages as slash commands; pass them to the LLM verbatim
-    #[arg(long)]
-    pub no_slash: bool,
-
     /// Override the configured model for this message only
     #[arg(long, value_name = "MODEL_ID")]
     pub model: Option<String>,
 }
 
 /// Handle the send command
-pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     let message = resolve_message(&args).await?;
 
     // Refuse empty messages at the CLI layer — see Bug 4 in
@@ -113,18 +108,15 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     // Group recipients (`group:<slug>`): post to the group channel as
     // the caller's user identity (ADR-049 Phase 2, D7). Membership is
     // the write authorization — a non-member user is refused by the
-    // store with `NotMember`. `--wait` / `--model` / `--no-slash` stay
-    // refused: a group post fans out to one run per member principal,
-    // so there is no single run to await or steer.
+    // store with `NotMember`. `--wait` / `--model` stay refused: a
+    // group post fans out to one run per member principal, so there
+    // is no single run to await or steer.
     if let Recipient::Group(slug) = parse_recipient(&args.principal) {
         if args.wait {
             anyhow::bail!("groups have no bound agent run; nothing to wait on");
         }
         if args.model.is_some() {
             anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
-        }
-        if args.no_slash {
-            anyhow::bail!("--no-slash is meaningless for group channels (no bound agent run)");
         }
         let channel = format!("group:{slug}");
         return post_to_group(paths, &channel, &message, &user).await;
@@ -133,11 +125,6 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     info!("Sending message to principal '{}'", args.principal);
 
     let client = DaemonClient::connect().await?;
-    let output_format = if _json {
-        OutputFormat::Json
-    } else {
-        OutputFormat::Human
-    };
     // Always use the streaming request. It emits `PrincipalSentChunk`
     // deltas as the root agent produces text, which (a) lets us print
     // incrementally and (b) keeps the per-packet idle timeout
@@ -155,13 +142,11 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
             &args.principal,
             message,
             user,
-            args.no_slash,
-            output_format,
             args.model.clone(),
         )
         .await?;
 
-    process_response_stream(stream, &client, &args, &peer, sent_at, _json).await
+    process_response_stream(stream, &client, &args, &peer, sent_at).await
 }
 
 /// `peko send group:<slug>` (ADR-049 Phase 2, D7): post `message` to
@@ -230,7 +215,6 @@ async fn process_response_stream(
     args: &SendArgs,
     peer: &peko_auth::Subject,
     sent_at: chrono::DateTime<chrono::Utc>,
-    _json: bool,
 ) -> Result<()> {
     // Spawn a side-channel task that watches for Ctrl-C and signals
     // the main loop. We can't await `ctrl_c()` directly inside the
@@ -246,18 +230,18 @@ async fn process_response_stream(
             }
         });
     }
-    let mut interrupt_sent = false;
+    let mut stop_sent = false;
 
     let mut has_started_line = false;
     // Run summary captured from the daemon's `RunSummary` packet —
     // printed as a single-line footer on stderr in `Done{success}`
     // so stdout stays pipe-safe (only the assistant text goes to
     // stdout). Field-test finding (2026-08-02): this footer was
-    // previously *only* visible in `--no-stream` mode, hiding per-turn
-    // token cost from the common streaming path.
+    // previously hidden in streaming mode, so per-turn token cost was
+    // invisible during normal use.
     let mut summary: Option<crate::summary::RunSummaryView> = None;
     while let Some(packet) =
-        next_or_interrupt(&mut stream, &ctrl_c_signal, &mut interrupt_sent, client, args, peer)
+        next_or_stop(&mut stream, &ctrl_c_signal, &mut stop_sent, client, args, peer)
             .await?
     {
         match packet {
@@ -454,17 +438,17 @@ async fn wait_for_queued_reply(
 /// eventually emit its own `Done` with `error: Some("stopped by
 /// user")` and close it). Returns the next packet or `None` when the
 /// stream is fully closed.
-async fn next_or_interrupt(
+async fn next_or_stop(
     stream: &mut peko_core::ipc::PacketStream,
     ctrl_c_signal: &std::sync::Arc<tokio::sync::Notify>,
-    interrupt_sent: &mut bool,
+    stop_sent: &mut bool,
     client: &DaemonClient,
     args: &SendArgs,
     peer: &peko_auth::Subject,
 ) -> Result<Option<ResponsePacket>> {
     // Outer loop so a Ctrl-C that races with a packet still falls back
     // to the next stream.next() call to pick up the daemon's final
-    // `Done`. The `if !*interrupt_sent` guard ensures we only send the
+    // `Done`. The `if !*stop_sent` guard ensures we only send the
     // stop once even if the user mashes Ctrl-C.
     loop {
         let notified = ctrl_c_signal.notified();
@@ -472,8 +456,8 @@ async fn next_or_interrupt(
         tokio::select! {
             biased;
             packet = stream.next() => return Ok(packet),
-            () = &mut notified, if !*interrupt_sent => {
-                *interrupt_sent = true;
+            () = &mut notified, if !*stop_sent => {
+                *stop_sent = true;
                 eprintln!("\n[peko] Ctrl-C received — sending stop to daemon...");
                 if let Err(e) = client
                     .principal_stop(args.principal.clone(), Some(peer.clone()))
@@ -533,7 +517,7 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("empty message must be rejected before IPC");
         let msg = format!("{err:#}");
@@ -552,7 +536,7 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("whitespace-only message must be rejected before IPC");
         assert!(format!("{err:#}").contains("Message is empty"));
@@ -569,21 +553,6 @@ mod tests {
                 assert_eq!(args.message, Some("hello".to_string()));
                 assert!(!args.wait);
                 assert!(args.peer.is_none());
-            }
-            _other => panic!("expected Send command"),
-        }
-    }
-
-    #[test]
-    fn send_parses_no_slash_flag() {
-        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "--no-slash", "/help"])
-            .expect("should parse send command with --no-slash");
-
-        match cli.command {
-            Commands::Send(args) => {
-                assert_eq!(args.principal, "myprincipal");
-                assert!(args.no_slash);
-                assert_eq!(args.message, Some("/help".to_string()));
             }
             _other => panic!("expected Send command"),
         }
@@ -663,7 +632,6 @@ mod tests {
             stdin: false,
             wait: false,
             peer: None,
-            no_slash: false,
             model: None,
         }
     }
@@ -718,7 +686,7 @@ mod tests {
         let paths = test_paths(&tmp);
         let store = seed_group(&paths, "eng-standup", &["local"]).await;
 
-        super::handle_send(group_send_args("group:eng-standup", "hi all"), &paths, false)
+        super::handle_send(group_send_args("group:eng-standup", "hi all"), &paths)
             .await
             .expect("group send must succeed for a member user");
 
@@ -753,7 +721,7 @@ mod tests {
 
         let mut args = group_send_args("group:eng", "hello from alice");
         args.peer = Some("user:alice".to_string());
-        super::handle_send(args, &paths, false)
+        super::handle_send(args, &paths)
             .await
             .expect("group send as --peer user must succeed");
 
@@ -785,7 +753,7 @@ mod tests {
         let paths = test_paths(&tmp);
         let _store = seed_group(&paths, "eng", &[]).await;
 
-        let err = super::handle_send(group_send_args("group:eng", "must not land"), &paths, false)
+        let err = super::handle_send(group_send_args("group:eng", "must not land"), &paths)
             .await
             .expect_err("non-member user must be refused");
         assert!(
@@ -803,7 +771,7 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("--wait on a group must be refused");
         assert!(
@@ -823,29 +791,11 @@ mod tests {
             Commands::Send(args) => args,
             _ => panic!("expected Send"),
         };
-        let err = super::handle_send(args, &paths, false)
+        let err = super::handle_send(args, &paths)
             .await
             .expect_err("--model on a group must be refused");
         assert!(
             format!("{err:#}").contains("--model is meaningless"),
-            "got: {err:#}"
-        );
-    }
-
-    #[tokio::test]
-    async fn send_group_recipient_refuses_no_slash_flag() {
-        let cli = Cli::try_parse_from(["peko", "send", "group:eng", "/help", "--no-slash"])
-            .expect("should parse");
-        let paths = from_cli(&cli);
-        let args = match cli.command {
-            Commands::Send(args) => args,
-            _ => panic!("expected Send"),
-        };
-        let err = super::handle_send(args, &paths, false)
-            .await
-            .expect_err("--no-slash on a group must be refused");
-        assert!(
-            format!("{err:#}").contains("--no-slash is meaningless"),
             "got: {err:#}"
         );
     }

@@ -66,7 +66,7 @@ fn send(cli: &PekoCli, principal: &str, msg: &str) -> (String, String, std::proc
     let (out, _, _) = run_with_timeout(
         || {
             let mut c = cli.cmd();
-            c.args(["send", principal, msg, "--no-stream"])
+            c.args(["send", principal, msg])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             c
@@ -92,7 +92,7 @@ fn send_with_user(
     let (out, _, _) = run_with_timeout(
         || {
             let mut c = cli.cmd();
-            c.args(["-U", user, "send", principal, msg, "--no-stream"])
+            c.args(["-U", user, "send", principal, msg])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             c

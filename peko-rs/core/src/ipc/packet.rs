@@ -7,7 +7,6 @@
 //! Packet size is limited to ~60KB to stay well under UDP MTU.
 //! Larger payloads are chunked at the application layer.
 
-use crate::principal::runtime::OutputFormat;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -474,12 +473,6 @@ pub enum RequestPacket {
         name: String,
         message: String,
         user: String,
-        /// Do not treat `/`-prefixed messages as slash commands.
-        #[serde(default)]
-        no_slash: bool,
-        /// Preferred output format for slash-command responses.
-        #[serde(default)]
-        output_format: OutputFormat,
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
@@ -498,12 +491,6 @@ pub enum RequestPacket {
         name: String,
         message: String,
         user: String,
-        /// Do not treat `/`-prefixed messages as slash commands.
-        #[serde(default)]
-        no_slash: bool,
-        /// Preferred output format for slash-command responses.
-        #[serde(default)]
-        output_format: OutputFormat,
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
@@ -1601,8 +1588,8 @@ pub enum ResponsePacket {
 
     /// Run-summary packet emitted by the daemon at the end of a
     /// principal-send run. Aggregates the run's tool-call errors and
-    /// cumulative token usage so CLI `--no-stream` (and other thin
-    /// consumers that don't persist the session JSONL) can surface
+    /// cumulative token usage so thin consumers that don't persist the
+    /// session JSONL can surface
     /// these facts to the user.
     ///
     /// Always emitted between `PrincipalSent*` / `PrincipalSentDone` /
@@ -2518,8 +2505,6 @@ mod tests {
             name: "helper".to_string(),
             message: "Hello".to_string(),
             user: "alice".to_string(),
-            no_slash: true,
-            output_format: OutputFormat::Json,
             override_model: Some("gpt-4o".to_string()),
         };
 
@@ -2532,16 +2517,12 @@ mod tests {
                 name,
                 message,
                 user,
-                no_slash,
-                output_format,
                 override_model,
             } => {
                 assert_eq!(request_id, 42);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "Hello");
                 assert_eq!(user, "alice");
-                assert!(no_slash);
-                assert_eq!(output_format, OutputFormat::Json);
                 assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4154,8 +4135,6 @@ mod tests {
             name: "helper".to_string(),
             message: "hello".to_string(),
             user: "alice".to_string(),
-            no_slash: true,
-            output_format: OutputFormat::Json,
             override_model: Some("gpt-4o".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
@@ -4166,16 +4145,12 @@ mod tests {
                 name,
                 message,
                 user,
-                no_slash,
-                output_format,
                 override_model,
             } => {
                 assert_eq!(request_id, 5000);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "hello");
                 assert_eq!(user, "alice");
-                assert!(no_slash);
-                assert_eq!(output_format, OutputFormat::Json);
                 assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4192,8 +4167,6 @@ mod tests {
             name: "helper".to_string(),
             message: "stream please".to_string(),
             user: "alice".to_string(),
-            no_slash: true,
-            output_format: OutputFormat::Json,
             override_model: Some("claude-haiku-4-5".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
@@ -4204,16 +4177,12 @@ mod tests {
                 name,
                 message,
                 user,
-                no_slash,
-                output_format,
                 override_model,
             } => {
                 assert_eq!(request_id, 5100);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "stream please");
                 assert_eq!(user, "alice");
-                assert!(no_slash);
-                assert_eq!(output_format, OutputFormat::Json);
                 assert_eq!(override_model, Some("claude-haiku-4-5".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4683,8 +4652,6 @@ mod tests {
             name: "p".to_string(),
             message: "m".to_string(),
             user: "u".to_string(),
-            no_slash: false,
-            output_format: OutputFormat::Human,
             override_model: None,
         };
         assert_eq!(req_send.request_id(), 1);

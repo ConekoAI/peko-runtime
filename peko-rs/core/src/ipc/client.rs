@@ -383,8 +383,6 @@ impl DaemonClient {
         name: impl Into<String>,
         message: impl Into<String>,
         user: impl Into<String>,
-        no_slash: bool,
-        output_format: crate::principal::runtime::OutputFormat,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -393,8 +391,6 @@ impl DaemonClient {
             name: name.into(),
             message: message.into(),
             user: user.into(),
-            no_slash,
-            output_format,
             override_model,
         };
         self.send_request(packet).await
@@ -408,8 +404,6 @@ impl DaemonClient {
         name: impl Into<String>,
         message: impl Into<String>,
         user: impl Into<String>,
-        no_slash: bool,
-        output_format: crate::principal::runtime::OutputFormat,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -418,8 +412,6 @@ impl DaemonClient {
             name: name.into(),
             message: message.into(),
             user: user.into(),
-            no_slash,
-            output_format,
             override_model,
         };
         self.send_request(packet).await
