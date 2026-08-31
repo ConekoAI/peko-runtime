@@ -54,4 +54,7 @@ pub use subagent_runtime::{SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest,
 // B4 cleanup: `DynamicSessionKeyProvider` was removed — it was
 // write-only on the production path (only `set_session_key` was
 // called once per subagent, no reads).
-pub use agent_compat::{new_agent_tool, runtime_from_executor};
+// B5 cleanup: `runtime_from_executor` was inlined into
+// `new_agent_tool`; the only caller was the one inside the same
+// module.
+pub use agent_compat::new_agent_tool;
