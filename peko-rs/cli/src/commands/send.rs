@@ -237,8 +237,8 @@ async fn process_response_stream(
     // printed as a single-line footer on stderr in `Done{success}`
     // so stdout stays pipe-safe (only the assistant text goes to
     // stdout). Field-test finding (2026-08-02): this footer was
-    // previously *only* visible in `--no-stream` mode, hiding per-turn
-    // token cost from the common streaming path.
+    // previously hidden in streaming mode, so per-turn token cost was
+    // invisible during normal use.
     let mut summary: Option<crate::summary::RunSummaryView> = None;
     while let Some(packet) =
         next_or_stop(&mut stream, &ctrl_c_signal, &mut stop_sent, client, args, peer)

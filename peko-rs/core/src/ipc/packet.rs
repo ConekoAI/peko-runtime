@@ -1588,8 +1588,8 @@ pub enum ResponsePacket {
 
     /// Run-summary packet emitted by the daemon at the end of a
     /// principal-send run. Aggregates the run's tool-call errors and
-    /// cumulative token usage so CLI `--no-stream` (and other thin
-    /// consumers that don't persist the session JSONL) can surface
+    /// cumulative token usage so thin consumers that don't persist the
+    /// session JSONL can surface
     /// these facts to the user.
     ///
     /// Always emitted between `PrincipalSent*` / `PrincipalSentDone` /

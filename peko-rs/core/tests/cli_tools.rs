@@ -18,7 +18,7 @@
 //!   2. Calls `POST /_test/configure` on the mock LLM to install a
 //!      scripted `MOCK_LLM_SCRIPT` (and reset the per-substring counter).
 //!   3. Spawns a plain `DaemonGuard`.
-//!   4. Runs `peko send <agent> <prompt> --no-stream` and asserts on the
+//!   4. Runs `peko send <agent> <prompt>` and asserts on the
 //!      parent's final stdout plus, where applicable, on the file the
 //!      tool wrote into the tool workspace.
 //!
@@ -207,7 +207,7 @@ async fn built_in_glob_finds_files() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -272,7 +272,7 @@ async fn built_in_grep_searches_content() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -331,7 +331,7 @@ async fn built_in_read_file_returns_content() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -390,7 +390,7 @@ async fn built_in_write_file_creates_file() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -470,7 +470,7 @@ async fn built_in_edit_modifies_file() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -540,7 +540,7 @@ async fn built_in_bash_executes_command() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", agent_name, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);

@@ -191,7 +191,7 @@ async fn session_new_refused_live_id_stays_stable() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", principal, &prompt, "--no-stream"],
+        &["send", principal, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -215,7 +215,7 @@ async fn session_new_refused_live_id_stays_stable() {
     let prompt = format!("Say SECOND_TURN_OK. Use the needle '{second_needle}'.");
     let (out, err, status) = run(
         &cli,
-        &["send", principal, &prompt, "--no-stream"],
+        &["send", principal, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -290,7 +290,7 @@ async fn session_delete_current_session_refused() {
     let prompt = format!("Say FIRST_OK. Use the needle '{first_needle}'.");
     let (out, err, status) = run(
         &cli,
-        &["send", principal, &prompt, "--no-stream"],
+        &["send", principal, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -320,7 +320,7 @@ async fn session_delete_current_session_refused() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", principal, &prompt, "--no-stream"],
+        &["send", principal, &prompt],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -396,7 +396,7 @@ async fn agent_spawn_list_resume_with_history() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", principal, &prompt, "--no-stream"],
+        &["send", principal, &prompt],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);
@@ -441,7 +441,7 @@ async fn agent_spawn_list_resume_with_history() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", principal, &prompt, "--no-stream"],
+        &["send", principal, &prompt],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);

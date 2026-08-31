@@ -1,8 +1,8 @@
 //! View-model for `ResponsePacket::RunSummary` + footer formatting.
 //!
-//! The CLI's `peko send --no-stream` captures a single `RunSummary`
-//! packet per run (between `PrincipalSent*` and `Done`) and prints a
-//! one-line footer to stderr at end-of-run. The footer is the
+//! The CLI's `peko send` captures a single `RunSummary` packet per run
+//! (between `PrincipalSent*` and `Done`) and prints a one-line footer
+//! to stderr at end-of-run. The footer is the
 //! opt-in-by-default surface for cumulative token usage and any
 //! tool errors that the daemon otherwise drops per ADR-042's
 //! "backend-only by default" rule.
@@ -39,8 +39,8 @@ pub struct RunSummaryView {
 }
 
 impl RunSummaryView {
-    /// Render the one-line footer that `peko send --no-stream` prints
-    /// to stderr. Format:
+    /// Render the one-line footer that `peko send` prints to stderr.
+    /// Format:
     ///
     /// ```text
     /// [peko] iterations=5 input=1234 output=567 cache=… tools_failed=2 [errors: read_file: …; bash: …]

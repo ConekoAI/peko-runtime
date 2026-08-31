@@ -94,7 +94,7 @@ fn send_default_response_streams_to_stdout() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (stdout, stderr, status) =
-        send(&cli, &["send", "test-agent", "Hello there", "--no-stream"]);
+        send(&cli, &["send", "test-agent", "Hello there"]);
     assert_send_ok(&stdout, &stderr, &status);
     // The CI mock LLM is configured with `DEFAULT_RESPONSE=SUCCESS` in
     // tests/docker/docker-compose.integration.yml — every prompt that
@@ -129,7 +129,6 @@ fn send_keyword_echo_returns_marker() {
             "send",
             "echo-agent",
             "Please complete the test. Respond with: CLI_SEND_OK",
-            "--no-stream",
         ],
     );
     assert_send_ok(&stdout, &stderr, &status);
@@ -166,7 +165,6 @@ fn send_file_option_reads_message_from_file() {
             "file-agent",
             "--file",
             test_file.to_str().unwrap(),
-            "--no-stream",
         ],
     );
     assert_send_ok(&stdout, &stderr, &status);
@@ -193,7 +191,7 @@ fn send_nonexistent_agent_fails() {
 
     let _daemon = DaemonGuard::spawn(&cli);
 
-    let (stdout, stderr, status) = send(&cli, &["send", "no-such-agent", "Hello", "--no-stream"]);
+    let (stdout, stderr, status) = send(&cli, &["send", "no-such-agent", "Hello"]);
     assert_send_err(&stdout, &stderr, &status);
     let combined = format!("{stdout}{stderr}");
     assert!(
@@ -295,12 +293,12 @@ fn send_posts_both_directions_to_peer_dm_channel() {
 
     let (stdout, stderr, status) = send(
         &cli,
-        &["send", "dm-agent", "FIRST_DM_MESSAGE", "--no-stream"],
+        &["send", "dm-agent", "FIRST_DM_MESSAGE"],
     );
     assert_send_ok(&stdout, &stderr, &status);
     let (stdout, stderr, status) = send(
         &cli,
-        &["send", "dm-agent", "SECOND_DM_MESSAGE", "--no-stream"],
+        &["send", "dm-agent", "SECOND_DM_MESSAGE"],
     );
     assert_send_ok(&stdout, &stderr, &status);
 

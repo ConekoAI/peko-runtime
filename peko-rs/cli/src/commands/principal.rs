@@ -1719,8 +1719,7 @@ mod tests {
     /// `principal send` was a duplicate of the top-level `send` command.
     /// Removed in 2026-08-01 v2 fixes. Migration: `principal send foo bar`
     /// becomes `send foo bar`. The top-level `send` is the canonical
-    /// command and supports `--no-stream`, `--file`, `--stdin`, `--model`,
-    /// `--no-slash`.
+    /// command and supports `--file`, `--stdin`, `--model`.
     #[test]
     fn principal_no_send_subcommand() {
         let result = Cli::try_parse_from(["peko", "principal", "send", "x", "y"]);

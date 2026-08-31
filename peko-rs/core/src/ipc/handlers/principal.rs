@@ -2238,8 +2238,8 @@ async fn run_principal_send(
     // stay backend-only and are dropped — the bubble break is driven
     // solely by the iteration counter, not by re-emitting those events.
     //
-    // For the `--no-stream` UX (and any thin consumer that doesn't
-    // persist the session JSONL) we still *accumulate* the run summary
+    // For thin consumers that don't persist the session JSONL we
+    // still *accumulate* the run summary
     // — `ToolStart` / `ToolEnd` / `Usage` events are correlated into
     // `iteration`, `tool_errors`, and `usage` and emitted as a single
     // `RunSummary` packet right before the final `Done`. ADR-042 keeps
@@ -2524,8 +2524,8 @@ async fn run_principal_send(
                 .await;
             }
             // Emit any accumulated tool errors + usage even on
-            // failure — `--no-stream` users still want to know "did
-            // any tools fail?" before they see the failure banner.
+            // failure — thin consumers still want to know "did any
+            // tools fail?" before they see the failure banner.
             let summary = ResponsePacket::RunSummary {
                 request_id,
                 iterations: iteration,
