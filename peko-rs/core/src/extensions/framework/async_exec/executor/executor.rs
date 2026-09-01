@@ -11,6 +11,7 @@ use super::types::{
 };
 use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::inbox::SessionInbox;
+use crate::extensions::framework::transport::async_transport::BoxedExecutionFn;
 use peko_session::InboxRegistry;
 
 /// Default `InboxFactory` for [`InboxRegistry`] construction.
@@ -193,11 +194,7 @@ impl AsyncExecutor {
         config: AsyncToolConfig,
         metadata: TaskMetadata,
         cancel_signal: Option<tokio::sync::watch::Sender<bool>>,
-        execution_fn: Box<
-            dyn FnOnce()
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
-                + Send,
-        >,
+        execution_fn: BoxedExecutionFn,
     ) -> Result<AsyncTaskReceipt> {
         // Determine task file path
         let task_file = self
@@ -495,11 +492,7 @@ impl AsyncExecutor {
         let parent_session_key = parent_session_key.into();
 
         // Box the generic closure so it can be passed to the non-generic inner method
-        let boxed_fn: Box<
-            dyn FnOnce()
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
-                + Send,
-        > = Box::new(move || Box::pin(execution_fn()));
+        let boxed_fn: BoxedExecutionFn = Box::new(move || Box::pin(execution_fn()));
 
         self.execute_inner(
             task_id,
@@ -536,11 +529,7 @@ impl AsyncExecutor {
         let tool_name = tool_name.into();
         let parent_session_key = parent_session_key.into();
 
-        let boxed_fn: Box<
-            dyn FnOnce()
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
-                + Send,
-        > = Box::new(move || Box::pin(execution_fn()));
+        let boxed_fn: BoxedExecutionFn = Box::new(move || Box::pin(execution_fn()));
 
         self.execute_inner(
             task_id,
@@ -563,11 +552,7 @@ impl AsyncExecutor {
         params: Value,
         parent_session_key: impl Into<String>,
         config: AsyncToolConfig,
-        execution_fn: Box<
-            dyn FnOnce()
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
-                + Send,
-        >,
+        execution_fn: BoxedExecutionFn,
     ) -> Result<AsyncTaskReceipt> {
         let tool_name = tool_name.into();
         let parent_session_key = parent_session_key.into();
@@ -662,11 +647,7 @@ impl AsyncExecutor {
         // 3. Build the factory closure that does the actual dispatch.
         //    It owns `context` (moved) and `rx`.
         let core_for_closure = core.clone();
-        let boxed_fn: Box<
-            dyn FnOnce()
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
-                + Send,
-        > = Box::new(move || {
+        let boxed_fn: BoxedExecutionFn = Box::new(move || {
             Box::pin(async move {
                 let (text, json, success) = core_for_closure
                     .execute_tool_via_hook(
