@@ -31,7 +31,7 @@ pub struct StopArgs {
 }
 
 /// Handle the stop command.
-pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
     // Group channels never trigger agent runs, so there is nothing
     // to stop.
     if let Recipient::Group(_) = parse_recipient(&args.principal) {
@@ -117,7 +117,7 @@ mod tests {
             Commands::Stop(args) => args,
             _ => panic!("expected Stop"),
         };
-        let err = super::handle_stop(args, &paths, false)
+        let err = super::handle_stop(args, &paths)
             .await
             .expect_err("group stop must be refused before IPC");
         assert!(
