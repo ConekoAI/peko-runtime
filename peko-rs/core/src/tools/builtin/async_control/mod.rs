@@ -297,3 +297,6 @@ pub trait AsyncRuntime: Send + Sync {
 /// `Async*Tool` constructor. Tools hold `Arc<dyn AsyncRuntime>` so
 /// per-agent swapping (e.g. in tests) is straightforward.
 pub type SharedAsyncRuntime = Arc<dyn AsyncRuntime>;
+
+#[cfg(test)]
+mod integration_tests;
