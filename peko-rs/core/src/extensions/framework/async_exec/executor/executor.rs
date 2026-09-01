@@ -1184,12 +1184,16 @@ mod dispatch_tool_tests {
 
     /// F38: `dispatch_tool` returns Ok(receipt) with a valid task_id
     /// regardless of whether the gate eventually passes or rejects.
-    /// The success-path (gate passes) outcome is exercised by the F37
-    /// `test_async_spawn_routes_through_capability_gate_allow` test
-    /// against the real `register_tool_system` path (outside the
-    /// framework boundary), so this test only pins the API contract
-    /// of `dispatch_tool` itself: a valid context + core yields a
-    /// receipt with a non-empty task_id that lands in the registry.
+    /// The success-path (gate passes) outcome is exercised by the
+    /// in-tree integration test
+    /// `tools::builtin::async_control::integration_tests::tests::test_async_spawn_through_capability_gate_allow`,
+    /// which wires `AsyncSpawnTool` against a real
+    /// `AsyncExecutorRuntime` (full chain: `AsyncSpawn` →
+    /// `AsyncExecutorRuntime::spawn` → `dispatch_tool` →
+    /// `core.execute_tool_via_hook`). This test only pins the API
+    /// contract of `dispatch_tool` itself: a valid context + core
+    /// yields a receipt with a non-empty task_id that lands in the
+    /// registry.
     ///
     /// `insert_tool_instance` populates the side-table (sufficient for
     /// the receipt to be returned; the gate's hook-registry lookup
