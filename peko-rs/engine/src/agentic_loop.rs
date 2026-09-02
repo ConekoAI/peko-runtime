@@ -2011,6 +2011,60 @@ impl AgenticLoop {
                     messages.push(r.message);
                 }
 
+                // PR 3 mid-turn trigger: after tool execution, before
+                // the next iteration, check if the cumulative message
+                // window is approaching the limit. If so, fire a
+                // mid-turn compaction that summarizes older turns
+                // and injects an environment snapshot ABOVE the last
+                // user message so the model can re-orient without
+                // losing the current tool-call / tool-result pair.
+                //
+                // This is structurally distinct from the pre-turn
+                // trigger at the top of the loop:
+                //   - pre-turn fires at the top of every iteration
+                //     against the full conversation;
+                //   - mid-turn fires here, AFTER tool execution, so it
+                //     sees the freshly-added tool results.
+                // The threshold matches the existing auto-threshold
+                // logic in `should_auto_compact` so the two triggers
+                // stay consistent.
+                let mid_turn_estimated =
+                    crate::compaction_driver::estimate_context_tokens_for_agentic(&messages)
+                        .tokens;
+                let mid_turn_threshold = self
+                    .compaction_config
+                    .auto_threshold_percent as usize
+                    * compaction_driver.context_window()
+                    / 100;
+                if mid_turn_estimated >= mid_turn_threshold {
+                    let snapshot = peko_session::EnvironmentSnapshot {
+                        runtime_environment: format!(
+                            "{}, agent={}",
+                            std::env::consts::OS,
+                            self.agent.name()
+                        ),
+                        permission_policy_summary: self
+                            .agent
+                            .principal_capabilities()
+                            .map(|allowed| allowed.to_strings())
+                            .unwrap_or_default(),
+                    };
+                    info!(
+                        "AgenticLoop: mid-turn threshold hit ({} >= {}); firing compaction",
+                        mid_turn_estimated, mid_turn_threshold
+                    );
+                    let _ = compaction_driver
+                        .compact_mid_turn(
+                            &mut messages,
+                            session,
+                            &*self.extension_core,
+                            &on_event,
+                            &run_id,
+                            snapshot,
+                        )
+                        .await?;
+                }
+
                 // Continue to next iteration
                 continue;
             }

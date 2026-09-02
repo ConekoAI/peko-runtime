@@ -70,6 +70,11 @@ pub struct CompactionRequest {
     pub previous_summary: Option<String>,
     /// Response channel for result
     pub response_tx: oneshot::Sender<CompactionResponse>,
+    /// Which phase triggered this compaction (PR 3). The worker
+    /// forwards this to `Compactor::compact` so the resulting
+    /// `CompactionEntry.phase` and `CompactionDetails.phase` carry
+    /// the originating trigger.
+    pub phase: crate::compaction::types::CompactionPhase,
 }
 
 /// Response from background compaction.
@@ -257,6 +262,7 @@ impl BackgroundCompactor {
         &self,
         messages: Vec<LlmMessage>,
         previous_summary: Option<String>,
+        phase: crate::compaction::types::CompactionPhase,
     ) -> Result<oneshot::Receiver<CompactionResponse>> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -264,6 +270,7 @@ impl BackgroundCompactor {
             messages,
             previous_summary,
             response_tx,
+            phase,
         };
 
         self.request_tx
@@ -414,7 +421,10 @@ async fn process_compaction_request_with_config(
     // summarization LLM call then auto-charges.
     let mut compactor = Compactor::with_config(config, request.previous_summary.clone());
 
-    match compactor.compact(&request.messages, &provider).await {
+    match compactor
+        .compact(&request.messages, &provider, request.phase)
+        .await
+    {
         Ok(result) => {
             // Update state
             {
@@ -471,9 +481,15 @@ impl crate::compaction::CompactorBackend for BackgroundCompactor {
         // own `(response_tx, response_rx)` oneshot pair and returns the
         // receiver. The trait port deliberately omits `response_tx` so
         // the lifted orchestrator doesn't have to construct a sender it
-        // never uses.
-        BackgroundCompactor::request_compaction(self, request.messages, request.previous_summary)
-            .await
+        // never uses. PR 3: also forward `phase` so the resulting
+        // `CompactionEntry` carries the originating trigger.
+        BackgroundCompactor::request_compaction(
+            self,
+            request.messages,
+            request.previous_summary,
+            request.phase,
+        )
+        .await
     }
 }
 

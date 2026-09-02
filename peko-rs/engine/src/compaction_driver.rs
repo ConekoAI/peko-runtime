@@ -29,7 +29,8 @@
 //! where the driver is built.
 
 use crate::compaction::{
-    CompactionConfig, CompactionRequest, CompactionResponse, CompactionResult, CompactorBackend,
+    CompactionConfig, CompactionPhase, CompactionRequest, CompactionResponse, CompactionResult,
+    CompactorBackend,
 };
 use crate::events::AgenticEvent;
 use crate::SessionView;
@@ -187,7 +188,7 @@ impl CompactionDriver {
                 });
             }
 
-            self.invoke_pre_hook(messages, session, funnel, effective_tokens)
+            self.invoke_pre_hook(messages, session, funnel, effective_tokens, CompactionPhase::PreTurn)
                 .await;
         }
 
@@ -205,6 +206,199 @@ impl CompactionDriver {
             // after `check_and_compact` returns, so the usage reaches
             // `total_usage` for this iteration.
         }
+
+        Ok(true)
+    }
+
+    /// PR 3: fire a mid-turn compaction.
+    ///
+    /// Structurally parallel to `check_and_compact` but with two
+    /// important differences:
+    ///
+    /// 1. **Phase tag** — the resulting `CompactionEntry.phase` and
+    ///    `CompactionDetails.phase` are tagged `MidTurn` so hooks
+    ///    can tell a post-tool-result summary from a top-of-iteration
+    ///    one.
+    /// 2. **Splice position** — instead of replacing `messages`
+    ///    wholesale (pre-turn's behaviour), the new summary message
+    ///    is inserted *above the last real user message*. The current
+    ///    turn's tool-call / tool-result pair is preserved verbatim
+    ///    at the tail of `messages`. The `snapshot` is appended after
+    ///    the summary so the model sees the runtime environment + the
+    ///    capability list before re-engaging with the tool results.
+    ///
+    /// `snapshot` is the environment snapshot the engine loop built
+    /// for this turn; the driver doesn't know how to construct one
+    /// (it doesn't have access to the agent / principal fields).
+    ///
+    /// Returns `Ok(true)` if `messages` was mutated (compaction
+    /// completed and the summary was spliced in); `Ok(false)` if the
+    /// backend returned `NotNeeded` / `Skipped` / `Failed` and
+    /// `messages` is unchanged.
+    pub async fn compact_mid_turn<S>(
+        &mut self,
+        messages: &mut Vec<LlmMessage>,
+        session: &S,
+        funnel: &dyn ToolFunnel,
+        on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
+        run_id: &str,
+        snapshot: peko_session::EnvironmentSnapshot,
+    ) -> Result<bool>
+    where
+        S: SessionView + ?Sized,
+    {
+        // Mid-turn has its own gating logic — the caller has already
+        // decided we should fire (the agentic loop checked estimated
+        // tokens after tool execution). We submit the request
+        // unconditionally and let the backend decide whether the
+        // summarization can actually help (it may return
+        // `NotNeeded` if there's nothing to compact, or `Skipped` if
+        // the cooldown is active). If either happens, we leave
+        // `messages` alone and the loop continues; the next iteration
+        // will hit `check_and_compact` (pre-turn) and may evict
+        // instead.
+        if self.pending_compaction.is_some() {
+            // Already running one — don't double-stack.
+            return Ok(false);
+        }
+
+        info!(
+            "Mid-turn compaction fired ({} messages, snapshot covers {} capabilities)",
+            messages.len(),
+            snapshot.permission_policy_summary.len()
+        );
+        on_event(AgenticEvent::Thinking {
+            run_id: run_id.to_string(),
+            text: "Compacting mid-turn after tool execution; preserving current tool result."
+                .to_string(),
+            is_delta: false,
+            is_final: false,
+            signature: None,
+        });
+
+        // Pre-hook fires the same way as `check_and_compact`. The
+        // hook may cancel compaction (Handled) or hand back
+        // pre-baked messages (ReplaceMessages). Both cases are
+        // honoured.
+        let effective_tokens = estimate_context_tokens(messages).tokens;
+        self.invoke_pre_hook(messages, session, funnel, effective_tokens, CompactionPhase::MidTurn)
+            .await;
+
+        // Wait for the background worker. `compact_mid_turn` is
+        // synchronous from the agentic loop's perspective — the
+        // engine can't proceed without knowing whether the summary
+        // has been spliced. We poll until the result lands, with
+        // the same 100ms timeout as `check_and_compact`'s implicit
+        // poll, but loop here until the receiver resolves. A
+        // realistic summarization LLM call takes 1–3s; a few
+        // hundred 100ms polls is fine.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            self.poll_background_compaction(messages, session).await;
+            if self.compaction_performed || self.pending_compaction.is_none() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                warn!("Mid-turn compaction deadline (30s) exceeded; leaving messages unchanged");
+                return Ok(false);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        if !self.compaction_performed {
+            // Backend returned NotNeeded / Skipped / Failed.
+            return Ok(false);
+        }
+
+        // Splice the resulting summary + snapshot into `messages`
+        // above the last real user message. The compactor returned
+        // its own message list (`result.messages`) which has the
+        // shape `[initial_system?, summary_msg, kept]`. For
+        // mid-turn we want ONLY the summary portion; we re-build
+        // the message list by taking everything before the last
+        // user message, then `[summary_msg, snapshot_msg]`, then
+        // everything from the last user message onward.
+        if let Some(result) = self.last_compaction_result.take() {
+            // Find the summary message — `Compactor::compact`
+            // stamps it with the prefix
+            // `[Conversation Summary - N messages]`.
+            let summary_text = format!(
+                "[Conversation Summary - {} messages]:",
+                result.entry.messages_compacted
+            );
+            let summary_msg = result
+                .messages
+                .iter()
+                .find(|m| {
+                    m.content.iter().any(|b| {
+                        matches!(b, peko_message::ContentBlock::Text { text } if text.starts_with(&summary_text))
+                    })
+                })
+                .cloned()
+                .unwrap_or_else(|| {
+                    // Fallback: take the first message in the
+                    // compacted result as the summary. Shouldn't
+                    // happen — `Compactor::compact` always
+                    // produces a summary message — but we degrade
+                    // gracefully rather than panicking.
+                    result
+                        .messages
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| peko_message::LlmMessage::system(
+                            result.entry.summary.clone(),
+                        ))
+                });
+
+            let snapshot_msg = snapshot.to_system_message();
+
+            // Find the last user message in the ORIGINAL messages
+            // (not result.messages). That's the boundary between
+            // "older turns we want to summarize" and "the current
+            // turn we want to preserve".
+            let last_user_idx = messages
+                .iter()
+                .rposition(|m| m.role == peko_message::MessageRole::User);
+
+            let last_user_idx = match last_user_idx {
+                Some(idx) => idx,
+                None => {
+                    // No user message in the conversation. Shouldn't
+                    // happen mid-turn (we just received tool results
+                    // for an LLM call responding to a user message),
+                    // but degrade gracefully: prepend summary +
+                    // snapshot at the top instead.
+                    warn!(
+                        "Mid-turn compaction: no user message found; prepending summary at top"
+                    );
+                    let mut new_messages = vec![summary_msg, snapshot_msg];
+                    new_messages.append(messages);
+                    *messages = new_messages;
+                    self.compaction_performed = false;
+                    self.invoke_post_hook(messages, session, funnel, run_id)
+                        .await;
+                    return Ok(true);
+                }
+            };
+
+            // Insert at `last_user_idx` — push everything from
+            // `last_user_idx..` to the right by two slots, then
+            // place summary + snapshot at the new
+            // `[last_user_idx, last_user_idx+1]` positions.
+            messages.insert(last_user_idx, summary_msg);
+            messages.insert(last_user_idx + 1, snapshot_msg);
+
+            info!(
+                "Mid-turn compaction spliced summary + snapshot above last user message (idx {})",
+                last_user_idx
+            );
+        }
+
+        self.compaction_performed = false;
+        // Post-hook fires the same as pre-turn — let handlers see
+        // the result and mutate `messages` further if they want.
+        self.invoke_post_hook(messages, session, funnel, run_id)
+            .await;
 
         Ok(true)
     }
@@ -248,6 +442,7 @@ impl CompactionDriver {
         _session: &S,
         funnel: &dyn ToolFunnel,
         estimated_tokens: usize,
+        phase: CompactionPhase,
     ) where
         S: SessionView + ?Sized,
     {
@@ -330,6 +525,7 @@ impl CompactionDriver {
                 let request = CompactionRequest {
                     messages: messages.clone(),
                     previous_summary: prev_summary,
+                    phase,
                 };
                 match self.backend.request(request).await {
                     Ok(receiver) => {
@@ -506,15 +702,14 @@ fn find_last_assistant_usage(messages: &[LlmMessage]) -> Option<(peko_message::T
 ///
 /// Mirrors `crate::compaction::ContextUsageEstimate` (lifted from
 /// root's `src/session/compaction.rs:207` in 9b.N.4). The local
-/// type here is private — callers should use the public
-/// `crate::compaction::ContextUsageEstimate` re-export instead. The
-/// duplicate definition exists because the driver's
-/// pre-hook + post-hook both call `estimate_context_tokens` and
-/// want a local typed return rather than threading the `compaction`
-/// re-export through the driver's private helpers.
+/// type here is `pub(crate)` so the agentic loop's mid-turn
+/// trigger can call [`estimate_context_tokens_for_agentic`] and
+/// read the same `tokens` field. Callers outside this crate should
+/// use the public `crate::compaction::ContextUsageEstimate`
+/// re-export.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // written for F17 inspection; readers added in F30+
-struct ContextUsageEstimate {
+pub struct ContextUsageEstimate {
     /// Total estimated tokens
     pub tokens: usize,
     /// Tokens from the last assistant usage record
@@ -534,6 +729,16 @@ struct ContextUsageEstimate {
 /// (root) — duplicated here so the driver's pre-hook + post-hook
 /// can run without a root dep. The two implementations are
 /// behaviour-equivalent; any future change must update both.
+/// Public re-export of the hybrid estimator for the agentic loop's
+/// mid-turn trigger. The loop calls this AFTER tool execution to
+/// decide whether a mid-turn compaction should fire (separate from
+/// the top-of-iteration `check_and_compact` path). The result type
+/// is the same `ContextUsageEstimate` returned internally; the loop
+/// only reads the `tokens` field.
+pub fn estimate_context_tokens_for_agentic(messages: &[LlmMessage]) -> ContextUsageEstimate {
+    estimate_context_tokens(messages)
+}
+
 fn estimate_context_tokens(messages: &[LlmMessage]) -> ContextUsageEstimate {
     if let Some((usage, index)) = find_last_assistant_usage(messages) {
         let usage_tokens = (usage.input + usage.output) as usize;

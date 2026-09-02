@@ -17,6 +17,7 @@ use crate::compaction::{
     turn_boundaries::{
         classify_message, find_cut_points, select_messages_respecting_boundaries, MessageKind,
     },
+    types::CompactionPhase,
     CompactionConfig, CompactionEntry, Compactor,
 };
 use peko_message::{ContentBlock, LlmMessage, MessageRole};
@@ -186,6 +187,7 @@ fn test_structured_summary_with_read_files() {
         read_files: vec!["src/main.rs".to_string()],
         modified_files: vec![],
         image_token_count: 0,
+        phase: CompactionPhase::PreTurn,
     };
 
     let formatted = format_summary_with_file_ops(summary, &details);
@@ -200,6 +202,7 @@ fn test_structured_summary_with_modified_files() {
         read_files: vec![],
         modified_files: vec!["src/main.rs".to_string()],
         image_token_count: 0,
+        phase: CompactionPhase::PreTurn,
     };
 
     let formatted = format_summary_with_file_ops(summary, &details);
@@ -260,6 +263,7 @@ fn test_compaction_entry_with_details() {
         read_files: vec!["a.rs".to_string()],
         modified_files: vec!["b.rs".to_string()],
         image_token_count: 0,
+        phase: CompactionPhase::PreTurn,
     })
     .unwrap();
 
@@ -271,6 +275,7 @@ fn test_compaction_entry_with_details() {
         tokens_before: 1000,
         tokens_after: 200,
         compaction_number: 1,
+        phase: CompactionPhase::PreTurn,
         details: Some(details_value),
     };
 

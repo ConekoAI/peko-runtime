@@ -49,9 +49,22 @@ pub mod types;
 pub mod image_budget;
 pub use image_budget::{estimate_image_block_tokens, estimate_image_tokens, message_image_tokens};
 
+// PR 3: environment snapshot — injected alongside mid-turn
+// compaction summaries so the model can re-orient after a
+// post-tool-result compaction. Lives at the crate root (not under
+// `compaction::*`) because it's structurally distinct from the
+// compaction state machine — it's a renderable snapshot, not a
+// persistence-owned data type.
+pub mod environment_snapshot;
+pub use environment_snapshot::EnvironmentSnapshot;
+
 // PR 2: function-call output rewriter. Re-exported at the crate
 // root so callers don't have to reach into `compaction::*`.
 pub use compaction::output_rewrite::{rewrite_oversized_tool_results, RewriteStats};
+
+// PR 3: phase enum + per-entry phase field — re-exported here so
+// callers don't have to reach into `compaction::types::*`.
+pub use compaction::types::CompactionPhase;
 
 pub use peko_subject::PathResolverLike;
 pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
