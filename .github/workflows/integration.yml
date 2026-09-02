@@ -28,23 +28,25 @@ on:
       # Phase 0.Z-D: `src/**` is a stale no-op after the src/ → peko-rs/core/src/
       # move. Kept alongside the new path for safety during partial reverts;
       # removed in the cleanup PR once master confirms src/-free.
-      # Phase 0.Z-B: `peko-rs/cli/**` triggers all tiers on CLI binary split.
-      # 2026-07-25: `peko-rs/core/Cargo.toml` + `peko-rs/*/Cargo.toml`
-      # added so feature/feature-flag changes (e.g. the Win32_Storage_FileSystem
-      # surface bug fix in PR #304) don't silently skip CI the same way
-      # the original windows-sys dep declaration did.
-      # 2026-07-28: `peko-rs/auth/**` + `peko-rs/identity/**` + `peko-rs/subject/**`
-      # added so satellite-crate source-only changes (e.g. R5 typed
-      # ApiKey subject projection) trigger CI. The same issue exists for
-      # any peko-rs/*/src/ change that doesn't touch Cargo.toml.
+      # 2026-07-25: `peko-rs/*/Cargo.toml` added so feature/feature-flag
+      # changes (e.g. the Win32_Storage_FileSystem surface bug fix in
+      # PR #304) don't silently skip CI the same way the original
+      # windows-sys dep declaration did.
+      # 2026-09-02: `peko-rs/*/src/**` + `peko-rs/*/tests/**` added so any
+      # satellite crate (engine, message, session, cron, events,
+      # extension-api, fs-persistence, observability, plan, principal,
+      # protocol, provider-api, providers, quota, tools-core, channel,
+      # peko-daemon, etc.) source-only change triggers CI. PRs #374 and
+      # #375 in the immutable-cooking-tower compaction series both tripped
+      # this: their diffs only touched peko-rs/{engine,session}/src/**
+      # and never auto-triggered CI, forcing manual `gh workflow run`
+      # dispatches. The previous per-crate list (cli/auth/identity/subject)
+      # caught the same bug one crate at a time; the wildcard closes it
+      # for every current + future satellite.
       - 'src/**'
-      - 'peko-rs/cli/**'
+      - 'peko-rs/*/src/**'
+      - 'peko-rs/*/tests/**'
       - 'peko-rs/*/Cargo.toml'
-      - 'peko-rs/core/src/**'
-      - 'peko-rs/core/tests/**'
-      - 'peko-rs/auth/**'
-      - 'peko-rs/identity/**'
-      - 'peko-rs/subject/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
@@ -57,13 +59,9 @@ on:
     branches: [main, master]
     paths:
       - 'src/**'
-      - 'peko-rs/cli/**'
+      - 'peko-rs/*/src/**'
+      - 'peko-rs/*/tests/**'
       - 'peko-rs/*/Cargo.toml'
-      - 'peko-rs/core/src/**'
-      - 'peko-rs/core/tests/**'
-      - 'peko-rs/auth/**'
-      - 'peko-rs/identity/**'
-      - 'peko-rs/subject/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
@@ -113,18 +111,16 @@ jobs:
               # Phase 0.Z-D: src/ moved to peko-rs/core/src/. The legacy
               # `src/**` entry is kept as a no-op safety net; removed in
               # the cleanup PR once master confirms src/-free.
-              # Phase 0.Z-B: cli/ moved to peko-rs/cli/src/. CLI-only diffs
-              # must still trigger lint/unit-linux/integration-llm.
-              # 2026-07-28: peko-rs/auth/** + peko-rs/identity/** +
-              # peko-rs/subject/** added so satellite-crate source-only
-              # changes (e.g. R5 typed ApiKey subject projection) reach
-              # the unit-test tier. Workflow-level paths also need this.
+              # 2026-09-02: `peko-rs/*/src/**` added so any
+              # satellite-crate source-only change reaches the
+              # unit-test tier. PRs #374 and #375 in the
+              # immutable-cooking-tower compaction series both tripped
+              # this and needed manual `gh workflow run` dispatches. The
+              # previous per-crate list (cli/auth/identity/subject)
+              # caught the same bug one crate at a time; the wildcard
+              # closes it for every current + future satellite.
               - 'src/**'
-              - 'peko-rs/cli/**'
-              - 'peko-rs/core/src/**'
-              - 'peko-rs/auth/**'
-              - 'peko-rs/identity/**'
-              - 'peko-rs/subject/**'
+              - 'peko-rs/*/src/**'
             crates:
               # Phase 12b: any workspace-member Cargo.toml change can
               # introduce a new forbidden crate-to-crate edge; the
