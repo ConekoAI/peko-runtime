@@ -19,7 +19,7 @@
 //! removed (its methods become direct impls on the real type). Until
 //! then it lets the four Phase 9b.N residuals that read `ExtensionCore`
 //! (9b.N.2 funnel, 9b.N.3 tool_executor, 9b.N.4
-//! compaction_orchestrator, 9b.N.5+ agentic_loop) consume the engine's
+//! compaction_driver, 9b.N.5+ agentic_loop) consume the engine's
 //! host contract through one trait port.
 //!
 //! Phase 9b.N.3 widened the trait to cover the full surface the engine
@@ -27,7 +27,7 @@
 //! probe), `pre_tool_use(...)` / `post_tool_use(...)` (F31x observe-only
 //! hook firing), and `execute_tool_via_hook(...)` (F37 funnel).
 //! Phase 9b.N.4 added three more methods for the compaction +
-//! session-state hooks the lifted `CompactionOrchestrator` fires:
+//! session-state hooks the lifted `CompactionDriver` fires:
 //! `invoke_session_compaction_pre_hook`,
 //! `invoke_session_compaction_post_hook`, and
 //! `invoke_session_state_change_hook`. Hiding `HookPoint` /
@@ -36,7 +36,7 @@
 //! `src/extensions/framework/core/hook_points.rs`) hasn't been
 //! lifted into `peko-extension-api` yet, so re-exporting it from the
 //! trait would defeat the move. Each hook method takes the raw
-//! fields the orchestrator already has in scope (or a typed payload
+//! fields the driver already has in scope (or a typed payload
 //! from `peko-extension-api::hook_io`).
 
 use crate::hook_io::{CompactionPreparationPayload, CompactionResultPayload, HookDecision};
@@ -155,7 +155,7 @@ pub trait ToolFunnel: Send + Sync + 'static {
 
     /// Fire `HookPoint::SessionCompaction` with
     /// `HookInput::CompactionPreparation`. The lifted
-    /// `CompactionOrchestrator` calls this at the start of each
+    /// `CompactionDriver` calls this at the start of each
     /// compaction iteration to let extensions replace or cancel the
     /// built-in compaction (see `HookPoint::SessionCompaction`).
     ///
@@ -179,7 +179,7 @@ pub trait ToolFunnel: Send + Sync + 'static {
 
     /// Fire `HookPoint::SessionCompactionPost` with
     /// `HookInput::CompactionResult`. The lifted
-    /// `CompactionOrchestrator` calls this after a successful
+    /// `CompactionDriver` calls this after a successful
     /// background compaction completes, so extensions can augment,
     /// validate, or log the compacted result (see
     /// `HookPoint::SessionCompactionPost`).
@@ -195,10 +195,10 @@ pub trait ToolFunnel: Send + Sync + 'static {
 
     /// Fire `HookPoint::SessionStateChange` with
     /// `HookInput::SessionState(SessionSnapshot)`. The lifted
-    /// `CompactionOrchestrator` calls this as a fallback when no
+    /// `CompactionDriver` calls this as a fallback when no
     /// `CompactionResult` is available (the loop's "session state
     /// changed" hook firing — see
-    /// `src/engine/compaction_orchestrator.rs:387`).
+    /// `src/engine/compaction_driver.rs:387`).
     ///
     /// Returns a [`HookDecision`]. Compaction / session-state hooks
     /// only honor `ReplaceMessages` and `Handled` returns — anything

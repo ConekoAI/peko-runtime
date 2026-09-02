@@ -91,7 +91,7 @@ pub struct AgenticLoop {
     /// firing. Phase 9b.N.5b.4 switched the field from the concrete
     /// root `Arc<peko_extension_api::ExtensionCore>` to
     /// `Arc<dyn ToolFunnel>` — the trait port the renderer, tool
-    /// executor, and compaction orchestrator all use. The renderer
+    /// executor, and compaction driver all use. The renderer
     /// (now in `peko_engine::prompt::renderer`) calls
     /// `ToolFunnel::invoke_prompt_section_hook` /
     /// `invoke_session_context_build_hook` instead of constructing
@@ -193,7 +193,7 @@ pub struct AgenticLoop {
     /// `crate::session::compaction::load_compaction_config()` and
     /// the loop never imports `dirs` / `toml`. `peko_engine` can't
     /// own the loader because it doesn't depend on those crates.
-    /// Cloned into `CompactionOrchestrator::new` at the start of
+    /// Cloned into `CompactionDriver::new` at the start of
     /// every `run_inner_with_meter` invocation (line 940 in the
     /// pre-9c version).
     compaction_config: CompactionConfig,
@@ -1039,12 +1039,12 @@ impl AgenticLoop {
         let mut iteration = 0;
         let mut total_usage = TokenUsage::default();
 
-        // Initialize compaction orchestrator. The model's max context
+        // Initialize compaction driver. The model's max context
         // length is the single source of truth from `ProviderCatalog`
         // (resolved via the agent's `LlmResolver`). When the catalog
         // has no entry, we fall back to a sane default — the same
         // 128K figure the legacy `ModelContextRegistry` defaulted to.
-        // The orchestrator pins the value once at run start.
+        // The driver pins the value once at run start.
         const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 128_000;
         let context_window = if self.agent.has_llm_resolver() {
             provider
@@ -1069,7 +1069,7 @@ impl AgenticLoop {
         // longer calls `crate::session::compaction::load_compaction_config()`
         // directly — that loader depends on `dirs` + `toml`, which
         // aren't in `peko-engine`'s dep graph.
-        let mut compaction_orchestrator = crate::CompactionOrchestrator::new(
+        let mut compaction_driver = crate::CompactionDriver::new(
             compactor_backend,
             self.compaction_config.clone(),
             context_window,
@@ -1077,7 +1077,7 @@ impl AgenticLoop {
 
         // Propagate the resolved model max into the session so the
         // `session` tool and IPC layer can surface it (used by the
-        // CLI dry-run and external status surfaces). The orchestrator
+        // CLI dry-run and external status surfaces). The driver
         // pins this same value at run start.
         // Phase 9b.N.5b.9b: route through `SessionView` so the write
         // lock is acquired inside the trait impl.
@@ -1275,7 +1275,7 @@ impl AgenticLoop {
             // ============================================================
             // ADR-022 Phase 3: Compaction with Extension Hooks
             // ============================================================
-            compaction_orchestrator
+            compaction_driver
                 .check_and_compact(
                     &mut messages,
                     session,
@@ -1295,7 +1295,7 @@ impl AgenticLoop {
             // `MeteredProvider` inside the BackgroundCompactor's
             // worker task (which opens its own `QuotaScope::with`
             // around the LLM call). No manual charge here.
-            if let Some(compaction_usage) = compaction_orchestrator.last_compaction_usage() {
+            if let Some(compaction_usage) = compaction_driver.last_compaction_usage() {
                 debug!(
                     "Compaction summarization used {} input + {} output tokens; folding into total_usage",
                     compaction_usage.input, compaction_usage.output

@@ -2,28 +2,28 @@
 # scripts/e2e/flows/auto-compact-threshold.sh
 #
 # WS1 (implicit session management, 2026-08-11): verify the
-# orchestrator's auto-compact wiring is invoked on every iteration
+# driver's auto-compact wiring is invoked on every iteration
 # and reads the persisted token counter through `session.token_usage()`.
 #
 # This is a thin observability check — the WS1 logic is covered by
-# 4 unit tests in `peko_engine::compaction_orchestrator::tests`
+# 4 unit tests in `peko_engine::compaction_driver::tests`
 # (`persisted_last_total_triggers_compaction_with_empty_messages`,
 #  `estimator_wins_when_larger_than_persisted_counter`,
 #  `threshold_triggered_compaction_unchanged_without_flag`,
-#  `forced_*`). The e2e flow proves the orchestrator integrates with
+#  `forced_*`). The e2e flow proves the driver integrates with
 # the agentic loop and consults the right token source in production.
 #
 # Strategy:
 #   1. Send one turn; locate the live session JSONL and sidecar
 #      `sessions.json`.
 #   2. Assert `sessions.json` records `last_total_tokens` for the
-#      session — proves the orchestrator writes the counter so future
+#      session — proves the driver writes the counter so future
 #      iterations can read it (SessionEntry.last_total_tokens).
 #   3. Assert the daemon log carries an `Agent loop: iteration` trace
 #      line — proves the agentic loop ran and `check_and_compact`
 #      had a chance to fire.
 #   4. (Stretch) If a `model_context_limit` is pinned on the session,
-#      assert it's non-zero — proves the orchestrator pinned the
+#      assert it's non-zero — proves the driver pinned the
 #      model window from the registry.
 
 flow_main() {
@@ -65,10 +65,10 @@ flow_main() {
   echo "live id: $live_id"
 
   # ── verify the sidecar carries last_total_tokens ──────────────────
-  # The orchestrator pins `last_total_tokens` on `SessionEntry` via
+  # The driver pins `last_total_tokens` on `SessionEntry` via
   # `Session::record_usage` after every assistant reply. WS1 reads it
   # back through `SessionView::token_usage` — if the field is missing
-  # the orchestrator's `effective_tokens` falls back to
+  # the driver's `effective_tokens` falls back to
   # `estimated_tokens` only, regressing the round-5 F2 fix.
   echo
   echo "─── POST: sessions.json carries last_total_tokens on entry ─"
@@ -99,7 +99,7 @@ flow_main() {
   daemon_log=$(ls -td /tmp/peko/auto-compact-threshold-* 2>/dev/null | head -1)/daemon.err
   if [[ -f "$daemon_log" ]]; then
     if grep -q "Agent loop: iteration" "$daemon_log"; then
-      echo "✓ agentic loop ran at least one iteration (orchestrator had a chance to fire)"
+      echo "✓ agentic loop ran at least one iteration (driver had a chance to fire)"
     else
       echo "❌ no iteration log lines — agentic loop never ran"
       return 1
@@ -109,7 +109,7 @@ flow_main() {
   fi
 
   # ── (stretch) verify model_context_limit was pinned ──────────────
-  # The orchestrator pins `model_context_limit` on the session at run
+  # The driver pins `model_context_limit` on the session at run
   # start (peko-rs/engine/src/agentic_loop.rs:~1086). WS1 relies on
   # this for `should_request(effective, context_window, ...)`.
   echo

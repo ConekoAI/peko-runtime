@@ -15,7 +15,7 @@
 //!
 //! `peko-engine` re-exports both `SessionCore` and `SessionView`
 //! from this module so the lifted `ToolExecutor`,
-//! `CompactionOrchestrator`, and `AgenticLoop` keep their existing
+//! `CompactionDriver`, and `AgenticLoop` keep their existing
 //! `peko_engine::SessionCore` / `peko_engine::SessionView` import
 //! paths unchanged.
 

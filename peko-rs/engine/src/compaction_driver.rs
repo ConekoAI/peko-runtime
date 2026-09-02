@@ -1,4 +1,4 @@
-//! Compaction orchestrator for the agentic loop.
+//! Compaction driver for the agentic loop.
 //!
 //! Encapsulates the entire compaction lifecycle:
 //! - Pre-compaction hook invocation
@@ -8,7 +8,7 @@
 //!
 //! Phase 9b.N.4 lifted this file from `src/engine/compaction_orchestrator.rs`
 //! into `peko-engine`. The lift relied on three trait ports so the
-//! orchestrator can talk to root-only types without a direct dependency:
+//! driver can talk to root-only types without a direct dependency:
 //!
 //! - **`ToolFunnel`** (`peko-extension-host`) — abstracted `ExtensionCore`
 //!   for hook firing. Three new methods added in 9b.N.4 cover the
@@ -16,17 +16,17 @@
 //!   `invoke_session_compaction_post_hook`, `invoke_session_state_change_hook`).
 //! - **`SessionView`** (`peko-engine`) — extended in 9b.N.4 with
 //!   `record_compaction`, `load_previous_compaction_summary`, and
-//!   `update_context_cache` for the orchestrator's session writes.
+//!   `update_context_cache` for the driver's session writes.
 //! - **`CompactorBackend`** (`peko-engine::compaction`) — new in 9b.N.4,
-//!   abstracts `BackgroundCompactor` so the orchestrator holds a
+//!   abstracts `BackgroundCompactor` so the driver holds a
 //!   `Box<dyn CompactorBackend>` instead of a concrete impl.
 //!
-//! The orchestrator no longer owns a "model context registry". The
+//! The driver no longer owns a "model context registry". The
 //! single source of truth for the model's max context length is
 //! `ModelInfo::context_length` in the `ProviderCatalog`. The caller
-//! resolves that value once before constructing the orchestrator and
+//! resolves that value once before constructing the driver and
 //! passes it as a concrete `usize` — see `AgenticLoop::run_inner`
-//! where the orchestrator is built.
+//! where the driver is built.
 
 use crate::compaction::{
     CompactionConfig, CompactionRequest, CompactionResponse, CompactionResult, CompactorBackend,
@@ -41,15 +41,15 @@ use peko_message::LlmMessage;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-/// Orchestrates compaction within the agentic loop.
+/// Drives one compaction cycle within the agentic loop.
 ///
 /// The loop just calls `check_and_compact()` at the start of each iteration.
 /// All complexity (hooks, background tasks, session updates) is encapsulated here.
-pub struct CompactionOrchestrator {
+pub struct CompactionDriver {
     /// Trait object over the root-owned `BackgroundCompactor`. The
-    /// orchestrator calls `should_request` to gate the trigger and
+    /// driver calls `should_request` to gate the trigger and
     /// `request` to submit. The trait port (Phase 9b.N.4) lets the
-    /// orchestrator move into `peko-engine` without dragging the
+    /// driver move into `peko-engine` without dragging the
     /// concrete `BackgroundCompactor` + `Provider` + `QuotaScope`
     /// root-only couplings with it.
     backend: Box<dyn CompactorBackend>,
@@ -69,12 +69,12 @@ pub struct CompactionOrchestrator {
     last_compaction_usage: Option<peko_message::TokenUsage>,
 }
 
-impl CompactionOrchestrator {
-    /// Create a new compaction orchestrator.
+impl CompactionDriver {
+    /// Create a new compaction driver.
     ///
     /// `context_window` is the **resolved** model max context — the
     /// caller consults `ProviderCatalog::model_context_length` (the
-    /// single source of truth) before invoking this. The orchestrator
+    /// single source of truth) before invoking this. The driver
     /// does not perform catalog resolution itself; doing so would
     /// require threading `Arc<ProviderCatalog>` through every call
     /// site. The value is concrete (a `usize`), not an `Option`, so
@@ -83,7 +83,7 @@ impl CompactionOrchestrator {
     /// declared limit.
     ///
     /// `backend` is the trait-object view of root's
-    /// `BackgroundCompactor`. The orchestrator owns a `Box<dyn
+    /// `BackgroundCompactor`. The driver owns a `Box<dyn
     /// CompactorBackend>` and never holds the concrete type.
     pub fn new(
         backend: Box<dyn CompactorBackend>,
@@ -209,7 +209,7 @@ impl CompactionOrchestrator {
         Ok(true)
     }
 
-    /// Reset the orchestrator state (e.g., when starting a new run).
+    /// Reset the driver state (e.g., when starting a new run).
     pub fn reset(&mut self) {
         self.pending_compaction = None;
         self.compaction_performed = false;
@@ -259,23 +259,23 @@ impl CompactionOrchestrator {
 
         let _ = threshold_tokens;
 
-        // The orchestrator used to import root's
+        // The driver used to import root's
         // `crate::session::compaction::turn_boundaries` here for the
         // message-selection + split-turn extraction. Those helpers are
-        // still root-only (they don't belong on the orchestrator's
-        // trait-port surface — the boundary rule says the orchestrator
+        // still root-only (they don't belong on the driver's
+        // trait-port surface — the boundary rule says the driver
         // decides "should we compact", not "which messages do we
         // compact"). For the pre-hook payload we now pass the full
         // message list and let the hook / compactor decide.
         //
-        // Pre-9b.N.4 behavior: the orchestrator called
+        // Pre-9b.N.4 behavior: the driver called
         // `turn_boundaries::select_messages_respecting_boundaries` to
         // build a `messages_to_summarize` slice and a
         // `turn_prefix_messages` slice for split-turn compaction. The
         // hook handler could then mutate the slice. Post-9b.N.4: we
         // still pass a `messages_to_summarize` slice — root's
         // `BackgroundCompactor` does the selection internally — and
-        // the orchestrator's pre-hook payload uses the full message
+        // the driver's pre-hook payload uses the full message
         // list as the summary slice. The hook contract is unchanged
         // (handlers see `serde_json::Value` blobs and can do whatever
         // they want). If a future phase reintroduces turn-boundary
@@ -477,7 +477,7 @@ impl CompactionOrchestrator {
 
 // ----------------------------------------------------------------------
 // F21 hybrid token estimator — local copy from `src/session/compaction.rs`.
-// Phase 9b.N.4 keeps this in peko-engine because the orchestrator's
+// Phase 9b.N.4 keeps this in peko-engine because the driver's
 // pre-hook + post-hook both need it. The root-owned `Compactor` also
 // uses it (the `compact` call). Duplication is the lesser evil here
 // vs lifting the entire `Compactor` (which depends on `Provider`).
@@ -508,10 +508,10 @@ fn find_last_assistant_usage(messages: &[LlmMessage]) -> Option<(peko_message::T
 /// root's `src/session/compaction.rs:207` in 9b.N.4). The local
 /// type here is private — callers should use the public
 /// `crate::compaction::ContextUsageEstimate` re-export instead. The
-/// duplicate definition exists because the orchestrator's
+/// duplicate definition exists because the driver's
 /// pre-hook + post-hook both call `estimate_context_tokens` and
 /// want a local typed return rather than threading the `compaction`
-/// re-export through the orchestrator's private helpers.
+/// re-export through the driver's private helpers.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // written for F17 inspection; readers added in F30+
 struct ContextUsageEstimate {
@@ -531,7 +531,7 @@ struct ContextUsageEstimate {
 /// conversation when no usage data is available.
 ///
 /// Mirrors `crate::session::compaction::Compactor::estimate_context_tokens`
-/// (root) — duplicated here so the orchestrator's pre-hook + post-hook
+/// (root) — duplicated here so the driver's pre-hook + post-hook
 /// can run without a root dep. The two implementations are
 /// behaviour-equivalent; any future change must update both.
 fn estimate_context_tokens(messages: &[LlmMessage]) -> ContextUsageEstimate {
@@ -592,7 +592,7 @@ fn estimate_tokens(messages: &[LlmMessage]) -> usize {
 // (`src/session/compaction.rs`) because it depends on the `dirs` +
 // `toml` crates, which aren't in `peko-engine`'s dep graph. Root is
 // the right home — it already owns the `Config` struct that calls
-// into this loader. The lifted `CompactionOrchestrator` accepts the
+// into this loader. The lifted `CompactionDriver` accepts the
 // loaded `CompactionConfig` as a constructor argument.
 
 // ----------------------------------------------------------------------
@@ -706,7 +706,7 @@ mod tests {
     /// Stub `CompactorBackend`: `should_request` returns a fixed gate
     /// value; `request` records the call and returns a receiver that
     /// stays pending (the sender is stashed so the channel neither
-    /// resolves nor closes during the orchestrator's 100ms poll).
+    /// resolves nor closes during the driver's 100ms poll).
     struct StubBackend {
         gate: bool,
         request_calls: AtomicUsize,
@@ -856,7 +856,7 @@ mod tests {
     }
 
     struct Fixture {
-        orchestrator: CompactionOrchestrator,
+        driver: CompactionDriver,
         backend: Arc<StubBackend>,
         session: StubSession,
         events: Arc<Mutex<Vec<String>>>,
@@ -864,20 +864,20 @@ mod tests {
 
     fn fixture(requested: bool, gate: bool) -> Fixture {
         let backend = Arc::new(StubBackend::new(gate));
-        let orchestrator = CompactionOrchestrator::new(
+        let driver = CompactionDriver::new(
             Box::new(ArcBackend(Arc::clone(&backend))),
             CompactionConfig::default(),
             200_000,
         );
         Fixture {
-            orchestrator,
+            driver,
             backend,
             session: StubSession::new(requested),
             events: Arc::new(Mutex::new(vec![])),
         }
     }
 
-    /// The orchestrator owns a `Box<dyn CompactorBackend>`; wrap the
+    /// The driver owns a `Box<dyn CompactorBackend>`; wrap the
     /// shared `Arc<StubBackend>` so tests can inspect the calls.
     struct ArcBackend(Arc<StubBackend>);
 
@@ -920,7 +920,7 @@ mod tests {
         let mut messages = small_messages();
         let on_event = event_sink(&f.events);
 
-        f.orchestrator
+        f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
             .unwrap();
@@ -931,7 +931,7 @@ mod tests {
             "forced flag must start compaction even below threshold"
         );
         assert!(
-            f.orchestrator.pending_compaction.is_some(),
+            f.driver.pending_compaction.is_some(),
             "background compaction should be pending"
         );
         assert!(
@@ -954,13 +954,13 @@ mod tests {
         let mut messages = small_messages();
         let on_event = event_sink(&f.events);
 
-        f.orchestrator
+        f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
             .unwrap();
 
         assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 0);
-        assert!(f.orchestrator.pending_compaction.is_none());
+        assert!(f.driver.pending_compaction.is_none());
         assert_eq!(f.session.clears.load(Ordering::SeqCst), 0);
         assert!(f.events.lock().expect("events mutex poisoned").is_empty());
     }
@@ -971,14 +971,14 @@ mod tests {
         let mut messages = small_messages();
         let on_event = event_sink(&f.events);
 
-        f.orchestrator
+        f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
             .unwrap();
 
         assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 1);
         assert!(
-            f.orchestrator.pending_compaction.is_some(),
+            f.driver.pending_compaction.is_some(),
             "background compaction should be pending"
         );
         assert_eq!(
@@ -998,7 +998,7 @@ mod tests {
     /// WS1 regression: when the in-memory `messages` slice is empty
     /// (cold reload from JSONL) but the persisted
     /// `Session::last_total_tokens` is over the threshold, the
-    /// orchestrator must still fire compaction. Before WS1 the
+    /// driver must still fire compaction. Before WS1 the
     /// estimator only saw the empty slice and let the session keep
     /// growing until `ContextWindowExceeded` recovery fired.
     #[tokio::test]
@@ -1012,12 +1012,12 @@ mod tests {
         // Pretend the previous run had accumulated 90k tokens.
         f.session.last_total.store(90_000, Ordering::SeqCst);
 
-        f.orchestrator
+        f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
             .unwrap();
 
-        // The orchestrator should call into the backend — proving
+        // The driver should call into the backend — proving
         // `effective_tokens = max(0, 90_000) = 90_000` reached the
         // gate. Without the WS1 max() this would have been 0 and the
         // gate would have stayed closed.
@@ -1043,7 +1043,7 @@ mod tests {
         // last_total is zero; the in-memory messages drive the gate.
         f.session.last_total.store(0, Ordering::SeqCst);
 
-        f.orchestrator
+        f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
             .unwrap();
@@ -1058,20 +1058,20 @@ mod tests {
         let on_event = event_sink(&f.events);
 
         // First call: forced start consumes the flag.
-        f.orchestrator
+        f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
             .unwrap();
         assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 1);
 
         // Re-arm the flag while the first compaction is still pending:
-        // the orchestrator must NOT start a second compaction and must
+        // the driver must NOT start a second compaction and must
         // NOT clear the flag (nothing genuinely started for it).
         *f.session
             .requested
             .lock()
             .expect("requested mutex poisoned") = true;
-        f.orchestrator
+        f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
             .unwrap();

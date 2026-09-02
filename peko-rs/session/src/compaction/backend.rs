@@ -1,5 +1,5 @@
 //! `CompactorBackend` — narrow trait port so the lifted
-//! `CompactionOrchestrator` (`peko-engine::compaction_orchestrator`)
+//! `CompactionDriver` (`peko-engine::compaction_driver`)
 //! can talk to the persistence-owned `BackgroundCompactor` without
 //! depending on `peko-session`.
 //!
@@ -7,14 +7,14 @@
 //! into this crate (`peko-session::compaction::backend`) so the
 //! canonical home matches the data layout's owner. `peko-engine`
 //! re-exports the trait via `peko_engine::CompactorBackend` so the
-//! orchestrator's import paths keep compiling.
+//! driver's import paths keep compiling.
 //!
 //! # Trait port rationale
 //!
-//! The orchestrator's shape is:
+//! The driver's shape is:
 //!
 //! ```ignore
-//! pub struct CompactionOrchestrator {
+//! pub struct CompactionDriver {
 //!     backend: Box<dyn CompactorBackend>,
 //!     ...
 //! }
@@ -58,8 +58,8 @@ use crate::compaction::types::{CompactionConfig, CompactionRequest, CompactionRe
 use anyhow::Result;
 use tokio::sync::oneshot;
 
-/// Narrow trait port that lets the [`super::CompactionOrchestrator`]
-/// (`peko-engine::compaction_orchestrator`) talk to the
+/// Narrow trait port that lets the [`super::CompactionDriver`]
+/// (`peko-engine::compaction_driver`) talk to the
 /// `BackgroundCompactor` here in `peko-session` without holding a
 /// direct reference.
 #[async_trait::async_trait]
