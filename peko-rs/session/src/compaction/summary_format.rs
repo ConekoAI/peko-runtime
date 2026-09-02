@@ -14,6 +14,14 @@ pub struct CompactionDetails {
     pub read_files: Vec<String>,
     /// Files that were modified (via tool calls)
     pub modified_files: Vec<String>,
+    /// Approximate token cost of images summarised in this entry
+    /// (sum of `estimate_image_tokens` across all `ContentBlock::Image`
+    /// blocks at the time of compaction). Lets post-hoc analysis see
+    /// how much of the context-window budget images were consuming.
+    /// `#[serde(default)]` keeps pre-PR-1 JSONL entries compatible
+    /// (missing field reads as 0).
+    #[serde(default)]
+    pub image_token_count: usize,
 }
 
 impl CompactionDetails {
@@ -29,6 +37,9 @@ impl CompactionDetails {
                 self.modified_files.push(f.clone());
             }
         }
+        // Image token counts are summed (not deduplicated) because
+        // each compact measures its own slice.
+        self.image_token_count = self.image_token_count.saturating_add(other.image_token_count);
     }
 }
 
@@ -81,8 +92,18 @@ pub fn extract_file_ops_from_messages(messages: &[peko_message::LlmMessage]) -> 
 
     let mut read = Vec::new();
     let mut modified = Vec::new();
+    let mut image_tokens: usize = 0;
 
     for msg in messages {
+        // Image tokens count across all roles — users may attach
+        // images, assistants may return them (F28 / Responses API).
+        for block in &msg.content {
+            if let ContentBlock::Image { source, mime_type } = block {
+                image_tokens =
+                    image_tokens.saturating_add(crate::estimate_image_tokens(source, mime_type));
+            }
+        }
+
         if msg.role != MessageRole::Assistant {
             continue;
         }
@@ -128,6 +149,7 @@ pub fn extract_file_ops_from_messages(messages: &[peko_message::LlmMessage]) -> 
     CompactionDetails {
         read_files: read,
         modified_files: modified,
+        image_token_count: image_tokens,
     }
 }
 
@@ -173,6 +195,7 @@ mod tests {
         let details = CompactionDetails {
             read_files: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
             modified_files: vec!["src/main.rs".to_string()],
+            image_token_count: 0,
         };
 
         let formatted = format_summary_with_file_ops(&summary, &details);
@@ -223,6 +246,7 @@ mod tests {
         let prev = CompactionDetails {
             read_files: vec!["a.rs".to_string()],
             modified_files: vec!["b.rs".to_string()],
+            image_token_count: 0,
         };
 
         let messages = vec![LlmMessage {
@@ -246,14 +270,80 @@ mod tests {
         let mut d1 = CompactionDetails {
             read_files: vec!["a.rs".to_string()],
             modified_files: vec![],
+            image_token_count: 0,
         };
         let d2 = CompactionDetails {
             read_files: vec!["a.rs".to_string(), "b.rs".to_string()],
             modified_files: vec![],
+            image_token_count: 1500,
         };
         d1.merge(&d2);
         assert_eq!(d1.read_files.len(), 2);
         assert!(d1.read_files.contains(&"a.rs".to_string()));
         assert!(d1.read_files.contains(&"b.rs".to_string()));
+    }
+
+    /// PR1: image token count is summed across merge (not deduplicated)
+    /// because each compaction measures its own slice. The total
+    /// represents cumulative image cost across the session's lifetime.
+    #[test]
+    fn test_details_merge_sums_image_tokens() {
+        let mut d1 = CompactionDetails {
+            image_token_count: 1500,
+            ..Default::default()
+        };
+        let d2 = CompactionDetails {
+            image_token_count: 2500,
+            ..Default::default()
+        };
+        d1.merge(&d2);
+        assert_eq!(d1.image_token_count, 4000);
+    }
+
+    /// PR1: extract_file_ops_from_messages counts image tokens across
+    /// user + assistant messages (users attach images, assistants
+    /// return them in Responses output_image).
+    #[test]
+    fn test_extract_counts_image_tokens_across_roles() {
+        let messages = vec![
+            LlmMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Image {
+                    source: peko_message::ImageSource::Url {
+                        url: "https://x.png".to_string(),
+                        dimensions: None,
+                    },
+                    mime_type: "image/png".to_string(),
+                }],
+                ..Default::default()
+            },
+            LlmMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Image {
+                    source: peko_message::ImageSource::Url {
+                        url: "https://x.jpg".to_string(),
+                        dimensions: None,
+                    },
+                    mime_type: "image/jpeg".to_string(),
+                }],
+                ..Default::default()
+            },
+        ];
+        let ops = extract_file_ops_from_messages(&messages);
+        // tier-3 PNG = 2500, jpeg = 1500 → total 4000.
+        assert_eq!(ops.image_token_count, 4000);
+    }
+
+    /// PR1: pre-PR-1 JSONL (no `image_token_count` field) reads as 0.
+    /// Backwards-compat for the `#[serde(default)]` attribute.
+    #[test]
+    fn test_details_legacy_loads_with_zero_image_tokens() {
+        let legacy = serde_json::json!({
+            "read_files": ["a.rs"],
+            "modified_files": [],
+        });
+        let parsed: CompactionDetails = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.image_token_count, 0);
+        assert_eq!(parsed.read_files, vec!["a.rs"]);
     }
 }

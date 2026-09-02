@@ -723,8 +723,8 @@ fn build_chat_completions_content(blocks: &[ContentBlock]) -> Value {
             }
             ContentBlock::Image { source, mime_type } => {
                 let url = match source {
-                    ImageSource::Url { url } => url.clone(),
-                    ImageSource::Base64 { data } => {
+                    ImageSource::Url { url, .. } => url.clone(),
+                    ImageSource::Base64 { data, .. } => {
                         format!("data:{};base64,{}", mime_type, data)
                     }
                 };
@@ -1598,6 +1598,7 @@ mod tests {
             content: vec![ContentBlock::Image {
                 source: ImageSource::Url {
                     url: "https://example.com/cat.png".to_string(),
+                    dimensions: None,
                 },
                 mime_type: "image/png".to_string(),
             }],
@@ -1628,6 +1629,7 @@ mod tests {
             content: vec![ContentBlock::Image {
                 source: ImageSource::Base64 {
                     data: "aGVsbG8=".to_string(),
+                    dimensions: None,
                 },
                 mime_type: "image/png".to_string(),
             }],
@@ -1662,6 +1664,7 @@ mod tests {
                 ContentBlock::Image {
                     source: ImageSource::Url {
                         url: "https://example.com/cat.png".to_string(),
+                        dimensions: None,
                     },
                     mime_type: "image/png".to_string(),
                 },

@@ -183,6 +183,7 @@ fn test_structured_summary_with_read_files() {
     let details = CompactionDetails {
         read_files: vec!["src/main.rs".to_string()],
         modified_files: vec![],
+        image_token_count: 0,
     };
 
     let formatted = format_summary_with_file_ops(summary, &details);
@@ -196,6 +197,7 @@ fn test_structured_summary_with_modified_files() {
     let details = CompactionDetails {
         read_files: vec![],
         modified_files: vec!["src/main.rs".to_string()],
+        image_token_count: 0,
     };
 
     let formatted = format_summary_with_file_ops(summary, &details);
@@ -255,6 +257,7 @@ fn test_compaction_entry_with_details() {
     let details_value = serde_json::to_value(CompactionDetails {
         read_files: vec!["a.rs".to_string()],
         modified_files: vec!["b.rs".to_string()],
+        image_token_count: 0,
     })
     .unwrap();
 

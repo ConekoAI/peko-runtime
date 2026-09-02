@@ -30,6 +30,9 @@ peko-events = { path = "../events" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Base64 decode for image-dimension extraction on response ingest.
+base64 = "0.22"
+
 # Catalog on-disk format (models.toml).
 toml = "0.8"
 

@@ -21,6 +21,7 @@
 use super::{extract_text_content, ToolCallAccumulator};
 use crate::transport::AuthConfig;
 use anyhow::{Context, Result};
+use base64::Engine;
 use peko_message::ImageSource;
 use peko_provider_api::CacheRetention;
 use peko_provider_api::{
@@ -242,8 +243,8 @@ fn build_responses_input_parts(blocks: &[ContentBlock]) -> Vec<ResponsesContentP
             }
             ContentBlock::Image { source, mime_type } => {
                 let url = match source {
-                    ImageSource::Url { url } => url.clone(),
-                    ImageSource::Base64 { data } => {
+                    ImageSource::Url { url, .. } => url.clone(),
+                    ImageSource::Base64 { data, .. } => {
                         format!("data:{};base64,{}", mime_type, data)
                     }
                 };
@@ -427,10 +428,19 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
                             ResponsesContentPart::OutputImage { image_url } => {
                                 let (data, mime_type) = split_data_url(&image_url);
                                 let source = if let Some(data) = data {
-                                    ImageSource::Base64 { data }
+                                    let dimensions = base64::engine::general_purpose::STANDARD
+                                        .decode(&data)
+                                        .ok()
+                                        .and_then(|bytes| {
+                                            peko_message::extract_dimensions_from_base64(
+                                                &bytes, &mime_type,
+                                            )
+                                        });
+                                    ImageSource::Base64 { data, dimensions }
                                 } else {
                                     ImageSource::Url {
                                         url: image_url.clone(),
+                                        dimensions: None,
                                     }
                                 };
                                 content.push(ContentBlock::Image { source, mime_type });
@@ -1845,6 +1855,7 @@ mod tests {
             content: vec![ContentBlock::Image {
                 source: ImageSource::Url {
                     url: "https://example.com/cat.png".to_string(),
+                    dimensions: None,
                 },
                 mime_type: "image/png".to_string(),
             }],
@@ -1871,6 +1882,7 @@ mod tests {
             content: vec![ContentBlock::Image {
                 source: ImageSource::Base64 {
                     data: "aGVsbG8=".to_string(),
+                    dimensions: None,
                 },
                 mime_type: "image/jpeg".to_string(),
             }],
@@ -1907,7 +1919,7 @@ mod tests {
         assert_eq!(resp.content.len(), 1);
         match &resp.content[0] {
             ContentBlock::Image { source, mime_type } => {
-                assert!(matches!(source, ImageSource::Base64 { data } if data == "QUJDRA=="));
+                assert!(matches!(source, ImageSource::Base64 { data, .. } if data == "QUJDRA=="));
                 assert_eq!(mime_type, "image/png");
             }
             other => panic!("expected Image block, got {other:?}"),

@@ -152,6 +152,31 @@ fn find_last_assistant_usage(
         .map(|(i, m)| (m.usage.unwrap(), i))
 }
 
+/// Sum the token estimate for a single message's content blocks.
+/// Text uses chars/4; images use the three-tier
+/// `estimate_image_tokens` so retention budgets reflect realistic
+/// image costs instead of the F21 placeholder of 50 chars/image.
+fn content_block_token_estimate(content: &[ContentBlock]) -> usize {
+    content
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Text { text } => text.len(),
+            ContentBlock::Image { source, mime_type } => {
+                // Image token cost is char-equivalent (chars / 4) at the
+                // CHARS_PER_TOKEN denominator used by text. Multiply by
+                // CHARS_PER_TOKEN to keep the downstream
+                // `+ 20) / CHARS_PER_TOKEN + 4` arithmetic unit-stable.
+                let image_tokens = crate::estimate_image_tokens(source, mime_type);
+                image_tokens.saturating_mul(CHARS_PER_TOKEN)
+            }
+            _ => 50,
+        })
+        .sum::<usize>()
+        .saturating_add(20)
+        / CHARS_PER_TOKEN
+        + 4
+}
+
 /// Load compaction config from the global config file, or use defaults.
 ///
 /// Phase 9b.N.4 keeps this loader in root (not in `peko-engine`) because
@@ -230,17 +255,7 @@ impl Compactor {
     pub fn estimate_tokens(messages: &[LlmMessage]) -> usize {
         messages
             .iter()
-            .map(|m| {
-                let content_len: usize = m
-                    .content
-                    .iter()
-                    .map(|b| match b {
-                        ContentBlock::Text { text } => text.len(),
-                        _ => 50, // Estimate for other blocks
-                    })
-                    .sum();
-                (content_len + 20) / CHARS_PER_TOKEN + 4
-            })
+            .map(|m| content_block_token_estimate(&m.content))
             .sum()
     }
 
@@ -258,17 +273,7 @@ impl Compactor {
             let usage_tokens = usage.input + usage.output;
             let trailing_tokens: usize = messages[index + 1..]
                 .iter()
-                .map(|m| {
-                    let content_len: usize = m
-                        .content
-                        .iter()
-                        .map(|b| match b {
-                            ContentBlock::Text { text } => text.len(),
-                            _ => 50,
-                        })
-                        .sum();
-                    (content_len + 20) / CHARS_PER_TOKEN + 4
-                })
+                .map(|m| content_block_token_estimate(&m.content))
                 .sum();
             ContextUsageEstimate {
                 tokens: (usage_tokens as usize) + trailing_tokens,
@@ -335,6 +340,20 @@ impl Compactor {
                 .filter_map(|b| match b {
                     ContentBlock::Text { text } => Some(text.clone()),
                     ContentBlock::ToolCall { name, .. } => Some(format!("[Tool: {name}]")),
+                    ContentBlock::Image { source, mime_type } => {
+                        // Surface image attachments to the summarizer
+                        // so the compacted summary preserves the fact
+                        // that an image was shared (and its
+                        // approximate token cost). Without this, the
+                        // summarizer would silently drop all
+                        // multimodal context, biasing the summary.
+                        let tokens = crate::estimate_image_tokens(source, mime_type);
+                        let source_kind = match source {
+                            peko_message::ImageSource::Base64 { .. } => "base64",
+                            peko_message::ImageSource::Url { .. } => "url",
+                        };
+                        Some(format!("[image: mime={mime_type}, kind={source_kind}, ~{tokens} tokens]"))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -856,6 +875,64 @@ mod tests {
 
         assert!(formatted.contains("User:"));
         assert!(formatted.contains("Assistant:"));
+    }
+
+    /// PR1: image content blocks must surface in the summarizer
+    /// prompt. Without this, the summarizer silently drops all
+    /// multimodal context. The rendered marker includes mime type +
+    /// approximate token cost.
+    #[test]
+    fn test_format_history_renders_image_blocks() {
+        let compactor = Compactor::new();
+        let messages = vec![LlmMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "what is this?".to_string(),
+                },
+                ContentBlock::Image {
+                    source: peko_message::ImageSource::Url {
+                        url: "https://example.com/x.jpg".to_string(),
+                        dimensions: None,
+                    },
+                    mime_type: "image/jpeg".to_string(),
+                },
+            ],
+            ..Default::default()
+        }];
+
+        let formatted = compactor.format_history_for_summary(&messages);
+        assert!(formatted.contains("what is this?"));
+        assert!(formatted.contains("[image: mime=image/jpeg"));
+        assert!(formatted.contains("kind=url"));
+        // tier-3 fallback for image/jpeg without dimensions → 1500
+        assert!(formatted.contains("~1500 tokens]"));
+    }
+
+    /// PR1: explicit image dimensions propagate to the rendered
+    /// token count (tier-1 path), so a 1024×1024 image reports
+    /// ~1399 tokens instead of the tier-3 floor.
+    #[test]
+    fn test_format_history_renders_image_with_dimensions() {
+        let compactor = Compactor::new();
+        let messages = vec![LlmMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Image {
+                source: peko_message::ImageSource::Base64 {
+                    data: "AAAA".to_string(),
+                    dimensions: Some(peko_message::ImageDimensions {
+                        width: 1024,
+                        height: 1024,
+                    }),
+                },
+                mime_type: "image/png".to_string(),
+            }],
+            ..Default::default()
+        }];
+
+        let formatted = compactor.format_history_for_summary(&messages);
+        assert!(formatted.contains("~1399 tokens]"));
+        assert!(formatted.contains("kind=base64"));
     }
 
     #[test]
