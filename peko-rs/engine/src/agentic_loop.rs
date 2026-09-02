@@ -1512,7 +1512,14 @@ impl AgenticLoop {
             let mut stream_attempt: u32 = 0;
             let mut stream = 'stream_retry: loop {
                 match self
-                    .stream_with_eviction(&provider, &model_id, &messages, &tool_defs, &options)
+                    .stream_with_eviction(
+                        &provider,
+                        &model_id,
+                        &messages,
+                        &tool_defs,
+                        &options,
+                        context_window,
+                    )
                     .await
                 {
                     Ok(s) => break 'stream_retry s,
@@ -1769,7 +1776,12 @@ impl AgenticLoop {
                                     // round-trips again.
                                     match self
                                         .stream_with_eviction(
-                                            &provider, &model_id, &messages, &tool_defs, &options,
+                                            &provider,
+                                            &model_id,
+                                            &messages,
+                                            &tool_defs,
+                                            &options,
+                                            context_window,
                                         )
                                         .await
                                     {
@@ -2296,6 +2308,7 @@ impl AgenticLoop {
         messages: &[LlmMessage],
         tool_defs: &[ToolDefinition],
         options: &ChatOptions,
+        context_window: usize,
     ) -> Result<
         std::pin::Pin<
             Box<dyn futures::Stream<Item = Result<peko_provider_api::StreamEvent>> + Send>,
@@ -2383,6 +2396,25 @@ impl AgenticLoop {
                     return Ok(stream);
                 }
                 Err(e) if is_context_window_exceeded(&e) && current.len() > 1 => {
+                    // PR 2: try the function-call output rewriter first
+                    // — it's cheaper than front-eviction (no recent
+                    // work lost) and catches the common case where a
+                    // single tool result blew the budget. Only fall
+                    // through to `drop_oldest_respecting_pairs` if
+                    // nothing was eligible for rewriting.
+                    let rewriter_stats = peko_session::rewrite_oversized_tool_results(
+                        &mut current,
+                        context_window,
+                        self.compaction_config.reserve_tokens,
+                    );
+                    if rewriter_stats.rewritten_count > 0 {
+                        info!(
+                            "ContextWindowExceeded: rewriter truncated {} tool result(s), reclaimed ~{} tokens",
+                            rewriter_stats.rewritten_count,
+                            rewriter_stats.tokens_reclaimed_estimate
+                        );
+                        continue;
+                    }
                     let before = current.len();
                     let dropped = drop_oldest_respecting_pairs(&mut current);
                     if dropped == 0 {

@@ -49,6 +49,10 @@ pub mod types;
 pub mod image_budget;
 pub use image_budget::{estimate_image_block_tokens, estimate_image_tokens, message_image_tokens};
 
+// PR 2: function-call output rewriter. Re-exported at the crate
+// root so callers don't have to reach into `compaction::*`.
+pub use compaction::output_rewrite::{rewrite_oversized_tool_results, RewriteStats};
+
 pub use peko_subject::PathResolverLike;
 pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
 

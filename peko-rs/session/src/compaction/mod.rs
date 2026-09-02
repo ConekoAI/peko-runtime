@@ -45,6 +45,7 @@ pub mod background;
 pub mod compaction_top;
 pub mod eviction;
 pub mod factory;
+pub mod output_rewrite;
 pub mod summary_format;
 pub mod turn_boundaries;
 pub mod types;
@@ -57,6 +58,7 @@ pub use background::{should_auto_compact, BackgroundCompactor};
 pub use compaction_top::{load_compaction_config, Compactor};
 pub use eviction::drop_oldest_respecting_pairs;
 pub use factory::BackgroundCompactorFactory;
+pub use output_rewrite::{rewrite_oversized_tool_results, RewriteStats};
 pub use summary_format::{
     compute_cumulative_details, extract_file_ops_from_messages, format_summary_with_file_ops,
     CompactionDetails,
