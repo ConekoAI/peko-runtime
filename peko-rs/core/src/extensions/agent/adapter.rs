@@ -261,12 +261,20 @@ impl WorkspaceAgentsPromptHandler {
         let text = agents
             .iter()
             .map(|a| {
+                // Normalize separators to `/` so the catalog renders
+                // portably across platforms (Windows: `to_string_lossy()`
+                // preserves `\`, which would break the substring
+                // assertion in `workspace_agents_handler_renders_catalog`
+                // and produce a less-readable location string for
+                // users). Matches the format style used by the sibling
+                // `WorkspaceSkillsPromptHandler` (skills/{name}/SKILL.md).
+                let location = a.file_path.to_string_lossy().replace('\\', "/");
                 format!(
                     "- {} (id: {}): {} (location: {})",
                     a.manifest.name,
                     a.manifest.id.0,
                     a.manifest.description,
-                    a.file_path.to_string_lossy()
+                    location
                 )
             })
             .collect::<Vec<_>>()
