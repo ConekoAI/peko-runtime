@@ -13,13 +13,13 @@
 //! lifts `tool_executor.rs` after introducing the `SessionView` trait
 //! port — the executor only needs `add_tool_result(...)` against the
 //! session, which the trait exposes via an `Arc<RwLock<Session>>` impl
-//! in root (orphan rule). Phase 9b.N.4 lifts `compaction_orchestrator.rs`
-//! after introducing the `CompactorBackend` trait port — the orchestrator
+//! in root (orphan rule). Phase 9b.N.4 lifts `compaction_driver.rs`
+//! after introducing the `CompactorBackend` trait port — the driver
 //! only needs the dual-threshold check + oneshot submit pattern, which
 //! the trait exposes via the root-owned `BackgroundCompactor` impl.
 //!
 //! The remaining root-coupled files (`agentic_loop`,
-//! `compaction_orchestrator`, `tool_runtime`) stay in `src/engine/`
+//! `compaction_driver`, `tool_runtime`) stay in `src/engine/`
 //! until later Phase 9b commits lift the agent / session /
 //! builtin-tools couplings (AgentView trait port, `ToolSearchTool`
 //! synthetic shims, `BuiltinToolAdapter` → `peko-tools-core`).
@@ -64,7 +64,7 @@ pub mod async_completion;
 pub mod async_inbox;
 pub mod chunker;
 pub mod compaction;
-pub mod compaction_orchestrator;
+pub mod compaction_driver;
 pub mod error;
 pub mod event_processor;
 pub mod events;
@@ -96,7 +96,7 @@ pub use agentic_loop::{AgenticLoop, AgenticResult};
 pub use async_completion::build_async_completion_message;
 pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
-pub use compaction_orchestrator::CompactionOrchestrator;
+pub use compaction_driver::CompactionDriver;
 pub use peko_session::ToolCall;
 // Phase 7 — the compaction data types + trait ports + eviction
 // helper live in `peko-session` (the persistence-side owner).

@@ -14,7 +14,7 @@
 //! [`CompactionState`], [`ContextUsageEstimate`], [`CompactionResult`],
 //! [`CompactionRequest`], [`CompactionResponse`], [`CompactionQuota`])
 //! moved into the `peko-engine` crate as part of the
-//! `compaction_orchestrator.rs` lift. Root re-exports them below so
+//! `compaction_driver.rs` lift. Root re-exports them below so
 //! the historical `crate::session::compaction::CompactionConfig` /
 //! etc. import paths keep compiling unchanged. The `Compactor` (LLM
 //! summarization helper), `BackgroundCompactor` (mpsc worker),
@@ -158,7 +158,7 @@ fn find_last_assistant_usage(
 /// it depends on the `dirs` + `toml` crates, which aren't in
 /// `peko-engine`'s dep graph. Root is the right home — it already owns
 /// the `Config` struct that calls into this loader. The lifted
-/// `CompactionOrchestrator` accepts the loaded `CompactionConfig` as a
+/// `CompactionDriver` accepts the loaded `CompactionConfig` as a
 /// constructor argument.
 pub fn load_compaction_config() -> CompactionConfig {
     let config_path = dirs::home_dir()
@@ -1017,7 +1017,7 @@ minimax = { "M3" = 4000 }
     }
 
     /// Phase 9b.N.4: `load_compaction_config` moved back into root
-    /// (the lifted `CompactionOrchestrator` accepts the config as a
+    /// (the lifted `CompactionDriver` accepts the config as a
     /// constructor argument rather than loading it itself). Verify
     /// the loader still produces sensible defaults when no config
     /// file is present.

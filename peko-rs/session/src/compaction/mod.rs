@@ -3,8 +3,8 @@
 //! Phase 7 moved the persistence impl (`BackgroundCompactor`,
 //! `Compactor`, `summary_format`, `turn_boundaries`, `eviction`,
 //! `cli`) from root's `src/session/compaction/` into this crate. The
-//! orchestration (`CompactionOrchestrator`) stays in
-//! `peko-engine::compaction_orchestrator`; the orchestrator holds a
+//! orchestration (`CompactionDriver`) stays in
+//! `peko-engine::compaction_driver`; the driver holds a
 //! `Box<dyn CompactorBackend>` supplied by the daemon (root wires the
 //! concrete impl through `src/engine/background_compactor_factory_compat.rs`).
 //!
@@ -13,10 +13,10 @@
 //! - [`types`] — pure-data DTOs (CompactionConfig, CompactionEntry,
 //!   CompactionState, ContextUsageEstimate, CompactionResult,
 //!   CompactionRequest, CompactionResponse, CompactionQuota,
-//!   CompactionResponseResult). These are what the orchestrator needs
+//!   CompactionResponseResult). These are what the driver needs
 //!   for bookkeeping and the trait-port signatures; the
 //!   persistence-side `BackgroundCompactor` also consumes them.
-//! - [`backend`] — `CompactorBackend` trait port the orchestrator
+//! - [`backend`] — `CompactorBackend` trait port the driver
 //!   holds.
 //! - [`factory`] — `BackgroundCompactorFactory` trait port the
 //!   loop calls per iteration.

@@ -10,10 +10,10 @@
 //! pre-Phase-7 import paths keep compiling.
 //!
 //! Phase 9b.N.4 lifted these out of `src/session/compaction.rs` and
-//! `src/session/compaction/background.rs` so the `CompactionOrchestrator`
+//! `src/session/compaction/background.rs` so the `CompactionDriver`
 //! could build them without a root dependency. Phase 7 moves them one
 //! step further — into the crate that owns the persistence impl
-//! itself — so the orchestrator's re-export is the only thing left in
+//! itself — so the driver's re-export is the only thing left in
 //! `peko-engine` for the data layout.
 
 use anyhow::Result;

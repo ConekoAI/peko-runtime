@@ -6,8 +6,8 @@
 //! `turn_boundaries`, `cli`) from this crate into the new
 //! `peko-session` crate. The orchestration stays here:
 //!
-//! - **`peko-engine::compaction_orchestrator`** —
-//!   [`CompactionOrchestrator`](crate::compaction_orchestrator::CompactionOrchestrator)
+//! - **`peko-engine::compaction_driver`** —
+//!   [`CompactionDriver`](crate::compaction_driver::CompactionDriver)
 //!   holds a `Box<dyn CompactorBackend>` supplied by the daemon
 //!   (the concrete `BackgroundCompactor` impl lives in
 //!   `peko-session`).

@@ -19,8 +19,8 @@
 //!   Phase 7.2+ adds the `BackgroundCompactor` mpsc worker, the
 //!   `Compactor` LLM summarization helper, `summary_format`,
 //!   `turn_boundaries`, `cli`.
-//! - **Orchestration** (`peko-engine::compaction_orchestrator`) —
-//!   `CompactionOrchestrator` holds a `Box<dyn CompactorBackend>`
+//! - **Orchestration** (`peko-engine::compaction_driver`) —
+//!   `CompactionDriver` holds a `Box<dyn CompactorBackend>`
 //!   supplied by the daemon.
 //!
 //! `peko-engine` re-exports the data types + trait port + eviction

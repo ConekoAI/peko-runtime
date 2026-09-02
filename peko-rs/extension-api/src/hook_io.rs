@@ -385,7 +385,7 @@ pub fn tool_result_from_hook(
 /// Phase 9b.N.4 lifted this from
 /// `src/extensions/framework/types/hook_io.rs` into the API crate
 /// (was previously in the host re-export module) so the lifted
-/// `CompactionOrchestrator` (`peko_engine::compaction_orchestrator`)
+/// `CompactionDriver` (`peko_engine::compaction_driver`)
 /// can construct a typed payload without importing the host. The
 /// variant itself (`HookInput::CompactionPreparation`) carries the
 /// fields as `serde_json::Value` blobs so the API crate stays

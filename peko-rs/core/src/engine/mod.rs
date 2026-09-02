@@ -14,11 +14,11 @@
 //! `ToolFunnel` (peko-extension-host) abstracts `ExtensionCore`'s
 //! engine-facing surface, and `SessionView` (peko-engine) abstracts
 //! the single `add_tool_result` write path. Phase 9b.N.4 lifts
-//! `compaction_orchestrator.rs` after extending both trait ports
+//! `compaction_driver.rs` after extending both trait ports
 //! (`ToolFunnel` gains three hook-firing methods for the compaction /
 //! session-state hooks; `SessionView` gains `record_compaction` /
 //! `load_previous_compaction_summary` / `update_context_cache`) and
-//! introducing a new `CompactorBackend` trait so the orchestrator
+//! introducing a new `CompactorBackend` trait so the driver
 //! holds a `Box<dyn CompactorBackend>` instead of a concrete
 //! `BackgroundCompactor`. Phase 9b.N.5a introduces the trait ports
 //! `agentic_loop.rs` will consume in 9b.N.5b: `AgentView`
