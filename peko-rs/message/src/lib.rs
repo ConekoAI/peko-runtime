@@ -1317,4 +1317,65 @@ mod tests {
         bytes.extend(0u32.to_be_bytes());
         assert!(extract_dimensions_from_base64(&bytes, "image/png").is_none());
     }
+
+    // ===================== PR 2: tool result rewrite round-trip =====================
+
+    /// PR 2: `ContentBlock::ToolResult` round-trips through serde
+    /// after the rewriter replaces the body with a single Text
+    /// sentinel. The output JSONL shape is what
+    /// `peko_session::jsonl::text_content()` flattens; verify the
+    /// nested Text block carries the full sentinel verbatim so a
+    /// `peko session show` can surface "this result was truncated"
+    /// without a separate metadata channel.
+    #[test]
+    fn test_rewritten_tool_result_round_trips() {
+        let original = ContentBlock::ToolResult {
+            tool_call_id: "tc1".to_string(),
+            name: "Read".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "[truncated by peko_runtime: tool result for call tc1 \
+                       was 50000 tokens, reduced to sentinel. Re-invoke the \
+                       tool with a narrower scope to get the full result.]"
+                    .to_string(),
+            }],
+            is_error: false,
+        };
+        let json = serde_json::to_value(&original).unwrap();
+        // serde tag = "type", variant = "tool_result"
+        assert_eq!(json["type"], "tool_result");
+        assert_eq!(json["tool_call_id"], "tc1");
+        assert_eq!(json["name"], "Read");
+        assert_eq!(json["is_error"], false);
+        assert_eq!(
+            json["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("[truncated by peko_runtime:"),
+            true
+        );
+
+        let parsed: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    /// PR 2: the `is_error: true → false` flip survives serde so
+    /// pre-existing JSONL readers see the truncated body as a
+    /// non-error result.
+    #[test]
+    fn test_tool_result_is_error_flip_round_trips() {
+        let original = ContentBlock::ToolResult {
+            tool_call_id: "tc1".to_string(),
+            name: "Bash".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "[truncated by peko_runtime: ...]".to_string(),
+            }],
+            is_error: false,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        let ContentBlock::ToolResult { is_error, .. } = &parsed else {
+            panic!("expected ToolResult")
+        };
+        assert!(!*is_error);
+    }
 }

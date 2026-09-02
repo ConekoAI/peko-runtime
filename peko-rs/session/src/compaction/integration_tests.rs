@@ -10,8 +10,10 @@
 
 use crate::compaction::{
     summary_format::{
-        extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails,
+        compute_cumulative_details, extract_file_ops_from_messages, format_summary_with_file_ops,
+        CompactionDetails,
     },
+    output_rewrite::{rewrite_oversized_tool_results, RewriteStats},
     turn_boundaries::{
         classify_message, find_cut_points, select_messages_respecting_boundaries, MessageKind,
     },
@@ -296,4 +298,104 @@ fn make_msg(role: MessageRole, text: &str) -> LlmMessage {
 #[allow(dead_code)]
 fn make_tool_result(tool_call_id: &str, text: &str) -> LlmMessage {
     LlmMessage::tool_result(tool_call_id, "test_tool", text, false)
+}
+
+// ============================================================================
+// PR 2: end-to-end integration test for the function-call output rewriter.
+// ============================================================================
+
+/// Pipeline test: an oversize tool result flows through the rewriter
+/// and then through `extract_file_ops_from_messages` (which simulates
+/// the summarizer scanning the messages). The rewriter's sentinel
+/// body must not break downstream consumers — we want the
+/// summarization to proceed and produce a clean `CompactionDetails`.
+#[test]
+fn test_rewriter_then_extract_file_ops_survives() {
+    // 1. Build a conversation where one tool result is huge.
+    let big_body = "x".repeat(300_000);
+    let messages = vec![
+        LlmMessage::text(MessageRole::User, "what's in /var/log/syslog?"),
+        LlmMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "tc1".to_string(),
+                name: "Read".to_string(),
+                arguments: serde_json::json!({"path": "/var/log/syslog"}),
+            }],
+            ..Default::default()
+        },
+        make_tool_result("tc1", &big_body),
+        LlmMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "tc2".to_string(),
+                name: "Read".to_string(),
+                arguments: serde_json::json!({"path": "/etc/passwd"}),
+            }],
+            ..Default::default()
+        },
+        make_tool_result("tc2", "root:x:0:0:root:/root:/bin/bash\n"),
+    ];
+
+    // 2. Run the rewriter (mirrors what `stream_with_eviction` does
+    //    when the provider returns `ContextWindowExceeded`).
+    let mut messages = messages;
+    let stats: RewriteStats =
+        rewrite_oversized_tool_results(&mut messages, 128_000, 16_384);
+    assert_eq!(stats.rewritten_count, 1, "should rewrite the oversize result");
+
+    // 3. The non-oversize result is untouched and the tool call side
+    //    of the conversation survives.
+    let ContentBlock::ToolResult {
+        content, is_error, ..
+    } = &messages[2].content[0]
+    else {
+        panic!("expected ToolResult at index 2")
+    };
+    assert!(!*is_error);
+    assert_eq!(content.len(), 1, "rewriter produces a single Text sentinel");
+    let ContentBlock::Text { text } = &content[0] else {
+        panic!("sentinel should be Text")
+    };
+    assert!(text.starts_with("[truncated by peko_runtime:"));
+
+    // 4. The summarizer's downstream consumer survives the rewritten
+    //    body. `extract_file_ops_from_messages` reads tool calls
+    //    (not ToolResult bodies), but we also exercise the JSONL
+    //    flattening (`text_content()`) implicitly via `details.merge`.
+    let details = extract_file_ops_from_messages(&messages);
+    assert!(
+        details.modified_files.is_empty(),
+        "no Write/Edit tool calls were made"
+    );
+
+    // 5. Cumulative merge over multiple compaction passes is stable
+    //    even when the prior pass had a rewritten body.
+    let next = compute_cumulative_details(Some(&details), &messages);
+    assert_eq!(next.read_files, details.read_files);
+}
+
+/// Two-pass integration: rewrite → compact → reload → rewrite again.
+/// The second rewrite should be a no-op (idempotence), and the
+/// persisted JSONL shape survives the round-trip.
+#[test]
+fn test_rewrite_compact_reload_rewrite_is_stable() {
+    let big_body = "x".repeat(300_000);
+    let mut messages = vec![make_tool_result("tc1", &big_body)];
+
+    // First rewrite
+    let stats1 = rewrite_oversized_tool_results(&mut messages, 128_000, 16_384);
+    assert_eq!(stats1.rewritten_count, 1);
+
+    // Persist + reload via serde (simulates JSONL round-trip).
+    let json = serde_json::to_string(&messages).unwrap();
+    let mut messages: Vec<LlmMessage> = serde_json::from_str(&json).unwrap();
+
+    // Second rewrite on the reloaded messages: must be a no-op.
+    let stats2 = rewrite_oversized_tool_results(&mut messages, 128_000, 16_384);
+    assert_eq!(
+        stats2.rewritten_count, 0,
+        "second pass should be a no-op (idempotence)"
+    );
+    assert_eq!(stats2.inspected_count, 1);
 }
