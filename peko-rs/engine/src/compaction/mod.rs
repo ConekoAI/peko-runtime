@@ -20,6 +20,7 @@
 
 pub use peko_session::compaction::{
     drop_oldest_respecting_pairs, BackgroundCompactorFactory, CompactionConfig, CompactionEntry,
-    CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
-    CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate,
+    CompactionPhase, CompactionQuota, CompactionRequest, CompactionResponse,
+    CompactionResponseResult, CompactionResult, CompactionState, CompactorBackend,
+    ContextUsageEstimate,
 };

@@ -478,10 +478,20 @@ impl Compactor {
     }
 
     /// Perform compaction using LLM for summarization
+    ///
+    /// `phase` (PR 3) identifies which trigger fired the compaction
+    /// (top-of-iteration vs mid-iteration). It's stamped onto the
+    /// returned `CompactionEntry.phase` and `CompactionDetails.phase`
+    /// so hooks and audit tooling can distinguish pre-turn summaries
+    /// from mid-turn ones. The injection position of the resulting
+    /// summary message is determined by the caller (the driver):
+    /// pre-turn goes at the top, mid-turn goes above the last user
+    /// message.
     pub async fn compact(
         &mut self,
         messages: &[LlmMessage],
         provider: &Arc<dyn ProviderView>,
+        phase: crate::compaction::types::CompactionPhase,
     ) -> Result<CompactionResult> {
         if messages.len() < 4 {
             return Err(anyhow::anyhow!(
@@ -561,10 +571,16 @@ impl Compactor {
         // Track file operations from messages being summarized
         let _file_ops =
             crate::compaction::summary_format::extract_file_ops_from_messages(&to_compact);
-        let cumulative_details = crate::compaction::summary_format::compute_cumulative_details(
+        let mut cumulative_details = crate::compaction::summary_format::compute_cumulative_details(
             None, // TODO: pass previous details when available
             &to_compact,
         );
+        // PR 3: stamp the originating phase onto the cumulative
+        // details so audit hooks can tell pre-turn from mid-turn.
+        // `merge` already preserves the field as last-write-wins; we
+        // overwrite here so the entry's phase matches the request's
+        // phase even when `previous` was nil.
+        cumulative_details.phase = phase;
 
         // Update previous summary for future cumulative updates
         self.previous_summary = Some(summary.clone());
@@ -612,6 +628,10 @@ impl Compactor {
             tokens_before,
             tokens_after,
             compaction_number: self.state.compaction_count,
+            // PR 3: phase is stamped from the request's `phase` arg
+            // so the resulting entry can be told apart from a
+            // mid-turn entry.
+            phase,
             // Phase 9b.N.4: `CompactionEntry::details` is now
             // `Option<serde_json::Value>` in `peko_engine::compaction`.
             // Serialize the root-owned `crate::compaction::summary_format::CompactionDetails`
@@ -1025,7 +1045,7 @@ minimax = { "M3" = 4000 }
         let messages = create_test_messages(30);
         let mut compactor = Compactor::new();
         let result = compactor
-            .compact(&messages, &provider)
+            .compact(&messages, &provider, crate::compaction::types::CompactionPhase::PreTurn)
             .await
             .expect("compaction should succeed with mock provider");
 
@@ -1079,7 +1099,7 @@ minimax = { "M3" = 4000 }
         let messages = create_test_messages(30);
         let mut compactor = Compactor::new();
         let result = compactor
-            .compact(&messages, &provider)
+            .compact(&messages, &provider, crate::compaction::types::CompactionPhase::PreTurn)
             .await
             .expect("compaction should succeed");
 

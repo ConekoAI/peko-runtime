@@ -7,8 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::compaction::types::CompactionPhase;
+
 /// Details tracked across compactions for cumulative file operations.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionDetails {
     /// Files that were read (via tool calls)
     pub read_files: Vec<String>,
@@ -22,6 +24,25 @@ pub struct CompactionDetails {
     /// (missing field reads as 0).
     #[serde(default)]
     pub image_token_count: usize,
+    /// Which point in the agentic loop fired this compaction. PR 3
+    /// stamps the phase onto details so audit hooks can distinguish
+    /// pre-turn from mid-turn summaries. Defaults to
+    /// [`CompactionPhase::PreTurn`] for backwards compatibility with
+    /// pre-PR-3 JSONL (the only kind of compaction that existed
+    /// before PR 3).
+    #[serde(default)]
+    pub phase: CompactionPhase,
+}
+
+impl Default for CompactionDetails {
+    fn default() -> Self {
+        Self {
+            read_files: Vec::new(),
+            modified_files: Vec::new(),
+            image_token_count: 0,
+            phase: CompactionPhase::PreTurn,
+        }
+    }
 }
 
 impl CompactionDetails {
@@ -40,6 +61,11 @@ impl CompactionDetails {
         // Image token counts are summed (not deduplicated) because
         // each compact measures its own slice.
         self.image_token_count = self.image_token_count.saturating_add(other.image_token_count);
+        // Phase is last-write-wins: the most recent compaction's
+        // phase is the phase of the cumulative details. Most
+        // sessions stay in `PreTurn` (the default); flipping to
+        // `MidTurn` is sticky until the next pre-turn fires.
+        self.phase = other.phase;
     }
 }
 
@@ -150,6 +176,13 @@ pub fn extract_file_ops_from_messages(messages: &[peko_message::LlmMessage]) -> 
         read_files: read,
         modified_files: modified,
         image_token_count: image_tokens,
+        // `phase` is not derivable from message contents alone — the
+        // compactor stamps it from the `CompactionRequest.phase` at
+        // the top of `Compactor::compact`. Defaulting here keeps this
+        // helper usable from non-Compactor call sites (tests, ad-hoc
+        // file-ops queries) without forcing every caller to thread
+        // the phase through.
+        phase: CompactionPhase::PreTurn,
     }
 }
 
@@ -196,6 +229,7 @@ mod tests {
             read_files: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
             modified_files: vec!["src/main.rs".to_string()],
             image_token_count: 0,
+            phase: CompactionPhase::PreTurn,
         };
 
         let formatted = format_summary_with_file_ops(&summary, &details);
@@ -247,6 +281,7 @@ mod tests {
             read_files: vec!["a.rs".to_string()],
             modified_files: vec!["b.rs".to_string()],
             image_token_count: 0,
+            phase: CompactionPhase::PreTurn,
         };
 
         let messages = vec![LlmMessage {
@@ -271,11 +306,13 @@ mod tests {
             read_files: vec!["a.rs".to_string()],
             modified_files: vec![],
             image_token_count: 0,
+            phase: CompactionPhase::PreTurn,
         };
         let d2 = CompactionDetails {
             read_files: vec!["a.rs".to_string(), "b.rs".to_string()],
             modified_files: vec![],
             image_token_count: 1500,
+            phase: CompactionPhase::PreTurn,
         };
         d1.merge(&d2);
         assert_eq!(d1.read_files.len(), 2);
@@ -290,14 +327,33 @@ mod tests {
     fn test_details_merge_sums_image_tokens() {
         let mut d1 = CompactionDetails {
             image_token_count: 1500,
+            phase: CompactionPhase::PreTurn,
             ..Default::default()
         };
         let d2 = CompactionDetails {
             image_token_count: 2500,
+            phase: CompactionPhase::PreTurn,
             ..Default::default()
         };
         d1.merge(&d2);
         assert_eq!(d1.image_token_count, 4000);
+    }
+
+    /// PR3: phase is last-write-wins on merge. A session that fires
+    /// mid-turn after a pre-turn inherits the mid-turn flag on the
+    /// cumulative details — hooks see what *most recently* fired.
+    #[test]
+    fn test_details_merge_phase_last_write_wins() {
+        let mut d1 = CompactionDetails {
+            phase: CompactionPhase::PreTurn,
+            ..Default::default()
+        };
+        let d2 = CompactionDetails {
+            phase: CompactionPhase::MidTurn,
+            ..Default::default()
+        };
+        d1.merge(&d2);
+        assert_eq!(d1.phase, CompactionPhase::MidTurn);
     }
 
     /// PR1: extract_file_ops_from_messages counts image tokens across
@@ -345,5 +401,26 @@ mod tests {
         let parsed: CompactionDetails = serde_json::from_value(legacy).unwrap();
         assert_eq!(parsed.image_token_count, 0);
         assert_eq!(parsed.read_files, vec!["a.rs"]);
+        // PR3: pre-PR-3 entries default the phase to `PreTurn`.
+        assert_eq!(parsed.phase, CompactionPhase::PreTurn);
+    }
+
+    /// PR3: `CompactionPhase` round-trips through serde for every
+    /// variant (snake_case wire shape).
+    #[test]
+    fn test_phase_serde_round_trip() {
+        for phase in [
+            CompactionPhase::PreTurn,
+            CompactionPhase::MidTurn,
+            CompactionPhase::StandaloneTurn,
+        ] {
+            let v = serde_json::to_value(phase).unwrap();
+            assert!(
+                v.is_string(),
+                "phase should serialize as a string, got {v:?}"
+            );
+            let back: CompactionPhase = serde_json::from_value(v).unwrap();
+            assert_eq!(back, phase);
+        }
     }
 }

@@ -20,6 +20,57 @@ use anyhow::Result;
 use peko_message::{LlmMessage, TokenUsage};
 use serde::{Deserialize, Serialize};
 
+/// Identifies which point in the agentic loop fired a compaction.
+///
+/// Distinct phases let downstream consumers (hooks, audit logs,
+/// observability) reason about *why* a compaction happened — pre-turn
+/// compactions happen at the top of an iteration against the full
+/// conversation, while mid-turn compactions happen after tool
+/// execution and preserve the current tool-call / tool-result pair
+/// intact. Pre-PR-3 JSONL that has no `phase` field reads as
+/// [`CompactionPhase::PreTurn`] (the serde default), which matches the
+/// pre-PR-3 behaviour exactly (compaction was always top-of-iteration).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPhase {
+    /// Compaction fired at the top of an iteration (before any LLM
+    /// call). The pre-PR-3 trigger; still the common case. The
+    /// resulting summary message is injected at the top of
+    /// `messages` (after the initial system prompt).
+    PreTurn,
+    /// Compaction fired mid-iteration, after tool execution and
+    /// before the next LLM call. Used when the post-tool-result
+    /// context window approaches the limit. The resulting summary
+    /// message is injected **above the last real user message** so
+    /// the current tool-call / tool-result pair stays intact.
+    MidTurn,
+    /// Compaction fired by an explicit, out-of-band request (the
+    /// session tool's `compact` action, a `/compact` slash command,
+    /// etc.). Same injection position as pre-turn. Reserved for
+    /// future use; current triggers only fire `PreTurn` or `MidTurn`.
+    StandaloneTurn,
+}
+
+impl Default for CompactionPhase {
+    /// Defaults to `PreTurn` so pre-PR-3 JSONL entries (no `phase`
+    /// field) read back as the phase they were created under.
+    fn default() -> Self {
+        Self::PreTurn
+    }
+}
+
+impl CompactionPhase {
+    /// Human-readable label for logs / audit events.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PreTurn => "pre_turn",
+            Self::MidTurn => "mid_turn",
+            Self::StandaloneTurn => "standalone_turn",
+        }
+    }
+}
+
 /// Compaction configuration
 ///
 /// User-tunable settings read from `~/.peko/config.toml` under the
@@ -101,6 +152,14 @@ pub struct CompactionEntry {
     pub tokens_after: usize,
     /// Compaction number (1st, 2nd, etc.)
     pub compaction_number: usize,
+    /// Which point in the agentic loop fired this compaction. PR 3
+    /// distinguishes [`CompactionPhase::PreTurn`] (top-of-iteration,
+    /// pre-PR-3 default) from [`CompactionPhase::MidTurn`] (after
+    /// tool execution, before the next LLM call).
+    /// `#[serde(default)]` keeps pre-PR-3 JSONL entries compatible
+    /// (missing field reads as `PreTurn`).
+    #[serde(default)]
+    pub phase: CompactionPhase,
     /// Tracked file operations from compacted messages.
     ///
     /// Phase 9b.N.4 widened this from
@@ -196,6 +255,14 @@ pub struct CompactionRequest {
     pub messages: Vec<LlmMessage>,
     /// Previous summary for cumulative updates (None for initial)
     pub previous_summary: Option<String>,
+    /// Which phase triggered this compaction (PR 3). The
+    /// `BackgroundCompactor` worker stamps this onto the resulting
+    /// `CompactionEntry.phase` and `CompactionDetails.phase` so
+    /// downstream consumers can tell pre-turn summaries from
+    /// mid-turn ones. Defaults to [`CompactionPhase::PreTurn`] to
+    /// match pre-PR-3 call sites that construct a request without
+    /// specifying a phase.
+    pub phase: CompactionPhase,
 }
 
 /// Completion outcome from the `BackgroundCompactor` worker.
