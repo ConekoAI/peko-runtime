@@ -45,7 +45,7 @@ const SKILLS_CATALOG_MAX_BYTES: usize = 8 * 1024;
 /// prompt.
 #[derive(Debug, Default)]
 pub struct WorkspaceSkillsPromptHandler {
-    cache: Mutex<Option<(SystemTime, String)>>,
+    cache: Mutex<Option<((SystemTime, usize), String)>>,
 }
 
 impl WorkspaceSkillsPromptHandler {
@@ -57,16 +57,23 @@ impl WorkspaceSkillsPromptHandler {
 
     /// Render the skills catalog for `workspace`, using the mtime-keyed
     /// cache. Returns `None` when there is nothing to render.
+    ///
+    /// The cache key is `(dir_mtime, immediate_child_count)`. Mtime alone
+    /// is unreliable on Windows NTFS for fast back-to-back subdir
+    /// creations (the parent dir's mtime can read back the same value
+    /// before the metadata update has been flushed); counting children
+    /// catches added/removed subdirs even when mtime is stale.
     fn render_catalog(&self, workspace: &str) -> Option<String> {
         let skills_dir = Path::new(workspace).join("skills");
-        let mtime = std::fs::metadata(&skills_dir)
-            .and_then(|m| m.modified())
-            .ok()?;
+        let metadata = std::fs::metadata(&skills_dir).ok()?;
+        let mtime = metadata.modified().ok()?;
+        let child_count = std::fs::read_dir(&skills_dir).ok()?.count();
+        let key = (mtime, child_count);
 
         {
             let cache = self.cache.lock().expect("skills catalog cache poisoned");
-            if let Some((cached_mtime, text)) = &*cache {
-                if *cached_mtime == mtime {
+            if let Some((cached_key, text)) = &*cache {
+                if *cached_key == key {
                     return (!text.is_empty()).then(|| text.clone());
                 }
             }
@@ -75,7 +82,7 @@ impl WorkspaceSkillsPromptHandler {
         let text = scan_skills_dir(&skills_dir, workspace);
 
         let mut cache = self.cache.lock().expect("skills catalog cache poisoned");
-        *cache = Some((mtime, text.clone()));
+        *cache = Some((key, text.clone()));
 
         (!text.is_empty()).then_some(text)
     }

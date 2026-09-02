@@ -229,7 +229,7 @@ struct AgentFrontmatter {
 /// handler well within the renderer's 2-second hook timeout.
 #[derive(Debug, Default)]
 pub struct WorkspaceAgentsPromptHandler {
-    cache: Mutex<Option<(SystemTime, String)>>,
+    cache: Mutex<Option<((SystemTime, usize), String)>>,
 }
 
 impl WorkspaceAgentsPromptHandler {
@@ -242,16 +242,24 @@ impl WorkspaceAgentsPromptHandler {
     /// Render the agents catalog for `workspace`, using the mtime-keyed
     /// cache. Returns `None` when there is nothing to render (no
     /// `agents/` dir, or no agents discovered).
+    ///
+    /// The cache key is `(dir_mtime, immediate_child_count)`. Mtime alone
+    /// is unreliable on Windows NTFS for fast back-to-back subdir/file
+    /// creations (the parent dir's mtime can read back the same value
+    /// before the metadata update has been flushed); counting children
+    /// catches added/removed entries even when mtime is stale. Same
+    /// shape as the sibling `WorkspaceSkillsPromptHandler` cache.
     fn render_catalog(&self, workspace: &str) -> Option<String> {
         let agents_dir = Path::new(workspace).join("agents");
-        let mtime = std::fs::metadata(&agents_dir)
-            .and_then(|m| m.modified())
-            .ok()?;
+        let metadata = std::fs::metadata(&agents_dir).ok()?;
+        let mtime = metadata.modified().ok()?;
+        let child_count = std::fs::read_dir(&agents_dir).ok()?.count();
+        let key = (mtime, child_count);
 
         {
             let cache = self.cache.lock().expect("agents catalog cache poisoned");
-            if let Some((cached_mtime, text)) = &*cache {
-                if *cached_mtime == mtime {
+            if let Some((cached_key, text)) = &*cache {
+                if *cached_key == key {
                     return (!text.is_empty()).then(|| text.clone());
                 }
             }
@@ -281,7 +289,7 @@ impl WorkspaceAgentsPromptHandler {
             .join("\n");
 
         let mut cache = self.cache.lock().expect("agents catalog cache poisoned");
-        *cache = Some((mtime, text.clone()));
+        *cache = Some((key, text.clone()));
 
         (!text.is_empty()).then_some(text)
     }
