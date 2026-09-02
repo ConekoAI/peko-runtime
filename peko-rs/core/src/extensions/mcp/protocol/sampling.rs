@@ -21,7 +21,8 @@ use crate::extensions::mcp::protocol::{
     },
 };
 use async_trait::async_trait;
-use peko_message::{ContentBlock, ImageSource, MessageRole};
+use base64::Engine;
+use peko_message::{extract_dimensions_from_base64, ContentBlock, ImageSource, MessageRole};
 use peko_provider_api::{ChatOptions, StopReason, ToolDefinition};
 use peko_providers::resolver::{LlmResolver, ResolveRequest};
 use peko_providers::MeteredProvider;
@@ -197,10 +198,16 @@ impl ServerRequestHandler for SamplingRequestHandler {
 fn convert_sampling_content(content: SamplingContent) -> ContentBlock {
     match content {
         SamplingContent::Text { text } => ContentBlock::Text { text },
-        SamplingContent::Image { data, mime_type } => ContentBlock::Image {
-            source: ImageSource::Base64 { data },
-            mime_type,
-        },
+        SamplingContent::Image { data, mime_type } => {
+            let dimensions = base64::engine::general_purpose::STANDARD
+                .decode(&data)
+                .ok()
+                .and_then(|bytes| extract_dimensions_from_base64(&bytes, &mime_type));
+            ContentBlock::Image {
+                source: ImageSource::Base64 { data, dimensions },
+                mime_type,
+            }
+        }
     }
 }
 

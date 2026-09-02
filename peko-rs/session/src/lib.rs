@@ -46,6 +46,9 @@ pub mod compaction;
 // PathResolverLike now lives in peko-subject; re-export below.
 pub mod types;
 
+pub mod image_budget;
+pub use image_budget::{estimate_image_block_tokens, estimate_image_tokens, message_image_tokens};
+
 pub use peko_subject::PathResolverLike;
 pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
 

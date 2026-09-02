@@ -225,6 +225,7 @@ mod tests {
             content: vec![ContentBlock::Image {
                 source: ImageSource::Base64 {
                     data: "aGVsbG8=".to_string(),
+                    dimensions: None,
                 },
                 mime_type: "image/png".to_string(),
             }],

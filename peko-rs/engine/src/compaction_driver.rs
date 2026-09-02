@@ -535,22 +535,11 @@ struct ContextUsageEstimate {
 /// can run without a root dep. The two implementations are
 /// behaviour-equivalent; any future change must update both.
 fn estimate_context_tokens(messages: &[LlmMessage]) -> ContextUsageEstimate {
-    use peko_message::ContentBlock;
     if let Some((usage, index)) = find_last_assistant_usage(messages) {
         let usage_tokens = (usage.input + usage.output) as usize;
         let trailing_tokens: usize = messages[index + 1..]
             .iter()
-            .map(|m| {
-                let content_len: usize = m
-                    .content
-                    .iter()
-                    .map(|b| match b {
-                        ContentBlock::Text { text } => text.len(),
-                        _ => 50,
-                    })
-                    .sum();
-                (content_len + 20) / CHARS_PER_TOKEN + 4
-            })
+            .map(|m| content_block_token_estimate(&m.content))
             .sum();
         ContextUsageEstimate {
             tokens: usage_tokens + trailing_tokens,
@@ -571,21 +560,37 @@ fn estimate_context_tokens(messages: &[LlmMessage]) -> ContextUsageEstimate {
 
 /// Heuristic token estimator — chars / 4 across the conversation.
 fn estimate_tokens(messages: &[LlmMessage]) -> usize {
-    use peko_message::ContentBlock;
     messages
         .iter()
-        .map(|m| {
-            let content_len: usize = m
-                .content
-                .iter()
-                .map(|b| match b {
-                    ContentBlock::Text { text } => text.len(),
-                    _ => 50,
-                })
-                .sum();
-            (content_len + 20) / CHARS_PER_TOKEN + 4
-        })
+        .map(|m| content_block_token_estimate(&m.content))
         .sum()
+}
+
+/// Sum the token estimate for a single message's content blocks.
+/// Text uses chars/4; images use the three-tier
+/// `estimate_image_tokens` so retention budgets reflect realistic
+/// image costs instead of the F21 placeholder of 50 chars/image.
+fn content_block_token_estimate(content: &[peko_message::ContentBlock]) -> usize {
+    use peko_message::ContentBlock;
+    content
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Text { text } => text.len(),
+            ContentBlock::Image { source, mime_type } => {
+                // Image token cost is char-equivalent (chars / 4) at the
+                // CHARS_PER_TOKEN denominator used by text. Multiply by
+                // CHARS_PER_TOKEN to keep the downstream
+                // `+ 20) / CHARS_PER_TOKEN + 4` arithmetic unit-stable.
+                let image_tokens =
+                    peko_session::estimate_image_tokens(source, mime_type);
+                image_tokens.saturating_mul(CHARS_PER_TOKEN)
+            }
+            _ => 50,
+        })
+        .sum::<usize>()
+        .saturating_add(20)
+        / CHARS_PER_TOKEN
+        + 4
 }
 
 // Phase 9b.N.4: `load_compaction_config` lives in root

@@ -98,14 +98,56 @@ impl TokenUsage {
     }
 }
 
-/// Image source for image content blocks
+/// Image dimensions in pixels.
+///
+/// PR 1 of the image-aware retention budget (`features/image-aware-retention`).
+/// When present, the compaction estimator uses
+/// `ceil(width * height / 750)` (OpenAI "high detail" tile math,
+/// conservative). When absent the estimator falls back to base64 bytes
+/// (`bytes / 0.75`) for `Base64` sources or a mime-type lookup table
+/// for `Url` sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ImageDimensions {
+    /// Tokens consumed at OpenAI "high detail" tile granularity.
+    /// 750 px²/token is the canonical "high detail" tile size
+    /// (Anthropic uses a similar ~750 figure for Claude 3+ vision).
+    /// Rounded up so a 1px sliver still counts.
+    #[must_use]
+    pub fn high_detail_tokens(&self) -> usize {
+        let px = u64::from(self.width) * u64::from(self.height);
+        // ceil(px / 750) without overflow on large images
+        px.div_ceil(750) as usize
+    }
+}
+
+/// Image source for image content blocks.
+///
+/// `dimensions` is optional — adapters populate it when they can
+/// parse the source (base64 header magic bytes, data-URL metadata,
+/// content-length + content-type probes, etc.). When absent the
+/// estimator falls back to bytes or mime-type heuristics, so the
+/// field is opt-in for callers and serde-default for JSONL
+/// backward-compatibility.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "source_type", rename_all = "snake_case")]
 pub enum ImageSource {
     /// Base64-encoded image data
-    Base64 { data: String },
+    Base64 {
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dimensions: Option<ImageDimensions>,
+    },
     /// URL to image
-    Url { url: String },
+    Url {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dimensions: Option<ImageDimensions>,
+    },
 }
 
 /// Standard LLM message roles
@@ -434,7 +476,11 @@ impl AgentMessage {
     /// Uses provider-agnostic estimation:
     /// - Base overhead: 4 tokens per message (role, formatting)
     /// - Text content: ~4 chars per token
-    /// - Images: 1000 tokens each (provider varies)
+    /// - Images: dimensions-based (`width * height / 750`) when
+    ///   `ImageSource::dimensions` is populated, else 1000 tokens
+    ///   legacy fallback. PR 1 (image-aware retention) plumbs
+    ///   `dimensions` through the provider adapters so this estimate
+    ///   reflects reality instead of a constant.
     /// - Tool calls/results: JSON token count
     #[must_use]
     pub fn estimate_tokens(&self) -> usize {
@@ -446,7 +492,13 @@ impl AgentMessage {
                     .iter()
                     .map(|block| match block {
                         ContentBlock::Text { text } => estimate_text_tokens(text),
-                        ContentBlock::Image { .. } => 1000, // Image tokens vary by provider
+                        ContentBlock::Image { source, .. } => {
+                            // PR 1: prefer dimensions-based estimate when
+                            // available. Fall back to legacy 1000-token
+                            // constant for backwards compatibility with
+                            // JSONL written before PR 1.
+                            image_token_estimate(source).unwrap_or(1000)
+                        }
                         ContentBlock::ToolCall {
                             name, arguments, ..
                         } => {
@@ -498,6 +550,52 @@ fn estimate_json_tokens(value: &Value) -> usize {
     // JSON is roughly 1 token per 2 characters (more verbose than text)
     let json_string = value.to_string();
     json_string.len() / 2
+}
+
+/// Image token estimate from an `ImageSource`. Returns `None` when
+/// dimensions are not populated — caller decides the fallback
+/// (legacy constant in peko-message, mime-type table in peko-session).
+///
+/// PR 1 helper so the message crate can do its own per-message
+/// estimate without depending on `peko-session::image_budget`. The
+/// session-side estimator wraps this and adds the more accurate
+/// fallback table for URL sources.
+fn image_token_estimate(source: &ImageSource) -> Option<usize> {
+    let dimensions = match source {
+        ImageSource::Base64 { dimensions, .. } | ImageSource::Url { dimensions, .. } => {
+            *dimensions
+        }
+    };
+    dimensions.map(|d| d.high_detail_tokens())
+}
+
+/// Best-effort dimension extraction from decoded image bytes.
+///
+/// Supports PNG (always — IHDR header at offset 16-23, big-endian u32 width
+/// then height). JPEG/GIF/WebP are out of scope for this PR; the estimator
+/// falls back to bytes/0.75 or mime-type tables when `None`.
+///
+/// Adapter callers should decode the base64 payload themselves and pass
+/// the resulting bytes + `mime_type`. Returns `None` when the format isn't
+/// recognized, the signature doesn't match, or the dimensions are zero.
+pub fn extract_dimensions_from_base64(bytes: &[u8], mime_type: &str) -> Option<ImageDimensions> {
+    if mime_type.eq_ignore_ascii_case("image/png") {
+        // PNG signature: 89 50 4E 47 0D 0A 1A 0A
+        const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        if bytes.len() < 24 || bytes[..8] != PNG_SIGNATURE {
+            return None;
+        }
+        // IHDR chunk: 4-byte length, "IHDR", then 13-byte payload starting
+        // with width (BE u32) and height (BE u32). Bytes 16-23 are width+height.
+        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Some(ImageDimensions { width, height })
+    } else {
+        None
+    }
 }
 
 impl Default for AgentMessage {
@@ -1034,5 +1132,189 @@ mod tests {
             ContentBlock::ToolResult { is_error, .. } => assert!(*is_error),
             _ => panic!("expected ToolResult block"),
         }
+    }
+
+    // ===================== PR 1: image dimensions tests =====================
+
+    /// `high_detail_tokens` matches OpenAI's `high` detail tile math
+    /// (`ceil(width * height / 750)`):
+    /// - 512×512 → ceil(262144/750) = 350
+    /// - 1024×1024 → ceil(1048576/750) = 1398
+    /// - 2048×2048 → ceil(4194304/750) = 5593
+    /// - 1×1 → 1 (rounded up)
+    #[test]
+    fn test_image_dimensions_high_detail_tokens() {
+        assert_eq!(
+            ImageDimensions { width: 512, height: 512 }.high_detail_tokens(),
+            350
+        );
+        assert_eq!(
+            ImageDimensions { width: 1024, height: 1024 }.high_detail_tokens(),
+            1399
+        );
+        assert_eq!(
+            ImageDimensions { width: 2048, height: 2048 }.high_detail_tokens(),
+            5593
+        );
+        // Edge: 1x1 image still costs 1 token (ceil(1/750))
+        assert_eq!(
+            ImageDimensions { width: 1, height: 1 }.high_detail_tokens(),
+            1
+        );
+    }
+
+    /// Image with `dimensions` populated costs `high_detail_tokens`,
+    /// not the 1000-token legacy fallback. The 1024×1024 case costs
+    /// ~1398 tokens — fixing the under-count that motivated PR 1.
+    #[test]
+    fn test_image_with_dimensions_estimates_realistic_tokens() {
+        let img = ContentBlock::Image {
+            source: ImageSource::Base64 {
+                data: "ignored".to_string(),
+                dimensions: Some(ImageDimensions { width: 1024, height: 1024 }),
+            },
+            mime_type: "image/png".to_string(),
+        };
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![img],
+            ..Default::default()
+        };
+        let est = AgentMessage::Llm(msg).estimate_tokens();
+        // base_overhead (4) + high_detail_tokens (1399) = 1403
+        assert_eq!(est, 4 + 1399);
+    }
+
+    /// Image without `dimensions` falls back to the legacy 1000-token
+    /// estimate so pre-PR-1 JSONL and URL-only sources keep working.
+    #[test]
+    fn test_image_without_dimensions_uses_legacy_estimate() {
+        let img = ContentBlock::Image {
+            source: ImageSource::Url {
+                url: "https://example.com/x.png".to_string(),
+                dimensions: None,
+            },
+            mime_type: "image/png".to_string(),
+        };
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![img],
+            ..Default::default()
+        };
+        let est = AgentMessage::Llm(msg).estimate_tokens();
+        // base_overhead (4) + legacy (1000) = 1004
+        assert_eq!(est, 4 + 1000);
+    }
+
+    /// Round-trip: `ImageSource` with `dimensions` serialises with
+    /// the field present and deserialises back to the same struct.
+    #[test]
+    fn test_image_source_dimensions_roundtrip() {
+        let src = ImageSource::Base64 {
+            data: "AAAA".to_string(),
+            dimensions: Some(ImageDimensions { width: 800, height: 600 }),
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert_eq!(json["source_type"], "base64");
+        assert_eq!(json["data"], "AAAA");
+        assert_eq!(json["dimensions"]["width"], 800);
+        assert_eq!(json["dimensions"]["height"], 600);
+        let parsed: ImageSource = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, src);
+    }
+
+    /// Backwards-compat: pre-PR-1 JSONL without `dimensions`
+    /// deserialises to `dimensions: None`. Verifies the serde-default
+    /// on both variants.
+    #[test]
+    fn test_image_source_dimensions_legacy_loads_as_none() {
+        let legacy = serde_json::json!({"source_type": "base64", "data": "AAAA"});
+        let parsed: ImageSource = serde_json::from_value(legacy).unwrap();
+        match parsed {
+            ImageSource::Base64 { data, dimensions } => {
+                assert_eq!(data, "AAAA");
+                assert_eq!(dimensions, None);
+            }
+            _ => panic!("expected Base64 variant"),
+        }
+
+        let legacy_url = serde_json::json!({"source_type": "url", "url": "https://x"});
+        let parsed_url: ImageSource = serde_json::from_value(legacy_url).unwrap();
+        match parsed_url {
+            ImageSource::Url { url, dimensions } => {
+                assert_eq!(url, "https://x");
+                assert_eq!(dimensions, None);
+            }
+            _ => panic!("expected Url variant"),
+        }
+    }
+
+    /// When `dimensions: None`, the on-disk JSONL shape omits the
+    /// `dimensions` key entirely (skip_serializing_if). Pre-PR-1
+    /// readers see no schema change.
+    #[test]
+    fn test_image_source_no_dimensions_omits_key() {
+        let src = ImageSource::Url {
+            url: "https://example.com/x.png".to_string(),
+            dimensions: None,
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert!(
+            json.as_object().unwrap().get("dimensions").is_none(),
+            "None dimensions should be skipped from serialisation"
+        );
+    }
+
+    /// `extract_dimensions_from_base64` reads width/height from the
+    /// PNG IHDR chunk. 1024×1024 is the canonical OpenAI "high detail"
+    /// image size and should round-trip cleanly.
+    #[test]
+    fn test_extract_dimensions_from_png_1024() {
+        // Hand-built 24-byte header: PNG signature + 8-byte IHDR prefix
+        // (length + "IHDR" tag) + width + height. IHDR's first 8 bytes
+        // follow the signature; we synthesise the prefix as zeros.
+        let mut bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        bytes.extend([0u8; 8]); // IHDR length + tag placeholder
+        bytes.extend(1024u32.to_be_bytes());
+        bytes.extend(1024u32.to_be_bytes());
+        let dims = extract_dimensions_from_base64(&bytes, "image/png").unwrap();
+        assert_eq!(dims.width, 1024);
+        assert_eq!(dims.height, 1024);
+        assert_eq!(dims.high_detail_tokens(), ((1024 * 1024 + 749) / 750) as usize);
+    }
+
+    /// Non-PNG mime types fall through to `None` (JPEG extraction is
+    /// deferred to a follow-up — SOFn marker parsing is non-trivial).
+    #[test]
+    fn test_extract_dimensions_non_png_returns_none() {
+        let bytes = vec![0u8; 32];
+        assert!(extract_dimensions_from_base64(&bytes, "image/jpeg").is_none());
+        assert!(extract_dimensions_from_base64(&bytes, "image/webp").is_none());
+    }
+
+    /// Bytes shorter than the PNG signature + IHDR payload are rejected.
+    #[test]
+    fn test_extract_dimensions_short_png_returns_none() {
+        let bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]; // 8 bytes
+        assert!(extract_dimensions_from_base64(&bytes, "image/png").is_none());
+    }
+
+    /// PNG signature mismatch (truncated JPEG bytes labeled PNG)
+    /// returns `None` rather than panic.
+    #[test]
+    fn test_extract_dimensions_bad_signature_returns_none() {
+        let bytes = vec![0u8; 32];
+        assert!(extract_dimensions_from_base64(&bytes, "image/png").is_none());
+    }
+
+    /// Zero-dimension PNG (corrupt IHDR) returns `None` rather than
+    /// producing a 0×0 ImageDimensions that would zero the token count.
+    #[test]
+    fn test_extract_dimensions_zero_dimensions_returns_none() {
+        let mut bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        bytes.extend([0u8; 8]);
+        bytes.extend(0u32.to_be_bytes());
+        bytes.extend(0u32.to_be_bytes());
+        assert!(extract_dimensions_from_base64(&bytes, "image/png").is_none());
     }
 }

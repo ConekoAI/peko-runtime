@@ -142,11 +142,11 @@ impl AnthropicAdapter {
                             }
                             ContentBlock::Image { source, mime_type } => {
                                 let source_value = match source {
-                                    ImageSource::Url { url } => json!({
+                                    ImageSource::Url { url, .. } => json!({
                                         "type": "url",
                                         "url": url,
                                     }),
-                                    ImageSource::Base64 { data } => json!({
+                                    ImageSource::Base64 { data, .. } => json!({
                                         "type": "base64",
                                         "media_type": mime_type,
                                         "data": data,
@@ -2085,6 +2085,7 @@ mod tests {
                 ContentBlock::Image {
                     source: ImageSource::Url {
                         url: "https://example.com/cat.png".to_string(),
+                        dimensions: None,
                     },
                     mime_type: "image/png".to_string(),
                 },
@@ -2122,6 +2123,7 @@ mod tests {
             content: vec![ContentBlock::Image {
                 source: ImageSource::Base64 {
                     data: "aGVsbG8=".to_string(),
+                    dimensions: None,
                 },
                 mime_type: "image/png".to_string(),
             }],
