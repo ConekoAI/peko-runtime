@@ -542,6 +542,15 @@ pub enum RequestPacket {
         /// rejected with `bad_cursor`.
         #[serde(default)]
         cursor: Option<String>,
+        /// Optional case-insensitive substring filter on message text.
+        /// Applied while paging (the daemon keeps walking older pages
+        /// until the page fills or the log is exhausted).
+        #[serde(default)]
+        query: Option<String>,
+        /// Optional exact author filter (the raw channel-log author —
+        /// a peer Subject wire form or the principal's id).
+        #[serde(default)]
+        author: Option<String>,
     },
 
     /// Watch a peer's conversation thread with a Principal: replay
@@ -802,6 +811,17 @@ pub enum RequestPacket {
         /// `tail` is set.
         #[serde(default)]
         before: Option<String>,
+        /// Search mode: case-insensitive substring match on `Posted`
+        /// text. When `query` or `author` is set, the daemon runs
+        /// `ChannelPort::search` (backward filtered scan; `tail` acts
+        /// as the match cap, `before` as the scan anchor) instead of
+        /// peeking.
+        #[serde(default)]
+        query: Option<String>,
+        /// Search mode: exact `Posted` author match (wire form, e.g.
+        /// `user:alice`).
+        #[serde(default)]
+        author: Option<String>,
     },
 
     /// PR-2b: subscribe to live events for `channel`. The daemon
@@ -1169,6 +1189,11 @@ pub enum ResponsePacket {
         /// the first returned one (page further back with `before`).
         #[serde(default)]
         has_more: bool,
+        /// Search mode only: the oldest line the scan examined. Pass
+        /// back as `before` to continue searching older history.
+        /// `None` when the scan reached the top of the log.
+        #[serde(default)]
+        resume_before: Option<String>,
     },
 
     /// PR-2b: one event in a `ChannelEventsWatch` stream. The daemon
@@ -4467,6 +4492,8 @@ mod tests {
             limit: Some(100),
             since_secs: Some(86_400),
             cursor: None,
+            query: None,
+            author: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4478,6 +4505,7 @@ mod tests {
                 limit,
                 since_secs,
                 cursor,
+                ..
             } => {
                 assert_eq!(request_id, 5200);
                 assert_eq!(name, "helper");

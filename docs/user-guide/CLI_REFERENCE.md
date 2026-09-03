@@ -674,6 +674,8 @@ peko log [OPTIONS] <PRINCIPAL>
 | `--limit <N>` | Hard cap on the number of messages returned (default 50, max 1000) — a single page. |
 | `--all` | Drain all pages (bounded multi-page loop) instead of a single page. |
 | `--since <DURATION>` | Only entries newer than the duration. Accepts `<N>h`, `<N>d`, `<N>m`, `<N>s` (e.g. `24h`, `7d`, `30m`, `3600s`). |
+| `--search <TEXT>` | Case-insensitive substring filter on message text; the daemon keeps paging older history until the page fills. Ignored with `--watch`. |
+| `--author <AUTHOR>` | Exact author filter (channel-log author: `user:<id>`, or the principal's id). Ignored with `--watch`. |
 | `--cursor <CURSOR>` | Opaque pagination cursor from a prior call's `next_cursor`. With `--watch`, seeds the replay start. |
 | `--watch` | Block and stream new messages live (replay newer than `--cursor` first). Ignores `--limit`/`--since`/`--all`. |
 | `--json` | Emit messages as JSON (pretty array; with `--watch`: NDJSON — one message object per line). Group threads emit `{id, at, author, text}` rows. |

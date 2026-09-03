@@ -338,6 +338,8 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 requester: Some(format!("user:{}", paths.user())),
                 tail: None,
                 before: None,
+                query: None,
+                author: None,
             };
             let events = run_daemon_or(
                 paths,

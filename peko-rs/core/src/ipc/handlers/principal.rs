@@ -430,6 +430,8 @@ impl RequestHandler for PrincipalHandler {
                 limit,
                 since_secs,
                 cursor,
+                query,
+                author,
             } => {
                 let caller_subject = caller.subject();
                 let response = match read_principal_log(
@@ -439,6 +441,8 @@ impl RequestHandler for PrincipalHandler {
                     limit,
                     since_secs,
                     cursor,
+                    query,
+                    author,
                     caller_subject,
                 )
                 .await
@@ -3336,6 +3340,8 @@ async fn read_principal_log(
     limit: Option<usize>,
     since_secs: Option<u64>,
     cursor: Option<String>,
+    query: Option<String>,
+    author: Option<String>,
     caller: Subject,
 ) -> Result<PrincipalLogResponse, PrincipalLogError> {
     let resolved = resolve_log_thread(host, name, peer, &caller).await?;
@@ -3384,6 +3390,12 @@ async fn read_principal_log(
     // exhausted (bounded, so a hostile filter can't pin the daemon).
     let principal_author = principal.id.to_string();
     let principal_subject = Subject::Principal(principal.did().await);
+    // Optional search predicates: case-insensitive text substring +
+    // exact raw-author match. Both apply while paging, so a filtered
+    // read keeps walking older pages until the page fills or the log
+    // is exhausted.
+    let needle = query.as_deref().map(str::to_lowercase);
+    let author_filter = author.as_deref();
 
     // The cursor is a raw line number: return rows strictly older.
     if let Some(c) = cursor.as_deref() {
@@ -3418,6 +3430,18 @@ async fn read_principal_log(
             let Ok(line_num) = line.parse::<u64>() else {
                 continue;
             };
+            // Search predicates apply to the raw channel row (author
+            // wire form + text), before display mapping.
+            if let Some(n) = needle.as_deref() {
+                if !text.to_lowercase().contains(n) {
+                    continue;
+                }
+            }
+            if let Some(want) = author_filter {
+                if author != want {
+                    continue;
+                }
+            }
             let message = map_posted_to_log_message(
                 format!("chan_{line_num}"),
                 &author,
@@ -3917,6 +3941,8 @@ mod tests {
                 limit,
                 since_secs,
                 cursor,
+                None,
+                None,
                 fx.owner.clone(),
             )
             .await
@@ -4052,6 +4078,65 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread")]
         #[serial_test::serial]
+        async fn query_and_author_filter_rows_while_paging() {
+            let fx = fixture(true).await;
+            post_turns(&fx, 3).await; // question/answer 0..=2
+
+            // Text filter (case-insensitive) matches only questions.
+            let page = read_principal_log(
+                &fx.host,
+                "loggable",
+                Some(fx.peer.clone()),
+                None,
+                None,
+                None,
+                Some("QUESTION".to_string()),
+                None,
+                fx.owner.clone(),
+            )
+            .await
+            .expect("query read");
+            let texts: Vec<&str> = page.messages.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(texts, vec!["question 0", "question 1", "question 2"]);
+
+            // Author filter matches the raw channel author — the peer's
+            // Subject wire form for inbound posts.
+            let page = read_principal_log(
+                &fx.host,
+                "loggable",
+                Some(fx.peer.clone()),
+                Some(2),
+                None,
+                None,
+                None,
+                Some(fx.peer.to_string()),
+                fx.owner.clone(),
+            )
+            .await
+            .expect("author read");
+            let texts: Vec<&str> = page.messages.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(texts, vec!["question 1", "question 2"]);
+
+            // A filter that matches nothing returns an empty page, not
+            // an error.
+            let page = read_principal_log(
+                &fx.host,
+                "loggable",
+                Some(fx.peer.clone()),
+                None,
+                None,
+                None,
+                Some("no-such-text".to_string()),
+                None,
+                fx.owner.clone(),
+            )
+            .await
+            .expect("empty read");
+            assert!(page.messages.is_empty());
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
         async fn empty_page_for_unknown_peer_and_bad_cursor_errors() {
             let fx = fixture(true).await;
             post_turns(&fx, 1).await;
@@ -4062,6 +4147,8 @@ mod tests {
                 &fx.host,
                 "loggable",
                 Some(stranger),
+                None,
+                None,
                 None,
                 None,
                 None,

@@ -47,15 +47,22 @@ impl Tool for ChannelReadTool {
          - channel: string (required) — channel id, e.g. 'chan_a1b2c3d4' or a \
          named group 'group:<slug>'\n\
          - limit:   int    (optional) — max events returned (default 50, cap 1000)\n\
-         - before:  string (optional) — event id; return the page of events OLDER \
-         than it (walk back through history)\n\
+         - query:   string (optional) — search mode: case-insensitive substring \
+         match on message text\n\
+         - author:  string (optional) — search mode: exact author match \
+         (e.g. 'user:alice' or a principal id)\n\
+         - before:  string (optional) — event id; in read mode return the page \
+         of events OLDER than it; in search mode, only search older history\n\
          - since:   string (optional) — event id; return events strictly NEWER \
-         than it (catch up after a prior read). Overrides `before`.\n\n\
-         With neither cursor, returns the NEWEST `limit` events. Events are always \
-         oldest→newest; each carries an `id` field (its line number in the channel \
-         log). The response object is {channel, events, has_more, next_cursor}: \
-         when `has_more` is true, pass `next_cursor` back as `before` (or `since` \
-         after a forward read) to get the adjacent page. The kind tag matches \
+         than it (catch up after a prior read). Overrides `before`. Ignored in \
+         search mode.\n\n\
+         With no cursor and no query, returns the NEWEST `limit` events. Events \
+         are always oldest→newest; each carries an `id` field (its line number \
+         in the channel log). The response object is {channel, events, \
+         has_more, next_cursor}: when `has_more` is true, pass `next_cursor` \
+         back as `before` (or `since` after a forward read) to continue. \
+         Search mode scans backward from `before` (or the tip) and returns \
+         only matching `posted` events. The kind tag matches \
          peko_protocol::channel::ChannelEvent (created / posted / member_joined / \
          member_left)."
             .to_string()
@@ -71,16 +78,24 @@ impl Tool for ChannelReadTool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max events returned (default 50, cap 1000)",
+                    "description": "Max events returned (default 50, cap 1000; search mode caps at 200)",
                     "minimum": 1
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search mode: case-insensitive substring match on message text"
+                },
+                "author": {
+                    "type": "string",
+                    "description": "Search mode: exact author match (e.g. 'user:alice' or a principal id)"
                 },
                 "before": {
                     "type": "string",
-                    "description": "Event id; return the page of events older than it"
+                    "description": "Event id; return/search the page of events older than it"
                 },
                 "since": {
                     "type": "string",
-                    "description": "Event id; return events strictly newer than it (overrides before)"
+                    "description": "Event id; return events strictly newer than it (read mode only)"
                 }
             },
             "required": ["channel"]
@@ -131,6 +146,17 @@ impl Tool for ChannelReadTool {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
+        let query_text = params
+            .get("query")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let author = params
+            .get("author")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         let limit = params
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -176,11 +202,25 @@ impl Tool for ChannelReadTool {
             Err(e) => return Err(anyhow::anyhow!("ChannelRead list_members: {e}")),
         }
 
-        // Fetch. Forward catch-up (`since`) walks newer-than-cursor
-        // events and caps the page; the default path is the tail read —
-        // the newest `limit` events, parsed at the store without
-        // decoding the whole log.
-        let (events, has_more, next_cursor) = match &since {
+        // Fetch. Search mode (query/author set) runs the store's
+        // bounded backward scan; `since` is a forward catch-up walk;
+        // the default path is the tail read — the newest `limit`
+        // events, parsed at the store without decoding the whole log.
+        let (events, has_more, next_cursor) = if query_text.is_some() || author.is_some() {
+            let q = peko_channel::ChannelQuery {
+                text: query_text,
+                author,
+                before,
+                limit,
+            };
+            let page = self
+                .port
+                .search(&channel_id, &q)
+                .await
+                .map_err(|e| anyhow::anyhow!("ChannelRead search: {e}"))?;
+            (page.events, page.has_more, page.resume_before)
+        } else {
+            match &since {
             Some(s) => {
                 let items = self
                     .port
@@ -204,6 +244,7 @@ impl Tool for ChannelReadTool {
                     None
                 };
                 (page.events, page.has_more, next_cursor)
+            }
             }
         };
 
@@ -566,6 +607,63 @@ mod tests {
             .execute_with_context(json!({ "channel": "not-a-chan-id" }), &ctx_with(alice))
             .await;
         assert!(res.is_err(), "invalid channel id must propagate as Err");
+    }
+
+    #[tokio::test]
+    async fn search_mode_filters_by_text_and_author() {
+        let port = Arc::new(TestChannelPort::default());
+        let channel = chan_id();
+        let alice = PrincipalId::generate();
+        {
+            let mut members = port.members.lock().await;
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
+        }
+        {
+            let mut events = port.events.lock().unwrap();
+            events.insert(
+                channel.clone(),
+                vec![
+                    ChannelEvent::Posted {
+                        channel: channel.clone(),
+                        author: "user:bob".into(),
+                        parent: None,
+                        text: "deploy the release".into(),
+                        at: "2026-08-05T12:00:30Z".into(),
+                    },
+                    ChannelEvent::Posted {
+                        channel: channel.clone(),
+                        author: alice.0.clone(),
+                        parent: None,
+                        text: "release notes drafted".into(),
+                        at: "2026-08-05T12:01:00Z".into(),
+                    },
+                ],
+            );
+        }
+
+        let tool = ChannelReadTool::new(port);
+        // Text query (case-insensitive): both posts match "release".
+        let got = tool
+            .execute_with_context(
+                json!({ "channel": channel.as_str(), "query": "RELEASE" }),
+                &ctx_with(alice.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got["events"].as_array().unwrap().len(), 2);
+
+        // Author + text combined narrow to one.
+        let got = tool
+            .execute_with_context(
+                json!({ "channel": channel.as_str(), "query": "release", "author": "user:bob" }),
+                &ctx_with(alice),
+            )
+            .await
+            .unwrap();
+        let arr = got["events"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["text"], "deploy the release");
+        assert_eq!(arr[0]["id"], "1", "the match carries its line id");
     }
 
     #[tokio::test]

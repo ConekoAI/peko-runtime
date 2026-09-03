@@ -238,6 +238,8 @@ impl DaemonClient {
         limit: Option<usize>,
         since_secs: Option<u64>,
         cursor: Option<String>,
+        query: Option<String>,
+        author: Option<String>,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalLog {
@@ -247,6 +249,8 @@ impl DaemonClient {
             limit,
             since_secs,
             cursor,
+            query,
+            author,
         };
         let mut stream = self.send_request(packet).await?;
         match stream.next().await {

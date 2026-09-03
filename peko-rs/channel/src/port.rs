@@ -140,6 +140,57 @@ pub trait ChannelPort: Send + Sync + 'static {
         })
     }
 
+    /// Search the channel's `Posted` events, scanning BACKWARD from
+    /// `query.before` (or the tip of the log) and returning up to
+    /// `query.limit` matching events oldest→newest, each with its
+    /// line-number [`TaskId`].
+    ///
+    /// This is the chat "find a message" read. There is deliberately
+    /// no index: the scan is bounded by `limit` and a per-call scan
+    /// budget ([`crate::store::SEARCH_MAX_SCAN_LINES`] on the JSONL
+    /// store), and [`SearchPage::resume_before`] lets the caller
+    /// continue into older history on a miss-heavy query. When
+    /// [`SearchPage::has_more`] is true, older history exists but was
+    /// not fully scanned — pass `resume_before` back as
+    /// `query.before`.
+    ///
+    /// The default impl walks the whole log via
+    /// [`Self::peek_with_ids`] and filters in memory (O(history), no
+    /// scan budget); [`crate::ChannelStore`] overrides with a
+    /// page-aware backward scan.
+    async fn search(&self, channel: &ChannelId, query: &ChannelQuery) -> Result<SearchPage> {
+        let all = self.peek_with_ids(channel, &Checkpoint::default()).await?;
+        let before: Option<u64> = match &query.before {
+            None => None,
+            Some(b) => Some(b.parse().map_err(|_| {
+                ChannelError::Adapter(format!(
+                    "invalid before cursor {b:?}: not a numeric line offset"
+                ))
+            })?),
+        };
+        let needle = query.text.as_deref().map(str::to_lowercase);
+        let mut matches: Vec<(TaskId, ChannelEvent)> = all
+            .into_iter()
+            .filter(|(id, ev)| {
+                if let Some(b) = before {
+                    if id.parse::<u64>().map(|n| n >= b).unwrap_or(false) {
+                        return false;
+                    }
+                }
+                query_matches(ev, needle.as_deref(), query.author.as_deref())
+            })
+            .collect();
+        let overflow = matches.len() > query.limit;
+        if overflow {
+            matches = matches.split_off(matches.len() - query.limit);
+        }
+        Ok(SearchPage {
+            events: matches,
+            has_more: overflow,
+            resume_before: None,
+        })
+    }
+
     /// Like [`Self::peek`] but each item carries its source `TaskId`
     /// (the line number where the event was appended in the channel's
     /// JSONL log). Used by the subscription loop to advance cursors
@@ -441,6 +492,64 @@ pub type TaskId = String;
 pub struct TailPage {
     pub events: Vec<(TaskId, ChannelEvent)>,
     pub has_more: bool,
+}
+
+/// Filter for [`ChannelPort::search`]. All set predicates must match
+/// (AND). A query with no predicates matches every `Posted` event —
+/// it degenerates to a bounded backward browse.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelQuery {
+    /// Case-insensitive substring match against `Posted.text`.
+    pub text: Option<String>,
+    /// Exact match against `Posted.author` (the wire form, e.g.
+    /// `user:alice` or a bare principal id).
+    pub author: Option<String>,
+    /// Only consider lines strictly older than this line number.
+    /// `None` starts from the tip of the log.
+    pub before: Option<TaskId>,
+    /// Max matches to return. The store clamps this to a hard cap.
+    pub limit: usize,
+}
+
+/// A page of search results, returned by [`ChannelPort::search`].
+/// `events` are oldest→newest. `has_more` is true when older history
+/// exists but was not fully scanned (scan budget exhausted or the
+/// log continues past the scanned range); `resume_before` is the
+/// oldest line the scan examined — pass it back as
+/// [`ChannelQuery::before`] to continue. `resume_before` is `None`
+/// when the scan reached the top of the log.
+#[derive(Debug, Clone)]
+pub struct SearchPage {
+    pub events: Vec<(TaskId, ChannelEvent)>,
+    pub has_more: bool,
+    pub resume_before: Option<TaskId>,
+}
+
+/// Shared match predicate: `ev` must be a `Posted` event whose `text`
+/// contains `needle` (already lowercased; case-insensitive) and whose
+/// `author` equals `author`. `None` predicates match everything.
+pub(crate) fn query_matches(
+    ev: &ChannelEvent,
+    needle: Option<&str>,
+    author: Option<&str>,
+) -> bool {
+    let ChannelEvent::Posted {
+        text, author: a, ..
+    } = ev
+    else {
+        return false;
+    };
+    if let Some(n) = needle {
+        if !text.to_lowercase().contains(n) {
+            return false;
+        }
+    }
+    if let Some(want) = author {
+        if a != want {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------

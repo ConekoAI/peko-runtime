@@ -4,6 +4,40 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel search (2026-09-03)
+
+Channels can finally answer "find that message" without a client-side
+full-log dump.
+
+#### Added
+- **`ChannelPort::search(channel, ChannelQuery)`** — a bounded,
+  backward filtered scan over `Posted` events. Predicates: `text`
+  (case-insensitive substring), `author` (exact wire-form match),
+  `before` (line-number anchor), `limit` (match cap, hard cap 200).
+  The scan walks pages newest→oldest, parses only `Posted` lines, and
+  stops after `limit` matches or `SEARCH_MAX_SCAN_LINES` (100k)
+  examined lines; `SearchPage { events, has_more, resume_before }`
+  carries the continuation cursor. `ChannelStore` implements the
+  page-aware scan; other adapters get a correct full-walk default.
+  No index — the scan is the deliberate minimum; per-page byte counts
+  keep the bookkeeping stat-only in the steady state.
+- **`ChannelRead` tool search mode** — new `query` / `author`
+  params; the response envelope `{channel, events, has_more,
+  next_cursor}` is unchanged, with `next_cursor` = the search's
+  `resume_before` in search mode.
+- **`peko log --search <TEXT>` / `--author <AUTHOR>`** — works on
+  both principal threads (the daemon's fill loop applies the
+  predicates while paging) and `group:<slug>` channels (via the
+  `ChannelPeek` search mode). Ignored with `--watch`.
+
+#### Changed
+- **IPC wire** — `RequestPacket::ChannelPeek` gains `query`/`author`;
+  `ResponsePacket::ChannelPeekResult` gains `resume_before`;
+  `RequestPacket::PrincipalLog` gains `query`/`author`. All
+  `#[serde(default)]` — older peers ignore them.
+
+---
+
 ### Channel log paging / rotation (2026-09-03)
 
 Bounds channel log growth: the event log is no longer a single

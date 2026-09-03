@@ -409,7 +409,7 @@ async fn wait_for_queued_reply(
         }
         tokio::time::sleep(POLL_INTERVAL).await;
         let resp = client
-            .principal_log(args.principal.clone(), Some(peer.clone()), Some(5), None, None)
+            .principal_log(args.principal.clone(), Some(peer.clone()), Some(5), None, None, None, None)
             .await;
         let messages = match resp {
             Ok(ResponsePacket::PrincipalLog { messages, .. }) => messages,

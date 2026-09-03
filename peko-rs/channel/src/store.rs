@@ -60,8 +60,8 @@ use tokio::fs;
 use tokio::sync::broadcast;
 
 use crate::port::{
-    ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TailPage,
-    TaskId, Tier,
+    ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result,
+    SearchPage, TailPage, TaskId, Tier, query_matches,
 };
 use crate::fs::channel_dir_name;
 
@@ -110,6 +110,15 @@ const CHANNEL_LOCK_TIMEOUT_MS: u64 = 10_000;
 /// GLOBAL across pages — they never reset — so cursors, reply
 /// `parent` references, and `peko log` pagination survive rotation.
 const DEFAULT_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Per-call scan budget for [`ChannelPort::search`]: at most this
+/// many log lines are examined per invocation. Bounds a miss-heavy
+/// query (no matches in the scanned range); `SearchPage.has_more` +
+/// `resume_before` let the caller continue into older history.
+pub const SEARCH_MAX_SCAN_LINES: u64 = 100_000;
+
+/// Hard cap on matches returned by one [`ChannelPort::search`] call.
+const SEARCH_MAX_MATCHES: usize = 200;
 
 // ---------------------------------------------------------------------------
 // ChannelConfig
@@ -877,6 +886,132 @@ impl ChannelStore {
         })
     }
 
+    /// Backward filtered scan over `Posted` events (see
+    /// [`ChannelPort::search`]). Walks pages newest→oldest, parses
+    /// only `Posted` lines (non-posted lines are skipped on a
+    /// byte-level kind-tag check), and stops at `limit` matches or
+    /// after [`SEARCH_MAX_SCAN_LINES`] examined lines — whichever
+    /// comes first.
+    ///
+    /// The kind-tag check relies on `serde_json`'s internal tagging
+    /// emitting `{"kind":"posted",...}` first; the
+    /// `search_finds_posts_across_pages` test pins the contract. If
+    /// the wire shape ever changes, the worst case is missed matches,
+    /// never wrong ones.
+    async fn search_events(
+        &self,
+        tier: Tier,
+        channel: &ChannelId,
+        query: &ChannelQuery,
+    ) -> Result<SearchPage> {
+        const POSTED_TAG: &[u8] = b"{\"kind\":\"posted\"";
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let pages = self.all_pages(&chan_dir).await?;
+        let mut counts = Vec::with_capacity(pages.len());
+        let mut total: u64 = 0;
+        for p in &pages {
+            let (c, _) = self.page_line_count(p).await?;
+            counts.push(c);
+            total += c;
+        }
+        let end = match &query.before {
+            None => total,
+            Some(b) => {
+                let b: u64 = b.parse().map_err(|_| {
+                    ChannelError::Adapter(format!(
+                        "invalid before cursor {b:?}: not a numeric line offset"
+                    ))
+                })?;
+                b.min(total)
+            }
+        };
+        let limit = query.limit.clamp(1, SEARCH_MAX_MATCHES);
+        let needle = query.text.as_deref().map(str::to_lowercase);
+
+        // Page bases (global line number of each page's first line).
+        let mut bases = Vec::with_capacity(pages.len());
+        let mut acc = 0u64;
+        for c in &counts {
+            bases.push(acc);
+            acc += c;
+        }
+
+        let mut matches: Vec<(u64, ChannelEvent)> = Vec::new(); // newest-first while collecting
+        let mut scanned: u64 = 0;
+        let mut floor = end; // smallest line number examined
+        'outer: for (i, path) in pages.iter().enumerate().rev() {
+            let base = bases[i];
+            if base >= end {
+                // The whole page sits at/after the anchor — skip
+                // (only possible for the newest pages).
+                continue;
+            }
+            let bytes = match fs::read(path).await {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(ChannelError::Adapter(format!(
+                        "read {}: {e}",
+                        path.display()
+                    )));
+                }
+            };
+            // Collect (global_idx, content range) for non-empty lines,
+            // then walk them newest-first.
+            let mut lines: Vec<(u64, usize, usize)> = Vec::new();
+            let mut idx = base;
+            let mut line_start = 0usize;
+            for (i, b) in bytes.iter().enumerate() {
+                if *b == b'\n' {
+                    if line_start < i {
+                        lines.push((idx, line_start, i));
+                    }
+                    idx += 1;
+                    line_start = i + 1;
+                }
+            }
+            for (gidx, s, e) in lines.into_iter().rev() {
+                if gidx >= end {
+                    continue; // at/after the anchor — not examined
+                }
+                if scanned >= SEARCH_MAX_SCAN_LINES {
+                    break 'outer;
+                }
+                scanned += 1;
+                floor = gidx;
+                let content = &bytes[s..e];
+                if !content.starts_with(POSTED_TAG) {
+                    continue;
+                }
+                let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                    ChannelError::Adapter(format!("decode event at line {gidx}: {e}"))
+                })?;
+                if query_matches(&ev, needle.as_deref(), query.author.as_deref()) {
+                    matches.push((gidx, ev));
+                    if matches.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        // Collected newest-first; return oldest→newest.
+        matches.reverse();
+        let has_more = floor > 0;
+        Ok(SearchPage {
+            events: matches
+                .into_iter()
+                .map(|(n, ev)| (n.to_string(), ev))
+                .collect(),
+            has_more,
+            resume_before: if has_more {
+                Some(floor.to_string())
+            } else {
+                None
+            },
+        })
+    }
+
     // -----------------------------------------------------------------
     // Membership helpers
     // -----------------------------------------------------------------
@@ -1495,6 +1630,11 @@ impl ChannelPort for ChannelStore {
     ) -> Result<TailPage> {
         let tier = self.resolve_tier(channel).await?;
         self.read_tail(tier, channel, limit, before).await
+    }
+
+    async fn search(&self, channel: &ChannelId, query: &ChannelQuery) -> Result<SearchPage> {
+        let tier = self.resolve_tier(channel).await?;
+        self.search_events(tier, channel, query).await
     }
 
     /// Override the trait's default full-log walk: `meta.json` +
@@ -2271,10 +2411,106 @@ mod tests {
         );
     }
 
+    // -- search --------------------------------------------------------
+
+    /// Search scans backward across pages, matches Posted events by
+    /// case-insensitive text substring and/or exact author, skips
+    /// membership lines, and pages with `resume_before`.
+    #[tokio::test]
+    async fn search_finds_posts_across_pages() {
+        let cfg = tmp_cfg("search");
+        let store = ChannelStore::new(cfg).with_rotate_bytes(200);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let alice = Subject::User("alice".into());
+        store.invite(&channel, &creator, &alice).await.unwrap();
+        let creator_subject = Subject::from(&creator);
+        // Line 0: Created, line 1: MemberJoined.
+        store
+            .post(&channel, &alice, PostMsg::root("hello world"))
+            .await
+            .unwrap(); // line 2
+        store
+            .post(&channel, &creator_subject, PostMsg::root("HELLO again"))
+            .await
+            .unwrap(); // line 3
+        store
+            .post(&channel, &creator_subject, PostMsg::root("unrelated"))
+            .await
+            .unwrap(); // line 4
+
+        let q = |text: Option<&str>, author: Option<&str>, before: Option<String>, limit| {
+            ChannelQuery {
+                text: text.map(str::to_string),
+                author: author.map(str::to_string),
+                before,
+                limit,
+            }
+        };
+
+        // Text match is case-insensitive and spans pages; membership
+        // lines never match.
+        let page = store.search(&channel, &q(Some("hello"), None, None, 10)).await.unwrap();
+        assert_eq!(
+            page.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["2", "3"],
+            "both 'hello' posts, oldest first, no MemberJoined line"
+        );
+        assert!(!page.has_more);
+        assert_eq!(page.resume_before, None, "scan reached the top");
+
+        // Author match is exact.
+        let page = store
+            .search(&channel, &q(None, Some("user:alice"), None, 10))
+            .await
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+        match &page.events[0].1 {
+            ChannelEvent::Posted { text, .. } => assert_eq!(text, "hello world"),
+            other => panic!("expected Posted, got {other:?}"),
+        }
+
+        // Limit caps the page; resume_before continues the scan.
+        let page1 = store.search(&channel, &q(Some("hello"), None, None, 1)).await.unwrap();
+        assert_eq!(page1.events.len(), 1);
+        assert_eq!(page1.events[0].0, "3", "newest match first page");
+        assert!(page1.has_more);
+        let resume = page1.resume_before.clone().expect("resume cursor");
+        let page2 = store
+            .search(&channel, &q(Some("hello"), None, Some(resume), 1))
+            .await
+            .unwrap();
+        assert_eq!(page2.events.len(), 1);
+        assert_eq!(page2.events[0].0, "2");
+        // The scan stopped AT the match (line 2) — lines 0..=1 were
+        // never examined, so has_more is still true...
+        assert!(page2.has_more);
+        let resume = page2.resume_before.clone().expect("resume cursor");
+        assert_eq!(resume, "2");
+        // ...and the final resume finds nothing below it.
+        let page3 = store
+            .search(&channel, &q(Some("hello"), None, Some(resume), 1))
+            .await
+            .unwrap();
+        assert!(page3.events.is_empty());
+        assert!(!page3.has_more);
+        assert_eq!(page3.resume_before, None);
+
+        // A miss scans to the top and reports so.
+        let page = store
+            .search(&channel, &q(Some("no-such-text"), None, None, 10))
+            .await
+            .unwrap();
+        assert!(page.events.is_empty());
+        assert!(!page.has_more);
+    }
+
     /// `pin_to_shared` copies rotated pages alongside the current one.
     #[tokio::test]
-    async fn pin_to_shared_copies_rotated_pages() {
-        let dir = std::env::temp_dir().join("peko-channel-tests-pin-pages");
+    async fn pin_to_shared_copies_rotated_pages() {        let dir = std::env::temp_dir().join("peko-channel-tests-pin-pages");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = ChannelConfig {

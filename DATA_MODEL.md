@@ -1724,14 +1724,15 @@ before sending), with `principal_id` = the invitee's bare id/DID
 ### 5¾.4 Read/write performance notes (2026-09-03)
 
 The append path is O(1) in the common case: `ChannelStore` keeps a
-per-log `(line_count, byte_len)` cache (in-memory only — no on-disk
-format change) and trusts it only when the file's current byte length
-matches, so an append from another process forces a recount instead of
-reusing a stale count. `members.json` read-modify-write cycles
+per-page `(line_count, byte_len)` cache (in-memory only) and trusts a
+page's entry only when the file's current byte length matches —
+rotated pages are immutable so their entries never go stale, and an
+external append to the current page changes its length and forces a
+recount. `members.json` read-modify-write cycles
 (`invite` / `leave` / `add_remote_member`) hold a `FileLock` on the
 members file (distinct from the `events.jsonl` append lock).
 
-Reads come in two shapes on `ChannelPort`:
+Reads come in three shapes on `ChannelPort`:
 
 - `peek` / `peek_with_ids(since)` — forward walk from a line-number
   cursor; pages entirely behind the cursor are skipped via their
@@ -1743,13 +1744,23 @@ Reads come in two shapes on `ChannelPort`:
   page's oldest line id back as `before`. `has_more` tracks the raw
   log, so a terminal page can be empty when only
   `Created`/`MemberJoined` lines remain.
+- `search(ChannelQuery)` — bounded backward filtered scan over
+  `Posted` events (`text` case-insensitive substring, `author` exact,
+  `before` anchor, `limit` cap). Walks pages newest→oldest and stops
+  at `limit` matches or `SEARCH_MAX_SCAN_LINES` (100k) examined
+  lines; `SearchPage.resume_before` + `has_more` continue the scan
+  into older history. There is no index by design — the scan is the
+  bounded minimum.
 
-The `ChannelPeek` IPC carries `tail`/`before` on the request and
-`event_ids` (line ids parallel to `events`) + `has_more` on the
-result — all `#[serde(default)]`, so older peers ignore them. The
+The `ChannelPeek` IPC carries `tail`/`before`/`query`/`author` on the
+request and `event_ids` (line ids parallel to `events`) + `has_more` +
+`resume_before` on the result — all `#[serde(default)]`, so older
+peers ignore them. `PrincipalLog` carries the same `query`/`author`
+filters for principal threads. The
 `ChannelRead` tool returns `{channel, events, has_more, next_cursor}`
 with a per-event `id` field, tail-anchored by default, `since` for
-forward catch-up and `before` for backward paging.
+forward catch-up, `before` for backward paging, and `query`/`author`
+for search.
 
 ---
 

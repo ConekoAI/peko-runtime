@@ -67,6 +67,18 @@ pub struct LogCommand {
     #[arg(long, value_name = "DURATION")]
     pub since: Option<String>,
 
+    /// Case-insensitive substring filter on message text. Combines
+    /// with paging: the daemon walks older pages until the page fills
+    /// or the log is exhausted. Ignored with `--watch`.
+    #[arg(long, value_name = "TEXT")]
+    pub search: Option<String>,
+
+    /// Exact author filter (the channel-log author: a peer Subject
+    /// like `user:alice`, or the principal's id). Ignored with
+    /// `--watch`.
+    #[arg(long, value_name = "AUTHOR")]
+    pub author: Option<String>,
+
     /// Opaque pagination cursor returned by a prior `peko log`
     /// call's `next_cursor` field. Pairs with `--limit` to walk
     /// older messages without overlap or gaps. With `--watch`, seeds
@@ -103,6 +115,8 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
         peer,
         limit,
         since,
+        search,
+        author,
         cursor,
         all,
         watch,
@@ -133,7 +147,7 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
             .await
             .context("Daemon is not running. Start it with: peko daemon start")?;
         let requester = format!("user:{}", paths.user());
-        return handle_group_log(&client, &slug, &requester, limit, since_secs, cursor, all, watch, use_json)
+        return handle_group_log(&client, &slug, &requester, limit, since_secs, search, author, cursor, all, watch, use_json)
             .await;
     }
 
@@ -144,6 +158,9 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
     if watch {
         if limit.is_some() || since_secs.is_some() || all {
             eprintln!("[peko] --watch ignores --limit/--since/--all; use --cursor to seed the replay");
+        }
+        if search.is_some() || author.is_some() {
+            eprintln!("[peko] --watch ignores --search/--author");
         }
         return watch_principal_log(&client, &principal, peer_subject, cursor, use_json).await;
     }
@@ -163,6 +180,8 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
                 limit,
                 since_secs,
                 cursor.clone(),
+                search.clone(),
+                author.clone(),
             )
             .await?
         {
@@ -292,6 +311,8 @@ async fn handle_group_log(
     requester: &str,
     limit: Option<usize>,
     since_secs: Option<u64>,
+    search: Option<String>,
+    author: Option<String>,
     cursor: Option<String>,
     all: bool,
     watch: bool,
@@ -304,12 +325,25 @@ async fn handle_group_log(
                 "[peko] group --watch ignores --limit/--since/--all; use --cursor to seed the replay"
             );
         }
+        if search.is_some() || author.is_some() {
+            eprintln!("[peko] group --watch ignores --search/--author");
+        }
         return watch_group_log(client, &channel, requester, cursor, use_json).await;
     }
 
     let cap = limit.unwrap_or(50).clamp(1, 1000);
-    let (rows, _last_id, has_more) =
-        peek_group_posted_rows(client, &channel, requester, None, Some(cap), cursor.filter(|c| !c.is_empty())).await?;
+    let searching = search.is_some() || author.is_some();
+    let (rows, _last_id, has_more, resume_before) = peek_group_posted_rows(
+        client,
+        &channel,
+        requester,
+        None,
+        Some(cap),
+        cursor.filter(|c| !c.is_empty()),
+        search,
+        author,
+    )
+    .await?;
     let cutoff = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s as i64));
     let rows: Vec<&(String, String, String, String)> = rows
         .iter()
@@ -320,8 +354,15 @@ async fn handle_group_log(
             None => true,
         })
         .collect();
+    // Paging-back cursor: search mode must resume from the oldest
+    // SCANNED line (matches are sparse), plain tail reads resume from
+    // the oldest RETURNED line.
     let next_cursor = if has_more {
-        rows.first().map(|(id, _, _, _)| id.clone())
+        if searching {
+            resume_before
+        } else {
+            rows.first().map(|(id, _, _, _)| id.clone())
+        }
     } else {
         None
     };
@@ -374,8 +415,8 @@ async fn watch_group_log(
     // and skip the count of rows already printed.
     let mut legacy_printed: Option<usize> = None;
     loop {
-        let (rows, last_raw_id, _) =
-            peek_group_posted_rows(client, channel, requester, since.clone(), None, None).await?;
+        let (rows, last_raw_id, _, _) =
+            peek_group_posted_rows(client, channel, requester, since.clone(), None, None, None, None).await?;
         match legacy_printed {
             Some(printed) => {
                 for (id, at, author, text) in rows.iter().skip(printed) {
@@ -419,11 +460,14 @@ fn print_group_row(id: &str, at: &str, author: &str, text: &str, use_json: bool)
 
 /// One `ChannelPeek` round-trip. Returns the channel's `Posted` rows
 /// (oldest→newest) as `(id, at, author, text)` tuples, the last raw
-/// event id (Posted or not — the exact `since` advance point), and
-/// the tail read's `has_more` flag.
+/// event id (Posted or not — the exact `since` advance point), the
+/// tail/search `has_more` flag, and the search scan's `resume_before`
+/// cursor (`None` outside search mode).
 ///
 /// `tail`/`before` select the bounded tail read (newest `tail` rows
-/// older than `before`); otherwise the request is a forward walk from
+/// older than `before`); `query`/`author` select search mode (the
+/// daemon's backward filtered scan; `tail` caps matches, `before`
+/// anchors the scan); otherwise the request is a forward walk from
 /// `since`.
 #[allow(clippy::too_many_arguments)]
 async fn peek_group_posted_rows(
@@ -433,7 +477,9 @@ async fn peek_group_posted_rows(
     since: Option<String>,
     tail: Option<usize>,
     before: Option<String>,
-) -> Result<(Vec<(String, String, String, String)>, Option<String>, bool)> {
+    query: Option<String>,
+    author: Option<String>,
+) -> Result<(Vec<(String, String, String, String)>, Option<String>, bool, Option<String>)> {
     let packet = RequestPacket::ChannelPeek {
         request_id: 0,
         channel: channel.to_string(),
@@ -441,14 +487,17 @@ async fn peek_group_posted_rows(
         requester: Some(requester.to_string()),
         tail,
         before,
+        query,
+        author,
     };
-    let (events, event_ids, has_more) = match client.request_response(packet).await? {
+    let (events, event_ids, has_more, resume_before) = match client.request_response(packet).await? {
         ResponsePacket::ChannelPeekResult {
             events,
             event_ids,
             has_more,
+            resume_before,
             ..
-        } => (events, event_ids, has_more),
+        } => (events, event_ids, has_more, resume_before),
         ResponsePacket::Error { message, .. } => {
             return Err(anyhow::anyhow!("group log failed: {message}"));
         }
@@ -473,7 +522,7 @@ async fn peek_group_posted_rows(
             rows.push((id, at, author, text));
         }
     }
-    Ok((rows, last_raw_id, has_more))
+    Ok((rows, last_raw_id, has_more, resume_before))
 }
 
 /// Human rendering for one group row: same `[<ts>] <author>: <text>`
