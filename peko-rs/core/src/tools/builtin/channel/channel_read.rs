@@ -46,12 +46,18 @@ impl Tool for ChannelReadTool {
          Parameters:\n\
          - channel: string (required) — channel id, e.g. 'chan_a1b2c3d4' or a \
          named group 'group:<slug>'\n\
-         - since:   string (optional) — opaque cursor from a previous read; \
-         omit to start from the beginning\n\
-         - limit:   int    (optional) — cap the number of events returned\n\n\
-         Returns an array of {kind, ...} event objects in causal order. \
-         The kind tag matches peko_protocol::channel::ChannelEvent \
-         (created / posted / member_joined / member_left)."
+         - limit:   int    (optional) — max events returned (default 50, cap 1000)\n\
+         - before:  string (optional) — event id; return the page of events OLDER \
+         than it (walk back through history)\n\
+         - since:   string (optional) — event id; return events strictly NEWER \
+         than it (catch up after a prior read). Overrides `before`.\n\n\
+         With neither cursor, returns the NEWEST `limit` events. Events are always \
+         oldest→newest; each carries an `id` field (its line number in the channel \
+         log). The response object is {channel, events, has_more, next_cursor}: \
+         when `has_more` is true, pass `next_cursor` back as `before` (or `since` \
+         after a forward read) to get the adjacent page. The kind tag matches \
+         peko_protocol::channel::ChannelEvent (created / posted / member_joined / \
+         member_left)."
             .to_string()
     }
 
@@ -63,14 +69,18 @@ impl Tool for ChannelReadTool {
                     "type": "string",
                     "description": "Channel id (e.g. 'chan_a1b2c3d4' or a named group 'group:<slug>')"
                 },
-                "since": {
-                    "type": "string",
-                    "description": "Opaque cursor from a prior read; omit to start from the beginning"
-                },
                 "limit": {
                     "type": "integer",
-                    "description": "Cap the number of events returned",
+                    "description": "Max events returned (default 50, cap 1000)",
                     "minimum": 1
+                },
+                "before": {
+                    "type": "string",
+                    "description": "Event id; return the page of events older than it"
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Event id; return events strictly newer than it (overrides before)"
                 }
             },
             "required": ["channel"]
@@ -113,12 +123,19 @@ impl Tool for ChannelReadTool {
         let since = params
             .get("since")
             .and_then(|v| v.as_str())
-            .map_or_else(Checkpoint::zero, |s| Checkpoint(s.to_string()));
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let before = params
+            .get("before")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         let limit = params
             .get("limit")
             .and_then(|v| v.as_u64())
-            .map(|n| n as usize);
+            .map(|n| (n as usize).clamp(1, 1000))
+            .unwrap_or(50);
 
         // Pull the principal id out of the ToolContext. The F37 funnel
         // supplies this; bare `execute` callers (none in production)
@@ -159,21 +176,56 @@ impl Tool for ChannelReadTool {
             Err(e) => return Err(anyhow::anyhow!("ChannelRead list_members: {e}")),
         }
 
-        // Peek + trim.
-        let mut events = self
-            .port
-            .peek(&channel_id, &since)
-            .await
-            .map_err(|e| anyhow::anyhow!("ChannelRead peek: {e}"))?;
+        // Fetch. Forward catch-up (`since`) walks newer-than-cursor
+        // events and caps the page; the default path is the tail read —
+        // the newest `limit` events, parsed at the store without
+        // decoding the whole log.
+        let (events, has_more, next_cursor) = match &since {
+            Some(s) => {
+                let items = self
+                    .port
+                    .peek_with_ids(&channel_id, &Checkpoint(s.clone()))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("ChannelRead peek: {e}"))?;
+                let has_more = items.len() > limit;
+                let page: Vec<_> = items.into_iter().take(limit).collect();
+                let next_cursor = page.last().map(|(id, _)| id.clone());
+                (page, has_more, next_cursor)
+            }
+            None => {
+                let page = self
+                    .port
+                    .peek_tail(&channel_id, limit, before.as_ref())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("ChannelRead peek_tail: {e}"))?;
+                let next_cursor = if page.has_more {
+                    page.events.first().map(|(id, _)| id.clone())
+                } else {
+                    None
+                };
+                (page.events, page.has_more, next_cursor)
+            }
+        };
 
-        if let Some(n) = limit {
-            events.truncate(n);
-        }
+        // Serialize each event with its line-number id merged in, so
+        // the caller can thread replies (`parent`) and page cursors.
+        let events = events
+            .into_iter()
+            .map(|(id, ev)| {
+                let mut v = serde_json::to_value(&ev)?;
+                if let serde_json::Value::Object(map) = &mut v {
+                    map.insert("id".into(), serde_json::Value::String(id));
+                }
+                Ok(v)
+            })
+            .collect::<serde_json::Result<Vec<_>>>()?;
 
-        // Return the events as a JSON array. Each event serializes via
-        // its derived `Serialize` impl (peko_protocol::channel::ChannelEvent).
-        let value = serde_json::to_value(&events)?;
-        Ok(value)
+        Ok(json!({
+            "channel": channel_id.as_str(),
+            "events": events,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }))
     }
 }
 
@@ -328,9 +380,13 @@ mod tests {
             .execute_with_context(json!({ "channel": channel.as_str() }), &ctx_with(alice))
             .await
             .unwrap();
-        let arr = got.as_array().expect("events array");
+        let arr = got["events"].as_array().expect("events array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["kind"], "created");
+        // Every event carries its line-number id for cursors/threading.
+        assert_eq!(arr[0]["id"], "1");
+        assert_eq!(got["has_more"], false);
+        assert_eq!(got["next_cursor"], serde_json::Value::Null);
     }
 
     #[tokio::test]
@@ -380,11 +436,86 @@ mod tests {
             )
             .await
             .unwrap();
-        let arr = got.as_array().expect("events array");
+        let arr = got["events"].as_array().expect("events array");
         // TestChannelPort doesn't actually filter by `since`, so the
         // `limit` cap is the only truncation we exercise here. The
         // production `ChannelStore` does the real filtering.
         assert_eq!(arr.len(), 2, "limit should truncate to 2 events");
+        // Forward read: has_more = more newer events exist beyond the
+        // page; next_cursor = the page's last id, fed back as `since`.
+        assert_eq!(got["has_more"], true);
+        assert_eq!(got["next_cursor"], "2");
+    }
+
+    #[tokio::test]
+    async fn read_without_since_returns_newest_page_with_backward_cursor() {
+        let port = Arc::new(TestChannelPort::default());
+        let channel = chan_id();
+        let alice = PrincipalId::generate();
+        {
+            let mut members = port.members.lock().await;
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
+        }
+        {
+            let mut events = port.events.lock().unwrap();
+            events.insert(
+                channel.clone(),
+                vec![
+                    ChannelEvent::Created {
+                        channel: channel.clone(),
+                        creator: alice.0.clone(),
+                        name: "team".into(),
+                        at: "2026-08-05T12:00:00Z".into(),
+                    },
+                    ChannelEvent::Posted {
+                        channel: channel.clone(),
+                        author: alice.0.clone(),
+                        parent: None,
+                        text: "first".into(),
+                        at: "2026-08-05T12:00:30Z".into(),
+                    },
+                    ChannelEvent::Posted {
+                        channel: channel.clone(),
+                        author: alice.0.clone(),
+                        parent: None,
+                        text: "second".into(),
+                        at: "2026-08-05T12:01:00Z".into(),
+                    },
+                ],
+            );
+        }
+
+        let tool = ChannelReadTool::new(port);
+        // No cursor: tail read — the NEWEST `limit` events, not the
+        // oldest.
+        let got = tool
+            .execute_with_context(
+                json!({ "channel": channel.as_str(), "limit": 2 }),
+                &ctx_with(alice.clone()),
+            )
+            .await
+            .unwrap();
+        let arr = got["events"].as_array().expect("events array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["text"], "first");
+        assert_eq!(arr[1]["text"], "second");
+        assert_eq!(got["has_more"], true);
+        // Backward paging cursor: the page's oldest id, fed back as
+        // `before`.
+        assert_eq!(got["next_cursor"], "2");
+
+        // Page back: `before` = the oldest id just seen.
+        let got = tool
+            .execute_with_context(
+                json!({ "channel": channel.as_str(), "limit": 2, "before": "2" }),
+                &ctx_with(alice),
+            )
+            .await
+            .unwrap();
+        let arr = got["events"].as_array().expect("events array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["kind"], "created");
+        assert_eq!(got["has_more"], false);
     }
 
     #[tokio::test]

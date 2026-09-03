@@ -1712,6 +1712,35 @@ The source side, symmetrically, records the invitee as a
 before sending), with `principal_id` = the invitee's bare id/DID
 (its `@<runtime>` routing suffix stripped).
 
+### 5¾.4 Read/write performance notes (2026-09-03)
+
+The append path is O(1) in the common case: `ChannelStore` keeps a
+per-log `(line_count, byte_len)` cache (in-memory only — no on-disk
+format change) and trusts it only when the file's current byte length
+matches, so an append from another process forces a recount instead of
+reusing a stale count. `members.json` read-modify-write cycles
+(`invite` / `leave` / `add_remote_member`) hold a `FileLock` on the
+members file (distinct from the `events.jsonl` append lock).
+
+Reads come in two shapes on `ChannelPort`:
+
+- `peek` / `peek_with_ids(since)` — forward walk from a line-number
+  cursor; scans from byte 0 and skips `since` lines.
+- `peek_tail(limit, before)` — the canonical "newest N messages" chat
+  read. One file read, but only the returned `limit` lines are
+  JSON-parsed (the skipped prefix is a byte scan). Returns
+  `TailPage { events, has_more }`; page backward by feeding the
+  page's oldest line id back as `before`. `has_more` tracks the raw
+  log, so a terminal page can be empty when only
+  `Created`/`MemberJoined` lines remain.
+
+The `ChannelPeek` IPC carries `tail`/`before` on the request and
+`event_ids` (line ids parallel to `events`) + `has_more` on the
+result — all `#[serde(default)]`, so older peers ignore them. The
+`ChannelRead` tool returns `{channel, events, has_more, next_cursor}`
+with a per-event `id` field, tail-anchored by default, `since` for
+forward catch-up and `before` for backward paging.
+
 ---
 
 ## 6. Agent Package Format (.agent) (RETIRED)

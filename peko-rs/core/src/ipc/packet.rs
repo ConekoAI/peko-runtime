@@ -791,6 +791,17 @@ pub enum RequestPacket {
         since: Option<String>,
         #[serde(default)]
         requester: Option<String>,
+        /// Tail-read mode: return the newest `tail` events at or before
+        /// `before` instead of the full forward walk from `since`.
+        /// Maps to `ChannelPort::peek_tail`. When absent the legacy
+        /// forward `since` semantics apply.
+        #[serde(default)]
+        tail: Option<usize>,
+        /// Line-number cursor bounding the tail read from above
+        /// (events strictly older than this line). Ignored unless
+        /// `tail` is set.
+        #[serde(default)]
+        before: Option<String>,
     },
 
     /// PR-2b: subscribe to live events for `channel`. The daemon
@@ -1147,6 +1158,17 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         events: Vec<peko_protocol::channel::ChannelEvent>,
+        /// Line-number ids parallel to `events` (the source line each
+        /// event was read from). Lets watch-style consumers advance a
+        /// `since` cursor precisely instead of re-reading the whole
+        /// log on every poll. Empty when the serving daemon predates
+        /// the field.
+        #[serde(default)]
+        event_ids: Vec<String>,
+        /// Tail reads only: true when the log holds events older than
+        /// the first returned one (page further back with `before`).
+        #[serde(default)]
+        has_more: bool,
     },
 
     /// PR-2b: one event in a `ChannelEventsWatch` stream. The daemon

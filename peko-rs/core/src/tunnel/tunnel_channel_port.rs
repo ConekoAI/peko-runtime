@@ -775,6 +775,18 @@ impl ChannelPort for TunnelChannelPort {
         self.local.peek_with_ids(channel, since).await
     }
 
+    /// Delegate to the local store's tail read so the default
+    /// (full-walk + slice) impl doesn't run — the tunnel wrapper adds
+    /// fan-out on writes only; reads are pure pass-throughs.
+    async fn peek_tail(
+        &self,
+        channel: &ChannelId,
+        limit: usize,
+        before: Option<&TaskId>,
+    ) -> Result<peko_channel::TailPage> {
+        self.local.peek_tail(channel, limit, before).await
+    }
+
     async fn leave(
         &self,
         channel: &ChannelId,

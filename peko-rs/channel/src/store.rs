@@ -43,14 +43,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use peko_fs_persistence::{append_bytes_durable, FileLock};
-use peko_protocol::channel::{ChannelEvent, ChannelId};
-// `ChannelMembership` is referenced only in the `ChannelPort::membership`
-// trait surface; this adapter relies on the default `peek`-walk impl
-// and never names the wire type. Mark the import as allowed so the
-// type re-export is visible across the crate without an inert hack
-// function.
-#[allow(unused_imports)]
-use peko_protocol::channel::ChannelMembership;
+use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use peko_subject::{PrincipalDID, PrincipalId, Subject};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -58,8 +51,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
 use crate::port::{
-    ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TaskId,
-    Tier,
+    ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TailPage,
+    TaskId, Tier,
 };
 use crate::fs::channel_dir_name;
 
@@ -357,6 +350,14 @@ pub struct ChannelStore {
     /// subscribe. Dead entries (no receivers) are GC'd by the next
     /// `subscribe_events` call.
     notifiers: Arc<Mutex<HashMap<ChannelId, broadcast::Sender<ChannelEvent>>>>,
+    /// Per-log `(line_count, byte_len)` cache for `append_event`'s
+    /// next-line-number computation, keyed by the `events.jsonl`
+    /// path. Without it every append would re-read the whole log just
+    /// to count newlines (O(history) per post). Correct across
+    /// processes: the cached entry is only trusted when the file's
+    /// current byte length matches — any external append or a crash
+    /// mid-write changes the length and falls back to a full recount.
+    line_counts: Arc<Mutex<HashMap<PathBuf, (u64, u64)>>>,
 }
 
 impl ChannelStore {
@@ -366,6 +367,7 @@ impl ChannelStore {
         Self {
             cfg,
             notifiers: Arc::new(Mutex::new(HashMap::new())),
+            line_counts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -379,6 +381,9 @@ impl ChannelStore {
         channel: &ChannelId,
     ) -> broadcast::Receiver<ChannelEvent> {
         let mut guard = self.notifiers.lock().expect("notifier mutex");
+        // GC channels whose sender has no live receivers left, so the
+        // map doesn't grow unboundedly with channel count.
+        guard.retain(|_, sender| sender.receiver_count() > 0);
         let sender = guard
             .entry(channel.clone())
             .or_insert_with(|| broadcast::channel(256).0);
@@ -490,17 +495,35 @@ impl ChannelStore {
                 ChannelError::Adapter(format!("lock {}: {e}", path.display()))
             })?;
 
-        // Determine the next line number from the current file length
-        // (line count = newline count for properly-terminated JSONL).
-        let line_number = match fs::metadata(&path).await {
-            Ok(_md) => {
-                let bytes = fs::read(&path).await.map_err(|e| {
-                    ChannelError::Adapter(format!("read {}: {e}", path.display()))
-                })?;
-                u64::try_from(bytes.iter().filter(|b| **b == b'\n').count())
-                    .map_err(|e| ChannelError::Adapter(format!("line count: {e}")))?
+        // Determine the next line number. The common case is O(1):
+        // the `line_counts` cache is trusted when the file's byte
+        // length matches what this process last observed (any append
+        // from another process, or a crash mid-write, changes the
+        // length and forces a full recount). Fallback: read the whole
+        // log and count newlines (line count = newline count for
+        // properly-terminated JSONL).
+        let (line_number, file_len) = match fs::metadata(&path).await {
+            Ok(md) => {
+                let len = md.len();
+                let cached = self
+                    .line_counts
+                    .lock()
+                    .expect("line_counts mutex")
+                    .get(&path)
+                    .copied();
+                match cached {
+                    Some((count, cached_len)) if cached_len == len => (count, len),
+                    _ => {
+                        let bytes = fs::read(&path).await.map_err(|e| {
+                            ChannelError::Adapter(format!("read {}: {e}", path.display()))
+                        })?;
+                        let count = u64::try_from(bytes.iter().filter(|b| **b == b'\n').count())
+                            .map_err(|e| ChannelError::Adapter(format!("line count: {e}")))?;
+                        (count, len)
+                    }
+                }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, 0),
             Err(e) => {
                 return Err(ChannelError::Adapter(format!(
                     "stat {}: {e}",
@@ -516,6 +539,15 @@ impl ChannelStore {
         append_bytes_durable(&path, &bytes).await.map_err(|e| {
             ChannelError::Adapter(format!("append {}: {e}", path.display()))
         })?;
+        // The append is durable; the file now ends exactly where our
+        // write finished, so the cache entry is authoritative for the
+        // next append (still under the caller-visible FileLock
+        // ordering — a concurrent appender in this process holds the
+        // same lock before computing its own line number).
+        self.line_counts
+            .lock()
+            .expect("line_counts mutex")
+            .insert(path.clone(), (line_number + 1, file_len + bytes.len() as u64));
         // Notify live subscribers only after the durable append
         // succeeds (see the method docs — single chokepoint).
         self.notify_event(channel, ev);
@@ -572,6 +604,82 @@ impl ChannelStore {
         Ok(out)
     }
 
+    /// Backward-anchored read: the newest `limit` events at or before
+    /// `before` (line number; `None` = tip of the log), oldest→newest.
+    ///
+    /// Reads the file once and parses ONLY the returned lines — the
+    /// skipped prefix is a byte scan, not a JSON decode — so a "last
+    /// N messages" chat read is O(file I/O) + O(limit) parsing instead
+    /// of O(history) parsing. Line numbers are the byte-scan newline
+    /// count, identical to [`Self::read_events`]'s numbering.
+    async fn read_tail(
+        &self,
+        tier: Tier,
+        channel: &ChannelId,
+        limit: usize,
+        before: Option<&TaskId>,
+    ) -> Result<crate::port::TailPage> {
+        let path = self.events_path_for(tier, channel);
+        let bytes = match fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(crate::port::TailPage {
+                    events: Vec::new(),
+                    has_more: false,
+                });
+            }
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "read {}: {e}",
+                    path.display()
+                )));
+            }
+        };
+
+        // Collect (line_number, content) per newline-terminated line.
+        // Blank lines still consume a line number so ids stay
+        // consistent with the count-based append cursor.
+        let mut lines: Vec<(u64, &[u8])> = Vec::new();
+        let mut idx: u64 = 0;
+        let mut start = 0usize;
+        for (i, b) in bytes.iter().enumerate() {
+            if *b == b'\n' {
+                let content = &bytes[start..i];
+                if !content.is_empty() {
+                    lines.push((idx, content));
+                }
+                idx += 1;
+                start = i + 1;
+            }
+        }
+        // Trailing bytes without a newline are a torn write — ignore
+        // (the next append recounts from newlines, so ids stay stable).
+
+        let end = match before {
+            None => lines.len(),
+            Some(b) => {
+                let b: u64 = b.parse().map_err(|_| {
+                    ChannelError::Adapter(format!(
+                        "invalid before cursor {b:?}: not a numeric line offset"
+                    ))
+                })?;
+                lines.partition_point(|(n, _)| *n < b)
+            }
+        };
+        let from = end.saturating_sub(limit);
+        let mut out = Vec::with_capacity(end - from);
+        for (n, content) in &lines[from..end] {
+            let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                ChannelError::Adapter(format!("decode event at line {n}: {e}"))
+            })?;
+            out.push((n.to_string(), ev));
+        }
+        Ok(crate::port::TailPage {
+            events: out,
+            has_more: from > 0,
+        })
+    }
+
     // -----------------------------------------------------------------
     // Membership helpers
     // -----------------------------------------------------------------
@@ -594,6 +702,21 @@ impl ChannelStore {
             .members
             .iter()
             .any(|m| member_subject(m) == *subject))
+    }
+
+    /// Lock `members.json` for a read-modify-write cycle (invite /
+    /// leave / add_remote_member). Without this, two concurrent
+    /// membership changes on the same channel race load→mutate→save
+    /// and the later save clobbers the earlier one. The lock is on
+    /// the members file itself (FileLock derives `<path>.lock`), so
+    /// it never contends with the `events.jsonl` append lock.
+    async fn lock_members(&self, chan_dir: &Path) -> Result<FileLock> {
+        FileLock::acquire(MembersJson::path_in(chan_dir), CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(format!(
+                "lock {}: {e}",
+                MembersJson::path_in(chan_dir).display()
+            )))
     }
 
     /// Walk `<runtime_dir>/channels/` and return every `ChannelId` for
@@ -766,6 +889,7 @@ impl ChannelStore {
     ) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let row = RemoteMember {
             runtime_id: runtime_id.to_string(),
@@ -1081,6 +1205,7 @@ impl ChannelPort for ChannelStore {
     ) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let inviter_subject = Subject::from(inviter);
         if !members
@@ -1165,6 +1290,49 @@ impl ChannelPort for ChannelStore {
         self.read_events(tier, channel, since).await
     }
 
+    async fn peek_tail(
+        &self,
+        channel: &ChannelId,
+        limit: usize,
+        before: Option<&TaskId>,
+    ) -> Result<TailPage> {
+        let tier = self.resolve_tier(channel).await?;
+        self.read_tail(tier, channel, limit, before).await
+    }
+
+    /// Override the trait's default full-log walk: `meta.json` +
+    /// `members.json` answer the same question in two small file
+    /// reads. The one field the files can't answer is
+    /// `last_membership_change` (a property of the event log), so it
+    /// reports `None` — consumers that need it can walk the log
+    /// themselves.
+    async fn membership(&self, channel: &ChannelId) -> Result<ChannelMembership> {
+        let tier = self.resolve_tier(channel).await?;
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let meta = MetaJson::load(&chan_dir, channel).await?;
+        let provenance = ChannelStore::members_with_attribution(self, channel).await?;
+        Ok(ChannelMembership {
+            channel: channel.clone(),
+            name: meta.name,
+            creator: meta.creator,
+            members: provenance.iter().map(|p| p.principal.clone()).collect(),
+            member_provenance: provenance,
+            created_at: meta.created_at.to_rfc3339(),
+            last_membership_change: None,
+        })
+    }
+
+    /// Wire the inherent (members.json-backed) implementation into the
+    /// trait so `Arc<dyn ChannelPort>` callers get it too — previously
+    /// the trait default ran instead, walking the full event log
+    /// through `membership()`.
+    async fn members_with_attribution(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<Vec<peko_protocol::channel::MemberProvenance>> {
+        ChannelStore::members_with_attribution(self, channel).await
+    }
+
     /// Phase 4: read `meta.json`'s `passive_binding`. Probes the
     /// Runtime-tier dir first (the common case), then the Shared dir
     /// when configured — mirroring `resolve_tier`'s fallback so a
@@ -1192,6 +1360,7 @@ impl ChannelPort for ChannelStore {
     ) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let before_len = members.members.len();
         let principal_subject = Subject::from(principal);
@@ -1558,6 +1727,187 @@ mod tests {
         assert!(
             matches!(err, Err(ChannelError::FanOutCap { current: 8 })),
             "9th principal must hit the cap at current=8; got: {err:?}"
+        );
+    }
+
+    // -- tail reads (peek_tail) ----------------------------------------
+
+    /// `peek_tail` returns the NEWEST `limit` events oldest→newest,
+    /// each with its true line-number id, and reports `has_more` when
+    /// older events exist beyond the page.
+    #[tokio::test]
+    async fn peek_tail_returns_newest_page_with_ids_and_has_more() {
+        let cfg = tmp_cfg("tail-basic");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        // Lines: 0 = Created, 1..=4 = posts.
+        for i in 0..4 {
+            store
+                .post(
+                    &channel,
+                    &Subject::from(&creator),
+                    PostMsg::root(format!("msg {i}")),
+                )
+                .await
+                .unwrap();
+        }
+
+        let page = store.peek_tail(&channel, 2, None).await.unwrap();
+        assert_eq!(page.events.len(), 2);
+        assert!(page.has_more, "older events exist beyond the page");
+        assert_eq!(page.events[0].0, "3");
+        assert_eq!(page.events[1].0, "4");
+        match &page.events[0].1 {
+            ChannelEvent::Posted { text, .. } => assert_eq!(text, "msg 2"),
+            other => panic!("expected Posted, got {other:?}"),
+        }
+
+        // A full-covering page reports has_more = false.
+        let page = store.peek_tail(&channel, 10, None).await.unwrap();
+        assert_eq!(page.events.len(), 5);
+        assert!(!page.has_more);
+    }
+
+    /// `before` anchors the tail read strictly below the given line,
+    /// so `next_cursor` → `before` walks backward without overlap.
+    #[tokio::test]
+    async fn peek_tail_before_pages_backward_without_overlap() {
+        let cfg = tmp_cfg("tail-before");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        for i in 0..3 {
+            store
+                .post(
+                    &channel,
+                    &Subject::from(&creator),
+                    PostMsg::root(format!("msg {i}")),
+                )
+                .await
+                .unwrap();
+        }
+        // Lines: 0 = Created, 1..=3 = posts.
+
+        let newest = store.peek_tail(&channel, 2, None).await.unwrap();
+        assert_eq!(
+            newest.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["2", "3"]
+        );
+        let cursor = newest.events[0].0.clone();
+
+        let older = store
+            .peek_tail(&channel, 2, Some(&cursor))
+            .await
+            .unwrap();
+        assert_eq!(
+            older.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["0", "1"],
+            "page before line 2 is lines 0..=1 — no overlap with the newest page"
+        );
+        assert!(!older.has_more);
+    }
+
+    /// The line-number cache must not go stale when another writer
+    /// (e.g. the CLI in-process fallback racing the daemon) appends to
+    /// the same log: the byte-length check forces a recount.
+    #[tokio::test]
+    async fn append_line_number_survives_external_append() {
+        let cfg = tmp_cfg("external-append");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let first = store
+            .post(&channel, &Subject::from(&creator), PostMsg::root("mine"))
+            .await
+            .unwrap();
+        assert_eq!(first, "1", "line 0 is the Created event");
+
+        // Simulate a second process appending directly to the file.
+        let events_path = cfg.channel_dir(&channel).join("events.jsonl");
+        let foreign = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_other".into(),
+            parent: None,
+            text: "foreign".into(),
+            at: "2026-09-03T00:00:00Z".into(),
+        };
+        let mut line = serde_json::to_vec(&foreign).unwrap();
+        line.push(b'\n');
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&events_path)
+            .unwrap();
+        std::io::Write::write_all(&mut f, &line).unwrap();
+
+        let second = store
+            .post(&channel, &Subject::from(&creator), PostMsg::root("mine again"))
+            .await
+            .unwrap();
+        assert_eq!(
+            second, "3",
+            "the external append must force a recount, not reuse the cached count"
+        );
+
+        let all = store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 4);
+        match &all[2].1 {
+            ChannelEvent::Posted { author, text, .. } => {
+                assert_eq!(author, "prin_other");
+                assert_eq!(text, "foreign");
+            }
+            other => panic!("expected the foreign Posted at line 2, got {other:?}"),
+        }
+    }
+
+    /// Concurrent membership changes must not lose rows: N overlapping
+    /// invites all land in `members.json` (the FileLock serializes the
+    /// load→mutate→save cycle).
+    #[tokio::test]
+    async fn concurrent_invites_do_not_lose_members() {
+        let cfg = tmp_cfg("concurrent-invites");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let store = store.clone();
+            let channel = channel.clone();
+            let creator = creator.clone();
+            handles.push(tokio::spawn(async move {
+                store
+                    .invite(
+                        &channel,
+                        &creator,
+                        &Subject::User(format!("user_{i}")),
+                    )
+                    .await
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().expect("invite must succeed");
+        }
+        let members = store.list_members(&channel).await.unwrap();
+        assert_eq!(
+            members.len(),
+            9,
+            "creator + 8 concurrently invited users must all be present"
         );
     }
 

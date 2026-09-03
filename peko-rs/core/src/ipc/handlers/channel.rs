@@ -548,6 +548,8 @@ impl RequestHandler for ChannelHandler {
                 channel,
                 since,
                 requester,
+                tail,
+                before,
             } => {
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -564,12 +566,37 @@ impl RequestHandler for ChannelHandler {
                 if !self.gate_channel_read(&ch, requester.as_deref(), caller, request_id, sink).await? {
                     return Ok(());
                 }
-                match self.router().handle_peek(&ch, since).await {
-                    Ok(resp) => {
+                // Tail mode (`tail` set) is the bounded "newest N"
+                // chat read; the default stays the legacy forward walk
+                // from `since`. Both go through `peek_with_ids`-shaped
+                // reads so the response can carry per-event line ids
+                // (watch consumers advance cursors with them).
+                let port = self.router().port().clone();
+                let result = match tail {
+                    Some(limit) => port
+                        .peek_tail(&ch, limit.clamp(1, 1000), before.as_ref())
+                        .await
+                        .map(|page| {
+                            let (ids, events): (Vec<_>, Vec<_>) =
+                                page.events.into_iter().unzip();
+                            (events, ids, page.has_more)
+                        }),
+                    None => port
+                        .peek_with_ids(&ch, &peko_channel::Checkpoint(since.unwrap_or_default()))
+                        .await
+                        .map(|items| {
+                            let (ids, events): (Vec<_>, Vec<_>) = items.into_iter().unzip();
+                            (events, ids, false)
+                        }),
+                };
+                match result {
+                    Ok((events, event_ids, has_more)) => {
                         let response = ResponsePacket::ChannelPeekResult {
                             request_id,
-                            channel: resp.channel,
-                            events: resp.events,
+                            channel: ch,
+                            events,
+                            event_ids,
+                            has_more,
                         };
                         send_response(sink, response).await?;
                     }
@@ -1116,6 +1143,8 @@ mod tests {
             channel: "chan_x".into(),
             since: None,
             requester: None,
+            tail: None,
+            before: None,
         }));
         assert!(handler.matches(&RequestPacket::ChannelLeave {
             request_id: 1,
@@ -1181,6 +1210,8 @@ mod tests {
             channel: ch.to_string(),
             since: None,
             requester: None,
+            tail: None,
+            before: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
         let sink: &dyn crate::ipc::response_sink::ResponseSink =
@@ -1197,7 +1228,9 @@ mod tests {
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 1, "expected one response packet");
         match &captured[0] {
-            ResponsePacket::ChannelPeekResult { events, .. } => {
+            ResponsePacket::ChannelPeekResult {
+                events, event_ids, ..
+            } => {
                 assert_eq!(
                     events.len(),
                     2,
@@ -1205,6 +1238,92 @@ mod tests {
                 );
                 assert!(matches!(events[0], ChannelEvent::Created { .. }));
                 assert!(matches!(events[1], ChannelEvent::Posted { .. }));
+                // Parallel line-number ids ride along so watch-style
+                // consumers can advance a `since` cursor precisely.
+                assert_eq!(event_ids, &vec!["0".to_string(), "1".to_string()]);
+            }
+            other => panic!("expected ChannelPeekResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_peek_tail_mode_returns_newest_page_with_cursor_state() {
+        let (tmp, host) = test_host();
+        let _ = tmp;
+        let handler = ChannelHandler::new(host.clone());
+        let ch = seed_channel(&host).await;
+
+        // Tail read with limit 1: only the newest event (the Posted
+        // at line 1), has_more = true (the Created at line 0 is older).
+        let req = RequestPacket::ChannelPeek {
+            request_id: 1,
+            channel: ch.to_string(),
+            since: None,
+            requester: None,
+            tail: Some(1),
+            before: None,
+        };
+        let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
+        let sink: &dyn crate::ipc::response_sink::ResponseSink =
+            &CaptureSink(captured.clone());
+        handler
+            .handle(
+                req,
+                &peko_auth::caller::CallerContext::local(),
+                sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
+            .await
+            .expect("handle");
+        let captured = captured.lock().unwrap();
+        match &captured[0] {
+            ResponsePacket::ChannelPeekResult {
+                events,
+                event_ids,
+                has_more,
+                ..
+            } => {
+                assert_eq!(events.len(), 1);
+                assert!(matches!(events[0], ChannelEvent::Posted { .. }));
+                assert_eq!(event_ids, &vec!["1".to_string()]);
+                assert!(has_more, "the Created event at line 0 is older");
+            }
+            other => panic!("expected ChannelPeekResult, got {other:?}"),
+        }
+
+        // Page back with `before` = the oldest line just seen.
+        let req = RequestPacket::ChannelPeek {
+            request_id: 2,
+            channel: ch.to_string(),
+            since: None,
+            requester: None,
+            tail: Some(1),
+            before: Some("1".to_string()),
+        };
+        let captured2 = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
+        let sink2: &dyn crate::ipc::response_sink::ResponseSink =
+            &CaptureSink(captured2.clone());
+        handler
+            .handle(
+                req,
+                &peko_auth::caller::CallerContext::local(),
+                sink2,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
+            .await
+            .expect("handle");
+        let captured2 = captured2.lock().unwrap();
+        match &captured2[0] {
+            ResponsePacket::ChannelPeekResult {
+                events,
+                event_ids,
+                has_more,
+                ..
+            } => {
+                assert_eq!(events.len(), 1);
+                assert!(matches!(events[0], ChannelEvent::Created { .. }));
+                assert_eq!(event_ids, &vec!["0".to_string()]);
+                assert!(!has_more, "nothing older than line 0");
             }
             other => panic!("expected ChannelPeekResult, got {other:?}"),
         }
@@ -1343,6 +1462,8 @@ mod tests {
             channel: ch.to_string(),
             since: None,
             requester: requester.map(str::to_string),
+            tail: None,
+            before: None,
         };
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
 
@@ -1459,6 +1580,8 @@ mod tests {
             channel: ch.to_string(),
             since: None,
             requester: requester.map(str::to_string),
+            tail: None,
+            before: None,
         };
         let jwt_alice = CallerContext::from_jwt("alice".to_string());
 
@@ -1628,6 +1751,8 @@ mod tests {
                     channel: ch.to_string(),
                     since: None,
                     requester: Some("user:alice".into()),
+                    tail: None,
+                    before: None,
                 },
                 &apikey,
                 &sink,

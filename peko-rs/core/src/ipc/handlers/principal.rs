@@ -3373,56 +3373,83 @@ async fn read_principal_log(
         return Ok(empty_page());
     };
 
-    // Walk the channel log oldest→newest; `Posted` events only.
-    let events = port
-        .peek_with_ids(&channel, &peko_channel::Checkpoint::zero())
-        .await
-        .map_err(|e| PrincipalLogError::Internal(format!("channel read failed: {e}")))?;
+    // Page the DM channel from the tail via `peek_tail`. The store
+    // parses only the returned lines (the older prefix is a byte
+    // scan), so a `peko log` page no longer decodes the whole
+    // channel history. A page can come back short of
+    // `effective_limit` chat rows even when older history exists —
+    // `Created`/`MemberJoined` lines occupy line numbers but don't
+    // map to messages, and `--since` filters — so the fill loop
+    // walks further back until the page is full or the log is
+    // exhausted (bounded, so a hostile filter can't pin the daemon).
     let principal_author = principal.id.to_string();
     let principal_subject = Subject::Principal(principal.did().await);
-    let mut rows: Vec<(u64, PrincipalLogMessage)> = Vec::new();
-    for (line, event) in events {
-        let ChannelEvent::Posted {
-            author, text, at, ..
-        } = event
-        else {
-            continue;
-        };
+
+    // The cursor is a raw line number: return rows strictly older.
+    if let Some(c) = cursor.as_deref() {
+        c.parse::<u64>()
+            .map_err(|_| PrincipalLogError::BadCursor(format!("invalid cursor: {c}")))?;
+    }
+    let mut before: Option<String> = cursor.clone();
+
+    const MAX_FILL_PAGES: usize = 10;
+    let mut collected: Vec<(u64, PrincipalLogMessage)> = Vec::new();
+    let mut older_available = false;
+    for _ in 0..MAX_FILL_PAGES {
+        let page = port
+            .peek_tail(&channel, effective_limit, before.as_ref())
+            .await
+            .map_err(|e| PrincipalLogError::Internal(format!("channel read failed: {e}")))?;
+        older_available = page.has_more;
+        if page.events.is_empty() {
+            break;
+        }
+        let page_oldest = page.events.first().map(|(line, _)| line.clone());
         // The store keys events by line number; skip anything that
         // doesn't parse rather than failing the whole page.
-        let Ok(line_num) = line.parse::<u64>() else {
-            continue;
-        };
-        let message = map_posted_to_log_message(
-            format!("chan_{line_num}"),
-            &author,
-            &at,
-            text,
-            &principal_author,
-            &principal_subject,
-        );
-        // The `since` cutoff admits unparseable timestamps (surfaced
-        // as "now" by the mapper — now ≥ cutoff).
-        if let Some(cut) = cutoff {
-            if message.timestamp < cut {
+        let mut rows: Vec<(u64, PrincipalLogMessage)> = Vec::new();
+        for (line, event) in page.events {
+            let ChannelEvent::Posted {
+                author, text, at, ..
+            } = event
+            else {
                 continue;
+            };
+            let Ok(line_num) = line.parse::<u64>() else {
+                continue;
+            };
+            let message = map_posted_to_log_message(
+                format!("chan_{line_num}"),
+                &author,
+                &at,
+                text,
+                &principal_author,
+                &principal_subject,
+            );
+            // The `since` cutoff admits unparseable timestamps (surfaced
+            // as "now" by the mapper — now ≥ cutoff).
+            if let Some(cut) = cutoff {
+                if message.timestamp < cut {
+                    continue;
+                }
             }
+            rows.push((line_num, message));
         }
-        rows.push((line_num, message));
+        // This page is OLDER than everything collected so far.
+        rows.append(&mut collected);
+        collected = rows;
+        if collected.len() >= effective_limit || !older_available {
+            break;
+        }
+        before = page_oldest;
     }
 
-    // In-memory paging is fine at DM-channel scale. The cursor is the
-    // oldest returned line number: keep strictly older rows, then take
-    // the newest `effective_limit` of those (returned oldest→newest).
-    if let Some(cursor) = cursor.as_deref() {
-        let before: u64 = cursor
-            .parse()
-            .map_err(|_| PrincipalLogError::BadCursor(format!("invalid cursor: {cursor}")))?;
-        rows.retain(|(line, _)| *line < before);
-    }
-    let start = rows.len().saturating_sub(effective_limit);
-    let has_more = start > 0;
-    let page = rows.split_off(start);
+    // Keep the newest `effective_limit` rows (returned oldest→newest).
+    // The cursor for the next page is the oldest returned line number.
+    let start = collected.len().saturating_sub(effective_limit);
+    let trimmed = start > 0;
+    let page = collected.split_off(start);
+    let has_more = trimmed || older_available;
     let next_cursor = if has_more {
         page.first().map(|(line, _)| line.to_string())
     } else {
@@ -3942,14 +3969,27 @@ mod tests {
             assert!(page2.has_more);
             assert_eq!(page2.next_cursor.as_deref(), Some("3"));
 
-            // Last page: lines 1,2 — no older rows remain.
+            // Last page: lines 1,2 — no older CHAT rows remain, but
+            // line 0 (the Created event) is still an older raw event,
+            // so has_more stays true and one final page returns empty
+            // (has_more tracks the log, not the Posted projection —
+            // answering "any older messages?" exactly would require a
+            // backward scan to the top of the log).
             let page3 = read(&fx, Some(2), None, page2.next_cursor.clone())
                 .await
                 .expect("page 3");
             let texts: Vec<&str> = page3.messages.iter().map(|m| m.text.as_str()).collect();
             assert_eq!(texts, vec!["question 0", "answer 0"]);
-            assert!(!page3.has_more);
-            assert_eq!(page3.next_cursor, None);
+            assert!(page3.has_more);
+            assert_eq!(page3.next_cursor.as_deref(), Some("1"));
+
+            // The terminal page past the Created line: empty, done.
+            let page4 = read(&fx, Some(2), None, page3.next_cursor.clone())
+                .await
+                .expect("page 4");
+            assert!(page4.messages.is_empty());
+            assert!(!page4.has_more);
+            assert_eq!(page4.next_cursor, None);
         }
 
         #[tokio::test(flavor = "multi_thread")]
