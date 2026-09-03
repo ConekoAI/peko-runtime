@@ -4,6 +4,35 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel log paging / rotation (2026-09-03)
+
+Bounds channel log growth: the event log is no longer a single
+ever-growing `events.jsonl`.
+
+#### Changed
+- **Page rotation** — when an append would push the current page past
+  8 MiB (`DEFAULT_ROTATE_BYTES`, overridable via
+  `ChannelStore::with_rotate_bytes`), the current page is renamed
+  aside to `events.<n>.jsonl` (1 = oldest, mirroring `peko-session`'s
+  paging) and the event lands in a fresh current page. Rotated pages
+  are immutable.
+- **Global line numbers** — `TaskId`s count lines across the whole
+  stitched log and never reset on rotation, so `cursors.json`,
+  `parent` reply references, and `peko log` pagination all survive
+  page rolls. Pre-paging channels are just one-page logs — no
+  migration.
+- **O(1) reply validation** — `post`'s parent check is now a
+  (cache-backed) global line count instead of a full log parse, so
+  replies no longer pay a second O(history) scan.
+- **Page-aware reads** — `peek`/`peek_with_ids` skip pages entirely
+  behind the cursor without opening them; `peek_tail` reads only the
+  pages intersecting the returned range. The per-page line-count
+  cache makes steady-state reads stat-only.
+- **`pin_to_shared`** copies rotated `events.<n>.jsonl` pages
+  alongside the current page (was: current page only).
+
+---
+
 ### Channel log read/write performance (2026-09-03)
 
 Makes channel reads and writes bounded instead of O(history), and

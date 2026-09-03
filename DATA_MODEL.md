@@ -1600,9 +1600,18 @@ channels.
 <runtime_dir>/channels/<channel_id>/
   meta.json       # channel metadata (schema below)
   members.json    # { members: [String], remote_members: [RemoteMember] }
-  events.jsonl    # one ChannelEvent per line, append-only
+  events.jsonl    # current page: one ChannelEvent per line, append-only
+  events.<n>.jsonl # rotated pages, 1 = oldest (present only after rotation)
   cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)
 ```
+
+The current page rotates aside to `events.<n>.jsonl` when an append
+would push it past 8 MiB (`DEFAULT_ROTATE_BYTES`), mirroring
+`peko-session`'s `<id>.<n>.jsonl` paging; rotated pages are immutable.
+`TaskId`s are **global line numbers across the stitched log** and
+never reset on rotation, so cursors, reply `parent` references, and
+`peko log` pagination survive page rolls. Pre-paging channels (a lone
+`events.jsonl`) are simply a one-page log — no migration needed.
 
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
 under `<shared_dir>/channels/<channel_id>/`.
@@ -1725,10 +1734,11 @@ members file (distinct from the `events.jsonl` append lock).
 Reads come in two shapes on `ChannelPort`:
 
 - `peek` / `peek_with_ids(since)` — forward walk from a line-number
-  cursor; scans from byte 0 and skips `since` lines.
+  cursor; pages entirely behind the cursor are skipped via their
+  cached line counts without being opened.
 - `peek_tail(limit, before)` — the canonical "newest N messages" chat
-  read. One file read, but only the returned `limit` lines are
-  JSON-parsed (the skipped prefix is a byte scan). Returns
+  read. Only the pages intersecting the returned range are read and
+  only the returned `limit` lines are JSON-parsed. Returns
   `TailPage { events, has_more }`; page backward by feeding the
   page's oldest line id back as `before`. `has_more` tracks the raw
   log, so a terminal page can be empty when only
