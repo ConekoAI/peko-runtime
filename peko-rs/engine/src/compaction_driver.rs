@@ -68,6 +68,12 @@ pub struct CompactionDriver {
     /// `total_usage` so the cost of compaction is not silently
     /// dropped on the floor.
     last_compaction_usage: Option<peko_message::TokenUsage>,
+    /// Compaction audit fix #4: whether the backend's quota state has
+    /// been hydrated from the session-persisted snapshot yet this
+    /// run. Hydration happens once, lazily, before the first gate
+    /// check (`CompactionDriver::new` is sync, so it can't happen at
+    /// construction).
+    limits_state_hydrated: bool,
 }
 
 impl CompactionDriver {
@@ -99,6 +105,7 @@ impl CompactionDriver {
             compaction_performed: false,
             last_compaction_result: None,
             last_compaction_usage: None,
+            limits_state_hydrated: false,
         }
     }
 
@@ -145,6 +152,12 @@ impl CompactionDriver {
         // assistant message's `usage.total_tokens`.
         let (_, _, last_total) = session.token_usage().await;
         let effective_tokens = estimated_tokens.max(last_total);
+
+        // Compaction audit fix #4: hydrate the backend's quota state
+        // from the session-persisted snapshot before the first gate
+        // check, so the count / cooldown / consecutive limits are
+        // per-session rather than per-run.
+        self.ensure_limits_state_hydrated(session).await;
 
         // Plan D2: an agent may have requested compaction out-of-band
         // (the session tool's `compact` action persists a
@@ -263,6 +276,11 @@ impl CompactionDriver {
             return Ok(false);
         }
 
+        // Compaction audit fix #4: same per-session hydration as
+        // `check_and_compact` — a mid-turn fire may precede the first
+        // pre-turn gate on a fresh run.
+        self.ensure_limits_state_hydrated(session).await;
+
         info!(
             "Mid-turn compaction fired ({} messages, snapshot covers {} capabilities)",
             messages.len(),
@@ -359,6 +377,7 @@ impl CompactionDriver {
         self.compaction_performed = false;
         self.last_compaction_result = None;
         self.last_compaction_usage = None;
+        self.limits_state_hydrated = false;
     }
 
     /// Token usage consumed by the most recent compaction's
@@ -385,6 +404,39 @@ impl CompactionDriver {
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
+
+    /// Compaction audit fix #4: hydrate the backend's quota state
+    /// from the session-persisted snapshot exactly once per run (the
+    /// driver is rebuilt per `run_inner`), so
+    /// `max_compactions_per_session` / `cooldown_seconds` /
+    /// `max_consecutive_auto` are per-session limits rather than
+    /// per-run.
+    async fn ensure_limits_state_hydrated<S>(&mut self, session: &S)
+    where
+        S: SessionView + ?Sized,
+    {
+        if self.limits_state_hydrated {
+            return;
+        }
+        self.limits_state_hydrated = true;
+        let persisted = session.compaction_limits_state().await;
+        self.backend.hydrate_limits_state(persisted).await;
+    }
+
+    /// Compaction audit fix #4: persist the backend's quota state
+    /// after a worker mutation (success or failure) so the next run
+    /// of this session hydrates from it. The worker updates its
+    /// state *before* answering the oneshot, so the snapshot read
+    /// here already reflects the mutation.
+    async fn sync_limits_state_to_session<S>(&self, session: &S)
+    where
+        S: SessionView + ?Sized,
+    {
+        let state = self.backend.limits_state().await;
+        if let Err(e) = session.store_compaction_limits_state(state).await {
+            warn!("Failed to persist compaction state: {}", e);
+        }
+    }
 
     async fn invoke_pre_hook<S>(
         &mut self,
@@ -531,6 +583,9 @@ impl CompactionDriver {
                             {
                                 warn!("Failed to record compaction entry: {}", e);
                             }
+                            // Audit fix #4: persist the worker's quota
+                            // state so the next run hydrates from it.
+                            self.sync_limits_state_to_session(session).await;
                         }
                         CompactionResponse::NotNeeded => {
                             debug!("Background compaction: not needed");
@@ -540,6 +595,10 @@ impl CompactionDriver {
                         }
                         CompactionResponse::Failed(err) => {
                             warn!("Background compaction failed: {}", err);
+                            // Audit fix #4: a failed attempt mutates
+                            // the cooldown stamp + consecutive-failure
+                            // counter — persist those too.
+                            self.sync_limits_state_to_session(session).await;
                         }
                     }
                     self.pending_compaction = None;
@@ -773,6 +832,10 @@ mod tests {
         requested: Mutex<bool>,
         clears: AtomicUsize,
         last_total: AtomicUsize,
+        /// Fix #4: the persisted compaction quota state this session
+        /// would return, plus a log of every state the driver stored.
+        limits: Mutex<crate::compaction::CompactionLimitsState>,
+        stored_states: Mutex<Vec<crate::compaction::CompactionLimitsState>>,
     }
 
     impl StubSession {
@@ -781,6 +844,8 @@ mod tests {
                 requested: Mutex::new(requested),
                 clears: AtomicUsize::new(0),
                 last_total: AtomicUsize::new(0),
+                limits: Mutex::new(crate::compaction::CompactionLimitsState::default()),
+                stored_states: Mutex::new(vec![]),
             }
         }
     }
@@ -861,6 +926,19 @@ mod tests {
             *self.requested.lock().expect("requested mutex poisoned") = false;
             self.clears.fetch_add(1, Ordering::SeqCst);
         }
+        async fn compaction_limits_state(&self) -> crate::compaction::CompactionLimitsState {
+            *self.limits.lock().expect("limits mutex poisoned")
+        }
+        async fn store_compaction_limits_state(
+            &self,
+            state: crate::compaction::CompactionLimitsState,
+        ) -> Result<()> {
+            self.stored_states
+                .lock()
+                .expect("stored_states mutex poisoned")
+                .push(state);
+            Ok(())
+        }
     }
 
     /// Stub `CompactorBackend`: `should_request` returns a fixed gate
@@ -871,6 +949,10 @@ mod tests {
         gate: bool,
         request_calls: AtomicUsize,
         senders: Mutex<Vec<oneshot::Sender<CompactionResponse>>>,
+        /// Fix #4: states the driver hydrated us with, plus the worker
+        /// state `limits_state` reports.
+        hydrated: Mutex<Vec<crate::compaction::CompactionLimitsState>>,
+        worker_state: Mutex<crate::compaction::CompactionLimitsState>,
     }
 
     impl StubBackend {
@@ -879,6 +961,8 @@ mod tests {
                 gate,
                 request_calls: AtomicUsize::new(0),
                 senders: Mutex::new(vec![]),
+                hydrated: Mutex::new(vec![]),
+                worker_state: Mutex::new(crate::compaction::CompactionLimitsState::default()),
             }
         }
     }
@@ -904,6 +988,18 @@ mod tests {
                 .expect("senders mutex poisoned")
                 .push(tx);
             Ok(rx)
+        }
+        async fn hydrate_limits_state(&self, state: crate::compaction::CompactionLimitsState) {
+            self.hydrated
+                .lock()
+                .expect("hydrated mutex poisoned")
+                .push(state);
+        }
+        async fn limits_state(&self) -> crate::compaction::CompactionLimitsState {
+            *self
+                .worker_state
+                .lock()
+                .expect("worker_state mutex poisoned")
         }
     }
 
@@ -1058,6 +1154,12 @@ mod tests {
             request: CompactionRequest,
         ) -> Result<oneshot::Receiver<CompactionResponse>> {
             self.0.request(request).await
+        }
+        async fn hydrate_limits_state(&self, state: crate::compaction::CompactionLimitsState) {
+            self.0.hydrate_limits_state(state).await;
+        }
+        async fn limits_state(&self) -> crate::compaction::CompactionLimitsState {
+            self.0.limits_state().await
         }
     }
 
@@ -1432,6 +1534,124 @@ mod tests {
                 matches!(b, peko_message::ContentBlock::Text { text } if text.contains("## Environment Snapshot"))
             }),
             "snapshot must lead the list when there is no user message"
+        );
+    }
+
+    /// Fix #4: the driver hydrates the backend from the
+    /// session-persisted quota state exactly once per run, before the
+    /// first gate check.
+    #[tokio::test]
+    async fn driver_hydrates_backend_from_session_state_once_per_run() {
+        let mut f = fixture(false, false);
+        let persisted = crate::compaction::CompactionLimitsState {
+            compaction_count: 7,
+            last_compaction_at_ms: Some(123),
+            consecutive_auto: 2,
+            consecutive_failures: 1,
+        };
+        *f.session.limits.lock().expect("limits mutex poisoned") = persisted;
+
+        let mut messages = small_messages();
+        let on_event = event_sink(&f.events);
+        for _ in 0..2 {
+            f.driver
+                .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+                .await
+                .unwrap();
+        }
+
+        let hydrated = f.backend.hydrated.lock().expect("hydrated mutex poisoned");
+        assert_eq!(
+            hydrated.as_slice(),
+            &[persisted],
+            "backend must be hydrated exactly once, with the persisted state"
+        );
+    }
+
+    /// Fix #4: after a Completed compaction the driver persists the
+    /// worker's quota state back onto the session.
+    #[tokio::test]
+    async fn driver_persists_worker_state_after_completed_compaction() {
+        let mut f = fixture(false, false);
+        let worker_state = crate::compaction::CompactionLimitsState {
+            compaction_count: 3,
+            last_compaction_at_ms: Some(42),
+            consecutive_auto: 3,
+            consecutive_failures: 0,
+        };
+        *f.backend
+            .worker_state
+            .lock()
+            .expect("worker_state mutex poisoned") = worker_state;
+
+        let mut messages = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::user("older question"),
+            LlmMessage::assistant("older answer"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+        let compacted = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::system("[Conversation Summary - 3 messages]:\nsummary text"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+
+        let mutated = drive_mid_turn(&mut f, &mut messages, completed_response(compacted, 3))
+            .await
+            .unwrap();
+        assert!(mutated);
+
+        let stored = f
+            .session
+            .stored_states
+            .lock()
+            .expect("stored_states mutex poisoned");
+        assert_eq!(
+            stored.as_slice(),
+            &[worker_state],
+            "worker quota state must be persisted after Completed"
+        );
+    }
+
+    /// Fix #4: a Failed response also syncs the worker state (the
+    /// failure stamps the cooldown + bumps consecutive failures).
+    #[tokio::test]
+    async fn driver_persists_worker_state_after_failed_compaction() {
+        let mut f = fixture(false, false);
+        let worker_state = crate::compaction::CompactionLimitsState {
+            compaction_count: 1,
+            last_compaction_at_ms: Some(42),
+            consecutive_auto: 1,
+            consecutive_failures: 2,
+        };
+        *f.backend
+            .worker_state
+            .lock()
+            .expect("worker_state mutex poisoned") = worker_state;
+
+        let mut messages = small_messages();
+        let mutated = drive_mid_turn(
+            &mut f,
+            &mut messages,
+            CompactionResponse::Failed("provider down".to_string()),
+        )
+        .await
+        .unwrap();
+        assert!(!mutated, "failed compaction must not mutate messages");
+
+        let stored = f
+            .session
+            .stored_states
+            .lock()
+            .expect("stored_states mutex poisoned");
+        assert_eq!(
+            stored.as_slice(),
+            &[worker_state],
+            "worker quota state must be persisted after Failed"
         );
     }
 }

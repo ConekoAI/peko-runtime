@@ -67,7 +67,7 @@ pub use turn_boundaries::{
     classify_message, find_cut_points, select_messages_respecting_boundaries, MessageKind,
 };
 pub use types::{
-    CompactionConfig, CompactionEntry, CompactionPhase, CompactionQuota, CompactionRequest,
-    CompactionResponse, CompactionResponseResult, CompactionResult, CompactionState,
-    ContextUsageEstimate,
+    CompactionConfig, CompactionEntry, CompactionLimitsState, CompactionPhase, CompactionQuota,
+    CompactionRequest, CompactionResponse, CompactionResponseResult, CompactionResult,
+    CompactionState, ContextUsageEstimate,
 };

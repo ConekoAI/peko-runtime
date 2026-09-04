@@ -144,6 +144,28 @@ pub trait SessionCore: Send + Sync + 'static {
     async fn clear_compact_request(session: &mut Self) {
         let _ = session;
     }
+
+    /// Read the persisted per-session compaction quota state
+    /// (compaction audit fix #4). The compaction driver hydrates the
+    /// per-run compactor from this at run start. Default: all-zero
+    /// state — implementors without a persistent index (test stubs,
+    /// in-memory sessions) compile unchanged.
+    async fn compaction_limits_state(
+        session: &mut Self,
+    ) -> crate::compaction::CompactionLimitsState {
+        let _ = session;
+        crate::compaction::CompactionLimitsState::default()
+    }
+
+    /// Persist the per-session compaction quota state after a worker
+    /// mutation (compaction audit fix #4). Default: no-op.
+    async fn store_compaction_limits_state(
+        session: &mut Self,
+        state: crate::compaction::CompactionLimitsState,
+    ) -> Result<()> {
+        let _ = (session, state);
+        Ok(())
+    }
 }
 
 /// Caller-facing facade: takes `&self` (lock-encapsulated).
@@ -230,6 +252,22 @@ pub trait SessionView: Send + Sync + 'static {
     /// Clear the persisted compaction-request flag once compaction
     /// genuinely starts. Default: no-op.
     async fn clear_compact_request(&self) {}
+
+    /// Read the persisted per-session compaction quota state
+    /// (compaction audit fix #4). Default: all-zero state — see
+    /// [`SessionCore::compaction_limits_state`].
+    async fn compaction_limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        crate::compaction::CompactionLimitsState::default()
+    }
+
+    /// Persist the per-session compaction quota state after a worker
+    /// mutation (compaction audit fix #4). Default: no-op.
+    async fn store_compaction_limits_state(
+        &self,
+        _state: crate::compaction::CompactionLimitsState,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -355,5 +393,18 @@ where
     async fn clear_compact_request(&self) {
         let mut guard = self.write().await;
         T::clear_compact_request(&mut *guard).await;
+    }
+
+    async fn compaction_limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        let mut guard = self.write().await;
+        T::compaction_limits_state(&mut *guard).await
+    }
+
+    async fn store_compaction_limits_state(
+        &self,
+        state: crate::compaction::CompactionLimitsState,
+    ) -> Result<()> {
+        let mut guard = self.write().await;
+        T::store_compaction_limits_state(&mut *guard, state).await
     }
 }

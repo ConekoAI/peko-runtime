@@ -54,7 +54,9 @@
 //! the orchestrator's `&mut self` access pattern when called from
 //! inside the agentic loop.
 
-use crate::compaction::types::{CompactionConfig, CompactionRequest, CompactionResponse};
+use crate::compaction::types::{
+    CompactionConfig, CompactionLimitsState, CompactionRequest, CompactionResponse,
+};
 use anyhow::Result;
 use tokio::sync::oneshot;
 
@@ -94,4 +96,23 @@ pub trait CompactorBackend: Send + Sync + 'static {
         &self,
         request: CompactionRequest,
     ) -> Result<oneshot::Receiver<CompactionResponse>>;
+
+    /// Hydrate the worker's quota state from the persisted per-session
+    /// snapshot (compaction audit fix #4). The compaction driver calls
+    /// this once per run, before the first [`Self::should_request`]
+    /// gate, so `max_compactions_per_session` / `cooldown_seconds` /
+    /// `max_consecutive_auto` apply per-session rather than per-run.
+    ///
+    /// Default: no-op — stateless/test backends compile unchanged.
+    async fn hydrate_limits_state(&self, _state: CompactionLimitsState) {}
+
+    /// Snapshot the worker's current quota state so the driver can
+    /// persist it onto the session index entry after every worker
+    /// mutation (compaction audit fix #4).
+    ///
+    /// Default: all-zero state — stateless/test backends compile
+    /// unchanged.
+    async fn limits_state(&self) -> CompactionLimitsState {
+        CompactionLimitsState::default()
+    }
 }

@@ -1063,6 +1063,10 @@ both = `false`):
 | `standing` | bool | Exempt from maintenance pruning (2026-08-15): a standing session's transcript is durable regardless of idle age. The trunk (`find_trunk_session(metas)`) and `archived` sessions are prune-exempt by rule; `standing` is the flag for standing children |
 | `privileged` | bool | Whole-store ownership-guard reach for the session's caller (sprint 2 Phase 5, 2026-08-17) despite having a parent — tree membership is unchanged. Set only for the principal owner's peer child (`/local-user`); see "Peer-child provisioning" in §5.10 |
 | `slug` | string \| null | Per-parent-unique path segment for `/a/b` addressing (2026-08-15, Phase 1b). `#[serde(default, skip_serializing_if = "Option::is_none")]` on the entry. See "Session path addressing" below |
+| `compaction_count` | u32 | Successful compactions recorded for this session (compaction audit fix #4, 2026-09-04). The per-session sequence the JSONL boundary event's `compaction_number` derives from; the per-run `BackgroundCompactor` hydrates from it at run start so `max_compactions_per_session` is a per-session limit, not per-run |
+| `last_compaction_at` | u64 \| null | Last compaction attempt (success or failure) as epoch milliseconds; drives the cross-run cooldown / escalating failure backoff |
+| `consecutive_auto_compactions` | u32 | Consecutive auto-compactions; the per-session gate behind `max_consecutive_auto` |
+| `consecutive_compaction_failures` | u32 | Consecutive failed compaction attempts (reset on success); drives the escalating failure backoff across runs |
 
 **`PeerInfo.active_session_id` is now `Option<String>`**
 (`#[serde(default)]`). Deleting a session scrubs its id from the

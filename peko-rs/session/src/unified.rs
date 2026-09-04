@@ -320,6 +320,39 @@ impl Session {
         }
     }
 
+    /// Read the persisted per-session compaction quota state
+    /// (compaction audit fix #4). The compaction driver hydrates the
+    /// per-run `BackgroundCompactor` from this at run start.
+    ///
+    /// Tolerant: a session without an index entry (or any metadata
+    /// read failure) reads as the all-zero default — the state is
+    /// advisory and never fails a turn.
+    pub async fn compaction_limits_state(&mut self) -> crate::compaction::CompactionLimitsState {
+        self.ensure_metadata_controller();
+        if let Some(ref mut controller) = self.metadata_controller {
+            return controller
+                .get_compaction_state(&self.id)
+                .await
+                .unwrap_or_default();
+        }
+        crate::compaction::CompactionLimitsState::default()
+    }
+
+    /// Persist the per-session compaction quota state after a worker
+    /// mutation (compaction audit fix #4). Failures are logged, not
+    /// propagated (mirrors [`Self::clear_compact_request`]).
+    pub async fn store_compaction_limits_state(
+        &mut self,
+        state: crate::compaction::CompactionLimitsState,
+    ) {
+        self.ensure_metadata_controller();
+        if let Some(ref mut controller) = self.metadata_controller {
+            if let Err(e) = controller.set_compaction_state(&self.id, state).await {
+                tracing::warn!("failed to persist compaction state for {}: {}", self.id, e);
+            }
+        }
+    }
+
     /// Record token usage (in-memory only, persists to index via `MetadataController`)
     ///
     /// `last_total_tokens` is the `total_tokens` reported by the
