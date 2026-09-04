@@ -336,6 +336,10 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 // ADR-049 Phase 2 (D6): reads are membership-gated;
                 // the CLI always identifies itself as the `-U` user.
                 requester: Some(format!("user:{}", paths.user())),
+                tail: None,
+                before: None,
+                query: None,
+                author: None,
             };
             let events = run_daemon_or(
                 paths,

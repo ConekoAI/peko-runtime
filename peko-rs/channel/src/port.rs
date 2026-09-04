@@ -96,7 +96,100 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// Walk the channel's event log starting from `since`, returning
     /// every event keyed at a strictly later `TaskId`. An empty
     /// `Checkpoint` (default) returns the entire log.
+    ///
+    /// Prefer [`Self::peek_tail`] for the canonical chat read ("the
+    /// newest N messages") — this method always scans from the start
+    /// of the log and materializes every matching event.
     async fn peek(&self, channel: &ChannelId, since: &Checkpoint) -> Result<Vec<ChannelEvent>>;
+
+    /// Backward-anchored read: return the newest `limit` events at
+    /// or before `before` (a line-number [`TaskId`]; `None` = the tip
+    /// of the log), oldest→newest, each carrying its source line
+    /// number. [`TailPage::has_more`] is true when the log holds
+    /// events older than the first returned one — pass that event's
+    /// id back as `before` to page further back.
+    ///
+    /// This is the canonical "last N messages" chat read. Adapters
+    /// backed by the JSONL store ([`crate::ChannelStore`]) override it
+    /// with a tail scan that parses only the returned lines.
+    ///
+    /// The default impl walks the full log via [`Self::peek_with_ids`]
+    /// and slices the tail — correct for any adapter, but O(history).
+    async fn peek_tail(
+        &self,
+        channel: &ChannelId,
+        limit: usize,
+        before: Option<&TaskId>,
+    ) -> Result<TailPage> {
+        let all = self.peek_with_ids(channel, &Checkpoint::default()).await?;
+        let end = match before {
+            None => all.len(),
+            Some(b) => {
+                let b: u64 = b.parse().map_err(|_| {
+                    ChannelError::Adapter(format!("invalid before cursor {b:?}: not a numeric line offset"))
+                })?;
+                all.partition_point(|(id, _)| {
+                    id.parse::<u64>().map(|n| n < b).unwrap_or(true)
+                })
+            }
+        };
+        let start = end.saturating_sub(limit);
+        Ok(TailPage {
+            events: all[start..end].to_vec(),
+            has_more: start > 0,
+        })
+    }
+
+    /// Search the channel's `Posted` events, scanning BACKWARD from
+    /// `query.before` (or the tip of the log) and returning up to
+    /// `query.limit` matching events oldest→newest, each with its
+    /// line-number [`TaskId`].
+    ///
+    /// This is the chat "find a message" read. There is deliberately
+    /// no index: the scan is bounded by `limit` and a per-call scan
+    /// budget ([`crate::store::SEARCH_MAX_SCAN_LINES`] on the JSONL
+    /// store), and [`SearchPage::resume_before`] lets the caller
+    /// continue into older history on a miss-heavy query. When
+    /// [`SearchPage::has_more`] is true, older history exists but was
+    /// not fully scanned — pass `resume_before` back as
+    /// `query.before`.
+    ///
+    /// The default impl walks the whole log via
+    /// [`Self::peek_with_ids`] and filters in memory (O(history), no
+    /// scan budget); [`crate::ChannelStore`] overrides with a
+    /// page-aware backward scan.
+    async fn search(&self, channel: &ChannelId, query: &ChannelQuery) -> Result<SearchPage> {
+        let all = self.peek_with_ids(channel, &Checkpoint::default()).await?;
+        let before: Option<u64> = match &query.before {
+            None => None,
+            Some(b) => Some(b.parse().map_err(|_| {
+                ChannelError::Adapter(format!(
+                    "invalid before cursor {b:?}: not a numeric line offset"
+                ))
+            })?),
+        };
+        let needle = query.text.as_deref().map(str::to_lowercase);
+        let mut matches: Vec<(TaskId, ChannelEvent)> = all
+            .into_iter()
+            .filter(|(id, ev)| {
+                if let Some(b) = before {
+                    if id.parse::<u64>().map(|n| n >= b).unwrap_or(false) {
+                        return false;
+                    }
+                }
+                query_matches(ev, needle.as_deref(), query.author.as_deref())
+            })
+            .collect();
+        let overflow = matches.len() > query.limit;
+        if overflow {
+            matches = matches.split_off(matches.len() - query.limit);
+        }
+        Ok(SearchPage {
+            events: matches,
+            has_more: overflow,
+            resume_before: None,
+        })
+    }
 
     /// Like [`Self::peek`] but each item carries its source `TaskId`
     /// (the line number where the event was appended in the channel's
@@ -390,6 +483,74 @@ impl Checkpoint {
 /// carries the same string — kept as a type alias here so consumers
 /// don't need to import from `peko-protocol`.
 pub type TaskId = String;
+
+/// A backward-anchored page of the channel log, returned by
+/// [`ChannelPort::peek_tail`]. `events` are oldest→newest, each with
+/// its line-number [`TaskId`]; `has_more` is true when older events
+/// exist beyond the first returned one.
+#[derive(Debug, Clone)]
+pub struct TailPage {
+    pub events: Vec<(TaskId, ChannelEvent)>,
+    pub has_more: bool,
+}
+
+/// Filter for [`ChannelPort::search`]. All set predicates must match
+/// (AND). A query with no predicates matches every `Posted` event —
+/// it degenerates to a bounded backward browse.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelQuery {
+    /// Case-insensitive substring match against `Posted.text`.
+    pub text: Option<String>,
+    /// Exact match against `Posted.author` (the wire form, e.g.
+    /// `user:alice` or a bare principal id).
+    pub author: Option<String>,
+    /// Only consider lines strictly older than this line number.
+    /// `None` starts from the tip of the log.
+    pub before: Option<TaskId>,
+    /// Max matches to return. The store clamps this to a hard cap.
+    pub limit: usize,
+}
+
+/// A page of search results, returned by [`ChannelPort::search`].
+/// `events` are oldest→newest. `has_more` is true when older history
+/// exists but was not fully scanned (scan budget exhausted or the
+/// log continues past the scanned range); `resume_before` is the
+/// oldest line the scan examined — pass it back as
+/// [`ChannelQuery::before`] to continue. `resume_before` is `None`
+/// when the scan reached the top of the log.
+#[derive(Debug, Clone)]
+pub struct SearchPage {
+    pub events: Vec<(TaskId, ChannelEvent)>,
+    pub has_more: bool,
+    pub resume_before: Option<TaskId>,
+}
+
+/// Shared match predicate: `ev` must be a `Posted` event whose `text`
+/// contains `needle` (already lowercased; case-insensitive) and whose
+/// `author` equals `author`. `None` predicates match everything.
+pub(crate) fn query_matches(
+    ev: &ChannelEvent,
+    needle: Option<&str>,
+    author: Option<&str>,
+) -> bool {
+    let ChannelEvent::Posted {
+        text, author: a, ..
+    } = ev
+    else {
+        return false;
+    };
+    if let Some(n) = needle {
+        if !text.to_lowercase().contains(n) {
+            return false;
+        }
+    }
+    if let Some(want) = author {
+        if a != want {
+            return false;
+        }
+    }
+    true
+}
 
 // ---------------------------------------------------------------------------
 // RemoteMember (PR-B cross-runtime)

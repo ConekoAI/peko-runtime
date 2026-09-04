@@ -7,14 +7,23 @@
 //! <runtime_dir>/
 //!   channels/
 //!     <chan_id>/
-//!       meta.json       # { creator, name, created_at, tier, passive_binding? }
-//!       members.json    # { members: [String], remote_members: [RemoteMember] }
-//!       events.jsonl    # one ChannelEvent per line, append-only
+//!       meta.json          # { creator, name, created_at, tier, passive_binding? }
+//!       members.json       # { members: [String], remote_members: [RemoteMember] }
+//!       events.jsonl       # current page: one ChannelEvent per line, append-only
+//!       events.<n>.jsonl   # rotated pages, 1 = oldest (mirrors peko-session paging)
 //! ```
 //!
 //! Append-only JSONL with [`FileLock`] + [`append_bytes_durable`]
 //! for crash safety (the pattern the retired chat-log store used).
-//! The cursor is a count-based offset into `events.jsonl`.
+//! The cursor is a count-based offset into the stitched log.
+//!
+//! ## Paging
+//!
+//! When the current page crosses `rotate_bytes`
+//! ([`DEFAULT_ROTATE_BYTES`], 8 MiB), `append_event` renames it aside
+//! to `events.<n>.jsonl` and starts a fresh current page — mirroring
+//! `peko-session`'s `<id>.<n>.jsonl` convention. Rotated pages are
+//! immutable.
 //!
 //! ## Why no DAG
 //!
@@ -26,11 +35,12 @@
 //!
 //! ## TaskId shape
 //!
-//! Every event gets a `TaskId` equal to its line number in
-//! `events.jsonl`. Line 0 is the channel's `Created` event; lines
-//! after that are `MemberJoined`, `Posted`, and `MemberLeft` events in
-//! causal (insertion) order. Line numbers are stable because the log
-//! is append-only — no rotations, no deletions, no rewrites.
+//! Every event gets a `TaskId` equal to its GLOBAL line number across
+//! the stitched log (all rotated pages + the current page, in order).
+//! Line 0 is the channel's `Created` event. Line numbers never reset
+//! on rotation, so cursors (`cursors.json`), reply `parent`
+//! references, and `peko log` pagination survive page rolls.
+//! Deletions never happen.
 //!
 //! [`FileLock`]: peko_fs_persistence::FileLock
 //! [`append_bytes_durable`]: peko_fs_persistence::append_bytes_durable
@@ -43,23 +53,15 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use peko_fs_persistence::{append_bytes_durable, FileLock};
-use peko_protocol::channel::{ChannelEvent, ChannelId};
-// `ChannelMembership` is referenced only in the `ChannelPort::membership`
-// trait surface; this adapter relies on the default `peek`-walk impl
-// and never names the wire type. Mark the import as allowed so the
-// type re-export is visible across the crate without an inert hack
-// function.
-#[allow(unused_imports)]
-use peko_protocol::channel::ChannelMembership;
+use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
 use peko_subject::{PrincipalDID, PrincipalId, Subject};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
 use crate::port::{
-    ChannelError, ChannelPort, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result, TaskId,
-    Tier,
+    ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result,
+    SearchPage, TailPage, TaskId, Tier, query_matches,
 };
 use crate::fs::channel_dir_name;
 
@@ -100,6 +102,23 @@ const EVENTS_FILE: &str = "events.jsonl";
 /// the same budget the retired chat-log store used; appends are
 /// single-line writes, so a holder past this is wedged, not slow.
 const CHANNEL_LOCK_TIMEOUT_MS: u64 = 10_000;
+
+/// Default byte cap on the current page of a channel's event log.
+/// Past this, `append_event` rotates the page aside to
+/// `events.<n>.jsonl` (mirroring `peko-session`'s `<id>.<n>.jsonl`
+/// paging) and starts a fresh current page. Line-number `TaskId`s are
+/// GLOBAL across pages — they never reset — so cursors, reply
+/// `parent` references, and `peko log` pagination survive rotation.
+const DEFAULT_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Per-call scan budget for [`ChannelPort::search`]: at most this
+/// many log lines are examined per invocation. Bounds a miss-heavy
+/// query (no matches in the scanned range); `SearchPage.has_more` +
+/// `resume_before` let the caller continue into older history.
+pub const SEARCH_MAX_SCAN_LINES: u64 = 100_000;
+
+/// Hard cap on matches returned by one [`ChannelPort::search`] call.
+const SEARCH_MAX_MATCHES: usize = 200;
 
 // ---------------------------------------------------------------------------
 // ChannelConfig
@@ -357,6 +376,23 @@ pub struct ChannelStore {
     /// subscribe. Dead entries (no receivers) are GC'd by the next
     /// `subscribe_events` call.
     notifiers: Arc<Mutex<HashMap<ChannelId, broadcast::Sender<ChannelEvent>>>>,
+    /// Per-page-file `(line_count, byte_len)` cache, keyed by the
+    /// page's path (`events.jsonl` or a rotated `events.<n>.jsonl`).
+    /// Powers the O(1) next-line-number computation in `append_event`
+    /// and lets reads skip/price whole pages without opening them.
+    ///
+    /// Correct across processes: a cached entry is only trusted when
+    /// the file's current byte length matches — any external append or
+    /// a crash mid-write changes the length and forces a recount.
+    /// Rotated pages are immutable once renamed aside, so their cached
+    /// counts stay valid indefinitely.
+    line_counts: Arc<Mutex<HashMap<PathBuf, (u64, u64)>>>,
+    /// Byte cap on the current page of a channel's event log. When an
+    /// append would push the current page past this, the page is
+    /// renamed aside to `events.<n>.jsonl` first (mirroring
+    /// `peko-session`'s paging) and the append lands in a fresh
+    /// current page. Override with [`Self::with_rotate_bytes`].
+    rotate_bytes: u64,
 }
 
 impl ChannelStore {
@@ -366,7 +402,18 @@ impl ChannelStore {
         Self {
             cfg,
             notifiers: Arc::new(Mutex::new(HashMap::new())),
+            line_counts: Arc::new(Mutex::new(HashMap::new())),
+            rotate_bytes: DEFAULT_ROTATE_BYTES,
         }
+    }
+
+    /// Override the event-log page cap (bytes). Tests use this to
+    /// force rotation after a few events; production keeps
+    /// [`DEFAULT_ROTATE_BYTES`].
+    #[must_use]
+    pub fn with_rotate_bytes(mut self, bytes: u64) -> Self {
+        self.rotate_bytes = bytes;
+        self
     }
 
     /// PR-2b: subscribe to live events for `channel`. Returns a
@@ -379,6 +426,9 @@ impl ChannelStore {
         channel: &ChannelId,
     ) -> broadcast::Receiver<ChannelEvent> {
         let mut guard = self.notifiers.lock().expect("notifier mutex");
+        // GC channels whose sender has no live receivers left, so the
+        // map doesn't grow unboundedly with channel count.
+        guard.retain(|_, sender| sender.receiver_count() > 0);
         let sender = guard
             .entry(channel.clone())
             .or_insert_with(|| broadcast::channel(256).0);
@@ -448,6 +498,114 @@ impl ChannelStore {
         self.channel_dir_for_tier(tier, channel).join(EVENTS_FILE)
     }
 
+    // -----------------------------------------------------------------
+    // Page helpers (rotation)
+    // -----------------------------------------------------------------
+
+    /// Rotated pages of the channel dir — `events.<n>.jsonl` files
+    /// sorted ascending by page number (1 = oldest). The current page
+    /// (`events.jsonl`) is NOT included; append it with
+    /// [`Self::all_pages`] for read paths.
+    async fn rotated_pages(&self, chan_dir: &Path) -> Result<Vec<PathBuf>> {
+        let mut numbered: Vec<(u32, PathBuf)> = Vec::new();
+        let mut rd = match fs::read_dir(chan_dir).await {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "read {}: {e}",
+                    chan_dir.display()
+                )));
+            }
+        };
+        while let Some(entry) = rd.next_entry().await.map_err(|e| {
+            ChannelError::Adapter(format!("walk {}: {e}", chan_dir.display()))
+        })? {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(n) = name
+                .strip_prefix("events.")
+                .and_then(|s| s.strip_suffix(".jsonl"))
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            numbered.push((n, entry.path()));
+        }
+        numbered.sort_by_key(|(n, _)| *n);
+        Ok(numbered.into_iter().map(|(_, p)| p).collect())
+    }
+
+    /// Every page of the channel's event log, oldest→newest: rotated
+    /// pages followed by the current page (when it exists).
+    async fn all_pages(&self, chan_dir: &Path) -> Result<Vec<PathBuf>> {
+        let mut pages = self.rotated_pages(chan_dir).await?;
+        let current = chan_dir.join(EVENTS_FILE);
+        match fs::try_exists(&current).await {
+            Ok(true) => pages.push(current),
+            Ok(false) => {}
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "stat {}: {e}",
+                    current.display()
+                )));
+            }
+        }
+        Ok(pages)
+    }
+
+    /// `(line_count, byte_len)` for one page file, cache-aware. Rotated
+    /// pages are immutable, so their entries never go stale; the
+    /// current page's entry is validated against the live byte length
+    /// (external appends / torn writes change it → recount). Missing
+    /// files count as (0, 0) and are not cached.
+    async fn page_line_count(&self, path: &Path) -> Result<(u64, u64)> {
+        let len = match fs::metadata(path).await {
+            Ok(md) => md.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "stat {}: {e}",
+                    path.display()
+                )));
+            }
+        };
+        let cached = self
+            .line_counts
+            .lock()
+            .expect("line_counts mutex")
+            .get(path)
+            .copied();
+        if let Some((count, cached_len)) = cached {
+            if cached_len == len {
+                return Ok((count, len));
+            }
+        }
+        let bytes = fs::read(path).await.map_err(|e| {
+            ChannelError::Adapter(format!("read {}: {e}", path.display()))
+        })?;
+        let count = u64::try_from(bytes.iter().filter(|b| **b == b'\n').count())
+            .map_err(|e| ChannelError::Adapter(format!("line count: {e}")))?;
+        self.line_counts
+            .lock()
+            .expect("line_counts mutex")
+            .insert(path.to_path_buf(), (count, len));
+        Ok((count, len))
+    }
+
+    /// Total line count across all of the channel's pages — the
+    /// global line number space `TaskId`s live in. Steady state is a
+    /// `read_dir` + stats (every page count comes from the cache);
+    /// cold starts byte-scan each page once, without parsing.
+    async fn global_line_count(&self, tier: Tier, channel: &ChannelId) -> Result<u64> {
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let mut total = 0;
+        for p in self.all_pages(&chan_dir).await? {
+            total += self.page_line_count(&p).await?.0;
+        }
+        Ok(total)
+    }
+
     /// Read meta.json and return its tier. Falls back to
     /// `Tier::Runtime` if meta.json is missing (lets `peek`/`list_members`
     /// surface `NotFound` cleanly via the directory load).
@@ -463,8 +621,15 @@ impl ChannelStore {
 
     /// Append one [`ChannelEvent`] as a single JSONL line. Acquires a
     /// per-shard [`FileLock`] + uses [`append_bytes_durable`] for
-    /// crash safety. Returns the line number (0-indexed) the event
-    /// was assigned.
+    /// crash safety. Returns the GLOBAL line number (0-indexed across
+    /// all pages) the event was assigned.
+    ///
+    /// When the append would push the current page past
+    /// `rotate_bytes`, the current page is first renamed aside to
+    /// `events.<n>.jsonl` (n = max existing page + 1) and the event
+    /// lands in a fresh current page. Rotation never changes line
+    /// numbers: ids count every newline-terminated line across all
+    /// pages, oldest→newest.
     ///
     /// This is the SINGLE disk-append chokepoint for the store —
     /// `create`, `post_with_event`, `append_remote_event` (the
@@ -490,58 +655,99 @@ impl ChannelStore {
                 ChannelError::Adapter(format!("lock {}: {e}", path.display()))
             })?;
 
-        // Determine the next line number from the current file length
-        // (line count = newline count for properly-terminated JSONL).
-        let line_number = match fs::metadata(&path).await {
-            Ok(_md) => {
-                let bytes = fs::read(&path).await.map_err(|e| {
-                    ChannelError::Adapter(format!("read {}: {e}", path.display()))
-                })?;
-                u64::try_from(bytes.iter().filter(|b| **b == b'\n').count())
-                    .map_err(|e| ChannelError::Adapter(format!("line count: {e}")))?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(e) => {
-                return Err(ChannelError::Adapter(format!(
-                    "stat {}: {e}",
-                    path.display()
-                )));
-            }
-        };
+        // Global next line number = lines in rotated pages + lines in
+        // the current page. `page_line_count` is cache-aware (rotated
+        // pages immutable, current page validated by byte length), so
+        // the steady-state cost is a read_dir + stats — never a file
+        // read. A cross-process append or torn write invalidates the
+        // current page's entry via its length and forces a recount of
+        // just that page.
+        let mut line_number: u64 = 0;
+        let rotated = self.rotated_pages(&chan_dir).await?;
+        for p in &rotated {
+            line_number += self.page_line_count(p).await?.0;
+        }
+        let (current_lines, current_len) = self.page_line_count(&path).await?;
+        line_number += current_lines;
 
         let mut bytes = serde_json::to_vec(ev).map_err(|e| {
             ChannelError::Adapter(format!("serialize ChannelEvent: {e}"))
         })?;
         bytes.push(b'\n');
+
+        // Rotate BEFORE the append when it would push the current page
+        // past the cap: the event always lands in a page under the cap
+        // (unless the event itself exceeds it). Rename is atomic; the
+        // lock above serializes this against other appenders, including
+        // cross-process ones.
+        let mut cur_len = current_len;
+        let mut cur_lines = current_lines;
+        if current_len > 0 && current_len + bytes.len() as u64 > self.rotate_bytes {
+            let n = rotated
+                .last()
+                .and_then(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(|s| s.strip_prefix("events."))
+                        .and_then(|s| s.strip_suffix(".jsonl"))
+                        .and_then(|s| s.parse::<u32>().ok())
+                })
+                .unwrap_or(0)
+                + 1;
+            let page_path = chan_dir.join(format!("events.{n}.jsonl"));
+            // Cache the renamed page's final counts under its new name
+            // BEFORE the rename so a racing reader's recount of that
+            // page agrees with what we measured.
+            self.line_counts
+                .lock()
+                .expect("line_counts mutex")
+                .insert(page_path.clone(), (cur_lines, cur_len));
+            fs::rename(&path, &page_path).await.map_err(|e| {
+                ChannelError::Adapter(format!(
+                    "rotate {} -> {}: {e}",
+                    path.display(),
+                    page_path.display()
+                ))
+            })?;
+            self.line_counts
+                .lock()
+                .expect("line_counts mutex")
+                .insert(path.clone(), (0, 0));
+            cur_len = 0;
+            cur_lines = 0;
+        }
+
         append_bytes_durable(&path, &bytes).await.map_err(|e| {
             ChannelError::Adapter(format!("append {}: {e}", path.display()))
         })?;
+        // The append is durable; the current page now ends exactly
+        // where our write finished, so the cache entry is authoritative
+        // for the next append (a concurrent in-process appender holds
+        // the same lock before computing its own line number).
+        self.line_counts.lock().expect("line_counts mutex").insert(
+            path.clone(),
+            (cur_lines + 1, cur_len + bytes.len() as u64),
+        );
         // Notify live subscribers only after the durable append
         // succeeds (see the method docs — single chokepoint).
         self.notify_event(channel, ev);
         Ok(line_number)
     }
 
-    /// Read `events.jsonl` from offset `since` (count-based) onward.
-    /// Empty `Checkpoint` reads from the beginning. Returns the parsed
-    /// events plus the line numbers used as [`TaskId`]s.
+    /// Read the channel's event log from offset `since` (count-based,
+    /// global across pages) onward. Empty `Checkpoint` reads from the
+    /// beginning. Returns the parsed events plus the line numbers used
+    /// as [`TaskId`]s.
+    ///
+    /// Pages entirely behind the cursor are skipped via their cached
+    /// line counts without being opened — a subscriber parked near the
+    /// tip never touches rotated history.
     async fn read_events(
         &self,
         tier: Tier,
         channel: &ChannelId,
         since: &Checkpoint,
     ) -> Result<Vec<(TaskId, ChannelEvent)>> {
-        let path = self.events_path_for(tier, channel);
-        let file = match fs::File::open(&path).await {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => {
-                return Err(ChannelError::Adapter(format!(
-                    "open {}: {e}",
-                    path.display()
-                )));
-            }
-        };
         let start: u64 = if since.0.is_empty() {
             0
         } else {
@@ -552,24 +758,258 @@ impl ChannelStore {
                 ))
             })?
         };
-        let reader = BufReader::new(file);
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
         let mut out = Vec::new();
-        let mut lines = reader.lines();
         let mut idx: u64 = 0;
-        while let Some(line) = lines.next_line().await.map_err(|e| {
-            ChannelError::Adapter(format!("read {}: {e}", path.display()))
-        })? {
-            if idx >= start {
-                let ev: ChannelEvent = serde_json::from_str(&line).map_err(|e| {
-                    ChannelError::Adapter(format!(
-                        "decode event at line {idx}: {e}"
-                    ))
-                })?;
-                out.push((idx.to_string(), ev));
+        for path in self.all_pages(&chan_dir).await? {
+            // Skip a whole page without opening it when the cursor is
+            // already past its last line.
+            if start > 0 {
+                let (count, _) = self.page_line_count(&path).await?;
+                if idx + count <= start {
+                    idx += count;
+                    continue;
+                }
             }
-            idx += 1;
+            let bytes = match fs::read(&path).await {
+                Ok(b) => b,
+                // A page that vanished mid-read (rotation race): the
+                // append path only renames, so skip and let the next
+                // read see the settled layout.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(ChannelError::Adapter(format!(
+                        "read {}: {e}",
+                        path.display()
+                    )));
+                }
+            };
+            let mut line_start = 0usize;
+            for (i, b) in bytes.iter().enumerate() {
+                if *b == b'\n' {
+                    let content = &bytes[line_start..i];
+                    if !content.is_empty() && idx >= start {
+                        let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                            ChannelError::Adapter(format!("decode event at line {idx}: {e}"))
+                        })?;
+                        out.push((idx.to_string(), ev));
+                    }
+                    idx += 1;
+                    line_start = i + 1;
+                }
+            }
         }
         Ok(out)
+    }
+
+    /// Backward-anchored read: the newest `limit` events at or before
+    /// `before` (GLOBAL line number; `None` = tip of the log),
+    /// oldest→newest.
+    ///
+    /// Line counts come from the per-page cache (stats only in the
+    /// steady state); then only the pages intersecting the returned
+    /// range are read, and only the returned lines are JSON-parsed —
+    /// so a "last N messages" chat read is O(limit) parse + O(pages)
+    /// stat, never O(history) decode.
+    async fn read_tail(
+        &self,
+        tier: Tier,
+        channel: &ChannelId,
+        limit: usize,
+        before: Option<&TaskId>,
+    ) -> Result<crate::port::TailPage> {
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let pages = self.all_pages(&chan_dir).await?;
+        let mut counts = Vec::with_capacity(pages.len());
+        let mut total: u64 = 0;
+        for p in &pages {
+            let (c, _) = self.page_line_count(p).await?;
+            counts.push(c);
+            total += c;
+        }
+        let end = match before {
+            None => total,
+            Some(b) => {
+                let b: u64 = b.parse().map_err(|_| {
+                    ChannelError::Adapter(format!(
+                        "invalid before cursor {b:?}: not a numeric line offset"
+                    ))
+                })?;
+                b.min(total)
+            }
+        };
+        let from = end.saturating_sub(limit as u64);
+        let mut out = Vec::new();
+        let mut base: u64 = 0;
+        for (path, count) in pages.iter().zip(&counts) {
+            let page_end = base + count;
+            if page_end <= from {
+                base = page_end;
+                continue;
+            }
+            if base >= end {
+                break;
+            }
+            let bytes = match fs::read(path).await {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    base = page_end;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(ChannelError::Adapter(format!(
+                        "read {}: {e}",
+                        path.display()
+                    )));
+                }
+            };
+            let mut idx = base;
+            let mut line_start = 0usize;
+            for (i, b) in bytes.iter().enumerate() {
+                if *b == b'\n' {
+                    let content = &bytes[line_start..i];
+                    if !content.is_empty() && idx >= from && idx < end {
+                        let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                            ChannelError::Adapter(format!("decode event at line {idx}: {e}"))
+                        })?;
+                        out.push((idx.to_string(), ev));
+                    }
+                    idx += 1;
+                    line_start = i + 1;
+                }
+            }
+            base = page_end;
+        }
+        Ok(crate::port::TailPage {
+            events: out,
+            has_more: from > 0,
+        })
+    }
+
+    /// Backward filtered scan over `Posted` events (see
+    /// [`ChannelPort::search`]). Walks pages newest→oldest, parses
+    /// only `Posted` lines (non-posted lines are skipped on a
+    /// byte-level kind-tag check), and stops at `limit` matches or
+    /// after [`SEARCH_MAX_SCAN_LINES`] examined lines — whichever
+    /// comes first.
+    ///
+    /// The kind-tag check relies on `serde_json`'s internal tagging
+    /// emitting `{"kind":"posted",...}` first; the
+    /// `search_finds_posts_across_pages` test pins the contract. If
+    /// the wire shape ever changes, the worst case is missed matches,
+    /// never wrong ones.
+    async fn search_events(
+        &self,
+        tier: Tier,
+        channel: &ChannelId,
+        query: &ChannelQuery,
+    ) -> Result<SearchPage> {
+        const POSTED_TAG: &[u8] = b"{\"kind\":\"posted\"";
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let pages = self.all_pages(&chan_dir).await?;
+        let mut counts = Vec::with_capacity(pages.len());
+        let mut total: u64 = 0;
+        for p in &pages {
+            let (c, _) = self.page_line_count(p).await?;
+            counts.push(c);
+            total += c;
+        }
+        let end = match &query.before {
+            None => total,
+            Some(b) => {
+                let b: u64 = b.parse().map_err(|_| {
+                    ChannelError::Adapter(format!(
+                        "invalid before cursor {b:?}: not a numeric line offset"
+                    ))
+                })?;
+                b.min(total)
+            }
+        };
+        let limit = query.limit.clamp(1, SEARCH_MAX_MATCHES);
+        let needle = query.text.as_deref().map(str::to_lowercase);
+
+        // Page bases (global line number of each page's first line).
+        let mut bases = Vec::with_capacity(pages.len());
+        let mut acc = 0u64;
+        for c in &counts {
+            bases.push(acc);
+            acc += c;
+        }
+
+        let mut matches: Vec<(u64, ChannelEvent)> = Vec::new(); // newest-first while collecting
+        let mut scanned: u64 = 0;
+        let mut floor = end; // smallest line number examined
+        'outer: for (i, path) in pages.iter().enumerate().rev() {
+            let base = bases[i];
+            if base >= end {
+                // The whole page sits at/after the anchor — skip
+                // (only possible for the newest pages).
+                continue;
+            }
+            let bytes = match fs::read(path).await {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(ChannelError::Adapter(format!(
+                        "read {}: {e}",
+                        path.display()
+                    )));
+                }
+            };
+            // Collect (global_idx, content range) for non-empty lines,
+            // then walk them newest-first.
+            let mut lines: Vec<(u64, usize, usize)> = Vec::new();
+            let mut idx = base;
+            let mut line_start = 0usize;
+            for (i, b) in bytes.iter().enumerate() {
+                if *b == b'\n' {
+                    if line_start < i {
+                        lines.push((idx, line_start, i));
+                    }
+                    idx += 1;
+                    line_start = i + 1;
+                }
+            }
+            for (gidx, s, e) in lines.into_iter().rev() {
+                if gidx >= end {
+                    continue; // at/after the anchor — not examined
+                }
+                if scanned >= SEARCH_MAX_SCAN_LINES {
+                    break 'outer;
+                }
+                scanned += 1;
+                floor = gidx;
+                let content = &bytes[s..e];
+                if !content.starts_with(POSTED_TAG) {
+                    continue;
+                }
+                let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                    ChannelError::Adapter(format!("decode event at line {gidx}: {e}"))
+                })?;
+                if query_matches(&ev, needle.as_deref(), query.author.as_deref()) {
+                    matches.push((gidx, ev));
+                    if matches.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        // Collected newest-first; return oldest→newest.
+        matches.reverse();
+        let has_more = floor > 0;
+        Ok(SearchPage {
+            events: matches
+                .into_iter()
+                .map(|(n, ev)| (n.to_string(), ev))
+                .collect(),
+            has_more,
+            resume_before: if has_more {
+                Some(floor.to_string())
+            } else {
+                None
+            },
+        })
     }
 
     // -----------------------------------------------------------------
@@ -594,6 +1034,21 @@ impl ChannelStore {
             .members
             .iter()
             .any(|m| member_subject(m) == *subject))
+    }
+
+    /// Lock `members.json` for a read-modify-write cycle (invite /
+    /// leave / add_remote_member). Without this, two concurrent
+    /// membership changes on the same channel race load→mutate→save
+    /// and the later save clobbers the earlier one. The lock is on
+    /// the members file itself (FileLock derives `<path>.lock`), so
+    /// it never contends with the `events.jsonl` append lock.
+    async fn lock_members(&self, chan_dir: &Path) -> Result<FileLock> {
+        FileLock::acquire(MembersJson::path_in(chan_dir), CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(format!(
+                "lock {}: {e}",
+                MembersJson::path_in(chan_dir).display()
+            )))
     }
 
     /// Walk `<runtime_dir>/channels/` and return every `ChannelId` for
@@ -766,6 +1221,7 @@ impl ChannelStore {
     ) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let row = RemoteMember {
             runtime_id: runtime_id.to_string(),
@@ -986,17 +1442,17 @@ impl ChannelStore {
         }
 
         // Validate parent (if any) references an existing line in the
-        // log. The log is append-only, so existing line numbers are
-        // stable until truncation (which we don't do).
+        // log. Line numbers are global across rotated pages and never
+        // reset, so the check is a (cache-backed) line count, not a
+        // log walk: `parent_idx < total lines` iff the parent exists.
         if let Some(parent_line) = msg.parent.as_ref() {
             let parent_idx: u64 = parent_line.parse().map_err(|_| {
                 ChannelError::Adapter(format!(
                     "invalid parent TaskId {parent_line}: not a numeric line offset"
                 ))
             })?;
-            let events =
-                self.read_events(tier, channel, &Checkpoint::default()).await?;
-            if events.is_empty() || parent_idx >= events.len() as u64 {
+            let total = self.global_line_count(tier, channel).await?;
+            if parent_idx >= total {
                 return Err(ChannelError::Adapter(format!(
                     "parent line {parent_line} not found in channel log"
                 )));
@@ -1081,6 +1537,7 @@ impl ChannelPort for ChannelStore {
     ) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let inviter_subject = Subject::from(inviter);
         if !members
@@ -1165,6 +1622,54 @@ impl ChannelPort for ChannelStore {
         self.read_events(tier, channel, since).await
     }
 
+    async fn peek_tail(
+        &self,
+        channel: &ChannelId,
+        limit: usize,
+        before: Option<&TaskId>,
+    ) -> Result<TailPage> {
+        let tier = self.resolve_tier(channel).await?;
+        self.read_tail(tier, channel, limit, before).await
+    }
+
+    async fn search(&self, channel: &ChannelId, query: &ChannelQuery) -> Result<SearchPage> {
+        let tier = self.resolve_tier(channel).await?;
+        self.search_events(tier, channel, query).await
+    }
+
+    /// Override the trait's default full-log walk: `meta.json` +
+    /// `members.json` answer the same question in two small file
+    /// reads. The one field the files can't answer is
+    /// `last_membership_change` (a property of the event log), so it
+    /// reports `None` — consumers that need it can walk the log
+    /// themselves.
+    async fn membership(&self, channel: &ChannelId) -> Result<ChannelMembership> {
+        let tier = self.resolve_tier(channel).await?;
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let meta = MetaJson::load(&chan_dir, channel).await?;
+        let provenance = ChannelStore::members_with_attribution(self, channel).await?;
+        Ok(ChannelMembership {
+            channel: channel.clone(),
+            name: meta.name,
+            creator: meta.creator,
+            members: provenance.iter().map(|p| p.principal.clone()).collect(),
+            member_provenance: provenance,
+            created_at: meta.created_at.to_rfc3339(),
+            last_membership_change: None,
+        })
+    }
+
+    /// Wire the inherent (members.json-backed) implementation into the
+    /// trait so `Arc<dyn ChannelPort>` callers get it too — previously
+    /// the trait default ran instead, walking the full event log
+    /// through `membership()`.
+    async fn members_with_attribution(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<Vec<peko_protocol::channel::MemberProvenance>> {
+        ChannelStore::members_with_attribution(self, channel).await
+    }
+
     /// Phase 4: read `meta.json`'s `passive_binding`. Probes the
     /// Runtime-tier dir first (the common case), then the Shared dir
     /// when configured — mirroring `resolve_tier`'s fallback so a
@@ -1192,6 +1697,7 @@ impl ChannelPort for ChannelStore {
     ) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let before_len = members.members.len();
         let principal_subject = Subject::from(principal);
@@ -1251,18 +1757,33 @@ impl ChannelPort for ChannelStore {
         }
         fs::create_dir_all(&shared_chan_dir).await?;
 
-        // Copy the three Runtime-tier files: meta.json, members.json,
-        // events.jsonl. None are recursive; the layout is flat.
-        for filename in [META_FILE, MEMBERS_FILE, EVENTS_FILE] {
-            let src = runtime_chan_dir.join(filename);
-            if !src.exists() {
+        // Copy the Runtime-tier data files: meta.json, members.json,
+        // events.jsonl, and any rotated `events.<n>.jsonl` pages.
+        // Locks / tmp files are skipped. The layout is flat — no
+        // recursion needed.
+        let mut rd = fs::read_dir(&runtime_chan_dir).await.map_err(|e| {
+            ChannelError::Adapter(format!(
+                "read {}: {e}",
+                runtime_chan_dir.display()
+            ))
+        })?;
+        while let Some(entry) = rd.next_entry().await.map_err(|e| {
+            ChannelError::Adapter(format!("walk {}: {e}", runtime_chan_dir.display()))
+        })? {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let is_data = name == META_FILE
+                || name == MEMBERS_FILE
+                || name == EVENTS_FILE
+                || (name.starts_with("events.") && name.ends_with(".jsonl"));
+            if !is_data {
                 continue;
             }
-            let dst = shared_chan_dir.join(filename);
-            fs::copy(&src, &dst).await.map_err(|e| {
+            let dst = shared_chan_dir.join(name);
+            fs::copy(entry.path(), &dst).await.map_err(|e| {
                 ChannelError::Adapter(format!(
                     "copy {} -> {}: {e}",
-                    src.display(),
+                    entry.path().display(),
                     dst.display()
                 ))
             })?;
@@ -1559,6 +2080,485 @@ mod tests {
             matches!(err, Err(ChannelError::FanOutCap { current: 8 })),
             "9th principal must hit the cap at current=8; got: {err:?}"
         );
+    }
+
+    // -- tail reads (peek_tail) ----------------------------------------
+
+    /// `peek_tail` returns the NEWEST `limit` events oldest→newest,
+    /// each with its true line-number id, and reports `has_more` when
+    /// older events exist beyond the page.
+    #[tokio::test]
+    async fn peek_tail_returns_newest_page_with_ids_and_has_more() {
+        let cfg = tmp_cfg("tail-basic");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        // Lines: 0 = Created, 1..=4 = posts.
+        for i in 0..4 {
+            store
+                .post(
+                    &channel,
+                    &Subject::from(&creator),
+                    PostMsg::root(format!("msg {i}")),
+                )
+                .await
+                .unwrap();
+        }
+
+        let page = store.peek_tail(&channel, 2, None).await.unwrap();
+        assert_eq!(page.events.len(), 2);
+        assert!(page.has_more, "older events exist beyond the page");
+        assert_eq!(page.events[0].0, "3");
+        assert_eq!(page.events[1].0, "4");
+        match &page.events[0].1 {
+            ChannelEvent::Posted { text, .. } => assert_eq!(text, "msg 2"),
+            other => panic!("expected Posted, got {other:?}"),
+        }
+
+        // A full-covering page reports has_more = false.
+        let page = store.peek_tail(&channel, 10, None).await.unwrap();
+        assert_eq!(page.events.len(), 5);
+        assert!(!page.has_more);
+    }
+
+    /// `before` anchors the tail read strictly below the given line,
+    /// so `next_cursor` → `before` walks backward without overlap.
+    #[tokio::test]
+    async fn peek_tail_before_pages_backward_without_overlap() {
+        let cfg = tmp_cfg("tail-before");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        for i in 0..3 {
+            store
+                .post(
+                    &channel,
+                    &Subject::from(&creator),
+                    PostMsg::root(format!("msg {i}")),
+                )
+                .await
+                .unwrap();
+        }
+        // Lines: 0 = Created, 1..=3 = posts.
+
+        let newest = store.peek_tail(&channel, 2, None).await.unwrap();
+        assert_eq!(
+            newest.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["2", "3"]
+        );
+        let cursor = newest.events[0].0.clone();
+
+        let older = store
+            .peek_tail(&channel, 2, Some(&cursor))
+            .await
+            .unwrap();
+        assert_eq!(
+            older.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["0", "1"],
+            "page before line 2 is lines 0..=1 — no overlap with the newest page"
+        );
+        assert!(!older.has_more);
+    }
+
+    /// The line-number cache must not go stale when another writer
+    /// (e.g. the CLI in-process fallback racing the daemon) appends to
+    /// the same log: the byte-length check forces a recount.
+    #[tokio::test]
+    async fn append_line_number_survives_external_append() {
+        let cfg = tmp_cfg("external-append");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let first = store
+            .post(&channel, &Subject::from(&creator), PostMsg::root("mine"))
+            .await
+            .unwrap();
+        assert_eq!(first, "1", "line 0 is the Created event");
+
+        // Simulate a second process appending directly to the file.
+        let events_path = cfg.channel_dir(&channel).join("events.jsonl");
+        let foreign = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_other".into(),
+            parent: None,
+            text: "foreign".into(),
+            at: "2026-09-03T00:00:00Z".into(),
+        };
+        let mut line = serde_json::to_vec(&foreign).unwrap();
+        line.push(b'\n');
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&events_path)
+            .unwrap();
+        std::io::Write::write_all(&mut f, &line).unwrap();
+
+        let second = store
+            .post(&channel, &Subject::from(&creator), PostMsg::root("mine again"))
+            .await
+            .unwrap();
+        assert_eq!(
+            second, "3",
+            "the external append must force a recount, not reuse the cached count"
+        );
+
+        let all = store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 4);
+        match &all[2].1 {
+            ChannelEvent::Posted { author, text, .. } => {
+                assert_eq!(author, "prin_other");
+                assert_eq!(text, "foreign");
+            }
+            other => panic!("expected the foreign Posted at line 2, got {other:?}"),
+        }
+    }
+
+    /// Concurrent membership changes must not lose rows: N overlapping
+    /// invites all land in `members.json` (the FileLock serializes the
+    /// load→mutate→save cycle).
+    #[tokio::test]
+    async fn concurrent_invites_do_not_lose_members() {
+        let cfg = tmp_cfg("concurrent-invites");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let store = store.clone();
+            let channel = channel.clone();
+            let creator = creator.clone();
+            handles.push(tokio::spawn(async move {
+                store
+                    .invite(
+                        &channel,
+                        &creator,
+                        &Subject::User(format!("user_{i}")),
+                    )
+                    .await
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().expect("invite must succeed");
+        }
+        let members = store.list_members(&channel).await.unwrap();
+        assert_eq!(
+            members.len(),
+            9,
+            "creator + 8 concurrently invited users must all be present"
+        );
+    }
+
+    // -- paging / rotation --------------------------------------------
+
+    /// Posting past the page cap rotates the current page aside to
+    /// `events.<n>.jsonl`; line-number ids stay global and contiguous
+    /// across the roll, and a full read stitches every page in order.
+    #[tokio::test]
+    async fn rotation_rolls_pages_and_ids_stay_global() {
+        let cfg = tmp_cfg("rotation");
+        let store = ChannelStore::new(cfg.clone()).with_rotate_bytes(300);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let sender = Subject::from(&creator);
+        for i in 0..10 {
+            let id = store
+                .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
+                .await
+                .unwrap();
+            assert_eq!(id, (i + 1).to_string(), "ids continue across rotations");
+        }
+
+        let chan_dir = cfg.channel_dir(&channel);
+        let rotated = store.rotated_pages(&chan_dir).await.unwrap();
+        assert!(
+            !rotated.is_empty(),
+            "300-byte cap must have rotated at least one page"
+        );
+
+        // Full read stitches all pages in order with contiguous ids.
+        let all = store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 11, "Created + 10 posts");
+        for (expect, (id, _)) in all.iter().enumerate() {
+            assert_eq!(id, &expect.to_string());
+        }
+
+        // A reply to a message living in a rotated page still
+        // validates (parent check is a global line count, not a
+        // current-page walk).
+        let reply = store
+            .post(&channel, &sender, PostMsg::reply("1".to_string(), "reply to msg 0"))
+            .await
+            .expect("parent in a rotated page must validate");
+        assert_eq!(reply, "11");
+    }
+
+    /// Cursor reads and tail reads cross page boundaries transparently.
+    #[tokio::test]
+    async fn reads_cross_page_boundaries() {
+        let cfg = tmp_cfg("cross-page-reads");
+        let store = ChannelStore::new(cfg).with_rotate_bytes(300);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let sender = Subject::from(&creator);
+        for i in 0..10 {
+            store
+                .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
+                .await
+                .unwrap();
+        }
+
+        // Forward read from a cursor in the middle: only newer events,
+        // correctly numbered regardless of which page they live on.
+        let newer = store
+            .peek_with_ids(&channel, &Checkpoint("8".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            newer.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["8", "9", "10"]
+        );
+
+        // Tail read spanning the boundary between a rotated page and
+        // the current page.
+        let page = store.peek_tail(&channel, 4, None).await.unwrap();
+        assert_eq!(
+            page.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["7", "8", "9", "10"]
+        );
+        assert!(page.has_more);
+
+        // Tail read anchored before a line in an OLD page.
+        let page = store
+            .peek_tail(&channel, 2, Some(&"3".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(
+            page.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["1", "2"]
+        );
+        assert!(page.has_more, "line 0 (Created) is older still");
+    }
+
+    /// A channel written by a pre-paging store (single events.jsonl,
+    /// no page files) reads identically, then rotates cleanly once it
+    /// crosses the cap.
+    #[tokio::test]
+    async fn legacy_single_file_channels_read_then_rotate() {
+        let cfg = tmp_cfg("legacy-rotate");
+        let store = ChannelStore::new(cfg.clone()).with_rotate_bytes(u64::MAX);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let sender = Subject::from(&creator);
+        for i in 0..3 {
+            store
+                .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
+                .await
+                .unwrap();
+        }
+        // Pre-paging state: no rotated pages.
+        let chan_dir = cfg.channel_dir(&channel);
+        assert!(store.rotated_pages(&chan_dir).await.unwrap().is_empty());
+        let all = store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 4);
+
+        // Now lower the cap and post — the legacy file rotates aside.
+        let store = store.with_rotate_bytes(10);
+        store
+            .post(&channel, &sender, PostMsg::root("post-rotation"))
+            .await
+            .unwrap();
+        let rotated = store.rotated_pages(&chan_dir).await.unwrap();
+        assert_eq!(rotated.len(), 1);
+        let all = store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            all.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["0", "1", "2", "3", "4"],
+            "legacy lines keep their ids; the post-rotation event continues the sequence"
+        );
+    }
+
+    // -- search --------------------------------------------------------
+
+    /// Search scans backward across pages, matches Posted events by
+    /// case-insensitive text substring and/or exact author, skips
+    /// membership lines, and pages with `resume_before`.
+    #[tokio::test]
+    async fn search_finds_posts_across_pages() {
+        let cfg = tmp_cfg("search");
+        let store = ChannelStore::new(cfg).with_rotate_bytes(200);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let alice = Subject::User("alice".into());
+        store.invite(&channel, &creator, &alice).await.unwrap();
+        let creator_subject = Subject::from(&creator);
+        // Line 0: Created, line 1: MemberJoined.
+        store
+            .post(&channel, &alice, PostMsg::root("hello world"))
+            .await
+            .unwrap(); // line 2
+        store
+            .post(&channel, &creator_subject, PostMsg::root("HELLO again"))
+            .await
+            .unwrap(); // line 3
+        store
+            .post(&channel, &creator_subject, PostMsg::root("unrelated"))
+            .await
+            .unwrap(); // line 4
+
+        let q = |text: Option<&str>, author: Option<&str>, before: Option<String>, limit| {
+            ChannelQuery {
+                text: text.map(str::to_string),
+                author: author.map(str::to_string),
+                before,
+                limit,
+            }
+        };
+
+        // Text match is case-insensitive and spans pages; membership
+        // lines never match.
+        let page = store.search(&channel, &q(Some("hello"), None, None, 10)).await.unwrap();
+        assert_eq!(
+            page.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["2", "3"],
+            "both 'hello' posts, oldest first, no MemberJoined line"
+        );
+        assert!(!page.has_more);
+        assert_eq!(page.resume_before, None, "scan reached the top");
+
+        // Author match is exact.
+        let page = store
+            .search(&channel, &q(None, Some("user:alice"), None, 10))
+            .await
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+        match &page.events[0].1 {
+            ChannelEvent::Posted { text, .. } => assert_eq!(text, "hello world"),
+            other => panic!("expected Posted, got {other:?}"),
+        }
+
+        // Limit caps the page; resume_before continues the scan.
+        let page1 = store.search(&channel, &q(Some("hello"), None, None, 1)).await.unwrap();
+        assert_eq!(page1.events.len(), 1);
+        assert_eq!(page1.events[0].0, "3", "newest match first page");
+        assert!(page1.has_more);
+        let resume = page1.resume_before.clone().expect("resume cursor");
+        let page2 = store
+            .search(&channel, &q(Some("hello"), None, Some(resume), 1))
+            .await
+            .unwrap();
+        assert_eq!(page2.events.len(), 1);
+        assert_eq!(page2.events[0].0, "2");
+        // The scan stopped AT the match (line 2) — lines 0..=1 were
+        // never examined, so has_more is still true...
+        assert!(page2.has_more);
+        let resume = page2.resume_before.clone().expect("resume cursor");
+        assert_eq!(resume, "2");
+        // ...and the final resume finds nothing below it.
+        let page3 = store
+            .search(&channel, &q(Some("hello"), None, Some(resume), 1))
+            .await
+            .unwrap();
+        assert!(page3.events.is_empty());
+        assert!(!page3.has_more);
+        assert_eq!(page3.resume_before, None);
+
+        // A miss scans to the top and reports so.
+        let page = store
+            .search(&channel, &q(Some("no-such-text"), None, None, 10))
+            .await
+            .unwrap();
+        assert!(page.events.is_empty());
+        assert!(!page.has_more);
+    }
+
+    /// `pin_to_shared` copies rotated pages alongside the current one.
+    #[tokio::test]
+    async fn pin_to_shared_copies_rotated_pages() {        let dir = std::env::temp_dir().join("peko-channel-tests-pin-pages");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = ChannelConfig {
+            runtime_dir: dir.join("runtime"),
+            shared_dir: Some(dir.join("shared")),
+        };
+        let store = ChannelStore::new(cfg).with_rotate_bytes(300);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let sender = Subject::from(&creator);
+        for i in 0..6 {
+            store
+                .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
+                .await
+                .unwrap();
+        }
+        assert!(!store
+            .rotated_pages(&store.config().channel_dir(&channel))
+            .await
+            .unwrap()
+            .is_empty());
+
+        let shared = store.pin_to_shared(&channel).await.expect("pin");
+        let pinned = std::fs::read_dir(&shared)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with("events.") && n.ends_with(".jsonl")
+            })
+            .count();
+        assert!(pinned >= 1, "rotated pages must be copied; got {pinned}");
+
+        // The pinned copy reads identically through a store rooted at
+        // the shared dir.
+        let shared_store = ChannelStore::new(ChannelConfig {
+            runtime_dir: dir.join("shared"),
+            shared_dir: None,
+        });
+        let all = shared_store
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 7, "Created + 6 posts, stitched across pages");
     }
 
     /// Legacy channels on disk carry bare principal ids in

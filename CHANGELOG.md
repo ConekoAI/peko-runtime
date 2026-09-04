@@ -4,6 +4,120 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel search (2026-09-03)
+
+Channels can finally answer "find that message" without a client-side
+full-log dump.
+
+#### Added
+- **`ChannelPort::search(channel, ChannelQuery)`** — a bounded,
+  backward filtered scan over `Posted` events. Predicates: `text`
+  (case-insensitive substring), `author` (exact wire-form match),
+  `before` (line-number anchor), `limit` (match cap, hard cap 200).
+  The scan walks pages newest→oldest, parses only `Posted` lines, and
+  stops after `limit` matches or `SEARCH_MAX_SCAN_LINES` (100k)
+  examined lines; `SearchPage { events, has_more, resume_before }`
+  carries the continuation cursor. `ChannelStore` implements the
+  page-aware scan; other adapters get a correct full-walk default.
+  No index — the scan is the deliberate minimum; per-page byte counts
+  keep the bookkeeping stat-only in the steady state.
+- **`ChannelRead` tool search mode** — new `query` / `author`
+  params; the response envelope `{channel, events, has_more,
+  next_cursor}` is unchanged, with `next_cursor` = the search's
+  `resume_before` in search mode.
+- **`peko log --search <TEXT>` / `--author <AUTHOR>`** — works on
+  both principal threads (the daemon's fill loop applies the
+  predicates while paging) and `group:<slug>` channels (via the
+  `ChannelPeek` search mode). Ignored with `--watch`.
+
+#### Changed
+- **IPC wire** — `RequestPacket::ChannelPeek` gains `query`/`author`;
+  `ResponsePacket::ChannelPeekResult` gains `resume_before`;
+  `RequestPacket::PrincipalLog` gains `query`/`author`. All
+  `#[serde(default)]` — older peers ignore them.
+
+---
+
+### Channel log paging / rotation (2026-09-03)
+
+Bounds channel log growth: the event log is no longer a single
+ever-growing `events.jsonl`.
+
+#### Changed
+- **Page rotation** — when an append would push the current page past
+  8 MiB (`DEFAULT_ROTATE_BYTES`, overridable via
+  `ChannelStore::with_rotate_bytes`), the current page is renamed
+  aside to `events.<n>.jsonl` (1 = oldest, mirroring `peko-session`'s
+  paging) and the event lands in a fresh current page. Rotated pages
+  are immutable.
+- **Global line numbers** — `TaskId`s count lines across the whole
+  stitched log and never reset on rotation, so `cursors.json`,
+  `parent` reply references, and `peko log` pagination all survive
+  page rolls. Pre-paging channels are just one-page logs — no
+  migration.
+- **O(1) reply validation** — `post`'s parent check is now a
+  (cache-backed) global line count instead of a full log parse, so
+  replies no longer pay a second O(history) scan.
+- **Page-aware reads** — `peek`/`peek_with_ids` skip pages entirely
+  behind the cursor without opening them; `peek_tail` reads only the
+  pages intersecting the returned range. The per-page line-count
+  cache makes steady-state reads stat-only.
+- **`pin_to_shared`** copies rotated `events.<n>.jsonl` pages
+  alongside the current page (was: current page only).
+
+---
+
+### Channel log read/write performance (2026-09-03)
+
+Makes channel reads and writes bounded instead of O(history), and
+gives every surface real cursors.
+
+#### Changed
+- **O(1) appends** — `ChannelStore::append_event` no longer re-reads
+  the whole `events.jsonl` to count newlines on every post; a
+  per-log `(line_count, byte_len)` cache (validated against the
+  file's current length, so cross-process appends force a recount)
+  answers the next-line-number question in O(1).
+- **Locked membership writes** — `invite` / `leave` /
+  `add_remote_member` now hold a `FileLock` on `members.json` across
+  the load→mutate→save cycle; concurrent membership changes no longer
+  lose rows.
+- **`ChannelPort::peek_tail(limit, before)`** — new backward-anchored
+  read returning `TailPage { events, has_more }` with line-number
+  ids. The `ChannelStore` impl parses only the returned lines (the
+  older prefix is a byte scan); other adapters get a correct
+  slice-based default.
+- **`ChannelRead` tool** — now returns the NEWEST `limit` events by
+  default (was: the oldest), each event carrying an `id` field, in a
+  `{channel, events, has_more, next_cursor}` envelope. `since` pages
+  forward (catch-up), `before` pages backward. The old bare-array
+  response shape is replaced.
+- **`peko log` (principal DM)** — `read_principal_log` pages via
+  `peek_tail` instead of decoding the whole channel log per page. A
+  bounded fill loop keeps pages full when `Created`/`MemberJoined`
+  lines or a `--since` cutoff thin out a page. Note: `has_more` now
+  tracks the raw event log, so a terminal page can be empty when only
+  membership lines remain.
+- **`peko log group:<slug>`** — `--limit` is now a server-side tail
+  read (was: client-side trim of a full-log peek); `--cursor` pages
+  backward via `before`. `--watch` advances its `since` cursor using
+  the new `event_ids` on `ChannelPeekResult`, so each 2s poll reads
+  only the delta (was: full log re-read every 2s).
+- **IPC wire** — `RequestPacket::ChannelPeek` gains optional
+  `tail`/`before`; `ResponsePacket::ChannelPeekResult` gains
+  `event_ids` + `has_more`. All `#[serde(default)]` — older peers
+  ignore them.
+- **Membership snapshot reads** — `ChannelStore` now overrides
+  `membership()` (meta.json + members.json instead of the trait's
+  default full-log walk; `last_membership_change` reports `None`)
+  and wires its `members.json`-backed `members_with_attribution`
+  into the trait so `Arc<dyn ChannelPort>` callers get it.
+- **Notifier GC** — `subscribe_events` reaps broadcast senders with
+  no live receivers, so the in-memory notifier map no longer grows
+  with channel count.
+
+---
+
 ### Capabilities as workspace files + per-turn prompt catalog (2026-08-30, ADR-050)
 
 Removes the CLI/IPC sugar around workspace capabilities and makes the

@@ -67,6 +67,18 @@ pub struct LogCommand {
     #[arg(long, value_name = "DURATION")]
     pub since: Option<String>,
 
+    /// Case-insensitive substring filter on message text. Combines
+    /// with paging: the daemon walks older pages until the page fills
+    /// or the log is exhausted. Ignored with `--watch`.
+    #[arg(long, value_name = "TEXT")]
+    pub search: Option<String>,
+
+    /// Exact author filter (the channel-log author: a peer Subject
+    /// like `user:alice`, or the principal's id). Ignored with
+    /// `--watch`.
+    #[arg(long, value_name = "AUTHOR")]
+    pub author: Option<String>,
+
     /// Opaque pagination cursor returned by a prior `peko log`
     /// call's `next_cursor` field. Pairs with `--limit` to walk
     /// older messages without overlap or gaps. With `--watch`, seeds
@@ -103,6 +115,8 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
         peer,
         limit,
         since,
+        search,
+        author,
         cursor,
         all,
         watch,
@@ -133,7 +147,7 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
             .await
             .context("Daemon is not running. Start it with: peko daemon start")?;
         let requester = format!("user:{}", paths.user());
-        return handle_group_log(&client, &slug, &requester, limit, since_secs, cursor, all, watch, use_json)
+        return handle_group_log(&client, &slug, &requester, limit, since_secs, search, author, cursor, all, watch, use_json)
             .await;
     }
 
@@ -144,6 +158,9 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
     if watch {
         if limit.is_some() || since_secs.is_some() || all {
             eprintln!("[peko] --watch ignores --limit/--since/--all; use --cursor to seed the replay");
+        }
+        if search.is_some() || author.is_some() {
+            eprintln!("[peko] --watch ignores --search/--author");
         }
         return watch_principal_log(&client, &principal, peer_subject, cursor, use_json).await;
     }
@@ -163,6 +180,8 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
                 limit,
                 since_secs,
                 cursor.clone(),
+                search.clone(),
+                author.clone(),
             )
             .await?
         {
@@ -272,12 +291,16 @@ async fn watch_principal_log(
 /// read against it (ADR-049 D6).
 ///
 /// Flag mapping onto what ChannelPeek actually supports:
-/// - `--cursor N` → peek's `since` checkpoint (rows strictly newer
-///   than line N).
-/// - `--limit N` → client-side: keep the newest N rows (default 50).
-/// - `--since <dur>` → client-side timestamp filter on `at`.
-/// - `--all` → no-op (peek already returns the full tail).
-/// - `--watch` → 2s poll loop (see `watch_group_log`).
+/// - `--limit N` → server-side tail read: the newest N rows
+///   (default 50, cap 1000) without a full log scan.
+/// - `--cursor N` → page further back: rows strictly older than
+///   line N (pairs with the `next_cursor` hint printed after a page).
+/// - `--since <dur>` → client-side timestamp filter on `at` (applied
+///   to the returned page).
+/// - `--all` → no-op (a single tail page per call).
+/// - `--watch` → 2s poll loop that advances its cursor via the
+///   response's `event_ids`, so each poll reads only the delta
+///   (see `watch_group_log`).
 ///
 /// Only `Posted` rows render, as `[<ts>] <author>: <text>` with the
 /// author verbatim — group authors are raw ids (principal ids or
@@ -288,6 +311,8 @@ async fn handle_group_log(
     requester: &str,
     limit: Option<usize>,
     since_secs: Option<u64>,
+    search: Option<String>,
+    author: Option<String>,
     cursor: Option<String>,
     all: bool,
     watch: bool,
@@ -300,58 +325,84 @@ async fn handle_group_log(
                 "[peko] group --watch ignores --limit/--since/--all; use --cursor to seed the replay"
             );
         }
+        if search.is_some() || author.is_some() {
+            eprintln!("[peko] group --watch ignores --search/--author");
+        }
         return watch_group_log(client, &channel, requester, cursor, use_json).await;
     }
 
-    let rows = peek_group_posted_rows(client, &channel, requester, cursor.filter(|c| !c.is_empty())).await?;
+    let cap = limit.unwrap_or(50).clamp(1, 1000);
+    let searching = search.is_some() || author.is_some();
+    let (rows, _last_id, has_more, resume_before) = peek_group_posted_rows(
+        client,
+        &channel,
+        requester,
+        None,
+        Some(cap),
+        cursor.filter(|c| !c.is_empty()),
+        search,
+        author,
+    )
+    .await?;
     let cutoff = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s as i64));
-    let rows: Vec<&(String, String, String)> = rows
+    let rows: Vec<&(String, String, String, String)> = rows
         .iter()
-        .filter(|(at, _, _)| match cutoff {
+        .filter(|(_, at, _, _)| match cutoff {
             Some(cut) => chrono::DateTime::parse_from_rfc3339(at)
                 .map(|dt| dt >= cut)
                 .unwrap_or(true), // unparseable timestamps are kept
             None => true,
         })
         .collect();
-    let cap = limit.unwrap_or(50).clamp(1, 1000);
-    let total = rows.len();
-    let rows = &rows[total.saturating_sub(cap)..];
+    // Paging-back cursor: search mode must resume from the oldest
+    // SCANNED line (matches are sparse), plain tail reads resume from
+    // the oldest RETURNED line.
+    let next_cursor = if has_more {
+        if searching {
+            resume_before
+        } else {
+            rows.first().map(|(id, _, _, _)| id.clone())
+        }
+    } else {
+        None
+    };
 
     if use_json {
         let messages: Vec<serde_json::Value> = rows
             .iter()
-            .map(|(at, author, text)| group_row_json(at, author, text))
+            .map(|(id, at, author, text)| group_row_json(id, at, author, text))
             .collect();
-        let out = serde_json::json!({ "channel": channel, "messages": messages });
+        let out = serde_json::json!({
+            "channel": channel,
+            "messages": messages,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else if rows.is_empty() {
         println!("📭 No messages in group '{slug}'.");
     } else {
         println!("📜 Group '{slug}':");
-        for (at, author, text) in rows {
+        for (_, at, author, text) in &rows {
             render_group_row(at, author, text);
         }
-        if total > cap {
-            println!("… (showing newest {cap} of {total} messages; raise --limit to see more)");
+        if let Some(next) = next_cursor {
+            println!(
+                "… (older messages available; re-run with --cursor {next:?} to page back)"
+            );
         }
     }
     Ok(())
 }
 
-/// Group `--watch`: the raw `ChannelEventsWatch` stream has no
-/// heartbeats and would die at the CLI's 60s per-packet idle timeout
-/// on a quiet channel, so this polls `ChannelPeek` every 2s and
-/// prints rows beyond the ones already shown (the channel log is
-/// append-only, so count-based diffing is exact). Ctrl-C exits via
-/// default SIGINT.
-///
-/// ADR-049 Phase 4 decision: KEEP the poll. `ChannelEventsWatch` is
-/// membership-gated since Phase 2 (and this loop passes the same
-/// `requester`), but it still emits no heartbeats — switching back to
-/// the raw stream would regress quiet-channel watches to a 60s
-/// timeout for no behavioral gain. Revisit only if the watch stream
-/// grows heartbeats.
+/// Group `--watch`: polls `ChannelPeek` every 2s with a `since`
+/// cursor advanced by the response's `event_ids`, so each poll reads
+/// only the newly appended lines instead of re-scanning the whole
+/// log. (The raw `ChannelEventsWatch` stream stays unused here: it
+/// has no heartbeats and would die at the CLI's 60s per-packet idle
+/// timeout on a quiet channel — see ADR-049 Phase 4.) A daemon that
+/// predates `event_ids` (parallel-length mismatch) falls back to the
+/// legacy count-based diff. Ctrl-C exits via default SIGINT.
 async fn watch_group_log(
     client: &DaemonClient,
     channel: &str,
@@ -359,52 +410,119 @@ async fn watch_group_log(
     cursor: Option<String>,
     use_json: bool,
 ) -> Result<()> {
-    let mut printed = 0usize;
     let mut since = cursor.filter(|c| !c.is_empty());
+    // Legacy fallback (pre-`event_ids` daemon): re-read from scratch
+    // and skip the count of rows already printed.
+    let mut legacy_printed: Option<usize> = None;
     loop {
-        let rows = peek_group_posted_rows(client, channel, requester, since.take()).await?;
-        for (at, author, text) in rows.iter().skip(printed) {
-            if use_json {
-                println!("{}", group_row_json(at, author, text));
-            } else {
-                render_group_row(at, author, text);
+        let (rows, last_raw_id, _, _) =
+            peek_group_posted_rows(client, channel, requester, since.clone(), None, None, None, None).await?;
+        match legacy_printed {
+            Some(printed) => {
+                for (id, at, author, text) in rows.iter().skip(printed) {
+                    print_group_row(id, at, author, text, use_json)?;
+                }
+                legacy_printed = Some(rows.len());
             }
+            None => match last_raw_id {
+                Some(id) => {
+                    for (row_id, at, author, text) in &rows {
+                        print_group_row(row_id, at, author, text, use_json)?;
+                    }
+                    since = Some(id);
+                }
+                None if rows.is_empty() => {
+                    // Quiet channel; the cursor stays put.
+                }
+                None => {
+                    eprintln!(
+                        "[peko] daemon did not return event ids; falling back to full re-reads"
+                    );
+                    legacy_printed = Some(0);
+                }
+            },
         }
-        printed = rows.len();
         use std::io::Write as _;
         std::io::stdout().flush()?;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
 
-/// One `ChannelPeek` round-trip; returns the channel's `Posted` rows
-/// (oldest→newest) since the cursor as `(at, author, text)` tuples.
+/// Print one group row in the active output mode.
+fn print_group_row(id: &str, at: &str, author: &str, text: &str, use_json: bool) -> Result<()> {
+    if use_json {
+        println!("{}", group_row_json(id, at, author, text));
+    } else {
+        render_group_row(at, author, text);
+    }
+    Ok(())
+}
+
+/// One `ChannelPeek` round-trip. Returns the channel's `Posted` rows
+/// (oldest→newest) as `(id, at, author, text)` tuples, the last raw
+/// event id (Posted or not — the exact `since` advance point), the
+/// tail/search `has_more` flag, and the search scan's `resume_before`
+/// cursor (`None` outside search mode).
+///
+/// `tail`/`before` select the bounded tail read (newest `tail` rows
+/// older than `before`); `query`/`author` select search mode (the
+/// daemon's backward filtered scan; `tail` caps matches, `before`
+/// anchors the scan); otherwise the request is a forward walk from
+/// `since`.
+#[allow(clippy::too_many_arguments)]
 async fn peek_group_posted_rows(
     client: &DaemonClient,
     channel: &str,
     requester: &str,
-    cursor: Option<String>,
-) -> Result<Vec<(String, String, String)>> {
+    since: Option<String>,
+    tail: Option<usize>,
+    before: Option<String>,
+    query: Option<String>,
+    author: Option<String>,
+) -> Result<(Vec<(String, String, String, String)>, Option<String>, bool, Option<String>)> {
     let packet = RequestPacket::ChannelPeek {
         request_id: 0,
         channel: channel.to_string(),
-        since: cursor,
+        since,
         requester: Some(requester.to_string()),
+        tail,
+        before,
+        query,
+        author,
     };
-    let events = match client.request_response(packet).await? {
-        ResponsePacket::ChannelPeekResult { events, .. } => events,
+    let (events, event_ids, has_more, resume_before) = match client.request_response(packet).await? {
+        ResponsePacket::ChannelPeekResult {
+            events,
+            event_ids,
+            has_more,
+            resume_before,
+            ..
+        } => (events, event_ids, has_more, resume_before),
         ResponsePacket::Error { message, .. } => {
             return Err(anyhow::anyhow!("group log failed: {message}"));
         }
         other => return Err(peko_core::ipc::unexpected_response(&other)),
     };
-    Ok(events
-        .into_iter()
-        .filter_map(|ev| match ev {
-            ChannelEvent::Posted { author, text, at, .. } => Some((at, author, text)),
-            _ => None,
-        })
-        .collect())
+    // Pair each event with its line id. A daemon predating the field
+    // returns an empty `event_ids`; surface empty ids rather than
+    // misaligning rows.
+    let ids_ok = event_ids.len() == events.len();
+    let mut rows = Vec::new();
+    let mut last_raw_id = None;
+    for (i, ev) in events.into_iter().enumerate() {
+        let id = if ids_ok {
+            event_ids[i].clone()
+        } else {
+            String::new()
+        };
+        if !id.is_empty() {
+            last_raw_id = Some(id.clone());
+        }
+        if let ChannelEvent::Posted { author, text, at, .. } = ev {
+            rows.push((id, at, author, text));
+        }
+    }
+    Ok((rows, last_raw_id, has_more, resume_before))
 }
 
 /// Human rendering for one group row: same `[<ts>] <author>: <text>`
@@ -414,8 +532,8 @@ fn render_group_row(at: &str, author: &str, text: &str) {
 }
 
 /// JSON rendering for one group row (batch arrays and watch NDJSON).
-fn group_row_json(at: &str, author: &str, text: &str) -> serde_json::Value {
-    serde_json::json!({ "at": at, "author": author, "text": text })
+fn group_row_json(id: &str, at: &str, author: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({ "id": id, "at": at, "author": author, "text": text })
 }
 
 /// Parse a `--peer` value into a `Subject`. Accepts the wire format
