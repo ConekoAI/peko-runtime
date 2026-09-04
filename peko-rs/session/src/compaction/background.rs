@@ -118,8 +118,28 @@ struct WorkerState {
     compaction_count: usize,
     /// Number of consecutive auto-compactions
     consecutive_auto: usize,
+    /// Number of consecutive failed compaction attempts. Drives the
+    /// escalating failure backoff in `should_request`; reset on
+    /// success.
+    consecutive_failures: u32,
     /// Whether compaction is currently in progress
     is_compacting: bool,
+}
+
+/// Cap on the escalating failure backoff (15 minutes).
+const MAX_FAILURE_BACKOFF_SECONDS: u64 = 15 * 60;
+
+/// Cooldown that applies after `consecutive_failures` failed attempts:
+/// the base cooldown doubled per consecutive failure, capped at
+/// [`MAX_FAILURE_BACKOFF_SECONDS`]. Zero failures yields the base
+/// cooldown unchanged.
+fn failure_backoff_seconds(cooldown_seconds: u64, consecutive_failures: u32) -> u64 {
+    // Clamp the shift so the multiplier can't overflow before the cap
+    // applies (any base cooldown × 2^10 already exceeds the cap).
+    let shift = consecutive_failures.min(10);
+    cooldown_seconds
+        .saturating_mul(1u64 << shift)
+        .min(MAX_FAILURE_BACKOFF_SECONDS)
 }
 
 impl BackgroundCompactor {
@@ -146,6 +166,7 @@ impl BackgroundCompactor {
             last_compaction: None,
             compaction_count: 0,
             consecutive_auto: 0,
+            consecutive_failures: 0,
             is_compacting: false,
         }));
 
@@ -202,6 +223,7 @@ impl BackgroundCompactor {
             last_compaction: None,
             compaction_count: 0,
             consecutive_auto: 0,
+            consecutive_failures: 0,
             is_compacting: false,
         }));
 
@@ -310,8 +332,13 @@ impl BackgroundCompactor {
             return false;
         }
 
-        // Check cooldown (prefer config value, fall back to quota)
-        let cooldown = config.cooldown_seconds;
+        // Check cooldown (prefer config value, fall back to quota).
+        // Failures count as attempts too — `last_compaction` is
+        // stamped on both success and failure — and consecutive
+        // failures escalate the cooldown exponentially so a
+        // persistently failing provider doesn't burn a summarization
+        // call per loop iteration.
+        let cooldown = failure_backoff_seconds(config.cooldown_seconds, state.consecutive_failures);
         if let Some(last) = state.last_compaction {
             let elapsed = last.elapsed().as_secs();
             if elapsed < cooldown {
@@ -432,6 +459,7 @@ async fn process_compaction_request_with_config(
                 s.last_compaction = Some(Instant::now());
                 s.compaction_count += 1;
                 s.consecutive_auto += 1;
+                s.consecutive_failures = 0;
             }
 
             info!(
@@ -445,6 +473,14 @@ async fn process_compaction_request_with_config(
         }
         Err(e) => {
             error!("Background compaction failed: {}", e);
+            // Record the attempt so the cooldown gate applies to
+            // failures too; consecutive failures escalate it via
+            // `failure_backoff_seconds`.
+            {
+                let mut s = state.lock().await;
+                s.last_compaction = Some(Instant::now());
+                s.consecutive_failures += 1;
+            }
             let _ = request
                 .response_tx
                 .send(CompactionResponse::Failed(e.to_string()));
@@ -496,6 +532,160 @@ impl crate::compaction::CompactorBackend for BackgroundCompactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peko_providers::adapters::AnyAdapter;
+    use peko_providers::core::ProviderRuntimeOptions;
+    use peko_providers::mock::MockAdapter;
+    use peko_providers::Provider;
+
+    fn mock_provider(mock: &MockAdapter) -> Arc<dyn ProviderView> {
+        Arc::new(
+            Provider::new(
+                AnyAdapter::Mock(mock.clone()),
+                "",
+                ProviderRuntimeOptions {
+                    default_model_id: "mock-model".to_string(),
+                    context_window: None,
+                    timeout_seconds: 300,
+                    max_retries: 0,
+                    retry_delay_ms: 0,
+                    ..Default::default()
+                },
+            )
+            .expect("mock provider should construct"),
+        )
+    }
+
+    /// Long-enough history that `Compactor::compact` actually calls
+    /// the LLM (same shape as the `compaction_top` tests).
+    fn test_messages() -> Vec<LlmMessage> {
+        let mut messages = vec![LlmMessage::system("You are a helpful assistant.")];
+        for i in 0..30 {
+            if i % 2 == 0 {
+                messages.push(LlmMessage::user(format!("User message {i}")));
+            } else {
+                messages.push(LlmMessage::assistant(format!(
+                    "Assistant response {i} with some additional text to make it longer"
+                )));
+            }
+        }
+        messages
+    }
+
+    fn test_request() -> (CompactionRequest, oneshot::Receiver<CompactionResponse>) {
+        let (response_tx, rx) = oneshot::channel();
+        (
+            CompactionRequest {
+                messages: test_messages(),
+                previous_summary: None,
+                response_tx,
+                phase: crate::compaction::types::CompactionPhase::PreTurn,
+            },
+            rx,
+        )
+    }
+
+    #[test]
+    fn failure_backoff_doubles_per_consecutive_failure_and_caps() {
+        assert_eq!(failure_backoff_seconds(60, 0), 60);
+        assert_eq!(failure_backoff_seconds(60, 1), 120);
+        assert_eq!(failure_backoff_seconds(60, 2), 240);
+        assert_eq!(failure_backoff_seconds(60, 3), 480);
+        assert_eq!(
+            failure_backoff_seconds(60, 4),
+            MAX_FAILURE_BACKOFF_SECONDS,
+            "capped at 15 minutes"
+        );
+        assert_eq!(
+            failure_backoff_seconds(60, 32),
+            MAX_FAILURE_BACKOFF_SECONDS,
+            "shift is clamped before the multiplier can overflow"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_attempt_records_cooldown_and_success_resets() {
+        let mock = MockAdapter::new();
+        let provider = mock_provider(&mock);
+        let state = Arc::new(Mutex::new(WorkerState {
+            last_compaction: None,
+            compaction_count: 0,
+            consecutive_auto: 0,
+            consecutive_failures: 0,
+            is_compacting: false,
+        }));
+
+        // Two consecutive failures: each stamps `last_compaction` (so
+        // the cooldown gate applies) and bumps the failure counter.
+        for expected_failures in 1..=2u32 {
+            mock.queue_error("provider down");
+            let (request, rx) = test_request();
+            process_compaction_request_with_config(
+                request,
+                provider.clone(),
+                state.clone(),
+                CompactionConfig::default(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(rx.await.unwrap(), CompactionResponse::Failed(_)),
+                "mock error must surface as CompactionResponse::Failed"
+            );
+            let s = state.lock().await;
+            assert!(
+                s.last_compaction.is_some(),
+                "a failed attempt must start the cooldown"
+            );
+            assert_eq!(s.consecutive_failures, expected_failures);
+            assert_eq!(s.compaction_count, 0, "failures don't count as compactions");
+            drop(s);
+        }
+
+        // A success resets the failure counter.
+        mock.queue_text("Summary of conversation: user and assistant discussed several topics.");
+        let (request, rx) = test_request();
+        process_compaction_request_with_config(
+            request,
+            provider,
+            state.clone(),
+            CompactionConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            rx.await.unwrap(),
+            CompactionResponse::Completed(_)
+        ));
+        let s = state.lock().await;
+        assert_eq!(
+            s.consecutive_failures, 0,
+            "success resets the failure counter"
+        );
+        assert_eq!(s.compaction_count, 1);
+    }
+
+    #[tokio::test]
+    async fn should_request_blocks_during_failure_cooldown() {
+        let mock = MockAdapter::new();
+        let compactor =
+            BackgroundCompactor::new(mock_provider(&mock), Arc::new(QuotaMeter::unlimited()));
+        {
+            let mut s = compactor.state.lock().await;
+            s.last_compaction = Some(Instant::now());
+            s.consecutive_failures = 1;
+        }
+        let config = CompactionConfig::default();
+        // Over the dual threshold, but inside the (escalated) failure
+        // cooldown — before the fix the cooldown never started on
+        // failure, so this returned true and the loop resubmitted a
+        // summarization call every iteration.
+        assert!(
+            !compactor
+                .should_request(1_000_000, 1_000_000, &config)
+                .await,
+            "failure cooldown must block resubmission"
+        );
+    }
 
     #[test]
     fn test_compaction_quota_default() {
