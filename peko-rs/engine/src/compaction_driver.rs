@@ -219,20 +219,21 @@ impl CompactionDriver {
     ///    `CompactionDetails.phase` are tagged `MidTurn` so hooks
     ///    can tell a post-tool-result summary from a top-of-iteration
     ///    one.
-    /// 2. **Splice position** — instead of replacing `messages`
-    ///    wholesale (pre-turn's behaviour), the new summary message
-    ///    is inserted *above the last real user message*. The current
-    ///    turn's tool-call / tool-result pair is preserved verbatim
-    ///    at the tail of `messages`. The `snapshot` is appended after
-    ///    the summary so the model sees the runtime environment + the
-    ///    capability list before re-engaging with the tool results.
+    /// 2. **Snapshot splice** — the worker's compacted list
+    ///    (`[initial system?, summary, kept tail]`) is installed
+    ///    wholesale by the result poll, exactly like pre-turn. The
+    ///    mid-turn-specific step is splicing the `snapshot` system
+    ///    message *above the last real user message* so the model
+    ///    sees the runtime environment + the capability list before
+    ///    re-engaging with the current turn's tool-call /
+    ///    tool-result pair, which the kept tail preserves verbatim.
     ///
     /// `snapshot` is the environment snapshot the engine loop built
     /// for this turn; the driver doesn't know how to construct one
     /// (it doesn't have access to the agent / principal fields).
     ///
     /// Returns `Ok(true)` if `messages` was mutated (compaction
-    /// completed and the summary was spliced in); `Ok(false)` if the
+    /// completed and the snapshot was spliced in); `Ok(false)` if the
     /// backend returned `NotNeeded` / `Skipped` / `Failed` and
     /// `messages` is unchanged.
     pub async fn compact_mid_turn<S>(
@@ -310,88 +311,37 @@ impl CompactionDriver {
             return Ok(false);
         }
 
-        // Splice the resulting summary + snapshot into `messages`
-        // above the last real user message. The compactor returned
-        // its own message list (`result.messages`) which has the
-        // shape `[initial_system?, summary_msg, kept]`. For
-        // mid-turn we want ONLY the summary portion; we re-build
-        // the message list by taking everything before the last
-        // user message, then `[summary_msg, snapshot_msg]`, then
-        // everything from the last user message onward.
-        if let Some(result) = self.last_compaction_result.take() {
-            // Find the summary message — `Compactor::compact`
-            // stamps it with the prefix
-            // `[Conversation Summary - N messages]`.
-            let summary_text = format!(
-                "[Conversation Summary - {} messages]:",
-                result.entry.messages_compacted
-            );
-            let summary_msg = result
-                .messages
-                .iter()
-                .find(|m| {
-                    m.content.iter().any(|b| {
-                        matches!(b, peko_message::ContentBlock::Text { text } if text.starts_with(&summary_text))
-                    })
-                })
-                .cloned()
-                .unwrap_or_else(|| {
-                    // Fallback: take the first message in the
-                    // compacted result as the summary. Shouldn't
-                    // happen — `Compactor::compact` always
-                    // produces a summary message — but we degrade
-                    // gracefully rather than panicking.
-                    result
-                        .messages
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| peko_message::LlmMessage::system(
-                            result.entry.summary.clone(),
-                        ))
-                });
-
+        // The poll above already installed the worker's compacted
+        // message list (`[initial system?, summary, kept tail]`), so
+        // the summary is in place exactly once. The mid-turn-specific
+        // step is splicing the environment snapshot above the last
+        // real user message in the compacted list, so the model
+        // re-orients right before the preserved tool-call /
+        // tool-result tail.
+        if self.last_compaction_result.take().is_some() {
             let snapshot_msg = snapshot.to_system_message();
 
-            // Find the last user message in the ORIGINAL messages
-            // (not result.messages). That's the boundary between
-            // "older turns we want to summarize" and "the current
-            // turn we want to preserve".
-            let last_user_idx = messages
+            match messages
                 .iter()
-                .rposition(|m| m.role == peko_message::MessageRole::User);
-
-            let last_user_idx = match last_user_idx {
-                Some(idx) => idx,
+                .rposition(|m| m.role == peko_message::MessageRole::User)
+            {
+                Some(idx) => {
+                    messages.insert(idx, snapshot_msg);
+                    info!(
+                        "Mid-turn compaction spliced snapshot above last user message (idx {})",
+                        idx
+                    );
+                }
                 None => {
-                    // No user message in the conversation. Shouldn't
+                    // No user message in the compacted list. Shouldn't
                     // happen mid-turn (we just received tool results
                     // for an LLM call responding to a user message),
-                    // but degrade gracefully: prepend summary +
-                    // snapshot at the top instead.
-                    warn!(
-                        "Mid-turn compaction: no user message found; prepending summary at top"
-                    );
-                    let mut new_messages = vec![summary_msg, snapshot_msg];
-                    new_messages.append(messages);
-                    *messages = new_messages;
-                    self.compaction_performed = false;
-                    self.invoke_post_hook(messages, session, funnel, run_id)
-                        .await;
-                    return Ok(true);
+                    // but degrade gracefully: insert the snapshot at
+                    // the top instead.
+                    warn!("Mid-turn compaction: no user message found; inserting snapshot at top");
+                    messages.insert(0, snapshot_msg);
                 }
-            };
-
-            // Insert at `last_user_idx` — push everything from
-            // `last_user_idx..` to the right by two slots, then
-            // place summary + snapshot at the new
-            // `[last_user_idx, last_user_idx+1]` positions.
-            messages.insert(last_user_idx, summary_msg);
-            messages.insert(last_user_idx + 1, snapshot_msg);
-
-            info!(
-                "Mid-turn compaction spliced summary + snapshot above last user message (idx {})",
-                last_user_idx
-            );
+            }
         }
 
         self.compaction_performed = false;
@@ -1293,6 +1243,195 @@ mod tests {
         assert!(
             f.session.peek_compact_request().await,
             "flag survives while a compaction is already pending"
+        );
+    }
+
+    /// Build the `Completed` response the worker would send, with a
+    /// compacted list of the real shape `[system, summary, kept...]`.
+    fn completed_response(
+        compacted: Vec<LlmMessage>,
+        compacted_count: usize,
+    ) -> CompactionResponse {
+        CompactionResponse::Completed(CompactionResult {
+            messages: compacted,
+            entry: crate::compaction::CompactionEntry {
+                timestamp: chrono::Utc::now(),
+                summary: "summary text".to_string(),
+                first_kept_entry_id: "kept_1".to_string(),
+                messages_compacted: compacted_count,
+                tokens_before: 1_000,
+                tokens_after: 100,
+                compaction_number: 1,
+                phase: CompactionPhase::MidTurn,
+                details: None,
+            },
+            state: crate::compaction::CompactionState::default(),
+            usage: peko_message::TokenUsage::default(),
+        })
+    }
+
+    fn tool_result_message() -> LlmMessage {
+        LlmMessage {
+            role: peko_message::MessageRole::Tool,
+            content: vec![peko_message::ContentBlock::ToolResult {
+                tool_call_id: "tc-1".to_string(),
+                name: "Read".to_string(),
+                content: vec![peko_message::ContentBlock::Text {
+                    text: "file body".to_string(),
+                }],
+                is_error: false,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Drive `compact_mid_turn` while a responder task answers the
+    /// backend's stashed sender with `response`. Returns the driver's
+    /// return value.
+    async fn drive_mid_turn(
+        f: &mut Fixture,
+        messages: &mut Vec<LlmMessage>,
+        response: CompactionResponse,
+    ) -> Result<bool> {
+        let backend = Arc::clone(&f.backend);
+        let responder = async move {
+            let tx = loop {
+                if let Some(tx) = backend
+                    .senders
+                    .lock()
+                    .expect("senders mutex poisoned")
+                    .pop()
+                {
+                    break tx;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            };
+            tx.send(response).expect("driver receiver alive");
+        };
+        let on_event = event_sink(&f.events);
+        let snapshot = peko_session::EnvironmentSnapshot {
+            runtime_environment: "test-os".to_string(),
+            permission_policy_summary: vec!["tool:read".to_string()],
+        };
+        let (driven, ()) = tokio::join!(
+            f.driver.compact_mid_turn(
+                messages,
+                &f.session,
+                &EmptyFunnel,
+                &on_event,
+                "run-1",
+                snapshot,
+            ),
+            responder
+        );
+        driven
+    }
+
+    fn text_contains(messages: &[LlmMessage], needle: &str) -> usize {
+        messages
+            .iter()
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, peko_message::ContentBlock::Text { text } if text.contains(needle))
+                })
+            })
+            .count()
+    }
+
+    /// Fix 2 regression: mid-turn compaction must not duplicate the
+    /// summary. The result poll installs the worker's compacted list
+    /// (summary included); the driver then splices ONLY the
+    /// environment snapshot above the last user message.
+    #[tokio::test]
+    async fn mid_turn_compaction_installs_summary_once_and_splices_snapshot() {
+        let mut f = fixture(false, false);
+        let mut messages = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::user("older question"),
+            LlmMessage::assistant("older answer"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+        let original_len = messages.len();
+
+        // The worker's compacted list: older turns collapsed into the
+        // summary; the current turn (user + assistant + tool result)
+        // survives in the kept tail.
+        let compacted = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::system("[Conversation Summary - 3 messages]:\nsummary text"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+        let compacted_len = compacted.len();
+
+        let mutated = drive_mid_turn(&mut f, &mut messages, completed_response(compacted, 3))
+            .await
+            .unwrap();
+
+        assert!(mutated, "mid-turn compaction should report a mutation");
+        assert_eq!(
+            text_contains(&messages, "[Conversation Summary - 3 messages]:"),
+            1,
+            "summary must appear exactly once: {messages:?}"
+        );
+        assert_eq!(text_contains(&messages, "## Environment Snapshot"), 1);
+        // Compacted list + one spliced snapshot message.
+        assert_eq!(messages.len(), compacted_len + 1);
+        assert!(
+            messages.len() < original_len + 2,
+            "older turns must be collapsed, not retained"
+        );
+        // Snapshot sits directly above the last user message; the
+        // in-flight tool-call / tool-result pair stays at the tail.
+        let snapshot_idx = messages
+            .iter()
+            .position(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, peko_message::ContentBlock::Text { text } if text.contains("## Environment Snapshot"))
+                })
+            })
+            .expect("snapshot present");
+        assert_eq!(
+            messages[snapshot_idx + 1].role,
+            peko_message::MessageRole::User
+        );
+        assert_eq!(
+            messages.last().expect("tail").role,
+            peko_message::MessageRole::Tool
+        );
+    }
+
+    /// Fix 2 fallback: no user message in the compacted list — the
+    /// snapshot goes to the top and the summary still appears once.
+    #[tokio::test]
+    async fn mid_turn_compaction_without_user_message_inserts_snapshot_at_top() {
+        let mut f = fixture(false, false);
+        let mut messages = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::assistant("orphaned answer"),
+        ];
+
+        let compacted = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::system("[Conversation Summary - 2 messages]:\nsummary text"),
+            LlmMessage::assistant("orphaned answer"),
+        ];
+
+        let mutated = drive_mid_turn(&mut f, &mut messages, completed_response(compacted, 2))
+            .await
+            .unwrap();
+
+        assert!(mutated);
+        assert_eq!(text_contains(&messages, "[Conversation Summary"), 1);
+        assert_eq!(text_contains(&messages, "## Environment Snapshot"), 1);
+        assert!(
+            messages[0].content.iter().any(|b| {
+                matches!(b, peko_message::ContentBlock::Text { text } if text.contains("## Environment Snapshot"))
+            }),
+            "snapshot must lead the list when there is no user message"
         );
     }
 }
