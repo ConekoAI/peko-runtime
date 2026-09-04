@@ -32,6 +32,20 @@ pub struct CompactionDetails {
     /// before PR 3).
     #[serde(default)]
     pub phase: CompactionPhase,
+    /// Verbatim user messages preserved from the compacted-away region
+    /// (compaction audit fix #6 — the Codex
+    /// `COMPACT_USER_MESSAGE_MAX_TOKENS` pattern). `Compactor::compact`
+    /// selects them newest-first under a fixed token budget and stores
+    /// them here oldest-first, each capped at a per-message character
+    /// limit. [`format_summary_with_file_ops`] renders them as a
+    /// `<user-messages>` block appended to the summary message, so the
+    /// live path and the resume path
+    /// (`message_conversion::compaction_summary_message`) produce
+    /// identical text. `#[serde(default)]` keeps pre-fix-#6 JSONL
+    /// entries compatible (missing field reads as `None` → no block,
+    /// rendered exactly as before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_messages: Option<Vec<String>>,
 }
 
 impl Default for CompactionDetails {
@@ -41,6 +55,7 @@ impl Default for CompactionDetails {
             modified_files: Vec::new(),
             image_token_count: 0,
             phase: CompactionPhase::PreTurn,
+            user_messages: None,
         }
     }
 }
@@ -66,6 +81,13 @@ impl CompactionDetails {
         // sessions stay in `PreTurn` (the default); flipping to
         // `MidTurn` is sticky until the next pre-turn fires.
         self.phase = other.phase;
+        // Preserved user messages are last-write-wins too: each
+        // compaction re-collects from the region it drops (newest-first
+        // under the fix-#6 token budget), so the newest collection
+        // supersedes the previous one.
+        if other.user_messages.is_some() {
+            self.user_messages = other.user_messages.clone();
+        }
     }
 }
 
@@ -83,7 +105,16 @@ impl CompactionDetails {
 /// <modified-files>
 /// path/to/changed.rs
 /// </modified-files>
+/// <user-messages>
+/// ...
+/// </user-messages>
 /// ```
+///
+/// The `<user-messages>` block (compaction audit fix #6) lists the
+/// verbatim user messages preserved from the compacted-away region,
+/// oldest first. It is appended only when `details.user_messages` is
+/// present and non-empty, so pre-fix-#6 compaction entries render
+/// exactly as before.
 pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) -> String {
     let mut result = summary.trim().to_string();
 
@@ -103,6 +134,22 @@ pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) 
             result.push('\n');
         }
         result.push_str("</modified-files>");
+    }
+
+    if let Some(user_messages) = details
+        .user_messages
+        .as_ref()
+        .filter(|msgs| !msgs.is_empty())
+    {
+        result.push_str(
+            "\n\n<user-messages>\nThe user sent the following messages verbatim (oldest first):\n",
+        );
+        for m in user_messages {
+            result.push_str("\n<message>\n");
+            result.push_str(m);
+            result.push_str("\n</message>\n");
+        }
+        result.push_str("</user-messages>");
     }
 
     result
@@ -183,6 +230,9 @@ pub fn extract_file_ops_from_messages(messages: &[peko_message::LlmMessage]) -> 
         // file-ops queries) without forcing every caller to thread
         // the phase through.
         phase: CompactionPhase::PreTurn,
+        // Fix #6's preserved user messages are collected by
+        // `Compactor::compact` (budget-aware), not by this scan.
+        user_messages: None,
     }
 }
 
@@ -230,6 +280,7 @@ mod tests {
             modified_files: vec!["src/main.rs".to_string()],
             image_token_count: 0,
             phase: CompactionPhase::PreTurn,
+            user_messages: None,
         };
 
         let formatted = format_summary_with_file_ops(&summary, &details);
@@ -246,6 +297,66 @@ mod tests {
         let formatted = format_summary_with_file_ops(&summary, &details);
         assert!(!formatted.contains("<read-files>"));
         assert!(!formatted.contains("<modified-files>"));
+        // Fix #6: no preserved user messages → no block either.
+        assert!(!formatted.contains("<user-messages>"));
+    }
+
+    /// Compaction audit fix #6: preserved verbatim user messages render
+    /// as a `<user-messages>` block after the file-ops blocks, oldest
+    /// first, each wrapped in a `<message>` tag.
+    #[test]
+    fn test_format_summary_with_user_messages() {
+        let summary = "## Goal\nTest".to_string();
+        let details = CompactionDetails {
+            user_messages: Some(vec![
+                "first requirement".to_string(),
+                "second correction".to_string(),
+            ]),
+            ..Default::default()
+        };
+
+        let formatted = format_summary_with_file_ops(&summary, &details);
+        assert!(formatted.contains("<user-messages>"));
+        assert!(formatted.contains("<message>\nfirst requirement\n</message>"));
+        assert!(formatted.contains("<message>\nsecond correction\n</message>"));
+        assert!(formatted.contains("</user-messages>"));
+        // Oldest first.
+        let first = formatted.find("first requirement").unwrap();
+        let second = formatted.find("second correction").unwrap();
+        assert!(first < second);
+    }
+
+    /// Fix #6: an empty `user_messages` vec renders no block (same as
+    /// `None`) — an empty block would be pure noise in the summary.
+    #[test]
+    fn test_format_summary_empty_user_messages_no_block() {
+        let details = CompactionDetails {
+            user_messages: Some(vec![]),
+            ..Default::default()
+        };
+        let formatted = format_summary_with_file_ops("## Goal\nTest", &details);
+        assert!(!formatted.contains("<user-messages>"));
+    }
+
+    /// Fix #6: merge is last-write-wins for `user_messages` — the most
+    /// recent compaction's collection supersedes the previous one, and
+    /// a `None` on the newer side never erases the older collection.
+    #[test]
+    fn test_details_merge_user_messages_last_write_wins() {
+        let mut d1 = CompactionDetails {
+            user_messages: Some(vec!["old".to_string()]),
+            ..Default::default()
+        };
+        let d2 = CompactionDetails::default();
+        d1.merge(&d2);
+        assert_eq!(d1.user_messages, Some(vec!["old".to_string()]));
+
+        let d3 = CompactionDetails {
+            user_messages: Some(vec!["new".to_string()]),
+            ..Default::default()
+        };
+        d1.merge(&d3);
+        assert_eq!(d1.user_messages, Some(vec!["new".to_string()]));
     }
 
     #[test]
@@ -282,6 +393,7 @@ mod tests {
             modified_files: vec!["b.rs".to_string()],
             image_token_count: 0,
             phase: CompactionPhase::PreTurn,
+            user_messages: None,
         };
 
         let messages = vec![LlmMessage {
@@ -307,12 +419,14 @@ mod tests {
             modified_files: vec![],
             image_token_count: 0,
             phase: CompactionPhase::PreTurn,
+            user_messages: None,
         };
         let d2 = CompactionDetails {
             read_files: vec!["a.rs".to_string(), "b.rs".to_string()],
             modified_files: vec![],
             image_token_count: 1500,
             phase: CompactionPhase::PreTurn,
+            user_messages: None,
         };
         d1.merge(&d2);
         assert_eq!(d1.read_files.len(), 2);
@@ -403,6 +517,8 @@ mod tests {
         assert_eq!(parsed.read_files, vec!["a.rs"]);
         // PR3: pre-PR-3 entries default the phase to `PreTurn`.
         assert_eq!(parsed.phase, CompactionPhase::PreTurn);
+        // Fix #6: pre-fix-#6 entries carry no preserved user messages.
+        assert_eq!(parsed.user_messages, None);
     }
 
     /// PR3: `CompactionPhase` round-trips through serde for every

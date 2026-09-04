@@ -76,9 +76,11 @@ pub fn latest_compaction_boundary(events: &[SessionEvent]) -> Option<usize> {
 /// Reconstructs the same text the live compaction path produces
 /// (`Compactor::compact`): the `"[Conversation Summary - {N} messages]:\n"`
 /// prefix + summary, with `<read-files>` / `<modified-files>` blocks
-/// appended via [`format_summary_with_file_ops`] when the persisted
-/// `details` blob deserializes. Missing or malformed fields degrade
-/// gracefully (zero defaults / summary-only body).
+/// and the fix-#6 `<user-messages>` block appended via
+/// [`format_summary_with_file_ops`] when the persisted `details` blob
+/// deserializes. Missing or malformed fields degrade gracefully (zero
+/// defaults / summary-only body); pre-fix-#6 events (no
+/// `details.user_messages`) render exactly as before.
 ///
 /// Returns `None` if `event` is not a compaction boundary.
 #[must_use]
@@ -382,6 +384,57 @@ mod tests {
             other => panic!("expected text block, got {other:?}"),
         };
         assert_eq!(text, "[Conversation Summary - 0 messages]:\n");
+    }
+
+    /// Compaction audit fix #6: a persisted `details.user_messages`
+    /// array re-renders as the same `<user-messages>` block the live
+    /// compaction path produces (both go through
+    /// `format_summary_with_file_ops`).
+    #[test]
+    fn test_compaction_summary_message_renders_user_messages() {
+        let event = compaction_event(serde_json::json!({
+            "summary": "Did the thing",
+            "messages_compacted": 7,
+            "details": {
+                "read_files": [],
+                "modified_files": [],
+                "user_messages": ["first ask", "second correction"],
+            },
+        }));
+
+        let msg = compaction_summary_message(&event).unwrap();
+        let text = match &msg.content[0] {
+            ContentBlock::Text { text } => text.as_str(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.contains("<user-messages>"));
+        assert!(text.contains("<message>\nfirst ask\n</message>"));
+        assert!(text.contains("<message>\nsecond correction\n</message>"));
+    }
+
+    /// Fix #6 backward compat: pre-fix-#6 compaction events (no
+    /// `user_messages` field in `details`) render without the block —
+    /// byte-identical to the pre-fix-#6 reconstruction.
+    #[test]
+    fn test_compaction_summary_message_legacy_event_has_no_user_block() {
+        let event = compaction_event(serde_json::json!({
+            "summary": "Did the thing",
+            "messages_compacted": 7,
+            "details": {
+                "read_files": ["a.rs"],
+                "modified_files": [],
+            },
+        }));
+
+        let msg = compaction_summary_message(&event).unwrap();
+        let text = match &msg.content[0] {
+            ContentBlock::Text { text } => text.as_str(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert_eq!(
+            text,
+            "[Conversation Summary - 7 messages]:\nDid the thing\n\n<read-files>\na.rs\n</read-files>"
+        );
     }
 
     #[test]

@@ -1936,6 +1936,53 @@ mod tests {
         assert_eq!(first_text(&history[2]), "New answer");
     }
 
+    /// Compaction audit fix #6: the persisted `details.user_messages`
+    /// round-trips through the JSONL and the resume path
+    /// (`load_history` → `compaction_summary_message`) rebuilds the
+    /// `<user-messages>` block on the reconstructed summary message.
+    #[tokio::test]
+    async fn test_load_history_resume_renders_preserved_user_messages() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-resume-user-messages";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("Old question").await.unwrap();
+
+        let details = crate::compaction::summary_format::CompactionDetails {
+            user_messages: Some(vec![
+                "Old question".to_string(),
+                "Please keep it under 200 words".to_string(),
+            ]),
+            ..Default::default()
+        };
+        session
+            .record_compaction("Summary of the old work", 1, 1000, 100, 1, Some(&details))
+            .await
+            .unwrap();
+
+        session.add_user("New question").await.unwrap();
+
+        let history = session.load_history().await.unwrap();
+        let summary = &history[0];
+        let text = first_text(summary);
+        assert!(text.contains("<user-messages>"));
+        assert!(text.contains("<message>\nOld question\n</message>"));
+        assert!(text.contains("<message>\nPlease keep it under 200 words\n</message>"));
+        // Oldest first.
+        let first = text.find("Old question").unwrap();
+        let second = text.find("Please keep it under 200 words").unwrap();
+        assert!(first < second);
+    }
+
     #[tokio::test]
     async fn test_load_history_without_compaction_unchanged() {
         use tempfile::TempDir;

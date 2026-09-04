@@ -47,6 +47,16 @@ use tracing::{debug, info, warn};
 /// Approximate characters per token for estimation
 const CHARS_PER_TOKEN: usize = 4;
 
+/// Compaction audit fix #6 (the Codex `COMPACT_USER_MESSAGE_MAX_TOKENS`
+/// pattern): token budget for the verbatim user messages preserved from
+/// the compacted-away region into the summary message's
+/// `<user-messages>` block. Hardcoded — deliberately not a config knob.
+const PRESERVED_USER_MESSAGES_TOKEN_BUDGET: usize = 20_000;
+
+/// Fix #6: per-message character cap applied before budget accounting
+/// so a single pathological user message can't eat the whole block.
+const PRESERVED_USER_MESSAGE_MAX_CHARS: usize = 2_000;
+
 /// Prompt for initial summarization (when no previous summary exists)
 const INITIAL_SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another AI will use to continue the work.
 
@@ -175,6 +185,86 @@ fn content_block_token_estimate(content: &[ContentBlock]) -> usize {
         .saturating_add(20)
         / CHARS_PER_TOKEN
         + 4
+}
+
+/// Compaction audit fix #6 (Codex `build_compacted_history` pattern):
+/// collect the verbatim user messages from the compacted-away region
+/// for the summary message's `<user-messages>` block, so the user's
+/// exact intent (requirements, corrections, preferences) survives
+/// summarization loss.
+///
+/// `region` is everything before the kept-tail cut — the pinned initial
+/// system prompt is already excluded by the caller, and previous
+/// compaction summaries are System-role messages, so the
+/// `MessageRole::User` filter excludes them (the
+/// `"[Conversation Summary"` prefix check is a belt-and-braces guard
+/// for hand-rolled transcripts). Empty / whitespace-only user messages
+/// are skipped.
+///
+/// Selection walks the region newest-first under
+/// [`PRESERVED_USER_MESSAGES_TOKEN_BUDGET`], so the most recent user
+/// intent always survives; the oldest message that would overflow the
+/// budget is truncated to fit (Codex behaviour) and everything older is
+/// dropped. Each message is capped at
+/// [`PRESERVED_USER_MESSAGE_MAX_CHARS`] first. The returned vec is
+/// oldest-first for rendering.
+fn collect_preserved_user_messages(region: &[LlmMessage]) -> Vec<String> {
+    let mut budget = PRESERVED_USER_MESSAGES_TOKEN_BUDGET;
+    let mut kept: Vec<String> = Vec::new();
+
+    for msg in region.iter().rev() {
+        if msg.role != MessageRole::User {
+            continue;
+        }
+        let text = msg
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = text.trim();
+        if text.is_empty() || text.starts_with("[Conversation Summary") {
+            continue;
+        }
+
+        // Per-message cap (char-boundary safe) before budget accounting.
+        let capped: String = if text.chars().count() > PRESERVED_USER_MESSAGE_MAX_CHARS {
+            let truncated: String = text
+                .chars()
+                .take(PRESERVED_USER_MESSAGE_MAX_CHARS)
+                .collect();
+            format!("{truncated}... [truncated]")
+        } else {
+            text.to_string()
+        };
+
+        // chars/4 with the same per-message framing overhead (+4) as
+        // `content_block_token_estimate`, so the budget is unit-stable
+        // with the surrounding estimators.
+        let tokens = capped.len() / CHARS_PER_TOKEN + 4;
+        if tokens > budget {
+            // Codex behaviour: truncate the oldest overflowing message
+            // to the remaining budget, then stop — everything older is
+            // dropped.
+            let avail_chars = budget.saturating_sub(4) * CHARS_PER_TOKEN;
+            if avail_chars > 0 {
+                let truncated: String = capped.chars().take(avail_chars).collect();
+                let truncated = truncated.trim_end();
+                if !truncated.is_empty() {
+                    kept.push(format!("{truncated}... [truncated]"));
+                }
+            }
+            break;
+        }
+        budget -= tokens;
+        kept.push(capped);
+    }
+
+    kept.reverse();
+    kept
 }
 
 /// Load compaction config from the global config file, or use defaults.
@@ -582,6 +672,21 @@ impl Compactor {
         // phase even when `previous` was nil.
         cumulative_details.phase = phase;
 
+        // Compaction audit fix #6: preserve the dropped region's
+        // verbatim user messages inside the summary message (rendered
+        // as a `<user-messages>` block by `format_summary_with_file_ops`
+        // and persisted via `CompactionDetails.user_messages`). The
+        // region is everything before the kept-tail cut in
+        // `conversation_msgs` — the pinned initial system prompt is
+        // already excluded above, and in a split turn this slice covers
+        // both `to_compact` and the summarized turn prefix.
+        let dropped_region =
+            &conversation_msgs[..conversation_msgs.len() - to_keep_conversation.len()];
+        let preserved_user_messages = collect_preserved_user_messages(dropped_region);
+        if !preserved_user_messages.is_empty() {
+            cumulative_details.user_messages = Some(preserved_user_messages);
+        }
+
         // Update previous summary for future cumulative updates
         self.previous_summary = Some(summary.clone());
 
@@ -897,6 +1002,86 @@ mod tests {
         assert!(formatted.contains("Assistant:"));
     }
 
+    // ==============================================================
+    // Compaction audit fix #6: verbatim user message preservation
+    // ==============================================================
+
+    /// The dropped region's user messages are collected oldest-first
+    /// for the `<user-messages>` block; other roles are ignored.
+    #[test]
+    fn test_collect_preserved_user_messages_oldest_first() {
+        let region = vec![
+            LlmMessage::user("first ask"),
+            LlmMessage::assistant("answer 1"),
+            LlmMessage::user("second ask"),
+            LlmMessage::assistant("answer 2"),
+        ];
+        let kept = collect_preserved_user_messages(&region);
+        assert_eq!(
+            kept,
+            vec!["first ask".to_string(), "second ask".to_string()]
+        );
+    }
+
+    /// Empty / whitespace-only user messages are skipped; previous
+    /// compaction summaries are excluded (System-role by construction,
+    /// plus a defensive prefix check for hand-rolled transcripts).
+    #[test]
+    fn test_collect_preserved_user_messages_skips_empty_and_summaries() {
+        let region = vec![
+            LlmMessage::user("   "),
+            LlmMessage::user(""),
+            LlmMessage::system("[Conversation Summary - 5 messages]:\nold summary"),
+            LlmMessage::user("[Conversation Summary - 5 messages]:\nold summary"),
+            LlmMessage::user("real message"),
+        ];
+        let kept = collect_preserved_user_messages(&region);
+        assert_eq!(kept, vec!["real message".to_string()]);
+    }
+
+    /// A single pathological message is capped at the per-message
+    /// character limit before budget accounting.
+    #[test]
+    fn test_collect_preserved_user_messages_caps_long_message() {
+        let region = vec![LlmMessage::user("x".repeat(10_000))];
+        let kept = collect_preserved_user_messages(&region);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].ends_with("... [truncated]"));
+        assert_eq!(
+            kept[0].len(),
+            PRESERVED_USER_MESSAGE_MAX_CHARS + "... [truncated]".len()
+        );
+    }
+
+    /// Budget enforcement: selection is newest-first, so the newest
+    /// messages survive verbatim while the oldest are dropped; the
+    /// oldest *kept* entry is the overflow message truncated to fit
+    /// the remaining budget (Codex behaviour).
+    #[test]
+    fn test_collect_preserved_user_messages_budget_newest_first() {
+        // 45 messages × ~2000 chars ≈ 500 tokens each ≈ 22.5k tokens
+        // total — over the 20k budget.
+        let region: Vec<LlmMessage> = (0..45)
+            .map(|i| LlmMessage::user(format!("msg {i}: {}", "x".repeat(1990))))
+            .collect();
+        let kept = collect_preserved_user_messages(&region);
+
+        assert!(
+            kept.len() < 45,
+            "budget must drop the oldest messages, kept {}",
+            kept.len()
+        );
+        // Newest survives verbatim.
+        assert_eq!(
+            kept.last().unwrap(),
+            &format!("msg 44: {}", "x".repeat(1990))
+        );
+        // Oldest of the region is gone.
+        assert!(!kept.iter().any(|m| m.starts_with("msg 0:")));
+        // The oldest kept entry is the truncated overflow message.
+        assert!(kept[0].ends_with("... [truncated]"));
+    }
+
     /// PR1: image content blocks must surface in the summarizer
     /// prompt. Without this, the summarizer silently drops all
     /// multimodal context. The rendered marker includes mime type +
@@ -1123,5 +1308,73 @@ minimax = { "M3" = 4000 }
         let cfg = load_compaction_config();
         assert!(cfg.enabled);
         assert_eq!(cfg.auto_threshold_percent, 85);
+    }
+
+    /// Compaction audit fix #6: the summary System message carries a
+    /// `<user-messages>` block with the dropped region's verbatim user
+    /// messages (oldest first), and the same messages are persisted on
+    /// `entry.details.user_messages` so the resume path
+    /// (`message_conversion::compaction_summary_message`) rebuilds the
+    /// identical text.
+    #[tokio::test]
+    async fn test_compact_preserves_user_messages_in_summary() {
+        let mock = MockAdapter::new();
+        mock.queue_text("Summary of conversation.");
+
+        let provider: Arc<dyn ProviderView> = Arc::new(
+            Provider::new(
+                AnyAdapter::Mock(mock.clone()),
+                "",
+                ProviderRuntimeOptions {
+                    default_model_id: "mock-model".to_string(),
+                    context_window: None,
+                    timeout_seconds: 300,
+                    max_retries: 3,
+                    retry_delay_ms: 1000,
+                    ..Default::default()
+                },
+            )
+            .expect("mock provider should construct"),
+        );
+
+        // A small keep_recent_tokens forces a real cut: the oldest
+        // user messages land in the dropped region while the newest
+        // ones stay in the kept tail.
+        let config = CompactionConfig {
+            keep_recent_tokens: 50,
+            ..Default::default()
+        };
+        let messages = create_test_messages(30);
+        let mut compactor = Compactor::with_config(config, None);
+        let result = compactor
+            .compact(&messages, &provider, crate::compaction::types::CompactionPhase::PreTurn)
+            .await
+            .expect("compaction should succeed with mock provider");
+
+        // Layout: [initial system prompt, summary, kept tail].
+        let summary_msg = &result.messages[1];
+        assert_eq!(summary_msg.role, MessageRole::System);
+        let text = match &summary_msg.content[0] {
+            ContentBlock::Text { text } => text.as_str(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.contains("<user-messages>"));
+        // The dropped region's oldest user message survives verbatim.
+        assert!(text.contains("<message>\nUser message 0\n</message>"));
+        // The kept tail's user message is NOT duplicated into the block.
+        assert!(!text.contains("User message 28"));
+
+        // Persisted on the entry details for the resume path.
+        let details = result.entry.details.clone().expect("details present");
+        let user_messages = details
+            .get("user_messages")
+            .and_then(serde_json::Value::as_array)
+            .expect("user_messages persisted on details");
+        assert!(
+            user_messages
+                .iter()
+                .any(|m| m.as_str() == Some("User message 0")),
+            "dropped user messages must be persisted, got {user_messages:?}"
+        );
     }
 }
