@@ -15,6 +15,7 @@
 //! - **SRP**: Only conversion logic, no persistence or I/O
 //! - **DRY**: Single source of truth for all message format conversions
 
+use crate::compaction::summary_format::{format_summary_with_file_ops, CompactionDetails};
 use crate::events::SessionEvent;
 use crate::jsonl::NormalizedEntry;
 use peko_message::ContentBlock;
@@ -35,6 +36,91 @@ pub fn event_to_llm_message(event: &SessionEvent) -> Option<LlmMessage> {
 
     // Non-message events return None
     None
+}
+
+/// Metadata key stamped on the compaction-boundary summary `LlmMessage`
+/// produced by [`compaction_summary_message`].
+///
+/// The engine's resume seeding treats a leading System-role message as
+/// the system-prompt slot and lets the `PromptRenderer` overwrite
+/// `messages[0]` on every iteration. Without this marker, a boundary
+/// summary landing at index 0 would be mistaken for that slot and
+/// silently destroyed on the first iteration after resume.
+pub const COMPACTION_BOUNDARY_METADATA_KEY: &str = "peko.compaction_boundary";
+
+/// Whether `msg` is a compaction-boundary summary message emitted by the
+/// resume path (see [`COMPACTION_BOUNDARY_METADATA_KEY`]).
+#[must_use]
+pub fn is_compaction_boundary_message(msg: &LlmMessage) -> bool {
+    msg.metadata
+        .get(COMPACTION_BOUNDARY_METADATA_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Find the newest compaction boundary in a stitched event list.
+///
+/// Returns the index of the last `SessionEvent::System` with
+/// `event == "compaction"`. `SessionStorage::load_events` stitches
+/// rotated pages oldest→newest, so a reverse scan finds the newest
+/// boundary regardless of paging.
+#[must_use]
+pub fn latest_compaction_boundary(events: &[SessionEvent]) -> Option<usize> {
+    events
+        .iter()
+        .rposition(|e| matches!(e, SessionEvent::System(sys) if sys.event == "compaction"))
+}
+
+/// Render the summary message for a compaction boundary event.
+///
+/// Reconstructs the same text the live compaction path produces
+/// (`Compactor::compact`): the `"[Conversation Summary - {N} messages]:\n"`
+/// prefix + summary, with `<read-files>` / `<modified-files>` blocks
+/// appended via [`format_summary_with_file_ops`] when the persisted
+/// `details` blob deserializes. Missing or malformed fields degrade
+/// gracefully (zero defaults / summary-only body).
+///
+/// Returns `None` if `event` is not a compaction boundary.
+#[must_use]
+pub fn compaction_summary_message(event: &SessionEvent) -> Option<LlmMessage> {
+    let SessionEvent::System(sys) = event else {
+        return None;
+    };
+    if sys.event != "compaction" {
+        return None;
+    }
+
+    let detail = &sys.detail;
+    let summary = detail.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+    let messages_compacted = detail
+        .get("messages_compacted")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let details = detail
+        .get("details")
+        .and_then(|v| serde_json::from_value::<CompactionDetails>(v.clone()).ok());
+
+    // `format_summary_with_file_ops` trims the summary and appends the
+    // file-ops blocks; without details the trimmed summary is the body.
+    let body = match details {
+        Some(d) => format_summary_with_file_ops(summary, &d),
+        None => summary.trim().to_string(),
+    };
+    let text = format!("[Conversation Summary - {messages_compacted} messages]:\n{body}");
+
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert(
+        COMPACTION_BOUNDARY_METADATA_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    Some(LlmMessage {
+        role: MessageRole::System,
+        content: vec![ContentBlock::Text { text }],
+        timestamp: sys.envelope.ts,
+        metadata,
+        tool_call_id: None,
+        usage: None,
+    })
 }
 
 /// Convert a `NormalizedEntry` to an `LlmMessage`
@@ -213,5 +299,104 @@ mod tests {
 
         let context = entries_to_context_text(&entries);
         assert!(context.is_empty());
+    }
+
+    // ==================================================================
+    // Compaction-boundary resume helpers
+    // ==================================================================
+
+    use crate::events::SystemEvent;
+
+    fn compaction_event(detail: serde_json::Value) -> SessionEvent {
+        SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope {
+                id: "compact_test".to_string(),
+                ts: Utc::now(),
+            },
+            event: "compaction".to_string(),
+            detail,
+        })
+    }
+
+    #[test]
+    fn test_latest_compaction_boundary_finds_newest() {
+        let events = vec![
+            SessionEvent::MessageV2(SessionMessage::user("a", MessageSource::User)),
+            compaction_event(serde_json::json!({"summary": "first", "messages_compacted": 1})),
+            SessionEvent::MessageV2(SessionMessage::user("b", MessageSource::User)),
+            compaction_event(serde_json::json!({"summary": "second", "messages_compacted": 2})),
+            SessionEvent::MessageV2(SessionMessage::user("c", MessageSource::User)),
+        ];
+
+        let idx = latest_compaction_boundary(&events).unwrap();
+        assert_eq!(idx, 3, "newest compaction boundary wins");
+    }
+
+    #[test]
+    fn test_latest_compaction_boundary_none_without_compaction() {
+        let events = vec![
+            SessionEvent::MessageV2(SessionMessage::user("a", MessageSource::User)),
+            SessionEvent::System(SystemEvent {
+                envelope: EventEnvelope {
+                    id: "evt".to_string(),
+                    ts: Utc::now(),
+                },
+                event: "model_change".to_string(),
+                detail: serde_json::json!({}),
+            }),
+        ];
+        assert!(latest_compaction_boundary(&events).is_none());
+    }
+
+    #[test]
+    fn test_compaction_summary_message_renders_file_ops() {
+        let event = compaction_event(serde_json::json!({
+            "summary": "Did the thing",
+            "messages_compacted": 7,
+            "details": {
+                "read_files": ["a.rs"],
+                "modified_files": ["b.rs"],
+            },
+        }));
+
+        let msg = compaction_summary_message(&event).unwrap();
+        assert_eq!(msg.role, MessageRole::System);
+        assert!(is_compaction_boundary_message(&msg));
+        let text = match &msg.content[0] {
+            ContentBlock::Text { text } => text.as_str(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.starts_with("[Conversation Summary - 7 messages]:\n"));
+        assert!(text.contains("Did the thing"));
+        assert!(text.contains("<read-files>\na.rs\n</read-files>"));
+        assert!(text.contains("<modified-files>\nb.rs\n</modified-files>"));
+    }
+
+    #[test]
+    fn test_compaction_summary_message_degrades_on_missing_fields() {
+        let event = compaction_event(serde_json::json!({}));
+
+        let msg = compaction_summary_message(&event).unwrap();
+        let text = match &msg.content[0] {
+            ContentBlock::Text { text } => text.as_str(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert_eq!(text, "[Conversation Summary - 0 messages]:\n");
+    }
+
+    #[test]
+    fn test_compaction_summary_message_ignores_non_compaction_events() {
+        let msg_event = SessionEvent::MessageV2(SessionMessage::user("hi", MessageSource::User));
+        assert!(compaction_summary_message(&msg_event).is_none());
+
+        let other_system = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope {
+                id: "evt".to_string(),
+                ts: Utc::now(),
+            },
+            event: "cwd".to_string(),
+            detail: serde_json::json!({"path": "/tmp"}),
+        });
+        assert!(compaction_summary_message(&other_system).is_none());
     }
 }

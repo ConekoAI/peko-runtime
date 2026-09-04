@@ -40,7 +40,10 @@ pub use serde_json::{json, Value};
 pub use std::sync::Arc;
 pub use tokio::sync::RwLock;
 
-pub use message_conversion::{entries_to_context_text, event_to_llm_message};
+pub use message_conversion::{
+    compaction_summary_message, entries_to_context_text, event_to_llm_message,
+    is_compaction_boundary_message, latest_compaction_boundary, COMPACTION_BOUNDARY_METADATA_KEY,
+};
 
 pub mod compaction;
 // PathResolverLike now lives in peko-subject; re-export below.

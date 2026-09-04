@@ -618,10 +618,10 @@ impl AgenticLoop {
         // consumption-side only and idempotent.
         let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
-            // Check if history already has a system message at the start
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            // Check if history already has a system message at the start.
+            // A compaction-boundary summary (System role) is not the
+            // prompt slot — see `history_has_prompt_slot`.
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -710,9 +710,7 @@ impl AgenticLoop {
         // test, finding N1). Storage stays faithful; repair is
         // consumption-side only and idempotent.
         let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -824,9 +822,7 @@ impl AgenticLoop {
         // See the repair note at the streaming intake above (finding N1).
         let messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -2563,10 +2559,10 @@ impl AgenticLoop {
         // consumption-side only and idempotent.
         let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
-            // Check if history already has a system message at the start
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            // Check if history already has a system message at the start.
+            // A compaction-boundary summary (System role) is not the
+            // prompt slot — see `history_has_prompt_slot`.
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -2606,6 +2602,23 @@ impl AgenticLoop {
         self.run_inner(messages, session, on_event, run_id, streaming_config)
             .await
     }
+}
+
+/// Whether a loaded (already repaired) history carries the loop's
+/// system-prompt slot at index 0.
+///
+/// A compaction-boundary summary message (System role, stamped by
+/// `peko_session::message_conversion::is_compaction_boundary_message`)
+/// is NOT the prompt: the placeholder is still prepended ahead of it so
+/// the `PromptRenderer` overwrites the placeholder on iteration 1 and
+/// the summary survives at index 1 — the same `[system_prompt, summary,
+/// kept...]` layout the live compaction path produces
+/// (`Compactor::compact` in `peko-session`).
+fn history_has_prompt_slot(h: &[LlmMessage]) -> bool {
+    h.first().is_some_and(|m| {
+        matches!(m.role, MessageRole::System)
+            && !peko_session::message_conversion::is_compaction_boundary_message(m)
+    })
 }
 
 #[cfg(test)]
