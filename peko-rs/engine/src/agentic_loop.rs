@@ -2021,18 +2021,20 @@ impl AgenticLoop {
                 //     against the full conversation;
                 //   - mid-turn fires here, AFTER tool execution, so it
                 //     sees the freshly-added tool results.
-                // The threshold matches the existing auto-threshold
-                // logic in `should_auto_compact` so the two triggers
-                // stay consistent.
+                // The gate IS the pre-turn gate: the same
+                // dual-threshold `should_auto_compact` check
+                // (percent-of-window OR window-minus-reserve) that
+                // `BackgroundCompactor::should_request` applies at
+                // the top of the loop, so the two triggers stay
+                // consistent by construction.
                 let mid_turn_estimated =
                     crate::compaction_driver::estimate_context_tokens_for_agentic(&messages)
                         .tokens;
-                let mid_turn_threshold = self
-                    .compaction_config
-                    .auto_threshold_percent as usize
-                    * compaction_driver.context_window()
-                    / 100;
-                if mid_turn_estimated >= mid_turn_threshold {
+                if peko_session::compaction::should_auto_compact(
+                    mid_turn_estimated,
+                    compaction_driver.context_window(),
+                    &self.compaction_config,
+                ) {
                     let snapshot = peko_session::EnvironmentSnapshot {
                         runtime_environment: format!(
                             "{}, agent={}",
@@ -2046,8 +2048,8 @@ impl AgenticLoop {
                             .unwrap_or_default(),
                     };
                     info!(
-                        "AgenticLoop: mid-turn threshold hit ({} >= {}); firing compaction",
-                        mid_turn_estimated, mid_turn_threshold
+                        "AgenticLoop: mid-turn threshold hit ({} tokens); firing compaction",
+                        mid_turn_estimated
                     );
                     let _ = compaction_driver
                         .compact_mid_turn(
