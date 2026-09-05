@@ -198,15 +198,6 @@ pub struct DeleteOutcome {
     pub deleted: Vec<String>,
 }
 
-/// Result of the `compact` action.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactRequestOutcome {
-    pub session_id: String,
-    /// When the request fires (next iteration for the current
-    /// session, next run for others).
-    pub message: String,
-}
-
 // ─── SessionRuntime port trait ────────────────────────────────────
 
 /// Runtime port the `SessionTool` uses to talk to session storage.
@@ -552,14 +543,5 @@ mod tests {
         assert_eq!(json["deleted"].as_array().unwrap().len(), 2);
         let back: DeleteOutcome = serde_json::from_value(json).unwrap();
         assert_eq!(back.deleted, vec!["a".to_string(), "b".to_string()]);
-
-        let compact = CompactRequestOutcome {
-            session_id: "s1".into(),
-            message: "fires next run".into(),
-        };
-        let json = serde_json::to_value(&compact).unwrap();
-        assert_eq!(json["session_id"], "s1");
-        let back: CompactRequestOutcome = serde_json::from_value(json).unwrap();
-        assert_eq!(back.message, "fires next run");
     }
 }

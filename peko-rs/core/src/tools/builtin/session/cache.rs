@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::{
-    BranchOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage, SessionInfo,
-    SessionRuntime, SessionSearchHit, SessionStatusResult, SharedSessionRuntime,
+    BranchOutcome, DeleteOutcome, HistoryMessage, SessionInfo, SessionRuntime, SessionSearchHit,
+    SessionStatusResult, SharedSessionRuntime,
 };
 
 /// In-memory session cache for testing and placeholder use.

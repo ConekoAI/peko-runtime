@@ -112,12 +112,6 @@ pub struct SessionEntry {
     /// resume/compact until unarchived (agent-owned session management).
     #[serde(default)]
     pub archived: bool,
-    /// Set when an agent requests compaction of this session. The
-    /// compaction orchestrator ORs this flag into its `should_request`
-    /// decision at the session's next run and clears it once compaction
-    /// actually starts, so the request survives restarts.
-    #[serde(default)]
-    pub compact_requested: bool,
     /// Standing sessions are exempt from maintenance pruning — their
     /// transcripts are durable regardless of idle age.
     #[serde(default)]
@@ -186,7 +180,6 @@ impl SessionEntry {
             peer_type: None,
             peer_id: None,
             archived: false,
-            compact_requested: false,
             standing: false,
             privileged: false,
             slug: None,
@@ -611,10 +604,11 @@ impl SessionIndex {
     /// Get session by ID, reading `sessions.json` directly from disk
     /// (both caches bypassed).
     ///
-    /// Used by the engine's per-iteration `compact_requested` peek:
-    /// the flag may have been written moments ago by a *different*
-    /// `MetadataController` (the session tool's adapter), so the 30s
-    /// index cache and the controller cache would both hide it.
+    /// Used by callers that must observe a write made moments ago by a
+    /// *different* `MetadataController` — the 30s index cache and the
+    /// controller cache would both hide it. (Introduced for the
+    /// retired per-iteration `compact_requested` peek; the peer-child
+    /// provisioning tests are the remaining callers.)
     pub async fn get_uncached(&self, session_id: &str) -> Result<Option<SessionEntry>> {
         let on_disk = Self::read_sessions_file(&self.sessions_path).await?;
         Ok(on_disk.get(session_id).cloned())
@@ -1352,13 +1346,15 @@ mod tests {
     }
 
     /// Backward compatibility: a `sessions.json` entry written before
-    /// the `archived` / `compact_requested` / `standing` / `privileged`
-    /// flags and the compaction-audit-fix-#4 quota fields
-    /// (`compaction_count` / `last_compaction_at` /
-    /// `consecutive_auto_compactions` /
+    /// the `archived` / `standing` / `privileged` flags and the
+    /// compaction-audit-fix-#4 quota fields (`compaction_count` /
+    /// `last_compaction_at` / `consecutive_auto_compactions` /
     /// `consecutive_compaction_failures`) existed must deserialize
     /// with all flags = false and all quota fields defaulted
-    /// (`#[serde(default)]`).
+    /// (`#[serde(default)]`). The retired `compact_requested` flag
+    /// (removed 2026-09-05 — replaced by the run-scoped force-compact
+    /// flag in the engine) may still be present in old files; serde's
+    /// default unknown-field tolerance must keep them readable.
     #[test]
     fn test_legacy_entry_without_archive_flags_defaults_false() {
         let legacy = serde_json::json!({
@@ -1376,12 +1372,14 @@ mod tests {
             "parent_session_id": null,
             "trigger": "user",
             "peer_type": "user",
-            "peer_id": "alice"
+            "peer_id": "alice",
+            // Retired field from a pre-removal `sessions.json`: must be
+            // ignored, not error (no `deny_unknown_fields` on the entry).
+            "compact_requested": true
         });
 
         let entry: SessionEntry = serde_json::from_value(legacy).unwrap();
         assert!(!entry.archived);
-        assert!(!entry.compact_requested);
         assert!(!entry.standing);
         assert!(!entry.privileged);
         assert_eq!(
@@ -1393,7 +1391,6 @@ mod tests {
         // And the flags round-trip through serialization once set.
         let mut entry = entry;
         entry.archived = true;
-        entry.compact_requested = true;
         entry.standing = true;
         entry.privileged = true;
         entry.set_compaction_limits_state(crate::compaction::CompactionLimitsState {
@@ -1405,7 +1402,6 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
         assert!(reloaded.archived);
-        assert!(reloaded.compact_requested);
         assert!(reloaded.standing);
         assert!(reloaded.privileged);
         assert_eq!(reloaded.compaction_count, 2);

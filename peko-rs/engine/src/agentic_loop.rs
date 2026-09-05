@@ -197,6 +197,13 @@ pub struct AgenticLoop {
     /// every `run_inner_with_meter` invocation (line 940 in the
     /// pre-9c version).
     compaction_config: CompactionConfig,
+    /// Run-scoped forced compaction (Agent tool `action = "compact"`,
+    /// 2026-09-05): when armed via [`Self::with_force_compact`], the
+    /// compaction driver built for this run fires a
+    /// `CompactionPhase::StandaloneTurn` compaction on iteration 1
+    /// regardless of the threshold gates, then continues with the
+    /// run's prompt. Default false.
+    force_compact: bool,
     /// Phase 4 (`feature/multi-model-subagents`): optional audit
     /// sink. When `Some`, the loop emits one `model.selected` audit
     /// event per successful LLM call (after `stream_with_eviction`
@@ -322,6 +329,7 @@ impl AgenticLoop {
             // loads it from `~/.peko/config.toml`; tests pass
             // `CompactionConfig::default()`.
             compaction_config,
+            force_compact: false,
             // Phase 4: opt-in audit sink. Callers (root's
             // `Agent::new_with_shared_executor`) attach via
             // `with_audit_sink` after `new` so the engine stays
@@ -351,6 +359,17 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_provider_factory(mut self, factory: Arc<dyn BackgroundCompactorFactory>) -> Self {
         self.compactor_factory = factory;
+        self
+    }
+
+    /// Arm the run-scoped forced compaction (Agent tool
+    /// `action = "compact"`): the compaction driver built for this run
+    /// fires a `CompactionPhase::StandaloneTurn` compaction on
+    /// iteration 1 regardless of the threshold / cooldown /
+    /// consecutive-auto gates, then continues with the run's prompt.
+    #[must_use]
+    pub fn with_force_compact(mut self, force: bool) -> Self {
+        self.force_compact = force;
         self
     }
 
@@ -1069,7 +1088,8 @@ impl AgenticLoop {
             compactor_backend,
             self.compaction_config.clone(),
             context_window,
-        );
+        )
+        .with_force_compact(self.force_compact);
 
         // Propagate the resolved model max into the session so the
         // `session` tool and IPC layer can surface it (used by the

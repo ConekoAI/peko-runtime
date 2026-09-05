@@ -284,42 +284,6 @@ impl Session {
         }
     }
 
-    /// Peek the persisted compaction-request flag (agent-owned session
-    /// management, plan D2). Consumed by the compaction orchestrator,
-    /// which ORs it into the threshold decision.
-    ///
-    /// Reads through to the on-disk index (via
-    /// `MetadataController::peek_compact_requested`): the flag may have
-    /// been written moments ago by a different controller — the
-    /// session tool's adapter — so a cached read would hide it.
-    ///
-    /// Tolerant: a session without an index entry (or any metadata
-    /// read failure) reads as "no request" — the flag is advisory and
-    /// never fails a turn.
-    pub async fn peek_compact_request(&mut self) -> bool {
-        self.ensure_metadata_controller();
-        if let Some(ref mut controller) = self.metadata_controller {
-            return controller
-                .peek_compact_requested(&self.id)
-                .await
-                .unwrap_or(false);
-        }
-        false
-    }
-
-    /// Clear the persisted compaction-request flag. The orchestrator
-    /// calls this only when compaction genuinely starts, so a crashed
-    /// run doesn't lose the request (plan D2). Failures are logged,
-    /// not propagated.
-    pub async fn clear_compact_request(&mut self) {
-        self.ensure_metadata_controller();
-        if let Some(ref mut controller) = self.metadata_controller {
-            if let Err(e) = controller.set_compact_requested(&self.id, false).await {
-                tracing::warn!("failed to clear compact_requested for {}: {}", self.id, e);
-            }
-        }
-    }
-
     /// Read the persisted per-session compaction quota state
     /// (compaction audit fix #4). The compaction driver hydrates the
     /// per-run `BackgroundCompactor` from this at run start.
@@ -340,7 +304,7 @@ impl Session {
 
     /// Persist the per-session compaction quota state after a worker
     /// mutation (compaction audit fix #4). Failures are logged, not
-    /// propagated (mirrors [`Self::clear_compact_request`]).
+    /// propagated.
     pub async fn store_compaction_limits_state(
         &mut self,
         state: crate::compaction::CompactionLimitsState,

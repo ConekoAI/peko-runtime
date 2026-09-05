@@ -40,9 +40,8 @@ use crate::session::ownership::{
     err_out_of_tree, err_run_active, err_self_mutation, in_subtree, CallerContext,
 };
 use crate::tools::builtin::session::{
-    BranchOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage, SessionInfo,
-    SessionRuntime, SessionSearchHit, SessionStatusResult, ToolCallInfo, ToolResultInfo,
-    UsageStats,
+    BranchOutcome, DeleteOutcome, HistoryMessage, SessionInfo, SessionRuntime, SessionSearchHit,
+    SessionStatusResult, ToolCallInfo, ToolResultInfo, UsageStats,
 };
 use peko_message::LlmMessage;
 use peko_subject::Subject;

@@ -479,7 +479,7 @@ impl ChannelResponder for GroupWakeResponder {
 /// the engine has a single resolver — `peko_session::path::resolve_reference`
 /// — that handles both `/`-paths and engine self-references; raw ids
 /// of any other shape refuse. The engine-internal entrypoints
-/// (`resume_preflight` / `request_compaction` / `validate_context_parent`)
+/// (`resume_preflight` / `compact_and_execute` / `validate_context_parent`)
 /// canonicalize via `SessionId::from` directly rather than going through
 /// a heuristic; this resolver sits closer to that surface than to the
 /// LLM-facing one. Do not "fix" this without first wiring bindings

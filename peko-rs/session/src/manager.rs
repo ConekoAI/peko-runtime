@@ -1425,17 +1425,6 @@ impl SessionManager {
             .await
     }
 
-    /// Set the compaction-request flag on a session (passthrough to
-    /// the `MetadataController`). Errors when the session does not
-    /// exist.
-    pub async fn set_compact_requested(&self, session_id: &str, requested: bool) -> Result<()> {
-        self.metadata_controller
-            .write()
-            .await
-            .set_compact_requested(session_id, requested)
-            .await
-    }
-
     /// Set the standing flag on a session (passthrough to the
     /// `MetadataController`). Standing sessions are exempt from
     /// maintenance pruning. Errors when the session does not exist.
@@ -3325,51 +3314,6 @@ mod tests {
             !handle.exists().await,
             "deleted session must report exists() == false"
         );
-    }
-
-    /// Plan D2 plumbing: the persisted `compact_requested` flag is
-    /// visible to (and clearable by) an open `Session` — the engine
-    /// reads it via `SessionView::peek_compact_request`.
-    #[tokio::test]
-    async fn test_session_compact_request_flag_roundtrip() {
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
-
-        let handle = manager
-            .create_session("test_agent", &peer, SessionCreateOptions::new())
-            .await
-            .unwrap();
-        let session_id = handle.session_id().to_string();
-
-        // Flag unset → peeks false.
-        {
-            let mut session = handle.base().write().await;
-            assert!(!session.peek_compact_request().await);
-        }
-
-        // Set via the manager (what the session tool's `compact`
-        // action does) → the open session peeks true.
-        manager
-            .set_compact_requested(&session_id, true)
-            .await
-            .unwrap();
-        {
-            let mut session = handle.base().write().await;
-            assert!(session.peek_compact_request().await);
-            // Clear (what the orchestrator does when compaction starts).
-            session.clear_compact_request().await;
-            assert!(!session.peek_compact_request().await);
-        }
-
-        // The clear persisted to the index (read via a fresh manager —
-        // the creating manager's metadata cache is per-instance, see
-        // the per-turn manager pattern in production).
-        let fresh = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let meta = fresh.get_session_metadata(&session_id).await.unwrap();
-        assert!(!meta.compact_requested);
     }
 
     /// RAII guard that enables `PEKO_TEST_MODE` for the duration of a

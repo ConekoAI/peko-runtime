@@ -33,10 +33,12 @@
 //! - [`execute_and_wait`](SubagentRuntime::execute_and_wait) — the actual
 //!   spawn. Builds `SubagentExecutor::execute_and_wait` from the lifted
 //!   request shape; returns the projected `SubagentRunView`.
-//! - [`request_compaction`](SubagentRuntime::request_compaction) — the
-//!   `Agent` tool's `compact` action. Flags a session for engine-driven
-//!   summarization at its next run; returns immediately (no LLM call,
-//!   no completion signal).
+//! - [`compact_and_execute`](SubagentRuntime::compact_and_execute) —
+//!   the `Agent` tool's `compact` action. Starts a continuation run on
+//!   the target session right away; the run force-compacts first
+//!   (run-scoped flag, `CompactionPhase::StandaloneTurn`), then
+//!   processes `prompt`. Returns the run's view like
+//!   [`execute_and_wait`](SubagentRuntime::execute_and_wait).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -47,7 +49,6 @@ use async_trait::async_trait;
 
 use crate::agents::subagent_runtime_impl::AgentPrompt;
 use crate::tools::builtin::messaging::dto::{ExecutionConfig, SubagentRunView};
-use crate::tools::builtin::session::CompactRequestOutcome;
 
 /// Runtime port the `AgentTool` uses to talk to the subagent executor.
 ///
@@ -115,22 +116,32 @@ pub trait SubagentRuntime: Send + Sync {
     /// detach on timeout).
     async fn execute_and_wait(&self, request: SpawnRequest) -> anyhow::Result<SubagentRunView>;
 
-    /// Flag a session for engine-driven compaction at its next run
-    /// (the `Agent` tool's `action = "compact"`).
+    /// Compact a session NOW and continue it with `prompt` in one run
+    /// (the `Agent` tool's `action = "compact"`; 2026-09-05 — replaces
+    /// the retired flag-and-defer `request_compaction`).
     ///
-    /// Returns immediately after setting the persisted
-    /// `compact_requested` flag — no LLM call, no completion signal.
+    /// Starts a continuation run on the target right away: the run
+    /// force-compacts first (run-scoped flag,
+    /// `CompactionPhase::StandaloneTurn`), then processes `prompt`.
+    /// Blocks until the run reaches a terminal state (or the
+    /// framework's auto-detach fires) and returns the run's view, like
+    /// [`Self::execute_and_wait`].
+    ///
     /// `caller_session_key` is the calling run's own session id; the
     /// ownership guards (target exists, not the caller's own session or
     /// an ancestor, inside the caller's subtree, not archived, no
     /// active run) live behind the port in
-    /// `SubagentExecutor::request_compaction` and surface as structured
-    /// anyhow errors.
-    async fn request_compaction(
+    /// `SubagentExecutor::compact_and_execute` and surface as
+    /// structured anyhow errors. Unlike `resume`, the target need not
+    /// be a spawned session — any in-tree session compacts.
+    async fn compact_and_execute(
         &self,
         target: &str,
+        prompt: &str,
+        agent: &str,
         caller_session_key: &str,
-    ) -> anyhow::Result<CompactRequestOutcome>;
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> anyhow::Result<SubagentRunView>;
 
     /// The spawning principal's runtime id (DID). Used for the audit
     /// event's `principal_id` field.
