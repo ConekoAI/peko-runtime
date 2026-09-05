@@ -39,6 +39,16 @@ Branch `session-pages`.
   `pages::render_page_catalog` helper, so both produce identical text
   and the catalog is always current.
 
+#### Fixed
+- **Session branching now carries compaction limits state** —
+  `branch_session_by_id` copies the parent's `compaction_count` /
+  `last_compaction_at` / consecutive-auto / consecutive-failure fields
+  onto the branch (like the token totals it already copied). Previously
+  the branch reset them, so its next compaction boundary would be
+  numbered from 1 and collide with the `compaction_number`s already
+  present in the copied history, and the per-session compaction gates
+  were silently reset (ADR-051 D2 follow-up).
+
 ### Channel search (2026-09-03)
 
 Channels can finally answer "find that message" without a client-side
