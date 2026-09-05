@@ -39,6 +39,20 @@ Branch `session-pages`.
   `pages::render_page_catalog` helper, so both produce identical text
   and the catalog is always current.
 
+#### Changed
+- **`Agent` tool `compact` action is immediate, not flag-and-defer** —
+  `Agent { action: "compact", path, prompt, agent }` starts a
+  continuation run on the target session right away; the run
+  force-compacts first (run-scoped flag, `CompactionPhase::StandaloneTurn`,
+  bypassing the threshold / cooldown / consecutive-auto gates), then
+  processes `prompt` against the compacted history, and the tool returns
+  the run's outcome like `resume` does. `prompt` + `agent` are now
+  required (previously ignored). The persisted `compact_requested`
+  session-index flag is gone (old `sessions.json` files carrying it
+  still load — serde ignores the unknown field); the
+  `SessionManager`/`MetadataController`/`SessionView` set/peek/clear
+  methods and the `CompactRequestOutcome` DTO went with it.
+
 #### Fixed
 - **Session branching now carries compaction limits state** —
   `branch_session_by_id` copies the parent's `compaction_count` /
