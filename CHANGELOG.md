@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-051: compaction pages as an addressable archive (2026-09-05, prototype)
+
+See `docs/architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md`.
+Branch `session-pages`.
+
+#### Added
+- **`peko_session::pages`** — a pure read model that promotes compaction
+  boundaries to an addressable page chain: `list_pages` (segment the
+  stitched event log at compaction boundaries; page 1 = genesis…first
+  boundary, live page = newest boundary…now), `read_page` (role-prefixed
+  transcript rendering with Read-style `offset`/`limit` line windowing
+  and a hard 8k-token cap per call + continuation marker), and
+  `search_pages` (case-insensitive substring search across all pages
+  incl. the live one, capped page-tagged snippets). No new files, no
+  re-keying — pages are derived by scanning `load_events` output.
+- **`Session::{list_pages, read_page, search_pages}`** — thin wrappers
+  that load stored events and delegate to the pure functions.
+
 ### Channel search (2026-09-03)
 
 Channels can finally answer "find that message" without a client-side

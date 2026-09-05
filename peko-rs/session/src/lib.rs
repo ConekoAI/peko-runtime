@@ -99,6 +99,7 @@ pub mod message_conversion;
 pub mod metadata;
 pub mod metadata_controller;
 pub mod overlay;
+pub mod pages;
 pub mod path;
 pub mod session_core;
 pub mod session_core_impl;
@@ -137,6 +138,7 @@ pub use manager::{OverlayRef, SessionCreateOptions, SessionHandle, SessionManage
 pub use metadata::{ReconciliationResult, SessionMetadata};
 pub use metadata_controller::MetadataController;
 pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOverlay};
+pub use pages::{SearchHit, SessionPage};
 pub use session_core::{SessionCore, SessionView};
 pub use session_info::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,

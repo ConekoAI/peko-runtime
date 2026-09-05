@@ -878,6 +878,42 @@ impl Session {
     }
 
     // ============================================================
+    // ADR-051: Compaction pages (read model)
+    // ============================================================
+
+    /// List this session's logical compaction pages (ADR-051 D1).
+    ///
+    /// Thin wrapper: loads the stitched event list and delegates to the
+    /// pure [`crate::pages::list_pages`] scan.
+    pub async fn list_pages(&self) -> Result<Vec<crate::pages::SessionPage>> {
+        let events = self.storage.load_events(&self.id).await?;
+        Ok(crate::pages::list_pages(&events))
+    }
+
+    /// Render one page as transcript text with line windowing +
+    /// per-call token cap (ADR-051 D3/D5). See [`crate::pages::read_page`].
+    pub async fn read_page(
+        &self,
+        page_number: usize,
+        offset: usize,
+        limit: usize,
+    ) -> Result<String> {
+        let events = self.storage.load_events(&self.id).await?;
+        Ok(crate::pages::read_page(&events, page_number, offset, limit))
+    }
+
+    /// Substring search across all pages including the live one
+    /// (ADR-051 D3). See [`crate::pages::search_pages`].
+    pub async fn search_pages(
+        &self,
+        pattern: &str,
+        max_results: usize,
+    ) -> Result<Vec<crate::pages::SearchHit>> {
+        let events = self.storage.load_events(&self.id).await?;
+        Ok(crate::pages::search_pages(&events, pattern, max_results))
+    }
+
+    // ============================================================
     // ADR-022: Single-File Session + Derived Context Cache
     // ============================================================
 

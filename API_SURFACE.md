@@ -954,6 +954,19 @@ on `feat/agent-session-paradigm`:
 - Multi-principal trunk lookup — today there's exactly one principal per runtime instance.
 - Hash-keyed map optimization (`HashMap<String, ...>` → `HashMap<Uuid, ...>`) — opportunistic, not audited.
 
+### ADR-051 (2026-09-05) — compaction pages as an addressable archive
+
+Prototype on branch `session-pages`; see
+`docs/architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md`.
+Pages are a pure read model over the stitched event log — the on-disk
+format is unchanged. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `peko_session::pages` (`list_pages`, `read_page`, `search_pages`, `is_compaction_boundary`, `READ_PAGE_MAX_TOKENS`) | `peko_session::pages` | ✅ New | Logical compaction-page read model: segmentation at compaction boundaries, Read-style windowed transcript rendering with a hard per-call token cap, substring search across pages |
+| `SessionPage` / `SearchHit` (`pages::SearchHit`) | `peko_session::pages` | ✅ New | Page catalog entry + page-tagged search hit DTOs (serializable) |
+| `Session::{list_pages, read_page, search_pages}` | `peko_session::unified` | ✅ New | Thin wrappers: `load_events` + delegate to the pure `pages` functions |
+
 ---
 
 ## Test Coverage Requirements
