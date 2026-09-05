@@ -166,6 +166,21 @@ pub trait SessionCore: Send + Sync + 'static {
         let _ = (session, state);
         Ok(())
     }
+
+    /// ADR-051 D4: render the `<archived-pages>` catalog footer for the
+    /// compaction summary message, derived from the session's stored
+    /// events. The compaction driver calls this right after
+    /// `record_compaction` persists the new boundary and appends the
+    /// footer to the installed summary message; the resume path
+    /// regenerates the identical text in
+    /// [`crate::message_conversion::compaction_summary_message`].
+    /// Default: `None` — implementors without page storage (test
+    /// stubs, in-memory sessions) compile unchanged and produce no
+    /// footer.
+    async fn archived_pages_footer(session: &Self) -> Option<String> {
+        let _ = session;
+        None
+    }
 }
 
 /// Caller-facing facade: takes `&self` (lock-encapsulated).
@@ -267,6 +282,13 @@ pub trait SessionView: Send + Sync + 'static {
         _state: crate::compaction::CompactionLimitsState,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// ADR-051 D4: `<archived-pages>` catalog footer for the compaction
+    /// summary message. Default: `None` — see
+    /// [`SessionCore::archived_pages_footer`].
+    async fn archived_pages_footer(&self) -> Option<String> {
+        None
     }
 }
 
@@ -406,5 +428,10 @@ where
     ) -> Result<()> {
         let mut guard = self.write().await;
         T::store_compaction_limits_state(&mut *guard, state).await
+    }
+
+    async fn archived_pages_footer(&self) -> Option<String> {
+        let guard = self.read().await;
+        T::archived_pages_footer(&*guard).await
     }
 }

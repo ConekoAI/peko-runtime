@@ -168,4 +168,8 @@ impl SessionCore for Session {
         Session::store_compaction_limits_state(session, state).await;
         Ok(())
     }
+
+    async fn archived_pages_footer(session: &Self) -> Option<String> {
+        Session::archived_pages_footer(session).await
+    }
 }

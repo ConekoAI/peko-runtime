@@ -28,6 +28,16 @@ Branch `session-pages`.
   manages). `read_page` windows rendered lines (`offset`/`limit`) under
   a hard per-call token cap; `search_pages` returns page-tagged hits
   suitable for a follow-up `read_page`.
+- **`<archived-pages>` catalog footer on the compaction summary
+  message** (ADR-051 D4) — every compaction summary now ends with a
+  one-line-per-page catalog of the session's archived pages (page
+  number, compaction number, ~token estimate, title excerpt) plus a
+  pointer to `read_page` / `search_pages`. Derived, never stored: the
+  live path (compaction driver, via the new defaulted
+  `SessionView::archived_pages_footer`) and the resume path
+  (`compaction_summary_message`) render it through the shared
+  `pages::render_page_catalog` helper, so both produce identical text
+  and the catalog is always current.
 
 ### Channel search (2026-09-03)
 

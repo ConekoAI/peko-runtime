@@ -1079,6 +1079,19 @@ live compaction path and the resume path render it from
 `details.user_messages`, so the reconstructed summary message is
 identical after a restart.
 
+The `<archived-pages>` footer (ADR-051, 2026-09-05) is appended after
+the `<user-messages>` block whenever the session has at least one
+compaction-archived page. It lists one line per page — page number,
+compaction number, chars/4 token estimate, first-user-message title
+excerpt — plus a pointer to the `session` tool's `read_page` /
+`search_pages` actions. The footer is **derived, never stored**: it is
+not part of the boundary event's `detail`; both the live path (the
+compaction driver appends it to the installed summary message after the
+boundary is recorded) and the resume path (`compaction_summary_message`)
+regenerate it by scanning the stored events
+(`peko_session::pages::render_page_catalog`), so the two sites produce
+identical text and the catalog is always current.
+
 ---
 
 ### 5.8 Agent-Owned Session Management (2026-08-09)

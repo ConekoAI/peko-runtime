@@ -550,6 +550,39 @@ impl CompactionDriver {
                 Ok(Ok(response)) => {
                     match response {
                         CompactionResponse::Completed(result) => {
+                            // ADR-051 D4: persist the boundary FIRST so
+                            // the page catalog enumerated below includes
+                            // the page this compaction just closed.
+                            // Record compaction entry in session
+                            if let Err(e) = session
+                                .record_compaction(
+                                    &result.entry.summary,
+                                    result.entry.messages_compacted,
+                                    result.entry.tokens_before,
+                                    result.entry.tokens_after,
+                                    result.entry.compaction_number,
+                                    result.entry.details.as_ref(),
+                                )
+                                .await
+                            {
+                                warn!("Failed to record compaction entry: {}", e);
+                            }
+                            // Audit fix #4: persist the worker's quota
+                            // state so the next run hydrates from it.
+                            self.sync_limits_state_to_session(session).await;
+
+                            // ADR-051 D4: append the derived
+                            // `<archived-pages>` catalog footer to the
+                            // summary message before installing it. The
+                            // footer is never stored — the resume path
+                            // (`peko_session::compaction_summary_message`)
+                            // regenerates the identical text from the
+                            // stored events.
+                            let mut result = result;
+                            if let Some(footer) = session.archived_pages_footer().await {
+                                append_archived_pages_footer(&mut result.messages, &footer);
+                            }
+
                             *messages = result.messages.clone();
                             self.compaction_performed = true;
                             self.last_compaction_result = Some(result.clone());
@@ -568,24 +601,6 @@ impl CompactionDriver {
                                 result.entry.tokens_before,
                                 result.entry.tokens_after
                             );
-
-                            // Record compaction entry in session
-                            if let Err(e) = session
-                                .record_compaction(
-                                    &result.entry.summary,
-                                    result.entry.messages_compacted,
-                                    result.entry.tokens_before,
-                                    result.entry.tokens_after,
-                                    result.entry.compaction_number,
-                                    result.entry.details.as_ref(),
-                                )
-                                .await
-                            {
-                                warn!("Failed to record compaction entry: {}", e);
-                            }
-                            // Audit fix #4: persist the worker's quota
-                            // state so the next run hydrates from it.
-                            self.sync_limits_state_to_session(session).await;
                         }
                         CompactionResponse::NotNeeded => {
                             debug!("Background compaction: not needed");
@@ -807,6 +822,29 @@ fn content_block_token_estimate(content: &[peko_message::ContentBlock]) -> usize
         + 4
 }
 
+/// ADR-051 D4: append the archived-pages catalog footer to the
+/// compaction summary message inside a compacted list. The summary is
+/// the System-role message the compactor installed near the top (after
+/// an optional pinned system prompt), identified by the shared
+/// `peko_session::COMPACTION_SUMMARY_PREFIX`. No-op when the list has
+/// no summary message (defensive — the worker always produces one).
+fn append_archived_pages_footer(messages: &mut [LlmMessage], footer: &str) {
+    for msg in messages.iter_mut() {
+        if msg.role != peko_message::MessageRole::System {
+            continue;
+        }
+        for block in msg.content.iter_mut() {
+            if let peko_message::ContentBlock::Text { text } = block {
+                if text.starts_with(peko_session::COMPACTION_SUMMARY_PREFIX) {
+                    text.push_str("\n\n");
+                    text.push_str(footer);
+                    return;
+                }
+            }
+        }
+    }
+}
+
 // Phase 9b.N.4: `load_compaction_config` lives in root
 // (`src/session/compaction.rs`) because it depends on the `dirs` +
 // `toml` crates, which aren't in `peko-engine`'s dep graph. Root is
@@ -836,6 +874,9 @@ mod tests {
         /// would return, plus a log of every state the driver stored.
         limits: Mutex<crate::compaction::CompactionLimitsState>,
         stored_states: Mutex<Vec<crate::compaction::CompactionLimitsState>>,
+        /// ADR-051 D4: the archived-pages catalog footer this session
+        /// would render from its stored events (`None` = boundary-less).
+        footer: Mutex<Option<String>>,
     }
 
     impl StubSession {
@@ -846,6 +887,7 @@ mod tests {
                 last_total: AtomicUsize::new(0),
                 limits: Mutex::new(crate::compaction::CompactionLimitsState::default()),
                 stored_states: Mutex::new(vec![]),
+                footer: Mutex::new(None),
             }
         }
     }
@@ -938,6 +980,9 @@ mod tests {
                 .expect("stored_states mutex poisoned")
                 .push(state);
             Ok(())
+        }
+        async fn archived_pages_footer(&self) -> Option<String> {
+            self.footer.lock().expect("footer mutex poisoned").clone()
         }
     }
 
@@ -1614,6 +1659,108 @@ mod tests {
             stored.as_slice(),
             &[worker_state],
             "worker quota state must be persisted after Completed"
+        );
+    }
+
+    /// ADR-051 D4 (live path): when the session renders an
+    /// archived-pages catalog after the boundary is recorded, the
+    /// driver appends it to the installed summary message — the same
+    /// text the resume path
+    /// (`peko_session::compaction_summary_message`) reconstructs from
+    /// the stored events.
+    #[tokio::test]
+    async fn completed_compaction_appends_archived_pages_footer() {
+        let mut f = fixture(false, false);
+        *f.session.footer.lock().expect("footer mutex poisoned") = Some(
+            "<archived-pages>\nThis session has 1 archived page(s) from earlier compactions:\n- page 1 (compaction #1, ~1k tokens): \"older question\"\nUse the session tool's read_page / search_pages actions to retrieve archived content.\n</archived-pages>"
+                .to_string(),
+        );
+
+        let mut messages = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::user("older question"),
+            LlmMessage::assistant("older answer"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+        let compacted = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::system("[Conversation Summary - 3 messages]:\nsummary text"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+
+        let mutated = drive_mid_turn(&mut f, &mut messages, completed_response(compacted, 3))
+            .await
+            .unwrap();
+        assert!(mutated);
+
+        // Exactly one summary message, and the footer rides it.
+        assert_eq!(text_contains(&messages, "<archived-pages>"), 1);
+        let summary = messages
+            .iter()
+            .find_map(|m| {
+                m.content.iter().find_map(|b| match b {
+                    peko_message::ContentBlock::Text { text }
+                        if text.starts_with(peko_session::COMPACTION_SUMMARY_PREFIX) =>
+                    {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+            })
+            .expect("summary message present");
+        assert!(
+            summary.ends_with("</archived-pages>"),
+            "footer must be appended to the summary text: {summary}"
+        );
+        // The pinned system prompt is untouched.
+        assert!(
+            !messages[0].content.iter().any(|b| matches!(
+                b,
+                peko_message::ContentBlock::Text { text } if text.contains("<archived-pages>")
+            )),
+            "system prompt must not gain the footer"
+        );
+    }
+
+    /// ADR-051 D4: without archived pages (`footer = None`, the
+    /// trait default for boundary-less sessions) the installed summary
+    /// text is byte-identical to what the worker produced.
+    #[tokio::test]
+    async fn completed_compaction_without_archived_pages_has_no_footer() {
+        let mut f = fixture(false, false);
+
+        let mut messages = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::user("older question"),
+            LlmMessage::assistant("older answer"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+        let compacted = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::system("[Conversation Summary - 3 messages]:\nsummary text"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+
+        let mutated = drive_mid_turn(&mut f, &mut messages, completed_response(compacted, 3))
+            .await
+            .unwrap();
+        assert!(mutated);
+        assert_eq!(text_contains(&messages, "<archived-pages>"), 0);
+        assert_eq!(
+            text_contains(
+                &messages,
+                "[Conversation Summary - 3 messages]:\nsummary text"
+            ),
+            1,
+            "summary text unchanged when there is nothing to catalog"
         );
     }
 

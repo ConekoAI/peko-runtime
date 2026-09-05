@@ -260,9 +260,72 @@ pub fn search_pages(events: &[SessionEvent], pattern: &str, max_results: usize) 
     hits
 }
 
+/// Render the `<archived-pages>` catalog footer for the compaction
+/// summary message (ADR-051 D4): one line per archived page (pages
+/// terminated by a compaction boundary — the live page is excluded),
+/// plus a pointer to the retrieval actions. Returns `None` — no footer
+/// — when the session has no archived pages yet.
+///
+/// The footer is DERIVED, never stored in the boundary event. Both
+/// render sites use this helper so they produce identical text: the
+/// live path (the engine's compaction driver appends it to the
+/// installed summary message after `Session::record_compaction`) and
+/// the resume path
+/// ([`crate::message_conversion::compaction_summary_message`]
+/// regenerates it from the stored events).
+#[must_use]
+pub fn render_page_catalog(pages: &[SessionPage]) -> Option<String> {
+    let archived: Vec<&SessionPage> = pages
+        .iter()
+        .filter(|p| p.boundary_event_id.is_some())
+        .collect();
+    if archived.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from("<archived-pages>\n");
+    out.push_str(&format!(
+        "This session has {} archived page(s) from earlier compactions:\n",
+        archived.len()
+    ));
+    for page in archived {
+        out.push_str(&format!("- page {}", page.page_number));
+        match page.compaction_number {
+            Some(n) => out.push_str(&format!(
+                " (compaction #{n}, {} tokens)",
+                format_token_estimate(page.token_estimate)
+            )),
+            // Legacy boundary written before `compaction_number` existed.
+            None => out.push_str(&format!(
+                " ({} tokens)",
+                format_token_estimate(page.token_estimate)
+            )),
+        }
+        if !page.title.is_empty() {
+            out.push_str(&format!(": \"{}\"", page.title));
+        }
+        out.push('\n');
+    }
+    out.push_str(
+        "Use the session tool's read_page / search_pages actions to retrieve archived content.\n\
+         </archived-pages>",
+    );
+    Some(out)
+}
+
 // --------------------------------------------------------------------
 // Internal helpers
 // --------------------------------------------------------------------
+
+/// `~42k`-style token figure for the catalog line (the estimate is
+/// chars/4 — precision beyond two significant digits would be noise).
+fn format_token_estimate(tokens: usize) -> String {
+    if tokens >= 1000 {
+        format!("~{}k", (tokens + 500) / 1000)
+    } else {
+        format!("~{tokens}")
+    }
+}
 
 fn build_page(
     page_number: usize,
@@ -676,5 +739,57 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].page_number, 1);
         assert_eq!(hits[1].page_number, 2);
+    }
+
+    // --------------------------------------------------------------
+    // render_page_catalog (ADR-051 D4)
+    // --------------------------------------------------------------
+
+    #[test]
+    fn render_page_catalog_lists_archived_pages_excluding_live() {
+        let events = vec![
+            user("first ask"),
+            assistant("first answer"),
+            boundary(1),
+            user("second ask"),
+            boundary(2),
+            assistant("live answer"),
+        ];
+        let footer = render_page_catalog(&list_pages(&events)).unwrap();
+        assert!(
+            footer.starts_with("<archived-pages>\nThis session has 2 archived page(s)"),
+            "{footer}"
+        );
+        assert!(footer.contains("- page 1 (compaction #1, ~"), "{footer}");
+        assert!(footer.contains(": \"first ask\""), "{footer}");
+        assert!(footer.contains("- page 2 (compaction #2, ~"), "{footer}");
+        assert!(footer.contains(": \"second ask\""), "{footer}");
+        assert!(!footer.contains("live answer"), "live page excluded");
+        assert!(footer.contains("read_page / search_pages"), "{footer}");
+        assert!(footer.ends_with("</archived-pages>"), "{footer}");
+    }
+
+    #[test]
+    fn render_page_catalog_none_without_archived_pages() {
+        assert!(render_page_catalog(&[]).is_none());
+        let events = vec![user("only live")];
+        assert!(render_page_catalog(&list_pages(&events)).is_none());
+    }
+
+    #[test]
+    fn render_page_catalog_legacy_boundary_omits_compaction_number() {
+        let legacy = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope {
+                id: "compact_legacy".to_string(),
+                ts: Utc::now(),
+            },
+            event: "compaction".to_string(),
+            detail: serde_json::json!({"summary": "old", "messages_compacted": 3}),
+        });
+        let events = vec![user("old question"), legacy];
+        let footer = render_page_catalog(&list_pages(&events)).unwrap();
+        assert!(footer.contains("- page 1 (~"), "{footer}");
+        assert!(!footer.contains("compaction #"), "{footer}");
+        assert!(footer.contains(": \"old question\""), "{footer}");
     }
 }

@@ -968,6 +968,10 @@ format is unchanged. New/changed public items:
 | `Session::{list_pages, read_page, search_pages}` | `peko_session::unified` | ✅ New | Thin wrappers: `load_events` + delegate to the pure `pages` functions |
 | `SessionRuntime::{list_pages, read_page, search_pages}` | `tools::builtin::session` | ✅ Extended | Session tool port: page catalog / windowed page render / page search. Production adapter resolves + ownership-gates (same read gate as `get_history`), then delegates to `peko_session::pages` |
 | `SessionTool` actions `list_pages` / `read_page` / `search_pages` (10 actions total) | `tools::builtin::session::tool` | ✅ Extended | Agent-facing page retrieval, gated by the existing `tool:session` grant — no new capabilities |
+| `pages::render_page_catalog` | `peko_session::pages` | ✅ New | `<archived-pages>` footer renderer shared by the live + resume paths (derived, never stored) |
+| `compaction_summary_message(events, boundary_idx)` | `peko_session::message_conversion` | ⚠️ Changed | Signature takes the full event list + boundary index (was `&SessionEvent`) so the resume path can enumerate pages for the footer |
+| `COMPACTION_SUMMARY_PREFIX` | `peko_session::message_conversion` | ✅ New | Shared `"[Conversation Summary"` prefix for both summary construction sites + the driver's summary-message locator |
+| `SessionCore`/`SessionView::archived_pages_footer` (defaulted) | `peko_session::session_core` | ✅ Extended | Live-path footer source: the compaction driver calls it right after `record_compaction` and appends the result to the installed summary message |
 
 ---
 

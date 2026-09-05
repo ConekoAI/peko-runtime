@@ -43,6 +43,7 @@ pub use tokio::sync::RwLock;
 pub use message_conversion::{
     compaction_summary_message, entries_to_context_text, event_to_llm_message,
     is_compaction_boundary_message, latest_compaction_boundary, COMPACTION_BOUNDARY_METADATA_KEY,
+    COMPACTION_SUMMARY_PREFIX,
 };
 
 pub mod compaction;
@@ -138,7 +139,7 @@ pub use manager::{OverlayRef, SessionCreateOptions, SessionHandle, SessionManage
 pub use metadata::{ReconciliationResult, SessionMetadata};
 pub use metadata_controller::MetadataController;
 pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOverlay};
-pub use pages::{SearchHit, SessionPage};
+pub use pages::{render_page_catalog, SearchHit, SessionPage};
 pub use session_core::{SessionCore, SessionView};
 pub use session_info::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
