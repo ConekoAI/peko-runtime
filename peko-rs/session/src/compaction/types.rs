@@ -222,6 +222,34 @@ pub struct CompactionResult {
     pub usage: TokenUsage,
 }
 
+/// Persisted per-session compaction quota state (compaction audit
+/// fix #4).
+///
+/// Lives on the session index entry (`SessionEntry`) so the per-run
+/// `BackgroundCompactor` hydrates from it at run start and syncs back
+/// on every mutation — making `max_compactions_per_session`,
+/// `cooldown_seconds`, and `max_consecutive_auto` genuinely
+/// per-session rather than per-run, and making the JSONL boundary
+/// event's `compaction_number` a per-session sequence.
+///
+/// All fields default to zero / `None`, so a session without
+/// persisted state (or an old index entry) reads as "never
+/// compacted".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionLimitsState {
+    /// Successful compactions recorded for this session. Also the
+    /// source of the per-session `compaction_number` sequence.
+    pub compaction_count: u32,
+    /// Last compaction attempt (success or failure) as epoch
+    /// milliseconds; drives the cross-run cooldown / failure backoff.
+    pub last_compaction_at_ms: Option<u64>,
+    /// Consecutive auto-compactions (gate for `max_consecutive_auto`).
+    pub consecutive_auto: u32,
+    /// Consecutive failed attempts; drives the escalating failure
+    /// backoff (`failure_backoff_seconds` in `background.rs`).
+    pub consecutive_failures: u32,
+}
+
 /// Compaction quota tracking — owned by `BackgroundCompactor`.
 ///
 /// `BackgroundCompactor` reads/writes one of these; the orchestrator

@@ -780,7 +780,7 @@ Common `event` values:
 | `session_resumed` | Session was resumed from storage | `resumed_at` |
 | `instance_restarted` | The instance was restarted | `restart_count` |
 | `plugin_applied` | A plugin was applied | `plugin_id` |
-| `compaction` | Conversation history was compacted (ADR-022) | `summary`, `messages_compacted`, `tokens_before`, `tokens_after`, `compaction_number` |
+| `compaction` | Conversation history was compacted (ADR-022) | `summary`, `messages_compacted`, `tokens_before`, `tokens_after`, `compaction_number`, optional `details` (file ops, phase, `user_messages`) |
 | `model_change` | The LLM model was changed mid-session | `provider`, `model_id` |
 
 **Compaction event (ADR-022):**
@@ -798,10 +798,22 @@ Common `event` values:
     "messages_compacted": 12,
     "tokens_before": 45000,
     "tokens_after": 8000,
-    "compaction_number": 1
+    "compaction_number": 1,
+    "details": {
+      "read_files": ["src/main.rs"],
+      "modified_files": [],
+      "image_token_count": 0,
+      "phase": "pre_turn",
+      "user_messages": [
+        "Summarise the Q4 earnings report.",
+        "Keep the summary under 200 words"
+      ]
+    }
   }
 }
 ```
+
+The optional `details` object carries the tracked file operations plus, since compaction audit fix #6, `user_messages`: the compacted-away region's verbatim user messages (oldest first, each capped at 2,000 characters, selected newest-first under a fixed 20,000-token budget). On context rebuild, the summary system message appends them as a `<user-messages>` block (see §5.6.5) so the user's exact intent survives summarization loss. Pre-fix-#6 events have no `user_messages` field and render exactly as before.
 
 When a `compaction` event is present, the runtime builds the LLM context by emitting the summary as a system message, followed only by messages that appear **after** the compaction event in the JSONL. Messages before the compaction are not sent to the LLM — they are preserved in the JSONL for audit but do not contribute to the context window.
 
@@ -978,7 +990,7 @@ keep_recent_tokens = 20000
 When building the LLM context from a session that contains compaction events:
 
 1. Find the **latest** `system` event with `event: "compaction"`.
-2. Emit the compaction's `summary` as a system message.
+2. Emit the compaction's `summary` as a system message (with `<read-files>` / `<modified-files>` and, when `details.user_messages` is present, the `<user-messages>` block — see §5.6.5).
 3. Emit only messages that appear **after** the compaction event in the JSONL.
 4. Messages before the compaction are preserved in `.jsonl` for audit but excluded from the LLM context.
 
@@ -1039,9 +1051,33 @@ path/to/file2.rs
 <modified-files>
 path/to/changed.rs
 </modified-files>
+
+<user-messages>
+The user sent the following messages verbatim (oldest first):
+
+<message>
+Summarise the Q4 earnings report.
+</message>
+
+<message>
+Keep the summary under 200 words
+</message>
+</user-messages>
 ```
 
 File operations are tracked across compactions by scanning tool calls in the messages being summarized.
+
+The `<user-messages>` block (compaction audit fix #6, the Codex
+`COMPACT_USER_MESSAGE_MAX_TOKENS` pattern) preserves the compacted-away
+region's verbatim user messages so exact user intent survives
+summarization loss. The compactor collects them newest-first under a
+fixed 20,000-token budget (chars/4 estimate), caps each message at
+2,000 characters, truncates the oldest overflowing message to fit, and
+skips empty messages and previous summary messages. The block is
+appended only when at least one user message was preserved; both the
+live compaction path and the resume path render it from
+`details.user_messages`, so the reconstructed summary message is
+identical after a restart.
 
 ---
 
@@ -1063,6 +1099,10 @@ both = `false`):
 | `standing` | bool | Exempt from maintenance pruning (2026-08-15): a standing session's transcript is durable regardless of idle age. The trunk (`find_trunk_session(metas)`) and `archived` sessions are prune-exempt by rule; `standing` is the flag for standing children |
 | `privileged` | bool | Whole-store ownership-guard reach for the session's caller (sprint 2 Phase 5, 2026-08-17) despite having a parent — tree membership is unchanged. Set only for the principal owner's peer child (`/local-user`); see "Peer-child provisioning" in §5.10 |
 | `slug` | string \| null | Per-parent-unique path segment for `/a/b` addressing (2026-08-15, Phase 1b). `#[serde(default, skip_serializing_if = "Option::is_none")]` on the entry. See "Session path addressing" below |
+| `compaction_count` | u32 | Successful compactions recorded for this session (compaction audit fix #4, 2026-09-04). The per-session sequence the JSONL boundary event's `compaction_number` derives from; the per-run `BackgroundCompactor` hydrates from it at run start so `max_compactions_per_session` is a per-session limit, not per-run |
+| `last_compaction_at` | u64 \| null | Last compaction attempt (success or failure) as epoch milliseconds; drives the cross-run cooldown / escalating failure backoff |
+| `consecutive_auto_compactions` | u32 | Consecutive auto-compactions; the per-session gate behind `max_consecutive_auto` |
+| `consecutive_compaction_failures` | u32 | Consecutive failed compaction attempts (reset on success); drives the escalating failure backoff across runs |
 
 **`PeerInfo.active_session_id` is now `Option<String>`**
 (`#[serde(default)]`). Deleting a session scrubs its id from the

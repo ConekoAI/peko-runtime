@@ -14,7 +14,7 @@ use peko_message::LlmMessage;
 use peko_providers::ProviderView;
 use peko_quota::{QuotaMeter, QuotaScope};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, warn};
 
@@ -110,16 +110,46 @@ pub struct BackgroundCompactor {
 }
 
 /// Internal worker state
+///
+/// Compaction audit fix #4: the quota-relevant fields are persisted
+/// on the session index entry (see
+/// [`crate::compaction::CompactionLimitsState`]) and hydrated into a
+/// fresh `WorkerState` at every run start, so
+/// `max_compactions_per_session` / `cooldown_seconds` /
+/// `max_consecutive_auto` are per-SESSION limits rather than
+/// per-run. `last_compaction` is a `SystemTime` (not `Instant`) so
+/// it round-trips through the persisted epoch-millis timestamp.
 #[derive(Debug)]
 struct WorkerState {
-    /// Last compaction time
-    last_compaction: Option<Instant>,
-    /// Number of compactions this session
+    /// Last compaction attempt (success or failure)
+    last_compaction: Option<SystemTime>,
+    /// Number of compactions this session (hydrated per run)
     compaction_count: usize,
-    /// Number of consecutive auto-compactions
+    /// Number of consecutive auto-compactions (hydrated per run)
     consecutive_auto: usize,
-    /// Whether compaction is currently in progress
+    /// Number of consecutive failed compaction attempts. Drives the
+    /// escalating failure backoff in `should_request`; reset on
+    /// success. Hydrated per run.
+    consecutive_failures: u32,
+    /// Whether compaction is currently in progress (never persisted —
+    /// a crashed run leaves no in-flight compaction)
     is_compacting: bool,
+}
+
+/// Cap on the escalating failure backoff (15 minutes).
+const MAX_FAILURE_BACKOFF_SECONDS: u64 = 15 * 60;
+
+/// Cooldown that applies after `consecutive_failures` failed attempts:
+/// the base cooldown doubled per consecutive failure, capped at
+/// [`MAX_FAILURE_BACKOFF_SECONDS`]. Zero failures yields the base
+/// cooldown unchanged.
+fn failure_backoff_seconds(cooldown_seconds: u64, consecutive_failures: u32) -> u64 {
+    // Clamp the shift so the multiplier can't overflow before the cap
+    // applies (any base cooldown × 2^10 already exceeds the cap).
+    let shift = consecutive_failures.min(10);
+    cooldown_seconds
+        .saturating_mul(1u64 << shift)
+        .min(MAX_FAILURE_BACKOFF_SECONDS)
 }
 
 impl BackgroundCompactor {
@@ -146,6 +176,7 @@ impl BackgroundCompactor {
             last_compaction: None,
             compaction_count: 0,
             consecutive_auto: 0,
+            consecutive_failures: 0,
             is_compacting: false,
         }));
 
@@ -202,6 +233,7 @@ impl BackgroundCompactor {
             last_compaction: None,
             compaction_count: 0,
             consecutive_auto: 0,
+            consecutive_failures: 0,
             is_compacting: false,
         }));
 
@@ -310,10 +342,20 @@ impl BackgroundCompactor {
             return false;
         }
 
-        // Check cooldown (prefer config value, fall back to quota)
-        let cooldown = config.cooldown_seconds;
+        // Check cooldown (prefer config value, fall back to quota).
+        // Failures count as attempts too — `last_compaction` is
+        // stamped on both success and failure — and consecutive
+        // failures escalate the cooldown exponentially so a
+        // persistently failing provider doesn't burn a summarization
+        // call per loop iteration.
+        let cooldown = failure_backoff_seconds(config.cooldown_seconds, state.consecutive_failures);
         if let Some(last) = state.last_compaction {
-            let elapsed = last.elapsed().as_secs();
+            // `elapsed` errs when the persisted stamp is in the
+            // future (clock skew across runs); treat that as "just
+            // happened" so the cooldown still applies — the
+            // conservative direction (never spam summarization
+            // calls).
+            let elapsed = last.elapsed().unwrap_or(Duration::ZERO).as_secs();
             if elapsed < cooldown {
                 debug!("Compaction on cooldown: {}s remaining", cooldown - elapsed);
                 return false;
@@ -345,7 +387,7 @@ impl BackgroundCompactor {
         let cooldown_remaining = state
             .last_compaction
             .map(|last| {
-                let elapsed = last.elapsed().as_secs();
+                let elapsed = last.elapsed().unwrap_or(Duration::ZERO).as_secs();
                 if elapsed < self.quota.cooldown_seconds {
                     format!("{}s", self.quota.cooldown_seconds - elapsed)
                 } else {
@@ -368,6 +410,40 @@ impl BackgroundCompactor {
     pub async fn reset_consecutive(&self) {
         let mut state = self.state.lock().await;
         state.consecutive_auto = 0;
+    }
+
+    /// Hydrate the worker quota state from the persisted per-session
+    /// snapshot (compaction audit fix #4).
+    ///
+    /// The compaction driver calls this once per run, before the
+    /// first `should_request` gate, so the quota / cooldown /
+    /// consecutive limits continue across runs of the same session
+    /// instead of restarting cold.
+    pub async fn hydrate_limits_state(&self, persisted: crate::compaction::CompactionLimitsState) {
+        let mut state = self.state.lock().await;
+        state.compaction_count = persisted.compaction_count as usize;
+        state.last_compaction = persisted
+            .last_compaction_at_ms
+            .map(|ms| UNIX_EPOCH + Duration::from_millis(ms));
+        state.consecutive_auto = persisted.consecutive_auto as usize;
+        state.consecutive_failures = persisted.consecutive_failures;
+    }
+
+    /// Snapshot the current worker quota state so the driver can
+    /// persist it onto the session index entry (compaction audit
+    /// fix #4). Called after every worker mutation (success or
+    /// failure).
+    pub async fn limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        let state = self.state.lock().await;
+        crate::compaction::CompactionLimitsState {
+            compaction_count: u32::try_from(state.compaction_count).unwrap_or(u32::MAX),
+            last_compaction_at_ms: state
+                .last_compaction
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            consecutive_auto: u32::try_from(state.consecutive_auto).unwrap_or(u32::MAX),
+            consecutive_failures: state.consecutive_failures,
+        }
     }
 }
 
@@ -425,13 +501,23 @@ async fn process_compaction_request_with_config(
         .compact(&request.messages, &provider, request.phase)
         .await
     {
-        Ok(result) => {
+        Ok(mut result) => {
             // Update state
             {
                 let mut s = state.lock().await;
-                s.last_compaction = Some(Instant::now());
+                s.last_compaction = Some(SystemTime::now());
                 s.compaction_count += 1;
                 s.consecutive_auto += 1;
+                s.consecutive_failures = 0;
+
+                // Compaction audit fix #4: the per-request `Compactor`
+                // numbers its entry from its own fresh state (always
+                // 1); renumber from the worker's (session-hydrated)
+                // count so the JSONL boundary event's
+                // `compaction_number` is a per-session sequence that
+                // continues across runs.
+                result.entry.compaction_number = s.compaction_count;
+                result.state.compaction_count = s.compaction_count;
             }
 
             info!(
@@ -445,6 +531,14 @@ async fn process_compaction_request_with_config(
         }
         Err(e) => {
             error!("Background compaction failed: {}", e);
+            // Record the attempt so the cooldown gate applies to
+            // failures too; consecutive failures escalate it via
+            // `failure_backoff_seconds`.
+            {
+                let mut s = state.lock().await;
+                s.last_compaction = Some(SystemTime::now());
+                s.consecutive_failures += 1;
+            }
             let _ = request
                 .response_tx
                 .send(CompactionResponse::Failed(e.to_string()));
@@ -491,11 +585,173 @@ impl crate::compaction::CompactorBackend for BackgroundCompactor {
         )
         .await
     }
+
+    async fn hydrate_limits_state(&self, state: crate::compaction::CompactionLimitsState) {
+        BackgroundCompactor::hydrate_limits_state(self, state).await;
+    }
+
+    async fn limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        BackgroundCompactor::limits_state(self).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peko_providers::adapters::AnyAdapter;
+    use peko_providers::core::ProviderRuntimeOptions;
+    use peko_providers::mock::MockAdapter;
+    use peko_providers::Provider;
+
+    fn mock_provider(mock: &MockAdapter) -> Arc<dyn ProviderView> {
+        Arc::new(
+            Provider::new(
+                AnyAdapter::Mock(mock.clone()),
+                "",
+                ProviderRuntimeOptions {
+                    default_model_id: "mock-model".to_string(),
+                    context_window: None,
+                    timeout_seconds: 300,
+                    max_retries: 0,
+                    retry_delay_ms: 0,
+                    ..Default::default()
+                },
+            )
+            .expect("mock provider should construct"),
+        )
+    }
+
+    /// Long-enough history that `Compactor::compact` actually calls
+    /// the LLM (same shape as the `compaction_top` tests).
+    fn test_messages() -> Vec<LlmMessage> {
+        let mut messages = vec![LlmMessage::system("You are a helpful assistant.")];
+        for i in 0..30 {
+            if i % 2 == 0 {
+                messages.push(LlmMessage::user(format!("User message {i}")));
+            } else {
+                messages.push(LlmMessage::assistant(format!(
+                    "Assistant response {i} with some additional text to make it longer"
+                )));
+            }
+        }
+        messages
+    }
+
+    fn test_request() -> (CompactionRequest, oneshot::Receiver<CompactionResponse>) {
+        let (response_tx, rx) = oneshot::channel();
+        (
+            CompactionRequest {
+                messages: test_messages(),
+                previous_summary: None,
+                response_tx,
+                phase: crate::compaction::types::CompactionPhase::PreTurn,
+            },
+            rx,
+        )
+    }
+
+    #[test]
+    fn failure_backoff_doubles_per_consecutive_failure_and_caps() {
+        assert_eq!(failure_backoff_seconds(60, 0), 60);
+        assert_eq!(failure_backoff_seconds(60, 1), 120);
+        assert_eq!(failure_backoff_seconds(60, 2), 240);
+        assert_eq!(failure_backoff_seconds(60, 3), 480);
+        assert_eq!(
+            failure_backoff_seconds(60, 4),
+            MAX_FAILURE_BACKOFF_SECONDS,
+            "capped at 15 minutes"
+        );
+        assert_eq!(
+            failure_backoff_seconds(60, 32),
+            MAX_FAILURE_BACKOFF_SECONDS,
+            "shift is clamped before the multiplier can overflow"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_attempt_records_cooldown_and_success_resets() {
+        let mock = MockAdapter::new();
+        let provider = mock_provider(&mock);
+        let state = Arc::new(Mutex::new(WorkerState {
+            last_compaction: None,
+            compaction_count: 0,
+            consecutive_auto: 0,
+            consecutive_failures: 0,
+            is_compacting: false,
+        }));
+
+        // Two consecutive failures: each stamps `last_compaction` (so
+        // the cooldown gate applies) and bumps the failure counter.
+        for expected_failures in 1..=2u32 {
+            mock.queue_error("provider down");
+            let (request, rx) = test_request();
+            process_compaction_request_with_config(
+                request,
+                provider.clone(),
+                state.clone(),
+                CompactionConfig::default(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(rx.await.unwrap(), CompactionResponse::Failed(_)),
+                "mock error must surface as CompactionResponse::Failed"
+            );
+            let s = state.lock().await;
+            assert!(
+                s.last_compaction.is_some(),
+                "a failed attempt must start the cooldown"
+            );
+            assert_eq!(s.consecutive_failures, expected_failures);
+            assert_eq!(s.compaction_count, 0, "failures don't count as compactions");
+            drop(s);
+        }
+
+        // A success resets the failure counter.
+        mock.queue_text("Summary of conversation: user and assistant discussed several topics.");
+        let (request, rx) = test_request();
+        process_compaction_request_with_config(
+            request,
+            provider,
+            state.clone(),
+            CompactionConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            rx.await.unwrap(),
+            CompactionResponse::Completed(_)
+        ));
+        let s = state.lock().await;
+        assert_eq!(
+            s.consecutive_failures, 0,
+            "success resets the failure counter"
+        );
+        assert_eq!(s.compaction_count, 1);
+    }
+
+    #[tokio::test]
+    async fn should_request_blocks_during_failure_cooldown() {
+        let mock = MockAdapter::new();
+        let compactor =
+            BackgroundCompactor::new(mock_provider(&mock), Arc::new(QuotaMeter::unlimited()));
+        {
+            let mut s = compactor.state.lock().await;
+            s.last_compaction = Some(SystemTime::now());
+            s.consecutive_failures = 1;
+        }
+        let config = CompactionConfig::default();
+        // Over the dual threshold, but inside the (escalated) failure
+        // cooldown — before the fix the cooldown never started on
+        // failure, so this returned true and the loop resubmitted a
+        // summarization call every iteration.
+        assert!(
+            !compactor
+                .should_request(1_000_000, 1_000_000, &config)
+                .await,
+            "failure cooldown must block resubmission"
+        );
+    }
 
     #[test]
     fn test_compaction_quota_default() {
@@ -503,6 +759,206 @@ mod tests {
         assert_eq!(quota.cooldown_seconds, 60);
         assert_eq!(quota.max_compactions_per_session, 100);
         assert_eq!(quota.max_consecutive_auto, 5);
+    }
+
+    /// Fix #4: hydrating from the persisted per-session snapshot
+    /// restores the quota counters, so `should_request` enforces
+    /// session-level limits on a freshly constructed (per-run)
+    /// compactor instead of starting cold.
+    #[tokio::test]
+    async fn hydrate_limits_state_restores_session_quota() {
+        let mock = MockAdapter::new();
+        let compactor =
+            BackgroundCompactor::new(mock_provider(&mock), Arc::new(QuotaMeter::unlimited()));
+        let config = CompactionConfig::default();
+
+        // Fresh compactor, over threshold: the gate is open.
+        assert!(
+            compactor
+                .should_request(1_000_000, 1_000_000, &config)
+                .await
+        );
+
+        // Hydrate a session that already hit the consecutive-auto
+        // ceiling (default `max_consecutive_auto` is 5).
+        compactor
+            .hydrate_limits_state(crate::compaction::CompactionLimitsState {
+                compaction_count: 5,
+                last_compaction_at_ms: None,
+                consecutive_auto: 5,
+                consecutive_failures: 0,
+            })
+            .await;
+        assert!(
+            !compactor
+                .should_request(1_000_000, 1_000_000, &config)
+                .await,
+            "hydrated consecutive_auto must gate the per-session limit"
+        );
+
+        // A hydrated cooldown stamp blocks too.
+        compactor
+            .hydrate_limits_state(crate::compaction::CompactionLimitsState {
+                compaction_count: 5,
+                last_compaction_at_ms: Some(
+                    u64::try_from(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis(),
+                    )
+                    .unwrap(),
+                ),
+                consecutive_auto: 0,
+                consecutive_failures: 0,
+            })
+            .await;
+        assert!(
+            !compactor
+                .should_request(1_000_000, 1_000_000, &config)
+                .await,
+            "hydrated cooldown stamp must gate the per-session cooldown"
+        );
+    }
+
+    /// Fix #4 end-to-end at the worker level: compact on one
+    /// compactor, persist the state to the session index, drop the
+    /// compactor, build a fresh one (a new "run") and hydrate from a
+    /// fresh `MetadataController` — the count / cooldown / consecutive
+    /// counters carry over, and the next compaction's
+    /// `compaction_number` continues the per-session sequence.
+    #[tokio::test]
+    async fn compaction_limits_survive_across_runs() {
+        use crate::index::SessionEntry;
+        use crate::metadata_controller::MetadataController;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let mut controller = MetadataController::new(&dir);
+        let entry = SessionEntry::new("sess_abc", "test_agent", "sess_abc.jsonl");
+        let session_id = entry.session_id.to_string();
+        controller.create_entry(entry).await.unwrap();
+
+        // --- Run 1 ---
+        let mock1 = MockAdapter::new();
+        mock1.queue_text("Summary of the conversation so far.");
+        let compactor1 =
+            BackgroundCompactor::new(mock_provider(&mock1), Arc::new(QuotaMeter::unlimited()));
+        compactor1
+            .hydrate_limits_state(controller.get_compaction_state(&session_id).await.unwrap())
+            .await;
+
+        let rx = compactor1
+            .request_compaction(
+                test_messages(),
+                None,
+                crate::compaction::types::CompactionPhase::PreTurn,
+            )
+            .await
+            .unwrap();
+        let first = match rx.await.unwrap() {
+            CompactionResponse::Completed(r) => r,
+            other => panic!("expected Completed, got {other:?}"),
+        };
+        assert_eq!(first.entry.compaction_number, 1);
+
+        // Sync back at the mutation point (what the driver does), then
+        // drop the compactor — the run ends.
+        controller
+            .set_compaction_state(&session_id, compactor1.limits_state().await)
+            .await
+            .unwrap();
+        drop(compactor1);
+
+        // --- Run 2 (fresh controller + fresh compactor) ---
+        let mut controller2 = MetadataController::new(&dir);
+        let persisted = controller2.get_compaction_state(&session_id).await.unwrap();
+        assert_eq!(persisted.compaction_count, 1);
+        assert_eq!(persisted.consecutive_auto, 1);
+        assert_eq!(persisted.consecutive_failures, 0);
+        assert!(persisted.last_compaction_at_ms.is_some());
+
+        let mock2 = MockAdapter::new();
+        let compactor2 =
+            BackgroundCompactor::new(mock_provider(&mock2), Arc::new(QuotaMeter::unlimited()));
+        compactor2.hydrate_limits_state(persisted).await;
+
+        // The 60s cooldown from run 1 still applies — the gate must
+        // refuse even though this compactor is brand new.
+        let config = CompactionConfig::default();
+        assert!(
+            !compactor2
+                .should_request(1_000_000, 1_000_000, &config)
+                .await,
+            "cooldown must survive across runs"
+        );
+
+        // Once the cooldown has passed (backdate the stamp), the next
+        // compaction continues the per-session sequence at 2.
+        let mut backdated = persisted;
+        backdated.last_compaction_at_ms = Some(0);
+        compactor2.hydrate_limits_state(backdated).await;
+        mock2.queue_text("Updated summary of the conversation.");
+        let rx = compactor2
+            .request_compaction(
+                test_messages(),
+                Some(first.entry.summary.clone()),
+                crate::compaction::types::CompactionPhase::PreTurn,
+            )
+            .await
+            .unwrap();
+        let second = match rx.await.unwrap() {
+            CompactionResponse::Completed(r) => r,
+            other => panic!("expected Completed, got {other:?}"),
+        };
+        assert_eq!(
+            second.entry.compaction_number, 2,
+            "compaction_number must continue the per-session sequence"
+        );
+        assert_eq!(compactor2.limits_state().await.compaction_count, 2);
+    }
+
+    /// Fix #4: a failed attempt's cooldown stamp + consecutive-failure
+    /// counter are part of the persisted snapshot, so the escalating
+    /// backoff also survives across runs.
+    #[tokio::test]
+    async fn failure_state_survives_across_runs() {
+        let mock1 = MockAdapter::new();
+        mock1.queue_error("provider down");
+        let compactor1 =
+            BackgroundCompactor::new(mock_provider(&mock1), Arc::new(QuotaMeter::unlimited()));
+
+        let rx = compactor1
+            .request_compaction(
+                test_messages(),
+                None,
+                crate::compaction::types::CompactionPhase::PreTurn,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(rx.await.unwrap(), CompactionResponse::Failed(_)));
+        let persisted = compactor1.limits_state().await;
+        assert_eq!(persisted.consecutive_failures, 1);
+        assert_eq!(persisted.compaction_count, 0);
+        assert!(persisted.last_compaction_at_ms.is_some());
+        drop(compactor1);
+
+        // Run 2: a fresh compactor hydrated from the failure state is
+        // inside the escalated failure cooldown (2 × base).
+        let mock2 = MockAdapter::new();
+        let compactor2 =
+            BackgroundCompactor::new(mock_provider(&mock2), Arc::new(QuotaMeter::unlimited()));
+        compactor2.hydrate_limits_state(persisted).await;
+        let config = CompactionConfig::default();
+        assert!(
+            !compactor2
+                .should_request(1_000_000, 1_000_000, &config)
+                .await,
+            "failure cooldown must survive across runs"
+        );
+        let state = compactor2.state.lock().await;
+        assert_eq!(state.consecutive_failures, 1);
     }
 
     #[test]

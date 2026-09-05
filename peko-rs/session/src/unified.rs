@@ -320,6 +320,39 @@ impl Session {
         }
     }
 
+    /// Read the persisted per-session compaction quota state
+    /// (compaction audit fix #4). The compaction driver hydrates the
+    /// per-run `BackgroundCompactor` from this at run start.
+    ///
+    /// Tolerant: a session without an index entry (or any metadata
+    /// read failure) reads as the all-zero default — the state is
+    /// advisory and never fails a turn.
+    pub async fn compaction_limits_state(&mut self) -> crate::compaction::CompactionLimitsState {
+        self.ensure_metadata_controller();
+        if let Some(ref mut controller) = self.metadata_controller {
+            return controller
+                .get_compaction_state(&self.id)
+                .await
+                .unwrap_or_default();
+        }
+        crate::compaction::CompactionLimitsState::default()
+    }
+
+    /// Persist the per-session compaction quota state after a worker
+    /// mutation (compaction audit fix #4). Failures are logged, not
+    /// propagated (mirrors [`Self::clear_compact_request`]).
+    pub async fn store_compaction_limits_state(
+        &mut self,
+        state: crate::compaction::CompactionLimitsState,
+    ) {
+        self.ensure_metadata_controller();
+        if let Some(ref mut controller) = self.metadata_controller {
+            if let Err(e) = controller.set_compaction_state(&self.id, state).await {
+                tracing::warn!("failed to persist compaction state for {}: {}", self.id, e);
+            }
+        }
+    }
+
     /// Record token usage (in-memory only, persists to index via `MetadataController`)
     ///
     /// `last_total_tokens` is the `total_tokens` reported by the
@@ -748,8 +781,33 @@ impl Session {
     ///
     /// Core implementation that handles all event formats and converts to
     /// `LlmMessage` with full `ContentBlock` fidelity.
+    ///
+    /// Compaction-boundary aware: when the transcript contains a
+    /// compaction event, the LLM-facing history restarts at the newest
+    /// boundary — one System-role summary message (the same text the
+    /// live compaction path produces, stamped with
+    /// [`crate::message_conversion::COMPACTION_BOUNDARY_METADATA_KEY`])
+    /// followed only by the messages recorded after the boundary.
+    /// Without this, the full pre-compaction transcript replays into
+    /// the LLM context after every restart.
     async fn load_history_native(&self) -> Result<Vec<LlmMessage>> {
         let events = self.storage.load_events(&self.id).await?;
+
+        if let Some(boundary_idx) = crate::message_conversion::latest_compaction_boundary(&events) {
+            let mut messages = Vec::new();
+            if let Some(summary) =
+                crate::message_conversion::compaction_summary_message(&events[boundary_idx])
+            {
+                messages.push(summary);
+            }
+            messages.extend(
+                events[boundary_idx + 1..]
+                    .iter()
+                    .filter_map(event_to_llm_message),
+            );
+            return Ok(messages);
+        }
+
         let messages: Vec<LlmMessage> = events.iter().filter_map(event_to_llm_message).collect();
 
         Ok(messages)
@@ -1776,5 +1834,277 @@ mod tests {
             Some(20),
             "reasoning_output_tokens must round-trip"
         );
+    }
+
+    // ============================================================
+    // Compaction-boundary resume: `load_history` must restart the
+    // LLM-facing history at the newest compaction event instead of
+    // replaying the full pre-compaction transcript.
+    // ============================================================
+
+    fn first_text(msg: &LlmMessage) -> &str {
+        msg.content
+            .iter()
+            .find_map(|b| match b {
+                peko_message::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("expected a text block")
+    }
+
+    #[tokio::test]
+    async fn test_load_history_honors_compaction_boundary() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-resume-boundary";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("Old question").await.unwrap();
+        session
+            .add_assistant("Old answer", None, None)
+            .await
+            .unwrap();
+
+        let details = crate::compaction::summary_format::CompactionDetails {
+            read_files: vec!["src/main.rs".to_string()],
+            modified_files: vec!["src/lib.rs".to_string()],
+            ..Default::default()
+        };
+        session
+            .record_compaction("Summary of the old work", 2, 1000, 100, 1, Some(&details))
+            .await
+            .unwrap();
+
+        session.add_user("New question").await.unwrap();
+        session
+            .add_assistant("New answer", None, None)
+            .await
+            .unwrap();
+
+        let history = session.load_history().await.unwrap();
+
+        // summary system message + only the post-boundary messages
+        assert_eq!(
+            history.len(),
+            3,
+            "expected summary + 2 post-boundary messages, got {history:?}"
+        );
+
+        let summary = &history[0];
+        assert!(matches!(summary.role, peko_message::MessageRole::System));
+        assert!(
+            crate::message_conversion::is_compaction_boundary_message(summary),
+            "summary must carry the boundary marker so the engine does not \
+             mistake it for the rebuilt system prompt"
+        );
+        let text = first_text(summary);
+        assert!(
+            text.starts_with("[Conversation Summary - 2 messages]:\n"),
+            "summary text must match the live-compaction shape, got: {text}"
+        );
+        assert!(text.contains("Summary of the old work"));
+        assert!(text.contains("<read-files>\nsrc/main.rs\n</read-files>"));
+        assert!(text.contains("<modified-files>\nsrc/lib.rs\n</modified-files>"));
+
+        // Pre-boundary messages are gone; post-boundary ones survive.
+        assert!(
+            !history.iter().any(|m| {
+                m.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        peko_message::ContentBlock::Text { text }
+                            if text.contains("Old question") || text.contains("Old answer")
+                    )
+                })
+            }),
+            "pre-boundary transcript must not replay"
+        );
+        assert!(matches!(history[1].role, peko_message::MessageRole::User));
+        assert_eq!(first_text(&history[1]), "New question");
+        assert!(matches!(
+            history[2].role,
+            peko_message::MessageRole::Assistant
+        ));
+        assert_eq!(first_text(&history[2]), "New answer");
+    }
+
+    /// Compaction audit fix #6: the persisted `details.user_messages`
+    /// round-trips through the JSONL and the resume path
+    /// (`load_history` → `compaction_summary_message`) rebuilds the
+    /// `<user-messages>` block on the reconstructed summary message.
+    #[tokio::test]
+    async fn test_load_history_resume_renders_preserved_user_messages() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-resume-user-messages";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("Old question").await.unwrap();
+
+        let details = crate::compaction::summary_format::CompactionDetails {
+            user_messages: Some(vec![
+                "Old question".to_string(),
+                "Please keep it under 200 words".to_string(),
+            ]),
+            ..Default::default()
+        };
+        session
+            .record_compaction("Summary of the old work", 1, 1000, 100, 1, Some(&details))
+            .await
+            .unwrap();
+
+        session.add_user("New question").await.unwrap();
+
+        let history = session.load_history().await.unwrap();
+        let summary = &history[0];
+        let text = first_text(summary);
+        assert!(text.contains("<user-messages>"));
+        assert!(text.contains("<message>\nOld question\n</message>"));
+        assert!(text.contains("<message>\nPlease keep it under 200 words\n</message>"));
+        // Oldest first.
+        let first = text.find("Old question").unwrap();
+        let second = text.find("Please keep it under 200 words").unwrap();
+        assert!(first < second);
+    }
+
+    #[tokio::test]
+    async fn test_load_history_without_compaction_unchanged() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-resume-no-compaction";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("q1").await.unwrap();
+        session.add_assistant("a1", None, None).await.unwrap();
+
+        let history = session.load_history().await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert!(matches!(history[0].role, peko_message::MessageRole::User));
+        assert!(matches!(
+            history[1].role,
+            peko_message::MessageRole::Assistant
+        ));
+        assert!(
+            !history
+                .iter()
+                .any(crate::message_conversion::is_compaction_boundary_message),
+            "no boundary marker without a compaction event"
+        );
+    }
+
+    /// A compaction boundary as the LAST event yields just the summary
+    /// message (empty tail) — no panic, and `repair_history` keeps the
+    /// lone System message intact.
+    #[tokio::test]
+    async fn test_load_history_compaction_last_event_empty_tail() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-resume-boundary-tail";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("q1").await.unwrap();
+        session
+            .record_compaction("everything so far", 1, 10, 5, 1, None)
+            .await
+            .unwrap();
+
+        let history = session.load_history().await.unwrap();
+        assert_eq!(history.len(), 1, "expected only the summary message");
+        assert!(crate::message_conversion::is_compaction_boundary_message(
+            &history[0]
+        ));
+        assert_eq!(
+            first_text(&history[0]),
+            "[Conversation Summary - 1 messages]:\neverything so far"
+        );
+
+        // The engine runs `repair_history` on the loaded list; a lone
+        // System-role summary must survive it unchanged.
+        let repaired = peko_message::repair::repair_history(history);
+        assert_eq!(repaired.len(), 1);
+        assert!(matches!(
+            repaired[0].role,
+            peko_message::MessageRole::System
+        ));
+    }
+
+    /// Malformed / partial compaction detail (missing fields, no
+    /// `details` blob) degrades to a summary-only message with zero
+    /// defaults instead of failing the load.
+    #[tokio::test]
+    async fn test_load_history_malformed_compaction_detail_graceful() {
+        use crate::events::{EventEnvelope, SessionEvent, SystemEvent};
+        use chrono::Utc;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-resume-malformed";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("old").await.unwrap();
+
+        // Detail missing `messages_compacted` / `details` entirely.
+        session
+            .append_event(&SessionEvent::System(SystemEvent {
+                envelope: EventEnvelope {
+                    id: "compact_partial".to_string(),
+                    ts: Utc::now(),
+                },
+                event: "compaction".to_string(),
+                detail: serde_json::json!({"summary": "partial summary"}),
+            }))
+            .await
+            .unwrap();
+
+        session.add_user("new").await.unwrap();
+
+        let history = session.load_history().await.unwrap();
+        assert_eq!(history.len(), 2);
+        let text = first_text(&history[0]);
+        assert_eq!(
+            text, "[Conversation Summary - 0 messages]:\npartial summary",
+            "missing fields fall back to defaults, got: {text}"
+        );
+        assert!(!text.contains("<read-files>"));
+        assert_eq!(first_text(&history[1]), "new");
     }
 }

@@ -410,6 +410,55 @@ impl MetadataController {
             .is_some_and(|e| e.compact_requested))
     }
 
+    /// Read the persisted per-session compaction quota state
+    /// (compaction audit fix #4).
+    ///
+    /// Tolerant: a session without an index entry reads as the
+    /// all-zero default ("never compacted") — the state is advisory
+    /// and never fails a turn.
+    pub async fn get_compaction_state(
+        &mut self,
+        session_id: &str,
+    ) -> Result<crate::compaction::CompactionLimitsState> {
+        Ok(self
+            .get_entry(session_id, false)
+            .await?
+            .map(|e| e.compaction_limits_state())
+            .unwrap_or_default())
+    }
+
+    /// Persist the per-session compaction quota state (compaction
+    /// audit fix #4).
+    ///
+    /// Same update pattern as [`Self::set_compact_requested`]: load
+    /// the entry, mutate the state fields, write back through the
+    /// delta-merge-safe index save. The engine calls this after every
+    /// worker mutation (success or failure) so the next run of the
+    /// session hydrates from it. Errors when the session does not
+    /// exist.
+    pub async fn set_compaction_state(
+        &mut self,
+        session_id: &str,
+        state: crate::compaction::CompactionLimitsState,
+    ) -> Result<()> {
+        debug!(
+            "Setting compaction state for session {}: {:?}",
+            session_id, state
+        );
+
+        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
+            anyhow::anyhow!("Cannot set compaction state for non-existent session {session_id}")
+        })?;
+
+        if entry.compaction_limits_state() != state {
+            entry.set_compaction_limits_state(state);
+            entry.touch();
+            self.update_entry(entry).await?;
+        }
+
+        Ok(())
+    }
+
     /// Update message counts atomically. `user_turn` bumps `turn_count`
     /// — pass true when the appended message has role `user`, so the
     /// index counts conversation turns rather than raw messages
@@ -1124,6 +1173,53 @@ mod tests {
         // The setter errors on a non-existent session.
         assert!(third
             .set_compact_requested("sess_nope", true)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_compaction_state_roundtrip() {
+        use crate::compaction::CompactionLimitsState;
+
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let mut controller = MetadataController::new(&dir);
+        let metadata = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+        controller.create_metadata(metadata).await.unwrap();
+
+        // A fresh entry reads as the all-zero default.
+        assert_eq!(
+            controller.get_compaction_state("sess_123").await.unwrap(),
+            CompactionLimitsState::default()
+        );
+
+        let state = CompactionLimitsState {
+            compaction_count: 3,
+            last_compaction_at_ms: Some(1_700_000_000_000),
+            consecutive_auto: 2,
+            consecutive_failures: 1,
+        };
+        controller
+            .set_compaction_state("sess_123", state)
+            .await
+            .unwrap();
+
+        // Reload through a fresh controller (fresh index + cache) to
+        // prove the state survived the save/reload round trip.
+        let mut reloaded = MetadataController::new(&dir);
+        assert_eq!(
+            reloaded.get_compaction_state("sess_123").await.unwrap(),
+            state
+        );
+
+        // A missing session reads as the default; the setter errors.
+        assert_eq!(
+            reloaded.get_compaction_state("sess_nope").await.unwrap(),
+            CompactionLimitsState::default()
+        );
+        assert!(reloaded
+            .set_compaction_state("sess_nope", state)
             .await
             .is_err());
     }

@@ -154,4 +154,18 @@ impl SessionCore for Session {
     async fn clear_compact_request(session: &mut Self) {
         Session::clear_compact_request(session).await;
     }
+
+    async fn compaction_limits_state(
+        session: &mut Self,
+    ) -> crate::compaction::CompactionLimitsState {
+        Session::compaction_limits_state(session).await
+    }
+
+    async fn store_compaction_limits_state(
+        session: &mut Self,
+        state: crate::compaction::CompactionLimitsState,
+    ) -> anyhow::Result<()> {
+        Session::store_compaction_limits_state(session, state).await;
+        Ok(())
+    }
 }

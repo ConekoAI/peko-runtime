@@ -116,8 +116,9 @@ pub use iteration_state::{
 };
 pub use peko_session::compaction::{
     drop_oldest_respecting_pairs, BackgroundCompactorFactory, CompactionConfig, CompactionEntry,
-    CompactionQuota, CompactionRequest, CompactionResponse, CompactionResponseResult,
-    CompactionResult, CompactionState, CompactorBackend, ContextUsageEstimate,
+    CompactionLimitsState, CompactionQuota, CompactionRequest, CompactionResponse,
+    CompactionResponseResult, CompactionResult, CompactionState, CompactorBackend,
+    ContextUsageEstimate,
 };
 pub use prompt::renderer::{
     EmptyMcpPromptContextProvider, McpPromptContextProvider, PromptRenderer,

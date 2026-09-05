@@ -188,6 +188,7 @@ fn test_structured_summary_with_read_files() {
         modified_files: vec![],
         image_token_count: 0,
         phase: CompactionPhase::PreTurn,
+        user_messages: None,
     };
 
     let formatted = format_summary_with_file_ops(summary, &details);
@@ -203,6 +204,7 @@ fn test_structured_summary_with_modified_files() {
         modified_files: vec!["src/main.rs".to_string()],
         image_token_count: 0,
         phase: CompactionPhase::PreTurn,
+        user_messages: None,
     };
 
     let formatted = format_summary_with_file_ops(summary, &details);
@@ -264,6 +266,7 @@ fn test_compaction_entry_with_details() {
         modified_files: vec!["b.rs".to_string()],
         image_token_count: 0,
         phase: CompactionPhase::PreTurn,
+        user_messages: None,
     })
     .unwrap();
 

@@ -642,6 +642,125 @@ mod tests {
     }
 
     // ===================================================================
+    // RT-005c: resume after compaction must restart history at the
+    // boundary — the rebuilt system prompt lands at messages[0] and the
+    // compaction summary survives right below it (the same
+    // `[system_prompt, summary, kept...]` layout the live compaction
+    // path produces), not replaying the pre-compaction transcript.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_rt005c_resume_after_compaction_keeps_summary() {
+        peko_identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Resumed answer");
+
+        let config = test_agent_config("rt005c-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(
+        agent.clone(),
+        provider.clone(),
+        extension_core,
+        std::sync::Arc::new(
+            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+            ),
+        ),
+        peko_engine::CompactionConfig::default(),
+    )
+    .await;
+
+        let session = test_session("rt005c-agent", temp_dir.path()).await;
+
+        // Seed the transcript: old turn, compaction boundary, new turn.
+        {
+            let mut s = session.write().await;
+            s.add_user("Old question").await.unwrap();
+            s.add_assistant("Old answer", None, None).await.unwrap();
+            s.record_compaction("Summary of old work", 2, 100, 20, 1, None)
+                .await
+                .unwrap();
+            s.add_user("New question").await.unwrap();
+            s.add_assistant("New answer", None, None).await.unwrap();
+        }
+        let history = session.read().await.load_history().await.unwrap();
+
+        let result = loop_
+            .run_with_resume("Continue", Vec::new(), |_| {}, &session, Some(history))
+            .await;
+        assert!(
+            result.is_ok(),
+            "Agentic loop should succeed: {:?}",
+            result.err()
+        );
+
+        let recorded = mock.recorded_requests();
+        assert!(
+            !recorded.is_empty(),
+            "mock should have recorded at least one request"
+        );
+        let msgs = &recorded[0].messages;
+
+        // messages[0] is the rebuilt system prompt, NOT the summary —
+        // the renderer overwrites index 0 every iteration.
+        let head_text: String = msgs[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !head_text.contains("[Conversation Summary"),
+            "compaction summary must not sit in the messages[0] prompt slot; got: {head_text}"
+        );
+
+        // The summary survives at index 1 (System role), followed by the
+        // post-boundary messages only.
+        assert!(msgs.len() >= 2, "expected prompt + summary, got {msgs:?}");
+        let summary = &msgs[1];
+        assert!(
+            matches!(summary.role, MessageRole::System),
+            "summary message must be System role, got {:?}",
+            summary.role
+        );
+        let summary_text: String = summary
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            summary_text.starts_with("[Conversation Summary - 2 messages]:\nSummary of old work"),
+            "summary must match the live-compaction shape, got: {summary_text}"
+        );
+
+        // The pre-compaction transcript must not replay.
+        let all_text: String = msgs
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !all_text.contains("Old question") && !all_text.contains("Old answer"),
+            "pre-boundary transcript must not replay after resume"
+        );
+        assert!(
+            all_text.contains("New question") && all_text.contains("New answer"),
+            "post-boundary messages must be present"
+        );
+    }
+
+    // ===================================================================
     // RT-006: Engine MUST support up to 10 iterations per turn
     // ===================================================================
     #[tokio::test]

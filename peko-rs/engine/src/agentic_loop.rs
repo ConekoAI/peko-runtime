@@ -618,10 +618,10 @@ impl AgenticLoop {
         // consumption-side only and idempotent.
         let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
-            // Check if history already has a system message at the start
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            // Check if history already has a system message at the start.
+            // A compaction-boundary summary (System role) is not the
+            // prompt slot — see `history_has_prompt_slot`.
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -710,9 +710,7 @@ impl AgenticLoop {
         // test, finding N1). Storage stays faithful; repair is
         // consumption-side only and idempotent.
         let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -824,9 +822,7 @@ impl AgenticLoop {
         // See the repair note at the streaming intake above (finding N1).
         let messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -2025,18 +2021,20 @@ impl AgenticLoop {
                 //     against the full conversation;
                 //   - mid-turn fires here, AFTER tool execution, so it
                 //     sees the freshly-added tool results.
-                // The threshold matches the existing auto-threshold
-                // logic in `should_auto_compact` so the two triggers
-                // stay consistent.
+                // The gate IS the pre-turn gate: the same
+                // dual-threshold `should_auto_compact` check
+                // (percent-of-window OR window-minus-reserve) that
+                // `BackgroundCompactor::should_request` applies at
+                // the top of the loop, so the two triggers stay
+                // consistent by construction.
                 let mid_turn_estimated =
                     crate::compaction_driver::estimate_context_tokens_for_agentic(&messages)
                         .tokens;
-                let mid_turn_threshold = self
-                    .compaction_config
-                    .auto_threshold_percent as usize
-                    * compaction_driver.context_window()
-                    / 100;
-                if mid_turn_estimated >= mid_turn_threshold {
+                if peko_session::compaction::should_auto_compact(
+                    mid_turn_estimated,
+                    compaction_driver.context_window(),
+                    &self.compaction_config,
+                ) {
                     let snapshot = peko_session::EnvironmentSnapshot {
                         runtime_environment: format!(
                             "{}, agent={}",
@@ -2050,8 +2048,8 @@ impl AgenticLoop {
                             .unwrap_or_default(),
                     };
                     info!(
-                        "AgenticLoop: mid-turn threshold hit ({} >= {}); firing compaction",
-                        mid_turn_estimated, mid_turn_threshold
+                        "AgenticLoop: mid-turn threshold hit ({} tokens); firing compaction",
+                        mid_turn_estimated
                     );
                     let _ = compaction_driver
                         .compact_mid_turn(
@@ -2563,10 +2561,10 @@ impl AgenticLoop {
         // consumption-side only and idempotent.
         let mut messages = if let Some(h) = history.map(peko_message::repair::repair_history) {
             info!("Loaded {} messages from history", h.len());
-            // Check if history already has a system message at the start
-            let has_system = h
-                .first()
-                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            // Check if history already has a system message at the start.
+            // A compaction-boundary summary (System role) is not the
+            // prompt slot — see `history_has_prompt_slot`.
+            let has_system = history_has_prompt_slot(&h);
             if has_system {
                 h
             } else {
@@ -2606,6 +2604,23 @@ impl AgenticLoop {
         self.run_inner(messages, session, on_event, run_id, streaming_config)
             .await
     }
+}
+
+/// Whether a loaded (already repaired) history carries the loop's
+/// system-prompt slot at index 0.
+///
+/// A compaction-boundary summary message (System role, stamped by
+/// `peko_session::message_conversion::is_compaction_boundary_message`)
+/// is NOT the prompt: the placeholder is still prepended ahead of it so
+/// the `PromptRenderer` overwrites the placeholder on iteration 1 and
+/// the summary survives at index 1 — the same `[system_prompt, summary,
+/// kept...]` layout the live compaction path produces
+/// (`Compactor::compact` in `peko-session`).
+fn history_has_prompt_slot(h: &[LlmMessage]) -> bool {
+    h.first().is_some_and(|m| {
+        matches!(m.role, MessageRole::System)
+            && !peko_session::message_conversion::is_compaction_boundary_message(m)
+    })
 }
 
 #[cfg(test)]

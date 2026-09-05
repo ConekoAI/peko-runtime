@@ -133,6 +133,26 @@ pub struct SessionEntry {
     /// `parent_session_id == None`) carries no slug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
+    /// Successful compactions recorded for this session (compaction
+    /// audit fix #4). This is the per-session sequence the JSONL
+    /// boundary event's `compaction_number` derives from; the per-run
+    /// `BackgroundCompactor` hydrates from it so
+    /// `max_compactions_per_session` is a per-session limit, not a
+    /// per-run one.
+    #[serde(default)]
+    pub compaction_count: u32,
+    /// Last compaction attempt (success or failure) as epoch
+    /// milliseconds; drives the cross-run cooldown / failure backoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_compaction_at: Option<u64>,
+    /// Consecutive auto-compactions; the per-session gate behind
+    /// `max_consecutive_auto`.
+    #[serde(default)]
+    pub consecutive_auto_compactions: u32,
+    /// Consecutive failed compaction attempts; drives the escalating
+    /// failure backoff across runs.
+    #[serde(default)]
+    pub consecutive_compaction_failures: u32,
 }
 
 impl SessionEntry {
@@ -170,6 +190,10 @@ impl SessionEntry {
             standing: false,
             privileged: false,
             slug: None,
+            compaction_count: 0,
+            last_compaction_at: None,
+            consecutive_auto_compactions: 0,
+            consecutive_compaction_failures: 0,
         }
     }
 
@@ -290,6 +314,29 @@ impl SessionEntry {
     /// Set trigger (e.g. "user" → "branch" → "resume").
     pub fn set_trigger(&mut self, trigger: impl Into<String>) {
         self.trigger = trigger.into();
+    }
+
+    /// Snapshot the persisted compaction quota state (compaction audit
+    /// fix #4). The engine hydrates the per-run `BackgroundCompactor`
+    /// from this at run start.
+    #[must_use]
+    pub fn compaction_limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        crate::compaction::CompactionLimitsState {
+            compaction_count: self.compaction_count,
+            last_compaction_at_ms: self.last_compaction_at,
+            consecutive_auto: self.consecutive_auto_compactions,
+            consecutive_failures: self.consecutive_compaction_failures,
+        }
+    }
+
+    /// Store the compaction quota state (compaction audit fix #4).
+    /// Does NOT `touch()` — the caller decides whether the entry was
+    /// meaningfully modified.
+    pub fn set_compaction_limits_state(&mut self, state: crate::compaction::CompactionLimitsState) {
+        self.compaction_count = state.compaction_count;
+        self.last_compaction_at = state.last_compaction_at_ms;
+        self.consecutive_auto_compactions = state.consecutive_auto;
+        self.consecutive_compaction_failures = state.consecutive_failures;
     }
 
     /// Convert to `SessionMetadata` for backward compatibility
@@ -1306,7 +1353,11 @@ mod tests {
 
     /// Backward compatibility: a `sessions.json` entry written before
     /// the `archived` / `compact_requested` / `standing` / `privileged`
-    /// fields existed must deserialize with all flags = false
+    /// flags and the compaction-audit-fix-#4 quota fields
+    /// (`compaction_count` / `last_compaction_at` /
+    /// `consecutive_auto_compactions` /
+    /// `consecutive_compaction_failures`) existed must deserialize
+    /// with all flags = false and all quota fields defaulted
     /// (`#[serde(default)]`).
     #[test]
     fn test_legacy_entry_without_archive_flags_defaults_false() {
@@ -1333,6 +1384,11 @@ mod tests {
         assert!(!entry.compact_requested);
         assert!(!entry.standing);
         assert!(!entry.privileged);
+        assert_eq!(
+            entry.compaction_limits_state(),
+            crate::compaction::CompactionLimitsState::default(),
+            "old index entries must hydrate as never-compacted"
+        );
 
         // And the flags round-trip through serialization once set.
         let mut entry = entry;
@@ -1340,12 +1396,22 @@ mod tests {
         entry.compact_requested = true;
         entry.standing = true;
         entry.privileged = true;
+        entry.set_compaction_limits_state(crate::compaction::CompactionLimitsState {
+            compaction_count: 2,
+            last_compaction_at_ms: Some(42),
+            consecutive_auto: 1,
+            consecutive_failures: 3,
+        });
         let json = serde_json::to_value(&entry).unwrap();
         let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
         assert!(reloaded.archived);
         assert!(reloaded.compact_requested);
         assert!(reloaded.standing);
         assert!(reloaded.privileged);
+        assert_eq!(reloaded.compaction_count, 2);
+        assert_eq!(reloaded.last_compaction_at, Some(42));
+        assert_eq!(reloaded.consecutive_auto_compactions, 1);
+        assert_eq!(reloaded.consecutive_compaction_failures, 3);
     }
 
     /// Maintenance must retain sessions exempt from pruning: the
