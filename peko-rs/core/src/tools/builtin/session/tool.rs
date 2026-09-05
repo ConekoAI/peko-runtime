@@ -172,6 +172,9 @@ impl SessionTool {
 /// Sprint 7 Commit F (2026-08-21): 7 actions, bash-aligned.
 /// `new` / `resume` / `compact` stay off this tool — they drive the
 /// LLM and live on the Agent tool.
+///
+/// ADR-051 (2026-09-05): +3 read actions for the compaction-page
+/// archive (`list_pages` / `read_page` / `search_pages`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SessionAction {
@@ -182,6 +185,9 @@ enum SessionAction {
     Copy,
     Move,
     Remove,
+    ListPages,
+    ReadPage,
+    SearchPages,
 }
 
 #[async_trait]
@@ -191,9 +197,9 @@ impl Tool for SessionTool {
     }
 
     fn description(&self) -> String {
-        r"Single tool with **7 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
+        r"Single tool with **10 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
 
-  status | list | history | find | copy | move | remove
+  status | list | history | find | copy | move | remove | list_pages | read_page | search_pages
 
 Per-action semantics (the action you choose determines which other params apply):
 - status: one session's metadata + token usage (path optional, defaults to current)
@@ -203,8 +209,11 @@ Per-action semantics (the action you choose determines which other params apply)
 - copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
 - move: reparent a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
 - remove: delete a session (path required; recursive:true also deletes its descendants, children first)
+- list_pages: compaction-page catalog of a session (path optional, defaults to current). Each compaction archives the preceding transcript as a numbered page; the segment after the newest compaction is the live page. Returns page numbers, token estimates, and title excerpts.
+- read_page: render one page's messages as transcript text (path optional, defaults to current; page required — a page number from list_pages; offset/limit window the rendered lines like Read). Responses are hard-capped per call; a truncation marker tells you the next offset. Use it to audit pre-compaction history after a summary looks wrong.
+- search_pages: case-insensitive substring search across ALL pages of a session including the live one (path optional, defaults to current; query required; max_results optional). Hits are page-tagged — follow up with read_page on the hit's page.
 
-The `path` parameter is an absolute slug path (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session).
+The `path` parameter is an absolute slug path (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session).
 
 The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
@@ -220,12 +229,12 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "list", "history", "find", "copy", "move", "remove"],
-                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage. To run work in a session, use the Agent tool (new/resume/compact)."
+                    "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
+                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages (ADR-051). To run work in a session, use the Agent tool (new/resume/compact)."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Source session: an absolute slug path ('/a/b/c', anchored at the root of your session tree). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` (defaults to current session). Match the Agent tool's `path` parameter."
+                    "description": "Source session: an absolute slug path ('/a/b/c', anchored at the root of your session tree). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). Match the Agent tool's `path` parameter."
                 },
                 "target": {
                     "type": "string",
@@ -233,7 +242,21 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "query": {
                     "type": "string",
-                    "description": "Required for 'find': case-insensitive substring to find in transcripts"
+                    "description": "Required for 'find' and 'search_pages': case-insensitive substring to find in transcripts"
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "Required for 'read_page': the 1-based page number from 'list_pages'"
+                },
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Optional for 'read_page': rendered-line offset to start from (use the offset named by a truncation marker to continue)"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Optional for 'search_pages': cap on returned hits"
                 },
                 "title": {
                     "type": "string",
@@ -264,7 +287,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 "limit": {
                     "type": "integer",
                     "default": 100,
-                    "description": "Max results for 'list', 'history', or 'find'"
+                    "description": "Max results for 'list', 'history', or 'find'; max rendered lines for 'read_page'"
                 },
                 "active_minutes": {
                     "type": "integer",
@@ -462,6 +485,73 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 let outcome = self.runtime.delete_session(session_key, recursive).await?;
                 Ok(serde_json::to_value(outcome)?)
             }
+            SessionAction::ListPages => {
+                let session_key = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.runtime.current_session_key())
+                    .to_string();
+
+                let pages = self.runtime.list_pages(&session_key).await?;
+                Ok(json!({
+                    "path": session_key,
+                    "total": pages.len(),
+                    "pages": pages,
+                }))
+            }
+            SessionAction::ReadPage => {
+                let session_key = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.runtime.current_session_key())
+                    .to_string();
+                let page = params.get("page").and_then(|v| v.as_u64()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "'read_page' requires the 'page' parameter — a 1-based page \
+                         number from 'list_pages'"
+                    )
+                })? as usize;
+                let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+
+                let content = self
+                    .runtime
+                    .read_page(&session_key, page, offset, limit)
+                    .await?;
+                Ok(json!({
+                    "path": session_key,
+                    "page": page,
+                    "offset": offset,
+                    "content": content,
+                }))
+            }
+            SessionAction::SearchPages => {
+                let session_key = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.runtime.current_session_key())
+                    .to_string();
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("'search_pages' requires the 'query' parameter")
+                    })?;
+                let max_results = params
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(20) as usize;
+
+                let hits = self
+                    .runtime
+                    .search_pages(&session_key, query, max_results)
+                    .await?;
+                Ok(json!({
+                    "path": session_key,
+                    "total": hits.len(),
+                    "hits": hits,
+                }))
+            }
         }
     }
 }
@@ -487,25 +577,37 @@ mod tests {
     /// `remove`) — `rename` folded into `move` (title/slug without
     /// new_parent), `archive` / `unarchive` dropped (sessions are
     /// monotonically visible until `remove`), `search` → `find`,
-    /// `branch` → `copy`, `delete` → `remove`. Pin the description
-    /// here so any future edit that drops one of the 7 action names
-    /// fails the test — defense-in-depth against the "register
-    /// without surfacing in description" omission pattern (F5).
+    /// `branch` → `copy`, `delete` → `remove`. ADR-051 (2026-09-05)
+    /// added 3 read actions for the compaction-page archive
+    /// (`list_pages` / `read_page` / `search_pages`), bringing the
+    /// surface to 10. Pin the description here so any future edit
+    /// that drops one of the 10 action names fails the test —
+    /// defense-in-depth against the "register without surfacing in
+    /// description" omission pattern (F5).
     #[test]
-    fn description_names_all_7_actions() {
+    fn description_names_all_10_actions() {
         let cache = SessionCache::new("test");
         let tool = SessionTool::new(Arc::new(cache).as_shared());
         let desc = tool.description();
 
-        // The 7 actions, in the order they appear in `SessionAction`.
+        // The 10 actions, in the order they appear in `SessionAction`.
         // If `SessionAction` ever grows, bump this list in lockstep.
         let expected_actions = [
-            "status", "list", "history", "find", "copy", "move", "remove",
+            "status",
+            "list",
+            "history",
+            "find",
+            "copy",
+            "move",
+            "remove",
+            "list_pages",
+            "read_page",
+            "search_pages",
         ];
         assert_eq!(
             expected_actions.len(),
-            7,
-            "test bug: expected_actions must have 7 entries"
+            10,
+            "test bug: expected_actions must have 10 entries"
         );
 
         for action in expected_actions {
@@ -517,10 +619,10 @@ mod tests {
         }
 
         // Lead-with-count: the description must advertise the action
-        // count up front so the model sees all 7 before any
+        // count up front so the model sees all 10 before any
         // per-action bullet (defeats primacy bias on the legacy 3).
         assert!(
-            desc.contains("7 operations") || desc.contains("7 actions") || desc.contains("7 op"),
+            desc.contains("10 operations") || desc.contains("10 actions") || desc.contains("10 op"),
             "session description must lead with the action count (F5: defeats primacy bias)"
         );
 
@@ -1322,5 +1424,162 @@ mod tests {
             .expect_err("raw-id target must error at the boundary");
         assert!(err.to_string().contains("target"), "{err}");
         assert!(err.to_string().contains("slug"), "{err}");
+    }
+
+    // ====================================================================================
+    // Tests: ADR-051 compaction-page actions (list_pages / read_page /
+    // search_pages). Backed by `SessionCache::add_events` — the page
+    // primitives are pure scans over the raw event list.
+    // ====================================================================================
+
+    fn page_event_user(text: &str) -> peko_session::SessionEvent {
+        peko_session::SessionEvent::MessageV2(peko_session::SessionMessage::user(
+            text,
+            peko_session::MessageSource::User,
+        ))
+    }
+
+    fn page_event_assistant(text: &str) -> peko_session::SessionEvent {
+        peko_session::SessionEvent::MessageV2(peko_session::SessionMessage::assistant_text(
+            text,
+            "test",
+            "test-model",
+        ))
+    }
+
+    fn page_event_boundary(n: usize) -> peko_session::SessionEvent {
+        peko_session::SessionEvent::System(peko_session::SystemEvent {
+            envelope: peko_session::EventEnvelope {
+                id: format!("compact_{n}"),
+                ts: chrono::Utc::now(),
+            },
+            event: "compaction".to_string(),
+            detail: json!({
+                "summary": format!("summary {n}"),
+                "messages_compacted": n,
+                "compaction_number": n,
+            }),
+        })
+    }
+
+    /// Cache seeded with a two-page session: page 1 (archived by
+    /// compaction #1) + the live page.
+    fn page_test_cache() -> Arc<SessionCache> {
+        let cache = SessionCache::new("s1");
+        cache.add_events(
+            "s1",
+            vec![
+                page_event_user("archived question about frambulators"),
+                page_event_assistant("archived answer"),
+                page_event_boundary(1),
+                page_event_user("live question"),
+            ],
+        );
+        Arc::new(cache)
+    }
+
+    #[tokio::test]
+    async fn test_session_list_pages() {
+        let tool = SessionTool::new(page_test_cache().as_shared());
+
+        let result = tool
+            .execute(json!({"action": "list_pages", "path": "s1"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result["total"], 2);
+        assert_eq!(result["pages"][0]["page_number"], 1);
+        assert_eq!(result["pages"][0]["compaction_number"], 1);
+        assert_eq!(result["pages"][0]["boundary_event_id"], "compact_1");
+        assert_eq!(
+            result["pages"][0]["title"],
+            "archived question about frambulators"
+        );
+        // Live page is last and carries no terminating boundary info.
+        assert_eq!(result["pages"][1]["page_number"], 2);
+        assert!(result["pages"][1]["compaction_number"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_session_read_page() {
+        let tool = SessionTool::new(page_test_cache().as_shared());
+
+        let result = tool
+            .execute(json!({"action": "read_page", "path": "s1", "page": 1}))
+            .await
+            .unwrap();
+        let content = result["content"].as_str().unwrap();
+        assert!(
+            content.contains("user: archived question about frambulators"),
+            "{content}"
+        );
+        assert!(content.contains("assistant: archived answer"), "{content}");
+        assert!(!content.contains("live question"), "page 1 only");
+
+        // Missing `page` param is a structured error.
+        let err = tool
+            .execute(json!({"action": "read_page", "path": "s1"}))
+            .await
+            .expect_err("read_page without page must error");
+        assert!(err.to_string().contains("page"), "{err}");
+
+        // Unknown page renders an explanatory body, not a hard error.
+        let result = tool
+            .execute(json!({"action": "read_page", "path": "s1", "page": 9}))
+            .await
+            .unwrap();
+        assert!(result["content"]
+            .as_str()
+            .unwrap()
+            .contains("Page 9 does not exist"));
+    }
+
+    #[tokio::test]
+    async fn test_session_search_pages() {
+        let tool = SessionTool::new(page_test_cache().as_shared());
+
+        let result = tool
+            .execute(json!({"action": "search_pages", "path": "s1", "query": "QUESTION"}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 2);
+        assert_eq!(result["hits"][0]["page_number"], 1, "archived page hit");
+        assert_eq!(result["hits"][1]["page_number"], 2, "live page hit");
+        assert!(result["hits"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("question"));
+
+        // max_results caps the hits.
+        let result = tool
+            .execute(json!({"action": "search_pages", "path": "s1", "query": "question", "max_results": 1}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 1);
+
+        let err = tool
+            .execute(json!({"action": "search_pages", "path": "s1"}))
+            .await
+            .expect_err("search_pages without query must error");
+        assert!(err.to_string().contains("query"), "{err}");
+    }
+
+    /// The page actions default `path` to the current session, like
+    /// `status` / `history`.
+    #[tokio::test]
+    async fn test_session_page_actions_default_to_current_session() {
+        let cache = SessionCache::new("s1");
+        cache.add_events("s1", vec![page_event_user("hello from current")]);
+        let tool = SessionTool::new(Arc::new(cache).as_shared());
+
+        let result = tool.execute(json!({"action": "list_pages"})).await.unwrap();
+        assert_eq!(result["path"], "s1");
+        assert_eq!(result["total"], 1);
+
+        let result = tool
+            .execute(json!({"action": "search_pages", "query": "hello"}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 1);
     }
 }

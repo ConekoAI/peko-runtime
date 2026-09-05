@@ -966,6 +966,8 @@ format is unchanged. New/changed public items:
 | `peko_session::pages` (`list_pages`, `read_page`, `search_pages`, `is_compaction_boundary`, `READ_PAGE_MAX_TOKENS`) | `peko_session::pages` | ✅ New | Logical compaction-page read model: segmentation at compaction boundaries, Read-style windowed transcript rendering with a hard per-call token cap, substring search across pages |
 | `SessionPage` / `SearchHit` (`pages::SearchHit`) | `peko_session::pages` | ✅ New | Page catalog entry + page-tagged search hit DTOs (serializable) |
 | `Session::{list_pages, read_page, search_pages}` | `peko_session::unified` | ✅ New | Thin wrappers: `load_events` + delegate to the pure `pages` functions |
+| `SessionRuntime::{list_pages, read_page, search_pages}` | `tools::builtin::session` | ✅ Extended | Session tool port: page catalog / windowed page render / page search. Production adapter resolves + ownership-gates (same read gate as `get_history`), then delegates to `peko_session::pages` |
+| `SessionTool` actions `list_pages` / `read_page` / `search_pages` (10 actions total) | `tools::builtin::session::tool` | ✅ Extended | Agent-facing page retrieval, gated by the existing `tool:session` grant — no new capabilities |
 
 ---
 

@@ -21,6 +21,13 @@ Branch `session-pages`.
   re-keying — pages are derived by scanning `load_events` output.
 - **`Session::{list_pages, read_page, search_pages}`** — thin wrappers
   that load stored events and delegate to the pure functions.
+- **`session` tool actions `list_pages` / `read_page` /
+  `search_pages`** (7 → 10 actions) — agent-facing page retrieval on
+  the existing Session tool, riding the `tool:session` grant and the
+  usual ownership gate (a caller reads pages only within the subtree it
+  manages). `read_page` windows rendered lines (`offset`/`limit`) under
+  a hard per-call token cap; `search_pages` returns page-tagged hits
+  suitable for a follow-up `read_page`.
 
 ### Channel search (2026-09-03)
 
