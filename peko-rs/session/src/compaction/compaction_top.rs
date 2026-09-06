@@ -696,7 +696,8 @@ impl Compactor {
             &cumulative_details,
         );
         let summary_content = format!(
-            "[Conversation Summary - {} messages]:\n{}",
+            "{} - {} messages]:\n{}",
+            crate::message_conversion::COMPACTION_SUMMARY_PREFIX,
             to_compact.len(),
             summary_with_ops
         );

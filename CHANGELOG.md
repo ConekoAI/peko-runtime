@@ -4,6 +4,65 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-051: compaction pages as an addressable archive (2026-09-05, prototype)
+
+See `docs/architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md`.
+Branch `session-pages`.
+
+#### Added
+- **`peko_session::pages`** — a pure read model that promotes compaction
+  boundaries to an addressable page chain: `list_pages` (segment the
+  stitched event log at compaction boundaries; page 1 = genesis…first
+  boundary, live page = newest boundary…now), `read_page` (role-prefixed
+  transcript rendering with Read-style `offset`/`limit` line windowing
+  and a hard 8k-token cap per call + continuation marker), and
+  `search_pages` (case-insensitive substring search across all pages
+  incl. the live one, capped page-tagged snippets). No new files, no
+  re-keying — pages are derived by scanning `load_events` output.
+- **`Session::{list_pages, read_page, search_pages}`** — thin wrappers
+  that load stored events and delegate to the pure functions.
+- **`session` tool actions `list_pages` / `read_page` /
+  `search_pages`** (7 → 10 actions) — agent-facing page retrieval on
+  the existing Session tool, riding the `tool:session` grant and the
+  usual ownership gate (a caller reads pages only within the subtree it
+  manages). `read_page` windows rendered lines (`offset`/`limit`) under
+  a hard per-call token cap; `search_pages` returns page-tagged hits
+  suitable for a follow-up `read_page`.
+- **`<archived-pages>` catalog footer on the compaction summary
+  message** (ADR-051 D4) — every compaction summary now ends with a
+  one-line-per-page catalog of the session's archived pages (page
+  number, compaction number, ~token estimate, title excerpt) plus a
+  pointer to `read_page` / `search_pages`. Derived, never stored: the
+  live path (compaction driver, via the new defaulted
+  `SessionView::archived_pages_footer`) and the resume path
+  (`compaction_summary_message`) render it through the shared
+  `pages::render_page_catalog` helper, so both produce identical text
+  and the catalog is always current.
+
+#### Changed
+- **`Agent` tool `compact` action is immediate, not flag-and-defer** —
+  `Agent { action: "compact", path, prompt, agent }` starts a
+  continuation run on the target session right away; the run
+  force-compacts first (run-scoped flag, `CompactionPhase::StandaloneTurn`,
+  bypassing the threshold / cooldown / consecutive-auto gates), then
+  processes `prompt` against the compacted history, and the tool returns
+  the run's outcome like `resume` does. `prompt` + `agent` are now
+  required (previously ignored). The persisted `compact_requested`
+  session-index flag is gone (old `sessions.json` files carrying it
+  still load — serde ignores the unknown field); the
+  `SessionManager`/`MetadataController`/`SessionView` set/peek/clear
+  methods and the `CompactRequestOutcome` DTO went with it.
+
+#### Fixed
+- **Session branching now carries compaction limits state** —
+  `branch_session_by_id` copies the parent's `compaction_count` /
+  `last_compaction_at` / consecutive-auto / consecutive-failure fields
+  onto the branch (like the token totals it already copied). Previously
+  the branch reset them, so its next compaction boundary would be
+  numbered from 1 and collide with the `compaction_number`s already
+  present in the copied history, and the per-session compaction gates
+  were silently reset (ADR-051 D2 follow-up).
+
 ### Channel search (2026-09-03)
 
 Channels can finally answer "find that message" without a client-side

@@ -41,8 +41,9 @@ use crate::tools::builtin::messaging::subagent_runtime::{
 /// `<workspace>/agents/<agent>/AGENT.md`); the new name matches the
 /// semantic.
 ///
-/// - `action` selects the mode (`new` / `resume`; `compact` stays
-///   for now per the round-7 decision).
+/// - `action` selects the mode (`new` / `resume` / `compact`).
+///   2026-09-05: `compact` no longer flags-and-defers — it compacts
+///   the target now and continues it with `prompt` in one run.
 /// - `path` is the slug path the target session lives at, or will
 ///   live at on `new`. Required non-empty for `new` (a single
 ///   slug segment — the new session's address) and `resume` /
@@ -73,15 +74,16 @@ pub struct AgentArgs {
     /// slug. Required for `new`, `resume`, and `compact`.
     #[serde(default)]
     pub path: String,
-    /// Task description / prompt for the subagent (required for `new`
-    /// and `resume`; ignored for `compact`).
+    /// Task description / prompt for the subagent (required for all
+    /// actions; for `compact`, the task the target session continues
+    /// with after compacting).
     #[serde(default)]
     pub prompt: String,
     /// Agent template: name of the agent definition under
     /// `<workspace>/agents/<agent>/AGENT.md` (directory layout) or
     /// `<workspace>/agents/<agent>.md` (flat layout). The agent
     /// template supplies the spawned subagent's system prompt.
-    /// (Required for `new` and `resume`; ignored for `compact`.)
+    /// (Required for all actions.)
     #[serde(default)]
     pub agent: String,
     /// Optional model override for the subagent
@@ -102,7 +104,7 @@ enum AgentAction {
     New,
     /// Re-attach a run to an existing spawned session.
     Resume,
-    /// Flag a session for engine-driven compaction at its next run.
+    /// Compact a session now and continue it with `prompt` in one run.
     Compact,
 }
 
@@ -172,12 +174,18 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
                     "action \"compact\" requires 'path' — an absolute slug path \
-                     ('/a/b/c') naming the session to flag for compaction"
+                     ('/a/b/c') naming the session to compact and continue"
                 ));
             }
             if let Err(e) = peko_session::path::validate_path(&args.path) {
                 return Err(anyhow::anyhow!(
                     "action \"compact\" 'path' is not a valid slug path: {e}"
+                ));
+            }
+            if args.prompt.is_empty() || args.agent.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "action \"compact\" requires 'prompt' and 'agent' — the target compacts \
+                     first, then continues with the prompt in the same run"
                 ));
             }
         }
@@ -476,25 +484,78 @@ impl AgentTool {
         })
     }
 
-    /// `action = "compact"` — flag the target session for engine-driven
-    /// compaction at its next run and return immediately (no LLM call,
-    /// no completion signal). Guard refusals from the runtime surface
-    /// through the same [`Self::format_error_response`] envelope resume
-    /// refusals use.
+    /// `action = "compact"` — compact the target session NOW and
+    /// continue it with `prompt` in one run (2026-09-05 — replaces the
+    /// retired flag-and-defer semantics). Returns the run's outcome in
+    /// the same envelope the spawn/resume path uses; guard refusals
+    /// from the runtime surface through the same
+    /// [`Self::format_error_response`] envelope resume refusals use.
     async fn execute_compact(
         &self,
         args: &AgentArgs,
         caller_session_key: Option<String>,
+        ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
-        let session_key = args.path.clone();
         let caller = caller_session_key.ok_or_else(|| {
             anyhow::anyhow!(
                 "Agent tool action \"compact\" needs the caller's session id — run through the \
                  engine's tool context or configure a session provider"
             )
         })?;
-        match self.runtime.request_compaction(&session_key, &caller).await {
-            Ok(outcome) => Ok(serde_json::to_value(outcome)?),
+
+        // Bridge the abort signal into a CancellationToken so a parent
+        // cancel propagates into the compact run's loop (same shape as
+        // the spawn/resume path).
+        let (parent_cancel, _cancel_guard): (
+            Option<tokio_util::sync::CancellationToken>,
+            peko_tools_core::CancellationTokenBridgeGuard,
+        ) = match ctx {
+            Some(c) => {
+                let (token, guard) =
+                    peko_tools_core::bridge_to_cancellation_token(Some(c.abort_signal()));
+                (Some(token), guard)
+            }
+            None => (None, peko_tools_core::CancellationTokenBridgeGuard::noop()),
+        };
+
+        match self
+            .runtime
+            .compact_and_execute(
+                &args.path,
+                &args.prompt,
+                &args.agent,
+                &caller,
+                parent_cancel,
+            )
+            .await
+        {
+            Ok(run) => {
+                let status_str = run.status.as_str();
+                let success = matches!(
+                    run.status,
+                    peko_extension_api::AsyncTaskStatus::Completed { .. }
+                );
+
+                let mut result = json!({
+                    "status": status_str,
+                    "run_id": run.run_id,
+                    "child_session_key": run.child_session_key,
+                    "success": success,
+                    "agent": args.agent,
+                });
+
+                // Include output or error if available
+                if let Some(ref subagent_result) = run.result {
+                    if let Some(ref output) = subagent_result.output {
+                        result["output"] = json!(output);
+                    }
+                    if let Some(ref error) = subagent_result.error {
+                        result["error"] = json!(error);
+                    }
+                }
+
+                Ok(result)
+            }
             Err(e) => Self::format_error_response(&e),
         }
     }
@@ -517,21 +578,21 @@ impl Tool for AgentTool {
     }
 
     fn description(&self) -> String {
-        r#"Run LLM work on sessions: spawn a sub-agent run (action "new", the default), re-attach a run to a previous spawned session (action "resume"), or flag a session for compaction (action "compact").
+        r#"Run LLM work on sessions: spawn a sub-agent run (action "new", the default), re-attach a run to a previous spawned session (action "resume"), or compact a session now and continue it with a prompt (action "compact").
 
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Actions:
 - new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + agent + path. `path` is a SINGLE slug segment (no `/`s) — the new session's address. Raw UUIDs and caller-relative slugs are REFUSED.
 - resume: Re-attach this run to an existing spawned session you own. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + agent.
-- compact: Flag a session for engine-driven summarization. `path` is an absolute slug path (`/a/b/c`). Requires path only (prompt and agent are ignored if supplied). Returns immediately after flagging; the engine summarizes at the target's next run.
+- compact: Compact the session NOW and continue it with `prompt` in one run — the continuation run summarizes older messages first (phase `standalone_turn`), then processes the prompt against the compacted history. `path` is an absolute slug path (`/a/b/c`). Requires path + prompt + agent. Returns the run's outcome like resume does. Works on any session in your tree (unlike resume, the target need not be a spawned session).
 
 Parameters:
 - action: "new" | "resume" | "compact" (default: "new")
-- prompt: Description of the task to execute (required for new and resume)
-- agent: Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for new and resume)
+- prompt: Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting)
+- agent: Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for all actions)
 - path: Target session (required for all actions) — for `new`: a single slug segment naming the new session; for `resume` and `compact`: an absolute slug path ('/a/b/c') from the session tool's list (`path` field). Raw session ids and caller-relative slugs are refused.
-- model: Optional model override for the subagent (matches Claude Code's Agent schema)
+- model: Optional model override for the subagent (matches Claude Code's Agent schema; ignored for compact — the continuation run keeps the session's model)
 
 Sessions you spawn have `parent_session_id` set to your session; the `session` tool's `list` action surfaces this. Use that field to find them. The session tool manages memory; this tool runs work.
 
@@ -554,8 +615,8 @@ Examples:
 // Persistent worker - continue a previous spawned session with its history
 {"action": "resume", "path": "/writer-1", "prompt": "Now update report.txt with the new numbers", "agent": "writer"}
 
-// Compact a long transcript before the next resume
-{"action": "compact", "path": "/writer-1"}"#
+// Compact a long transcript now and continue with a follow-up task in the same run
+{"action": "compact", "path": "/writer-1", "prompt": "Now draft the final report from our work so far", "agent": "writer"}"#
             .to_string()
     }
 
@@ -566,16 +627,16 @@ Examples:
                 "action": {
                     "type": "string",
                     "enum": ["new", "resume", "compact"],
-                    "description": "What to do: 'new' spawns a fresh subagent session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' flags a session for engine-driven summarization at its next run",
+                    "description": "What to do: 'new' spawns a fresh subagent session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' compacts a session now and continues it with `prompt` in one run",
                     "default": "new"
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Description of the task to execute (required for new and resume; ignored for compact)"
+                    "description": "Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting)"
                 },
                 "agent": {
                     "type": "string",
-                    "description": "Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for new and resume; ignored for compact)"
+                    "description": "Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for all actions)"
                 },
                 "path": {
                     "type": "string",
@@ -583,7 +644,7 @@ Examples:
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override for the subagent"
+                    "description": "Optional model override for the subagent (ignored for compact)"
                 }
             }
         })
@@ -602,7 +663,7 @@ Examples:
         let caller_session_key = self.runtime.session_id();
 
         if action == AgentAction::Compact {
-            return self.execute_compact(&args, caller_session_key).await;
+            return self.execute_compact(&args, caller_session_key, None).await;
         }
 
         // Resolve the agent template to a concrete agent config and apply
@@ -659,7 +720,9 @@ Examples:
         let caller_session_key = ctx.session_id.clone().or_else(|| self.runtime.session_id());
 
         if action == AgentAction::Compact {
-            return self.execute_compact(&args, caller_session_key).await;
+            return self
+                .execute_compact(&args, caller_session_key, Some(ctx))
+                .await;
         }
 
         let _subagent_config = self
@@ -722,8 +785,9 @@ struct TestSubagentState {
     /// Whether `execute_and_wait` should succeed (true) or fail with
     /// an error (false).
     succeed_on_execute: bool,
-    /// Every `request_compaction(target, caller)` call seen, in order.
-    compaction_requests: Vec<(String, String)>,
+    /// Every `compact_and_execute(target, prompt, agent, caller)` call
+    /// seen, in order.
+    compaction_requests: Vec<(String, String, String, String)>,
     /// Principal id used in audit events.
     principal_id: String,
     /// Principal display name used in audit events.
@@ -840,9 +904,10 @@ impl TestSubagentRuntime {
             .succeed_on_execute = succeed;
     }
 
-    /// Every `request_compaction(target, caller)` call seen (cloned).
+    /// Every `compact_and_execute(target, prompt, agent, caller)` call
+    /// seen (cloned).
     #[must_use]
-    pub fn compaction_requests(&self) -> Vec<(String, String)> {
+    pub fn compaction_requests(&self) -> Vec<(String, String, String, String)> {
         self.inner
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
@@ -1000,19 +1065,48 @@ impl SubagentRuntime for TestSubagentRuntime {
         })
     }
 
-    async fn request_compaction(
+    async fn compact_and_execute(
         &self,
         target: &str,
+        prompt: &str,
+        agent: &str,
         caller_session_key: &str,
-    ) -> anyhow::Result<crate::tools::builtin::session::CompactRequestOutcome> {
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> anyhow::Result<crate::tools::builtin::messaging::dto::SubagentRunView> {
+        let _ = parent_cancel;
         self.inner
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .compaction_requests
-            .push((target.to_string(), caller_session_key.to_string()));
-        Ok(crate::tools::builtin::session::CompactRequestOutcome {
-            session_id: target.to_string(),
-            message: "Compaction scheduled".to_string(),
+            .push((
+                target.to_string(),
+                prompt.to_string(),
+                agent.to_string(),
+                caller_session_key.to_string(),
+            ));
+        Ok(crate::tools::builtin::messaging::dto::SubagentRunView {
+            run_id: "test-compact-run".into(),
+            child_session_key: target.to_string(),
+            parent_session_key: caller_session_key.to_string(),
+            task: prompt.to_string(),
+            status: peko_extension_api::AsyncTaskStatus::Completed {
+                result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
+            },
+            started_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
+            label: None,
+            result: Some(crate::tools::builtin::messaging::dto::SubagentResult {
+                status: peko_extension_api::AsyncTaskStatus::Completed {
+                    result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
+                },
+                output: Some("compacted and continued".to_string()),
+                error: None,
+                token_usage: None,
+                completed_at: chrono::Utc::now(),
+            }),
+            depth: 1,
+            announce_completion: true,
         })
     }
 }
@@ -1424,7 +1518,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compact_routes_to_request_compaction() {
+    async fn test_compact_routes_to_compact_and_execute() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
@@ -1433,16 +1527,26 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "compact",
                 "path": "target-sess",
+                "prompt": "summarize and continue",
+                "agent": "writer",
             }))
             .await
             .expect("compact should succeed against the test runtime");
 
-        assert_eq!(result["session_id"], "target-sess");
-        assert!(result["message"].as_str().unwrap().contains("Compaction"));
+        // The compact action returns the run outcome, like resume.
+        assert_eq!(result["status"], "completed");
+        assert_eq!(result["run_id"], "test-compact-run");
+        assert_eq!(result["child_session_key"], "target-sess");
+        assert_eq!(result["output"], "compacted and continued");
         assert_eq!(
             runtime.compaction_requests(),
-            vec![("target-sess".to_string(), "caller:sess".to_string())],
-            "compact must route to the port with the caller's session id"
+            vec![(
+                "target-sess".to_string(),
+                "summarize and continue".to_string(),
+                "writer".to_string(),
+                "caller:sess".to_string()
+            )],
+            "compact must route to the port with path + prompt + agent + caller session id"
         );
         // No spawn ran, so nothing was audited.
         assert!(runtime.audits().is_empty());
@@ -1459,6 +1563,40 @@ mod tests {
             .expect_err("compact without path must refuse");
         assert!(err.to_string().contains("path"), "{err}");
         assert!(runtime.compaction_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compact_requires_prompt_and_agent() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        // Missing prompt.
+        let err = tool
+            .execute(serde_json::json!({
+                "action": "compact",
+                "path": "/target-sess",
+                "agent": "writer",
+            }))
+            .await
+            .expect_err("compact without prompt must refuse");
+        assert!(err.to_string().contains("prompt"), "{err}");
+
+        // Missing agent.
+        let err = tool
+            .execute(serde_json::json!({
+                "action": "compact",
+                "path": "/target-sess",
+                "prompt": "continue",
+            }))
+            .await
+            .expect_err("compact without agent must refuse");
+        assert!(err.to_string().contains("agent"), "{err}");
+
+        assert!(
+            runtime.compaction_requests().is_empty(),
+            "validation failures must not reach the runtime"
+        );
     }
 
     #[tokio::test]

@@ -147,14 +147,6 @@ impl SessionCore for Session {
         Session::load_history(session).await
     }
 
-    async fn peek_compact_request(session: &mut Self) -> bool {
-        Session::peek_compact_request(session).await
-    }
-
-    async fn clear_compact_request(session: &mut Self) {
-        Session::clear_compact_request(session).await;
-    }
-
     async fn compaction_limits_state(
         session: &mut Self,
     ) -> crate::compaction::CompactionLimitsState {
@@ -167,5 +159,9 @@ impl SessionCore for Session {
     ) -> anyhow::Result<()> {
         Session::store_compaction_limits_state(session, state).await;
         Ok(())
+    }
+
+    async fn archived_pages_footer(session: &Self) -> Option<String> {
+        Session::archived_pages_footer(session).await
     }
 }

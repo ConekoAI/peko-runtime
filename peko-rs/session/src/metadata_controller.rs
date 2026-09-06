@@ -362,54 +362,6 @@ impl MetadataController {
         Ok(())
     }
 
-    /// Set the compaction-request flag on a session
-    ///
-    /// The compaction orchestrator ORs this flag into its
-    /// `should_request` decision at the session's next run and clears it
-    /// once compaction actually starts. Errors when the session does not
-    /// exist.
-    pub async fn set_compact_requested(
-        &mut self,
-        session_id: &str,
-        compact_requested: bool,
-    ) -> Result<()> {
-        debug!(
-            "Setting compact_requested={} for session {}",
-            compact_requested, session_id
-        );
-
-        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
-            anyhow::anyhow!("Cannot set compact_requested for non-existent session {session_id}")
-        })?;
-
-        if entry.compact_requested != compact_requested {
-            entry.compact_requested = compact_requested;
-            entry.touch();
-            self.update_entry(entry).await?;
-        }
-
-        info!(
-            "Set compact_requested={} for session {}",
-            compact_requested, session_id
-        );
-        Ok(())
-    }
-
-    /// Read the compaction-request flag directly from the on-disk
-    /// index, bypassing both the controller cache and the 30s index
-    /// cache.
-    ///
-    /// The engine peeks this once per iteration; the flag may have
-    /// been written moments earlier by a *different* controller (the
-    /// session tool's adapter), so a cached read would hide it.
-    pub async fn peek_compact_requested(&mut self, session_id: &str) -> Result<bool> {
-        Ok(self
-            .index
-            .get_uncached(session_id)
-            .await?
-            .is_some_and(|e| e.compact_requested))
-    }
-
     /// Read the persisted per-session compaction quota state
     /// (compaction audit fix #4).
     ///
@@ -430,7 +382,7 @@ impl MetadataController {
     /// Persist the per-session compaction quota state (compaction
     /// audit fix #4).
     ///
-    /// Same update pattern as [`Self::set_compact_requested`]: load
+    /// Same update pattern as the other flag setters above: load
     /// the entry, mutate the state fields, write back through the
     /// delta-merge-safe index save. The engine calls this after every
     /// worker mutation (success or failure) so the next run of the
@@ -1135,46 +1087,6 @@ mod tests {
             .await
             .unwrap()
             .is_none());
-    }
-
-    #[tokio::test]
-    async fn test_compact_requested_roundtrip() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path().to_path_buf();
-
-        let mut controller = MetadataController::new(&dir);
-        let metadata = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
-        controller.create_metadata(metadata).await.unwrap();
-
-        controller
-            .set_compact_requested("sess_123", true)
-            .await
-            .unwrap();
-
-        // Reload through a fresh controller (fresh index + cache) to
-        // prove the flag survived the save/reload round trip.
-        let mut reloaded = MetadataController::new(&dir);
-        let meta = reloaded
-            .get_metadata_fast("sess_123")
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(meta.compact_requested);
-
-        // Clearing a flag persists too.
-        reloaded
-            .set_compact_requested("sess_123", false)
-            .await
-            .unwrap();
-        let mut third = MetadataController::new(&dir);
-        let meta = third.get_metadata_fast("sess_123").await.unwrap().unwrap();
-        assert!(!meta.compact_requested);
-
-        // The setter errors on a non-existent session.
-        assert!(third
-            .set_compact_requested("sess_nope", true)
-            .await
-            .is_err());
     }
 
     #[tokio::test]

@@ -198,15 +198,6 @@ pub struct DeleteOutcome {
     pub deleted: Vec<String>,
 }
 
-/// Result of the `compact` action.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactRequestOutcome {
-    pub session_id: String,
-    /// When the request fires (next iteration for the current
-    /// session, next run for others).
-    pub message: String,
-}
-
 // ─── SessionRuntime port trait ────────────────────────────────────
 
 /// Runtime port the `SessionTool` uses to talk to session storage.
@@ -267,6 +258,38 @@ pub trait SessionRuntime: Send + Sync {
         peer: Option<&peko_subject::Subject>,
         limit: usize,
     ) -> anyhow::Result<Vec<SessionSearchHit>>;
+
+    /// ADR-051: list the logical compaction-page catalog of a session
+    /// (page 1 = genesis…first boundary; the live page — the segment
+    /// after the newest boundary — is last). Same ownership gate as
+    /// `get_history`.
+    async fn list_pages(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Vec<peko_session::pages::SessionPage>>;
+
+    /// ADR-051: render one page's messages as transcript text
+    /// (role-prefixed lines). `offset` / `limit` are Read-style line
+    /// windows; a hard per-call token cap
+    /// (`peko_session::pages::READ_PAGE_MAX_TOKENS`) applies on top.
+    /// Same ownership gate as `get_history`.
+    async fn read_page(
+        &self,
+        session_key: &str,
+        page: usize,
+        offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<String>;
+
+    /// ADR-051: case-insensitive substring search across all pages of
+    /// one session, including the live page. Hits are page-tagged and
+    /// capped at `max_results`. Same ownership gate as `get_history`.
+    async fn search_pages(
+        &self,
+        session_key: &str,
+        query: &str,
+        max_results: usize,
+    ) -> anyhow::Result<Vec<peko_session::pages::SearchHit>>;
 
     /// Copy a session into a new session under `target_parent` with
     /// slug `target_slug` (mirrors bash `cp src dst` where `dst` is the
@@ -520,14 +543,5 @@ mod tests {
         assert_eq!(json["deleted"].as_array().unwrap().len(), 2);
         let back: DeleteOutcome = serde_json::from_value(json).unwrap();
         assert_eq!(back.deleted, vec!["a".to_string(), "b".to_string()]);
-
-        let compact = CompactRequestOutcome {
-            session_id: "s1".into(),
-            message: "fires next run".into(),
-        };
-        let json = serde_json::to_value(&compact).unwrap();
-        assert_eq!(json["session_id"], "s1");
-        let back: CompactRequestOutcome = serde_json::from_value(json).unwrap();
-        assert_eq!(back.message, "fires next run");
     }
 }

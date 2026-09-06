@@ -202,16 +202,25 @@ Spawn a subagent.
 ```json
 {
   "action": "new | resume | compact (default new)",
-  "prompt": "string (required for new + resume)",
-  "agent": "string (required for new + resume) — agent template name",
+  "prompt": "string (required for all actions — for compact, the task the session continues with after compacting)",
+  "agent": "string (required for all actions) — agent template name",
   "path": "string (required for new + resume + compact)",
-  "model": "string?"
+  "model": "string? (ignored for compact)"
 }
 ```
 
 **Peko extensions:** `action` (3-value enum: `new` | `resume` | `compact`),
 `path` (the slug path under the parent's tree; replaces the Claude Code
 `session_key` / `name` pair).
+
+`compact` (2026-09-05) no longer flags the session for a later run — it
+starts a continuation run on the target immediately: the run
+force-compacts first (phase `standalone_turn`, bypassing the threshold /
+cooldown gates), then processes `prompt` against the compacted history,
+and the tool returns the run's outcome like `resume` does. Unlike
+`resume`, the target need not be a spawned session — any session in the
+caller's tree compacts (but never the caller's own session or an
+ancestor; the engine compacts those automatically).
 
 `agent` resolves to a Markdown file at
 `<workspace>/agents/<agent>/AGENT.md` (directory layout) or

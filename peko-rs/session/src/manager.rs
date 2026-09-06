@@ -1372,6 +1372,19 @@ impl SessionManager {
         // copy stays attributable to (and manageable by) the same peer.
         new_metadata.peer_type = parent_metadata.peer_type.clone();
         new_metadata.peer_id = parent_metadata.peer_id.clone();
+        // Carry the compaction limits state: the branch's transcript
+        // contains the parent's compaction boundary events, so the
+        // per-session sequence (`compaction_number`) and the
+        // per-session gates (count / cooldown / consecutive limits)
+        // must continue from the parent's values — resetting them
+        // would renumber the next boundary from 1 and collide with the
+        // copied history (ADR-051 D2).
+        new_metadata.compaction_count = parent_metadata.compaction_count;
+        new_metadata.last_compaction_at = parent_metadata.last_compaction_at;
+        new_metadata.consecutive_auto_compactions =
+            parent_metadata.consecutive_auto_compactions;
+        new_metadata.consecutive_compaction_failures =
+            parent_metadata.consecutive_compaction_failures;
 
         // Store metadata
         self.metadata_controller
@@ -1409,17 +1422,6 @@ impl SessionManager {
             .write()
             .await
             .set_slug(session_id, slug)
-            .await
-    }
-
-    /// Set the compaction-request flag on a session (passthrough to
-    /// the `MetadataController`). Errors when the session does not
-    /// exist.
-    pub async fn set_compact_requested(&self, session_id: &str, requested: bool) -> Result<()> {
-        self.metadata_controller
-            .write()
-            .await
-            .set_compact_requested(session_id, requested)
             .await
     }
 
@@ -3234,6 +3236,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_branch_session_by_id_carries_compaction_state() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let peer = Subject::User("alice".to_string());
+
+        let parent_id = {
+            let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+            let handle = manager
+                .create_session("test_agent", &peer, SessionCreateOptions::new())
+                .await
+                .unwrap();
+            handle.session_id().to_string()
+        };
+
+        // Simulate a parent that has already compacted: the copied
+        // transcript contains boundary events numbered 1..=3, so the
+        // branch must continue the sequence (and the gates) from there.
+        let parent_state = crate::compaction::CompactionLimitsState {
+            compaction_count: 3,
+            last_compaction_at_ms: Some(1_700_000_000_000),
+            consecutive_auto: 2,
+            consecutive_failures: 1,
+        };
+        let mut manager = SessionManager::new()
+            .with_sessions_dir_internal(temp.path())
+            .with_agent_name("test_agent");
+        manager
+            .metadata_controller
+            .write()
+            .await
+            .set_compaction_state(&parent_id, parent_state)
+            .await
+            .unwrap();
+
+        let branch_id = manager
+            .branch_session_by_id(&parent_id, Some("branch".to_string()))
+            .await
+            .unwrap();
+
+        let branch_state = manager
+            .metadata_controller
+            .write()
+            .await
+            .get_compaction_state(&branch_id.to_string())
+            .await
+            .unwrap();
+        assert_eq!(branch_state, parent_state);
+    }
+
+    #[tokio::test]
     async fn test_session_handle_exists_false_for_nonexistent() {
         use tempfile::TempDir;
 
@@ -3261,51 +3314,6 @@ mod tests {
             !handle.exists().await,
             "deleted session must report exists() == false"
         );
-    }
-
-    /// Plan D2 plumbing: the persisted `compact_requested` flag is
-    /// visible to (and clearable by) an open `Session` — the engine
-    /// reads it via `SessionView::peek_compact_request`.
-    #[tokio::test]
-    async fn test_session_compact_request_flag_roundtrip() {
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
-
-        let handle = manager
-            .create_session("test_agent", &peer, SessionCreateOptions::new())
-            .await
-            .unwrap();
-        let session_id = handle.session_id().to_string();
-
-        // Flag unset → peeks false.
-        {
-            let mut session = handle.base().write().await;
-            assert!(!session.peek_compact_request().await);
-        }
-
-        // Set via the manager (what the session tool's `compact`
-        // action does) → the open session peeks true.
-        manager
-            .set_compact_requested(&session_id, true)
-            .await
-            .unwrap();
-        {
-            let mut session = handle.base().write().await;
-            assert!(session.peek_compact_request().await);
-            // Clear (what the orchestrator does when compaction starts).
-            session.clear_compact_request().await;
-            assert!(!session.peek_compact_request().await);
-        }
-
-        // The clear persisted to the index (read via a fresh manager —
-        // the creating manager's metadata cache is per-instance, see
-        // the per-turn manager pattern in production).
-        let fresh = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let meta = fresh.get_session_metadata(&session_id).await.unwrap();
-        assert!(!meta.compact_requested);
     }
 
     /// RAII guard that enables `PEKO_TEST_MODE` for the duration of a

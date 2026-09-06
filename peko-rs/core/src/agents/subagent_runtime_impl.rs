@@ -19,7 +19,7 @@
 //! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat). Workspace is required: the global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`) was retired in Sprint 8 Commit 2 |
 //! | [`audit_spawn`]                            | `observability.audit("SubagentSpawn", ...)` — no-op when no hub is attached                                        |
 //! | [`execute_and_wait`]                       | `SubagentExecutor::execute_and_wait` — returns the projected `SubagentRunView`                                     |
-//! | [`request_compaction`]                     | `SubagentExecutor::request_compaction` — flags the target for engine-driven compaction, returns immediately        |
+//! | [`compact_and_execute`]                    | `SubagentExecutor::compact_and_execute` — compacts the target now and continues it with the prompt in one run        |
 //!
 //! Principal-id and principal-name accessors are pulled directly from
 //! the executor's stable `principal_id`/`principal_name` getters.
@@ -251,6 +251,9 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             // template against the standing child's `[children]`
             // declaration.
             agent: Some(request.agent.clone()),
+            // Spawn/resume never force-compact; that flag is armed by
+            // the compact action's own adapter path below.
+            force_compact: false,
         };
 
         let view = if let Some(ref resume_target) = request.resume_session {
@@ -296,47 +299,39 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         };
 
         // Translate the root's `SubagentRunView` to the built-in's.
-        // The struct fields are identical by design; this projection
-        // keeps the port boundary explicit so changes in either side
-        // surface as a compile error.
-        Ok(SubagentRunView {
-            run_id: view.run_id,
-            child_session_key: view.child_session_key,
-            parent_session_key: view.parent_session_key,
-            task: view.task,
-            status: view.status,
-            started_at: view.started_at,
-            completed_at: view.completed_at,
-            cleanup: match view.cleanup {
-                peko_session::types::SpawnCleanupPolicy::Keep => SpawnCleanupPolicy::Keep,
-                peko_session::types::SpawnCleanupPolicy::Delete => SpawnCleanupPolicy::Delete,
-            },
-            label: view.label,
-            result: view
-                .result
-                .map(|r| crate::tools::builtin::messaging::SubagentResult {
-                    status: r.status,
-                    output: r.output,
-                    error: r.error,
-                    token_usage: r.token_usage,
-                    completed_at: r.completed_at,
-                }),
-            depth: view.depth,
-            announce_completion: view.announce_completion,
-        })
+        Ok(project_run_view(view))
     }
 
-    /// `Agent` tool `action = "compact"` — delegate to the executor's
-    /// guarded flag-set. Returns immediately (no LLM call, no
-    /// completion signal).
-    async fn request_compaction(
+    /// `Agent` tool `action = "compact"` (2026-09-05 — replaces the
+    /// retired flag-and-defer `request_compaction`): start a
+    /// continuation run on the target right away; the run
+    /// force-compacts first (run-scoped flag), then processes
+    /// `prompt`. Returns the run's view like `execute_and_wait`.
+    async fn compact_and_execute(
         &self,
         target: &str,
+        prompt: &str,
+        agent: &str,
         caller_session_key: &str,
-    ) -> anyhow::Result<crate::tools::builtin::session::CompactRequestOutcome> {
-        self.executor
-            .request_compaction(target, caller_session_key)
-            .await
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> anyhow::Result<SubagentRunView> {
+        let _ = agent; // validated tool-side; the run continues the session's own agent
+        let root_config = crate::agents::subagent_executor::ExecutionConfig {
+            max_depth: self.max_depth(),
+            force_compact: true,
+            ..Default::default()
+        };
+        let view = self
+            .executor
+            .compact_and_execute(
+                target,
+                prompt,
+                caller_session_key,
+                root_config,
+                parent_cancel,
+            )
+            .await?;
+        Ok(project_run_view(view))
     }
 
     fn principal_id(&self) -> String {
@@ -374,6 +369,39 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         // collapsed the tool's own `workspace` field onto the
         // runtime port — this accessor is the canonical owner.
         self.executor.principal_workspace()
+    }
+}
+
+/// Translate the root's `SubagentRunView` to the built-in's. The
+/// struct fields are identical by design; this projection keeps the
+/// port boundary explicit so changes in either side surface as a
+/// compile error. Shared by `execute_and_wait` and
+/// `compact_and_execute`.
+fn project_run_view(view: crate::agents::subagent_types::SubagentRunView) -> SubagentRunView {
+    SubagentRunView {
+        run_id: view.run_id,
+        child_session_key: view.child_session_key,
+        parent_session_key: view.parent_session_key,
+        task: view.task,
+        status: view.status,
+        started_at: view.started_at,
+        completed_at: view.completed_at,
+        cleanup: match view.cleanup {
+            peko_session::types::SpawnCleanupPolicy::Keep => SpawnCleanupPolicy::Keep,
+            peko_session::types::SpawnCleanupPolicy::Delete => SpawnCleanupPolicy::Delete,
+        },
+        label: view.label,
+        result: view
+            .result
+            .map(|r| crate::tools::builtin::messaging::SubagentResult {
+                status: r.status,
+                output: r.output,
+                error: r.error,
+                token_usage: r.token_usage,
+                completed_at: r.completed_at,
+            }),
+        depth: view.depth,
+        announce_completion: view.announce_completion,
     }
 }
 

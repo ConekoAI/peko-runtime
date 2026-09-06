@@ -45,9 +45,12 @@ pub enum CompactionPhase {
     /// the current tool-call / tool-result pair stays intact.
     MidTurn,
     /// Compaction fired by an explicit, out-of-band request (the
-    /// session tool's `compact` action, a `/compact` slash command,
-    /// etc.). Same injection position as pre-turn. Reserved for
-    /// future use; current triggers only fire `PreTurn` or `MidTurn`.
+    /// `Agent` tool's `compact` action, a `/compact` slash command,
+    /// etc.). Same injection position as pre-turn. Wired 2026-09-05:
+    /// the compact action starts a continuation run with a run-scoped
+    /// force-compact flag; the driver consumes it on the first
+    /// iteration and fires with this phase (bypassing the threshold /
+    /// cooldown / consecutive-auto gates — the request is explicit).
     StandaloneTurn,
 }
 

@@ -128,23 +128,6 @@ pub trait SessionCore: Send + Sync + 'static {
 
     async fn load_history(session: &Self) -> Result<Vec<peko_message::LlmMessage>>;
 
-    /// Peek the persisted compaction-request flag (agent-owned session
-    /// management, plan D2). The compaction orchestrator ORs this into
-    /// its threshold decision. Default: no request — implementors
-    /// without a persistent flag (test stubs, in-memory sessions)
-    /// compile unchanged.
-    async fn peek_compact_request(session: &mut Self) -> bool {
-        let _ = session;
-        false
-    }
-
-    /// Clear the persisted compaction-request flag. The orchestrator
-    /// calls this only when compaction genuinely starts, so a crashed
-    /// run doesn't lose the request. Default: no-op.
-    async fn clear_compact_request(session: &mut Self) {
-        let _ = session;
-    }
-
     /// Read the persisted per-session compaction quota state
     /// (compaction audit fix #4). The compaction driver hydrates the
     /// per-run compactor from this at run start. Default: all-zero
@@ -165,6 +148,21 @@ pub trait SessionCore: Send + Sync + 'static {
     ) -> Result<()> {
         let _ = (session, state);
         Ok(())
+    }
+
+    /// ADR-051 D4: render the `<archived-pages>` catalog footer for the
+    /// compaction summary message, derived from the session's stored
+    /// events. The compaction driver calls this right after
+    /// `record_compaction` persists the new boundary and appends the
+    /// footer to the installed summary message; the resume path
+    /// regenerates the identical text in
+    /// [`crate::message_conversion::compaction_summary_message`].
+    /// Default: `None` — implementors without page storage (test
+    /// stubs, in-memory sessions) compile unchanged and produce no
+    /// footer.
+    async fn archived_pages_footer(session: &Self) -> Option<String> {
+        let _ = session;
+        None
     }
 }
 
@@ -243,16 +241,6 @@ pub trait SessionView: Send + Sync + 'static {
 
     async fn load_history(&self) -> Result<Vec<peko_message::LlmMessage>>;
 
-    /// Peek the persisted compaction-request flag (plan D2). Default:
-    /// no request — see [`SessionCore::peek_compact_request`].
-    async fn peek_compact_request(&self) -> bool {
-        false
-    }
-
-    /// Clear the persisted compaction-request flag once compaction
-    /// genuinely starts. Default: no-op.
-    async fn clear_compact_request(&self) {}
-
     /// Read the persisted per-session compaction quota state
     /// (compaction audit fix #4). Default: all-zero state — see
     /// [`SessionCore::compaction_limits_state`].
@@ -267,6 +255,13 @@ pub trait SessionView: Send + Sync + 'static {
         _state: crate::compaction::CompactionLimitsState,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// ADR-051 D4: `<archived-pages>` catalog footer for the compaction
+    /// summary message. Default: `None` — see
+    /// [`SessionCore::archived_pages_footer`].
+    async fn archived_pages_footer(&self) -> Option<String> {
+        None
     }
 }
 
@@ -385,16 +380,6 @@ where
         T::load_history(&*guard).await
     }
 
-    async fn peek_compact_request(&self) -> bool {
-        let mut guard = self.write().await;
-        T::peek_compact_request(&mut *guard).await
-    }
-
-    async fn clear_compact_request(&self) {
-        let mut guard = self.write().await;
-        T::clear_compact_request(&mut *guard).await;
-    }
-
     async fn compaction_limits_state(&self) -> crate::compaction::CompactionLimitsState {
         let mut guard = self.write().await;
         T::compaction_limits_state(&mut *guard).await
@@ -406,5 +391,10 @@ where
     ) -> Result<()> {
         let mut guard = self.write().await;
         T::store_compaction_limits_state(&mut *guard, state).await
+    }
+
+    async fn archived_pages_footer(&self) -> Option<String> {
+        let guard = self.read().await;
+        T::archived_pages_footer(&*guard).await
     }
 }

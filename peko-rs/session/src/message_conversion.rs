@@ -71,6 +71,14 @@ pub fn latest_compaction_boundary(events: &[SessionEvent]) -> Option<usize> {
         .rposition(|e| matches!(e, SessionEvent::System(sys) if sys.event == "compaction"))
 }
 
+/// Shared prefix of the compaction summary message text
+/// (`"[Conversation Summary - {N} messages]:\n…"`). Both construction
+/// sites use it — the live path (`compaction::compaction_top`) and the
+/// resume path ([`compaction_summary_message`]) — and the engine's
+/// compaction driver uses it to locate the installed summary message
+/// when appending the ADR-051 archived-pages footer.
+pub const COMPACTION_SUMMARY_PREFIX: &str = "[Conversation Summary";
+
 /// Render the summary message for a compaction boundary event.
 ///
 /// Reconstructs the same text the live compaction path produces
@@ -82,9 +90,21 @@ pub fn latest_compaction_boundary(events: &[SessionEvent]) -> Option<usize> {
 /// defaults / summary-only body); pre-fix-#6 events (no
 /// `details.user_messages`) render exactly as before.
 ///
-/// Returns `None` if `event` is not a compaction boundary.
+/// ADR-051 D4: an `<archived-pages>` catalog footer is appended via
+/// [`crate::pages::render_page_catalog`], enumerated over
+/// `events[..=boundary_idx]` so the catalog for boundary k lists
+/// exactly pages 1..=k (the page this boundary closes included). The
+/// footer is derived, never stored; the live path appends the
+/// identical text.
+///
+/// Returns `None` if `events[boundary_idx]` is not a compaction
+/// boundary.
 #[must_use]
-pub fn compaction_summary_message(event: &SessionEvent) -> Option<LlmMessage> {
+pub fn compaction_summary_message(
+    events: &[SessionEvent],
+    boundary_idx: usize,
+) -> Option<LlmMessage> {
+    let event = events.get(boundary_idx)?;
     let SessionEvent::System(sys) = event else {
         return None;
     };
@@ -104,11 +124,22 @@ pub fn compaction_summary_message(event: &SessionEvent) -> Option<LlmMessage> {
 
     // `format_summary_with_file_ops` trims the summary and appends the
     // file-ops blocks; without details the trimmed summary is the body.
-    let body = match details {
+    let mut body = match details {
         Some(d) => format_summary_with_file_ops(summary, &d),
         None => summary.trim().to_string(),
     };
-    let text = format!("[Conversation Summary - {messages_compacted} messages]:\n{body}");
+
+    // ADR-051 D4: archived-pages catalog footer (derived, never
+    // stored). Pages are enumerated over the events up to and
+    // including this boundary, so a mid-history boundary never lists
+    // pages closed by LATER compactions.
+    let pages = crate::pages::list_pages(&events[..=boundary_idx]);
+    if let Some(footer) = crate::pages::render_page_catalog(&pages) {
+        body.push_str("\n\n");
+        body.push_str(&footer);
+    }
+
+    let text = format!("{COMPACTION_SUMMARY_PREFIX} - {messages_compacted} messages]:\n{body}");
 
     let mut metadata = std::collections::HashMap::new();
     metadata.insert(
@@ -352,16 +383,16 @@ mod tests {
 
     #[test]
     fn test_compaction_summary_message_renders_file_ops() {
-        let event = compaction_event(serde_json::json!({
+        let events = vec![compaction_event(serde_json::json!({
             "summary": "Did the thing",
             "messages_compacted": 7,
             "details": {
                 "read_files": ["a.rs"],
                 "modified_files": ["b.rs"],
             },
-        }));
+        }))];
 
-        let msg = compaction_summary_message(&event).unwrap();
+        let msg = compaction_summary_message(&events, 0).unwrap();
         assert_eq!(msg.role, MessageRole::System);
         assert!(is_compaction_boundary_message(&msg));
         let text = match &msg.content[0] {
@@ -376,14 +407,17 @@ mod tests {
 
     #[test]
     fn test_compaction_summary_message_degrades_on_missing_fields() {
-        let event = compaction_event(serde_json::json!({}));
+        let events = vec![compaction_event(serde_json::json!({}))];
 
-        let msg = compaction_summary_message(&event).unwrap();
+        let msg = compaction_summary_message(&events, 0).unwrap();
         let text = match &msg.content[0] {
             ContentBlock::Text { text } => text.as_str(),
             other => panic!("expected text block, got {other:?}"),
         };
-        assert_eq!(text, "[Conversation Summary - 0 messages]:\n");
+        assert!(
+            text.starts_with("[Conversation Summary - 0 messages]:\n"),
+            "missing fields fall back to defaults, got: {text}"
+        );
     }
 
     /// Compaction audit fix #6: a persisted `details.user_messages`
@@ -392,7 +426,7 @@ mod tests {
     /// `format_summary_with_file_ops`).
     #[test]
     fn test_compaction_summary_message_renders_user_messages() {
-        let event = compaction_event(serde_json::json!({
+        let events = vec![compaction_event(serde_json::json!({
             "summary": "Did the thing",
             "messages_compacted": 7,
             "details": {
@@ -400,9 +434,9 @@ mod tests {
                 "modified_files": [],
                 "user_messages": ["first ask", "second correction"],
             },
-        }));
+        }))];
 
-        let msg = compaction_summary_message(&event).unwrap();
+        let msg = compaction_summary_message(&events, 0).unwrap();
         let text = match &msg.content[0] {
             ContentBlock::Text { text } => text.as_str(),
             other => panic!("expected text block, got {other:?}"),
@@ -414,33 +448,94 @@ mod tests {
 
     /// Fix #6 backward compat: pre-fix-#6 compaction events (no
     /// `user_messages` field in `details`) render without the block —
-    /// byte-identical to the pre-fix-#6 reconstruction.
+    /// byte-identical to the pre-fix-#6 reconstruction. The ADR-051
+    /// `<archived-pages>` footer is appended to ALL reconstructions
+    /// (pre- and post-ADR-051 sessions alike); it is pinned here via
+    /// the shared `render_page_catalog` helper so this test also locks
+    /// the live/resume identity property.
     #[test]
     fn test_compaction_summary_message_legacy_event_has_no_user_block() {
-        let event = compaction_event(serde_json::json!({
+        let events = vec![compaction_event(serde_json::json!({
             "summary": "Did the thing",
             "messages_compacted": 7,
             "details": {
                 "read_files": ["a.rs"],
                 "modified_files": [],
             },
-        }));
+        }))];
 
-        let msg = compaction_summary_message(&event).unwrap();
+        let msg = compaction_summary_message(&events, 0).unwrap();
         let text = match &msg.content[0] {
             ContentBlock::Text { text } => text.as_str(),
             other => panic!("expected text block, got {other:?}"),
         };
+        let footer = crate::pages::render_page_catalog(&crate::pages::list_pages(&events)).unwrap();
         assert_eq!(
             text,
-            "[Conversation Summary - 7 messages]:\nDid the thing\n\n<read-files>\na.rs\n</read-files>"
+            format!(
+                "[Conversation Summary - 7 messages]:\nDid the thing\n\n<read-files>\na.rs\n</read-files>\n\n{footer}"
+            )
         );
+        assert!(!text.contains("<user-messages>"));
+    }
+
+    /// ADR-051 D4: the reconstructed summary lists the archived pages
+    /// — including the page this boundary just closed — and excludes
+    /// anything after it.
+    #[test]
+    fn test_compaction_summary_message_appends_archived_pages_footer() {
+        let events = vec![
+            SessionEvent::MessageV2(SessionMessage::user("first ask", MessageSource::User)),
+            compaction_event(serde_json::json!({
+                "summary": "first summary",
+                "messages_compacted": 1,
+                "compaction_number": 1,
+            })),
+            SessionEvent::MessageV2(SessionMessage::user("second ask", MessageSource::User)),
+            compaction_event(serde_json::json!({
+                "summary": "second summary",
+                "messages_compacted": 2,
+                "compaction_number": 2,
+            })),
+            SessionEvent::MessageV2(SessionMessage::user("live ask", MessageSource::User)),
+        ];
+
+        // The newest boundary's summary lists pages 1 and 2.
+        let msg = compaction_summary_message(&events, 3).unwrap();
+        let text = match &msg.content[0] {
+            ContentBlock::Text { text } => text.as_str(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.starts_with("[Conversation Summary - 2 messages]:\nsecond summary"));
+        assert!(text.contains("<archived-pages>"), "{text}");
+        assert!(
+            text.contains("This session has 2 archived page(s)"),
+            "{text}"
+        );
+        assert!(text.contains("- page 1 (compaction #1, ~"), "{text}");
+        assert!(text.contains(": \"first ask\""), "{text}");
+        assert!(text.contains("- page 2 (compaction #2, ~"), "{text}");
+        assert!(text.contains(": \"second ask\""), "{text}");
+        assert!(!text.contains("live ask"), "live page is not archived");
+
+        // An older boundary reconstructs with ONLY the pages it had
+        // closed at the time — later compactions are invisible to it.
+        let msg = compaction_summary_message(&events, 1).unwrap();
+        let text = match &msg.content[0] {
+            ContentBlock::Text { text } => text.as_str(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(
+            text.contains("This session has 1 archived page(s)"),
+            "{text}"
+        );
+        assert!(!text.contains("page 2"), "{text}");
     }
 
     #[test]
     fn test_compaction_summary_message_ignores_non_compaction_events() {
         let msg_event = SessionEvent::MessageV2(SessionMessage::user("hi", MessageSource::User));
-        assert!(compaction_summary_message(&msg_event).is_none());
+        assert!(compaction_summary_message(&[msg_event], 0).is_none());
 
         let other_system = SessionEvent::System(SystemEvent {
             envelope: EventEnvelope {
@@ -450,6 +545,9 @@ mod tests {
             event: "cwd".to_string(),
             detail: serde_json::json!({"path": "/tmp"}),
         });
-        assert!(compaction_summary_message(&other_system).is_none());
+        assert!(compaction_summary_message(&[other_system], 0).is_none());
+
+        // Out-of-range boundary index is a clean `None`.
+        assert!(compaction_summary_message(&[], 0).is_none());
     }
 }

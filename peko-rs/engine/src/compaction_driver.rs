@@ -74,6 +74,15 @@ pub struct CompactionDriver {
     /// check (`CompactionDriver::new` is sync, so it can't happen at
     /// construction).
     limits_state_hydrated: bool,
+    /// Run-scoped forced-compaction flag (Agent tool
+    /// `action = "compact"`, 2026-09-05). Set at run start via
+    /// [`Self::with_force_compact`]; consumed on the first
+    /// `check_and_compact` call so the forced compaction fires exactly
+    /// once, at iteration 1, with `CompactionPhase::StandaloneTurn`.
+    /// Replaces the retired persisted `compact_requested` session-index
+    /// flag (plan D2) — the continuation run IS the "next run", so no
+    /// persisted state is needed.
+    force_compact_once: bool,
 }
 
 impl CompactionDriver {
@@ -106,16 +115,28 @@ impl CompactionDriver {
             last_compaction_result: None,
             last_compaction_usage: None,
             limits_state_hydrated: false,
+            force_compact_once: false,
         }
+    }
+
+    /// Arm the run-scoped forced compaction (Agent tool
+    /// `action = "compact"`). The first `check_and_compact` of this run
+    /// fires a `CompactionPhase::StandaloneTurn` compaction regardless
+    /// of the threshold / cooldown / consecutive-auto gates, then the
+    /// flag is consumed — later iterations gate normally.
+    #[must_use]
+    pub fn with_force_compact(mut self, force: bool) -> Self {
+        self.force_compact_once = force;
+        self
     }
 
     /// Check if compaction is needed and perform it.
     ///
     /// This method handles:
     /// 1. Token estimation and threshold checking
-    /// 2. Agent-requested compaction via the persisted
-    ///    `compact_requested` flag (plan D2 — OR'd into the threshold
-    ///    decision, cleared once compaction genuinely starts)
+    /// 2. Run-scoped forced compaction (the `force_compact_once` flag
+    ///    armed by the Agent tool's `compact` action — consumed on
+    ///    first use, fires with `CompactionPhase::StandaloneTurn`)
     /// 3. Pre-compaction hook invocation
     /// 4. Background compaction initiation
     /// 5. Polling for background compaction completion
@@ -159,13 +180,16 @@ impl CompactionDriver {
         // per-session rather than per-run.
         self.ensure_limits_state_hydrated(session).await;
 
-        // Plan D2: an agent may have requested compaction out-of-band
-        // (the session tool's `compact` action persists a
-        // `compact_requested` flag on the session metadata). The flag
-        // ORs into the threshold decision and is cleared ONLY when
-        // compaction genuinely starts (below), so a crashed run does
-        // not lose the request.
-        let forced = session.peek_compact_request().await;
+        // Run-scoped forced compaction (Agent tool `action =
+        // "compact"`): the continuation run was launched with the
+        // force flag armed. Consume it on first use so it fires
+        // exactly once; the forced path bypasses the threshold /
+        // cooldown / consecutive-auto gates in `should_request`
+        // (explicit intent) but still respects an already-pending
+        // compaction (`pending_compaction.is_none()` below) and
+        // records into the persisted limits state like any
+        // compaction.
+        let forced = std::mem::take(&mut self.force_compact_once);
 
         // Start background compaction if needed and not already running
         if self.pending_compaction.is_none()
@@ -179,10 +203,12 @@ impl CompactionDriver {
                 "Context window approaching limit ({} tokens, last_total={}), checking compaction...",
                 effective_tokens, last_total
             );
+            let phase = if forced {
+                CompactionPhase::StandaloneTurn
+            } else {
+                CompactionPhase::PreTurn
+            };
             if forced {
-                // Compaction is genuinely starting — consume the
-                // request so it fires exactly once.
-                session.clear_compact_request().await;
                 on_event(AgenticEvent::Thinking {
                     run_id: run_id.to_string(),
                     text: "Compacting this session as requested. Summarizing older messages..."
@@ -201,7 +227,7 @@ impl CompactionDriver {
                 });
             }
 
-            self.invoke_pre_hook(messages, session, funnel, effective_tokens, CompactionPhase::PreTurn)
+            self.invoke_pre_hook(messages, session, funnel, effective_tokens, phase)
                 .await;
         }
 
@@ -550,6 +576,39 @@ impl CompactionDriver {
                 Ok(Ok(response)) => {
                     match response {
                         CompactionResponse::Completed(result) => {
+                            // ADR-051 D4: persist the boundary FIRST so
+                            // the page catalog enumerated below includes
+                            // the page this compaction just closed.
+                            // Record compaction entry in session
+                            if let Err(e) = session
+                                .record_compaction(
+                                    &result.entry.summary,
+                                    result.entry.messages_compacted,
+                                    result.entry.tokens_before,
+                                    result.entry.tokens_after,
+                                    result.entry.compaction_number,
+                                    result.entry.details.as_ref(),
+                                )
+                                .await
+                            {
+                                warn!("Failed to record compaction entry: {}", e);
+                            }
+                            // Audit fix #4: persist the worker's quota
+                            // state so the next run hydrates from it.
+                            self.sync_limits_state_to_session(session).await;
+
+                            // ADR-051 D4: append the derived
+                            // `<archived-pages>` catalog footer to the
+                            // summary message before installing it. The
+                            // footer is never stored — the resume path
+                            // (`peko_session::compaction_summary_message`)
+                            // regenerates the identical text from the
+                            // stored events.
+                            let mut result = result;
+                            if let Some(footer) = session.archived_pages_footer().await {
+                                append_archived_pages_footer(&mut result.messages, &footer);
+                            }
+
                             *messages = result.messages.clone();
                             self.compaction_performed = true;
                             self.last_compaction_result = Some(result.clone());
@@ -568,24 +627,6 @@ impl CompactionDriver {
                                 result.entry.tokens_before,
                                 result.entry.tokens_after
                             );
-
-                            // Record compaction entry in session
-                            if let Err(e) = session
-                                .record_compaction(
-                                    &result.entry.summary,
-                                    result.entry.messages_compacted,
-                                    result.entry.tokens_before,
-                                    result.entry.tokens_after,
-                                    result.entry.compaction_number,
-                                    result.entry.details.as_ref(),
-                                )
-                                .await
-                            {
-                                warn!("Failed to record compaction entry: {}", e);
-                            }
-                            // Audit fix #4: persist the worker's quota
-                            // state so the next run hydrates from it.
-                            self.sync_limits_state_to_session(session).await;
                         }
                         CompactionResponse::NotNeeded => {
                             debug!("Background compaction: not needed");
@@ -807,6 +848,29 @@ fn content_block_token_estimate(content: &[peko_message::ContentBlock]) -> usize
         + 4
 }
 
+/// ADR-051 D4: append the archived-pages catalog footer to the
+/// compaction summary message inside a compacted list. The summary is
+/// the System-role message the compactor installed near the top (after
+/// an optional pinned system prompt), identified by the shared
+/// `peko_session::COMPACTION_SUMMARY_PREFIX`. No-op when the list has
+/// no summary message (defensive — the worker always produces one).
+fn append_archived_pages_footer(messages: &mut [LlmMessage], footer: &str) {
+    for msg in messages.iter_mut() {
+        if msg.role != peko_message::MessageRole::System {
+            continue;
+        }
+        for block in msg.content.iter_mut() {
+            if let peko_message::ContentBlock::Text { text } = block {
+                if text.starts_with(peko_session::COMPACTION_SUMMARY_PREFIX) {
+                    text.push_str("\n\n");
+                    text.push_str(footer);
+                    return;
+                }
+            }
+        }
+    }
+}
+
 // Phase 9b.N.4: `load_compaction_config` lives in root
 // (`src/session/compaction.rs`) because it depends on the `dirs` +
 // `toml` crates, which aren't in `peko-engine`'s dep graph. Root is
@@ -826,26 +890,26 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::oneshot;
 
-    /// Stub `SessionView` with a switchable compact-request flag.
-    /// Everything unrelated to the flag is inert.
+    /// Stub `SessionView`. Everything unrelated to token usage and the
+    /// persisted compaction quota state is inert.
     struct StubSession {
-        requested: Mutex<bool>,
-        clears: AtomicUsize,
         last_total: AtomicUsize,
         /// Fix #4: the persisted compaction quota state this session
         /// would return, plus a log of every state the driver stored.
         limits: Mutex<crate::compaction::CompactionLimitsState>,
         stored_states: Mutex<Vec<crate::compaction::CompactionLimitsState>>,
+        /// ADR-051 D4: the archived-pages catalog footer this session
+        /// would render from its stored events (`None` = boundary-less).
+        footer: Mutex<Option<String>>,
     }
 
     impl StubSession {
-        fn new(requested: bool) -> Self {
+        fn new() -> Self {
             Self {
-                requested: Mutex::new(requested),
-                clears: AtomicUsize::new(0),
                 last_total: AtomicUsize::new(0),
                 limits: Mutex::new(crate::compaction::CompactionLimitsState::default()),
                 stored_states: Mutex::new(vec![]),
+                footer: Mutex::new(None),
             }
         }
     }
@@ -919,13 +983,6 @@ mod tests {
         async fn load_history(&self) -> Result<Vec<LlmMessage>> {
             Ok(vec![])
         }
-        async fn peek_compact_request(&self) -> bool {
-            *self.requested.lock().expect("requested mutex poisoned")
-        }
-        async fn clear_compact_request(&self) {
-            *self.requested.lock().expect("requested mutex poisoned") = false;
-            self.clears.fetch_add(1, Ordering::SeqCst);
-        }
         async fn compaction_limits_state(&self) -> crate::compaction::CompactionLimitsState {
             *self.limits.lock().expect("limits mutex poisoned")
         }
@@ -939,15 +996,21 @@ mod tests {
                 .push(state);
             Ok(())
         }
+        async fn archived_pages_footer(&self) -> Option<String> {
+            self.footer.lock().expect("footer mutex poisoned").clone()
+        }
     }
 
     /// Stub `CompactorBackend`: `should_request` returns a fixed gate
-    /// value; `request` records the call and returns a receiver that
-    /// stays pending (the sender is stashed so the channel neither
-    /// resolves nor closes during the driver's 100ms poll).
+    /// value; `request` records the call (and the request's phase) and
+    /// returns a receiver that stays pending (the sender is stashed so
+    /// the channel neither resolves nor closes during the driver's
+    /// 100ms poll).
     struct StubBackend {
         gate: bool,
         request_calls: AtomicUsize,
+        /// Phase of every `CompactionRequest` received, in order.
+        phases: Mutex<Vec<CompactionPhase>>,
         senders: Mutex<Vec<oneshot::Sender<CompactionResponse>>>,
         /// Fix #4: states the driver hydrated us with, plus the worker
         /// state `limits_state` reports.
@@ -960,6 +1023,7 @@ mod tests {
             Self {
                 gate,
                 request_calls: AtomicUsize::new(0),
+                phases: Mutex::new(vec![]),
                 senders: Mutex::new(vec![]),
                 hydrated: Mutex::new(vec![]),
                 worker_state: Mutex::new(crate::compaction::CompactionLimitsState::default()),
@@ -979,9 +1043,13 @@ mod tests {
         }
         async fn request(
             &self,
-            _request: CompactionRequest,
+            request: CompactionRequest,
         ) -> Result<oneshot::Receiver<CompactionResponse>> {
             self.request_calls.fetch_add(1, Ordering::SeqCst);
+            self.phases
+                .lock()
+                .expect("phases mutex poisoned")
+                .push(request.phase);
             let (tx, rx) = oneshot::channel();
             self.senders
                 .lock()
@@ -1118,17 +1186,18 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
     }
 
-    fn fixture(requested: bool, gate: bool) -> Fixture {
+    fn fixture(force_compact: bool, gate: bool) -> Fixture {
         let backend = Arc::new(StubBackend::new(gate));
         let driver = CompactionDriver::new(
             Box::new(ArcBackend(Arc::clone(&backend))),
             CompactionConfig::default(),
             200_000,
-        );
+        )
+        .with_force_compact(force_compact);
         Fixture {
             driver,
             backend,
-            session: StubSession::new(requested),
+            session: StubSession::new(),
             events: Arc::new(Mutex::new(vec![])),
         }
     }
@@ -1177,11 +1246,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forced_compaction_fires_below_threshold_and_clears_flag() {
-        let mut f = fixture(true, false); // flag set, token gate closed
+    async fn forced_compaction_fires_once_below_threshold_with_standalone_phase() {
+        let mut f = fixture(true, false); // force flag armed, token gate closed
         let mut messages = small_messages();
         let on_event = event_sink(&f.events);
 
+        // Iteration 1: the armed flag fires compaction even below
+        // threshold, tagged StandaloneTurn.
         f.driver
             .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
             .await
@@ -1196,17 +1267,62 @@ mod tests {
             f.driver.pending_compaction.is_some(),
             "background compaction should be pending"
         );
-        assert!(
-            !f.session.peek_compact_request().await,
-            "flag cleared once compaction starts"
+        assert_eq!(
+            *f.backend.phases.lock().expect("phases mutex poisoned"),
+            vec![CompactionPhase::StandaloneTurn],
+            "forced compaction must fire with the StandaloneTurn phase"
         );
-        assert_eq!(f.session.clears.load(Ordering::SeqCst), 1);
-        let events = f.events.lock().expect("events mutex poisoned");
-        assert_eq!(events.len(), 1);
+        {
+            let events = f.events.lock().expect("events mutex poisoned");
+            assert_eq!(events.len(), 1);
+            assert!(
+                events[0].contains("as requested"),
+                "forced wording expected, got: {}",
+                events[0]
+            );
+        }
+
+        // Iteration 2 while still pending: the pending gate holds — no
+        // second compaction.
+        f.driver
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            f.backend.request_calls.load(Ordering::SeqCst),
+            1,
+            "no second compaction while one is pending"
+        );
+
+        // The worker completes; the next check consumes the result.
+        let tx = f
+            .backend
+            .senders
+            .lock()
+            .expect("senders mutex poisoned")
+            .pop()
+            .expect("a compaction request is pending");
+        tx.send(completed_response(small_messages(), 2))
+            .expect("driver receiver alive");
+        f.driver
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
         assert!(
-            events[0].contains("as requested"),
-            "forced wording expected, got: {}",
-            events[0]
+            f.driver.pending_compaction.is_none(),
+            "completed compaction should clear the pending slot"
+        );
+
+        // Iteration 4: the flag is consumed — with the token gate
+        // closed, no further compaction fires.
+        f.driver
+            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            f.backend.request_calls.load(Ordering::SeqCst),
+            1,
+            "the run-scoped force flag fires exactly once"
         );
     }
 
@@ -1223,7 +1339,6 @@ mod tests {
 
         assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 0);
         assert!(f.driver.pending_compaction.is_none());
-        assert_eq!(f.session.clears.load(Ordering::SeqCst), 0);
         assert!(f.events.lock().expect("events mutex poisoned").is_empty());
     }
 
@@ -1244,9 +1359,9 @@ mod tests {
             "background compaction should be pending"
         );
         assert_eq!(
-            f.session.clears.load(Ordering::SeqCst),
-            0,
-            "non-forced start must not touch the flag"
+            *f.backend.phases.lock().expect("phases mutex poisoned"),
+            vec![CompactionPhase::PreTurn],
+            "threshold-triggered compaction keeps the PreTurn phase"
         );
         let events = f.events.lock().expect("events mutex poisoned");
         assert_eq!(events.len(), 1);
@@ -1311,41 +1426,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn forced_flag_survives_while_compaction_already_pending() {
-        let mut f = fixture(true, false);
-        let mut messages = small_messages();
-        let on_event = event_sink(&f.events);
-
-        // First call: forced start consumes the flag.
-        f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
-            .await
-            .unwrap();
-        assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 1);
-
-        // Re-arm the flag while the first compaction is still pending:
-        // the driver must NOT start a second compaction and must
-        // NOT clear the flag (nothing genuinely started for it).
-        *f.session
-            .requested
-            .lock()
-            .expect("requested mutex poisoned") = true;
-        f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
-            .await
-            .unwrap();
-        assert_eq!(
-            f.backend.request_calls.load(Ordering::SeqCst),
-            1,
-            "no second compaction while one is pending"
-        );
-        assert!(
-            f.session.peek_compact_request().await,
-            "flag survives while a compaction is already pending"
-        );
     }
 
     /// Build the `Completed` response the worker would send, with a
@@ -1614,6 +1694,108 @@ mod tests {
             stored.as_slice(),
             &[worker_state],
             "worker quota state must be persisted after Completed"
+        );
+    }
+
+    /// ADR-051 D4 (live path): when the session renders an
+    /// archived-pages catalog after the boundary is recorded, the
+    /// driver appends it to the installed summary message — the same
+    /// text the resume path
+    /// (`peko_session::compaction_summary_message`) reconstructs from
+    /// the stored events.
+    #[tokio::test]
+    async fn completed_compaction_appends_archived_pages_footer() {
+        let mut f = fixture(false, false);
+        *f.session.footer.lock().expect("footer mutex poisoned") = Some(
+            "<archived-pages>\nThis session has 1 archived page(s) from earlier compactions:\n- page 1 (compaction #1, ~1k tokens): \"older question\"\nUse the session tool's read_page / search_pages actions to retrieve archived content.\n</archived-pages>"
+                .to_string(),
+        );
+
+        let mut messages = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::user("older question"),
+            LlmMessage::assistant("older answer"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+        let compacted = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::system("[Conversation Summary - 3 messages]:\nsummary text"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+
+        let mutated = drive_mid_turn(&mut f, &mut messages, completed_response(compacted, 3))
+            .await
+            .unwrap();
+        assert!(mutated);
+
+        // Exactly one summary message, and the footer rides it.
+        assert_eq!(text_contains(&messages, "<archived-pages>"), 1);
+        let summary = messages
+            .iter()
+            .find_map(|m| {
+                m.content.iter().find_map(|b| match b {
+                    peko_message::ContentBlock::Text { text }
+                        if text.starts_with(peko_session::COMPACTION_SUMMARY_PREFIX) =>
+                    {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+            })
+            .expect("summary message present");
+        assert!(
+            summary.ends_with("</archived-pages>"),
+            "footer must be appended to the summary text: {summary}"
+        );
+        // The pinned system prompt is untouched.
+        assert!(
+            !messages[0].content.iter().any(|b| matches!(
+                b,
+                peko_message::ContentBlock::Text { text } if text.contains("<archived-pages>")
+            )),
+            "system prompt must not gain the footer"
+        );
+    }
+
+    /// ADR-051 D4: without archived pages (`footer = None`, the
+    /// trait default for boundary-less sessions) the installed summary
+    /// text is byte-identical to what the worker produced.
+    #[tokio::test]
+    async fn completed_compaction_without_archived_pages_has_no_footer() {
+        let mut f = fixture(false, false);
+
+        let mut messages = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::user("older question"),
+            LlmMessage::assistant("older answer"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+        let compacted = vec![
+            LlmMessage::system("system prompt"),
+            LlmMessage::system("[Conversation Summary - 3 messages]:\nsummary text"),
+            LlmMessage::user("current question"),
+            LlmMessage::assistant("calling a tool"),
+            tool_result_message(),
+        ];
+
+        let mutated = drive_mid_turn(&mut f, &mut messages, completed_response(compacted, 3))
+            .await
+            .unwrap();
+        assert!(mutated);
+        assert_eq!(text_contains(&messages, "<archived-pages>"), 0);
+        assert_eq!(
+            text_contains(
+                &messages,
+                "[Conversation Summary - 3 messages]:\nsummary text"
+            ),
+            1,
+            "summary text unchanged when there is nothing to catalog"
         );
     }
 

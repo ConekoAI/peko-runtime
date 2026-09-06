@@ -40,9 +40,8 @@ use crate::session::ownership::{
     err_out_of_tree, err_run_active, err_self_mutation, in_subtree, CallerContext,
 };
 use crate::tools::builtin::session::{
-    BranchOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage, SessionInfo,
-    SessionRuntime, SessionSearchHit, SessionStatusResult, ToolCallInfo, ToolResultInfo,
-    UsageStats,
+    BranchOutcome, DeleteOutcome, HistoryMessage, SessionInfo, SessionRuntime, SessionSearchHit,
+    SessionStatusResult, ToolCallInfo, ToolResultInfo, UsageStats,
 };
 use peko_message::LlmMessage;
 use peko_subject::Subject;
@@ -159,6 +158,30 @@ impl SessionManagerRuntime {
         peko_session::path::resolve_reference(metas, caller_id, reference)
             .map(|id| id.to_string())
             .map_err(|e| self.refuse(e))
+    }
+
+    /// ADR-051: resolve + ownership-gate + load the target session's
+    /// stitched event list for the page read primitives
+    /// (`list_pages` / `read_page` / `search_pages`). Same read gate as
+    /// `get_history` / `get_status`: the caller must manage the
+    /// target's subtree.
+    async fn load_guarded_events(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Vec<peko_session::SessionEvent>> {
+        let (session_key, sessions_dir) = {
+            let mut manager = self.session_manager.write().await;
+            let (caller, metas) = self.caller_and_metas(&mut manager).await?;
+            let session_key = self.resolve_ref(&caller, &metas, session_key)?;
+            self.guard_tree(&caller, &session_key, &metas)?;
+            let sessions_dir = manager
+                .sessions_dir()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
+            (session_key, sessions_dir)
+        };
+        let storage = SessionStorage::new(sessions_dir);
+        storage.load_events(&session_key).await
     }
 }
 
@@ -301,6 +324,39 @@ impl SessionRuntime for SessionManagerRuntime {
             .collect();
 
         Ok(messages)
+    }
+
+    async fn list_pages(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Vec<peko_session::pages::SessionPage>> {
+        let events = self.load_guarded_events(session_key).await?;
+        Ok(peko_session::pages::list_pages(&events))
+    }
+
+    async fn read_page(
+        &self,
+        session_key: &str,
+        page: usize,
+        offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<String> {
+        let events = self.load_guarded_events(session_key).await?;
+        Ok(peko_session::pages::read_page(&events, page, offset, limit))
+    }
+
+    async fn search_pages(
+        &self,
+        session_key: &str,
+        query: &str,
+        max_results: usize,
+    ) -> anyhow::Result<Vec<peko_session::pages::SearchHit>> {
+        let events = self.load_guarded_events(session_key).await?;
+        Ok(peko_session::pages::search_pages(
+            &events,
+            query,
+            max_results,
+        ))
     }
 
     async fn get_status(&self, session_id: &str) -> anyhow::Result<SessionStatusResult> {

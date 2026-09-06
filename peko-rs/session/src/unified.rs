@@ -284,42 +284,6 @@ impl Session {
         }
     }
 
-    /// Peek the persisted compaction-request flag (agent-owned session
-    /// management, plan D2). Consumed by the compaction orchestrator,
-    /// which ORs it into the threshold decision.
-    ///
-    /// Reads through to the on-disk index (via
-    /// `MetadataController::peek_compact_requested`): the flag may have
-    /// been written moments ago by a different controller — the
-    /// session tool's adapter — so a cached read would hide it.
-    ///
-    /// Tolerant: a session without an index entry (or any metadata
-    /// read failure) reads as "no request" — the flag is advisory and
-    /// never fails a turn.
-    pub async fn peek_compact_request(&mut self) -> bool {
-        self.ensure_metadata_controller();
-        if let Some(ref mut controller) = self.metadata_controller {
-            return controller
-                .peek_compact_requested(&self.id)
-                .await
-                .unwrap_or(false);
-        }
-        false
-    }
-
-    /// Clear the persisted compaction-request flag. The orchestrator
-    /// calls this only when compaction genuinely starts, so a crashed
-    /// run doesn't lose the request (plan D2). Failures are logged,
-    /// not propagated.
-    pub async fn clear_compact_request(&mut self) {
-        self.ensure_metadata_controller();
-        if let Some(ref mut controller) = self.metadata_controller {
-            if let Err(e) = controller.set_compact_requested(&self.id, false).await {
-                tracing::warn!("failed to clear compact_requested for {}: {}", self.id, e);
-            }
-        }
-    }
-
     /// Read the persisted per-session compaction quota state
     /// (compaction audit fix #4). The compaction driver hydrates the
     /// per-run `BackgroundCompactor` from this at run start.
@@ -340,7 +304,7 @@ impl Session {
 
     /// Persist the per-session compaction quota state after a worker
     /// mutation (compaction audit fix #4). Failures are logged, not
-    /// propagated (mirrors [`Self::clear_compact_request`]).
+    /// propagated.
     pub async fn store_compaction_limits_state(
         &mut self,
         state: crate::compaction::CompactionLimitsState,
@@ -796,7 +760,7 @@ impl Session {
         if let Some(boundary_idx) = crate::message_conversion::latest_compaction_boundary(&events) {
             let mut messages = Vec::new();
             if let Some(summary) =
-                crate::message_conversion::compaction_summary_message(&events[boundary_idx])
+                crate::message_conversion::compaction_summary_message(&events, boundary_idx)
             {
                 messages.push(summary);
             }
@@ -875,6 +839,55 @@ impl Session {
         }
 
         Ok(None)
+    }
+
+    // ============================================================
+    // ADR-051: Compaction pages (read model)
+    // ============================================================
+
+    /// List this session's logical compaction pages (ADR-051 D1).
+    ///
+    /// Thin wrapper: loads the stitched event list and delegates to the
+    /// pure [`crate::pages::list_pages`] scan.
+    pub async fn list_pages(&self) -> Result<Vec<crate::pages::SessionPage>> {
+        let events = self.storage.load_events(&self.id).await?;
+        Ok(crate::pages::list_pages(&events))
+    }
+
+    /// Render one page as transcript text with line windowing +
+    /// per-call token cap (ADR-051 D3/D5). See [`crate::pages::read_page`].
+    pub async fn read_page(
+        &self,
+        page_number: usize,
+        offset: usize,
+        limit: usize,
+    ) -> Result<String> {
+        let events = self.storage.load_events(&self.id).await?;
+        Ok(crate::pages::read_page(&events, page_number, offset, limit))
+    }
+
+    /// Substring search across all pages including the live one
+    /// (ADR-051 D3). See [`crate::pages::search_pages`].
+    pub async fn search_pages(
+        &self,
+        pattern: &str,
+        max_results: usize,
+    ) -> Result<Vec<crate::pages::SearchHit>> {
+        let events = self.storage.load_events(&self.id).await?;
+        Ok(crate::pages::search_pages(&events, pattern, max_results))
+    }
+
+    /// ADR-051 D4: the `<archived-pages>` catalog footer for the
+    /// compaction summary message, derived from the currently stored
+    /// events. `None` when no page has been archived yet (boundary-less
+    /// session). The engine's compaction driver appends this to the
+    /// freshly installed summary message right after
+    /// [`Session::record_compaction`] persists the new boundary; the
+    /// resume path regenerates the identical text in
+    /// [`crate::message_conversion::compaction_summary_message`].
+    pub async fn archived_pages_footer(&self) -> Option<String> {
+        let events = self.storage.load_events(&self.id).await.ok()?;
+        crate::pages::render_page_catalog(&crate::pages::list_pages(&events))
     }
 
     // ============================================================
@@ -1913,10 +1926,23 @@ mod tests {
         assert!(text.contains("Summary of the old work"));
         assert!(text.contains("<read-files>\nsrc/main.rs\n</read-files>"));
         assert!(text.contains("<modified-files>\nsrc/lib.rs\n</modified-files>"));
+        // ADR-051 D4: the summary ends with the archived-pages catalog
+        // (page 1 = the segment this boundary closed).
+        assert!(text.contains("<archived-pages>"), "{text}");
+        assert!(
+            text.contains("This session has 1 archived page(s)"),
+            "{text}"
+        );
+        assert!(text.contains("- page 1 (compaction #1, ~"), "{text}");
+        assert!(text.contains(": \"Old question\""), "{text}");
+        assert!(text.contains("read_page / search_pages"), "{text}");
 
         // Pre-boundary messages are gone; post-boundary ones survive.
+        // (The scan starts AFTER the summary message: its ADR-051
+        // `<archived-pages>` footer legitimately quotes the archived
+        // page's first-user-message excerpt as the page title.)
         assert!(
-            !history.iter().any(|m| {
+            !history[1..].iter().any(|m| {
                 m.content.iter().any(|b| {
                     matches!(
                         b,
@@ -1983,6 +2009,88 @@ mod tests {
         assert!(first < second);
     }
 
+    /// ADR-051 D4: after two compactions, the resumed summary lists
+    /// both archived pages in order and the footer text is identical
+    /// to `pages::render_page_catalog` over the stored events (the
+    /// live path appends the same helper's output).
+    #[tokio::test]
+    async fn test_load_history_multi_compaction_lists_all_pages() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-resume-two-compactions";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("first task please").await.unwrap();
+        session
+            .record_compaction("summary one", 1, 100, 10, 1, None)
+            .await
+            .unwrap();
+        session.add_user("second task please").await.unwrap();
+        session
+            .record_compaction("summary two", 1, 200, 20, 2, None)
+            .await
+            .unwrap();
+        session.add_user("live question").await.unwrap();
+
+        let history = session.load_history().await.unwrap();
+        let text = first_text(&history[0]);
+        assert!(text.starts_with("[Conversation Summary - 1 messages]:\nsummary two"));
+        assert!(
+            text.contains("This session has 2 archived page(s)"),
+            "{text}"
+        );
+        assert!(text.contains("- page 1 (compaction #1, ~"), "{text}");
+        assert!(text.contains(": \"first task please\""), "{text}");
+        assert!(text.contains("- page 2 (compaction #2, ~"), "{text}");
+        assert!(text.contains(": \"second task please\""), "{text}");
+        assert!(!text.contains("live question"), "{text}");
+
+        // Identity property: resume footer == catalog over stored events.
+        let pages = session.list_pages().await.unwrap();
+        let footer = crate::pages::render_page_catalog(&pages).unwrap();
+        assert!(
+            text.ends_with(&footer),
+            "summary must end with the derived catalog: {text}"
+        );
+    }
+
+    /// ADR-051 D4: `Session::archived_pages_footer` is `None` before
+    /// the first compaction and `Some` afterwards — the live-path
+    /// entry point the compaction driver calls.
+    #[tokio::test]
+    async fn test_archived_pages_footer_lifecycle() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-footer-lifecycle";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("q1").await.unwrap();
+        assert_eq!(session.archived_pages_footer().await, None);
+
+        session
+            .record_compaction("summary one", 1, 100, 10, 1, None)
+            .await
+            .unwrap();
+        let footer = session.archived_pages_footer().await.unwrap();
+        assert!(footer.contains("- page 1 (compaction #1, ~"), "{footer}");
+    }
+
     #[tokio::test]
     async fn test_load_history_without_compaction_unchanged() {
         use tempfile::TempDir;
@@ -2045,9 +2153,15 @@ mod tests {
         assert!(crate::message_conversion::is_compaction_boundary_message(
             &history[0]
         ));
+        // ADR-051 D4: the summary now ends with the derived
+        // `<archived-pages>` footer (page 1 = the one this boundary
+        // just closed). Pin via the shared helper so the resume text
+        // and the live-path text stay identical by construction.
+        let stored = session.list_pages().await.unwrap();
+        let footer = crate::pages::render_page_catalog(&stored).unwrap();
         assert_eq!(
             first_text(&history[0]),
-            "[Conversation Summary - 1 messages]:\neverything so far"
+            format!("[Conversation Summary - 1 messages]:\neverything so far\n\n{footer}")
         );
 
         // The engine runs `repair_history` on the loaded list; a lone
@@ -2100,11 +2214,16 @@ mod tests {
         let history = session.load_history().await.unwrap();
         assert_eq!(history.len(), 2);
         let text = first_text(&history[0]);
-        assert_eq!(
-            text, "[Conversation Summary - 0 messages]:\npartial summary",
+        assert!(
+            text.starts_with("[Conversation Summary - 0 messages]:\npartial summary"),
             "missing fields fall back to defaults, got: {text}"
         );
         assert!(!text.contains("<read-files>"));
+        // ADR-051 D4: even a malformed boundary closes page 1, so the
+        // footer lists it (no compaction_number on this legacy-shaped
+        // detail → no "#n" annotation).
+        assert!(text.contains("<archived-pages>"), "{text}");
+        assert!(text.contains("- page 1 (~"), "{text}");
         assert_eq!(first_text(&history[1]), "new");
     }
 }

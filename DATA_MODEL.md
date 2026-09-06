@@ -1079,6 +1079,19 @@ live compaction path and the resume path render it from
 `details.user_messages`, so the reconstructed summary message is
 identical after a restart.
 
+The `<archived-pages>` footer (ADR-051, 2026-09-05) is appended after
+the `<user-messages>` block whenever the session has at least one
+compaction-archived page. It lists one line per page — page number,
+compaction number, chars/4 token estimate, first-user-message title
+excerpt — plus a pointer to the `session` tool's `read_page` /
+`search_pages` actions. The footer is **derived, never stored**: it is
+not part of the boundary event's `detail`; both the live path (the
+compaction driver appends it to the installed summary message after the
+boundary is recorded) and the resume path (`compaction_summary_message`)
+regenerate it by scanning the stored events
+(`peko_session::pages::render_page_catalog`), so the two sites produce
+identical text and the catalog is always current.
+
 ---
 
 ### 5.8 Agent-Owned Session Management (2026-08-09)
@@ -1095,7 +1108,6 @@ both = `false`):
 | Field | Type | Description |
 |-------|------|-------------|
 | `archived` | bool | Hidden from `session list` unless `include_archived: true`; refuses resume/compact until unarchived |
-| `compact_requested` | bool | Persisted compaction request (set by the `Agent` tool's `compact` action). The orchestrator ORs it into the threshold decision at the session's next iteration/run and clears it only when compaction genuinely starts, so a crashed run doesn't lose the request |
 | `standing` | bool | Exempt from maintenance pruning (2026-08-15): a standing session's transcript is durable regardless of idle age. The trunk (`find_trunk_session(metas)`) and `archived` sessions are prune-exempt by rule; `standing` is the flag for standing children |
 | `privileged` | bool | Whole-store ownership-guard reach for the session's caller (sprint 2 Phase 5, 2026-08-17) despite having a parent — tree membership is unchanged. Set only for the principal owner's peer child (`/local-user`); see "Peer-child provisioning" in §5.10 |
 | `slug` | string \| null | Per-parent-unique path segment for `/a/b` addressing (2026-08-15, Phase 1b). `#[serde(default, skip_serializing_if = "Option::is_none")]` on the entry. See "Session path addressing" below |

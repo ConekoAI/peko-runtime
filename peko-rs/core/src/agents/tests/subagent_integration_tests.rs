@@ -35,7 +35,7 @@ fn sid(literal: &str) -> String {
 ///
 /// Implemented as a `macro_rules!` (not a `fn`) so the result is a
 /// `&'static str` — the runtime entry points (`resume_and_execute`,
-/// `request_compaction`, `validate_context_parent`, ...) take
+/// `compact_and_execute`, `validate_context_parent`, ...) take
 /// `&str` and the v5-derive + path-prefix work is fully evaluated
 /// at compile time.
 macro_rules! path {
@@ -1720,8 +1720,9 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
 }
 
 // ---------------------------------------------------------------------------
-// Round 7: `request_compaction` (Agent tool `action = "compact"`) — guards
-// + happy path. Returns immediately after flagging; no LLM call.
+// `compact_and_execute` (Agent tool `action = "compact"`, 2026-09-05) —
+// guards + happy path. Starts a continuation run on the target right
+// away; the run force-compacts first, then processes the prompt.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1737,7 +1738,13 @@ async fn compact_refuses_nonexistent_target() {
         peko_subject::PrincipalId::generate(),
     );
     let err = executor
-        .request_compaction(path!("no-such-session"), &sid("root-sess"))
+        .compact_and_execute(
+            path!("no-such-session"),
+            "task",
+            &sid("root-sess"),
+            ExecutionConfig::default(),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -1770,7 +1777,13 @@ async fn compact_refuses_self_and_ancestor() {
 
     // Self: the engine compacts the caller's own session automatically.
     let err = executor
-        .request_compaction(path!("spawn-a"), &sid("spawn-a"))
+        .compact_and_execute(
+            path!("spawn-a"),
+            "task",
+            &sid("spawn-a"),
+            ExecutionConfig::default(),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
@@ -1782,7 +1795,7 @@ async fn compact_refuses_self_and_ancestor() {
     // only path that resolves to the trunk (root-sess carries no
     // slug in the canonical shape).
     let err = executor
-        .request_compaction("/", &sid("spawn-a"))
+        .compact_and_execute("/", "task", &sid("spawn-a"), ExecutionConfig::default(), None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
@@ -1811,7 +1824,13 @@ async fn compact_refuses_archived_target() {
         peko_subject::PrincipalId::generate(),
     );
     let err = executor
-        .request_compaction(path!("spawn-a"), &sid("root-sess"))
+        .compact_and_execute(
+            path!("spawn-a"),
+            "task",
+            &sid("root-sess"),
+            ExecutionConfig::default(),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -1821,7 +1840,7 @@ async fn compact_refuses_archived_target() {
 }
 
 #[tokio::test]
-async fn compact_happy_path_flags_session_without_trigger_requirement() {
+async fn compact_happy_path_runs_session_without_trigger_requirement() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
     // Unlike resume, compact does NOT require trigger == "spawn" — a
@@ -1842,32 +1861,30 @@ async fn compact_happy_path_flags_session_without_trigger_requirement() {
         5,
         peko_subject::PrincipalId::generate(),
     );
-    let outcome = executor
-        .request_compaction(path!("branch-a"), &sid("root-sess"))
+    // No provider is wired into the test executor, so the run completes
+    // immediately via the "no provider configured" shortcut — enough to
+    // prove the continuation run launches on the target and its outcome
+    // comes back.
+    let view = executor
+        .compact_and_execute(
+            path!("branch-a"),
+            "compact then summarize",
+            &sid("root-sess"),
+            ExecutionConfig::default(),
+            None,
+        )
         .await
         .unwrap();
-    // Sprint 6: request_compaction resolves the target through
-    // `SessionId::from`, so the returned id is the v5 UUID form.
-    assert_eq!(outcome.session_id, sid("branch-a"));
-    assert!(
-        outcome.message.contains("no completion signal") || outcome.message.contains("next run"),
-        "outcome must be honest about deferred semantics: {}",
-        outcome.message
-    );
 
-    let metas = session_manager
-        .write()
-        .await
-        .list_all_sessions(false)
-        .await
-        .unwrap();
-    let target = metas
-        .iter()
-        .find(|m| m.session_id.to_string() == sid("branch-a"))
-        .expect("target metadata present");
+    assert_eq!(view.task, "compact then summarize");
+    // Sprint 6: compact_and_execute resolves the target through
+    // `resolve_reference`, so the registered child key is the v5 UUID
+    // form.
+    assert_eq!(view.child_session_id.as_deref(), Some(sid("branch-a").as_str()));
     assert!(
-        target.compact_requested,
-        "compact must set the persisted compact_requested flag"
+        matches!(view.status, AsyncTaskStatus::Completed { .. }),
+        "the compact run must complete, got: {:?}",
+        view.status
     );
 }
 

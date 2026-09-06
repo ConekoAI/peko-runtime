@@ -769,17 +769,17 @@ oversized transcripts page in place. New/changed public items:
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
 | `SessionRuntime` v2 (adds `search_sessions`, `branch_session`, `rename_session`, `set_archived`, `delete_session`, `request_compaction`; `list_sessions` gains `include_archived`) | `tools::builtin::session` | ✅ Extended | Session tool port trait |
-| `SessionInfo` (+`archived`, +`run_active`), `SessionSearchHit`, `BranchOutcome`, `DeleteOutcome`, `CompactRequestOutcome` | `tools::builtin::session` | ✅ New | Session tool DTOs |
+| `SessionInfo` (+`archived`, +`run_active`), `SessionSearchHit`, `BranchOutcome`, `DeleteOutcome` | `tools::builtin::session` | ✅ New | Session tool DTOs (`CompactRequestOutcome` removed 2026-09-05 with the immediate-compact rework) |
 | `ownership::{CallerContext, caller_context, in_subtree, descendants_of, err_*}` | `session::ownership` | ✅ New | Ownership tree + guard refusals (shared by both tools) |
-| `SessionManager::{set_archived, set_compact_requested, set_session_title, delete_session_by_id}` | `peko_session::manager` | ✅ New | Controller passthroughs |
+| `SessionManager::{set_archived, set_session_title, delete_session_by_id}` | `peko_session::manager` | ✅ New | Controller passthroughs (`set_compact_requested` removed 2026-09-05) |
 | `SessionStorage::search_transcripts` / `TranscriptSearchHit` | `peko_session::jsonl` | ✅ New | Case-insensitive transcript substring search |
 | `RotationOutcome::Paged` / `page_numbers` / `page_path` | `peko_session::jsonl` | ✅ New | Stable-id transcript paging (`<id>.N.jsonl` pages, transparent read-path stitching) |
-| `SessionCore`/`SessionView::{peek_compact_request, clear_compact_request}` (defaulted) | `peko_session::session_core` | ✅ Extended | Forced-compaction flag port (plan D2) |
-| `SessionIndex::get_uncached` | `peko_session::index` | ✅ New | Cache-bypassing entry read (mid-run flag peek) |
-| `MetadataController::{set_archived, set_compact_requested, peek_compact_requested}` | `peko_session::metadata_controller` | ✅ New | Flag writers + read-through peek |
-| `SubagentExecutor::{resume_and_execute, resume_and_wait, request_compaction, validate_context_parent}` | `agents::subagent_executor` | ✅ New | Persistent subagents (`Agent` `action:"resume"`) + deferred compaction flagging (`action:"compact"`) |
+| `SessionCore`/`SessionView::{peek_compact_request, clear_compact_request}` (defaulted) | `peko_session::session_core` | ❌ Removed (2026-09-05) | Forced-compaction flag port (plan D2) — replaced by the run-scoped `force_compact` flag |
+| `SessionIndex::get_uncached` | `peko_session::index` | ✅ New | Cache-bypassing entry read (was the mid-run flag peek; remaining callers are the peer-child provisioning tests) |
+| `MetadataController::{set_archived}` | `peko_session::metadata_controller` | ✅ New | Flag writers (`set_compact_requested` / `peek_compact_requested` removed 2026-09-05) |
+| `SubagentExecutor::{resume_and_execute, resume_and_wait, compact_and_execute, validate_context_parent}` | `agents::subagent_executor` | ✅ New | Persistent subagents (`Agent` `action:"resume"`) + immediate compact-and-continue (`action:"compact"`; replaced `request_compaction` 2026-09-05) |
 | `SpawnRequest` (+`resume_session`, +`caller_session_key`) | `tools::builtin::messaging` | ✅ Extended | Agent tool port input |
-| `SubagentRuntime::request_compaction` | `tools::builtin::messaging` | ✅ New | Agent tool compact-action port method |
+| `SubagentRuntime::compact_and_execute` | `tools::builtin::messaging` | ✅ New | Agent tool compact-action port method (replaced `request_compaction` 2026-09-05) |
 | `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `extensions::framework::async_exec::executor` | ✅ New | Subagent active-run detection |
 
 ### Agent–Session Paradigm Sprint (2026-08-15)
@@ -953,6 +953,29 @@ on `feat/agent-session-paradigm`:
 - Migrating pre-existing on-disk sessions — prelaunch posture, no on-disk sessions exist.
 - Multi-principal trunk lookup — today there's exactly one principal per runtime instance.
 - Hash-keyed map optimization (`HashMap<String, ...>` → `HashMap<Uuid, ...>`) — opportunistic, not audited.
+
+### ADR-051 (2026-09-05) — compaction pages as an addressable archive
+
+Prototype on branch `session-pages`; see
+`docs/architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md`.
+Pages are a pure read model over the stitched event log — the on-disk
+format is unchanged. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `peko_session::pages` (`list_pages`, `read_page`, `search_pages`, `is_compaction_boundary`, `READ_PAGE_MAX_TOKENS`) | `peko_session::pages` | ✅ New | Logical compaction-page read model: segmentation at compaction boundaries, Read-style windowed transcript rendering with a hard per-call token cap, substring search across pages |
+| `SessionPage` / `SearchHit` (`pages::SearchHit`) | `peko_session::pages` | ✅ New | Page catalog entry + page-tagged search hit DTOs (serializable) |
+| `Session::{list_pages, read_page, search_pages}` | `peko_session::unified` | ✅ New | Thin wrappers: `load_events` + delegate to the pure `pages` functions |
+| `SessionRuntime::{list_pages, read_page, search_pages}` | `tools::builtin::session` | ✅ Extended | Session tool port: page catalog / windowed page render / page search. Production adapter resolves + ownership-gates (same read gate as `get_history`), then delegates to `peko_session::pages` |
+| `SessionTool` actions `list_pages` / `read_page` / `search_pages` (10 actions total) | `tools::builtin::session::tool` | ✅ Extended | Agent-facing page retrieval, gated by the existing `tool:session` grant — no new capabilities |
+| `pages::render_page_catalog` | `peko_session::pages` | ✅ New | `<archived-pages>` footer renderer shared by the live + resume paths (derived, never stored) |
+| `compaction_summary_message(events, boundary_idx)` | `peko_session::message_conversion` | ⚠️ Changed | Signature takes the full event list + boundary index (was `&SessionEvent`) so the resume path can enumerate pages for the footer |
+| `COMPACTION_SUMMARY_PREFIX` | `peko_session::message_conversion` | ✅ New | Shared `"[Conversation Summary"` prefix for both summary construction sites + the driver's summary-message locator |
+| `SessionCore`/`SessionView::archived_pages_footer` (defaulted) | `peko_session::session_core` | ✅ Extended | Live-path footer source: the compaction driver calls it right after `record_compaction` and appends the result to the installed summary message |
+| `CompactionDriver::with_force_compact` / `force_compact_once` | `peko_engine::compaction_driver` | ✅ New | Run-scoped forced compaction: consumed on the first `check_and_compact`, fires with `CompactionPhase::StandaloneTurn`, bypassing the threshold / cooldown / consecutive-auto gates |
+| `AgenticLoop::with_force_compact` / `Agent::with_force_compact` / `ExecutionConfig.force_compact` | `peko_engine::agentic_loop`, `agents::agent`, `agents::subagent_executor` | ✅ New | Carrier chain for the compact action's force flag (config → run closure → child `Agent` → loop → driver) |
+| `SubagentExecutor::compact_and_execute` / `SubagentRuntime::compact_and_execute` | `agents::subagent_executor`, `tools::builtin::messaging` | ✅ New | `Agent` `action:"compact"` — starts a continuation run that force-compacts first, then processes the prompt; guard stack is `resume_preflight` with `AttachKind::Compact` (no spawned-only gate) |
+| `SessionEntry.compact_requested` + `SessionManager`/`MetadataController`/`SessionCore` flag methods + `CompactRequestOutcome` | `peko_session`, `tools::builtin::session` | ❌ Removed | The persisted flag-and-defer machinery; old `sessions.json` files carrying the field still deserialize (no `deny_unknown_fields`) |
 
 ---
 

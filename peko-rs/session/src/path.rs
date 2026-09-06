@@ -412,7 +412,6 @@ mod tests {
             peer_type: None,
             peer_id: None,
             archived: false,
-            compact_requested: false,
             standing: false,
             privileged: false,
             slug: slug.map(String::from),

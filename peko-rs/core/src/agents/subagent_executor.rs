@@ -125,6 +125,14 @@ pub struct ExecutionConfig {
     /// match the declared one. `None` skips the check (callers that
     /// don't know the type).
     pub agent: Option<String>,
+    /// Run-scoped forced compaction (Agent tool `action = "compact"`,
+    /// 2026-09-05): when true, the child run's compaction driver fires
+    /// a `CompactionPhase::StandaloneTurn` compaction on iteration 1
+    /// before the run's task is processed. Threaded like
+    /// `model_override` (config → run closure →
+    /// `execute_subagent_task` → `Agent::with_force_compact` →
+    /// `AgenticLoop::with_force_compact`). Default false.
+    pub force_compact: bool,
 }
 
 impl Default for ExecutionConfig {
@@ -138,6 +146,7 @@ impl Default for ExecutionConfig {
             model_override: None,
             slug: None,
             agent: None,
+            force_compact: false,
         }
     }
 }
@@ -173,8 +182,9 @@ struct SubagentRunSpec {
 
 /// The output of [`SubagentExecutor::resume_preflight`]: everything
 /// the registration step needs once the resume guard stack has
-/// passed. Shared by the final-only (`resume_and_execute`) and
-/// streaming (`resume_streaming`) resume paths.
+/// passed. Shared by the final-only (`resume_and_execute`), streaming
+/// (`resume_streaming`), and compact (`compact_and_execute`)
+/// re-attach paths.
 struct ResumePreflight {
     run_id: String,
     /// The path-resolved canonical target session id.
@@ -182,6 +192,18 @@ struct ResumePreflight {
     /// The opened existing session (prior history attached).
     child_base: Arc<RwLock<peko_session::Session>>,
     child_depth: u32,
+}
+
+/// Which re-attach flavour a preflight run is for (2026-09-05). Drives
+/// the guard error wording and whether the spawned-only gate applies:
+/// `resume` re-attaches only to spawned subagent sessions, while
+/// `compact` targets any session in the caller's tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachKind {
+    /// `Agent` tool `action = "resume"`.
+    Resume,
+    /// `Agent` tool `action = "compact"`.
+    Compact,
 }
 
 /// Executor for subagent tasks
@@ -883,7 +905,12 @@ impl SubagentExecutor {
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         let pre = self
-            .resume_preflight(resume_session_id, parent_session_key, &config)
+            .resume_preflight(
+                resume_session_id,
+                parent_session_key,
+                &config,
+                AttachKind::Resume,
+            )
             .await?;
 
         info!(
@@ -946,7 +973,12 @@ impl SubagentExecutor {
         };
 
         let pre = self
-            .resume_preflight(resume_session_id, parent_session_key, &config)
+            .resume_preflight(
+                resume_session_id,
+                parent_session_key,
+                &config,
+                AttachKind::Resume,
+            )
             .await?;
 
         info!(
@@ -982,24 +1014,31 @@ impl SubagentExecutor {
         })
     }
 
-    /// The full resume guard stack + session open shared by
-    /// [`Self::resume_and_execute`] (final-only) and
-    /// [`Self::resume_streaming`] (live event stream) so the two can
-    /// never drift. Runs every D4 guard from the shared ownership
-    /// module (see inline comments) plus the spawn-time cost
-    /// pre-flight — a resume is still LLM traffic against the
-    /// principal's meter. The caller's current session is
-    /// `parent_session_key` (the caller's session id on the
-    /// production path).
+    /// The full re-attach guard stack + session open shared by
+    /// [`Self::resume_and_execute`] (final-only),
+    /// [`Self::resume_streaming`] (live event stream), and
+    /// [`Self::compact_and_execute`] so the three can never drift.
+    /// Runs every D4 guard from the shared ownership module (see
+    /// inline comments) plus the spawn-time cost pre-flight — a
+    /// re-attach is still LLM traffic against the principal's meter.
+    /// The caller's current session is `parent_session_key` (the
+    /// caller's session id on the production path).
+    ///
+    /// `kind` selects the guard wording and the spawned-only gate:
+    /// [`AttachKind::Resume`] refuses non-spawn targets
+    /// (`err_resume_not_spawned`); [`AttachKind::Compact`] deliberately
+    /// skips that gate — compact targets any in-tree session.
     async fn resume_preflight(
         &self,
         resume_session_id: &str,
         parent_session_key: &str,
         config: &ExecutionConfig,
+        kind: AttachKind,
     ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
-            caller_context, err_out_of_tree, err_resume_archived, err_resume_into_own_run,
-            err_resume_not_spawned, err_run_active, in_subtree,
+            caller_context, err_compact_ancestor, err_compact_archived, err_out_of_tree,
+            err_resume_archived, err_resume_into_own_run, err_resume_not_spawned, err_run_active,
+            in_subtree,
         };
 
         // Same spawn-time cost pre-flight as the spawn path — a resume
@@ -1044,17 +1083,24 @@ impl SubagentExecutor {
                 )
             })?;
         // Guard: cannot run inside the caller's own session or an
-        // ancestor (would re-enter the caller's own run).
+        // ancestor (would re-enter the caller's own run). For compact
+        // the wording notes the engine compacts the caller's own
+        // lineage automatically.
         if resume_session_id == caller.current_session_id
             || caller
                 .ancestors
                 .iter()
                 .any(|a| a.as_str() == resume_session_id)
         {
-            return Err(err_resume_into_own_run(&resume_session_id));
+            return Err(match kind {
+                AttachKind::Resume => err_resume_into_own_run(&resume_session_id),
+                AttachKind::Compact => err_compact_ancestor(&resume_session_id),
+            });
         }
         // Guard: only spawned subagent sessions can be re-attached.
-        if target_meta.trigger != "spawn" {
+        // Compact deliberately skips this gate — it targets any session
+        // in the caller's tree (branches included).
+        if kind == AttachKind::Resume && target_meta.trigger != "spawn" {
             return Err(err_resume_not_spawned(&resume_session_id));
         }
         // Guard: subtree callers stay inside their subtree (principal-
@@ -1068,7 +1114,10 @@ impl SubagentExecutor {
         }
         // Guard: archived sessions have no business running.
         if target_meta.archived {
-            return Err(err_resume_archived(&resume_session_id));
+            return Err(match kind {
+                AttachKind::Resume => err_resume_archived(&resume_session_id),
+                AttachKind::Compact => err_compact_archived(&resume_session_id),
+            });
         }
         // Guard: refuse while a run is in flight for the target.
         // Mechanism: subagent runs do NOT hold `InboxRegistry` run
@@ -1132,96 +1181,72 @@ impl SubagentExecutor {
         })
     }
 
-    /// Flag a session for engine-driven compaction at its next run
-    /// (`Agent` tool `action = "compact"`). Returns immediately after
-    /// setting the persisted `compact_requested` flag — no LLM call,
-    /// no completion signal; the target's next resume reflects the
-    /// compacted history.
+    /// Compact a session NOW and continue it with `task` in one run
+    /// (`Agent` tool `action = "compact"`, 2026-09-05 — replaces the
+    /// retired flag-and-defer `request_compaction`). Starts a
+    /// continuation run on the target right away; the run's compaction
+    /// driver force-compacts first (run-scoped flag,
+    /// `CompactionPhase::StandaloneTurn`), then processes `task`.
+    /// Blocks until the run reaches a terminal state and returns its
+    /// view, like [`Self::resume_and_wait`]; the framework's 5-min
+    /// auto-detach applies unchanged.
     ///
-    /// Guards mirror [`resume_and_execute`](Self::resume_and_execute)
-    /// minus the spawn-trigger requirement (compact targets any session
-    /// in the caller's tree) and plus the self/ancestor refusal
-    /// (`err_compact_ancestor`) — the engine compacts the caller's own
-    /// lineage automatically. This deliberately diverges from
-    /// `SessionManagerRuntime::request_compaction`
-    /// (`session/session_runtime_impl.rs`), which allows compacting the
-    /// caller's own current session; the Agent path must not.
-    pub async fn request_compaction(
+    /// Guards are the shared re-attach stack
+    /// ([`Self::resume_preflight`], [`AttachKind::Compact`]) minus the
+    /// spawned-only requirement — compact targets any session in the
+    /// caller's tree — with compact-specific wording for the
+    /// self/ancestor refusal (`err_compact_ancestor` — the engine
+    /// compacts the caller's own lineage automatically).
+    pub async fn compact_and_execute(
         &self,
         target: &str,
-        caller_session_key: &str,
-    ) -> Result<crate::tools::builtin::session::CompactRequestOutcome> {
-        use crate::session::ownership::{
-            caller_context, err_compact_ancestor, err_compact_archived, err_out_of_tree,
-            err_run_active, in_subtree,
+        task: &str,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<SubagentRunView> {
+        // The compact run ALWAYS arms the force-compact flag — that is
+        // the definition of the action; callers cannot opt out.
+        let config = ExecutionConfig {
+            force_compact: true,
+            ..config
         };
 
-        let (caller, metas) = {
-            let mut manager = self.session_manager.write().await;
-            let metas = manager.list_all_sessions(false).await?;
-            (caller_context(caller_session_key, &metas), metas)
-        };
-
-        // Resolve the LLM-facing slug path to a canonical session id
-        // at the runtime boundary. Same rationale as
-        // `resume_preflight`: bypassing `resolve_reference` and using
-        // `SessionId::from`'s v5 fallback would silently misroute a
-        // slug path to a deterministic UUID that doesn't match any
-        // metadata (PR review finding B2).
-        let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
-        let resolved = peko_session::path::resolve_reference(&metas, caller_id, target)?;
-        let target = resolved.as_str();
-
-        // Guard: target must exist. Defense-in-depth — same rationale
-        // as in `resume_preflight`.
-        let target_meta = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == target)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "session '{target}' not found — pass a slug path from the session \
-                     tool's list (`path` field)"
-                )
-            })?;
-        // Guard: the caller's own session or an ancestor compacts
-        // automatically — refuse.
-        if target == caller.current_session_id
-            || caller.ancestors.iter().any(|a| a.as_str() == target)
-        {
-            return Err(err_compact_ancestor(&target));
-        }
-        // Guard: subtree callers stay inside their subtree (principal-
-        // level callers pass automatically).
-        if !caller.is_base && !caller.privileged && !in_subtree(&caller, &target, &metas) {
-            return Err(err_out_of_tree(&target, &caller.current_session_id));
-        }
-        // Guard: archived sessions have no future run to consume the
-        // request.
-        if target_meta.archived {
-            return Err(err_compact_archived(&target));
-        }
-        // Guard: refuse while a run is in flight for the target (same
-        // registry source of truth as the resume path).
-        {
-            let registry = self.registry().read().await;
-            if registry.has_active_subagent_run_for_child(&target) {
-                return Err(err_run_active(&target));
-            }
-        }
-
-        self.session_manager
-            .read()
-            .await
-            .set_compact_requested(&target, true)
+        let pre = self
+            .resume_preflight(target, parent_session_key, &config, AttachKind::Compact)
             .await?;
-        Ok(crate::tools::builtin::session::CompactRequestOutcome {
-            session_id: target.clone(),
-            message: "Compaction scheduled — the engine summarizes the session at its next \
-                      run. There is no completion signal; the next resume reflects the \
-                      compacted history."
-                .to_string(),
-        })
+
+        info!(
+            "Compacting subagent session: run_id={} session={} depth={}",
+            pre.run_id, pre.session_id, pre.child_depth
+        );
+
+        let run_id = self
+            .register_subagent_run(SubagentRunSpec {
+                run_id: pre.run_id,
+                task: task.to_string(),
+                parent_session_key: parent_session_key.to_string(),
+                // No spawn overlay exists for a compacted session —
+                // register with the plain session id in both slots.
+                child_session_key: pre.session_id.clone(),
+                child_session_id: pre.session_id,
+                child_base: pre.child_base,
+                child_depth: pre.child_depth,
+                config: config.clone(),
+                parent_cancel,
+                stream_events: None,
+            })
+            .await?;
+
+        // Mirror the streaming resume waiter's unlimited-run mapping:
+        // `timeout_seconds == 0` means the run never times out, so the
+        // wait must not fire either.
+        let wait_secs = if config.timeout_seconds == 0 {
+            u64::MAX / 2
+        } else {
+            config.timeout_seconds
+        };
+        self.wait_for_run(&run_id, wait_secs).await
     }
 
     /// Validate an explicitly-provided `parent_session_key` (spawn
@@ -1249,7 +1274,7 @@ impl SubagentExecutor {
         let metas = manager.list_all_sessions(false).await?;
 
         // Resolve the LLM-facing slug path to a canonical session id.
-        // Same rationale as `resume_preflight` / `request_compaction`:
+        // Same rationale as `resume_preflight` / `compact_and_execute`:
         // `SessionId::from`'s v5 fallback would silently misroute a
         // slug path to a deterministic UUID that doesn't match any
         // metadata (PR review finding B2).
@@ -1356,6 +1381,9 @@ impl SubagentExecutor {
         // `execute_subagent_task` (task-locals don't cross
         // `tokio::spawn`, but plain owned Strings do).
         let model_override_clone = config.model_override.clone();
+        // 2026-09-05: the compact action's run-scoped force-compact
+        // flag; cloned into the task closure like `model_override`.
+        let force_compact_for_closure = config.force_compact;
         // Sprint 2 Phase 6: the streaming resume path's event sink.
         // Moved into the task closure; `None` keeps the final-only
         // execution path.
@@ -1429,6 +1457,7 @@ impl SubagentExecutor {
                         &system_prompt,
                         &task_message,
                         model_override_clone, // Phase 1
+                        force_compact_for_closure,
                         provider_clone,
                         agent_config_clone,
                         session_manager_clone,
@@ -1780,6 +1809,11 @@ async fn execute_subagent_task(
     // `SpecGate::check` against the new spec before handing the
     // provider to `Agent::new_with_shared_executor`.
     model_override: Option<String>,
+    // 2026-09-05: run-scoped force-compact flag (Agent tool
+    // `action = "compact"`). When true, the child Agent's loop
+    // force-compacts the session on iteration 1
+    // (`CompactionPhase::StandaloneTurn`) before processing the task.
+    force_compact: bool,
     provider: Option<Arc<peko_providers::Provider>>,
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
@@ -1973,6 +2007,12 @@ async fn execute_subagent_task(
     // `with_caller_principal_did`, for deeper descendants too.
     subagent = subagent.with_caller_principal_did(caller_principal_did);
 
+    // 2026-09-05: the compact action's continuation run force-compacts
+    // on iteration 1 before processing the task.
+    if force_compact {
+        subagent = subagent.with_force_compact(true);
+    }
+
     // Sprint 2 Phase 7: bind the daemon-shared inbox registry so the
     // child loop drains steering queued by ingress paths (the
     // `PrincipalManager` / IPC serial-queue fallback) into this child
@@ -2001,6 +2041,25 @@ async fn execute_subagent_task(
 
     // Clone child_session for potential recovery after execution
     let child_session_for_recovery = child_session.clone();
+
+    // 2026-09-05: the compact run must compact the REAL transcript.
+    // The subagent path normally passes `history: None` (the loop's
+    // in-memory context starts fresh from the task prompt — fine for
+    // task-oriented spawns), but a forced compaction over a 2-message
+    // slice would hit the worker's `<4 messages → NotNeeded` soft-fail
+    // and compact nothing. Load the session's stored history so the
+    // driver compacts the full conversation, then continues with the
+    // prompt against the compacted context.
+    let history = if force_compact {
+        let loaded = child_session_for_recovery
+            .read()
+            .await
+            .load_history()
+            .await?;
+        Some(loaded)
+    } else {
+        None
+    };
 
     // F39: subagent runs inside `QuotaScope::with(parent_quota_meter, ...)`
     // so the spawned `tokio::task`'s `MeteredProvider::from_current_scope`
@@ -2047,7 +2106,7 @@ async fn execute_subagent_task(
             &combined_prompt,
             Vec::new(), // subagents carry no recalled context
             child_session,
-            None, // history: None => full system prompt (with tools) is prepended
+            history.clone(), // compact runs load the transcript (see above)
             None, // caller_id: child turns attribute at the principal boundary
             move |event| sink(event),
             cancel,
@@ -2057,7 +2116,7 @@ async fn execute_subagent_task(
             &combined_prompt,
             Vec::new(), // subagents carry no recalled context
             child_session,
-            None, // history: None => full system prompt (with tools) is prepended
+            history, // compact runs load the transcript (see above)
             cancel,
             |_event| {
                 // Non-streaming: ignore events

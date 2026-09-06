@@ -741,10 +741,16 @@ mod tests {
             "summary must match the live-compaction shape, got: {summary_text}"
         );
 
-        // The pre-compaction transcript must not replay.
+        // The pre-compaction transcript must not replay. (The summary
+        // at msgs[1] is excluded from the scan: its ADR-051
+        // `<archived-pages>` footer legitimately quotes the archived
+        // page's first-user-message excerpt — "Old question" — as the
+        // page title.)
         let all_text: String = msgs
             .iter()
-            .flat_map(|m| m.content.iter())
+            .enumerate()
+            .filter(|(i, _)| *i != 1)
+            .flat_map(|(_, m)| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.as_str()),
                 _ => None,

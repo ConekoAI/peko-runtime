@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::{
-    BranchOutcome, CompactRequestOutcome, DeleteOutcome, HistoryMessage, SessionInfo,
-    SessionRuntime, SessionSearchHit, SessionStatusResult, SharedSessionRuntime,
+    BranchOutcome, DeleteOutcome, HistoryMessage, SessionInfo, SessionRuntime, SessionSearchHit,
+    SessionStatusResult, SharedSessionRuntime,
 };
 
 /// In-memory session cache for testing and placeholder use.
@@ -32,6 +32,10 @@ pub struct SessionCache {
     sessions: Mutex<HashMap<String, SessionInfo>>,
     histories: Mutex<HashMap<String, Vec<HistoryMessage>>>,
     statuses: Mutex<HashMap<String, SessionStatusResult>>,
+    /// Raw stored events, seeded per session by `add_events` for the
+    /// ADR-051 page primitives (which are pure scans over the event
+    /// list). Sessions without seeded events read as empty.
+    events: Mutex<HashMap<String, Vec<peko_session::SessionEvent>>>,
     /// Monotonic counter for deterministic branch ids in tests.
     branch_counter: Mutex<usize>,
 }
@@ -45,6 +49,7 @@ impl SessionCache {
             sessions: Mutex::new(HashMap::new()),
             histories: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
+            events: Mutex::new(HashMap::new()),
             branch_counter: Mutex::new(0),
         }
     }
@@ -71,6 +76,14 @@ impl SessionCache {
             .insert(key, status);
     }
 
+    /// Seed the raw stored events for a session (ADR-051 page tests).
+    pub fn add_events(&self, key: &str, events: Vec<peko_session::SessionEvent>) {
+        self.events
+            .lock()
+            .expect("events mutex poisoned")
+            .insert(key.to_string(), events);
+    }
+
     /// Wrap into a `SharedSessionRuntime` for tool construction.
     #[must_use]
     pub fn as_shared(self: Arc<Self>) -> SharedSessionRuntime {
@@ -86,6 +99,17 @@ impl SessionCache {
             };
             have_kind == want_kind.as_str() && have_id == want_id.as_str()
         })
+    }
+
+    /// Seeded events for a session (empty when none were seeded —
+    /// mirrors `get_history`'s empty-for-missing behavior).
+    fn events_for(&self, session_key: &str) -> Vec<peko_session::SessionEvent> {
+        self.events
+            .lock()
+            .expect("events mutex poisoned")
+            .get(session_key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// ~160-char snippet centered on the match, `…`-marked when
@@ -217,6 +241,43 @@ impl SessionRuntime for SessionCache {
             }
         }
         Ok(hits)
+    }
+
+    async fn list_pages(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Vec<peko_session::pages::SessionPage>> {
+        Ok(peko_session::pages::list_pages(
+            &self.events_for(session_key),
+        ))
+    }
+
+    async fn read_page(
+        &self,
+        session_key: &str,
+        page: usize,
+        offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<String> {
+        Ok(peko_session::pages::read_page(
+            &self.events_for(session_key),
+            page,
+            offset,
+            limit,
+        ))
+    }
+
+    async fn search_pages(
+        &self,
+        session_key: &str,
+        query: &str,
+        max_results: usize,
+    ) -> anyhow::Result<Vec<peko_session::pages::SearchHit>> {
+        Ok(peko_session::pages::search_pages(
+            &self.events_for(session_key),
+            query,
+            max_results,
+        ))
     }
 
     async fn copy_session(

@@ -59,6 +59,13 @@ pub struct Agent {
     /// this registry's session inbox instead of creating a per-call one,
     /// so external callers can push steering messages into a running agent.
     inbox_registry: Option<Arc<InboxRegistry>>,
+    /// Run-scoped force-compact flag (Agent tool `action = "compact"`,
+    /// 2026-09-05). Set via [`Self::with_force_compact`] by the subagent
+    /// executor for compact continuation runs; forwarded to the
+    /// `AgenticLoop` in `build_agentic_loop`, whose compaction driver
+    /// force-compacts on iteration 1 before the run's prompt is
+    /// processed. Default false.
+    force_compact: bool,
     /// Optional principal workspace. When set, `init_builtins_async` builds the
     /// `Agent` tool with `with_workspace(Some(workspace), …)`, so the root
     /// agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
@@ -173,6 +180,7 @@ impl Clone for Agent {
             current_session_id: Arc::clone(&self.current_session_id),
             extension_core: Arc::clone(&self.extension_core),
             inbox_registry: self.inbox_registry.clone(),
+            force_compact: self.force_compact,
             principal_workspace: self.principal_workspace.clone(),
             caller_principal_did: self.caller_principal_did.clone(),
             principal_id: self.principal_id.clone(),
@@ -681,6 +689,7 @@ impl Agent {
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry,
+            force_compact: false,
             principal_workspace: None,
             caller_principal_did: None,
             principal_id,
@@ -748,6 +757,18 @@ impl Agent {
     #[must_use]
     pub fn with_inbox_registry(mut self, registry: Option<Arc<InboxRegistry>>) -> Self {
         self.inbox_registry = registry;
+        self
+    }
+
+    /// Arm the run-scoped forced compaction for this agent's next run
+    /// (Agent tool `action = "compact"`, 2026-09-05). The executor
+    /// sets this on the child Agent of a compact continuation run; the
+    /// loop's compaction driver force-compacts the session on
+    /// iteration 1 (`CompactionPhase::StandaloneTurn`) before the run's
+    /// prompt is processed.
+    #[must_use]
+    pub fn with_force_compact(mut self, force: bool) -> Self {
+        self.force_compact = force;
         self
     }
 
@@ -1120,6 +1141,7 @@ impl Agent {
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
+            force_compact: false,
             principal_workspace: None,
             caller_principal_did: None,
             principal_id,
@@ -1919,6 +1941,11 @@ impl Agent {
             self.audit_sink.clone(),
             self.audit_first_use_for_model.clone(),
         );
+        // 2026-09-05: forward the compact action's run-scoped
+        // force-compact flag to the loop's compaction driver.
+        if self.force_compact {
+            loop_ = loop_.with_force_compact(true);
+        }
         if let Some(token) = cancel {
             loop_ = loop_.with_cancel_token(token);
         }
@@ -2176,6 +2203,7 @@ impl Agent {
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
+            force_compact: false,
             principal_workspace: None,
             caller_principal_did: None,
             principal_id: peko_subject::PrincipalId::generate(),
