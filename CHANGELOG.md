@@ -4,6 +4,163 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Agent-surface E2E fixes (2026-09-06)
+
+Follow-ups from a live end-to-end audit (real LLM, wire-logged):
+
+- **Default capabilities** — `Capabilities::starter_bundle()` ships
+  `tool:*` / `agent:*` / `skill:*` again; a fresh principal sees the
+  full tool catalog (previously `tools: []` on the wire while the
+  prompt advertised ~15 tools). The Skill gate now honors `skill:*`
+  wildcards, and capability-denial errors point at
+  `[capabilities].grants` in `principal.toml`.
+- **Stable identities** — `principal.toml` persists the principal's
+  runtime `id` (was regenerated per load, forking peer DM channels
+  every daemon restart); the root agent's DID is resolved through a
+  `by-name/<name>.json` alias instead of being re-minted every turn.
+  Passphrase/headless mode never touches the OS keychain for reads
+  (fixes a hang in unsigned test binaries).
+- **Cron spawn-tool jobs await the tool outcome** — history and the
+  `cron.result` audit event record the real `success`/`failed` status
+  with the error string instead of a permanent `"running"` placeholder;
+  a coalesce guard prevents re-fire while a run is open.
+- **Async registry fix** — background `Bash` receipts
+  (`Bash:<uuid>`) resolve via `AsyncOutput`/`AsyncStatus`/`AsyncStop`
+  again (cross-registry fallback), and `wait_for_completion` no longer
+  holds the registry read lock across the wait (deadlock).
+- **Ingress failure surfacing** — a failed turn (e.g. LLM transport
+  error) now returns a real error to `peko send` (non-zero exit) and
+  posts a `⚠ Run failed` notice to the peer DM channel, instead of an
+  empty success-looking reply. The async executor no longer clobbers a
+  task-recorded `Failed` status with `Completed`.
+- **Run-dir isolation** — the IPC socket/PID honor `PEKO_HOME`
+  (`$PEKO_HOME/run/`) instead of always using `~/.peko/run`.
+- **Prompt surface** — bare `+08:00` timezone line dropped; blank-line
+  runs collapsed in the assembled system prompt; `channel` default
+  `"discord"` → `"cli"`; `DEFAULT_MAX_OUTPUT_TOKENS` 4096 → 8192;
+  root AGENT.md: `session` action count fixed (7 → 10), MEMORY.md
+  editing guidance + a conservative self-scheduled keepalive nudge
+  added; `ReadFile` → `Read` in Glob/Grep descriptions; internal
+  jargon stripped from `session`/`CronDelete` descriptions.
+- **ToolSearch** searches the caller's principal catalog (was
+  hardcoded system) and applies the documented capability gate.
+
+### Cross-principal isolation + cron ping path (2026-09-07)
+
+Found by the live "annoying principal" E2E (two principals, cron
+`ChannelSend` pings, wire-logged):
+
+- **Per-principal session stores** — `PrincipalMemoryFactory::create`
+  receives the principal's Local tier root
+  (`{data}/principals/{name}/local/`); the daemon and CLI custom
+  factories re-derived the principal name from its `file_name()`,
+  which is `"local"` for every principal, collapsing ALL sessions
+  into a shared `principals/local/local/sessions/` store (principal
+  A's history leaked into principal B's LLM context, and B's cron
+  picked A's channel ids). Both custom factories are deleted; the
+  default factory (use the root as-is) serves all callers.
+  Regression test: `principals_have_isolated_session_stores`.
+- **Cron `SpawnTool` caller identity** — the cron engine passed the
+  principal's display NAME as `principal_id`; ChannelSend's channel
+  membership check (keyed on the `prin_…` id) rejected every
+  cron-fired ping with "caller is not a member". The real id is now
+  passed, with the name carried separately as `principal_name`.
+- **Cron `SpawnTool` cold start** — agent-specific built-ins
+  (`ChannelSend`, `Agent`, `Task*`, `Async*`) were only registered by
+  `Agent::init_builtins_async` at run start, so a cron fire before
+  any agent turn failed with "Tool 'ChannelSend' not available". The
+  ChannelSend wiring is factored into
+  `tools::builtin::channel::build_channel_send_tool` (shared with the
+  agent path) and the cron engine ensure-registers it per principal
+  before dispatch.
+
+### Dynamic (LLM-driven) cron jobs (2026-09-07)
+
+- **`CronCreate` accepts `message` again** — a `Send` job that lands in
+  the principal's trunk session and runs a full agent turn per fire, so
+  pings/reminders are composed fresh each time (verified live: four
+  fires, four distinct in-character messages in the user's DM channel).
+  Sprint 7 had made the tool SpawnTool-only, and the `peko cron` CLI
+  retirement then left the `Send` fire path with no writer at all. The
+  `tool` + `params` form is unchanged; the two are mutually exclusive.
+  (`tool="Agent"` per fire stays possible but fragile: the Agent tool
+  registers only after an agent run, and a fixed `path` collides on the
+  second fire — slug-already-used.)
+- **Cron `SpawnTool` session context** — the dispatch context now
+  carries the trunk session id as `session_id`; tools that resolve the
+  caller session (Agent's `resolve_reference`) refused the funnel's
+  `"unknown"` default.
+- **Cron history honors in-band tool failure** — a `Completed` task
+  whose payload declares `success: false` or a non-empty `error`
+  records a `failed` run (was `"success"` forever, hiding that every
+  ping had actually been rejected).
+
+### Session-addressed cron targets (2026-09-07)
+
+Cron `SpawnTool` jobs can now drive ANY session by path, not just fire
+a fixed tool call:
+
+- **Agent `new` is create-or-resume** — a slug colliding with a
+  spawn-created session in the caller's subtree ATTACHES to it
+  (resume) instead of refusing. Fire #1 of a recurring job creates
+  `/cron-ping`, fires #2+ continue it — one continuous session with
+  accumulating context. Collisions with non-spawn sessions still
+  refuse. The previously standing-only attach rule was widened;
+  `[children]` declared-type checks still apply to standing children.
+- **Peer-bound turns deliver to the DM channel** — a new
+  `PeerTurnSurface` port on `SubagentExecutor` (implemented in the
+  principal layer, injected on the root agent's and cron's executors):
+  when a run's target session is a peer-bound standing child, the run
+  flips into conversation mode and its final reply posts to the peer's
+  DM channel. An Agent-tool `resume /local-user` — interactive or
+  cron-fired — now reaches the user; previously the reply vanished
+  into the caller's result envelope. The surface propagates onto child
+  agents' executors so their per-run `Agent`-tool re-registration
+  (idempotent replace) keeps the delivery wiring.
+- **Cron cold start for `Agent`** — a SpawnTool fire before any agent
+  run ensure-registers the `Agent` tool via the shared
+  `PeerChildTurns::build` recipe (provider/session-manager/quota/
+  persona wiring cannot drift from the ingress path).
+- **`CronUpdate` tool** — patch a job's `enabled` (pause/resume;
+  re-enabling resets the consecutive-failure budget) and
+  `wake_on_completion` (subscribe/unsubscribe the trunk inbox to each
+  fire's result) without deleting the job.
+
+Verified live (MiniMax-M3, daemon cold start, zero interactive turns):
+a recurring `Agent new path="local-user"` job attached to the peer
+child every minute and each in-character reply landed in the user's
+DM channel (`peko log`).
+
+### Peer-ingress conversation mode (2026-09-06)
+
+Peer-ingress turns (`peko send`, Hub webchat, tunnel A2A, channel
+subscribers) now run as conversations instead of one-shot subagent
+tasks:
+
+- **`ExecutionConfig.conversation`** (default `false`) — when set, the
+  run skips the `[Subagent Context]` / `[Subagent Task]` wrapper (the
+  user text reaches the LLM verbatim) and the session's prior history
+  is loaded, fixing the conversational amnesia between peer messages.
+  Agent-tool spawns keep the task framing.
+- **Peer turns allow delegation** — `drive_turn_streaming` and the
+  channel responder driver run with `max_depth: 3` instead of the
+  one-shot default 1.
+- **Tool-bag parity on the peer path** — `PeerChildTurns::build`
+  installs the principal tool bag (Skill tool, workspace MCP /
+  universal tools, `{{agents}}` / `{{skills}}` prompt handlers) and
+  the `agent_catalog` tool on the daemon-global `ExtensionCore` via
+  the new shared `principal::context::ensure_principal_tool_bag`
+  helper (also used by `PrincipalContext::core`).
+- **Plan port fix** — `SubagentExecutor`'s `principal_plan_port` now
+  reaches the spawned `Agent`, so the `Plan*` tools register on
+  peer-child runs (previously dropped, producing the "No
+  principal_plan_port bound" warning).
+- **Conversation channel context** — the peer's DM channel id +
+  subject render into the `{{session_context}}` prompt section
+  (`conversation channel: chan_…` / `peer: user:…`), so the model can
+  target `ChannelSend` / cron reminders at the channel that reaches
+  the user.
+
 ### ADR-051: compaction pages as an addressable archive (2026-09-05, prototype)
 
 See `docs/architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md`.

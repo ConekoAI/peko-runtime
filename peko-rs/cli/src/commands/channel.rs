@@ -202,20 +202,22 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 paths,
                 packet,
                 "channel_create_failed",
-                move |port, paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let creator_id = paths
-                        .resolver()
-                        .lookup_principal_id_by_name(&creator)
-                        .with_context(|| {
-                            format!("Creator principal '{creator}' not found on disk")
-                        })?;
-                    // ADR-049 Phase 2 (D5): validate the explicit id
-                    // up front; `None` keeps the chan_* mint.
-                    let id = id.map(|raw| parse_channel_id(&raw)).transpose()?;
-                    let resp = router.handle_create(&creator_id, &name, bind, id).await?;
-                    Ok(resp.channel)
-                })
+                move |port, paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let creator_id = paths
+                            .resolver()
+                            .lookup_principal_id_by_name(&creator)
+                            .with_context(|| {
+                                format!("Creator principal '{creator}' not found on disk")
+                            })?;
+                        // ADR-049 Phase 2 (D5): validate the explicit id
+                        // up front; `None` keeps the chan_* mint.
+                        let id = id.map(|raw| parse_channel_id(&raw)).transpose()?;
+                        let resp = router.handle_create(&creator_id, &name, bind, id).await?;
+                        Ok(resp.channel)
+                    })
+                },
             )
             .await?;
             print_channel_id(ch, json)
@@ -236,33 +238,37 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 paths,
                 packet,
                 "channel_invite_failed",
-                move |port, paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let ch = parse_channel_id(&channel)?;
-                    let inviter_id = paths
-                        .resolver()
-                        .lookup_principal_id_by_name(&inviter)
-                        .with_context(|| {
-                            format!("Inviter principal '{inviter}' not found on disk")
-                        })?;
-                    // ADR-049 Phase 1: a `user:<id>` invitee is taken
-                    // verbatim (validated by wire form only); anything
-                    // else resolves as a principal name.
-                    let invitee_subject = match Subject::from_str(&invitee) {
-                        Ok(s @ Subject::User(_)) => s,
-                        _ => {
-                            let id = paths
-                                .resolver()
-                                .lookup_principal_id_by_name(&invitee)
-                                .with_context(|| {
-                                    format!("Invitee principal '{invitee}' not found on disk")
-                                })?;
-                            Subject::from(&id)
-                        }
-                    };
-                    let resp = router.handle_invite(&ch, &inviter_id, &invitee_subject).await?;
-                    Ok((resp.channel, resp.invitee))
-                })
+                move |port, paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let ch = parse_channel_id(&channel)?;
+                        let inviter_id = paths
+                            .resolver()
+                            .lookup_principal_id_by_name(&inviter)
+                            .with_context(|| {
+                                format!("Inviter principal '{inviter}' not found on disk")
+                            })?;
+                        // ADR-049 Phase 1: a `user:<id>` invitee is taken
+                        // verbatim (validated by wire form only); anything
+                        // else resolves as a principal name.
+                        let invitee_subject = match Subject::from_str(&invitee) {
+                            Ok(s @ Subject::User(_)) => s,
+                            _ => {
+                                let id = paths
+                                    .resolver()
+                                    .lookup_principal_id_by_name(&invitee)
+                                    .with_context(|| {
+                                        format!("Invitee principal '{invitee}' not found on disk")
+                                    })?;
+                                Subject::from(&id)
+                            }
+                        };
+                        let resp = router
+                            .handle_invite(&ch, &inviter_id, &invitee_subject)
+                            .await?;
+                        Ok((resp.channel, resp.invitee))
+                    })
+                },
             )
             .await?;
             if json {
@@ -292,35 +298,33 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 text: text.clone(),
                 parent: parent.clone(),
             };
-            let task_id = run_daemon_or(
-                paths,
-                packet,
-                "channel_post_failed",
-                move |port, paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let ch = parse_channel_id(&channel)?;
-                    // ADR-049 Phase 2: a `user:<id>` sender is taken
-                    // verbatim (the daemon path does the same);
-                    // anything else resolves as a principal name.
-                    let sender_subject = match Subject::from_str(&sender) {
-                        Ok(s @ Subject::User(_)) => s,
-                        _ => {
-                            let id = paths
-                                .resolver()
-                                .lookup_principal_id_by_name(&sender)
-                                .with_context(|| {
-                                    format!("Sender principal '{sender}' not found on disk")
-                                })?;
-                            Subject::from(&id)
-                        }
-                    };
-                    let resp = router
-                        .handle_post(&ch, &sender_subject, &text, parent)
-                        .await?;
-                    Ok(resp.task_id)
+            let task_id =
+                run_daemon_or(paths, packet, "channel_post_failed", move |port, paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let ch = parse_channel_id(&channel)?;
+                        // ADR-049 Phase 2: a `user:<id>` sender is taken
+                        // verbatim (the daemon path does the same);
+                        // anything else resolves as a principal name.
+                        let sender_subject = match Subject::from_str(&sender) {
+                            Ok(s @ Subject::User(_)) => s,
+                            _ => {
+                                let id = paths
+                                    .resolver()
+                                    .lookup_principal_id_by_name(&sender)
+                                    .with_context(|| {
+                                        format!("Sender principal '{sender}' not found on disk")
+                                    })?;
+                                Subject::from(&id)
+                            }
+                        };
+                        let resp = router
+                            .handle_post(&ch, &sender_subject, &text, parent)
+                            .await?;
+                        Ok(resp.task_id)
+                    })
                 })
-            )
-            .await?;
+                .await?;
             if json {
                 println!("{}", serde_json::json!({ "task_id": task_id }));
             } else {
@@ -341,18 +345,16 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 query: None,
                 author: None,
             };
-            let events = run_daemon_or(
-                paths,
-                packet,
-                "channel_peek_failed",
-                move |port, _paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let ch = parse_channel_id(&channel)?;
-                    let resp = router.handle_peek(&ch, since).await?;
-                    Ok(resp.events)
+            let events =
+                run_daemon_or(paths, packet, "channel_peek_failed", move |port, _paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let ch = parse_channel_id(&channel)?;
+                        let resp = router.handle_peek(&ch, since).await?;
+                        Ok(resp.events)
+                    })
                 })
-            )
-            .await?;
+                .await?;
             if json {
                 println!(
                     "{}",
@@ -375,12 +377,14 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 paths,
                 packet,
                 "channel_members_failed",
-                move |port, _paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let ch = parse_channel_id(&channel)?;
-                    let resp = router.handle_members(&ch).await?;
-                    Ok(resp.members)
-                })
+                move |port, _paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let ch = parse_channel_id(&channel)?;
+                        let resp = router.handle_members(&ch).await?;
+                        Ok(resp.members)
+                    })
+                },
             )
             .await?;
             if json {
@@ -401,23 +405,21 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 request_id: 0,
                 principal_name: principal.clone(),
             };
-            let channels = run_daemon_or(
-                paths,
-                packet,
-                "channel_list_failed",
-                move |port, paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let p_id = paths
-                        .resolver()
-                        .lookup_principal_id_by_name(&principal)
-                        .with_context(|| {
-                            format!("Principal '{principal}' not found on disk")
-                        })?;
-                    let resp = router.handle_list(&p_id).await?;
-                    Ok(resp.channels)
+            let channels =
+                run_daemon_or(paths, packet, "channel_list_failed", move |port, paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let p_id = paths
+                            .resolver()
+                            .lookup_principal_id_by_name(&principal)
+                            .with_context(|| {
+                                format!("Principal '{principal}' not found on disk")
+                            })?;
+                        let resp = router.handle_list(&p_id).await?;
+                        Ok(resp.channels)
+                    })
                 })
-            )
-            .await?;
+                .await?;
             if json {
                 let s: Vec<String> = channels.iter().map(|c| c.to_string()).collect();
                 println!(
@@ -437,18 +439,16 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 request_id: 0,
                 channel: channel.clone(),
             };
-            let members = run_daemon_or(
-                paths,
-                packet,
-                "channel_show_failed",
-                move |port, _paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let ch = parse_channel_id(&channel)?;
-                    let resp = router.handle_show(&ch).await?;
-                    Ok(resp.members)
+            let members =
+                run_daemon_or(paths, packet, "channel_show_failed", move |port, _paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let ch = parse_channel_id(&channel)?;
+                        let resp = router.handle_show(&ch).await?;
+                        Ok(resp.members)
+                    })
                 })
-            )
-            .await?;
+                .await?;
             if json {
                 println!(
                     "{}",
@@ -463,33 +463,29 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             Ok(())
         }
         ChannelCommands::Leave {
-            channel,
-            principal,
-            ..
+            channel, principal, ..
         } => {
             let packet = RequestPacket::ChannelLeave {
                 request_id: 0,
                 channel: channel.clone(),
                 principal_name: principal.clone(),
             };
-            let (ch, principal_id) = run_daemon_or(
-                paths,
-                packet,
-                "channel_leave_failed",
-                move |port, paths| Box::pin(async move {
-                    let router = ChannelCliRouter::new(port);
-                    let ch = parse_channel_id(&channel)?;
-                    let principal_id = paths
-                        .resolver()
-                        .lookup_principal_id_by_name(&principal)
-                        .with_context(|| {
-                            format!("Principal '{principal}' not found on disk")
-                        })?;
-                    let resp = router.handle_leave(&ch, &principal_id).await?;
-                    Ok((resp.channel, resp.principal))
+            let (ch, principal_id) =
+                run_daemon_or(paths, packet, "channel_leave_failed", move |port, paths| {
+                    Box::pin(async move {
+                        let router = ChannelCliRouter::new(port);
+                        let ch = parse_channel_id(&channel)?;
+                        let principal_id = paths
+                            .resolver()
+                            .lookup_principal_id_by_name(&principal)
+                            .with_context(|| {
+                                format!("Principal '{principal}' not found on disk")
+                            })?;
+                        let resp = router.handle_leave(&ch, &principal_id).await?;
+                        Ok((resp.channel, resp.principal))
+                    })
                 })
-            )
-            .await?;
+                .await?;
             if json {
                 println!(
                     "{}",
@@ -570,17 +566,15 @@ where
             }
         }
     }
-    let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(
-        ChannelConfig {
-            runtime_dir: paths.runtime_dir(),
-            // PR-3d: in-process fallback mirrors the daemon's
-            // `principals_root_dir()` so `peko channel pin-to-shared`
-            // works without a running daemon. The same authority
-            // gate that the daemon enforces runs upstream of
-            // `ChannelCliRouter::handle_pin_to_shared` in production.
-            shared_dir: Some(paths.principals_root_dir()),
-        },
-    ));
+    let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(ChannelConfig {
+        runtime_dir: paths.runtime_dir(),
+        // PR-3d: in-process fallback mirrors the daemon's
+        // `principals_root_dir()` so `peko channel pin-to-shared`
+        // works without a running daemon. The same authority
+        // gate that the daemon enforces runs upstream of
+        // `ChannelCliRouter::handle_pin_to_shared` in production.
+        shared_dir: Some(paths.principals_root_dir()),
+    }));
     local(port, paths).await.context(err_label)
 }
 
@@ -610,11 +604,4 @@ fn print_channel_id(ch: ChannelId, json: bool) -> Result<()> {
 // Silence unused-import lints for types referenced only in patterns we
 // may exercise in future subcommands (e.g. `PinToShared`).
 #[allow(dead_code)]
-fn _unused(
-    _: ChannelEvent,
-    _: PostMsg,
-    _: CreateOpts,
-    _: ChannelMembership,
-    _: PrincipalId,
-) {
-}
+fn _unused(_: ChannelEvent, _: PostMsg, _: CreateOpts, _: ChannelMembership, _: PrincipalId) {}

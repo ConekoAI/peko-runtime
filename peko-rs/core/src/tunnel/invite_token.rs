@@ -84,11 +84,10 @@ pub enum InviteTokenError {
     Expired(DateTime<Utc>),
     #[error("invite token has been revoked (jti = {0})")]
     Revoked(Uuid),
-    #[error("invite token does not match the requested principal (expected {expected}, got {actual})")]
-    PrincipalMismatch {
-        expected: String,
-        actual: String,
-    },
+    #[error(
+        "invite token does not match the requested principal (expected {expected}, got {actual})"
+    )]
+    PrincipalMismatch { expected: String, actual: String },
 }
 
 /// The claims embedded in an invite token. All fields are required
@@ -265,6 +264,11 @@ impl InviteRevocationSet {
         self.revoked.lock().await.len()
     }
 
+    /// Whether the revocation set is currently empty.
+    pub async fn is_empty(&self) -> bool {
+        self.revoked.lock().await.is_empty()
+    }
+
     /// Sweep expired entries. The dispatcher doesn't need this
     /// called on a hot path — `verify_token` rejects expired tokens
     /// first, so a revoked entry that has ALSO expired is harmless.
@@ -283,7 +287,7 @@ impl InviteRevocationSet {
     /// daemon can wire a long-running task on top of this type.
     #[must_use]
     pub fn janitor_interval() -> Duration {
-        Duration::from_secs(60)
+        Duration::from_mins(1)
     }
 }
 
@@ -336,9 +340,9 @@ pub(crate) fn decode_signature(b64: &str) -> Result<Signature> {
     let bytes = URL_SAFE_NO_PAD
         .decode(b64)
         .context("invite signature is not valid base64url-no-pad")?;
-    let arr: [u8; 64] = bytes
-        .try_into()
-        .map_err(|v: Vec<u8>| anyhow!("invite signature length is {} bytes; expected 64", v.len()))?;
+    let arr: [u8; 64] = bytes.try_into().map_err(|v: Vec<u8>| {
+        anyhow!("invite signature length is {} bytes; expected 64", v.len())
+    })?;
     Ok(Signature::from_bytes(&arr))
 }
 
@@ -497,7 +501,10 @@ mod tests {
         // a2a domain tag. If both used the same prefix, a signature
         // over an a2a envelope could validate against an invite
         // token (or vice versa) — a transversal collision.
-        assert_ne!(INVITE_TOKEN_DOMAIN, super::super::a2a_signature::A2A_SIGNATURE_DOMAIN);
+        assert_ne!(
+            INVITE_TOKEN_DOMAIN,
+            super::super::a2a_signature::A2A_SIGNATURE_DOMAIN
+        );
     }
 
     #[tokio::test]

@@ -6,8 +6,9 @@
 //!
 //! ## Transport
 //!
-//! - **Unix**: Unix domain datagram socket at `~/.peko/run/daemon.sock`
-//!   (file mode 0600 — kernel-enforced peer identity).
+//! - **Unix**: Unix domain datagram socket at `$PEKO_HOME/run/daemon.sock`
+//!   (or `~/.peko/run/daemon.sock` when `PEKO_HOME` is unset;
+//!   file mode 0600 — kernel-enforced peer identity).
 //! - **Windows**: Named pipe at `\\.\pipe\peko-{username}` (ADR-038)
 //!   with a DACL that grants the current user Generic All — kernel-enforced
 //!   peer identity analogous to Unix 0600. Falls back to UDP on bind failure.
@@ -64,14 +65,13 @@ pub const DAEMON_PIPE_ENV: &str = "PEKO_DAEMON_PIPE";
 pub const DAEMON_MODE_ENV: &str = "PEKO_DAEMON";
 
 /// Get the default socket path for the current platform
+///
+/// Resolves under `$PEKO_HOME/run` when `PEKO_HOME` is set (parity
+/// with `common::paths::default_config_dir`), else `~/.peko/run`.
+/// The explicit `PEKO_DAEMON_SOCK` override is honored by the
+/// connection ladder (`connection.rs`) before this default is tried.
 pub fn default_socket_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .map(|d| d.join(".peko").join("run").join("daemon.sock"))
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(".peko")
-                .join("run")
-                .join("daemon.sock")
-        })
+    crate::common::paths::default_run_dir().join("daemon.sock")
 }
 
 /// Get the default Windows named-pipe name (ADR-038).
@@ -105,20 +105,12 @@ pub fn default_pipe_name() -> String {
 
 /// Get the default PID file path
 pub fn default_pid_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .map(|d| d.join(".peko").join("run").join("daemon.pid"))
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(".peko")
-                .join("run")
-                .join("daemon.pid")
-        })
+    crate::common::paths::default_run_dir().join("daemon.pid")
 }
 
 /// Ensure the run directory exists
 pub fn ensure_run_dir() -> std::io::Result<std::path::PathBuf> {
-    let run_dir = dirs::home_dir()
-        .map(|d| d.join(".peko").join("run"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".peko").join("run"));
+    let run_dir = crate::common::paths::default_run_dir();
     std::fs::create_dir_all(&run_dir)?;
     Ok(run_dir)
 }
@@ -131,8 +123,37 @@ mod tests {
     fn test_default_socket_path_contains_peko() {
         let path = default_socket_path();
         let s = path.to_string_lossy();
-        assert!(s.contains(".peko"));
+        assert!(s.contains(".peko") || std::env::var("PEKO_HOME").is_ok());
         assert!(s.contains("daemon.sock"));
+    }
+
+    /// `PEKO_HOME` must isolate the run dir: socket, pid, and
+    /// `ensure_run_dir` all resolve under `$PEKO_HOME/run` before the
+    /// `~/.peko` fallback. Touches the process-global `PEKO_HOME`
+    /// (sets + restores) — serialized with the other env-mutating
+    /// tests via `serial_test`.
+    #[test]
+    #[serial_test::serial]
+    fn test_run_dir_honors_peko_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let saved = std::env::var("PEKO_HOME").ok();
+        // SAFETY: serialized via #[serial]; value restored below.
+        unsafe { std::env::set_var("PEKO_HOME", tmp.path()) };
+
+        let sock = default_socket_path();
+        let pid = default_pid_path();
+        let run_dir = ensure_run_dir().unwrap();
+
+        // SAFETY: same as above.
+        match saved {
+            Some(v) => unsafe { std::env::set_var("PEKO_HOME", v) },
+            None => unsafe { std::env::remove_var("PEKO_HOME") },
+        }
+
+        assert_eq!(sock, tmp.path().join("run").join("daemon.sock"));
+        assert_eq!(pid, tmp.path().join("run").join("daemon.pid"));
+        assert_eq!(run_dir, tmp.path().join("run"));
+        assert!(run_dir.is_dir(), "ensure_run_dir must create {run_dir:?}");
     }
 
     #[test]

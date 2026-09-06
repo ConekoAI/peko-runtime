@@ -29,11 +29,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::agents::subagent_executor::SubagentExecutor;
-use peko_extension_api::SpawnCleanupPolicy;
 use crate::tools::builtin::messaging::{
     SpawnAuditEvent, SpawnRequest, SubagentRunView, SubagentRuntime,
 };
 use anyhow::Context;
+use peko_extension_api::SpawnCleanupPolicy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -213,7 +213,9 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             .and_then(|m| m.config().cost_per_call_max)?;
         let provider = self.executor.provider_for_cost_estimate()?;
         let pricing = provider.spec().and_then(|s| s.pricing)?;
-        Some(crate::agents::subagent_executor::estimate_spawn_cost_usd(&pricing))
+        Some(crate::agents::subagent_executor::estimate_spawn_cost_usd(
+            &pricing,
+        ))
     }
 
     async fn execute_and_wait(&self, request: SpawnRequest) -> anyhow::Result<SubagentRunView> {
@@ -254,6 +256,11 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             // Spawn/resume never force-compact; that flag is armed by
             // the compact action's own adapter path below.
             force_compact: false,
+            // Agent-tool spawns are delegated tasks, not peer
+            // conversations — keep the subagent task framing.
+            conversation: false,
+            conversation_channel: None,
+            conversation_peer: None,
         };
 
         let view = if let Some(ref resume_target) = request.resume_session {

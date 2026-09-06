@@ -182,10 +182,9 @@ impl Tool for ChannelReadTool {
                 // ADR-049 Phase 1: members are Subject-typed. Compare
                 // against the caller's principal Subject exactly (no
                 // cross-kind match on the bare id string).
-                let caller = peko_subject::Subject::from(&peko_subject::PrincipalId(
-                    principal_str.clone(),
-                ));
-                let is_member = members.iter().any(|m| *m == caller);
+                let caller =
+                    peko_subject::Subject::from(&peko_subject::PrincipalId(principal_str.clone()));
+                let is_member = members.contains(&caller);
                 if !is_member {
                     return Ok(serde_json::json!({
                         "error": "caller is not a member of this channel",
@@ -221,30 +220,30 @@ impl Tool for ChannelReadTool {
             (page.events, page.has_more, page.resume_before)
         } else {
             match &since {
-            Some(s) => {
-                let items = self
-                    .port
-                    .peek_with_ids(&channel_id, &Checkpoint(s.clone()))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("ChannelRead peek: {e}"))?;
-                let has_more = items.len() > limit;
-                let page: Vec<_> = items.into_iter().take(limit).collect();
-                let next_cursor = page.last().map(|(id, _)| id.clone());
-                (page, has_more, next_cursor)
-            }
-            None => {
-                let page = self
-                    .port
-                    .peek_tail(&channel_id, limit, before.as_ref())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("ChannelRead peek_tail: {e}"))?;
-                let next_cursor = if page.has_more {
-                    page.events.first().map(|(id, _)| id.clone())
-                } else {
-                    None
-                };
-                (page.events, page.has_more, next_cursor)
-            }
+                Some(s) => {
+                    let items = self
+                        .port
+                        .peek_with_ids(&channel_id, &Checkpoint(s.clone()))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("ChannelRead peek: {e}"))?;
+                    let has_more = items.len() > limit;
+                    let page: Vec<_> = items.into_iter().take(limit).collect();
+                    let next_cursor = page.last().map(|(id, _)| id.clone());
+                    (page, has_more, next_cursor)
+                }
+                None => {
+                    let page = self
+                        .port
+                        .peek_tail(&channel_id, limit, before.as_ref())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("ChannelRead peek_tail: {e}"))?;
+                    let next_cursor = if page.has_more {
+                        page.events.first().map(|(id, _)| id.clone())
+                    } else {
+                        None
+                    };
+                    (page.events, page.has_more, next_cursor)
+                }
             }
         };
 
@@ -360,10 +359,7 @@ mod tests {
             Ok(())
         }
 
-        async fn list_members(
-            &self,
-            channel: &ChannelId,
-        ) -> peko_channel::Result<Vec<Subject>> {
+        async fn list_members(&self, channel: &ChannelId) -> peko_channel::Result<Vec<Subject>> {
             let g = self.members.lock().await;
             Ok(g.get(channel).cloned().unwrap_or_default())
         }

@@ -12,7 +12,6 @@ use crate::registry::packaging::path_safety::safe_join;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
-use anyhow::Context;
 use peko_auth::Subject;
 use peko_extension_api::Capabilities;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
@@ -864,6 +863,7 @@ mod tests {
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
+            id: None,
             did: Some(PrincipalDID(did.to_string())),
             owner: Subject::User("local".to_string()),
             identity: Default::default(),

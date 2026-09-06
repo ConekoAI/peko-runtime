@@ -207,6 +207,16 @@ pub struct TurnPromptContext {
     /// Whether the daemon has a gateway attached (gates `{{self_update}}`).
     pub has_gateway: bool,
 
+    /// Peer-conversation DM channel id (peer-ingress turns only),
+    /// rendered into the `{{session_context}}` section as the channel
+    /// that reaches the user. `None` for non-conversation runs.
+    pub conversation_channel: Option<String>,
+    /// Peer-conversation peer subject in wire form (`user:alice`,
+    /// `principal:did:…`; peer-ingress turns only), rendered into the
+    /// `{{session_context}}` section. `None` for non-conversation
+    /// runs.
+    pub conversation_peer: Option<String>,
+
     // ---- Control surfaces ----
     /// Iteration-budget state (`None` ⇒ `{{iteration_budget}}` not rendered).
     pub iteration_budget: Option<IterationBudgetState>,

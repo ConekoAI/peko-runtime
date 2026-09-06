@@ -1,6 +1,7 @@
 //! Unified `session` tool — single storage entry point that dispatches
-//! by `action` over 7 operations (`status` / `list` / `history` /
-//! `find` / `copy` / `move` / `remove`).
+//! by `action` over 10 operations (`status` / `list` / `history` /
+//! `find` / `copy` / `move` / `remove` / `list_pages` / `read_page` /
+//! `search_pages`).
 //!
 //! Replaces the legacy `session_status`, `sessions_list`,
 //! `sessions_history` tools (Issue 013). The verbs match the bash
@@ -100,20 +101,14 @@ impl SessionTool {
     /// `AgentArgs::validate_action_args`). Raw session ids and
     /// malformed paths are rejected here so the model gets a clean
     /// structured error before the runtime touches state.
-    fn require_path<'a>(
-        params: &'a serde_json::Value,
-        action: &str,
-    ) -> anyhow::Result<&'a str> {
-        let path = params
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "action \"{action}\" requires 'path' — an absolute slug path \
+    fn require_path<'a>(params: &'a serde_json::Value, action: &str) -> anyhow::Result<&'a str> {
+        let path = params.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "action \"{action}\" requires 'path' — an absolute slug path \
                      ('/a/b/c') naming the target session (use the `path` field from \
                      `session list`)"
-                )
-            })?;
+            )
+        })?;
         if let Err(e) = peko_session::path::validate_path(path) {
             return Err(anyhow::anyhow!(
                 "action \"{action}\" 'path' is not a valid slug path: {e}"
@@ -217,7 +212,7 @@ The `path` parameter is an absolute slug path (`/a/b/c`, anchored at the root of
 
 The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
-Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it. Sessions are monotonically visible until `remove` (Sprint 7 Commit F: archive/unarchive retired; if you want it gone, remove it).
+Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). A caller in a spawned session manages only its own subtree — both the moved session and the destination must be inside it. Sessions are monotonically visible until `remove` (there is no archive/unarchive; if you want it gone, remove it).
 
 To RUN work in a session, use the Agent tool instead — its three actions (new / resume / compact) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session_id` set (visible on status)."
             .to_string()
@@ -230,7 +225,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 "action": {
                     "type": "string",
                     "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
-                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages (ADR-051). To run work in a session, use the Agent tool (new/resume/compact)."
+                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact)."
                 },
                 "path": {
                     "type": "string",
@@ -274,7 +269,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 "include_archived": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Optional for 'list': include archived sessions (hidden by default). Sprint 7 Commit F retired archive/unarchive actions; this filter remains for legacy records that already carry the flag."
+                    "description": "Optional for 'list': include archived sessions (hidden by default). The archive/unarchive actions are retired; this filter remains for legacy records that already carry the flag."
                 },
                 "peer": {
                     "type": "string",
@@ -422,8 +417,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
             SessionAction::Copy => {
                 let session_key = Self::require_path(&params, "copy")?;
                 let (parent_str, slug) = Self::parse_target(&params, "copy")?;
-                let target_parent =
-                    if parent_str.is_empty() { "/".to_string() } else { parent_str.to_string() };
+                let target_parent = if parent_str.is_empty() {
+                    "/".to_string()
+                } else {
+                    parent_str.to_string()
+                };
                 let label = params
                     .get("label")
                     .and_then(|v| v.as_str())
@@ -1117,9 +1115,16 @@ mod tests {
 
         for demoted in [
             // Agent-tool-only (drive the LLM).
-            "new", "resume", "compact",
+            "new",
+            "resume",
+            "compact",
             // Sprint 7 Commit F retired (bash-aligned verb replaced them).
-            "search", "rename", "delete", "branch", "archive", "unarchive",
+            "search",
+            "rename",
+            "delete",
+            "branch",
+            "archive",
+            "unarchive",
         ] {
             let exec_err = tool
                 .execute(json!({"action": demoted}))

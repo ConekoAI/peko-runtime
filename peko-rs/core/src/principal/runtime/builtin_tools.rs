@@ -20,6 +20,7 @@ pub const GLOBAL_TOOL_NAMES: &[&str] = &[
     "CronCreate",
     "CronDelete",
     "CronList",
+    "CronUpdate",
     "AsyncStatus",
     "AsyncList",
     "AsyncStop",

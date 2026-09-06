@@ -96,10 +96,7 @@ mod tests {
     /// `AbortableStubTool`) registered against the supplied capability
     /// snapshot. Returns an `AsyncToolRig` ready to drive every Async*
     /// tool from the same backing runtime.
-    async fn setup_with_stop(
-        capabilities: Vec<String>,
-        register_abortable: bool,
-    ) -> AsyncToolRig {
+    async fn setup_with_stop(capabilities: Vec<String>, register_abortable: bool) -> AsyncToolRig {
         let core = Arc::new(ExtensionCore::new());
         // Register via `BuiltinToolAdapter::register_tool_system` rather
         // than `core.insert_tool_instance`. The latter only fills the
@@ -116,12 +113,9 @@ mod tests {
             .await
             .expect("register stub_tool");
         if register_abortable {
-            BuiltinToolAdapter::register_tool_system(
-                &core,
-                Arc::new(AbortableStubTool),
-            )
-            .await
-            .expect("register abortable_stub");
+            BuiltinToolAdapter::register_tool_system(&core, Arc::new(AbortableStubTool))
+                .await
+                .expect("register abortable_stub");
         }
         core.set_session_key("test_agent", Some("session_under_test".to_string()))
             .await;
@@ -163,7 +157,10 @@ mod tests {
             }))
             .await
             .expect("AsyncSpawn returns receipt");
-        assert_eq!(receipt["status"], "running", "receipt status runs while dispatched");
+        assert_eq!(
+            receipt["status"], "running",
+            "receipt status runs while dispatched"
+        );
         assert_eq!(receipt["tool"], "stub_tool", "receipt echoes the tool name");
         let task_id = receipt["task_id"].as_str().expect("task_id is a string");
         assert!(
@@ -285,8 +282,7 @@ mod tests {
     /// — the F38 two-layer contract).
     #[tokio::test]
     async fn test_async_stop_cancels_long_running_task() {
-        let rig =
-            setup_with_stop(vec!["tool:abortable_stub".to_string()], true).await;
+        let rig = setup_with_stop(vec!["tool:abortable_stub".to_string()], true).await;
 
         let receipt = rig
             .spawn
@@ -349,7 +345,10 @@ mod tests {
     #[tokio::test]
     async fn test_async_list_filters_by_tool_name() {
         let rig = setup_with_stop(
-            vec!["tool:stub_tool".to_string(), "tool:abortable_stub".to_string()],
+            vec![
+                "tool:stub_tool".to_string(),
+                "tool:abortable_stub".to_string(),
+            ],
             true,
         )
         .await;
@@ -373,12 +372,24 @@ mod tests {
         let _ = poll_terminal(&rig, r1["task_id"].as_str().unwrap(), "completed").await;
         let _ = poll_terminal(&rig, r2["task_id"].as_str().unwrap(), "completed").await;
 
-        let list_all = rig
-            .list
-            .execute(serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(list_all["total"], serde_json::json!(2));
+        let list_all = rig.list.execute(serde_json::json!({})).await.unwrap();
+        // `AsyncList` merges the process-global per-agent registries
+        // (background `Bash` tasks, subagent runs from other tests in
+        // this binary), so the total is a lower bound — pin that both
+        // spawned tasks are present instead of an exact count.
+        let all_tasks = list_all["tasks"].as_array().expect("tasks is array");
+        assert!(
+            all_tasks
+                .iter()
+                .any(|t| t["task_id"] == r1["task_id"] && t["tool_name"] == "stub_tool"),
+            "list_all must contain the stub_tool task: {list_all}"
+        );
+        assert!(
+            all_tasks
+                .iter()
+                .any(|t| t["task_id"] == r2["task_id"] && t["tool_name"] == "abortable_stub"),
+            "list_all must contain the abortable_stub task: {list_all}"
+        );
 
         let list_stub = rig
             .list
@@ -398,10 +409,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list_aborter["total"], serde_json::json!(1));
-        assert_eq!(
-            list_aborter["tasks"][0]["task_id"],
-            r2["task_id"],
-        );
+        assert_eq!(list_aborter["tasks"][0]["task_id"], r2["task_id"],);
     }
 
     /// F37 success-path test: the test the doc comment on
@@ -435,11 +443,7 @@ mod tests {
 
     /// Poll `AsyncStatus` until the task's status matches `expected`,
     /// or panic after ~2s. Returns the terminal `TaskView` JSON.
-    async fn poll_terminal(
-        rig: &AsyncToolRig,
-        task_id: &str,
-        expected: &str,
-    ) -> serde_json::Value {
+    async fn poll_terminal(rig: &AsyncToolRig, task_id: &str, expected: &str) -> serde_json::Value {
         for _ in 0..100 {
             let status = rig
                 .status
@@ -459,8 +463,6 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!(
-            "task {task_id} never reached status {expected} within ~2s"
-        );
+        panic!("task {task_id} never reached status {expected} within ~2s");
     }
 }

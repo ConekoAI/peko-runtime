@@ -148,7 +148,7 @@ mod tests {
             SessionId::from("child"),
             "test_agent",
             "child.jsonl",
-            parent.clone(),
+            parent,
         );
         assert_eq!(child.parent_session_id, Some(parent));
         assert_eq!(child.trigger, "branch");

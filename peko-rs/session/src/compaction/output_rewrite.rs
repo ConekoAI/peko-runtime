@@ -189,6 +189,23 @@ pub fn rewrite_oversized_tool_results(
     stats
 }
 
+/// Helper for tests below: return the byte length of a `Text` block
+/// (or 0 for other variants). Keeps assertions readable without
+/// importing serde_json values.
+#[cfg(test)]
+trait ApproxTextLen {
+    fn approx_text_len(&self) -> usize;
+}
+
+#[cfg(test)]
+impl ApproxTextLen for ContentBlock {
+    fn approx_text_len(&self) -> usize {
+        match self {
+            ContentBlock::Text { text } => text.len(),
+            _ => 0,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,21 +463,5 @@ mod tests {
         let mut messages = vec![tool_result_msg("tc1", &big_body)];
         let stats = rewrite_oversized_tool_results(&mut messages, 128_000, 0);
         assert_eq!(stats.rewritten_count, 1);
-    }
-}
-
-/// Helper for tests above: return the byte length of a `Text` block
-/// (or 0 for other variants). Keeps assertions readable without
-/// importing serde_json values.
-trait ApproxTextLen {
-    fn approx_text_len(&self) -> usize;
-}
-
-impl ApproxTextLen for ContentBlock {
-    fn approx_text_len(&self) -> usize {
-        match self {
-            ContentBlock::Text { text } => text.len(),
-            _ => 0,
-        }
     }
 }

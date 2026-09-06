@@ -780,7 +780,7 @@ mod tests {
         let authority = RuntimeAuthority::for_caller(resolver, Subject::User("alice".into()));
         let caps = Capabilities::with_grants(["runtime:write_*"]);
         let result = authority.runtime_extensions_root_write(Some(&caps));
-        assert!(matches!(result, Ok(_)));
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1004,7 +1004,6 @@ mod tests {
             }) if capability == Capability::new("principal:write_mcps")
         ));
     }
-
 
     // ----- _for_name accessors with real layout ------------------------
 

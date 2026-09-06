@@ -119,7 +119,7 @@ async fn run_command(
     command: Commands,
     paths: &GlobalPaths,
     json: bool,
-    cli_registry: Option<&str>,
+    _cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
     match command {
         Commands::Principal(cmd) => principal::handle_principal(cmd, paths, json).await,

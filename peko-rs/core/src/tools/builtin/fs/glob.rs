@@ -308,7 +308,7 @@ impl Tool for GlobTool {
 Find files and directories matching a glob pattern.
 
 Use when: Exploring project structure, finding files by pattern, listing directory contents.
-Don't use when: You need file contents (use ReadFile) or content search (use Grep).
+Don't use when: You need file contents (use Read) or content search (use Grep).
 
 ## Glob Pattern Syntax
 

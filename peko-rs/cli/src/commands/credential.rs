@@ -104,20 +104,26 @@ pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()>
             material,
             metadata,
             replace_on,
-        } => set_cmd(paths, &vault, &namespace, &name, &kind, material, metadata, replace_on).await,
+        } => {
+            set_cmd(
+                paths, &vault, &namespace, &name, &kind, material, metadata, replace_on,
+            )
+            .await
+        }
         CredentialCommands::Get { id } => get_cmd(&vault, &id).await,
-        CredentialCommands::Delete { id, force } => match delete_cmd(paths, &vault, &id, force).await
-        {
-            Ok(()) => Ok(()),
-            Err(DeleteError::InUse { message }) => {
-                // PR 3 / `feature/model-first-config`: exit code 3
-                // signals "credential in use" so scripts can detect
-                // the refusal without parsing the message.
-                eprintln!("{message}");
-                std::process::exit(3);
+        CredentialCommands::Delete { id, force } => {
+            match delete_cmd(paths, &vault, &id, force).await {
+                Ok(()) => Ok(()),
+                Err(DeleteError::InUse { message }) => {
+                    // PR 3 / `feature/model-first-config`: exit code 3
+                    // signals "credential in use" so scripts can detect
+                    // the refusal without parsing the message.
+                    eprintln!("{message}");
+                    std::process::exit(3);
+                }
+                Err(DeleteError::Other(e)) => Err(e),
             }
-            Err(DeleteError::Other(e)) => Err(e),
-        },
+        }
         CredentialCommands::List {
             namespace,
             kind,
@@ -140,9 +146,7 @@ pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()>
 /// `InUse` to `exit(3)`; everything else propagates as `anyhow`.
 #[derive(Debug)]
 enum DeleteError {
-    InUse {
-        message: String,
-    },
+    InUse { message: String },
     Other(anyhow::Error),
 }
 
@@ -212,9 +216,7 @@ async fn set_cmd(
     let mut rewired = 0usize;
     if let Some(old_id) = replace_on.as_deref() {
         if old_id == id {
-            anyhow::bail!(
-                "--replace-on id matches the credential being stored; nothing to rewire"
-            );
+            anyhow::bail!("--replace-on id matches the credential being stored; nothing to rewire");
         }
         let cat = ModelCatalog::load_or_init(paths.config_dir.join(ModelCatalog::FILENAME))
             .await
@@ -273,15 +275,14 @@ async fn delete_cmd(
     // the IPC path; both surfaces enforce the same rule
     // independently so a CLI-only run is just as safe as a desktop
     // run.
-    let dependents = match ModelCatalog::load_or_init(paths.config_dir.join(ModelCatalog::FILENAME))
-        .await
-    {
-        Ok(cat) => cat.models_referencing(id).await,
-        // Treat a missing/unreadable catalog as "no dependents" — we
-        // can't prove any, so don't block the delete. The vault still
-        // owns the authority here.
-        Err(_) => Vec::new(),
-    };
+    let dependents =
+        match ModelCatalog::load_or_init(paths.config_dir.join(ModelCatalog::FILENAME)).await {
+            Ok(cat) => cat.models_referencing(id).await,
+            // Treat a missing/unreadable catalog as "no dependents" — we
+            // can't prove any, so don't block the delete. The vault still
+            // owns the authority here.
+            Err(_) => Vec::new(),
+        };
 
     if !dependents.is_empty() && !force {
         let names = dependents
@@ -409,19 +410,19 @@ async fn list_cmd(
             _ => String::new(),
         };
         let ref_badge = match dependents.get(&s.id) {
-            Some(entries) if !entries.is_empty() => format!(" | used by {} model(s)", entries.len()),
+            Some(entries) if !entries.is_empty() => {
+                format!(" | used by {} model(s)", entries.len())
+            }
             _ => String::new(),
         };
         println!(
-            "  {}  {}:{}{}  {}{}{}",
+            "  {}  {}:{}{}  {}{}",
             s.id,
             s.namespace,
             s.name,
             ref_badge,
             s.kind.as_str(),
-            tested,
-            // trailing space already on `tested`; nothing extra
-            ""
+            tested
         );
     }
 

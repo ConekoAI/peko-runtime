@@ -133,16 +133,24 @@ Return (background): async task receipt.
 
 ### `CronCreate` 🔧
 
-Schedule a tool to run at a future time. Always writes a `SpawnTool`
-job — the daemon asks the `AsyncExecutor` to run `tool_name` with
-`tool_params` at fire time.
+Schedule future work. Two mutually exclusive job shapes:
+
+- **`message`** — an instruction delivered to the principal's trunk
+  session at fire time, running a full agent turn. Output is composed
+  fresh on every fire (LLM-driven, costs tokens per fire); the agent
+  reaches the user via `ChannelSend`. Use for reminders/pings whose
+  text should vary.
+- **`tool` + `params`** — a fixed tool call at fire time (no LLM cost).
+  The daemon asks the `AsyncExecutor` to run `tool_name` with
+  `tool_params` verbatim.
 
 ```json
 {
-  "tool": "string (REQUIRED, e.g. \"Agent\", \"Bash\", \"Read\", \"ChannelRead\")",
-  "params": "object (REQUIRED, defaults to {})",
-  "wake_on_completion": "boolean (default false)",
-  "timeout_secs": "integer (default executor policy, 7200s)"
+  "message": "string (mode 1 — mutually exclusive with tool)",
+  "tool": "string (mode 2, e.g. \"Agent\", \"Bash\", \"ChannelSend\")",
+  "params": "object (mode 2, defaults to {})",
+  "wake_on_completion": "boolean (SpawnTool only, default false)",
+  "timeout_secs": "integer (SpawnTool only, default 7200s)"
 }
 ```
 
@@ -152,15 +160,17 @@ schedule a classic cron job, supply `cron`; otherwise supply one of
 the extension fields. Extra fields:
 `label`, `at`, `interval_ms`, `timezone`, `idle_ms`.
 
-**Sprint 7 Commit D (2026-08-21)** restricted the tool to scheduling
-SpawnTool jobs only — `prompt` / `message` / `target` / `description` /
+**Sprint 7 Commit D (2026-08-21)** restricted the tool to SpawnTool
+jobs only — `prompt` / `message` / `target` / `description` /
 `recurring` / `durable` / `task` were dropped from `CronCreateArgs`,
 and the `CronJobAction::Notify` variant + the engine's `run_notify_job`
-were deleted (they had only the message path as their writer). To
-schedule a "remind me in N minutes" job, use `tool="Agent"` with an
-explicit prompt (e.g.
-`tool="Agent", params={"prompt": "Deliver this message verbatim to
-the user: stand up and stretch.", "agent": "...", "path": "..."}`).
+were deleted. **`message` was restored (2026-09-07)** after the
+retirement of the `peko cron` CLI left the `Send` fire path with no
+writer at all — `tool="Agent"` per fire proved fragile (the Agent tool
+is only registered once an agent run has happened, and its fixed
+`path` collides on repeat fires), while the trunk `Send` turn is the
+designed dynamic path. `target` stays dropped: the trunk is the only
+destination.
 
 ### `CronDelete` 🔧
 
@@ -174,6 +184,23 @@ the user: stand up and stretch.", "agent": "...", "path": "..."}`).
 **Peko extensions:** accepts `label` as an alternative to `id` (the schema
 uses `oneOf` rather than requiring `id`). The canonical Claude call passes
 `id` only. **Sprint 7 Commit C** dropped the legacy `job_id` alias.
+
+### `CronUpdate` 🔧
+
+Patch a scheduled job's mutable fields by `id` (or `label`):
+
+```json
+{
+  "id": "string",
+  "label": "string? (alternative to id)",
+  "enabled": "boolean? (pause/resume; re-enabling resets the failure budget)",
+  "wake_on_completion": "boolean? (subscribe/unsubscribe the trunk inbox to each fire's result; tool jobs only)"
+}
+```
+
+At least one of `enabled` / `wake_on_completion` is required. Use this to
+unsubscribe from a noisy job's results, or to resume a paused job without
+recreating it.
 
 ### `CronList` 🔧
 

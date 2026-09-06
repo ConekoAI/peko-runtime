@@ -5,7 +5,6 @@
 //! implements the `peko principal` CLI surface.
 
 use std::io::IsTerminal;
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -20,9 +19,8 @@ use peko_core::principal::config::{
     PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
     PrincipalMemoryConfig, PrincipalRoutingConfig,
 };
-use peko_core::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use peko_core::principal::{
-    factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
+    factory::{DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory},
     PrincipalManager,
 };
 
@@ -1460,8 +1458,8 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
     );
 
     PrincipalManager::with_path_resolver(
-        resolver.clone(),
-        Arc::new(CliPrincipalMemoryFactory { resolver }),
+        resolver,
+        Arc::new(DefaultPrincipalMemoryFactory),
         Arc::new(DefaultPrincipalRouterFactory),
         peko_core::extensions::framework::async_exec::executor::standalone_inbox_registry(),
     )
@@ -1470,6 +1468,7 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
 fn default_principal_config(name: &str) -> PrincipalConfig {
     PrincipalConfig {
         name: name.to_string(),
+        id: None,
         did: None,
         owner: Subject::User("local".to_string()),
         identity: PrincipalIdentityConfig {
@@ -1530,35 +1529,9 @@ fn render_remove_principal_json(name: &str) -> serde_json::Result<String> {
     }))
 }
 
-/// Memory factory that places Principal memory under the Local tier root.
-///
-/// **Phase A.** Memory now lives at `{data_dir}/principals/{name}/local/`
-/// (Local tier), not `{data_dir}/principals/{name}/memory/`. The factory
-/// takes a `PathResolver` so the runtime writer and the IPC resolver agree
-/// on the same path — the previous hand-rolled join caused silent
-/// session-export loss.
-struct CliPrincipalMemoryFactory {
-    resolver: peko_core::common::paths::PathResolver,
-}
-
-#[async_trait::async_trait]
-impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
-    async fn create(
-        &self,
-        _principal_id: &peko_subject::PrincipalId,
-        workspace_path: &Path,
-    ) -> Arc<dyn peko_core::principal::PrincipalMemory> {
-        let name = workspace_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let local_root = self.resolver.principal_layout(&name).local.root;
-        let _ = tokio::fs::create_dir_all(&local_root).await;
-        let memory = DefaultPrincipalMemory::new(local_root);
-        let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
-        Arc::new(memory)
-    }
-}
+// Memory placement is the default: `PrincipalManager` passes the
+// principal's Local tier root (`{data_dir}/principals/{name}/local/`) to
+// the factory, so `DefaultPrincipalMemoryFactory` is used directly.
 
 #[cfg(test)]
 mod tests {

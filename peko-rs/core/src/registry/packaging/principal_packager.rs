@@ -223,12 +223,7 @@ impl PrincipalPackager {
         // the legacy `extensions/` prefix is no longer emitted by the
         // packager. The unpackager still accepts it on import.
         let layer_prefixes = [
-            "config",
-            "identity",
-            "agents",
-            "memory",
-            "sessions",
-            "plugins",
+            "config", "identity", "agents", "memory", "sessions", "plugins",
         ];
 
         for prefix in layer_prefixes {
@@ -483,6 +478,7 @@ mod tests {
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
+            id: None,
             did: Some(PrincipalDID(did.to_string())),
             owner: peko_auth::Subject::User("local".to_string()),
             identity: Default::default(),

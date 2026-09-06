@@ -80,10 +80,11 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
 /// Like [`create_mock_principal`], but additionally grants the Principal a set
 /// of capability tools.
 ///
-/// Newly-created Principals have an empty `[capabilities] grants` list by
-/// default. Tests that drive the root agent into calling tools (e.g.
-/// `Write`, `Bash`, `Agent`) must grant them here, or the runtime's tool
-/// dispatcher rejects the tool_call.
+/// Newly-created Principals ship the `tool:*` / `agent:*` / `skill:*`
+/// wildcards via `Capabilities::starter_bundle`, so extra grants are no
+/// longer required for the root agent to call built-in tools. This helper
+/// remains for tests that want an explicit, narrower grant list recorded
+/// in `principal.toml`.
 ///
 /// `tools` are bare tool names (e.g. `"Write"`, `"Bash"`, `"Agent"`) or
 /// already-typed capability strings (e.g. `"universal:calculator_simple"`).

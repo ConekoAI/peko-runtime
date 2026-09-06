@@ -97,9 +97,11 @@ impl CronRuntime for DaemonCronAdapter {
         // outside the implicit principal context, so we look up by
         // `job.principal_id` and write to the matching per-principal
         // schedule file.
-        let principal =
-            crate::daemon::cron_engine::resolve_principal(&self.principal_manager, &job.principal_id)
-                .await;
+        let principal = crate::daemon::cron_engine::resolve_principal(
+            &self.principal_manager,
+            &job.principal_id,
+        )
+        .await;
         let Some(p) = principal else {
             return Err(anyhow::anyhow!(
                 "Principal '{}' is not loaded",
@@ -128,6 +130,27 @@ impl CronRuntime for DaemonCronAdapter {
             .map_err(|e| anyhow::anyhow!("Failed to remove job: {e}"))?;
         if !removed {
             warn!("cron remove: job {job_id} not found under principal {name}");
+        }
+        Ok(())
+    }
+
+    async fn update_job(
+        &self,
+        job_id: &str,
+        enabled: Option<bool>,
+        wake_on_completion: Option<bool>,
+    ) -> Result<()> {
+        let (_name, path) = self
+            .resolve_owner(job_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
+        let scheduler =
+            CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
+        let updated = scheduler
+            .update_job_fields(job_id, enabled, wake_on_completion)
+            .map_err(|e| anyhow::anyhow!("Failed to update job: {e}"))?;
+        if !updated {
+            return Err(anyhow::anyhow!("Job {job_id} not found"));
         }
         Ok(())
     }

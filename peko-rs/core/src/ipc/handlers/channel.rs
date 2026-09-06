@@ -19,7 +19,6 @@ use async_trait::async_trait;
 use peko_channel::port::Checkpoint;
 use peko_channel::{ChannelCliRouter, ChannelId, ChannelPort};
 
-use crate::common::paths::PathResolver;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
@@ -40,11 +39,6 @@ use std::str::FromStr;
 /// `ResponsePacket::Error { "not loaded" }`. Production hosts that
 /// have a `PrincipalManager` override the method to return `Some`.
 pub(crate) trait ChannelHost: Send + Sync {
-    /// Typed path resolver. The handler doesn't currently use it
-    /// (PR-2 lets `ChannelCliRouter` route through the port), but the
-    /// trait shape mirrors `CronHost` for forward compatibility.
-    fn path_resolver(&self) -> PathResolver;
-
     /// Channel port for all `ChannelPort` operations.
     fn channel_port(&self) -> Arc<dyn ChannelPort>;
 
@@ -67,12 +61,7 @@ pub(crate) trait ChannelHost: Send + Sync {
     /// `AsyncSpawn` of `ChannelRead` via `AsyncExecutor::spawn`)
     /// override this to fire the dispatch — the handler keeps the
     /// log + swallow contract.
-    fn ensure_invitee_subscriber(
-        &self,
-        _invitee: &PrincipalId,
-        _channel: &ChannelId,
-    ) {
-    }
+    fn ensure_invitee_subscriber(&self, _invitee: &PrincipalId, _channel: &ChannelId) {}
 
     /// Phase 4 (agent-session paradigm sprint): post-create hook. The
     /// handler calls this from the `ChannelCreate` success arm so the
@@ -118,9 +107,7 @@ impl ChannelHandler {
         let name_owned = name.to_string();
         tokio::task::block_in_place(|| {
             let runtime = tokio::runtime::Handle::current();
-            runtime.block_on(async {
-                pm.get_by_name(&name_owned).await.map(|p| p.id.clone())
-            })
+            runtime.block_on(async { pm.get_by_name(&name_owned).await.map(|p| p.id.clone()) })
         })
     }
 
@@ -184,7 +171,9 @@ impl ChannelHandler {
                         return self
                             .send_forbidden(
                                 request_id,
-                                &format!("caller may only read channels as their own identity ('{u}')"),
+                                &format!(
+                                    "caller may only read channels as their own identity ('{u}')"
+                                ),
                                 sink,
                             )
                             .await;
@@ -197,13 +186,11 @@ impl ChannelHandler {
             return Ok(true);
         };
         match self.host.channel_port().list_members(channel).await {
-            Ok(members) if members.iter().any(|m| *m == requester) => Ok(true),
+            Ok(members) if members.contains(&requester) => Ok(true),
             Ok(_) => {
                 let response = ResponsePacket::Error {
                     request_id,
-                    message: format!(
-                        "requester '{requester}' is not a member of the channel"
-                    ),
+                    message: format!("requester '{requester}' is not a member of the channel"),
                 };
                 send_response(sink, response).await?;
                 Ok(false)
@@ -374,9 +361,7 @@ impl RequestHandler for ChannelHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!(
-                                "Inviter principal '{inviter_name}' is not loaded"
-                            ),
+                            message: format!("Inviter principal '{inviter_name}' is not loaded"),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -500,9 +485,7 @@ impl RequestHandler for ChannelHandler {
                         None => {
                             let response = ResponsePacket::Error {
                                 request_id,
-                                message: format!(
-                                    "Sender principal '{sender_name}' is not loaded"
-                                ),
+                                message: format!("Sender principal '{sender_name}' is not loaded"),
                             };
                             send_response(sink, response).await?;
                             return Ok(());
@@ -520,11 +503,7 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
-                match self
-                    .router()
-                    .handle_post(&ch, &sender, &text, parent)
-                    .await
-                {
+                match self.router().handle_post(&ch, &sender, &text, parent).await {
                     Ok(resp) => {
                         let response = ResponsePacket::ChannelPosted {
                             request_id,
@@ -565,7 +544,10 @@ impl RequestHandler for ChannelHandler {
                     }
                 };
                 // ADR-049 Phase 2 (D6): membership-gated read.
-                if !self.gate_channel_read(&ch, requester.as_deref(), caller, request_id, sink).await? {
+                if !self
+                    .gate_channel_read(&ch, requester.as_deref(), caller, request_id, sink)
+                    .await?
+                {
                     return Ok(());
                 }
                 // Three read modes: search (query/author set) runs the
@@ -583,8 +565,7 @@ impl RequestHandler for ChannelHandler {
                         limit: tail.unwrap_or(50).clamp(1, 1000),
                     };
                     port.search(&ch, &q).await.map(|page| {
-                        let (ids, events): (Vec<_>, Vec<_>) =
-                            page.events.into_iter().unzip();
+                        let (ids, events): (Vec<_>, Vec<_>) = page.events.into_iter().unzip();
                         (events, ids, page.has_more, page.resume_before)
                     })
                 } else {
@@ -598,7 +579,10 @@ impl RequestHandler for ChannelHandler {
                                 (events, ids, page.has_more, None)
                             }),
                         None => port
-                            .peek_with_ids(&ch, &peko_channel::Checkpoint(since.unwrap_or_default()))
+                            .peek_with_ids(
+                                &ch,
+                                &peko_channel::Checkpoint(since.unwrap_or_default()),
+                            )
                             .await
                             .map(|items| {
                                 let (ids, events): (Vec<_>, Vec<_>) = items.into_iter().unzip();
@@ -628,7 +612,10 @@ impl RequestHandler for ChannelHandler {
                 }
             }
 
-            RequestPacket::ChannelMembers { request_id, channel } => {
+            RequestPacket::ChannelMembers {
+                request_id,
+                channel,
+            } => {
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
                     None => {
@@ -701,9 +688,7 @@ impl RequestHandler for ChannelHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!(
-                                "Principal '{principal_name}' is not loaded"
-                            ),
+                            message: format!("Principal '{principal_name}' is not loaded"),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -739,7 +724,10 @@ impl RequestHandler for ChannelHandler {
                 }
             }
 
-            RequestPacket::ChannelPinToShared { request_id, channel } => {
+            RequestPacket::ChannelPinToShared {
+                request_id,
+                channel,
+            } => {
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
                     None => {
@@ -799,7 +787,10 @@ impl RequestHandler for ChannelHandler {
                 // ADR-049 Phase 2 (D6): same membership gate as
                 // `ChannelPeek` (the replay half of this stream reads
                 // the same log).
-                if !self.gate_channel_read(&ch, requester.as_deref(), caller, request_id, sink).await? {
+                if !self
+                    .gate_channel_read(&ch, requester.as_deref(), caller, request_id, sink)
+                    .await?
+                {
                     return Ok(());
                 }
                 run_channel_events_watch(
@@ -936,6 +927,7 @@ async fn run_channel_events_watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::paths::PathResolver;
     use peko_channel::port::{CreateOpts, PostMsg};
     use peko_channel::ChannelConfig;
     use peko_channel::ChannelStore;
@@ -969,27 +961,18 @@ mod tests {
     }
 
     impl ChannelHost for TestChannelHost {
-        fn path_resolver(&self) -> PathResolver {
-            self.path_resolver.clone()
-        }
         fn channel_port(&self) -> Arc<dyn ChannelPort> {
             self.port.clone()
         }
         // Default `principal_manager` returns None — happy paths
         // don't need it.
 
-        fn ensure_invitee_subscriber(
-            &self,
-            invitee: &PrincipalId,
-            channel: &ChannelId,
-        ) {
+        fn ensure_invitee_subscriber(&self, invitee: &PrincipalId, channel: &ChannelId) {
             // PR-4c tests: configurable panic simulates a misbehaving
             // host. The handler's log + swallow contract means the
             // invite response still surfaces success even when the
             // kickoff panics.
-            if self.kickoff_should_panic {
-                panic!("simulated kickoff failure");
-            }
+            assert!(!self.kickoff_should_panic, "simulated kickoff failure");
             self.kickoff_log
                 .lock()
                 .unwrap()
@@ -1043,7 +1026,10 @@ mod tests {
     /// event is visible to the host's port (same on-disk layout).
     async fn seed_channel(host: &TestChannelHost) -> ChannelId {
         let runtime_dir = host.path_resolver.runtime_dir();
-        let adapter = ChannelStore::new(ChannelConfig { runtime_dir, shared_dir: None });
+        let adapter = ChannelStore::new(ChannelConfig {
+            runtime_dir,
+            shared_dir: None,
+        });
         let creator = PrincipalId::generate();
         let ch = adapter
             .create(&creator, CreateOpts::runtime("seed"))
@@ -1193,8 +1179,7 @@ mod tests {
             id: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
-        let sink: &dyn crate::ipc::response_sink::ResponseSink =
-            &CaptureSink(captured.clone());
+        let sink: &dyn crate::ipc::response_sink::ResponseSink = &CaptureSink(captured.clone());
         handler
             .handle(
                 req,
@@ -1207,12 +1192,12 @@ mod tests {
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
         match &captured[0] {
-            ResponsePacket::Error { request_id, message } => {
+            ResponsePacket::Error {
+                request_id,
+                message,
+            } => {
                 assert_eq!(*request_id, 7);
-                assert!(
-                    message.contains("not loaded"),
-                    "got {message}"
-                );
+                assert!(message.contains("not loaded"), "got {message}");
             }
             other => panic!("expected Error, got {other:?}"),
         }
@@ -1236,8 +1221,7 @@ mod tests {
             author: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
-        let sink: &dyn crate::ipc::response_sink::ResponseSink =
-            &CaptureSink(captured.clone());
+        let sink: &dyn crate::ipc::response_sink::ResponseSink = &CaptureSink(captured.clone());
         handler
             .handle(
                 req,
@@ -1288,8 +1272,7 @@ mod tests {
             author: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
-        let sink: &dyn crate::ipc::response_sink::ResponseSink =
-            &CaptureSink(captured.clone());
+        let sink: &dyn crate::ipc::response_sink::ResponseSink = &CaptureSink(captured.clone());
         handler
             .handle(
                 req,
@@ -1299,8 +1282,7 @@ mod tests {
             )
             .await
             .expect("handle");
-        let captured = captured.lock().unwrap();
-        match &captured[0] {
+        match &captured.lock().unwrap()[0] {
             ResponsePacket::ChannelPeekResult {
                 events,
                 event_ids,
@@ -1313,7 +1295,7 @@ mod tests {
                 assert!(has_more, "the Created event at line 0 is older");
             }
             other => panic!("expected ChannelPeekResult, got {other:?}"),
-        }
+        };
 
         // Page back with `before` = the oldest line just seen.
         let req = RequestPacket::ChannelPeek {
@@ -1327,8 +1309,7 @@ mod tests {
             author: None,
         };
         let captured2 = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
-        let sink2: &dyn crate::ipc::response_sink::ResponseSink =
-            &CaptureSink(captured2.clone());
+        let sink2: &dyn crate::ipc::response_sink::ResponseSink = &CaptureSink(captured2.clone());
         handler
             .handle(
                 req,
@@ -1361,9 +1342,12 @@ mod tests {
         let _ = tmp;
         let handler = ChannelHandler::new(host.clone());
         let ch = seed_channel(&host).await; // Created + Posted("hi")
-        // A second, non-matching post.
+                                            // A second, non-matching post.
         let runtime_dir = host.path_resolver.runtime_dir();
-        let adapter = ChannelStore::new(ChannelConfig { runtime_dir, shared_dir: None });
+        let adapter = ChannelStore::new(ChannelConfig {
+            runtime_dir,
+            shared_dir: None,
+        });
         let members = adapter.list_members(&ch).await.expect("members");
         let sender = members[0].clone();
         adapter
@@ -1382,8 +1366,7 @@ mod tests {
             author: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
-        let sink: &dyn crate::ipc::response_sink::ResponseSink =
-            &CaptureSink(captured.clone());
+        let sink: &dyn crate::ipc::response_sink::ResponseSink = &CaptureSink(captured.clone());
         handler
             .handle(
                 req,
@@ -1393,8 +1376,7 @@ mod tests {
             )
             .await
             .expect("handle");
-        let captured = captured.lock().unwrap();
-        match &captured[0] {
+        match &captured.lock().unwrap()[0] {
             ResponsePacket::ChannelPeekResult {
                 events,
                 event_ids,
@@ -1411,7 +1393,7 @@ mod tests {
                 assert_eq!(resume_before, &None);
             }
             other => panic!("expected ChannelPeekResult, got {other:?}"),
-        }
+        };
     }
 
     // -----------------------------------------------------------------
@@ -1423,7 +1405,10 @@ mod tests {
     /// the channel id.
     async fn seed_channel_with_user_member(host: &TestChannelHost) -> (ChannelStore, ChannelId) {
         let runtime_dir = host.path_resolver.runtime_dir();
-        let adapter = ChannelStore::new(ChannelConfig { runtime_dir, shared_dir: None });
+        let adapter = ChannelStore::new(ChannelConfig {
+            runtime_dir,
+            shared_dir: None,
+        });
         let creator = PrincipalId::generate();
         let ch = adapter
             .create(&creator, CreateOpts::runtime("seed"))
@@ -1468,16 +1453,18 @@ mod tests {
             )
             .await
             .expect("handle");
-        let captured = captured.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        match &captured[0] {
-            ResponsePacket::ChannelPosted { request_id, task_id, .. } => {
+        assert_eq!(captured.lock().unwrap().len(), 1);
+        match &captured.lock().unwrap()[0] {
+            ResponsePacket::ChannelPosted {
+                request_id,
+                task_id,
+                ..
+            } => {
                 assert_eq!(*request_id, 5);
                 assert_eq!(task_id, "2", "Created=0, MemberJoined=1, Posted=2");
             }
             other => panic!("expected ChannelPosted, got {other:?}"),
-        }
-        drop(captured);
+        };
 
         // The event's author is the canonical user wire form.
         let events = adapter
@@ -1523,7 +1510,10 @@ mod tests {
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
         match &captured[0] {
-            ResponsePacket::Error { request_id, message } => {
+            ResponsePacket::Error {
+                request_id,
+                message,
+            } => {
                 assert_eq!(*request_id, 6);
                 assert!(message.contains("not a member"), "got {message}");
             }
@@ -1575,14 +1565,12 @@ mod tests {
             .handle(peek(Some("user:mallory")), &test_caller(), &sink, &peer)
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("not a member"), "got {message}");
             }
             other => panic!("expected Error for non-member requester; got {other:?}"),
-        }
-        drop(guard);
+        };
 
         // Malformed requester subject → validation error.
         let (captured, sink) = capture_sink();
@@ -1590,14 +1578,15 @@ mod tests {
             .handle(peek(Some("not-a-subject")), &test_caller(), &sink, &peer)
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
-                assert!(message.contains("invalid requester subject"), "got {message}");
+                assert!(
+                    message.contains("invalid requester subject"),
+                    "got {message}"
+                );
             }
             other => panic!("expected Error for malformed requester; got {other:?}"),
-        }
-        drop(guard);
+        };
 
         // Absent requester → ungated (Phase 4 escape hatch).
         let (captured, sink) = capture_sink();
@@ -1632,18 +1621,24 @@ mod tests {
         };
         let (captured, sink) = capture_sink();
         handler
-            .handle(req, &test_caller(), &sink,
-                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")))
+            .handle(
+                req,
+                &test_caller(),
+                &sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
-            [ResponsePacket::Error { request_id, message }] => {
+        match captured.lock().unwrap().as_slice() {
+            [ResponsePacket::Error {
+                request_id,
+                message,
+            }] => {
                 assert_eq!(*request_id, 9);
                 assert!(message.contains("not a member"), "got {message}");
             }
             other => panic!("expected Error for non-member watch requester; got {other:?}"),
-        }
+        };
     }
 
     // -----------------------------------------------------------------
@@ -1711,13 +1706,12 @@ mod tests {
             .handle(peek(Some("user:bob")), &jwt_alice, &sink, &peer)
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("[forbidden]"), "got {message}");
             }
             other => panic!("expected [forbidden] for impersonation; got {other:?}"),
-        }
+        };
 
         // A JWT caller who is NOT a member has no escape: gated on
         // their own identity and refused.
@@ -1727,13 +1721,12 @@ mod tests {
             .handle(peek(None), &jwt_mallory, &sink, &peer)
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("not a member"), "got {message}");
             }
             other => panic!("expected not-a-member for JWT non-member; got {other:?}"),
-        }
+        };
 
         // A sub that itself carries the `user:` wire prefix normalizes
         // to the same bare id (mirrors `from_bridge_user`).
@@ -1794,13 +1787,12 @@ mod tests {
             .handle(post("user:bob"), &jwt_alice, &sink, &peer)
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("[forbidden]"), "got {message}");
             }
             other => panic!("expected [forbidden] for user impersonation; got {other:?}"),
-        }
+        };
 
         // As a principal → forbidden (a JWT user is never a principal
         // sender; checked before resolution, so the missing
@@ -1810,13 +1802,12 @@ mod tests {
             .handle(post("some-principal"), &jwt_alice, &sink, &peer)
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("[forbidden]"), "got {message}");
             }
             other => panic!("expected [forbidden] for principal impersonation; got {other:?}"),
-        }
+        };
     }
 
     /// An API-key caller is not a user: `user:*` requester/sender
@@ -1851,13 +1842,12 @@ mod tests {
             )
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("[forbidden]"), "got {message}");
             }
             other => panic!("expected [forbidden] for api-key user requester; got {other:?}"),
-        }
+        };
 
         // user:* sender on a post → forbidden.
         let (captured, sink) = capture_sink();
@@ -1876,15 +1866,13 @@ mod tests {
             )
             .await
             .expect("handle");
-        let guard = captured.lock().unwrap();
-        match guard.as_slice() {
+        match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("[forbidden]"), "got {message}");
             }
             other => panic!("expected [forbidden] for api-key user sender; got {other:?}"),
-        }
+        };
     }
-
 
     // -----------------------------------------------------------------------
     // PR-3d: `ChannelPinToShared` IPC variant + shared-tier opt-in
@@ -1935,7 +1923,12 @@ mod tests {
             channel: ch.to_string(),
         };
         handler
-            .handle(req, &test_caller(), &*sink, &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")))
+            .handle(
+                req,
+                &test_caller(),
+                &*sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
             .await
             .expect("handle");
 
@@ -1959,7 +1952,11 @@ mod tests {
         }
 
         // Runtime source must still resolve (COPY semantics).
-        let runtime_chan_dir = host.path_resolver.runtime_dir().join("channels").join(ch.as_str());
+        let runtime_chan_dir = host
+            .path_resolver
+            .runtime_dir()
+            .join("channels")
+            .join(ch.as_str());
         assert!(runtime_chan_dir.exists(), "runtime source must remain");
     }
 
@@ -1979,14 +1976,22 @@ mod tests {
             channel: ch.to_string(),
         };
         handler
-            .handle(req, &test_caller(), &*sink, &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")))
+            .handle(
+                req,
+                &test_caller(),
+                &*sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+            )
             .await
             .expect("handle");
 
         let packets = sink.0.lock().unwrap();
         assert_eq!(packets.len(), 1);
         match &packets[0] {
-            ResponsePacket::Error { request_id, message } => {
+            ResponsePacket::Error {
+                request_id,
+                message,
+            } => {
                 assert_eq!(*request_id, 18);
                 assert!(
                     message.contains("pin-to-shared") || message.contains("shared"),
@@ -2057,10 +2062,7 @@ mod tests {
             requester: None,
         };
         let json = serde_json::to_string(&req).expect("encode");
-        assert!(
-            json.contains("\"channel_events_watch\""),
-            "got {json}"
-        );
+        assert!(json.contains("\"channel_events_watch\""), "got {json}");
         let decoded: RequestPacket = serde_json::from_str(&json).expect("decode");
         match decoded {
             RequestPacket::ChannelEventsWatch {
@@ -2088,10 +2090,7 @@ mod tests {
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");
-        assert!(
-            json.contains("\"channel_event_received\""),
-            "got {json}"
-        );
+        assert!(json.contains("\"channel_event_received\""), "got {json}");
         let decoded: ResponsePacket = serde_json::from_str(&json).expect("decode");
         match decoded {
             ResponsePacket::ChannelEventReceived {
@@ -2139,12 +2138,15 @@ mod tests {
         use peko_channel::port::PostMsg;
         let (tmp, host) = test_host();
         let _ = tmp;
-        let handler = ChannelHandler::new(host.clone());
+        let _handler = ChannelHandler::new(host.clone());
         let port = host.channel_port();
 
         // Seed a channel with one Posted event (Created is line 0).
         let runtime_dir = host.path_resolver.runtime_dir();
-        let adapter = ChannelStore::new(ChannelConfig { runtime_dir, shared_dir: None });
+        let adapter = ChannelStore::new(ChannelConfig {
+            runtime_dir,
+            shared_dir: None,
+        });
         let creator = PrincipalId::generate();
         let ch = adapter
             .create(&creator, CreateOpts::runtime("seed"))
@@ -2183,7 +2185,11 @@ mod tests {
             // Small delay so the streaming task subscribes first.
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             live_port
-                .post(&live_ch, &Subject::from(&live_creator), PostMsg::root("live"))
+                .post(
+                    &live_ch,
+                    &Subject::from(&live_creator),
+                    PostMsg::root("live"),
+                )
                 .await
                 .expect("post 2");
         });
@@ -2191,13 +2197,10 @@ mod tests {
         // Wait for the streaming task to finish (it returns Ok(())
         // when the sink errors). The timeout guards against a
         // regression where the loop never exits.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            handle,
-        )
-        .await
-        .expect("streaming task must complete within 2s")
-        .expect("task must not panic");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("streaming task must complete within 2s")
+            .expect("task must not panic");
         result.expect("run_channel_events_watch must succeed");
 
         // The sink must have observed at least 2 packets (the seed

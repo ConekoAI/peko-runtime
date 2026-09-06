@@ -37,7 +37,7 @@ pub struct CronDeleteArgs {
     /// Job ID to cancel
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Optional label to cancel (peko extension; alternative to `id`)
+    /// Optional label to cancel (alternative to `id`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -49,7 +49,7 @@ impl Tool for CronDeleteTool {
     }
 
     fn description(&self) -> String {
-        "Cancel a scheduled job by ID (or by label as a peko extension).".to_string()
+        "Cancel a scheduled job by ID (or by label).".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -68,7 +68,7 @@ impl Tool for CronDeleteTool {
                 },
                 "label": {
                     "type": "string",
-                    "description": "Label of the scheduled job to cancel (peko extension)"
+                    "description": "Label of the scheduled job to cancel (alternative to id)"
                 }
             },
             "oneOf": [
@@ -132,7 +132,7 @@ impl Tool for CronDeleteTool {
 }
 
 /// Find a job ID by its label, restricted to the given Principal.
-async fn resolve_id_by_label(
+pub(crate) async fn resolve_id_by_label(
     runtime: &dyn crate::tools::CronRuntime,
     label: &str,
     principal_id: &str,
@@ -145,7 +145,7 @@ async fn resolve_id_by_label(
 }
 
 /// Verify that an explicit job ID belongs to the given Principal.
-async fn verify_id_belongs_to_principal(
+pub(crate) async fn verify_id_belongs_to_principal(
     runtime: &dyn crate::tools::CronRuntime,
     job_id: &str,
     principal_id: &str,

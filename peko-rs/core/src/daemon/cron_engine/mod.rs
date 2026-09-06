@@ -16,7 +16,9 @@ use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
-use peko_cron::{CronJob, CronJobAction, CronRun, CronScheduler, DEFAULT_MAX_RETRIES, IdleDetector};
+use peko_cron::{
+    CronJob, CronJobAction, CronRun, CronScheduler, IdleDetector, DEFAULT_MAX_RETRIES,
+};
 use peko_observability::Observability;
 use peko_subject::PrincipalId;
 use peko_tools_core::ToolResult;
@@ -282,7 +284,7 @@ impl CronEngine {
         Ok(())
     }
 
-    /// Handle a system event and trigger matching event-triggered jobs.
+    // Handle a system event and trigger matching event-triggered jobs.
     // ------------------------------------------------------------------
     // Job execution
     // ------------------------------------------------------------------
@@ -298,6 +300,7 @@ impl CronEngine {
     /// Errors:
     /// - `"job {id} not found"` if no loaded principal owns the job.
     /// - `"cron lookup"` for low-level scheduler failures.
+    #[cfg(test)]
     pub async fn execute_job_for_id(&self, job_id: &str) -> Result<String> {
         // Walk loaded schedulers looking for the one that owns the
         // job. Schedulers are keyed by principal_id (DID); the
@@ -349,6 +352,28 @@ impl CronEngine {
         let run_id = Uuid::new_v4().to_string();
         let started_at = Utc::now();
 
+        let scheduler = self.scheduler_for(&job.principal_id).await?;
+
+        // Coalesce with an in-flight run of the same job: SpawnTool
+        // jobs now AWAIT the tool's terminal outcome (bounded by the
+        // executor's `timeout_secs` enforcement), so without this guard
+        // an `Every` job whose tool outlives one poll interval would
+        // re-fire on every tick while the previous run is still open.
+        // A row stuck on "running" from a crashed daemon is closed by
+        // the janitor's `reconcile_running_runs`, unblocking the job on
+        // a later tick.
+        if scheduler
+            .list_running_runs()?
+            .iter()
+            .any(|r| r.job_id == job.id)
+        {
+            info!(
+                "⏭️  Job '{}' already has a run in flight; skipping this fire",
+                job.name
+            );
+            return Ok(());
+        }
+
         let _ = self
             .observability
             .audit_with_caller(
@@ -374,31 +399,49 @@ impl CronEngine {
             output: None,
             error: None,
         };
-        let scheduler = self.scheduler_for(&job.principal_id).await?;
         scheduler.record_run(&run)?;
 
         let result = match &job.action {
-            CronJobAction::Send { .. } => self.run_send_job(&job).await,
+            CronJobAction::Send { .. } => self
+                .run_send_job(&job)
+                .await
+                .map(|(status, output)| (status, output, None)),
             CronJobAction::SpawnTool { .. } => self.run_spawn_tool_job(&job).await,
         };
 
         let (status, output, error) = match result {
-            Ok((s, o)) => (s, o, None),
+            Ok((s, o, e)) => (s, o, e),
             Err(e) => ("failed".to_string(), None, Some(e.to_string())),
         };
 
+        // Surface failures loudly — the run row and the `cron.result`
+        // audit event below carry the detail; this WARN is what an
+        // operator sees live in the daemon log (2026-09-06 live bug: a
+        // failing `ChannelSend` spawn vanished with no trace).
+        if status != "success" && status != "running" {
+            warn!(
+                "⚠️ Cron job '{}' (run {}) finished with status '{}': {}",
+                job.name,
+                run_id,
+                status,
+                error
+                    .as_deref()
+                    .or(output.as_deref())
+                    .unwrap_or("<no detail>")
+            );
+        }
+
         let finished_at = Utc::now();
         if status == "running" {
-            // SpawnTool fire returned immediately with the async task
-            // id: the run stays open until the janitor reconciles the
-            // task's terminal state via `finalize_run`. Attach the task
-            // id to the START row — a second `record_run` with the same
-            // id appended a duplicate row stuck on "running" forever
-            // (2026-08-07 field test, F3).
+            // The SpawnTool await outlived its wait budget without a
+            // terminal task status: the run stays open until the
+            // janitor reconciles the task's terminal state via
+            // `finalize_run`. Attach the task id to the START row — a
+            // second `record_run` with the same id appends a duplicate
+            // row stuck on "running" forever (2026-08-07 field test, F3).
             scheduler.attach_run_output(&run_id, output.clone(), error.clone())?;
         } else {
-            // Terminal outcome (Send path, or an immediate failure):
-            // close the start row in place.
+            // Terminal outcome: close the start row in place.
             scheduler.finalize_run(&run_id, &status, output.clone(), error.clone())?;
         }
 
@@ -478,9 +521,9 @@ impl CronEngine {
         // One-shot reaping keys on the FIRE, not the run outcome:
         // "fired" is the lifecycle fact that retires a one-shot job;
         // the run's status belongs to history (preserved). Gating on
-        // `status == "success"` left SpawnTool one-shots (which return
-        // "running" immediately) parked on the 100-year sentinel
-        // forever (2026-08-07 field test, F3).
+        // `status == "success"` left SpawnTool one-shots (which then
+        // returned "running" immediately) parked on the 100-year
+        // sentinel forever (2026-08-07 field test, F3).
         if job.delete_after_run {
             info!(
                 "🗑️  Deleting one-shot job '{}' after run (status: {})",
@@ -526,7 +569,7 @@ impl CronEngine {
             ));
         };
 
-        let principal = resolve_principal(&pm, &job.principal_id)
+        let principal = resolve_principal(pm, &job.principal_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0))?;
 
@@ -583,11 +626,23 @@ impl CronEngine {
     ///    trunk inbox (`root:self`) when `wake_on_completion=true`
     ///    (Phase 3b — see below).
     ///
-    /// Returns `("running", Some(task_id))` immediately — the actual
-    /// tool execution is async. The daemon's janitor loop reconciles
-    /// the eventual outcome against the executor's registry to update
-    /// `last_status` (Phase 4).
-    async fn run_spawn_tool_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
+    /// The engine then AWAITS the task's terminal status — bounded by
+    /// the executor's own `timeout_secs` enforcement, so the wait
+    /// cannot hang — and returns the real outcome (`("success",
+    /// Some(output), None)` / `("failed", None, Some(error))` / … via
+    /// [`map_async_status`]) so the `CronRun` history and the
+    /// `cron.result` audit event record what actually happened
+    /// (2026-09-06 live bug: the fire-and-forget "running" placeholder
+    /// let a failing `ChannelSend` spawn vanish with no trace).
+    /// Awaiting is safe for the scheduler: `execute_job` runs detached
+    /// in its own `tokio::spawn` per job. If the wait outlives its
+    /// budget without a terminal status, the run stays open as
+    /// "running" with the task id attached and the janitor's
+    /// `reconcile_running_runs` closes it later.
+    async fn run_spawn_tool_job(
+        &self,
+        job: &CronJob,
+    ) -> Result<(String, Option<String>, Option<String>)> {
         let CronJobAction::SpawnTool {
             tool_name,
             tool_params,
@@ -600,6 +655,7 @@ impl CronEngine {
             // SpawnTool actions here. Anything else is a bug.
             return Ok((
                 "failed".to_string(),
+                None,
                 Some("run_spawn_tool_job called with non-SpawnTool action".to_string()),
             ));
         };
@@ -609,6 +665,7 @@ impl CronEngine {
             None => {
                 return Ok((
                     "failed".to_string(),
+                    None,
                     Some("ExtensionCore dropped; cannot resolve tool".to_string()),
                 ));
             }
@@ -632,14 +689,16 @@ impl CronEngine {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
                 "failed".to_string(),
+                None,
                 Some("PrincipalManager not available".to_string()),
             ));
         };
-        let principal = match resolve_principal(&pm, &job.principal_id).await {
+        let principal = match resolve_principal(pm, &job.principal_id).await {
             Some(p) => p,
             None => {
                 return Ok((
                     "failed".to_string(),
+                    None,
                     Some(format!("Principal '{}' not loaded", job.principal_id.0)),
                 ));
             }
@@ -648,16 +707,98 @@ impl CronEngine {
         // extensions from that same snapshot. Both values flow through the
         // canonical tool funnel so extension ownership requirements cannot be
         // bypassed by scheduled execution.
-        let (snapshot_capabilities, snapshot_principal_id, capabilities) = {
+        //
+        // `principal_id` must be the principal's real id (`prin_…`), NOT
+        // its display name: tools that authorize against it (ChannelSend's
+        // membership check matches the stored `prin_…` member row) reject
+        // a name-shaped sender. The name rides along separately as
+        // `principal_name` for tools that want the display string.
+        let (snapshot_capabilities, snapshot_principal_id, snapshot_principal_name, capabilities) = {
             let config = principal.config.read().await;
             let capabilities = config.capabilities.clone();
             let caps = capabilities.grants.iter().map(|c| c.0.clone()).collect();
-            (caps, config.name.clone(), capabilities)
+            (
+                caps,
+                principal.id.0.clone(),
+                config.name.clone(),
+                capabilities,
+            )
         };
         let snapshot_active_extensions = pm
             .active_extensions_for(&principal, &capabilities)
             .await
             .to_vec();
+
+        // Agent-specific built-ins (ChannelSend, Agent, Task*, Async*) are
+        // normally registered by `Agent::init_builtins_async` at run start.
+        // A cron SpawnTool fire can run before any agent turn (e.g. right
+        // after daemon start), leaving the hook point unhandled and the
+        // job failing with "Tool '…' not available". ChannelSend is the
+        // cron ping path, so ensure its registration here. Registration
+        // is idempotent (`register_tool` unregisters first), but skip the
+        // churn when a run already registered it.
+        if tool_name == crate::tools::builtin::channel::CHANNEL_SEND_TOOL_NAME
+            && core
+                .get_tool_metadata(tool_name, &principal.id)
+                .await
+                .is_none()
+        {
+            let caller_did = principal.config.read().await.did.clone();
+            match caller_did {
+                Some(did) => {
+                    match crate::tools::builtin::channel::build_channel_send_tool(&core, &did.0) {
+                        Some(tool) => {
+                            if let Err(e) =
+                                crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+                                    &core,
+                                    tool,
+                                    &principal.id,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "cron SpawnTool: ChannelSend ensure-registration failed: {e}"
+                                );
+                            }
+                        }
+                        None => {
+                            tracing::warn!(
+                                "cron SpawnTool: no ChannelPort on ExtensionCore — \
+                                 ChannelSend cannot be registered"
+                            );
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        "cron SpawnTool: principal '{}' has no DID — \
+                         ChannelSend cannot be registered",
+                        job.principal_id.0
+                    );
+                }
+            }
+        }
+
+        // Agent cold start: same registration gap as ChannelSend, but
+        // the Agent tool needs a fully-wired `SubagentExecutor`
+        // (provider, session manager, quota, persona). Build one through
+        // the shared `PeerChildTurns::build` recipe so the wiring cannot
+        // drift from the ingress path, and install the peer-turn surface
+        // so cron-attached turns on peer-bound sessions (e.g.
+        // `/local-user`) deliver their reply to the peer's DM channel.
+        if tool_name == "Agent"
+            && core
+                .get_tool_metadata(tool_name, &principal.id)
+                .await
+                .is_none()
+        {
+            if let Err(e) = self
+                .ensure_agent_tool_registered(pm, &principal, &core)
+                .await
+            {
+                tracing::warn!("cron SpawnTool: Agent ensure-registration failed: {e:#}");
+            }
+        }
 
         let wake = wake_on_completion.unwrap_or(false);
         let timeout = timeout_secs.or(Some(7200));
@@ -689,14 +830,41 @@ impl CronEngine {
                 trunk_session_key.clone(),
             )
             .for_principal(snapshot_principal_id, snapshot_capabilities)
+            .with_principal_name(snapshot_principal_name)
+            // The spawned tool runs unattributed to any live turn, so
+            // give it the trunk session id as its own session context —
+            // tools that resolve the caller session (Agent's
+            // `resolve_reference`, session/Task attribution) refuse the
+            // funnel's "unknown" default. The trunk id is a v5 UUID,
+            // which `resolve_reference` accepts as a raw id.
+            .with_session_id(trunk_session_key.clone())
             .with_active_extensions(snapshot_active_extensions);
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
 
-        // The fire itself completed synchronously (the tool runs in the
-        // background). Return immediately so the cron engine records
-        // the run with the spawn receipt.
-        Ok(("running".to_string(), Some(receipt.task_id)))
+        // Await the task's terminal status by polling `check_status`
+        // (short read-lock probes). Do NOT use
+        // `AsyncExecutor::wait_for_completion` here: it holds the
+        // registry read lock for the whole wait, which blocks the
+        // spawned task's status write and deadlocks until the timeout.
+        // The budget is the task's own timeout plus a grace margin —
+        // the executor flips the task to `TimedOut` itself when its
+        // timeout is exhausted, so this cannot hang.
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(timeout.unwrap_or(7200).saturating_add(5));
+        loop {
+            match executor.check_status(&receipt.task_id).await {
+                Some(status) if status.is_terminal() => break Ok(map_async_status(status)),
+                _ if tokio::time::Instant::now() >= deadline => {
+                    // Still non-terminal (or purged from the registry)
+                    // after the wait budget: leave the run open with
+                    // the task id so `reconcile_running_runs` can close
+                    // it later.
+                    break Ok(("running".to_string(), Some(receipt.task_id), None));
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -773,6 +941,56 @@ impl CronEngine {
         }
         Ok(finalized)
     }
+
+    /// Register the `Agent` tool for a principal whose cron SpawnTool
+    /// job fires before any agent run has happened (cold start).
+    ///
+    /// The tool needs a fully-wired `SubagentExecutor` — provider,
+    /// session manager, quota meter, persona, plan port. Build it
+    /// through the shared [`PeerChildTurns::build`] recipe (the same
+    /// construction the peer-ingress and channel-responder paths use)
+    /// so the wiring cannot drift, then install the
+    /// [`PeerTurnSurface`](crate::agents::subagent_executor::PeerTurnSurface)
+    /// so cron-attached turns on peer-bound sessions (e.g. a recurring
+    /// `Agent new path="local-user"` ping job) deliver their reply to
+    /// the peer's DM channel. PeerChildTurns' own executor stays
+    /// surface-free — the ingress/responder drivers post replies
+    /// themselves.
+    async fn ensure_agent_tool_registered(
+        &self,
+        pm: &Arc<PrincipalManager>,
+        principal: &Arc<crate::principal::Principal>,
+        core: &Arc<ExtensionCore>,
+    ) -> Result<()> {
+        let resolver = pm
+            .llm_resolver()
+            .ok_or_else(|| anyhow::anyhow!("PrincipalManager has no LLM resolver bound"))?;
+        let turns = crate::principal::child_turns::PeerChildTurns::build(
+            principal,
+            &resolver,
+            Arc::clone(&self.observability),
+            Some(pm.shared_inbox_registry()),
+        )
+        .await?;
+        let surface = core.services().channel_port().map(|port| {
+            Arc::new(crate::principal::child_turns::PeerTurnSurfaceImpl::new(
+                Arc::clone(turns.session_manager()),
+                port,
+                principal.id.clone(),
+            )) as Arc<dyn crate::agents::subagent_executor::PeerTurnSurface>
+        });
+        let executor = turns.executor().clone().with_peer_turn_surface(surface);
+        let tool = Arc::new(crate::tools::builtin::messaging::new_agent_tool(Arc::new(
+            executor,
+        )));
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool(core, tool, &principal.id)
+            .await?;
+        info!(
+            principal = %principal.id.0,
+            "cron cold start: registered Agent tool for principal"
+        );
+        Ok(())
+    }
 }
 
 /// Translate a terminal `AsyncTaskStatus` into the wire string the cron
@@ -797,6 +1015,29 @@ fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<
                 .as_ref()
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "<no result data>".to_string());
+            // In-band failure: the tool executed without a transport
+            // error, but its payload reports failure — the standard
+            // `ChannelSendResult` (`"success": false` + `"error"`) and
+            // the Agent tool's error envelope (`"error": "…"`). Record
+            // the run as failed so the history, the `cron.result` audit
+            // event, and the consecutive-failure retry budget reflect
+            // what actually happened instead of accumulating green
+            // "success" rows for pings that never posted.
+            if let Some(v) = result.data.as_ref() {
+                let declared_failure = v.get("success").and_then(|s| s.as_bool()) == Some(false)
+                    || v.get("error")
+                        .and_then(|e| e.as_str())
+                        .is_some_and(|s| !s.is_empty());
+                if declared_failure {
+                    let err = v
+                        .get("error")
+                        .and_then(|e| e.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("tool reported success:false")
+                        .to_string();
+                    return ("failed".to_string(), Some(rendered), Some(err));
+                }
+            }
             ("success".to_string(), Some(rendered), None)
         }
         AsyncTaskStatus::Failed { error } => ("failed".to_string(), None, Some(error)),
@@ -859,6 +1100,44 @@ mod tests {
     use peko_subject::Subject;
     use std::sync::Arc;
     use tempfile::TempDir;
+    /// In-band tool failure must not record as cron success: a
+    /// `Completed` task whose payload declares `success: false`
+    /// (ChannelSendResult) or carries a non-empty `error` string (Agent
+    /// error envelope) maps to a `failed` run with the error surfaced.
+    #[test]
+    fn map_async_status_honors_in_band_failure() {
+        let ok = map_async_status(AsyncTaskStatus::Completed {
+            result: ToolResult::success(serde_json::json!({
+                "success": true, "channel": "chan_x", "error": null
+            })),
+        });
+        assert_eq!(ok.0, "success");
+
+        let send_fail = map_async_status(AsyncTaskStatus::Completed {
+            result: ToolResult::success(serde_json::json!({
+                "success": false, "error": "caller is not a member of this channel"
+            })),
+        });
+        assert_eq!(send_fail.0, "failed");
+        assert_eq!(
+            send_fail.2.as_deref(),
+            Some("caller is not a member of this channel")
+        );
+
+        let agent_fail = map_async_status(AsyncTaskStatus::Completed {
+            result: ToolResult::success(serde_json::json!({
+                "error": "slug 'cron-ping' is already used"
+            })),
+        });
+        assert_eq!(agent_fail.0, "failed");
+        assert!(agent_fail.2.unwrap().contains("already used"));
+
+        // A plain success payload without the envelope fields stays success.
+        let plain = map_async_status(AsyncTaskStatus::Completed {
+            result: ToolResult::success(serde_json::json!("done")),
+        });
+        assert_eq!(plain.0, "success");
+    }
 
     fn engine_from_tmp(tmp: &TempDir) -> CronEngine {
         let idle = Arc::new(IdleDetector::new());
@@ -936,6 +1215,7 @@ mod tests {
     fn test_config(name: &str) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
+            id: None,
             did: None,
             owner: Subject::User("test-owner".to_string()),
             identity: PrincipalIdentityConfig {
@@ -1025,7 +1305,7 @@ mod tests {
                 message: "Hello from cron".to_string(),
                 target: None,
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1097,7 +1377,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 timeout_secs: Some(7200),
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::minutes(5),
@@ -1223,7 +1503,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 timeout_secs: Some(7200),
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::minutes(5),
@@ -1405,7 +1685,7 @@ mod tests {
                 message: "cron tick payload".to_string(),
                 target: None,
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1425,7 +1705,7 @@ mod tests {
         let mut runs: Vec<peko_cron::CronRun> = Vec::new();
         for _ in 0..50 {
             runs = scheduler.get_run_history(&job.id, 10).unwrap();
-            if runs.len() >= 1 && runs[0].status != "running" {
+            if !runs.is_empty() && runs[0].status != "running" {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1593,7 +1873,7 @@ mod tests {
                 message: "organize your memory".to_string(),
                 target: Some("trunk".to_string()),
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1612,7 +1892,7 @@ mod tests {
         let mut runs: Vec<peko_cron::CronRun> = Vec::new();
         for _ in 0..50 {
             runs = scheduler.get_run_history(&job.id, 10).unwrap();
-            if runs.len() >= 1 && runs[0].status != "running" {
+            if !runs.is_empty() && runs[0].status != "running" {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1717,7 +1997,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 timeout_secs: Some(60),
             },
-                        delete_after_run: true,
+            delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),
@@ -1775,6 +2055,24 @@ mod tests {
         }
     }
 
+    /// Failing counterpart of `CronStubTool` — models the 2026-09-06
+    /// live bug's `ChannelSend` with a bad channel id: the dispatch
+    /// itself succeeds, the tool body errors.
+    struct CronFailingStubTool;
+
+    #[async_trait::async_trait]
+    impl peko_tools_core::Tool for CronFailingStubTool {
+        fn name(&self) -> &str {
+            "cron_fail_stub"
+        }
+        fn description(&self) -> String {
+            "stub tool that always fails".to_string()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            anyhow::bail!("unknown channel 'chan_missing' (bad channel id)")
+        }
+    }
+
     /// Phase 3b (2026-08-15): a SpawnTool job with
     /// `wake_on_completion=true` posts its completion steer into the
     /// principal's TRUNK inbox (`root:self`) — NOT the owner's
@@ -1814,19 +2112,28 @@ mod tests {
         );
         let workspace = tmp.path().join("principals");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
+        // Grant the full tool catalog so the F37 capability gate lets
+        // the stub tool execute (`Capabilities::default()` is empty →
+        // fail-closed) — the engine now awaits the tool's outcome, and
+        // this test wants the success path.
+        principal.config.write().await.capabilities = Capabilities::starter_bundle();
 
         // Executor wired to an inbox registry the test can inspect.
         let registry =
             crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
         let executor = Arc::new(AsyncExecutor::new(registry.clone()));
 
-        // ExtensionCore with the stub tool registered so the dispatch
-        // resolves an instance. The capability grant is irrelevant
-        // here: the wake steer fires on ANY terminal status (success or
-        // gate rejection), and this test pins the destination key only.
+        // ExtensionCore with the stub tool registered through the
+        // built-in adapter so the F37 funnel resolves an execution
+        // handler (bare `insert_tool_instance` only fills the
+        // side-table; the hook dispatch would return "not available").
         let core = Arc::new(ExtensionCore::new());
-        core.insert_tool_instance("cron_stub".to_string(), Arc::new(CronStubTool))
-            .await;
+        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
+            &core,
+            Arc::new(CronStubTool),
+        )
+        .await
+        .unwrap();
 
         let resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -1838,7 +2145,7 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager.clone()),
-            executor,
+            executor.clone(),
             Arc::downgrade(&core),
         );
 
@@ -1853,7 +2160,7 @@ mod tests {
                 wake_on_completion: Some(true),
                 timeout_secs: Some(60),
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -1864,9 +2171,17 @@ mod tests {
             max_retries: None,
         };
 
-        let (status, receipt) = engine.run_spawn_tool_job(&job).await.unwrap();
-        assert_eq!(status, "running");
-        let task_id = receipt.expect("spawn receipt carries the task id");
+        // The engine now awaits the tool's outcome, so the stub has
+        // completed by the time the call returns; the task id comes
+        // from the executor registry (the receipt is no longer
+        // returned — the run's terminal status is).
+        let (status, _output, _error) = engine.run_spawn_tool_job(&job).await.unwrap();
+        assert_eq!(status, "success");
+        let tasks = executor.list_tasks(None).await;
+        let task_id = tasks
+            .first()
+            .map(|t| t.task_id.clone())
+            .expect("the dispatched task is registered");
 
         // Poll up to 2s for the steer message to land in the trunk
         // inbox (the closure runs in the background).
@@ -1901,6 +2216,128 @@ mod tests {
         panic!("timed out waiting for steer message in {trunk_key} inbox");
     }
 
+    /// Regression test for the 2026-09-06 live bug: a SpawnTool cron
+    /// job whose tool fails (here: a `ChannelSend`-style bad channel
+    /// id, stubbed) must be awaited by the engine and land in history
+    /// as "failed" WITH the error string — plus a `cron.result` audit
+    /// event carrying that error — instead of the placeholder
+    /// "running" row that silently vanished.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_spawn_tool_failure_records_failed_with_error() {
+        let tmp = TempDir::new().unwrap();
+        // Same manager-without-global-core setup as the wake test
+        // above: `run_spawn_tool_job` dispatches through the
+        // `ExtensionCore` handed to the engine, not the process-global.
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let catalog_path = tmp.path().join("models.toml");
+        let (llm_resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(llm_resolver),
+        );
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+        // Grant the tool catalog so the F37 gate lets the stub run and
+        // the failure comes from the tool body, not the gate.
+        principal.config.write().await.capabilities = Capabilities::starter_bundle();
+
+        let executor = Arc::new(AsyncExecutor::new(
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        ));
+        let core = Arc::new(ExtensionCore::new());
+        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
+            &core,
+            Arc::new(CronFailingStubTool),
+        )
+        .await
+        .unwrap();
+
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            obs.clone(),
+            Some(manager.clone()),
+            executor,
+            Arc::downgrade(&core),
+        );
+
+        let job = CronJob {
+            id: "job-fail".to_string(),
+            name: "failing-spawn".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::SpawnTool {
+                tool_name: "cron_fail_stub".to_string(),
+                tool_params: serde_json::json!({}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(60),
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        // The engine awaits the tool outcome, so once `execute_job`
+        // returns the run row must be final — no polling.
+        engine.execute_job(job.clone()).await.unwrap();
+
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "exactly one run row, got: {runs:?}");
+        assert_eq!(runs[0].status, "failed");
+        assert!(runs[0].finished_at.is_some());
+        let error = runs[0].error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("bad channel id"),
+            "run error must carry the tool failure, got: {error:?}"
+        );
+
+        // Job-level bookkeeping reflects the failure too.
+        let updated = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(updated.last_status.as_deref(), Some("failed"));
+        assert_eq!(updated.consecutive_failures, 1);
+
+        // The `cron.result` audit event carries the real status + error.
+        let audit = obs.get_audit_log(50).await;
+        let result_event = audit
+            .iter()
+            .find(|e| e.event_type == "cron.result")
+            .expect("cron.result audit event must exist");
+        assert_eq!(result_event.details["status"], "failed");
+        assert!(
+            result_event.details["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("bad channel id"),
+            "audit error must carry the tool failure, got: {:?}",
+            result_event.details
+        );
+
+        drop(principal);
+    }
+
     /// PR 2: `execute_job_for_id` finds the owning principal's
     /// scheduler, returns a fresh `run_id`, and actually fires the
     /// job (a closed success row appears in the run history).
@@ -1932,7 +2369,10 @@ mod tests {
         // No jobs registered yet — install the scheduler so the
         // engine can find the job after the manual trigger.
         engine
-            .install_scheduler_for_test(&PrincipalId::from_did(&principal.did().await), scheduler.clone())
+            .install_scheduler_for_test(
+                &PrincipalId::from_did(&principal.did().await),
+                scheduler.clone(),
+            )
             .await;
 
         let job = peko_cron::CronJob {
@@ -1946,7 +2386,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 timeout_secs: Some(60),
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + Duration::hours(1),
@@ -1972,7 +2412,7 @@ mod tests {
         let mut runs: Vec<peko_cron::CronRun> = Vec::new();
         for _ in 0..50 {
             runs = scheduler.get_run_history("job-abc", 10).unwrap();
-            if runs.len() >= 1 && runs[0].status != "running" {
+            if !runs.is_empty() && runs[0].status != "running" {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2021,7 +2461,10 @@ mod tests {
 
         // No jobs registered — the lookup must fail.
         let result = engine.execute_job_for_id("does-not-exist").await;
-        assert!(result.is_err(), "unknown job id must error, got: {result:?}");
+        assert!(
+            result.is_err(),
+            "unknown job id must error, got: {result:?}"
+        );
 
         drop(principal);
     }
@@ -2055,7 +2498,10 @@ mod tests {
             std::sync::Weak::new(),
         );
         engine
-            .install_scheduler_for_test(&PrincipalId::from_did(&principal.did().await), scheduler.clone())
+            .install_scheduler_for_test(
+                &PrincipalId::from_did(&principal.did().await),
+                scheduler.clone(),
+            )
             .await;
 
         // One job, due immediately. We can't easily inject a sleep
@@ -2071,7 +2517,7 @@ mod tests {
                 message: "fast fire".to_string(),
                 target: None,
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - Duration::minutes(1),

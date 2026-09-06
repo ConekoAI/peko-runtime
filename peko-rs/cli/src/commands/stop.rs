@@ -50,7 +50,10 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
                     "Stopped run on thread '{thread}' with principal '{}'",
                     args.principal
                 );
-            } else if error.as_deref().is_some_and(|e| e.starts_with("no running turn")) {
+            } else if error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("no running turn"))
+            {
                 // Idempotent stop: nothing in flight is a notice, not
                 // a failure (scripting-friendly exit 0).
                 println!(
@@ -81,8 +84,8 @@ mod tests {
 
     #[test]
     fn stop_parses_principal() {
-        let cli = Cli::try_parse_from(["peko", "stop", "scout"])
-            .expect("should parse stop command");
+        let cli =
+            Cli::try_parse_from(["peko", "stop", "scout"]).expect("should parse stop command");
 
         match cli.command {
             Commands::Stop(args) => {

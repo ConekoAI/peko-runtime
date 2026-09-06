@@ -17,7 +17,6 @@ pub(crate) mod state;
 use crate::common::paths::PathResolver;
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
-use chrono::Utc;
 use peko_cron::IdleDetector;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -535,6 +534,34 @@ impl Daemon {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PR-3c / PR-5a: channel subscriber lifespan
+// ---------------------------------------------------------------------------
+
+/// Spawn one [`ChannelSubscriber`] per (loaded principal × channel the
+/// principal is a member of). Delegates to the [`ChannelBindingSupervisor`]
+/// held on `AppState` (Phase 4, agent-session paradigm sprint): channels
+/// whose `meta.json` carries a `passive_binding` get a
+/// `PassiveBindingResponder` (DM-tier — inbound posts wake the bound
+/// session and the reply posts back); unbound (group-tier) channels get
+/// the ADR-049 Phase 3 `GroupWakeResponder` (D4 — `user:*` root posts
+/// wake the member principal; principal posts never wake). Post-boot
+/// channels (created or joined after this enumeration) are covered by
+/// the supervisor's `ensure_subscriber`, wired to the
+/// `ChannelHost::channel_created` / `ensure_invitee_subscriber` hooks.
+///
+/// `app_state` must already be constructed (drift check ran, principals
+/// are loaded). The function returns the `JoinHandle`s so a future
+/// shutdown hook can abort them; today's shutdown is a process kill,
+/// so callers are free to drop them.
+///
+/// [`ChannelBindingSupervisor`]: crate::daemon::channel_binding::ChannelBindingSupervisor
+async fn spawn_channel_subscribers(
+    app_state: &crate::daemon::state::AppState,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    app_state.channel_binding_supervisor().spawn_all().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,31 +594,3 @@ mod tests {
 // to be reachable from a top-level `tests/*.rs` integration harness.
 #[cfg(all(test, feature = "test-utils"))]
 mod e2e_tests;
-
-// ---------------------------------------------------------------------------
-// PR-3c / PR-5a: channel subscriber lifespan
-// ---------------------------------------------------------------------------
-
-/// Spawn one [`ChannelSubscriber`] per (loaded principal × channel the
-/// principal is a member of). Delegates to the [`ChannelBindingSupervisor`]
-/// held on `AppState` (Phase 4, agent-session paradigm sprint): channels
-/// whose `meta.json` carries a `passive_binding` get a
-/// `PassiveBindingResponder` (DM-tier — inbound posts wake the bound
-/// session and the reply posts back); unbound (group-tier) channels get
-/// the ADR-049 Phase 3 `GroupWakeResponder` (D4 — `user:*` root posts
-/// wake the member principal; principal posts never wake). Post-boot
-/// channels (created or joined after this enumeration) are covered by
-/// the supervisor's `ensure_subscriber`, wired to the
-/// `ChannelHost::channel_created` / `ensure_invitee_subscriber` hooks.
-///
-/// `app_state` must already be constructed (drift check ran, principals
-/// are loaded). The function returns the `JoinHandle`s so a future
-/// shutdown hook can abort them; today's shutdown is a process kill,
-/// so callers are free to drop them.
-///
-/// [`ChannelBindingSupervisor`]: crate::daemon::channel_binding::ChannelBindingSupervisor
-async fn spawn_channel_subscribers(
-    app_state: &crate::daemon::state::AppState,
-) -> Vec<tokio::task::JoinHandle<()>> {
-    app_state.channel_binding_supervisor().spawn_all().await
-}

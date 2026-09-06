@@ -54,9 +54,35 @@ struct LegacyStoredIdentity {
     last_used: String,
 }
 
+/// Stable name → DID alias record, stored as `by-name/<name>.json`.
+///
+/// Identity files are named by DID (`identity_path`), so callers that
+/// only know a stable human name (e.g. the root agent's config name)
+/// resolve it through this indirection instead of re-minting an
+/// identity on every lookup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NameAlias {
+    did: String,
+}
+
+/// Passphrase resolution for headless/test operation: `PEKO_IDENTITY_PASSPHRASE`
+/// wins; `PEKO_MASTER_PASSPHRASE` (the vault master passphrase the test
+/// harnesses and headless daemons already set) is the fallback so tests
+/// never touch the OS keychain.
+fn env_passphrase_from_env() -> Option<SecretString> {
+    std::env::var("PEKO_IDENTITY_PASSPHRASE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("PEKO_MASTER_PASSPHRASE")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
+        .map(|s| SecretString::new(s.into()))
+}
+
 /// Key storage manager
-pub struct KeyStorage {
-    base_path: PathBuf,
+pub struct KeyStorage {    base_path: PathBuf,
     /// Optional passphrase for encrypted-file fallback in tests.
     /// When set and the OS keychain is unavailable, this passphrase
     /// is used automatically for EncryptedKeyStorage.
@@ -73,10 +99,7 @@ impl KeyStorage {
     /// `IdentityDataDir` for whatever data-dir resolver it owns.
     pub fn new(data_dir: &dyn IdentityDataDir) -> Result<Self> {
         let base_path = identities_dir(&data_dir.default_data_dir());
-        let env_passphrase = std::env::var("PEKO_IDENTITY_PASSPHRASE")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| SecretString::new(s.into()));
+        let env_passphrase = env_passphrase_from_env();
         Self::with_path_and_passphrase(base_path, env_passphrase)
     }
 
@@ -88,12 +111,10 @@ impl KeyStorage {
 
     /// Create new key storage with custom path
     ///
-    /// Checks `PEKO_IDENTITY_PASSPHRASE` for headless fallback, same as `new()`.
+    /// Checks `PEKO_IDENTITY_PASSPHRASE`/`PEKO_MASTER_PASSPHRASE` for
+    /// headless fallback, same as `new()`.
     pub fn with_path(base_path: PathBuf) -> Result<Self> {
-        let env_passphrase = std::env::var("PEKO_IDENTITY_PASSPHRASE")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| SecretString::new(s.into()));
+        let env_passphrase = env_passphrase_from_env();
         Self::with_path_and_passphrase(base_path, env_passphrase)
     }
 
@@ -173,7 +194,7 @@ impl KeyStorage {
         } else {
             anyhow::bail!(
                 "OS keychain is unavailable and no passphrase was provided. \
-                 Set PEKO_IDENTITY_PASSPHRASE or use KeyStorage::with_passphrase() for headless environments."
+                 Set PEKO_IDENTITY_PASSPHRASE or PEKO_MASTER_PASSPHRASE, or use KeyStorage::with_passphrase() for headless environments."
             );
         };
 
@@ -238,6 +259,18 @@ impl KeyStorage {
     fn load_from_stored(&self, stored: StoredIdentity, did: &str) -> Result<Identity> {
         let private_key_b64 = match &stored.key_storage {
             KeyStorageRef::Keychain { service, account } => {
+                // Passphrase (encrypted-file/headless) mode never touches the
+                // OS keychain: reading a keychain item written by a different
+                // binary signature pops a GUI prompt, which hangs headless
+                // callers (tests, CI). Treat the record as unusable so the
+                // caller (`load_or_create_named`) regenerates instead.
+                if self.test_passphrase.is_some() {
+                    anyhow::bail!(
+                        "Identity {did} stores its key in the OS keychain, but \
+                         passphrase mode is active (PEKO_IDENTITY_PASSPHRASE/PEKO_MASTER_PASSPHRASE) — \
+                         refusing keychain access"
+                    );
+                }
                 let keychain = KeychainStorage::with_service(service.clone());
                 keychain.retrieve_key(account).with_context(|| {
                     format!(
@@ -251,7 +284,7 @@ impl KeyStorage {
                 let passphrase = self.test_passphrase.as_ref().ok_or_else(|| {
                     anyhow::anyhow!(
                         "Encrypted identity {did} requires a passphrase. \
-                         Set PEKO_IDENTITY_PASSPHRASE or use KeyStorage::with_passphrase()."
+                         Set PEKO_IDENTITY_PASSPHRASE or PEKO_MASTER_PASSPHRASE, or use KeyStorage::with_passphrase()."
                     )
                 })?;
                 EncryptedKeyStorage::retrieve_key(&enc_path, passphrase)
@@ -430,6 +463,104 @@ impl KeyStorage {
         self.base_path.join(format!("{filename}.enc"))
     }
 
+    /// Get the file path for a name → DID alias file
+    /// (`by-name/<name>.json`). Characters outside `[A-Za-z0-9._-]`
+    /// are replaced with `_` so any config name maps to a safe path.
+    fn name_alias_path(&self, name: &str) -> PathBuf {
+        let sanitized: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        self.base_path
+            .join("by-name")
+            .join(format!("{sanitized}.json"))
+    }
+
+    /// Resolve a recorded name alias to its DID. Returns `None` when no
+    /// alias was recorded or the alias file is unreadable/corrupt —
+    /// callers then fall through to (re)generation.
+    #[must_use]
+    pub fn resolve_name_alias(&self, name: &str) -> Option<String> {
+        let json = fs::read_to_string(self.name_alias_path(name)).ok()?;
+        let alias: NameAlias = serde_json::from_str(&json).ok()?;
+        Some(alias.did)
+    }
+
+    /// Record (or overwrite) the name → DID alias used by
+    /// [`Self::load_or_create_named`].
+    pub fn record_name_alias(&self, name: &str, did: &str) -> Result<()> {
+        let file_path = self.name_alias_path(name);
+        if let Some(dir) = file_path.parent() {
+            fs::create_dir_all(dir)
+                .with_context(|| format!("Failed to create alias directory: {dir:?}"))?;
+        }
+        let alias = NameAlias {
+            did: did.to_string(),
+        };
+        fs::write(&file_path, serde_json::to_string_pretty(&alias)?)
+            .with_context(|| format!("Failed to write alias file: {file_path:?}"))?;
+
+        // Set restrictive file permissions (owner read/write only: 600)
+        #[cfg(unix)]
+        {
+            let permissions = fs::Permissions::from_mode(0o600);
+            fs::set_permissions(&file_path, permissions)
+                .with_context(|| "Failed to set file permissions")?;
+        }
+
+        Ok(())
+    }
+
+    /// Load the identity aliased to a stable `name`, generating and
+    /// storing a fresh one (plus the name alias) when none exists.
+    ///
+    /// Identity files are named by DID, so the name is resolved through
+    /// the `by-name/` alias first, then a legacy name-keyed identity
+    /// file (`<name>.json`, pre-DID-keyed storage) if present, before
+    /// falling back to generating a new identity. When the alias
+    /// exists but the DID's identity file is gone, a fresh identity is
+    /// generated and the alias rewritten.
+    pub fn load_or_create_named(&self, name: &str, scope: DIDScope) -> Result<Identity> {
+        if let Some(did) = self.resolve_name_alias(name) {
+            match self.load(&did) {
+                Ok(identity) => {
+                    debug!("Loaded name-keyed identity for '{name}': {}", identity.did);
+                    return Ok(identity);
+                }
+                Err(e) => {
+                    warn!(
+                        "Name alias for '{name}' points at missing identity {did} ({e}); regenerating"
+                    );
+                }
+            }
+        }
+
+        // Legacy name-keyed file (pre-DID-keyed storage): honor it and
+        // pin the alias so future loads resolve through the DID.
+        if let Ok(identity) = self.load(name) {
+            if let Err(e) = self.record_name_alias(name, &identity.did) {
+                warn!("Failed to record name alias for '{name}': {e}");
+            }
+            return Ok(identity);
+        }
+
+        let identity = Identity::generate(scope, None).context("Failed to generate identity")?;
+        self.store(&identity)?;
+        self.record_name_alias(name, &identity.did)?;
+        info!(
+            "Created and stored new identity for '{name}': {}",
+            identity.did
+        );
+
+        Ok(identity)
+    }
+
     /// Get the base storage path
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -526,6 +657,136 @@ mod tests {
             .unwrap()
             .verify(message, &signature)
             .is_ok());
+    }
+
+    /// The root agent's identity must survive reconstruction: calling
+    /// `load_or_create_named` twice with the same name resolves through
+    /// the `by-name/` alias and returns the SAME DID instead of
+    /// re-minting an ed25519 identity per call.
+    #[test]
+    fn test_load_or_create_named_is_stable() {
+        let temp_dir = TempDir::new().unwrap();
+        let passphrase = SecretString::new("test-passphrase".into());
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+
+        let first = storage
+            .load_or_create_named("root", DIDScope::Local)
+            .unwrap();
+        let second = storage
+            .load_or_create_named("root", DIDScope::Local)
+            .unwrap();
+
+        assert_eq!(first.did, second.did);
+        assert!(second.did.starts_with("did:peko:local:"));
+        // The alias file pins the name → DID mapping on disk.
+        assert_eq!(
+            storage.resolve_name_alias("root").as_deref(),
+            Some(first.did.as_str())
+        );
+
+        // A different name gets its own identity.
+        let other = storage
+            .load_or_create_named("other", DIDScope::Local)
+            .unwrap();
+        assert_ne!(other.did, first.did);
+    }
+
+    /// An alias pointing at a deleted identity file must not wedge the
+    /// loader: a fresh identity is generated and the alias rewritten.
+    #[test]
+    fn test_load_or_create_named_regenerates_when_did_file_gone() {
+        let temp_dir = TempDir::new().unwrap();
+        let passphrase = SecretString::new("test-passphrase".into());
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+
+        let first = storage
+            .load_or_create_named("root", DIDScope::Local)
+            .unwrap();
+        storage.delete(&first.did).unwrap();
+        assert_eq!(
+            storage.resolve_name_alias("root").as_deref(),
+            Some(first.did.as_str())
+        );
+
+        let second = storage
+            .load_or_create_named("root", DIDScope::Local)
+            .unwrap();
+        assert_ne!(second.did, first.did);
+        assert_eq!(
+            storage.resolve_name_alias("root").as_deref(),
+            Some(second.did.as_str())
+        );
+        assert!(storage.exists(&second.did));
+    }
+
+    /// Passphrase (encrypted-file) mode must never consult the OS
+    /// keychain: an alias resolving to a keychain-backed record (e.g.
+    /// written by a different binary, whose read would pop a GUI prompt
+    /// and hang headless callers) is treated as unusable and regenerated.
+    #[test]
+    fn test_passphrase_mode_skips_keychain_backed_identity() {
+        let temp_dir = TempDir::new().unwrap();
+        let passphrase = SecretString::new("test-passphrase".into());
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+
+        let first = storage
+            .load_or_create_named("root", DIDScope::Local)
+            .unwrap();
+        // Rewrite the stored record to claim keychain backing (as if a
+        // non-passphrase process wrote it).
+        let path = temp_dir
+            .path()
+            .join(format!("{}.json", first.did.replace(':', "_")));
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        stored["key_storage"] = serde_json::json!({
+            "kind": "keychain",
+            "service": "peko",
+            "account": first.did,
+        });
+        fs::write(&path, serde_json::to_string_pretty(&stored).unwrap()).unwrap();
+
+        // Must regenerate rather than touch the keychain (which would
+        // hang a headless/unsigned process on macOS).
+        let second = storage
+            .load_or_create_named("root", DIDScope::Local)
+            .unwrap();
+        assert_ne!(second.did, first.did);
+        assert_eq!(
+            storage.resolve_name_alias("root").as_deref(),
+            Some(second.did.as_str())
+        );
+    }
+
+    /// A legacy name-keyed identity file (`<name>.json`, written before
+    /// storage became DID-keyed) is still honored and gets an alias.
+    #[test]
+    fn test_load_or_create_named_honors_legacy_name_keyed_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let passphrase = SecretString::new("test-passphrase".into());
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+
+        // Simulate the legacy layout: an identity file named by the
+        // agent name instead of the DID.
+        let identity = Identity::generate(DIDScope::Local, None).unwrap();
+        let original_did = identity.did.clone();
+        storage.store(&identity).unwrap();
+        let did_path = storage.identity_path(&original_did);
+        let legacy_path = storage.identity_path("root");
+        fs::rename(&did_path, &legacy_path).unwrap();
+
+        let loaded = storage
+            .load_or_create_named("root", DIDScope::Local)
+            .unwrap();
+        assert_eq!(loaded.did, original_did);
+        assert_eq!(
+            storage.resolve_name_alias("root").as_deref(),
+            Some(original_did.as_str())
+        );
     }
 
     #[test]

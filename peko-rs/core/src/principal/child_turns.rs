@@ -54,7 +54,10 @@ use crate::principal::agent_runner::build_agent_config;
 use crate::principal::config::PrincipalConfig;
 use crate::principal::factory::DefaultPrincipalRouterFactory;
 use crate::principal::peer_children::ensure_peer_child;
-use crate::principal::peer_dm::{ensure_peer_dm_channel, PeerDmSubscriberHook};
+use crate::principal::peer_dm::{
+    ensure_peer_dm_channel, find_peer_dm_channel, post_peer_dm_reply, PeerDmSubscriberHook,
+};
+use crate::principal::router::AgentPromptSummary;
 use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
@@ -172,8 +175,27 @@ impl PeerChildTurns {
         observability: Arc<Observability>,
         inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
     ) -> Result<Self> {
-        let (name, owner, capabilities, agent_config, preferred_model_id) = {
+        let (name, owner, capabilities, agent_config, preferred_model_id, available_agents) = {
             let config = principal.config.read().await;
+            // Same `available_agents` projection
+            // `PrincipalManager::build_router_context` computes for
+            // the root-agent path — the `agent_catalog` tool's
+            // contents.
+            let available_agents: Vec<AgentPromptSummary> =
+                principal
+                    .agent_prompts
+                    .iter()
+                    .map(|(id, p)| AgentPromptSummary {
+                        id: id.clone(),
+                        name: p.name.clone(),
+                        description: p.frontmatter.description.clone(),
+                        enabled: config.capabilities.is_granted(
+                            &peko_extension_api::Capability::new(format!("agent:{id}")),
+                        ) || config.capabilities.is_granted(
+                            &peko_extension_api::Capability::new(format!("agent:{}", p.name)),
+                        ),
+                    })
+                    .collect();
             (
                 config.name.clone(),
                 config.owner.clone(),
@@ -181,6 +203,7 @@ impl PeerChildTurns {
                 // Persona inheritance — see module docs.
                 peer_child_agent_config(&config, &principal.workspace_path),
                 config.preferred_model_id.clone(),
+                available_agents,
             )
         };
         let agent_name = agent_config.name.clone();
@@ -236,6 +259,26 @@ impl PeerChildTurns {
         // Persona inheritance — see module docs.
         .with_agent_config(agent_config);
         executor.set_caller_principal_did(principal.did().await.0);
+
+        // Tool-bag parity with the root-agent path
+        // (`PrincipalContext::core` + `agent_runner`): the peer-ingress
+        // path builds no `PrincipalContext`, so without this the peer
+        // turn ran with built-ins only — no `Skill` tool, no workspace
+        // MCP/universal tools, no `{{agents}}`/`{{skills}}` prompt
+        // sections, and no `agent_catalog` (the tool the root prompt
+        // advertises). Both installs are idempotent; the tool-bag
+        // install honors the core's once-gate.
+        let core = crate::principal::context::ensure_principal_tool_bag(
+            &principal.workspace_path,
+            &principal.id,
+        )
+        .await;
+        if let Err(e) =
+            crate::principal::context::install_agent_catalog(&core, available_agents, &principal.id)
+                .await
+        {
+            tracing::warn!("agent_catalog install failed for peer-child turns: {e}");
+        }
 
         Ok(Self {
             executor,
@@ -363,6 +406,45 @@ impl PeerChildTurns {
         }
     }
 
+    /// Conversation-prompt context for a peer turn: the peer's
+    /// subject (wire form) read back from the child session's
+    /// metadata, and the peer's DM channel id resolved through the
+    /// channel port's Phase 11 passive binding. Both are best-effort:
+    /// a standalone/test context with no channel port yields `None`
+    /// for the channel, and a session without stamped peer metadata
+    /// yields `None` for the peer.
+    async fn conversation_context(&self, session_id: &str) -> (Option<String>, Option<String>) {
+        let metas = self
+            .session_manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .unwrap_or_default();
+        let Some(meta) = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == session_id)
+        else {
+            return (None, None);
+        };
+        let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
+            (Some("user"), Some(id)) => Some(Subject::User(id.to_string())),
+            (Some("principal"), Some(id)) => Some(Subject::Principal(id.to_string().into())),
+            _ => None,
+        };
+        let channel = match (&self.channel_port, meta.slug.as_deref()) {
+            (Some(port), Some(slug)) => {
+                find_peer_dm_channel(port, &self.principal_id, &format!("/{slug}"))
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|id| id.to_string())
+            }
+            _ => None,
+        };
+        (peer.map(|p| p.to_string()), channel)
+    }
+
     /// Drive one streaming turn in the peer's standing child session.
     ///
     /// Blocks until the run reaches a terminal state and returns the
@@ -393,10 +475,19 @@ impl PeerChildTurns {
         cancel: Option<tokio_util::sync::CancellationToken>,
         override_model: Option<String>,
     ) -> Result<StreamingResumeOutcome> {
+        let (conversation_peer, conversation_channel) = self.conversation_context(session_id).await;
         let config = ExecutionConfig {
             announce_completion: false,
             timeout_seconds: 0,
             model_override: override_model,
+            // Peer ingress is a CONVERSATION, not a delegated task:
+            // no subagent framing, the session's prior history is
+            // loaded, and the peer-facing agent may itself delegate
+            // (depth 3, like the root agent the prompt describes).
+            conversation: true,
+            conversation_channel,
+            conversation_peer,
+            max_depth: 3,
             ..ExecutionConfig::default()
         };
         self.executor
@@ -409,6 +500,79 @@ impl PeerChildTurns {
                 cancel,
             )
             .await
+    }
+}
+
+/// [`PeerTurnSurface`] over the principal's session metadata + channel
+/// port (2026-09-07).
+///
+/// Installed on executors that can reach a peer-bound session from a
+/// NON-ingress path — the root agent's `SubagentExecutor` (so the Agent
+/// tool can target `/local-user`-style peer sessions) and the cron
+/// cold-start builder. The lookup mirrors
+/// [`PeerChildTurns::conversation_context`] but additionally requires
+/// the session to be STANDING and to have a DM channel: plain spawned
+/// subagent sessions carry `peer_type: "principal"` + a `spawn_*` peer
+/// id and must not be mistaken for peer-bound sessions.
+pub(crate) struct PeerTurnSurfaceImpl {
+    session_manager: Arc<RwLock<SessionManager>>,
+    channel_port: Arc<dyn peko_channel::ChannelPort>,
+    principal_id: peko_subject::PrincipalId,
+}
+
+impl PeerTurnSurfaceImpl {
+    pub(crate) fn new(
+        session_manager: Arc<RwLock<SessionManager>>,
+        channel_port: Arc<dyn peko_channel::ChannelPort>,
+        principal_id: peko_subject::PrincipalId,
+    ) -> Self {
+        Self {
+            session_manager,
+            channel_port,
+            principal_id,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
+    async fn peer_surface(&self, session_id: &str) -> Option<(String, String)> {
+        let metas = self
+            .session_manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .ok()?;
+        let meta = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == session_id)?;
+        if !meta.standing {
+            return None;
+        }
+        let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
+            (Some("user"), Some(id)) => Subject::User(id.to_string()),
+            (Some("principal"), Some(id)) => Subject::Principal(id.to_string().into()),
+            _ => return None,
+        };
+        let slug = meta.slug.as_deref()?;
+        let channel =
+            find_peer_dm_channel(&self.channel_port, &self.principal_id, &format!("/{slug}"))
+                .await
+                .ok()
+                .flatten()?;
+        Some((peer.to_string(), channel.to_string()))
+    }
+
+    async fn post_reply(&self, channel_id: &str, text: &str) {
+        match peko_channel::ChannelId::parse(channel_id) {
+            Some(channel) => {
+                post_peer_dm_reply(&self.channel_port, &self.principal_id, &channel, text).await;
+            }
+            None => {
+                tracing::warn!("peer turn delivery: unparseable channel id '{channel_id}'");
+            }
+        }
     }
 }
 
@@ -426,6 +590,7 @@ mod tests {
     fn test_config(name: &str, routing: PrincipalRoutingConfig) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
+            id: None,
             did: None,
             owner: Subject::User("test-owner".to_string()),
             identity: PrincipalIdentityConfig::default(),
@@ -661,7 +826,9 @@ mod tests {
         for _ in 0..6 {
             let turns = Arc::clone(&turns);
             let peer = peer.clone();
-            handles.push(tokio::spawn(async move { turns.ensure_child_ingress(&peer).await }));
+            handles.push(tokio::spawn(async move {
+                turns.ensure_child_ingress(&peer).await
+            }));
         }
         for h in handles {
             h.await.unwrap().unwrap();
@@ -700,15 +867,9 @@ mod tests {
         let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
         let dm = ingress.dm_channel.expect("port attached ⇒ DM channel");
 
-        post_peer_dm_inbound(
-            &port,
-            &turns.principal_id,
-            &dm,
-            &peer.to_string(),
-            "hello",
-        )
-        .await
-        .unwrap();
+        post_peer_dm_inbound(&port, &turns.principal_id, &dm, &peer.to_string(), "hello")
+            .await
+            .unwrap();
         post_peer_dm_reply(&port, &turns.principal_id, &dm, "hi alice").await;
 
         let events = store
@@ -749,5 +910,47 @@ mod tests {
         let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
         assert!(ingress.dm_channel.is_none());
         assert!(!ingress.child_id.is_empty());
+    }
+
+    /// Conversation-prompt context: the peer's subject + DM channel
+    /// id resolve from the child session's metadata + the channel
+    /// port's passive binding; a no-port context yields `None` for
+    /// the channel (the section simply omits the line).
+    #[tokio::test]
+    async fn conversation_context_resolves_peer_and_dm_channel() {
+        let (_dir, manager, store) = dm_fixture().await;
+        let port: Arc<dyn peko_channel::ChannelPort> = store.clone();
+        let turns = bare_turns(
+            manager,
+            Some(port),
+            None,
+            Some(Arc::new(tokio::sync::Mutex::new(()))),
+        );
+
+        let peer = Subject::User("alice".to_string());
+        let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
+        let dm = ingress.dm_channel.expect("port attached ⇒ DM channel");
+
+        let (peer_str, channel) = turns.conversation_context(&ingress.child_id).await;
+        assert_eq!(peer_str.as_deref(), Some("user:alice"));
+        assert_eq!(channel.as_deref(), Some(dm.to_string().as_str()));
+
+        // Unknown session id ⇒ no context.
+        let (peer_str, channel) = turns.conversation_context("no-such-session").await;
+        assert!(peer_str.is_none());
+        assert!(channel.is_none());
+    }
+
+    /// No channel port (standalone/test contexts): the peer still
+    /// resolves from session metadata; the channel line is omitted.
+    #[tokio::test]
+    async fn conversation_context_without_port_omits_channel() {
+        let (_dir, manager, _store) = dm_fixture().await;
+        let turns = bare_turns(manager, None, None, None);
+        let peer = Subject::User("alice".to_string());
+        let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
+        let (peer_str, channel) = turns.conversation_context(&ingress.child_id).await;
+        assert_eq!(peer_str.as_deref(), Some("user:alice"));
+        assert!(channel.is_none());
     }
 }

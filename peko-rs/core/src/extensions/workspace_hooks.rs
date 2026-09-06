@@ -37,13 +37,12 @@
 //! prevent other hooks from loading — the same posture as the MCP and
 //! universal-tool scanners.
 
-use crate::extensions::framework::core::handler::HookHandler;
-use crate::extensions::framework::core::hook_points::{HookPoint, HookPointBuilder};
-use crate::extensions::framework::core::ExtensionCore;
-use crate::extensions::framework::types::ExtensionId;
 use crate::extensions::command_handler::{
     CommandHookConfig, CommandHookHandler, CommandOutputFormat,
 };
+use crate::extensions::framework::core::hook_points::{HookPoint, HookPointBuilder};
+use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::types::ExtensionId;
 use anyhow::{anyhow, Context, Result};
 use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
@@ -169,8 +168,8 @@ async fn register_one_hook(
     let raw = tokio::fs::read_to_string(manifest_path)
         .await
         .with_context(|| format!("read {}", manifest_path.display()))?;
-    let manifest: HookManifest = toml::from_str(&raw)
-        .with_context(|| format!("parse {}", manifest_path.display()))?;
+    let manifest: HookManifest =
+        toml::from_str(&raw).with_context(|| format!("parse {}", manifest_path.display()))?;
 
     if manifest.binds.is_empty() {
         return Err(anyhow!(
@@ -192,9 +191,7 @@ async fn register_one_hook(
         Some("text") => CommandOutputFormat::Text,
         Some("json") => CommandOutputFormat::Json,
         Some(other) => {
-            warn!(
-                "Hook {hook_id} has unknown output format `{other}`; defaulting to JSON"
-            );
+            warn!("Hook {hook_id} has unknown output format `{other}`; defaulting to JSON");
             CommandOutputFormat::Json
         }
         None => CommandOutputFormat::Json,
@@ -204,9 +201,9 @@ async fn register_one_hook(
         command: manifest.command.clone(),
         args: manifest.args.clone(),
         env: manifest.env.clone(),
-        timeout_secs: manifest.timeout_secs.unwrap_or(
-            crate::extensions::command_handler::DEFAULT_COMMAND_TIMEOUT_SECS,
-        ),
+        timeout_secs: manifest
+            .timeout_secs
+            .unwrap_or(crate::extensions::command_handler::DEFAULT_COMMAND_TIMEOUT_SECS),
         output_format,
     };
 
@@ -214,11 +211,7 @@ async fn register_one_hook(
     // registry uses this to filter handlers when `active_extensions`
     // is passed by the dispatcher (the principal only sees hooks
     // registered under its own scope or the system scope).
-    let extension_id = ExtensionId::new(format!(
-        "principal:{}/hook:{}",
-        principal_id,
-        hook_id
-    ));
+    let extension_id = ExtensionId::new(format!("principal:{}/hook:{}", principal_id, hook_id));
 
     let mut registered = 0usize;
     for bind in &manifest.binds {
@@ -303,7 +296,10 @@ output = "text"
         let m: HookManifest = toml::from_str(raw).unwrap();
         assert_eq!(m.binds.len(), 4);
         assert_eq!(m.args, vec!["--hook", "write"]);
-        assert_eq!(m.env.get("PEKO_PRINCIPAL").map(String::as_str), Some("alice"));
+        assert_eq!(
+            m.env.get("PEKO_PRINCIPAL").map(String::as_str),
+            Some("alice")
+        );
         assert_eq!(m.timeout_secs, Some(5));
         assert_eq!(m.output.as_deref(), Some("text"));
     }
@@ -442,7 +438,12 @@ output = "text"
         // Fire PreToolUse("Bash") and observe the captured stdout.
         let input = HookInput::Unit;
         let result = core
-            .invoke_hook(crate::extensions::framework::core::hook_points::HookPointBuilder::pre_tool_use("Bash"), input)
+            .invoke_hook(
+                crate::extensions::framework::core::hook_points::HookPointBuilder::pre_tool_use(
+                    "Bash",
+                ),
+                input,
+            )
             .await;
         match result {
             HookResult::Continue(HookOutput::Text(text)) => {
@@ -496,7 +497,10 @@ command = "/nonexistent/binary"
         // The bad manifest fails parsing (no `command`) and is
         // skipped; the good one registers (the runtime is the
         // separate failure surface).
-        assert_eq!(loaded, 1, "good hook should still register despite bad neighbor");
+        assert_eq!(
+            loaded, 1,
+            "good hook should still register despite bad neighbor"
+        );
     }
 
     /// Scanner returns 0 when the hooks directory doesn't exist

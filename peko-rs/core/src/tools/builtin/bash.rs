@@ -116,7 +116,8 @@ impl BashTool {
     ///
     /// Uses a global registry keyed under the synthetic agent name `Bash` so
     /// the async-task-control family can find background shell tasks through
-    /// the existing `find_task_across_all_registries` path.
+    /// the `AsyncExecutorRuntime` global-registry fallback (which consults
+    /// `find_task_across_all_registries` when the per-call registry misses).
     fn background_executor() -> Arc<AsyncExecutor> {
         use std::sync::OnceLock;
         static EXECUTOR: OnceLock<Arc<AsyncExecutor>> = OnceLock::new();
@@ -127,8 +128,7 @@ impl BashTool {
                 Arc::new(AsyncExecutor::with_registries(
                     registry,
                     queue_manager,
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(
-                    ),
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
                 ))
             })
             .clone()

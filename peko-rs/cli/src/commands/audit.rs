@@ -161,7 +161,12 @@ fn tail_jsonl(
         // exit instead of picking up the new file. That's a known
         // follow-up (notify-based rotation polling).
         let today_path = today_audit_path(&audit_dir);
-        if let Err(e) = follow_today(&today_path, event_type.as_deref(), principal.as_deref(), json) {
+        if let Err(e) = follow_today(
+            &today_path,
+            event_type.as_deref(),
+            principal.as_deref(),
+            json,
+        ) {
             eprintln!("(follow ended: {e})");
         }
     }
@@ -197,8 +202,8 @@ fn parse_since(s: &str) -> Result<DateTime<Utc>> {
 /// parsed events (oldest first; sort happens at the call site).
 fn read_jsonl_dir(dir: &Path) -> Result<Vec<AuditEvent>> {
     let mut out = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("read audit dir {}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).with_context(|| format!("read audit dir {}", dir.display()))?;
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
@@ -211,8 +216,7 @@ fn read_jsonl_dir(dir: &Path) -> Result<Vec<AuditEvent>> {
         if !name.starts_with("audit-") || !name.ends_with(".jsonl") {
             continue;
         }
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
         for line in bytes.split(|&b| b == b'\n') {
             if line.is_empty() {
                 continue;
@@ -247,8 +251,8 @@ fn follow_today(
     json: bool,
 ) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("follow: open {}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("follow: open {}", path.display()))?;
     let mut pos: u64 = file.metadata()?.len();
     file.seek(SeekFrom::Start(pos))?;
 
@@ -292,7 +296,10 @@ fn follow_today(
         // `tail -F`'s job).
         let expected = today_audit_path(path.parent().unwrap_or(Path::new(".")));
         if !expected.exists() {
-            eprintln!("(follow: rotated to {}-MM-DD; restart with the new path)", NaiveDate::MIN);
+            eprintln!(
+                "(follow: rotated to {}-MM-DD; restart with the new path)",
+                NaiveDate::MIN
+            );
             break;
         }
         // Co-operative exit on stdin close.
@@ -347,7 +354,9 @@ async fn list_via_ipc(
             println!("  ----\n  {total:>4}  total");
             Ok(())
         }
-        ResponsePacket::Error { message, .. } => Err(anyhow::anyhow!("audit list failed: {message}")),
+        ResponsePacket::Error { message, .. } => {
+            Err(anyhow::anyhow!("audit list failed: {message}"))
+        }
         other => Err(peko_core::ipc::unexpected_response(&other)),
     }
 }
@@ -429,19 +438,6 @@ fn event_matches_principal(event: &AuditEvent, principal: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_observability::AuditEvent;
-
-    fn evt(event_type: &str) -> AuditEvent {
-        AuditEvent {
-            timestamp: Utc::now(),
-            component: "test".into(),
-            event_type: event_type.into(),
-            agent_did: None,
-            caller: None,
-            details: serde_json::json!({}),
-            severity: AuditSeverity::Info,
-        }
-    }
 
     #[test]
     fn parse_since_accepts_relative_units() {
@@ -450,16 +446,13 @@ mod tests {
         // 30 minutes earlier — should be strictly less than `before`.
         assert!(s < before);
         let diff = (before - s).num_minutes();
-        assert!(diff >= 29 && diff <= 31, "diff was {diff} min");
+        assert!((29..=31).contains(&diff), "diff was {diff} min");
     }
 
     #[test]
     fn parse_since_accepts_rfc3339() {
         let dt = parse_since("2026-01-15T10:00:00Z").unwrap();
-        assert_eq!(
-            dt.to_rfc3339(),
-            "2026-01-15T10:00:00+00:00"
-        );
+        assert_eq!(dt.to_rfc3339(), "2026-01-15T10:00:00+00:00");
     }
 
     #[test]

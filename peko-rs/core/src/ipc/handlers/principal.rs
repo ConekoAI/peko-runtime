@@ -239,30 +239,15 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// `https://pekohub.org` if the runtime has no configured hub.
     fn pekohub_base_url(&self) -> String;
 
-    /// **Phase B.** Tier-typed authority that hands out
-    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Default
-    /// impl returns the runtime-public authority; IPC handlers that
-    /// act on behalf of a caller override with a per-subject variant.
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        // The default arm keeps the trait-port surface stable for
-        // test hosts that haven't been refactored to project a
-        // subject. Production hosts override this with the
-        // subject-specific authority the IPC admission layer
-        // resolves.
-        unimplemented!(
-            "PrincipalHost::authority must be implemented; production hosts override this"
-        )
-    }
-
     /// **Phase C.** Build a per-call authority that projects this
-    /// handler's caller subject. Handlers MUST call this instead of
-    /// [`authority`](Self::authority) when they intend to write — the
-    /// returned authority is the only one entitled to clear the
-    /// Shared-write actor gate (peer-as-User on Shared, peer-as-Public
-    /// on Local). The default impl constructs the authority from the
-    /// caller's subject via `RuntimeAuthority::for_caller`; production
-    /// hosts inherit this default because `for_caller` already accepts
-    /// any verified `Subject`.
+    /// handler's caller subject. Handlers MUST call this when they
+    /// intend to write — the returned authority is the only one
+    /// entitled to clear the Shared-write actor gate (peer-as-User
+    /// on Shared, peer-as-Public on Local). The default impl
+    /// constructs the authority from the caller's subject via
+    /// `RuntimeAuthority::for_caller`; production hosts inherit this
+    /// default because `for_caller` already accepts any verified
+    /// `Subject`.
     fn authority_for(&self, caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
         crate::common::authority::RuntimeAuthority::for_caller(
             self.path_resolver(),
@@ -481,8 +466,16 @@ impl RequestHandler for PrincipalHandler {
                 peer,
                 since_cursor,
             } => {
-                handle_principal_log_watch(request_id, &name, peer, since_cursor, caller, host, sink)
-                    .await?;
+                handle_principal_log_watch(
+                    request_id,
+                    &name,
+                    peer,
+                    since_cursor,
+                    caller,
+                    host,
+                    sink,
+                )
+                .await?;
             }
 
             RequestPacket::PrincipalExport {
@@ -492,13 +485,7 @@ impl RequestHandler for PrincipalHandler {
                 include_sessions,
                 with_extensions: _, // Phase 5: ignored; extensions live in the workspace tar.
             } => {
-                match export_principal_package(
-                    host,
-                    &name,
-                    output.clone(),
-                    include_sessions,
-                )
-                .await
+                match export_principal_package(host, &name, output.clone(), include_sessions).await
                 {
                     Ok(output_path) => {
                         let response = ResponsePacket::PrincipalExported {
@@ -1491,6 +1478,7 @@ impl RequestHandler for PrincipalHandler {
                 let description = description.unwrap_or_else(|| format!("The {name} Principal"));
                 let config = PrincipalConfig {
                     name: name.clone(),
+                    id: None,
                     did: None,
                     owner: caller.subject().clone(),
                     identity: PrincipalIdentityConfig {
@@ -2261,6 +2249,14 @@ async fn run_principal_send(
     // `AgenticEvent::Usage` per run, immediately before
     // `Lifecycle{End}` — so capturing the last seen is sufficient.
     let mut usage: Option<RunUsageSummary> = None;
+    // Last `Lifecycle{Error}` observed on the event stream. The
+    // engine emits one right before returning `Err` (LLM transport
+    // failure after retry exhaustion, quota trips, ...); the
+    // completion branch below uses it to rescue failures that an
+    // upstream producer swallowed into an `Ok` outcome with empty
+    // final text (which the CLI would render as an empty reply with
+    // exit 0 — silent failure).
+    let mut run_error: Option<String> = None;
     // Heartbeat ticker. The CLI applies a per-packet idle timeout
     // (`CLI_TIMEOUT_SECS`, 60s) to this stream, and long tool calls emit
     // no events — so a >60s `Bash`/`curl`/compile would otherwise kill a
@@ -2377,6 +2373,20 @@ async fn run_principal_send(
                 });
                 continue;
             }
+            // `Lifecycle{Error}` is emitted by the engine immediately
+            // before it returns `Err` (e.g. "connection closed before
+            // message completed" after the retry budget runs out).
+            // Capture it; the event itself stays backend-only.
+            AgenticEvent::Lifecycle {
+                phase: peko_engine::LifecyclePhase::Error,
+                error,
+                ..
+            } => {
+                if let Some(msg) = error {
+                    run_error = Some(msg);
+                }
+                continue;
+            }
             _ => continue, // tool-success/thinking/retry/streaming stay backend-only
         };
         if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
@@ -2414,6 +2424,20 @@ async fn run_principal_send(
         )),
     };
     let _ = child_turn_handle.await;
+
+    // Rescue swallowed failures: when the engine signalled
+    // `Lifecycle{Error}` but the turn outcome still came back `Ok`
+    // with empty final text, the real `Err` was lost upstream.
+    // Convert to the failure path below so the client receives an
+    // Error packet + `Done { success: false }` (non-zero CLI exit)
+    // and the peer DM channel gets a "⚠ Run failed" notice instead
+    // of a silent gap.
+    let turn_result = match turn_result {
+        Ok(outcome) if outcome.final_text.trim().is_empty() && run_error.is_some() => {
+            Err(anyhow::anyhow!(run_error.unwrap()))
+        }
+        other => other,
+    };
 
     match turn_result {
         Ok(outcome) => {
@@ -2509,7 +2533,8 @@ async fn run_principal_send(
             let user_stopped = {
                 let runs_registry = host.streaming_runs();
                 let runs = runs_registry.lock().unwrap();
-                runs.get(&session_id).is_some_and(|h| h.cancel.is_cancelled())
+                runs.get(&session_id)
+                    .is_some_and(|h| h.cancel.is_cancelled())
             };
             let message = if user_stopped {
                 "stopped by user".to_string()
@@ -2675,7 +2700,15 @@ async fn run_steering_successor(
         return Ok(());
     }
 
-    let outcome = match {
+    // `Lifecycle{Error}` events from the successor's run are captured
+    // here (the sink below drops everything else) so a swallowed
+    // mid-run failure — an `Ok` outcome with empty text, see the
+    // rescue in `run_principal_send` — still surfaces as a failure
+    // notice instead of an empty successor reply. Bound outside the
+    // match scrutinee so the completion branch can read it.
+    let run_error = Arc::new(Mutex::new(None::<String>));
+    let run_error_sink = Arc::clone(&run_error);
+    let outcome_result = {
         // Register in `streaming_runs` under the same session key as
         // the predecessor (the permit guarantees one run per session,
         // and the predecessor's entry is still present — we overwrite
@@ -2699,19 +2732,29 @@ async fn run_steering_successor(
             registry: host.streaming_runs(),
             session_id: session_id.to_string(),
         };
-        // `drive_turn_streaming` with a drop-everything event sink so
-        // the fresh cancel token is observed by the successor's
-        // agentic loop at iteration boundaries.
+        // `drive_turn_streaming` with an event sink that drops
+        // everything except `Lifecycle{Error}` (captured in the
+        // hoisted `run_error` above).
         turns
             .drive_turn_streaming(
                 session_id,
                 &steering.content,
-                Arc::new(|_| {}),
+                Arc::new(move |event| {
+                    if let AgenticEvent::Lifecycle {
+                        phase: peko_engine::LifecyclePhase::Error,
+                        error: Some(msg),
+                        ..
+                    } = event
+                    {
+                        *run_error_sink.lock().unwrap() = Some(msg);
+                    }
+                }),
                 Some(cancel),
                 override_model,
             )
             .await
-    } {
+    };
+    let outcome = match outcome_result {
         Ok(o) => o,
         Err(e) => {
             let error = ResponsePacket::Error {
@@ -2724,6 +2767,29 @@ async fn run_steering_successor(
     };
 
     let content = outcome.final_text;
+
+    // Swallowed-failure rescue (mirrors `run_principal_send`): empty
+    // text + a captured `Lifecycle{Error}` means the run failed
+    // upstream — post the failure notice to the DM channel and surface
+    // an Error packet instead of an empty successor reply.
+    if content.trim().is_empty() {
+        let captured = run_error.lock().unwrap().clone();
+        if let Some(msg) = captured {
+            post_dm_reply(
+                channel_port.as_ref(),
+                principal,
+                dm_channel.as_ref(),
+                &format!("⚠ Run failed: {msg}"),
+            )
+            .await;
+            let error = ResponsePacket::Error {
+                request_id: predecessor_request_id,
+                message: format!("Successor run failed: {msg}"),
+            };
+            send_response(sink, error).await?;
+            return Ok(());
+        }
+    }
 
     post_dm_reply(
         channel_port.as_ref(),
@@ -2838,9 +2904,11 @@ async fn build_principal_packager(
     let layout = resolver.principal_layout(name);
     let identity = load_principal_identity(&resolver, name, &did).await?;
 
-    Ok(crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
-        .with_agents_dir(&layout.shared.agents_dir)
-        .with_sessions_dir(&layout.local.sessions_dir))
+    Ok(
+        crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
+            .with_agents_dir(&layout.shared.agents_dir)
+            .with_sessions_dir(&layout.local.sessions_dir),
+    )
 }
 
 /// Export a Principal to a `.principal` package on disk.
@@ -3518,7 +3586,14 @@ async fn handle_principal_log_watch(
                 PrincipalLogError::BadCursor(msg) => format!("[bad_cursor] {msg}"),
                 PrincipalLogError::Internal(msg) => format!("[internal_error] {msg}"),
             };
-            send_response(sink, ResponsePacket::Error { request_id, message }).await?;
+            send_response(
+                sink,
+                ResponsePacket::Error {
+                    request_id,
+                    message,
+                },
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -3628,7 +3703,10 @@ async fn run_principal_log_watch(
             &principal_author,
             &principal_subject,
         );
-        let packet = ResponsePacket::PrincipalLogAppended { request_id, message };
+        let packet = ResponsePacket::PrincipalLogAppended {
+            request_id,
+            message,
+        };
         if send_response(sink, packet).await.is_err() {
             // Client disconnected mid-replay — drop the stream.
             return Ok(());
@@ -3816,6 +3894,7 @@ mod tests {
         fn test_principal_config(name: &str) -> crate::principal::PrincipalConfig {
             crate::principal::PrincipalConfig {
                 name: name.to_string(),
+                id: None,
                 did: None,
                 owner: Subject::User("test-owner".to_string()),
                 identity: PrincipalIdentityConfig::default(),
@@ -4246,9 +4325,13 @@ mod tests {
 
             // Live post: forwarded exactly once.
             let port: Arc<dyn ChannelPort> = fx.store.clone();
-            port.post(&fx.channel, &Subject::from(&fx.principal.id), PostMsg::root("live answer"))
-                .await
-                .expect("live post");
+            port.post(
+                &fx.channel,
+                &Subject::from(&fx.principal.id),
+                PostMsg::root("live answer"),
+            )
+            .await
+            .expect("live post");
             wait_for_packet(&sink, |p| {
                 matches!(p, ResponsePacket::PrincipalLogAppended { message, .. } if message.text == "live answer")
             }, "live row")

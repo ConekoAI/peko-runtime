@@ -102,10 +102,10 @@ fn minimax_api_key() -> Option<String> {
 /// entry first and passes its configured model id — model-first
 /// create requires `--model` and validates it against the catalog.
 ///
-/// New Principals are created with an empty `[capabilities] grants`
-/// list by default. Tests that need the root agent to call tools (e.g.
-/// the native-tool-call test below) must grant them separately with
-/// [`grant_tools_to_principal`].
+/// New Principals ship the `tool:*` / `agent:*` / `skill:*` wildcards via
+/// `Capabilities::starter_bundle`, so [`grant_tools_to_principal`] is no
+/// longer required for built-in tools — it remains for tests that want an
+/// explicit grant list recorded in `principal.toml`.
 ///
 /// Must be called BEFORE `DaemonGuard::spawn`: `peko principal create`
 /// writes files directly and needs no daemon.
@@ -206,11 +206,7 @@ async fn cli_providers_minimax_smoke() {
     // PS script: `peko send <principal> "Hello, can you tell me a short joke?"`
     let (out, err, status) = run(
         &cli,
-        &[
-            "send",
-            principal,
-            "Hello, can you tell me a short joke?",
-        ],
+        &["send", principal, "Hello, can you tell me a short joke?"],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);
@@ -241,11 +237,7 @@ async fn cli_providers_kimi_smoke() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     // PS script: `peko send <principal> "Hi"`
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, "Hi"],
-        Duration::from_secs(45),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, "Hi"], Duration::from_secs(45));
     assert_ok(&out, &err, &status);
     assert!(
         !out.trim().is_empty(),
@@ -261,8 +253,10 @@ async fn cli_providers_kimi_smoke() {
 /// emits a native Anthropic-format `tool_use`/`tool_result` exchange,
 /// executing `Read` and surfacing the file content in its final answer.
 ///
-/// `Read` is granted to the Principal explicitly because newly-created
-/// Principals have no tools by default.
+/// The explicit `Read` grant below is belt-and-braces: freshly created
+/// Principals already carry the `tool:*` wildcard from
+/// `Capabilities::starter_bundle`, so the extra `tool:Read` entry in
+/// `principal.toml` is redundant but harmless.
 ///
 /// Skips when `MINIMAX_API_KEY` is unset.
 #[tokio::test]
@@ -289,11 +283,7 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = "Read the file tool_test.txt in your workspace and report its exact contents.";
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, prompt],
-        Duration::from_secs(120),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, prompt], Duration::from_secs(120));
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("TOOL_TEST_SECRET_123"),

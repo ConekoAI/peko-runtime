@@ -2,10 +2,9 @@
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use peko_auth::Subject;
 use peko_engine::state::StateMachine;
 use peko_engine::AgentState;
@@ -148,8 +147,7 @@ pub struct Agent {
     /// closure receives a model id and returns `true` on first
     /// use of (principal, model). When `None`, the loop emits
     /// `Info` for every call.
-    audit_first_use_for_model:
-        Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    audit_first_use_for_model: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
     /// Phase 2 PR 2 (ADR-047 §2.3): MCP context provider forwarded
     /// to the `AgenticLoop`. The framework `McpAdapter` is gone; the
     /// renderer consults this provider directly for the
@@ -158,8 +156,7 @@ pub struct Agent {
     /// (placeholder is stripped to empty via `remove_missing=true`).
     /// Production wiring at `principal/agent_runner.rs` binds the
     /// real provider wrapping the global `McpManager`.
-    mcp_context_provider:
-        Option<Arc<dyn peko_engine::McpPromptContextProvider>>,
+    mcp_context_provider: Option<Arc<dyn peko_engine::McpPromptContextProvider>>,
 }
 
 impl Clone for Agent {
@@ -258,9 +255,9 @@ impl Agent {
         // session-key provider is no longer threaded through the
         // constructor — the canonical caller session id comes from
         // `ToolContext::session_id`.
-        tools.push(Arc::new(
-            crate::tools::builtin::messaging::new_agent_tool(self.subagent_executor.clone()),
-        ));
+        tools.push(Arc::new(crate::tools::builtin::messaging::new_agent_tool(
+            self.subagent_executor.clone(),
+        )));
 
         // Add planning todo (Task*) tools backed by the agent's session storage.
         // Phase 10d: the tools now speak to a `TodoRuntime` port trait; the
@@ -314,10 +311,10 @@ impl Agent {
         // loop's `StatelessAgentService` (which used to construct
         // `AgentConfig` literals), so the lockstep-update reason is
         // gone.
-        if let Some(plan_port) = self.principal_plan_port.as_ref().cloned() {
+        if let Some(plan_port) = self.principal_plan_port.clone() {
             use crate::tools::builtin::{
-                PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool,
-                PlanListTool, PlanMarkStepTool, PlanRecordEvidenceTool,
+                PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool,
+                PlanMarkStepTool, PlanRecordEvidenceTool,
             };
             tools.push(Arc::new(PlanCreateTool::new(plan_port.clone())));
             tools.push(Arc::new(PlanListTool::new(plan_port.clone())));
@@ -349,39 +346,12 @@ impl Agent {
         // group / user branches work; principal targets return a
         // structured error.
         if let Some(caller_did) = self.caller_principal_did.as_ref() {
-            let cross_ctx = self
-                .extension_core
-                .services()
-                .cross_runtime_a2a_ctx()
-                .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());
-            let port = self
-                .extension_core
-                .services()
-                .channel_port();
-            match (port, cross_ctx) {
-                (Some(port), Some(ctx)) => {
-                    tools.push(std::sync::Arc::new(
-                        crate::tools::builtin::channel::ChannelSendTool::new_with_peer(
-                            port,
-                            caller_did.clone(),
-                            ctx,
-                        ),
-                    ) as std::sync::Arc<dyn peko_tools_core::Tool>);
-                }
-                (Some(port), None) => {
-                    tracing::debug!(
-                        "CrossRuntimeA2aCtx not available on ExtensionCore — \
-                         ChannelSend registers local-only (no principal branch) for agent {}",
-                        self.config.name
-                    );
-                    tools.push(std::sync::Arc::new(
-                        crate::tools::builtin::channel::ChannelSendTool::new_local_only(
-                            port,
-                            caller_did.clone(),
-                        ),
-                    ) as std::sync::Arc<dyn peko_tools_core::Tool>);
-                }
-                (None, _) => {
+            match crate::tools::builtin::channel::build_channel_send_tool(
+                &self.extension_core,
+                caller_did,
+            ) {
+                Some(tool) => tools.push(tool),
+                None => {
                     tracing::warn!(
                         "No ChannelPort on ExtensionCore services — \
                          ChannelSend will not be registered for agent {}",
@@ -874,10 +844,7 @@ impl Agent {
     /// `None` keeps the unmetered default (CLI one-shot / test paths
     /// with no quota config).
     #[must_use]
-    pub fn with_quota_meter(
-        mut self,
-        meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
-    ) -> Self {
+    pub fn with_quota_meter(mut self, meter: Option<Arc<peko_quota::meter::QuotaMeter>>) -> Self {
         let executor = (*self.subagent_executor).clone().with_quota_meter(meter);
         self.subagent_executor = Arc::new(executor);
         self
@@ -900,10 +867,7 @@ impl Agent {
     /// on the child also wires the seven tools (subagents can manage
     /// plans on behalf of their spawning principal).
     #[must_use]
-    pub fn with_principal_plan_port(
-        mut self,
-        plan_port: Arc<dyn peko_plan::PlanPort>,
-    ) -> Self {
+    pub fn with_principal_plan_port(mut self, plan_port: Arc<dyn peko_plan::PlanPort>) -> Self {
         let executor = (*self.subagent_executor)
             .clone()
             .with_principal_plan_port(plan_port.clone());
@@ -944,7 +908,6 @@ impl Agent {
     /// `None` for either argument disables the corresponding half:
     /// `sink = None` ⇒ no audit emission at all; `sink = Some` +
     /// `first_use_lookup = None` ⇒ every event is `Info`.
-    #[must_use]
     /// Phase 2 PR 2 (ADR-047 §2.3): bind an MCP context provider
     /// that the `AgenticLoop` consults for the `{{mcp_context}}`
     /// system-prompt section. The default `None` makes the loop
@@ -1002,6 +965,22 @@ impl Agent {
     #[must_use]
     pub fn with_model_aliases(mut self, aliases: Vec<String>) -> Self {
         self.config.model_aliases = aliases;
+        self
+    }
+
+    /// Set the peer-conversation DM channel id (conversation runs
+    /// only — rendered into the `{{session_context}}` section).
+    #[must_use]
+    pub fn with_conversation_channel(mut self, channel: impl Into<String>) -> Self {
+        self.config.conversation_channel = Some(channel.into());
+        self
+    }
+
+    /// Set the peer-conversation peer subject (conversation runs
+    /// only — rendered into the `{{session_context}}` section).
+    #[must_use]
+    pub fn with_conversation_peer(mut self, peer: impl Into<String>) -> Self {
+        self.config.conversation_peer = Some(peer.into());
         self
     }
 
@@ -1292,7 +1271,6 @@ impl Agent {
     /// once per subagent (in `subagent_executor.rs`); the reader had
     /// no callers. `ToolContext::session_id` is the canonical
     /// production session-key source.
-
     /// Execute a task with the LLM provider using the unified callback API.
     ///
     /// Directly creates an `AgenticLoop` and runs it — no intermediate layers.
@@ -1353,14 +1331,7 @@ impl Agent {
         // an unlimited meter (no charging, no persistence).
         let quota_meter = Arc::new(peko_quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(
-                agent_arc,
-                provider,
-                session_key,
-                None,
-                None,
-                quota_meter,
-            )
+            .build_agentic_loop(agent_arc, provider, session_key, None, None, quota_meter)
             .await?;
 
         // Phase 9b.N.5b.9d: inline `AgenticLoop::run`'s session-creation
@@ -1765,23 +1736,21 @@ impl Agent {
         // 4. Re-register the per-agent async tools (overwrites any prior
         //    instance). register_tool is idempotent — unregisters first.
         //    Per-agent async tools are scoped to the owning principal.
-        if let Err(e) =
-            crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
-                &extension_core,
-                spawn_tool,
-                &self.principal_id,
-            )
-            .await
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
+            &extension_core,
+            spawn_tool,
+            &self.principal_id,
+        )
+        .await
         {
             warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
         }
-        if let Err(e) =
-            crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
-                &extension_core,
-                output_tool,
-                &self.principal_id,
-            )
-            .await
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
+            &extension_core,
+            output_tool,
+            &self.principal_id,
+        )
+        .await
         {
             warn!("Failed to register per-agent AsyncOutputTool: {}", e);
         }
@@ -1854,16 +1823,16 @@ impl Agent {
         // catalog's lifetime past the daemon.
         if self.config.enable_model_list {
             if let Some(ref catalog) = self.model_catalog {
-                let model_list_tool =
-                    Arc::new(crate::tools::builtin::ModelListTool::new(
-                        Arc::downgrade(catalog),
-                    ));
-                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_model_list_tool(
-                    &extension_core,
-                    model_list_tool,
-                    &self.principal_id,
-                )
-                .await
+                let model_list_tool = Arc::new(crate::tools::builtin::ModelListTool::new(
+                    Arc::downgrade(catalog),
+                ));
+                if let Err(e) =
+                    crate::extensions::builtin::BuiltinToolAdapter::register_model_list_tool(
+                        &extension_core,
+                        model_list_tool,
+                        &self.principal_id,
+                    )
+                    .await
                 {
                     warn!("Failed to register per-agent ModelListTool: {e}");
                 }
@@ -2063,6 +2032,20 @@ impl Agent {
         &self.config.model_aliases
     }
 
+    /// Peer-conversation DM channel id (conversation runs only),
+    /// rendered into the `{{session_context}}` section.
+    #[must_use]
+    pub fn conversation_channel(&self) -> Option<&str> {
+        self.config.conversation_channel.as_deref()
+    }
+
+    /// Peer-conversation peer subject (conversation runs only),
+    /// rendered into the `{{session_context}}` section.
+    #[must_use]
+    pub fn conversation_peer(&self) -> Option<&str> {
+        self.config.conversation_peer.as_deref()
+    }
+
     // Session overlay methods
 
     /// Get the session manager
@@ -2155,17 +2138,11 @@ impl Agent {
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
 
-        // Load or create identity in temp storage
+        // Load or create identity in temp storage (name → DID alias,
+        // same resolution as the production `load_or_create_identity`).
         let identity = {
             let storage = KeyStorage::with_path(temp_dir.join("data").join("identities"))?;
-            let identity_name = config.name.clone();
-            if let Ok(identity) = storage.load(&identity_name) {
-                identity
-            } else {
-                let identity = Identity::generate(DIDScope::Local, None)?;
-                storage.store(&identity)?;
-                identity
-            }
+            storage.load_or_create_named(&config.name, DIDScope::Local)?
         };
 
         let (provider, resolved_model_id) =
@@ -2233,37 +2210,12 @@ impl Agent {
         let storage =
             KeyStorage::new(crate::identity_compat::default_identity_data_dir().as_ref())?;
 
-        // Sprint 8 Commit 5: the `agent_did` lookup branch was dropped.
-        // The branch read `config.agent_did` from TOML and used it as
-        // the on-disk identity filename. After the spawn-path TOML
-        // fallback was retired (Commit 2), `config.agent_did` is set
-        // only by the gateway loop's `ConfigAuthority` (retired in
-        // Sprint 9 Commit 4 along with `StatelessAgentService`). The
-        // spawn path always passes a config without `agent_did`
-        // (constructed from the parent's own config or
-        // `AgentConfig::default()`), so the TOML lookup was dead on
-        // the spawn path.
-        //
-        // Identity resolution falls through to the legacy name-keyed
-        // path (pre-#28 fallback that still resolves existing
-        // identities keyed by `{name}.json`). For a fresh agent the
-        // bottom branch generates a new identity. `KeyStorage` is the
-        // authoritative source; `agent_did` was retired from
-        // `AgentConfig` entirely in Sprint 9 Commit 1.
-
-        if let Ok(identity) = storage.load(&config.name) {
-            info!("Loaded name-keyed identity: {}", identity.did);
-            return Ok(identity);
-        }
-
-        // Create new identity
-        info!("Creating new identity for: {}", config.name);
-        let identity = Identity::generate(DIDScope::Local, None)?;
-
-        storage.store(&identity)?;
-        info!("Created and stored new identity: {}", identity.did);
-
-        Ok(identity)
+        // Identity files are named by DID (`KeyStorage::identity_path`),
+        // so a lookup by agent name can never hit directly — the stable
+        // name is resolved through a `by-name/<name>.json` alias (see
+        // `KeyStorage::load_or_create_named`). Without that indirection
+        // every agent construction re-minted a fresh ed25519 identity.
+        storage.load_or_create_named(&config.name, DIDScope::Local)
     }
 
     // Sprint 8 Commit 5: `backfill_agent_did` and `is_path_under_temp_dir`
@@ -2409,6 +2361,14 @@ impl peko_engine::AgentView for Agent {
 
     fn model_aliases(&self) -> &[String] {
         Agent::model_aliases(self)
+    }
+
+    fn conversation_channel(&self) -> Option<&str> {
+        Agent::conversation_channel(self)
+    }
+
+    fn conversation_peer(&self) -> Option<&str> {
+        Agent::conversation_peer(self)
     }
 
     fn config_enable_tool_search(&self) -> bool {

@@ -138,12 +138,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // apart from older thread history.
     let sent_at = chrono::Utc::now();
     let stream = client
-        .principal_send_stream(
-            &args.principal,
-            message,
-            user,
-            args.model.clone(),
-        )
+        .principal_send_stream(&args.principal, message, user, args.model.clone())
         .await?;
 
     process_response_stream(stream, &client, &args, &peer, sent_at).await
@@ -195,7 +190,12 @@ async fn post_to_group(
     }));
     let router = ChannelCliRouter::new(port);
     let resp = router
-        .handle_post(&ch, &peko_auth::Subject::User(user.to_string()), message, None)
+        .handle_post(
+            &ch,
+            &peko_auth::Subject::User(user.to_string()),
+            message,
+            None,
+        )
         .await?;
     println!("posted → {}", resp.task_id);
     Ok(())
@@ -240,9 +240,15 @@ async fn process_response_stream(
     // previously hidden in streaming mode, so per-turn token cost was
     // invisible during normal use.
     let mut summary: Option<crate::summary::RunSummaryView> = None;
-    while let Some(packet) =
-        next_or_stop(&mut stream, &ctrl_c_signal, &mut stop_sent, client, args, peer)
-            .await?
+    while let Some(packet) = next_or_stop(
+        &mut stream,
+        &ctrl_c_signal,
+        &mut stop_sent,
+        client,
+        args,
+        peer,
+    )
+    .await?
     {
         match packet {
             ResponsePacket::PrincipalSentChunk { delta: content, .. }
@@ -368,7 +374,9 @@ async fn wait_for_queued_reply(
                         }
                         ResponsePacket::Heartbeat { .. } => {}
                         ResponsePacket::Error { message, .. } => {
-                            eprintln!("[peko] --wait: log watch error ({message}); polling instead");
+                            eprintln!(
+                                "[peko] --wait: log watch error ({message}); polling instead"
+                            );
                             return false;
                         }
                         _ => {}
@@ -409,7 +417,15 @@ async fn wait_for_queued_reply(
         }
         tokio::time::sleep(POLL_INTERVAL).await;
         let resp = client
-            .principal_log(args.principal.clone(), Some(peer.clone()), Some(5), None, None, None, None)
+            .principal_log(
+                args.principal.clone(),
+                Some(peer.clone()),
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+            )
             .await;
         let messages = match resp {
             Ok(ResponsePacket::PrincipalLog { messages, .. }) => messages,
@@ -663,8 +679,7 @@ mod tests {
             shared_dir: None,
         });
         let creator = PrincipalId("prin_alice".to_string());
-        let channel_id =
-            peko_protocol::channel::ChannelId::for_group(slug);
+        let channel_id = peko_protocol::channel::ChannelId::for_group(slug);
         let channel = store
             .create(&creator, CreateOpts::runtime(slug).with_id(channel_id))
             .await
@@ -756,10 +771,7 @@ mod tests {
         let err = super::handle_send(group_send_args("group:eng", "must not land"), &paths)
             .await
             .expect_err("non-member user must be refused");
-        assert!(
-            format!("{err:#}").contains("not a member"),
-            "got: {err:#}"
-        );
+        assert!(format!("{err:#}").contains("not a member"), "got: {err:#}");
     }
 
     #[tokio::test]
@@ -783,7 +795,12 @@ mod tests {
     #[tokio::test]
     async fn send_group_recipient_refuses_model_flag() {
         let cli = Cli::try_parse_from([
-            "peko", "send", "group:eng", "hi", "--model", "openai-gpt-4o",
+            "peko",
+            "send",
+            "group:eng",
+            "hi",
+            "--model",
+            "openai-gpt-4o",
         ])
         .expect("should parse");
         let paths = from_cli(&cli);

@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{run_with_stdin, run_with_timeout, DaemonGuard, PekoCli, PrincipalPackageBuilder};
+use common::{run_with_timeout, DaemonGuard, PekoCli, PrincipalPackageBuilder};
 use std::time::Duration;
 
 fn unique_name(prefix: &str) -> String {

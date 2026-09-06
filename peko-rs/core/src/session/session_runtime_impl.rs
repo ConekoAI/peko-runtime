@@ -35,9 +35,9 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::session::ownership::{
-    caller_context, descendants_of, err_compact_archived, err_dangling, err_delete_ancestor,
-    err_descendants_exist, err_live_base_managed, err_move_ancestor, err_move_cycle,
-    err_out_of_tree, err_run_active, err_self_mutation, in_subtree, CallerContext,
+    caller_context, descendants_of, err_dangling, err_delete_ancestor, err_descendants_exist,
+    err_live_base_managed, err_move_ancestor, err_move_cycle, err_out_of_tree, err_run_active,
+    err_self_mutation, in_subtree, CallerContext,
 };
 use crate::tools::builtin::session::{
     BranchOutcome, DeleteOutcome, HistoryMessage, SessionInfo, SessionRuntime, SessionSearchHit,
@@ -587,7 +587,8 @@ impl SessionRuntime for SessionManagerRuntime {
             }
             post_order.push(id.clone());
             for m in &metas {
-                if m.parent_session_id.as_ref().map(|p| p.as_str()).as_deref() == Some(id.as_str()) {
+                if m.parent_session_id.as_ref().map(|p| p.as_str()).as_deref() == Some(id.as_str())
+                {
                     stack.push(m.session_id.to_string());
                 }
             }
@@ -743,10 +744,7 @@ impl SessionRuntime for SessionManagerRuntime {
         }
 
         manager
-            .move_session(
-                session_key,
-                Some(peko_session::SessionId::from(new_parent)),
-            )
+            .move_session(session_key, Some(peko_session::SessionId::from(new_parent)))
             .await?;
 
         // Apply the slug change (if any). The uniqueness check above
@@ -760,7 +758,6 @@ impl SessionRuntime for SessionManagerRuntime {
 
         Ok(())
     }
-
 }
 
 /// Convert an `LlmMessage` to a `HistoryMessage` for tool output.
@@ -910,8 +907,7 @@ mod tests {
             // Sprint 6: convert the literal to its v5-derived UUID
             // form so it matches the canonical id stored in
             // `SessionMetadata.session_id`.
-            *self.current.write().await =
-                Some(peko_session::SessionId::from(id).to_string());
+            *self.current.write().await = Some(peko_session::SessionId::from(id).to_string());
         }
 
         async fn create(&self, id: &str, parent: Option<&str>) {
@@ -961,11 +957,13 @@ mod tests {
     async fn tree_harness(current: &str) -> Harness {
         let h = Harness::new().await;
         h.create("root:user:alice", None).await;
-        h.create("spawn1", Some(sid("root:user:alice").as_str())).await;
+        h.create("spawn1", Some(sid("root:user:alice").as_str()))
+            .await;
         h.set_slug("spawn1", "a").await;
         h.create("child1", Some(sid("spawn1").as_str())).await;
         h.set_slug("child1", "b").await;
-        h.create("spawn2", Some(sid("root:user:alice").as_str())).await;
+        h.create("spawn2", Some(sid("root:user:alice").as_str()))
+            .await;
         h.set_slug("spawn2", "c").await;
         h.set_current(current).await;
         h
@@ -1042,24 +1040,18 @@ mod tests {
         // child of root:user:alice via a slug so the resolver can
         // find it (sibling-root addressing is out of scope for v1;
         // see sprint 5 plan).
-        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
+        h.create("root:self", Some(sid("root:user:alice").as_str()))
+            .await;
         h.set_slug("root:self", "self").await;
-        let err = h
-            .runtime
-            .delete_session("/self", true)
-            .await
-            .unwrap_err();
+        let err = h.runtime.delete_session("/self", true).await.unwrap_err();
         assert!(err.to_string().contains("managed by the engine"), "{err}");
 
         // A retired-shape id (`root:cron:*`) has no family protection
         // anymore: it deletes like any plain session.
-        h.create("root:cron:alice", Some(sid("root:user:alice").as_str())).await;
+        h.create("root:cron:alice", Some(sid("root:user:alice").as_str()))
+            .await;
         h.set_slug("root:cron:alice", "cron-alice").await;
-        let outcome = h
-            .runtime
-            .delete_session("/cron-alice", true)
-            .await
-            .unwrap();
+        let outcome = h.runtime.delete_session("/cron-alice", true).await.unwrap();
         assert_eq!(outcome.deleted, vec![sid("root:cron:alice")]);
     }
 
@@ -1074,10 +1066,7 @@ mod tests {
 
         // Recursive deletes children first.
         let outcome = h.runtime.delete_session("/a", true).await.unwrap();
-        assert_eq!(
-            outcome.deleted,
-            vec![sid("child1"), sid("spawn1")]
-        );
+        assert_eq!(outcome.deleted, vec![sid("child1"), sid("spawn1")]);
         assert!(h.runtime.get_status("/a").await.is_err());
         assert!(h.runtime.get_status("/a/b").await.is_err());
     }
@@ -1128,7 +1117,8 @@ mod tests {
         };
 
         let h = tree_harness("root:user:alice").await;
-        h.create("subrun_probe", Some(sid("root:user:alice").as_str())).await;
+        h.create("subrun_probe", Some(sid("root:user:alice").as_str()))
+            .await;
 
         let registry = get_or_create_registry_for_agent("test-agent-list-run-active");
         let task_id = "task_subrun_probe".to_string();
@@ -1163,7 +1153,10 @@ mod tests {
             .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
-        let probe = all.iter().find(|s| s.session_id == sid("subrun_probe")).unwrap();
+        let probe = all
+            .iter()
+            .find(|s| s.session_id == sid("subrun_probe"))
+            .unwrap();
         assert!(probe.run_active, "live subagent run must mark run_active");
 
         // Terminal runs no longer count.
@@ -1176,7 +1169,10 @@ mod tests {
             .list_sessions(None, None, 50, None, false)
             .await
             .unwrap();
-        let probe = all.iter().find(|s| s.session_id == sid("subrun_probe")).unwrap();
+        let probe = all
+            .iter()
+            .find(|s| s.session_id == sid("subrun_probe"))
+            .unwrap();
         assert!(!probe.run_active);
     }
 
@@ -1212,11 +1208,7 @@ mod tests {
         );
 
         // Ancestor delete refuses (ancestor guard, not the tree message).
-        let err = h
-            .runtime
-            .delete_session("/", true)
-            .await
-            .unwrap_err();
+        let err = h.runtime.delete_session("/", true).await.unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
 
         // Self delete refuses.
@@ -1236,10 +1228,7 @@ mod tests {
         // child1 now has the branch as a descendant: recursive delete
         // removes both, branch first.
         let outcome = h.runtime.delete_session("/a/b", true).await.unwrap();
-        assert_eq!(
-            outcome.deleted,
-            vec![branch.new_session_id, sid("child1")]
-        );
+        assert_eq!(outcome.deleted, vec![branch.new_session_id, sid("child1")]);
     }
 
     #[tokio::test]
@@ -1266,11 +1255,7 @@ mod tests {
         assert_eq!(hits[0].session_id, sid("child1"));
 
         // history/status: out-of-tree explicit keys refuse; in-tree works.
-        let err = h
-            .runtime
-            .get_history("/c", 10, false)
-            .await
-            .unwrap_err();
+        let err = h.runtime.get_history("/c", 10, false).await.unwrap_err();
         assert!(
             err.to_string().contains("outside your session subtree"),
             "{err}"
@@ -1329,11 +1314,7 @@ mod tests {
 
         // The caller's base ancestor is still refused as an ancestor
         // (delete).
-        let err = h
-            .runtime
-            .delete_session("/", true)
-            .await
-            .unwrap_err();
+        let err = h.runtime.delete_session("/", true).await.unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
     }
 
@@ -1351,7 +1332,10 @@ mod tests {
             .unwrap();
         // After move, child1 sits under spawn2 → path /c/b.
         let status = h.runtime.get_status("/c/b").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn2").as_str()));
+        assert_eq!(
+            status.parent_session.as_deref(),
+            Some(sid("spawn2").as_str())
+        );
 
         // Audit trail: a System "reparent" event landed in child1's
         // JSONL recording old → new parent.
@@ -1376,7 +1360,10 @@ mod tests {
         // After this move, child1 sits directly under root:user:alice
         // with slug "b" → path /b.
         let status = h.runtime.get_status("/b").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some(sid("root:user:alice").as_str()));
+        assert_eq!(
+            status.parent_session.as_deref(),
+            Some(sid("root:user:alice").as_str())
+        );
 
         // Unknown endpoints error.
         assert!(h
@@ -1446,7 +1433,10 @@ mod tests {
             .await
             .unwrap();
         let status = h.runtime.get_status("/a/g").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn1").as_str()));
+        assert_eq!(
+            status.parent_session.as_deref(),
+            Some(sid("spawn1").as_str())
+        );
     }
 
     #[tokio::test]
@@ -1479,7 +1469,8 @@ mod tests {
         // resolver can address it (sibling-root addressing isn't
         // supported in the resolver scope). The engine-managed guard
         // fires on the id shape regardless of where it sits.
-        h.create("root:self", Some(sid("root:user:alice").as_str())).await;
+        h.create("root:self", Some(sid("root:user:alice").as_str()))
+            .await;
         h.set_slug("root:self", "self").await;
 
         let err = h
@@ -1491,7 +1482,8 @@ mod tests {
 
         // A retired-shape id (`root:cron:*`) moves like any plain
         // session — Phase 7 narrowed the family guard to the trunk.
-        h.create("root:cron:alice", Some(sid("root:user:alice").as_str())).await;
+        h.create("root:cron:alice", Some(sid("root:user:alice").as_str()))
+            .await;
         h.set_slug("root:cron:alice", "cron-alice").await;
         h.runtime
             .move_session("/cron-alice", "/a".to_string(), None)
@@ -1521,7 +1513,10 @@ mod tests {
             .unwrap();
         // After move, child1 sits under spawn2 → /c/b.
         let status = h.runtime.get_status("/c/b").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn2").as_str()));
+        assert_eq!(
+            status.parent_session.as_deref(),
+            Some(sid("spawn2").as_str())
+        );
     }
 
     /// A run on a DESCENDANT of the move target also refuses — the
@@ -1649,7 +1644,10 @@ mod tests {
             .await
             .unwrap();
         let status = h.runtime.get_status("/c/b2").await.unwrap();
-        assert_eq!(status.parent_session.as_deref(), Some(sid("spawn2").as_str()));
+        assert_eq!(
+            status.parent_session.as_deref(),
+            Some(sid("spawn2").as_str())
+        );
 
         // delete via path.
         let outcome = h.runtime.delete_session("/c/b2", false).await.unwrap();
@@ -1792,7 +1790,10 @@ mod tests {
         // Slugless sessions fall back to their raw id (v5 UUID form
         // after Sprint 6) as last segment.
         assert_eq!(by_id("root:user:alice").slug, None);
-        assert_eq!(by_id("root:user:alice").path, format!("/{}", sid("root:user:alice")));
+        assert_eq!(
+            by_id("root:user:alice").path,
+            format!("/{}", sid("root:user:alice"))
+        );
     }
 
     // ─── Sprint 5 + 6: path-only LLM-facing surface ─────────────────
@@ -1843,10 +1844,7 @@ mod tests {
             .unwrap_err();
         // "spawn2" isn't a `/`-prefixed path or the caller's own id,
         // so it falls into the refusal arm.
-        assert!(
-            err.to_string().contains("not a slug path"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("not a slug path"), "{err}");
 
         // Now use an actual raw id (UUID) — accepted by `resolve_reference`,
         // refused by the per-action existence guard instead. `get_history`

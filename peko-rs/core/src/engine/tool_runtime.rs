@@ -20,7 +20,7 @@ use crate::tools::builtin::BashTool;
 use crate::tools::builtin::{ChannelReadTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use anyhow::Result;
 use peko_channel::{ChannelPort, NoopChannelPort};
-use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool};
+use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool, CronUpdateTool};
 use peko_tools_core::Tool;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,18 +35,15 @@ use tracing::info;
 /// - The daemon (for async task execution)
 /// - Future job runners (cron, webhooks, etc.)
 ///
-/// `Debug` is intentionally not derived: the `channel_port` field is
-/// `Arc<dyn ChannelPort>`, which doesn't implement `Debug`. The
-/// concrete impls (e.g. `ChannelStore`) may add their own
-/// `Debug` derives later; for now `Clone` is enough — runtime owners
-/// rarely need formatted debug output, and the field-by-field accessors
-/// below cover the diagnostic surfaces.
+/// `Debug` is intentionally not derived: the runtime holds trait-object
+/// state that doesn't implement `Debug`. `Clone` is enough — runtime
+/// owners rarely need formatted debug output, and the field-by-field
+/// accessors below cover the diagnostic surfaces.
 #[derive(Clone)]
 pub struct ToolRuntime {
     extension_core: Arc<ExtensionCore>,
     path_resolver: PathResolver,
     workspace: PathBuf,
-    channel_port: Arc<dyn ChannelPort>,
 }
 
 impl ToolRuntime {
@@ -108,13 +105,12 @@ impl ToolRuntime {
         channel_port: Arc<dyn ChannelPort>,
     ) -> Result<Self> {
         let workspace = workspace.into();
-        Self::register_builtins(&extension_core, &path_resolver, channel_port.clone()).await?;
+        Self::register_builtins(&extension_core, &path_resolver, channel_port).await?;
 
         Ok(Self {
             extension_core,
             path_resolver,
             workspace,
-            channel_port,
         })
     }
 
@@ -129,13 +125,12 @@ impl ToolRuntime {
     ) -> Result<Self> {
         let workspace = workspace.into();
         let extension_core = Arc::new(ExtensionCore::new());
-        Self::register_builtins(&extension_core, &path_resolver, channel_port.clone()).await?;
+        Self::register_builtins(&extension_core, &path_resolver, channel_port).await?;
 
         Ok(Self {
             extension_core,
             path_resolver,
             workspace,
-            channel_port,
         })
     }
 
@@ -160,13 +155,12 @@ impl ToolRuntime {
         let workspace = workspace.into();
         let extension_core = Arc::new(ExtensionCore::with_services(services));
         let channel_port: Arc<dyn ChannelPort> = Arc::new(NoopChannelPort);
-        Self::register_builtins(&extension_core, &path_resolver, channel_port.clone()).await?;
+        Self::register_builtins(&extension_core, &path_resolver, channel_port).await?;
 
         Ok(Self {
             extension_core,
             path_resolver,
             workspace,
-            channel_port,
         })
     }
 
@@ -209,6 +203,7 @@ impl ToolRuntime {
             Arc::new(CronCreateTool::new()),
             Arc::new(CronDeleteTool::new()),
             Arc::new(CronListTool::new()),
+            Arc::new(CronUpdateTool::new()),
             // PR-4a — channel reading as a tool. The principal's
             // agentic loop calls this on demand; the daemon-side
             // audit ring buffer (PR-3c) observes every channel event

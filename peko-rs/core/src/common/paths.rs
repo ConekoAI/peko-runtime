@@ -221,6 +221,24 @@ pub fn default_cache_dir() -> PathBuf {
     dirs::cache_dir().map_or_else(|| default_data_dir().join("cache"), |d| d.join("peko"))
 }
 
+/// Get the default runtime directory (daemon socket + pid file).
+///
+/// Checks `PEKO_HOME` environment variable first (`$PEKO_HOME/run`),
+/// then falls back to `~/.peko/run` or the current directory's
+/// `.peko/run` folder. The IPC layer (`crate::ipc`) resolves its
+/// socket/pid paths from this so `PEKO_HOME` isolates the whole
+/// runtime, not just config/data/cache.
+#[must_use]
+pub fn default_run_dir() -> PathBuf {
+    if let Ok(peko_home) = std::env::var(PEKO_HOME_ENV) {
+        return PathBuf::from(peko_home).join("run");
+    }
+    dirs::home_dir().map_or_else(
+        || PathBuf::from(".peko").join("run"),
+        |d| d.join(".peko").join("run"),
+    )
+}
+
 /// Path resolver for Peko's directory structure
 ///
 /// This struct provides methods to resolve paths for agents,

@@ -286,7 +286,7 @@ impl AsyncTaskRegistry {
         // Fast path: check if already completed
         if let Some(entry) = self.tasks.get(task_id) {
             if entry.status.is_terminal() {
-                return Ok(self.status_to_wait_result(&entry.status));
+                return Ok(Self::status_to_wait_result(&entry.status));
             }
         }
 
@@ -296,7 +296,7 @@ impl AsyncTaskRegistry {
             // Check if completed
             if let Some(entry) = self.tasks.get(task_id) {
                 if entry.status.is_terminal() {
-                    return Ok(self.status_to_wait_result(&entry.status));
+                    return Ok(Self::status_to_wait_result(&entry.status));
                 }
             } else {
                 return Err(anyhow::anyhow!("Task {task_id} not found in registry"));
@@ -328,7 +328,7 @@ impl AsyncTaskRegistry {
     }
 
     /// Convert status to wait result
-    fn status_to_wait_result(&self, status: &AsyncTaskStatus) -> WaitResult {
+    pub(crate) fn status_to_wait_result(status: &AsyncTaskStatus) -> WaitResult {
         match status {
             AsyncTaskStatus::Completed { result } => WaitResult::Completed {
                 result: result.clone(),
@@ -707,4 +707,64 @@ pub async fn has_active_subagent_run_across_all_registries(child: &str) -> bool 
         }
     }
     false
+}
+
+/// Find the shared per-agent registry that owns `task_id`, across all
+/// agent registries. Unlike [`find_task_across_all_registries`] (which
+/// returns a cloned entry), this returns the live registry handle so a
+/// caller can *wait* on the task (e.g. the `AsyncRuntime` fallback for
+/// background `Bash` receipts registered under the synthetic `"Bash"`
+/// agent).
+pub async fn find_owning_registry_for_task(task_id: &str) -> Option<SharedAsyncTaskRegistry> {
+    let task_id = task_id.to_string();
+    let registries: Vec<SharedAsyncTaskRegistry> = {
+        let map = global_registries().lock().unwrap();
+        map.values().cloned().collect()
+    };
+    for registry in registries {
+        let found = {
+            let reg = registry.read().await;
+            reg.get(&task_id).is_some()
+        };
+        if found {
+            return Some(registry);
+        }
+    }
+    None
+}
+
+/// Poll `registry` for `task_id` with short-lived read guards until the
+/// task reaches a terminal state or `timeout` elapses.
+///
+/// Unlike [`AsyncTaskRegistry::wait_for_completion`] — which the caller
+/// traditionally invoked while holding a read guard for the entire
+/// wait — this helper drops the guard between polls so the executor's
+/// background writer is never starved of the write lock (the same
+/// hazard `SubagentExecutor::wait_for_run` documents inline).
+pub async fn wait_for_completion_polled(
+    registry: &SharedAsyncTaskRegistry,
+    task_id: &AsyncTaskId,
+    timeout: Duration,
+) -> anyhow::Result<WaitResult> {
+    let start = tokio::time::Instant::now();
+    loop {
+        let status = {
+            let reg = registry.read().await;
+            reg.check_status(task_id)
+        };
+        match status {
+            Some(s) if s.is_terminal() => {
+                return Ok(AsyncTaskRegistry::status_to_wait_result(&s));
+            }
+            Some(_) => {}
+            None => return Err(anyhow::anyhow!("Task {task_id} not found in registry")),
+        }
+
+        if start.elapsed() >= timeout {
+            return Ok(WaitResult::Timeout);
+        }
+
+        let remaining = timeout.saturating_sub(start.elapsed());
+        tokio::time::sleep(Duration::from_millis(50).min(remaining)).await;
+    }
 }

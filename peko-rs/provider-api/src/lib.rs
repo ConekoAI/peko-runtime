@@ -76,14 +76,22 @@ pub use traits::{
 /// Fallback for `ChatOptions::max_tokens` when neither the caller nor
 /// the catalog supplies a value.
 ///
-/// 4096 fits the lower bound of every Anthropic and OpenAI model that
-/// supports tool use. The preferred source is
+/// 8192 covers the current-generation floor — every Anthropic and
+/// OpenAI model that supports tool use accepts at least 8192 output
+/// tokens — and un-clips long tool-use replies that the previous 4096
+/// truncated mid-turn. The preferred source is
 /// `ProviderCatalog::model_max_output_tokens` (when wired into the
 /// caller) or `ModelInfo::max_output_tokens` from the catalog
-/// directly. This constant exists so the bare `4096` literal does not
+/// directly. This constant exists so the bare `8192` literal does not
 /// drift across `ChatOptions` construction sites.
+///
+/// Note: the agentic loop currently passes this constant verbatim
+/// (`agentic_loop.rs` `ChatOptions::max_tokens`) rather than the
+/// per-model catalog value — threading `ModelConfig::max_output_tokens`
+/// through `ResolvedChoice` → `Agent` → `AgentView` → the loop is a
+/// follow-up.
 ///
 /// Lifted from `crate::providers::DEFAULT_MAX_OUTPUT_TOKENS` in
 /// Phase 9b.N.5b.8 so the agentic loop (now in `peko-engine`) can
 /// reference it without taking a `peko-engine → root` dep edge.
-pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8192;
