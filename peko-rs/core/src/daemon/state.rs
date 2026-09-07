@@ -19,9 +19,8 @@ use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::extensions::framework::inbox::SessionInbox;
 use crate::extensions::framework::store::ExtensionStore;
-use crate::principal::memory::{DefaultPrincipalMemory, PrincipalMemory};
 use crate::principal::{
-    factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
+    factory::{DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory},
     PrincipalManager,
 };
 use crate::registry::{load_from_workspace, RegistryConfig};
@@ -62,15 +61,6 @@ pub(crate) struct AppState {
     /// `data_dir.join("…")` joins. The legacy `data_dir` field is
     /// retained for back-compat with callers that haven't migrated.
     pub path_resolver: crate::common::paths::PathResolver,
-
-    /// **Phase B.** Tier-typed authority that hands out
-    /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Constructed
-    /// once at daemon startup with `Subject::Public` (the daemon
-    /// itself is the actor); IPC handlers that act on behalf of a
-    /// caller layer a second authority with `Subject::Principal` via
-    /// the trait-port `authority()` accessor. See
-    /// `peko_core::common::authority` for the type-level tier gate.
-    pub authority: Arc<crate::common::authority::RuntimeAuthority>,
 
     /// Port the server is listening on
     pub port: u16,
@@ -194,11 +184,6 @@ pub(crate) struct AppState {
     /// `AppState` so multiple dispatchers (and the IPC mint/revoke
     /// handler) share the same view.
     pub invite_revocation_set: Arc<crate::tunnel::InviteRevocationSet>,
-
-    /// Loaded peko configuration (`network.direct.advertise_endpoint`
-    /// is still announced to the hub directory; the direct transport
-    /// itself retired in sprint 3 Phase 12b).
-    pub peko_config: PekoConfig,
 
     /// Shared idle detector used by the cron engine and IPC server to
     /// track Principal activity for idle-triggered jobs.
@@ -811,9 +796,7 @@ impl AppState {
             let _ = std::fs::create_dir_all(&root);
             let manager = PrincipalManager::with_path_resolver(
                 path_resolver.clone(),
-                Arc::new(DaemonPrincipalMemoryFactory {
-                    resolver: path_resolver.clone(),
-                }),
+                Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
                 Arc::clone(&inbox_registry),
             )
@@ -959,13 +942,6 @@ impl AppState {
             // `principal_layout(name).local.root`, etc. without
             // re-deriving them from `data_dir`.
             path_resolver: path_resolver.clone(),
-            // **Phase B.** Authority gated by `Subject::Public` — the
-            // daemon itself is the actor. IPC handlers that act on
-            // behalf of a caller wrap this with `Subject::Principal`
-            // for tier-specific reads.
-            authority: Arc::new(crate::common::authority::RuntimeAuthority::for_runtime(
-                path_resolver,
-            )),
             port,
             host,
             config,
@@ -1006,7 +982,6 @@ impl AppState {
             runtime_identity,
             runtime_signing_key,
             invite_revocation_set,
-            peko_config,
             idle_detector: None,
             cron_engine: None,
             runtime_metadata,
@@ -1931,36 +1906,9 @@ fn load_peko_config(config_dir: &Path) -> PekoConfig {
     PekoConfig::default()
 }
 
-/// Memory factory that places Principal memory under the Local tier root.
-///
-/// **Phase A.** Memory now lives at `{data_dir}/principals/{name}/local/`
-/// (Local tier), not `{data_dir}/principals/{name}/memory/` (the old
-/// on-disk layout). The factory takes a `PathResolver` so the runtime
-/// writer and the IPC resolver agree on the same path — the previous
-/// hand-rolled `data_dir.join("principals").join(name).join("memory")`
-/// join was the root cause of the silent session-export loss.
-struct DaemonPrincipalMemoryFactory {
-    resolver: crate::common::paths::PathResolver,
-}
-
-#[async_trait::async_trait]
-impl PrincipalMemoryFactory for DaemonPrincipalMemoryFactory {
-    async fn create(
-        &self,
-        _principal_id: &peko_subject::PrincipalId,
-        workspace_path: &Path,
-    ) -> Arc<dyn PrincipalMemory> {
-        let name = workspace_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let local_root = self.resolver.principal_layout(&name).local.root;
-        let _ = tokio::fs::create_dir_all(&local_root).await;
-        let memory = DefaultPrincipalMemory::new(local_root);
-        let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
-        Arc::new(memory)
-    }
-}
+// Memory placement is the default: `PrincipalManager` already passes the
+// principal's Local tier root (`{data_dir}/principals/{name}/local/`) to
+// the factory, so `DefaultPrincipalMemoryFactory` is used directly.
 
 impl Default for DaemonConfigSnapshot {
     fn default() -> Self {
@@ -2219,10 +2167,6 @@ impl crate::ipc::handlers::instance::InstanceHost for AppState {
 }
 
 impl crate::ipc::handlers::channel::ChannelHost for AppState {
-    fn path_resolver(&self) -> crate::common::paths::PathResolver {
-        self.path_resolver.clone()
-    }
-
     fn channel_port(&self) -> Arc<dyn peko_channel::ChannelPort> {
         self.channel_port.clone()
     }
@@ -2326,13 +2270,6 @@ impl crate::ipc::handlers::runtime::RuntimeHost for AppState {
 
     fn cache_dir(&self) -> std::path::PathBuf {
         self.cache_dir.clone()
-    }
-
-    /// Phase B: tier-typed authority mirror. The runtime handler
-    /// doesn't currently use tier-typed paths but the accessor is
-    /// here for parity with the rest of the trait ports.
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        &self.authority
     }
 }
 
@@ -3126,15 +3063,6 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
             .map(|s| s.trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "https://pekohub.org".to_string())
-    }
-
-    fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {
-        // Production `AppState` was constructed with
-        // `RuntimeAuthority::for_runtime(...)` so its actor is
-        // `Subject::Public`. The IPC admission layer is responsible
-        // for projecting a caller subject into the per-tier read
-        // paths the handler actually invokes.
-        &self.authority
     }
 }
 

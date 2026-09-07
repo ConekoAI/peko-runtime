@@ -28,13 +28,21 @@
 //! `dispatch_tool_with_signal` from a peer crate (not used by the
 //! built-in `AsyncSpawnTool`).
 //!
-//! ## Per-agent scope
+//! ## Per-agent scope (with global-registry fallback)
 //!
 //! `lookup`, `list`, and `cancel` operate on this runtime's own
-//! `AsyncExecutor::registry()` — the tasks spawned by THIS agent. The
-//! legacy "all agents' tasks" cross-cutting helper functions are
-//! intentionally not exposed; the per-agent scope is what every
-//! current caller actually uses.
+//! `AsyncExecutor::registry()` first — the tasks spawned by THIS run.
+//! The production executor registry is per-call (built fresh in
+//! `Agent::build_agentic_loop`), so tasks registered elsewhere in the
+//! process would otherwise be invisible: background `Bash` tasks live
+//! in the process-global registry keyed by the synthetic `"Bash"`
+//! agent, subagent runs live in the per-agent-name global registry,
+//! and `AsyncSpawn` tasks from an earlier run are gone from the fresh
+//! registry. To keep receipts resolvable across turns and producers,
+//! each method falls back to the global per-agent registry cache
+//! (`super::registry::find_task_across_all_registries` & friends) when
+//! the own-registry lookup misses — restoring the intent the
+//! pre-Phase-10c helper encoded as its "cross-registry global" mode.
 
 use super::dispatch::ToolDispatchContext;
 use super::executor::AsyncExecutor;
@@ -168,17 +176,45 @@ impl AsyncRuntime for AsyncExecutorRuntime {
     }
 
     async fn lookup(&self, task_id: &str) -> Option<TaskView> {
-        let registry = self.executor.registry();
-        let reg = registry.read().await;
-        reg.get(&task_id.to_string()).map(Self::project_taskview)
+        {
+            let registry = self.executor.registry();
+            let reg = registry.read().await;
+            if let Some(entry) = reg.get(&task_id.to_string()) {
+                return Some(Self::project_taskview(entry));
+            }
+        }
+        // Fallback: the task may live in a process-global per-agent
+        // registry (background `Bash` tasks, subagent runs, tasks from
+        // an earlier run of this agent) — see the module doc.
+        super::registry::find_task_across_all_registries(task_id)
+            .await
+            .map(|entry| Self::project_taskview(&entry))
     }
 
     async fn list(&self, status_filter: Option<&str>, tool_filter: Option<&str>) -> Vec<TaskView> {
-        let registry = self.executor.registry();
-        let reg = registry.read().await;
-        reg.list_tasks(None)
+        // Own-registry entries first, then any tasks from the global
+        // per-agent registries (deduped by task_id, own wins). The
+        // own registry is per-call in production, so without the
+        // global merge `AsyncList` would never show background `Bash`
+        // tasks or previous runs' spawns.
+        let mut seen = std::collections::HashSet::new();
+        let mut tasks: Vec<TaskView> = Vec::new();
+        {
+            let registry = self.executor.registry();
+            let reg = registry.read().await;
+            for entry in reg.list_tasks(None) {
+                if seen.insert(entry.task_id.clone()) {
+                    tasks.push(Self::project_taskview(&entry));
+                }
+            }
+        }
+        for entry in super::registry::list_all_tasks_across_all_registries().await {
+            if seen.insert(entry.task_id.clone()) {
+                tasks.push(Self::project_taskview(&entry));
+            }
+        }
+        tasks
             .into_iter()
-            .map(|e| Self::project_taskview(&e))
             .filter(|t| {
                 status_filter.map_or(true, |f| t.status == f)
                     && tool_filter.map_or(true, |f| t.tool_name == f)
@@ -187,9 +223,20 @@ impl AsyncRuntime for AsyncExecutorRuntime {
     }
 
     async fn cancel(&self, task_id: &str) -> PortCancelResult {
-        let registry = self.executor.registry();
-        let mut reg = registry.write().await;
-        match reg.cancel(&task_id.to_string()) {
+        {
+            let registry = self.executor.registry();
+            let mut reg = registry.write().await;
+            match reg.cancel(&task_id.to_string()) {
+                super::registry::CancelResult::Success { previous } => {
+                    return PortCancelResult::Success { previous };
+                }
+                super::registry::CancelResult::AlreadyTerminal { previous } => {
+                    return PortCancelResult::AlreadyTerminal { previous };
+                }
+                super::registry::CancelResult::NotFound => {} // fall through to global registries
+            }
+        }
+        match super::registry::cancel_task_across_all_registries(task_id).await {
             super::registry::CancelResult::Success { previous } => {
                 PortCancelResult::Success { previous }
             }
@@ -201,18 +248,37 @@ impl AsyncRuntime for AsyncExecutorRuntime {
     }
 
     async fn wait_for_completion(&self, task_id: &str, timeout: Duration) -> Result<WaitResult> {
-        Ok(
-            match self
-                .executor
-                .wait_for_completion(&task_id.to_string(), timeout)
+        let task_id_string = task_id.to_string();
+        let in_own_registry = {
+            let reg = self.executor.registry().read().await;
+            reg.get(&task_id_string).is_some()
+        };
+        // When the task lives in a global per-agent registry (see
+        // `lookup`), wait on THAT registry — the own executor's
+        // registry would immediately error with "not found".
+        let wait_result = if !in_own_registry {
+            match super::registry::find_owning_registry_for_task(task_id).await {
+                Some(owning) => {
+                    super::registry::wait_for_completion_polled(&owning, &task_id_string, timeout)
+                        .await?
+                }
+                None => {
+                    self.executor
+                        .wait_for_completion(&task_id_string, timeout)
+                        .await?
+                }
+            }
+        } else {
+            self.executor
+                .wait_for_completion(&task_id_string, timeout)
                 .await?
-            {
-                super::types::WaitResult::Completed { result } => WaitResult::Completed { result },
-                super::types::WaitResult::Failed { error } => WaitResult::Failed { error },
-                super::types::WaitResult::Cancelled => WaitResult::Cancelled,
-                super::types::WaitResult::Timeout => WaitResult::Timeout,
-            },
-        )
+        };
+        Ok(match wait_result {
+            super::types::WaitResult::Completed { result } => WaitResult::Completed { result },
+            super::types::WaitResult::Failed { error } => WaitResult::Failed { error },
+            super::types::WaitResult::Cancelled => WaitResult::Cancelled,
+            super::types::WaitResult::Timeout => WaitResult::Timeout,
+        })
     }
 }
 
@@ -355,5 +421,146 @@ impl AsyncRuntime for TestAsyncRuntime {
 
     async fn wait_for_completion(&self, _task_id: &str, _timeout: Duration) -> Result<WaitResult> {
         Ok(WaitResult::Timeout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extensions::framework::async_exec::executor::{
+        standalone_inbox_registry, AsyncExecutor,
+    };
+    use peko_tools_core::Tool;
+
+    /// Build a runtime whose own executor registry is empty — any
+    /// resolution of a task id must come from the global-registry
+    /// fallback.
+    fn make_runtime() -> Arc<AsyncExecutorRuntime> {
+        let core = Arc::new(ExtensionCore::new());
+        Arc::new(AsyncExecutorRuntime::new(
+            Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
+            Arc::downgrade(&core),
+            None,
+            PrincipalId::system().clone(),
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+        ))
+    }
+
+    /// Bug pin: `Bash { run_in_background: true }` receipts are
+    /// registered in the process-global registry keyed by the
+    /// synthetic `"Bash"` agent, so a runtime bound to a fresh
+    /// per-call executor could not resolve them ("Task not found").
+    /// lookup / list / wait_for_completion / cancel must all resolve
+    /// the receipt through the global-registry fallback.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_background_receipt_resolves_via_global_fallback() {
+        let bash = crate::tools::builtin::BashTool::new();
+        let receipt = bash
+            .execute(serde_json::json!({
+                "command": "echo bg-done",
+                "run_in_background": true,
+            }))
+            .await
+            .unwrap();
+        let task_id = receipt["task_id"].as_str().unwrap().to_string();
+        assert!(task_id.starts_with("Bash:"));
+
+        let runtime = make_runtime();
+
+        let view = runtime
+            .lookup(&task_id)
+            .await
+            .expect("lookup must resolve the Bash receipt id");
+        assert_eq!(view.tool_name, "Bash");
+
+        let list = runtime.list(None, Some("Bash")).await;
+        assert!(
+            list.iter().any(|t| t.task_id == task_id),
+            "list must include the Bash background task"
+        );
+
+        let wait = runtime
+            .wait_for_completion(&task_id, Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(
+            matches!(wait, WaitResult::Completed { .. }),
+            "blocking wait must observe completion: {wait:?}"
+        );
+
+        let view = runtime.lookup(&task_id).await.unwrap();
+        assert!(view.is_terminal(), "task should be terminal after wait");
+
+        // Cancel on the terminal task must report AlreadyTerminal —
+        // NotFound would mean the fallback still can't see the task.
+        let cancel = runtime.cancel(&task_id).await;
+        assert!(
+            matches!(cancel, PortCancelResult::AlreadyTerminal { .. }),
+            "cancel on completed task: {cancel:?}"
+        );
+    }
+
+    /// `AsyncStop` on a still-running background Bash task must find it
+    /// through the fallback and return `Success`, not `NotFound`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_background_cancel_resolves_via_global_fallback() {
+        let bash = crate::tools::builtin::BashTool::new();
+        let receipt = bash
+            .execute(serde_json::json!({
+                "command": "sleep 30",
+                "run_in_background": true,
+            }))
+            .await
+            .unwrap();
+        let task_id = receipt["task_id"].as_str().unwrap().to_string();
+
+        let runtime = make_runtime();
+        let cancel = runtime.cancel(&task_id).await;
+        assert!(
+            matches!(cancel, PortCancelResult::Success { .. }),
+            "cancel on running task: {cancel:?}"
+        );
+    }
+
+    /// Regression pin: `AsyncExecutor::wait_for_completion` used to
+    /// hold the registry read guard for the entire wait, starving the
+    /// background task's write-lock status update until the timeout
+    /// fired. The wait must observe completion promptly instead.
+    #[tokio::test]
+    async fn wait_for_completion_observes_completion_promptly() {
+        let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
+        let task_id = "test:prompt-completion".to_string();
+        executor
+            .execute(
+                task_id.clone(),
+                "test",
+                serde_json::json!({}),
+                "session",
+                super::super::types::AsyncToolConfig::default(),
+                || async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok(serde_json::json!({"ok": true}))
+                },
+            )
+            .await
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let result = executor
+            .wait_for_completion(&task_id, Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, super::super::types::WaitResult::Completed { .. }),
+            "expected Completed, got: {result:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "wait starved the registry writer until the timeout: {:?}",
+            start.elapsed()
+        );
     }
 }

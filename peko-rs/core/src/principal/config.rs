@@ -6,7 +6,7 @@ use peko_auth::host::PrincipalResourceView;
 pub use peko_auth::{Exposure, Permission, PermissionGrant};
 use peko_extension_api::Capabilities;
 use peko_quota::QuotaConfig;
-use peko_subject::PrincipalDID;
+use peko_subject::{PrincipalDID, PrincipalId};
 
 /// Persisted live status for a Principal's tunnel instance.
 ///
@@ -44,6 +44,15 @@ pub enum TransportPreference {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalConfig {
     pub name: String,
+
+    /// Stable runtime id (`prin_*`). Persisted so daemon restarts keep
+    /// the same principal identity — peer DM channels, cron ownership,
+    /// and per-principal runtime state are keyed by it. Generated at
+    /// create; pre-existing `principal.toml` files without this field
+    /// get one assigned at load (the config is re-persisted so it
+    /// stabilizes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<PrincipalId>,
 
     /// Optional stable DID. If omitted, the runtime generates a local DID
     /// from the principal name and id on first creation.
@@ -89,7 +98,6 @@ pub struct PrincipalConfig {
     // tunnel can move that policy into the `Capabilities` grant set
     // (the runtime gate for `principal:write_*` / `runtime:*`
     // survived intact — see `peko_extension_api::Capabilities`).
-
     /// Network exposure level for this Principal.
     #[serde(default)]
     pub exposure: Exposure,
@@ -412,6 +420,7 @@ mod tests {
     fn principal_config_transport_preference_roundtrip() {
         let cfg = PrincipalConfig {
             name: "alice".into(),
+            id: None,
             did: None,
             owner: Default::default(),
             identity: Default::default(),
@@ -441,12 +450,59 @@ mod tests {
         );
     }
 
+    /// The stable principal id must round-trip losslessly through serde
+    /// so a daemon restart loads the same `prin_*` the create path
+    /// persisted (peer DM channels are keyed by it).
+    #[test]
+    fn principal_config_id_roundtrip() {
+        let mut cfg = make_test_config("alice", peko_auth::Subject::User("user:a".into()));
+        cfg.id = Some(PrincipalId("prin_0123456789abcdef".into()));
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            serialized.contains("id = \"prin_0123456789abcdef\""),
+            "got: {serialized}"
+        );
+
+        let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(back.id, Some(PrincipalId("prin_0123456789abcdef".into())));
+
+        // Absent id must not emit the key (same convention as
+        // `preferred_model_id` / `status`). Only the top-level scalar
+        // section is checked: the `[owner]` table legitimately carries
+        // an `id = "user:..."` line.
+        cfg.id = None;
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        let top_level = serialized
+            .lines()
+            .take_while(|line| !line.starts_with('['))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !top_level.contains("id ="),
+            "absent id leaked into TOML: {serialized}"
+        );
+    }
+
+    /// Pre-existing `principal.toml` files without an `id` field must
+    /// still load (`#[serde(default)]` ⇒ `None`); the manager's load
+    /// path assigns + re-persists one.
+    #[test]
+    fn principal_config_without_id_field_parses() {
+        let toml = r#"
+            name = "legacy"
+            exposure = "private"
+        "#;
+        let cfg: PrincipalConfig = toml::from_str(toml).expect("legacy TOML must parse");
+        assert_eq!(cfg.id, None);
+    }
+
     /// The model field must round-trip losslessly through serde so the
     /// `peko principal set-model` write path can persist it.
     #[test]
     fn principal_config_model_field_roundtrip() {
         let cfg = PrincipalConfig {
             name: "alice".into(),
+            id: None,
             did: None,
             owner: Default::default(),
             identity: Default::default(),
@@ -488,6 +544,7 @@ mod tests {
     fn principal_config_without_hints_does_not_emit_keys() {
         let cfg = PrincipalConfig {
             name: "bob".into(),
+            id: None,
             did: None,
             owner: Default::default(),
             identity: Default::default(),
@@ -516,6 +573,7 @@ mod tests {
     fn principal_config_serializes_capabilities_grants() {
         let cfg = PrincipalConfig {
             name: "alice".into(),
+            id: None,
             did: None,
             owner: Default::default(),
             identity: Default::default(),
@@ -568,6 +626,7 @@ mod tests {
     fn principal_config_wildcard_grants_match() {
         let cfg = PrincipalConfig {
             name: "wildcard".into(),
+            id: None,
             did: None,
             owner: Default::default(),
             identity: Default::default(),
@@ -619,6 +678,7 @@ mod tests {
         // Empty permissions: only owner has access.
         let cfg = PrincipalConfig {
             name: "lockdown".into(),
+            id: None,
             did: None,
             owner: alice.clone(),
             identity: Default::default(),
@@ -674,6 +734,7 @@ mod tests {
     fn make_test_config(name: &str, owner: peko_auth::Subject) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
+            id: None,
             did: None,
             owner,
             identity: Default::default(),

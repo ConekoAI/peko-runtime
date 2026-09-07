@@ -1346,12 +1346,11 @@ mod tests {
         assert_eq!(json["tool_call_id"], "tc1");
         assert_eq!(json["name"], "Read");
         assert_eq!(json["is_error"], false);
-        assert_eq!(
+        assert!(
             json["content"][0]["text"]
                 .as_str()
                 .unwrap()
                 .starts_with("[truncated by peko_runtime:"),
-            true
         );
 
         let parsed: ContentBlock = serde_json::from_value(json).unwrap();

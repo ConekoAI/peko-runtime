@@ -348,7 +348,9 @@ impl ExtensionCore {
             let Some(caps) = capabilities else {
                 warn!(tool_name = %tool_name, "Tool execution blocked: no capability set provided");
                 return HookResult::Error(anyhow::anyhow!(
-                    "Tool '{tool_name}' is currently disabled. Grant the capability to use it."
+                    "Tool '{tool_name}' is currently disabled: no capability set was provided \
+                     for this call. This is a caller-context bug — the agentic loop is expected \
+                     to pass the principal's grants."
                 ));
             };
             let caps = Capabilities::with_grants(caps.iter().cloned());
@@ -364,7 +366,9 @@ impl ExtensionCore {
             {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
                 return HookResult::Error(anyhow::anyhow!(
-                    "Tool '{tool_name}' is currently disabled. Grant the capability to use it."
+                    "Tool '{tool_name}' is currently disabled. To enable it, add \
+                     \"tool:{tool_name}\" to `[capabilities].grants` in the principal's \
+                     `principal.toml` and restart the daemon (or recreate the run)."
                 ));
             }
             trace!(tool_name = %tool_name, "Tool execution permitted");
@@ -738,11 +742,14 @@ impl ExtensionCore {
     ///    tools must remain invisible even via search — they are
     ///    telemetry-only or sub-tool-of-other-tool and should never be
     ///    surfaced to the model.
-    /// 2. The capability gate applies: a `Deferred` tool without the
-    ///    principal's `tool:<name>` grant is dropped from the search
-    ///    results. The caller passes the same `Capabilities` and
+    /// 2. The capability gate applies when the caller supplies a
+    ///    capability set: a `Deferred` tool without the principal's
+    ///    `tool:<name>` grant is dropped from the search results. The
+    ///    caller passes the same `Capabilities` and
     ///    `ActiveExtensionSet` it would pass to
-    ///    [`Self::list_tool_definitions_with_allowlist`].
+    ///    [`Self::list_tool_definitions_with_allowlist`]. `None` skips
+    ///    the gate (test / no-context callers only — production callers
+    ///    always carry the principal's grants).
     /// 3. Empty query / limit = 0 returns an empty vec — those are
     ///    validated upstream in `ToolSearchTool::execute`; this method
     ///    defensively returns empty for them.
@@ -752,6 +759,8 @@ impl ExtensionCore {
     pub async fn list_deferred_tool_definitions(
         &self,
         principal_id: &PrincipalId,
+        capabilities: Option<&Capabilities>,
+        active_extensions: Option<&ActiveExtensionSet>,
         query: &str,
         limit: usize,
     ) -> Vec<peko_providers::ToolDefinition> {
@@ -760,10 +769,24 @@ impl ExtensionCore {
         }
 
         let all = self.list_tools(principal_id).await;
-        let deferred: Vec<_> = all
-            .into_iter()
-            .filter(|m| matches!(m.exposure, ToolExposure::Deferred))
-            .collect();
+        let mut deferred = Vec::new();
+        for m in all {
+            if !matches!(m.exposure, ToolExposure::Deferred) {
+                continue;
+            }
+            // Capability gate — same check the wire catalog applies in
+            // `list_tool_definitions_with_allowlist`.
+            if let Some(caps) = capabilities {
+                if !self
+                    .tool_registry
+                    .is_tool_enabled(&m.name, caps, active_extensions, principal_id)
+                    .await
+                {
+                    continue;
+                }
+            }
+            deferred.push(m);
+        }
 
         // Score and rank. The backend is stdlib-only; no I/O, no async.
         let mut scored: Vec<_> = deferred

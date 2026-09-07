@@ -238,7 +238,8 @@ impl AgentTool {
         if !self.runtime.is_subagent_enabled(agent) {
             anyhow::bail!(
                 "Agent template '{agent}' is not enabled for this principal. \
-                 Grant 'agent:{agent}' and retry."
+                 Grant 'agent:{agent}' by adding it to `[capabilities].grants` in the \
+                 principal's `principal.toml` and retry."
             );
         }
 
@@ -583,7 +584,7 @@ impl Tool for AgentTool {
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Actions:
-- new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + agent + path. `path` is a SINGLE slug segment (no `/`s) — the new session's address. Raw UUIDs and caller-relative slugs are REFUSED.
+- new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + agent + path. `path` is a SINGLE slug segment (no `/`s) — the new session's address. Raw UUIDs and caller-relative slugs are REFUSED. Create-or-resume: if a spawn-created session in your tree already owns that slug, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session.
 - resume: Re-attach this run to an existing spawned session you own. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + agent.
 - compact: Compact the session NOW and continue it with `prompt` in one run — the continuation run summarizes older messages first (phase `standalone_turn`), then processes the prompt against the compacted history. `path` is an absolute slug path (`/a/b/c`). Requires path + prompt + agent. Returns the run's outcome like resume does. Works on any session in your tree (unlike resume, the target need not be a spawned session).
 

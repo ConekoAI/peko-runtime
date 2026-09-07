@@ -480,9 +480,7 @@ mod tests {
         )
         .await
         .expect("tool runtime should initialize");
-        crate::extensions::framework::core::init_global_core(
-            tool_runtime.extension_core().clone(),
-        );
+        crate::extensions::framework::core::init_global_core(tool_runtime.extension_core().clone());
 
         let catalog_path = tmp.path().join("models.toml");
         let (resolver, adapter) =
@@ -491,10 +489,12 @@ mod tests {
         adapter.queue_text("conversational reply");
         adapter.queue_text("trunk reply");
 
-        let store = Arc::new(peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
-            runtime_dir: tmp.path().join("runtime"),
-            shared_dir: None,
-        }));
+        let store = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("runtime"),
+                shared_dir: None,
+            },
+        ));
         let channel_port: Arc<dyn ChannelPort> = store.clone();
         let manager = Arc::new(
             crate::principal::PrincipalManager::with_path_resolver(
@@ -521,6 +521,7 @@ mod tests {
         let principal = manager
             .create(crate::principal::PrincipalConfig {
                 name: "boss".to_string(),
+                id: None,
                 did: None,
                 owner: owner.clone(),
                 identity: Default::default(),

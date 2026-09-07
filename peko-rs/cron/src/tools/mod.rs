@@ -180,12 +180,15 @@ impl ScheduleKind {
 /// What a cron job does when it fires.
 ///
 /// Two shapes:
-/// - CLI cron (`peko cron add …`) writes a [`Self::Send`] job — at fire
-///   time the daemon delivers `message` to the Principal's owner root
-///   session as a user-message, exactly like a deferred `peko send`.
-/// - Agent cron (`CronCreate` tool) writes a [`Self::SpawnTool`] job —
-///   at fire time the daemon asks the `AsyncExecutor` to run
-///   `tool_name` with `tool_params`.
+/// - [`Self::Send`] — at fire time the daemon delivers `message` to the
+///   principal's trunk session as a user-message and runs a full agent
+///   turn (LLM-driven, dynamic output; the agent answers via
+///   ChannelSend). Written by `CronCreate` with `message` (and formerly
+///   by the retired `peko cron add` CLI).
+/// - [`Self::SpawnTool`] — at fire time the daemon asks the
+///   `AsyncExecutor` to run `tool_name` with `tool_params` (fixed
+///   behavior, no LLM cost per fire). Written by `CronCreate` with
+///   `tool` + `params`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CronJobAction {
@@ -304,6 +307,16 @@ pub trait CronRuntime: Send + Sync {
     /// List all cron jobs (across all principals — call sites filter
     /// by `principal_name` if needed).
     async fn list_jobs(&self) -> Result<Vec<CronJob>>;
+
+    /// Patch mutable job fields (`enabled`, `wake_on_completion`).
+    /// `None` fields are left untouched. Returns an error when the job
+    /// does not exist.
+    async fn update_job(
+        &self,
+        job_id: &str,
+        enabled: Option<bool>,
+        wake_on_completion: Option<bool>,
+    ) -> Result<()>;
 }
 
 // ─── Public helpers used by the cron tools ────────────────────────
@@ -550,10 +563,12 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
 pub mod create;
 pub mod delete;
 pub mod list;
+pub mod update;
 
 pub use create::CronCreateTool;
 pub use delete::CronDeleteTool;
 pub use list::CronListTool;
+pub use update::CronUpdateTool;
 
 /// Register a job via the runtime port. Returns the standard
 /// `{"job_id", "label", "status", "next_run_at"}` JSON shape.

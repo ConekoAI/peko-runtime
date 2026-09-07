@@ -651,11 +651,9 @@ async fn edit_cmd(args: EditArgs, paths: &GlobalPaths) -> Result<()> {
         return Ok(());
     }
 
-    cat.upsert(entry).await.with_context(|| {
-        format!(
-            "failed to update model '{id}' — note must be ≤500 chars"
-        )
-    })?;
+    cat.upsert(entry)
+        .await
+        .with_context(|| format!("failed to update model '{id}' — note must be ≤500 chars"))?;
 
     if before_note != new_note {
         println!("Updated note on '{id}'.");
@@ -884,12 +882,7 @@ fn thinking_wire(t: ThinkingMode) -> &'static str {
 /// Emit one configured model either as human-readable detail or as
 /// JSON, or render the `peko model add` command that would
 /// recreate it.
-async fn show_cmd(
-    id: &str,
-    paths: &GlobalPaths,
-    json: bool,
-    copy_as_cli: bool,
-) -> Result<()> {
+async fn show_cmd(id: &str, paths: &GlobalPaths, json: bool, copy_as_cli: bool) -> Result<()> {
     let cat = open_catalog(paths).await?;
     let entry = cat
         .get(id)
@@ -949,7 +942,10 @@ fn print_detail(e: &ModelConfig) {
             println!("    spec:");
             println!("      image_input:    {}", s.image_input);
             println!("      audio_input:    {}", s.audio_input);
-            println!("      tool_support:   {}", tool_support_wire(s.tool_support));
+            println!(
+                "      tool_support:   {}",
+                tool_support_wire(s.tool_support)
+            );
             println!("      streaming:      {}", s.streaming);
             println!("      thinking:       {}", thinking_wire(s.thinking));
             println!("      json_mode:      {}", s.json_mode);
@@ -1034,7 +1030,10 @@ fn render_add_command(e: &ModelConfig) -> String {
 /// field name; subsequent columns hold the value for each model.
 async fn compare_cmd(ids: &[String], paths: &GlobalPaths, json: bool) -> Result<()> {
     if ids.len() < 2 {
-        anyhow::bail!("`peko model compare` needs at least 2 ids (got {})", ids.len());
+        anyhow::bail!(
+            "`peko model compare` needs at least 2 ids (got {})",
+            ids.len()
+        );
     }
     let cat = open_catalog(paths).await?;
     let mut entries = Vec::with_capacity(ids.len());
@@ -1216,8 +1215,10 @@ async fn search_cmd(args: SearchArgs, paths: &GlobalPaths) -> Result<()> {
     }
 
     if args.json {
-        let summaries: Vec<ModelSummaryWire> =
-            matched.iter().map(|e| ModelSummaryWire::from_config(e)).collect();
+        let summaries: Vec<ModelSummaryWire> = matched
+            .iter()
+            .map(|e| ModelSummaryWire::from_config(e))
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -1252,11 +1253,7 @@ async fn search_cmd(args: SearchArgs, paths: &GlobalPaths) -> Result<()> {
     Ok(())
 }
 
-fn matches_predicate(
-    e: &ModelConfig,
-    args: &SearchArgs,
-    needle_lower: Option<&str>,
-) -> bool {
+fn matches_predicate(e: &ModelConfig, args: &SearchArgs, needle_lower: Option<&str>) -> bool {
     if args.vision && !e.spec.is_some_and(|s| s.image_input) {
         return false;
     }
@@ -1666,7 +1663,9 @@ mod tests {
         // but we can at least exercise the wire-shape builder
         // directly via the helper it wraps.
         let cat = peko_providers::catalog::ModelCatalog::load_or_init(
-            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+            &paths
+                .config_dir
+                .join(peko_providers::catalog::ModelCatalog::FILENAME),
         )
         .await
         .unwrap();
@@ -1713,7 +1712,9 @@ mod tests {
         .expect("add should succeed");
 
         let cat = peko_providers::catalog::ModelCatalog::load_or_init(
-            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+            &paths
+                .config_dir
+                .join(peko_providers::catalog::ModelCatalog::FILENAME),
         )
         .await
         .unwrap();
@@ -1771,7 +1772,9 @@ mod tests {
         .expect("edit succeeds");
 
         let cat = peko_providers::catalog::ModelCatalog::load_or_init(
-            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+            &paths
+                .config_dir
+                .join(peko_providers::catalog::ModelCatalog::FILENAME),
         )
         .await
         .unwrap();
@@ -1809,9 +1812,8 @@ mod tests {
         .await
         .expect("add succeeds");
 
-        let too_long: String = std::iter::repeat('x')
-            .take(peko_providers::catalog::NOTE_MAX_CHARS + 1)
-            .collect();
+        let too_long: String =
+            std::iter::repeat_n('x', peko_providers::catalog::NOTE_MAX_CHARS + 1).collect();
         let err = edit_cmd(
             EditArgs {
                 id: "anthropic-claude-3-5-haiku-latest".into(),
@@ -1889,7 +1891,9 @@ mod tests {
         let paths = seed_two_models().await;
         // Exercise `field_value` and the row builder directly.
         let cat = peko_providers::catalog::ModelCatalog::load_or_init(
-            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+            &paths
+                .config_dir
+                .join(peko_providers::catalog::ModelCatalog::FILENAME),
         )
         .await
         .unwrap();
@@ -1940,7 +1944,9 @@ mod tests {
         // We exercise the predicate helper directly because
         // search_cmd prints to stdout rather than returning data.
         let cat = peko_providers::catalog::ModelCatalog::load_or_init(
-            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+            &paths
+                .config_dir
+                .join(peko_providers::catalog::ModelCatalog::FILENAME),
         )
         .await
         .unwrap();
@@ -1974,7 +1980,9 @@ mod tests {
     async fn search_no_key_matches_local_endpoints() {
         let paths = seed_two_models().await;
         let cat = peko_providers::catalog::ModelCatalog::load_or_init(
-            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+            &paths
+                .config_dir
+                .join(peko_providers::catalog::ModelCatalog::FILENAME),
         )
         .await
         .unwrap();
@@ -2002,7 +2010,9 @@ mod tests {
     async fn search_contains_is_case_insensitive_substring() {
         let paths = seed_two_models().await;
         let cat = peko_providers::catalog::ModelCatalog::load_or_init(
-            &paths.config_dir.join(peko_providers::catalog::ModelCatalog::FILENAME),
+            &paths
+                .config_dir
+                .join(peko_providers::catalog::ModelCatalog::FILENAME),
         )
         .await
         .unwrap();
@@ -2073,8 +2083,8 @@ mod tests {
             Vault::load(paths.resolver().vault()).expect("vault load should succeed even empty");
         assert!(
             vault
-            .list_credentials(&peko_core::common::vault::CredentialFilter::default())
-            .is_empty(),
+                .list_credentials(&peko_core::common::vault::CredentialFilter::default())
+                .is_empty(),
             "dry-run must not write the --key to the vault"
         );
     }
@@ -2086,11 +2096,9 @@ mod tests {
             .await
             .expect("dry-run remove should succeed");
         // Entry must still be present.
-        let cat = ModelCatalog::load_or_init(
-            &paths.config_dir.join(ModelCatalog::FILENAME),
-        )
-        .await
-        .unwrap();
+        let cat = ModelCatalog::load_or_init(&paths.config_dir.join(ModelCatalog::FILENAME))
+            .await
+            .unwrap();
         assert!(
             cat.get("anthropic-claude-sonnet-4-5").await.is_some(),
             "dry-run must not actually remove the entry"

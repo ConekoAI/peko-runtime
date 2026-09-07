@@ -147,8 +147,11 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
             .await
             .context("Daemon is not running. Start it with: peko daemon start")?;
         let requester = format!("user:{}", paths.user());
-        return handle_group_log(&client, &slug, &requester, limit, since_secs, search, author, cursor, all, watch, use_json)
-            .await;
+        return handle_group_log(
+            &client, &slug, &requester, limit, since_secs, search, author, cursor, all, watch,
+            use_json,
+        )
+        .await;
     }
 
     let client = DaemonClient::connect()
@@ -157,7 +160,9 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
 
     if watch {
         if limit.is_some() || since_secs.is_some() || all {
-            eprintln!("[peko] --watch ignores --limit/--since/--all; use --cursor to seed the replay");
+            eprintln!(
+                "[peko] --watch ignores --limit/--since/--all; use --cursor to seed the replay"
+            );
         }
         if search.is_some() || author.is_some() {
             eprintln!("[peko] --watch ignores --search/--author");
@@ -387,9 +392,7 @@ async fn handle_group_log(
             render_group_row(at, author, text);
         }
         if let Some(next) = next_cursor {
-            println!(
-                "… (older messages available; re-run with --cursor {next:?} to page back)"
-            );
+            println!("… (older messages available; re-run with --cursor {next:?} to page back)");
         }
     }
     Ok(())
@@ -415,8 +418,17 @@ async fn watch_group_log(
     // and skip the count of rows already printed.
     let mut legacy_printed: Option<usize> = None;
     loop {
-        let (rows, last_raw_id, _, _) =
-            peek_group_posted_rows(client, channel, requester, since.clone(), None, None, None, None).await?;
+        let (rows, last_raw_id, _, _) = peek_group_posted_rows(
+            client,
+            channel,
+            requester,
+            since.clone(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
         match legacy_printed {
             Some(printed) => {
                 for (id, at, author, text) in rows.iter().skip(printed) {
@@ -479,7 +491,12 @@ async fn peek_group_posted_rows(
     before: Option<String>,
     query: Option<String>,
     author: Option<String>,
-) -> Result<(Vec<(String, String, String, String)>, Option<String>, bool, Option<String>)> {
+) -> Result<(
+    Vec<(String, String, String, String)>,
+    Option<String>,
+    bool,
+    Option<String>,
+)> {
     let packet = RequestPacket::ChannelPeek {
         request_id: 0,
         channel: channel.to_string(),
@@ -490,7 +507,8 @@ async fn peek_group_posted_rows(
         query,
         author,
     };
-    let (events, event_ids, has_more, resume_before) = match client.request_response(packet).await? {
+    let (events, event_ids, has_more, resume_before) = match client.request_response(packet).await?
+    {
         ResponsePacket::ChannelPeekResult {
             events,
             event_ids,
@@ -518,7 +536,10 @@ async fn peek_group_posted_rows(
         if !id.is_empty() {
             last_raw_id = Some(id.clone());
         }
-        if let ChannelEvent::Posted { author, text, at, .. } = ev {
+        if let ChannelEvent::Posted {
+            author, text, at, ..
+        } = ev
+        {
             rows.push((id, at, author, text));
         }
     }
@@ -528,7 +549,12 @@ async fn peek_group_posted_rows(
 /// Human rendering for one group row: same `[<ts>] <author>: <text>`
 /// shape as principal-thread rows.
 fn render_group_row(at: &str, author: &str, text: &str) {
-    println!("[{}] {}: {}", timestamp_short(at), author, truncate(text, 240));
+    println!(
+        "[{}] {}: {}",
+        timestamp_short(at),
+        author,
+        truncate(text, 240)
+    );
 }
 
 /// JSON rendering for one group row (batch arrays and watch NDJSON).
@@ -667,13 +693,9 @@ mod tests {
 
     #[test]
     fn log_parses_group_recipient_with_watch() {
-        let cli = crate::commands::Cli::try_parse_from([
-            "peko",
-            "log",
-            "group:eng-standup",
-            "--watch",
-        ])
-        .expect("should parse log command with a group recipient");
+        let cli =
+            crate::commands::Cli::try_parse_from(["peko", "log", "group:eng-standup", "--watch"])
+                .expect("should parse log command with a group recipient");
 
         match cli.command {
             crate::commands::Commands::Log(args) => {

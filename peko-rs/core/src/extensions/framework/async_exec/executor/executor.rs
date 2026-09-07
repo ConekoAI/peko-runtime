@@ -341,6 +341,25 @@ impl AsyncExecutor {
                 return;
             }
 
+            // The task body may have already recorded a terminal status
+            // itself (the subagent closure writes `Failed` with the
+            // `SubagentResult` metadata before returning its opaque
+            // JSON). Don't clobber that with `Completed` just because the
+            // closure returned `Ok` — `wait_for_run` readers key on the
+            // status.
+            let already_terminal = {
+                let registry = registry_clone.read().await;
+                registry
+                    .get(&task_id_clone)
+                    .map(|e| {
+                        matches!(
+                            e.status,
+                            AsyncTaskStatus::Failed { .. } | AsyncTaskStatus::TimedOut { .. }
+                        )
+                    })
+                    .unwrap_or(false)
+            };
+
             // Map outcome to status and update registry
             let status = match &outcome {
                 TaskOutcome::Success(value) => AsyncTaskStatus::Completed {
@@ -361,12 +380,14 @@ impl AsyncExecutor {
 
             {
                 let mut registry = registry_clone.write().await;
-                registry.update_status(&task_id_clone, status.clone());
+                if !already_terminal {
+                    registry.update_status(&task_id_clone, status.clone());
 
-                // Store the result
-                if let TaskOutcome::Success(ref value) = outcome {
-                    if let Some(entry) = registry.get_mut(&task_id_clone) {
-                        entry.set_result(value.clone());
+                    // Store the result
+                    if let TaskOutcome::Success(ref value) = outcome {
+                        if let Some(entry) = registry.get_mut(&task_id_clone) {
+                            entry.set_result(value.clone());
+                        }
                     }
                 }
             }
@@ -406,7 +427,10 @@ impl AsyncExecutor {
                     tracing::debug!("Delivery result for task {}: {}", task_id_clone, e);
                 }
             } else {
-                tracing::warn!("executor: task {} not found in registry after completion", task_id_clone);
+                tracing::warn!(
+                    "executor: task {} not found in registry after completion",
+                    task_id_clone
+                );
             }
 
             // NEW: push a completion event to the per-session inbox
@@ -697,13 +721,18 @@ impl AsyncExecutor {
     }
 
     /// Wait for a task to complete (sync mode)
+    ///
+    /// Polls with short-lived read guards (via
+    /// [`super::registry::wait_for_completion_polled`]) so the
+    /// background task's status writer is never starved of the write
+    /// lock — holding a read guard for the whole wait would block the
+    /// terminal update until the timeout fired.
     pub async fn wait_for_completion(
         &self,
         task_id: &AsyncTaskId,
         timeout: Duration,
     ) -> Result<WaitResult> {
-        let registry = self.registry.read().await;
-        registry.wait_for_completion(task_id, timeout).await
+        super::registry::wait_for_completion_polled(&self.registry, task_id, timeout).await
     }
 
     /// Get the current status of a task

@@ -120,8 +120,8 @@ pub struct AgentConfig {
     ///
     /// Surfaces in the rendered system prompt at `{{channel}}` and in the
     /// `{{runtime}}` section's `Channel:` line. `None` means the agent
-    /// does not override the runtime default (`"discord"` for legacy
-    /// compat — see `AgenticLoop::build_turn_context`).
+    /// does not override the runtime default (`"cli"` — see
+    /// `AgenticLoop::build_turn_context`).
     #[serde(default)]
     pub channel: Option<String>,
 
@@ -144,6 +144,22 @@ pub struct AgentConfig {
     /// omitted from the prompt.
     #[serde(default)]
     pub model_aliases: Vec<String>,
+
+    /// Peer-conversation DM channel id (peer-ingress turns only).
+    ///
+    /// Surfaced in the `{{session_context}}` section as the channel
+    /// that reaches the user, so the model can target `ChannelSend` /
+    /// cron reminders. `None` for non-conversation runs (Agent-tool
+    /// spawns, trunk turns).
+    #[serde(default)]
+    pub conversation_channel: Option<String>,
+
+    /// Peer-conversation peer subject in wire form (`user:alice`,
+    /// `principal:did:…`; peer-ingress turns only). Surfaced in the
+    /// `{{session_context}}` section. `None` for non-conversation
+    /// runs.
+    #[serde(default)]
+    pub conversation_peer: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -187,12 +203,14 @@ impl Default for AgentConfig {
             enable_model_list: true,
             // Phase 2 inert fields. The renderer reads these from
             // `AgentConfig` via `Agent` accessors; `None`/`false`/`[]`
-            // here preserves the legacy hardcoded runtime defaults
-            // (`"discord"`, `"medium"`, sandbox off, no aliases).
+            // here falls through to the runtime defaults
+            // (`"cli"`, `"medium"`, sandbox off, no aliases).
             channel: None,
             thinking_level: None,
             sandbox_enabled: false,
             model_aliases: Vec::new(),
+            conversation_channel: None,
+            conversation_peer: None,
         }
     }
 }
@@ -246,8 +264,8 @@ mod tests {
 
     /// Phase 2: `#[serde(default)]` on each inert field means an
     /// older `AgentConfig` TOML without these keys still parses
-    /// cleanly. The renderer falls back to its legacy hardcoded
-    /// defaults via `Agent::channel().unwrap_or("discord")` etc.
+    /// cleanly. The renderer falls back to the runtime defaults via
+    /// `Agent::channel().unwrap_or("cli")` etc.
     #[test]
     fn agent_config_legacy_toml_omits_inert_fields() {
         let legacy = r#"

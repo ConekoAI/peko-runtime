@@ -10,12 +10,19 @@ use peko_subject::PrincipalId;
 // longer threads the meter through to the router.
 
 /// Factory for building a Principal's memory store.
+///
+/// `local_root` is the principal's Local tier root
+/// (`{data_dir}/principals/{name}/local/`); sessions live under
+/// `local_root/sessions/`. It is already principal-scoped — factories
+/// must use it as-is (deriving a name from its `file_name()` yields
+/// `"local"`, which once collapsed every principal's sessions into a
+/// single shared `principals/local/local/sessions/` store).
 #[async_trait]
 pub trait PrincipalMemoryFactory: Send + Sync {
     async fn create(
         &self,
         principal_id: &PrincipalId,
-        workspace_path: &std::path::Path,
+        local_root: &std::path::Path,
     ) -> Arc<dyn PrincipalMemory>;
 }
 
@@ -44,11 +51,11 @@ impl PrincipalMemoryFactory for DefaultPrincipalMemoryFactory {
     async fn create(
         &self,
         _principal_id: &PrincipalId,
-        workspace_path: &std::path::Path,
+        local_root: &std::path::Path,
     ) -> Arc<dyn PrincipalMemory> {
         // Ensure the sessions directory exists.
         let memory =
-            crate::principal::memory::DefaultPrincipalMemory::new(workspace_path.to_path_buf());
+            crate::principal::memory::DefaultPrincipalMemory::new(local_root.to_path_buf());
         let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
         Arc::new(memory)
     }

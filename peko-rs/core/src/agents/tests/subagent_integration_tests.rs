@@ -137,7 +137,7 @@ async fn test_e2e_spawn_and_complete() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -162,12 +162,7 @@ async fn test_e2e_spawn_and_complete() {
 
     // Spawn a subagent
     let run_id = executor
-        .spawn_and_execute(
-            "Test task",
-            &parent_key,
-            ExecutionConfig::default(),
-            None,
-        )
+        .spawn_and_execute("Test task", &parent_key, ExecutionConfig::default(), None)
         .await
         .unwrap();
 
@@ -205,7 +200,7 @@ async fn subagent_inherits_parent_cancel() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Subject::User("alice".to_string());
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -299,7 +294,7 @@ async fn test_spawn_depth_limit() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -330,12 +325,7 @@ async fn test_spawn_depth_limit() {
 
     // First spawn should succeed (depth 1 <= max_depth 1)
     let run_id1 = executor
-        .spawn_and_execute(
-            "First task",
-            &parent_key,
-            config.clone(),
-            None,
-        )
+        .spawn_and_execute("First task", &parent_key, config.clone(), None)
         .await
         .unwrap();
 
@@ -366,12 +356,7 @@ async fn test_spawn_depth_limit() {
     // index, finds the child session's metadata (depth 1), and reports
     // the new run as depth 2 — exceeding max_depth=1, must be rejected.
     let result = executor
-        .spawn_and_execute(
-            "Nested task",
-            &child_id,
-            config,
-            None,
-        )
+        .spawn_and_execute("Nested task", &child_id, config, None)
         .await;
 
     assert!(
@@ -417,7 +402,7 @@ async fn test_isolated_vs_shared_session() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -447,12 +432,7 @@ async fn test_isolated_vs_shared_session() {
 
     // Test isolated spawn
     let isolated_run_id = executor
-        .spawn_and_execute(
-            "Isolated task",
-            &parent_key,
-            config.clone(),
-            None,
-        )
+        .spawn_and_execute("Isolated task", &parent_key, config.clone(), None)
         .await
         .unwrap();
 
@@ -461,12 +441,7 @@ async fn test_isolated_vs_shared_session() {
 
     // Test shared spawn
     let shared_run_id = executor
-        .spawn_and_execute(
-            "Shared task",
-            &parent_key,
-            config,
-            None,
-        )
+        .spawn_and_execute("Shared task", &parent_key, config, None)
         .await
         .unwrap();
 
@@ -509,7 +484,7 @@ async fn test_result_format_in_registry() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -532,12 +507,7 @@ async fn test_result_format_in_registry() {
     ));
 
     let run_id = executor
-        .spawn_and_execute(
-            "Test task",
-            &parent_key,
-            ExecutionConfig::default(),
-            None,
-        )
+        .spawn_and_execute("Test task", &parent_key, ExecutionConfig::default(), None)
         .await
         .unwrap();
 
@@ -561,7 +531,7 @@ async fn test_list_runs_functionality() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -592,12 +562,7 @@ async fn test_list_runs_functionality() {
     let mut run_ids = Vec::new();
     for i in 0..3 {
         let run_id = executor
-            .spawn_and_execute(
-                &format!("Task {}", i),
-                &parent_key,
-                config.clone(),
-                None,
-            )
+            .spawn_and_execute(&format!("Task {}", i), &parent_key, config.clone(), None)
             .await
             .unwrap();
         run_ids.push(run_id);
@@ -648,7 +613,7 @@ async fn test_cleanup_policy_tracking() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -680,12 +645,7 @@ async fn test_cleanup_policy_tracking() {
     // the view reflects that — the keep entry is the only assertion
     // left.
     let keep_run_id = executor
-        .spawn_and_execute(
-            "Keep task",
-            &parent_key,
-            config.clone(),
-            None,
-        )
+        .spawn_and_execute("Keep task", &parent_key, config.clone(), None)
         .await
         .unwrap();
 
@@ -707,7 +667,7 @@ async fn test_parent_child_relationship() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -730,12 +690,7 @@ async fn test_parent_child_relationship() {
     ));
 
     let run_id = executor
-        .spawn_and_execute(
-            "Test task",
-            &parent_key,
-            ExecutionConfig::default(),
-            None,
-        )
+        .spawn_and_execute("Test task", &parent_key, ExecutionConfig::default(), None)
         .await
         .unwrap();
 
@@ -827,7 +782,7 @@ async fn test_concurrent_runs_counting() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -868,12 +823,7 @@ async fn test_concurrent_runs_counting() {
 
     // Create a run with long timeout
     let _run_id = executor
-        .spawn_and_execute(
-            "Long task",
-            &parent_key,
-            config,
-            None,
-        )
+        .spawn_and_execute("Long task", &parent_key, config, None)
         .await
         .unwrap();
 
@@ -913,7 +863,7 @@ async fn test_executor_get_status() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -936,12 +886,7 @@ async fn test_executor_get_status() {
     ));
 
     let run_id = executor
-        .spawn_and_execute(
-            "Test task",
-            &parent_key,
-            ExecutionConfig::default(),
-            None,
-        )
+        .spawn_and_execute("Test task", &parent_key, ExecutionConfig::default(), None)
         .await
         .unwrap();
 
@@ -952,7 +897,10 @@ async fn test_executor_get_status() {
     sleep(Duration::from_millis(500)).await;
 
     // Check status after completion
-    let view = executor.get_run(&run_id).await.expect("run {run_id} missing");
+    let view = executor
+        .get_run(&run_id)
+        .await
+        .expect("run {run_id} missing");
     let status = view.status;
     assert!(status.is_terminal(), "Status: {}", status);
 }
@@ -966,7 +914,7 @@ async fn test_executor_get_run() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -989,12 +937,7 @@ async fn test_executor_get_run() {
     ));
 
     let run_id = executor
-        .spawn_and_execute(
-            "Test task",
-            &parent_key,
-            ExecutionConfig::default(),
-            None,
-        )
+        .spawn_and_execute("Test task", &parent_key, ExecutionConfig::default(), None)
         .await
         .unwrap();
 
@@ -1075,7 +1018,7 @@ async fn test_max_concurrent_limit() {
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
     // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
+    let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
@@ -1116,12 +1059,7 @@ async fn test_max_concurrent_limit() {
     // Second spawn might fail or succeed depending on timing
     // (if first run completes before second spawn, it will succeed)
     let _result2 = executor
-        .spawn_and_execute(
-            "Task 2",
-            &parent_key,
-            ExecutionConfig::default(),
-            None,
-        )
+        .spawn_and_execute("Task 2", &parent_key, ExecutionConfig::default(), None)
         .await;
 }
 
@@ -1216,8 +1154,7 @@ async fn resume_refuses_nonexistent_target() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("no child of")
-            || err.to_string().contains("not found"),
+        err.to_string().contains("no child of") || err.to_string().contains("not found"),
         "{err}"
     );
 }
@@ -1345,7 +1282,8 @@ async fn resume_refuses_archived_target() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("archived sessions are not currently restorable"),
+        err.to_string()
+            .contains("archived sessions are not currently restorable"),
         "{err}"
     );
 }
@@ -1602,21 +1540,28 @@ async fn new_with_fresh_name_spawns_new_session() {
 }
 
 #[tokio::test]
-async fn new_with_name_colliding_non_standing_errors() {
+async fn new_with_name_colliding_non_spawn_errors() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
-    // A NON-standing session deeper in the caller's subtree already
-    // owns the slug "notes". (A direct-sibling collision keeps the
-    // Phase 1b "unique per parent" refusal — see
+    // A session NOT created by an Agent spawn deeper in the caller's
+    // subtree already owns the slug "notes". Attach-on-collision only
+    // applies to spawn-created sessions; this one keeps the structured
+    // refusal. (Spawn-created collisions attach instead — see
     // `spawn_with_name_stamps_child_slug`.)
-    create_linked_session(&session_manager, &agent_name, "mid-spawn", Some("root-sess"), "spawn")
-        .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "mid-spawn",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
     create_linked_session(
         &session_manager,
         &agent_name,
         "plain-notes",
         Some("mid-spawn"),
-        "spawn",
+        "user",
     )
     .await;
     session_manager
@@ -1647,7 +1592,7 @@ async fn new_with_name_colliding_non_standing_errors() {
         .await
         .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("not a standing child"), "{msg}");
+    assert!(msg.contains("not created by an Agent spawn"), "{msg}");
     // Sprint 6: the colliding session id appears as its v5 UUID form.
     assert!(msg.contains(&sid("plain-notes")), "{msg}");
 }
@@ -1748,8 +1693,7 @@ async fn compact_refuses_nonexistent_target() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("no child of")
-            || err.to_string().contains("not found"),
+        err.to_string().contains("no child of") || err.to_string().contains("not found"),
         "{err}"
     );
 }
@@ -1795,7 +1739,13 @@ async fn compact_refuses_self_and_ancestor() {
     // only path that resolves to the trunk (root-sess carries no
     // slug in the canonical shape).
     let err = executor
-        .compact_and_execute("/", "task", &sid("spawn-a"), ExecutionConfig::default(), None)
+        .compact_and_execute(
+            "/",
+            "task",
+            &sid("spawn-a"),
+            ExecutionConfig::default(),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
@@ -1834,7 +1784,8 @@ async fn compact_refuses_archived_target() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("archived sessions are not currently restorable"),
+        err.to_string()
+            .contains("archived sessions are not currently restorable"),
         "{err}"
     );
 }
@@ -1880,7 +1831,10 @@ async fn compact_happy_path_runs_session_without_trigger_requirement() {
     // Sprint 6: compact_and_execute resolves the target through
     // `resolve_reference`, so the registered child key is the v5 UUID
     // form.
-    assert_eq!(view.child_session_id.as_deref(), Some(sid("branch-a").as_str()));
+    assert_eq!(
+        view.child_session_id.as_deref(),
+        Some(sid("branch-a").as_str())
+    );
     assert!(
         matches!(view.status, AsyncTaskStatus::Completed { .. }),
         "the compact run must complete, got: {:?}",
@@ -1941,8 +1895,7 @@ async fn validate_context_parent_resolves_path() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("no child")
-            || err.to_string().contains("not found"),
+        err.to_string().contains("no child") || err.to_string().contains("not found"),
         "{err}"
     );
 }
@@ -1953,17 +1906,6 @@ async fn validate_context_parent_resolves_path() {
 // session metadata at spawn; `resume` / `compact` accept `/`-rooted
 // session paths (resolved against the caller's tree before guards).
 // ---------------------------------------------------------------------------
-
-/// Set a slug on a linked session (mirrors what the session tool's
-/// rename does through the production adapter).
-async fn set_slug(session_manager: &Arc<RwLock<SessionManager>>, id: &str, slug: &str) {
-    session_manager
-        .read()
-        .await
-        .set_session_slug(id, Some(slug.to_string()))
-        .await
-        .unwrap();
-}
 
 #[tokio::test]
 async fn spawn_with_name_stamps_child_slug() {
@@ -2000,14 +1942,38 @@ async fn spawn_with_name_stamps_child_slug() {
         .unwrap();
     let child = metas
         .iter()
-        .find(|m| m.parent_session_id.map(|id| id.to_string()).as_deref() == Some(peko_session::SessionId::from("root-sess").to_string().as_str()))
+        .find(|m| {
+            m.parent_session_id.map(|id| id.to_string()).as_deref()
+                == Some(
+                    peko_session::SessionId::from("root-sess")
+                        .to_string()
+                        .as_str(),
+                )
+        })
         .expect("spawned child present");
     assert_eq!(child.slug.as_deref(), Some("task-b"));
     assert_eq!(child.trigger, "spawn");
 
-    // Uniqueness: a second spawn with the same name under the same
-    // parent refuses BEFORE the run registers, naming the conflict.
-    let err = executor
+    // Attach-on-collision (2026-09-07): a second spawn with the same
+    // name under the same parent ATTACHES to the existing child instead
+    // of refusing — recurring static-parameter callers (cron SpawnTool)
+    // rely on this: fire #1 creates, fire #2+ resumes. Wait for the
+    // first run to reach a terminal state first: the attach path is a
+    // resume, which refuses while the session has an active run.
+    for _ in 0..50 {
+        let terminal = {
+            let guard = registry.read().await;
+            guard
+                .get(&run_id)
+                .map(|e| e.status.is_terminal())
+                .unwrap_or(false)
+        };
+        if terminal {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    let run_id2 = executor
         .spawn_and_execute(
             "task 2",
             "root-sess",
@@ -2018,9 +1984,12 @@ async fn spawn_with_name_stamps_child_slug() {
             None,
         )
         .await
-        .unwrap_err();
-    assert!(err.to_string().contains("unique per parent"), "{err}");
-    assert!(err.to_string().contains(&child.session_id.to_string()), "{err}");
+        .unwrap();
+    assert_eq!(
+        run_child_session_id(&registry, &run_id2).await.as_deref(),
+        Some(child.session_id.to_string().as_str()),
+        "name matching a spawned session must attach to it"
+    );
 
     // Invalid slug format refuses at spawn too.
     let err = executor
@@ -2250,7 +2219,7 @@ async fn streaming_resume_registers_active_run_in_registry() {
         if registry
             .read()
             .await
-            .has_active_subagent_run_for_child(&sid("spawn-a").as_str())
+            .has_active_subagent_run_for_child(sid("spawn-a").as_str())
         {
             observed_active = true;
             break;
@@ -2276,7 +2245,7 @@ async fn streaming_resume_registers_active_run_in_registry() {
     assert!(!registry
         .read()
         .await
-        .has_active_subagent_run_for_child(&sid("spawn-a").as_str()));
+        .has_active_subagent_run_for_child(sid("spawn-a").as_str()));
 }
 
 /// Cancellation: a cancelled parent token surfaces as a refused
@@ -2377,7 +2346,8 @@ async fn streaming_resume_enforces_guard_stack() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("archived sessions are not currently restorable"),
+        err.to_string()
+            .contains("archived sessions are not currently restorable"),
         "{err}"
     );
 
@@ -2410,8 +2380,7 @@ async fn streaming_resume_enforces_guard_stack() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("no child of")
-            || err.to_string().contains("not found"),
+        err.to_string().contains("no child of") || err.to_string().contains("not found"),
         "{err}"
     );
 }
@@ -2501,7 +2470,7 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
         .into_iter()
         .filter(|e| {
             matches!(&e.metadata, TaskMetadata::Subagent(m)
-                if m.child_session_id.as_deref() == Some(&sid("spawn-a").as_str()))
+                if m.child_session_id.as_deref() == Some(sid("spawn-a").as_str()))
         })
         .count();
     assert_eq!(runs_for_child, 1, "no double-run may be registered");
@@ -2567,7 +2536,11 @@ async fn streaming_resume_sequential_turns_keep_history() {
 
     // The child session kept both turns.
     let mut manager = session_manager.write().await;
-    let handle = manager.open_session(&sid("spawn-a").as_str()).await.unwrap().unwrap();
+    let handle = manager
+        .open_session(sid("spawn-a").as_str())
+        .await
+        .unwrap()
+        .unwrap();
     let history = handle.load_history().await.unwrap();
     for needle in ["first message", "second message"] {
         assert!(
@@ -2577,4 +2550,89 @@ async fn streaming_resume_sequential_turns_keep_history() {
             "child session history must contain '{needle}'"
         );
     }
+}
+
+/// 2026-09-07: a run whose target session is peer-bound (per the
+/// injected `PeerTurnSurface`) flips into conversation mode and
+/// delivers its final reply to the peer's DM channel — this is what
+/// lets Agent-tool resumes and cron SpawnTool attaches targeting
+/// `/local-user`-style sessions reach the user.
+#[tokio::test]
+async fn peer_bound_run_delivers_reply_via_surface() {
+    use crate::agents::subagent_executor::PeerTurnSurface;
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Default)]
+    struct RecordingSurface {
+        probed: StdMutex<Vec<String>>,
+        posted: StdMutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTurnSurface for RecordingSurface {
+        async fn peer_surface(&self, session_id: &str) -> Option<(String, String)> {
+            self.probed.lock().unwrap().push(session_id.to_string());
+            Some(("user:local".to_string(), "chan_test".to_string()))
+        }
+
+        async fn post_reply(&self, channel_id: &str, text: &str) {
+            self.posted
+                .lock()
+                .unwrap()
+                .push((channel_id.to_string(), text.to_string()));
+        }
+    }
+
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+
+    let surface = Arc::new(RecordingSurface::default());
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager,
+        &agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    )
+    .with_peer_turn_surface(Some(surface.clone()));
+
+    let run_id = executor
+        .spawn_and_execute(
+            "ping the user",
+            "root-sess",
+            ExecutionConfig {
+                slug: Some("ping".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Wait for the run to reach a terminal state (delivery happens at
+    // completion, inside the run closure, before the status flip).
+    for _ in 0..50 {
+        let terminal = {
+            let guard = registry.read().await;
+            guard
+                .get(&run_id)
+                .map(|e| e.status.is_terminal())
+                .unwrap_or(false)
+        };
+        if terminal {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let probed = surface.probed.lock().unwrap();
+    assert_eq!(probed.len(), 1, "the child session is probed once");
+    let posted = surface.posted.lock().unwrap();
+    assert_eq!(posted.len(), 1, "exactly one delivery");
+    assert_eq!(posted[0].0, "chan_test");
+    assert!(
+        posted[0].1.contains("ping the user"),
+        "the stub completion text embeds the task: {:?}",
+        posted[0].1
+    );
 }

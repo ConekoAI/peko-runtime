@@ -75,14 +75,15 @@ pub async fn declared_subagent_type(sessions_dir: &Path, session_id: &str) -> Op
     })
 }
 
-/// `Agent` `new` with `name` colliding with a session that is NOT a
-/// standing child (rename semantics live in the session tool).
-pub fn err_name_not_standing(name: &str, session_id: &str) -> anyhow::Error {
+/// `Agent` `new` with `name` colliding with a session that was NOT
+/// created by an Agent spawn (rename semantics live in the session
+/// tool). Spawn-created sessions attach by name; anything else refuses.
+pub fn err_name_not_spawned(name: &str, session_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "cannot spawn with name '{name}': session '{session_id}' already uses that slug but is \
-         not a standing child — only standing sessions (declared via the principal's \
-         [children] config) attach by name; pick a different name, or manage the existing \
-         session with the session tool"
+        "cannot spawn with name '{name}': session '{session_id}' already uses that slug but was \
+         not created by an Agent spawn — only spawn-created sessions (Agent `new` results and \
+         [children]-declared standing children) attach by name; pick a different name, or manage \
+         the existing session with the session tool"
     )
 }
 
@@ -142,7 +143,7 @@ mod tests {
     #[test]
     fn refusals_are_actionable() {
         for err in [
-            err_name_not_standing("memory", "sess_x"),
+            err_name_not_spawned("memory", "sess_x"),
             err_declared_type_mismatch("memory", "sess_x", "archivist", "writer"),
         ] {
             let msg = err.to_string();

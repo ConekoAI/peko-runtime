@@ -1075,9 +1075,7 @@ impl AgenticLoop {
         // The default factory (built inside `new`) captures the inner
         // `Arc<Provider>` and rebuilds a fresh `BackgroundCompactor`
         // here with the loop's stored meters.
-        let compactor_backend = self
-            .compactor_factory
-            .build(Arc::clone(&self.quota_meter));
+        let compactor_backend = self.compactor_factory.build(Arc::clone(&self.quota_meter));
         // Phase 9b.N.5b.9c: compaction config comes from the loop's
         // stored field (loaded by root at construction time and passed
         // in via the new `compaction_config` parameter). The loop no
@@ -1168,7 +1166,10 @@ impl AgenticLoop {
                         iteration,
                     );
                     if let Err(e) = session.add_user(msg.content.clone()).await {
-                        warn!("AgenticLoop: failed to persist steering message {}: {e}", msg.id);
+                        warn!(
+                            "AgenticLoop: failed to persist steering message {}: {e}",
+                            msg.id
+                        );
                     }
                     messages.push(LlmMessage::user(msg.content));
                 }
@@ -2048,8 +2049,7 @@ impl AgenticLoop {
                 // the top of the loop, so the two triggers stay
                 // consistent by construction.
                 let mid_turn_estimated =
-                    crate::compaction_driver::estimate_context_tokens_for_agentic(&messages)
-                        .tokens;
+                    crate::compaction_driver::estimate_context_tokens_for_agentic(&messages).tokens;
                 if peko_session::compaction::should_auto_compact(
                     mid_turn_estimated,
                     compaction_driver.context_window(),
@@ -2341,15 +2341,20 @@ impl AgenticLoop {
             principal_memory: crate::load_principal_memory(&workspace),
             workspace,
             resolved_model,
-            // Phase 2 wiring: read from `AgentConfig`. Back-compat
-            // defaults (`"discord"`, `"medium"`) match the legacy
-            // hardcoded values so existing prompt bodies continue to
-            // render unchanged for agents that don't override these.
-            channel: self.agent.channel().unwrap_or("discord").to_string(),
+            // Phase 2 wiring: read from `AgentConfig`. Agents that
+            // don't override these get the runtime defaults — `"cli"`
+            // for the channel (the common ingress surface; matches the
+            // `AgentView::channel` doc), `"medium"` for thinking.
+            channel: self.agent.channel().unwrap_or("cli").to_string(),
             thinking_level: self.agent.thinking_level().unwrap_or("medium").to_string(),
             sandbox_enabled: self.agent.sandbox_enabled(),
             model_aliases: self.agent.model_aliases().to_vec(),
             has_gateway: true,
+            // Peer-conversation context (peer-ingress turns): the DM
+            // channel that reaches the user + the peer's subject,
+            // rendered into the `{{session_context}}` section.
+            conversation_channel: self.agent.conversation_channel().map(str::to_string),
+            conversation_peer: self.agent.conversation_peer().map(str::to_string),
             // Phase 3: control surfaces fully populated each iteration.
             iteration_budget,
             quota_state,

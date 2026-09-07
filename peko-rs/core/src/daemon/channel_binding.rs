@@ -440,9 +440,7 @@ impl GroupWakeResponder {
                 text,
                 parent,
                 ..
-            } if parent.is_none()
-                && matches!(Subject::from_str(author), Ok(Subject::User(_))) =>
-            {
+            } if parent.is_none() && matches!(Subject::from_str(author), Ok(Subject::User(_))) => {
                 Some(format!("{author}: {text}"))
             }
             _ => None,
@@ -588,11 +586,16 @@ impl SubagentResumeDriver {
 impl BoundTurnDriver for SubagentResumeDriver {
     async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
         // No completion announcement: the reply goes to the CHANNEL,
-        // not the parent session's inbox. Everything else defaults
-        // (cleanup: Keep — bound sessions outlive their runs;
-        // timeout 300s; max_depth 1).
+        // not the parent session's inbox. Conversation mode (no
+        // subagent framing, prior history loaded, delegation allowed
+        // to depth 3) — a channel-driven turn is a turn in the peer's
+        // ongoing conversation, same as the streaming ingress path.
+        // Everything else defaults (cleanup: Keep — bound sessions
+        // outlive their runs; timeout 300s).
         let config = ExecutionConfig {
             announce_completion: false,
+            conversation: true,
+            max_depth: 3,
             ..ExecutionConfig::default()
         };
         let wait_timeout =
@@ -905,13 +908,16 @@ impl ChannelBindingSupervisor {
         // ADR-049 Phase 3: the driver bundle is built for bound AND
         // unbound channels — unbound (group-tier) channels get the
         // group wake responder from the same bundle.
-        let drivers = self.driver_for(principal).await.map(|(turn, binding_resolver, group_resolver)| {
-            ResponderDrivers {
-                turn: Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
-                binding_resolver: Arc::clone(&binding_resolver) as Arc<dyn BindingResolver>,
-                group_resolver: Arc::clone(&group_resolver) as Arc<dyn BindingResolver>,
-            }
-        });
+        let drivers =
+            self.driver_for(principal)
+                .await
+                .map(
+                    |(turn, binding_resolver, group_resolver)| ResponderDrivers {
+                        turn: Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
+                        binding_resolver: Arc::clone(&binding_resolver) as Arc<dyn BindingResolver>,
+                        group_resolver: Arc::clone(&group_resolver) as Arc<dyn BindingResolver>,
+                    },
+                );
         select_responder(
             channel.clone(),
             principal.id.clone(),
@@ -1309,7 +1315,10 @@ mod tests {
         // the log — in production the subscriber only ever hands the
         // responder line ids that exist.
         let other = pid("prin_other");
-        store.invite(&channel, &principal, &Subject::from(&other)).await.unwrap();
+        store
+            .invite(&channel, &principal, &Subject::from(&other))
+            .await
+            .unwrap();
         let line = store
             .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
             .await
@@ -1486,7 +1495,11 @@ mod tests {
 
         // A posts a root post (line 1; Created is line 0).
         let line_a = store_a
-            .post(&channel_a, &Subject::from(&principal_a), PostMsg::root("hello from A"))
+            .post(
+                &channel_a,
+                &Subject::from(&principal_a),
+                PostMsg::root("hello from A"),
+            )
             .await
             .unwrap();
 
@@ -1793,10 +1806,7 @@ mod tests {
                 at: "2026-08-15T00:00:00Z".into(),
             },
         ] {
-            assert_eq!(
-                GroupWakeResponder::response_trigger(&principal, &ev),
-                None
-            );
+            assert_eq!(GroupWakeResponder::response_trigger(&principal, &ev), None);
         }
     }
 
@@ -1875,7 +1885,10 @@ mod tests {
         assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
         assert_eq!(
             calls.lock().unwrap()[0],
-            ("session-1".to_string(), "user:alice: hello group".to_string())
+            (
+                "session-1".to_string(),
+                "user:alice: hello group".to_string()
+            )
         );
 
         // The reply lands on the group as the principal, THREADED
@@ -1935,7 +1948,11 @@ mod tests {
         );
 
         let line = store
-            .post(&channel, &Subject::from(&other), PostMsg::root("agent talking"))
+            .post(
+                &channel,
+                &Subject::from(&other),
+                PostMsg::root("agent talking"),
+            )
             .await
             .unwrap();
         responder
@@ -1961,8 +1978,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn group_child_resolver_keys_sessions_per_channel() {
         let tmp = tempfile::tempdir().unwrap();
-        let manager = SessionManager::new()
-            .with_sessions_dir_internal(tmp.path().join("sessions"));
+        let manager = SessionManager::new().with_sessions_dir_internal(tmp.path().join("sessions"));
         let resolver =
             GroupChildResolver::new("test-agent".to_string(), Arc::new(RwLock::new(manager)));
 
@@ -2025,16 +2041,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn resolver_passes_raw_ids_through() {
         let (manager, _tmp) = store_with_standing_child().await;
-        let resolver =
-            SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
-        assert_eq!(resolver.resolve(&sid("child-1")).await.unwrap(), sid("child-1"));
+        let resolver = SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
+        assert_eq!(
+            resolver.resolve(&sid("child-1")).await.unwrap(),
+            sid("child-1")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn resolver_resolves_slash_paths() {
         let (manager, _tmp) = store_with_standing_child().await;
-        let resolver =
-            SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
+        let resolver = SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
         assert_eq!(resolver.resolve("/user-a").await.unwrap(), sid("child-1"));
         let err = resolver.resolve("/nope").await.unwrap_err();
         assert!(err.to_string().contains("user-a"), "{err}");
@@ -2127,9 +2144,16 @@ mod tests {
             )
             .await
             .unwrap();
-        store.invite(&channel, &principal, &Subject::from(&other)).await.unwrap();
         store
-            .post(&channel, &Subject::from(&other), PostMsg::root("before-restart"))
+            .invite(&channel, &principal, &Subject::from(&other))
+            .await
+            .unwrap();
+        store
+            .post(
+                &channel,
+                &Subject::from(&other),
+                PostMsg::root("before-restart"),
+            )
             .await
             .unwrap();
 
@@ -2167,15 +2191,19 @@ mod tests {
         // log before boot 2 ticks.
         let store2 = Arc::clone(&store);
         let channel2 = channel.clone();
-        assert!(eventually(|| async {
-            store2
-                .peek(&channel2, &peko_channel::Checkpoint::default())
-                .await
-                .unwrap()
-                .iter()
-                .any(|ev| matches!(ev, ChannelEvent::Posted { text, .. } if text == "the reply"))
-        })
-        .await);
+        assert!(
+            eventually(|| async {
+                store2
+                    .peek(&channel2, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(
+                        |ev| matches!(ev, ChannelEvent::Posted { text, .. } if text == "the reply"),
+                    )
+            })
+            .await
+        );
 
         // Boot 2 ("daemon restart"): a fresh subscriber over LOADED
         // cursors. History is not re-delivered; the only new event is

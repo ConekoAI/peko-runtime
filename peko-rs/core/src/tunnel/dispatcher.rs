@@ -31,9 +31,9 @@ use super::protocol::{
 use super::TunnelHandle;
 use super::{
     did_key::did_key_to_verifying_key,
-    tunnel_channel_audit, tunnel_channel_signature::{
-        verify_channel_event, verify_channel_invite, ChannelInviteSignedFields,
-        ChannelSignedFields,
+    tunnel_channel_audit,
+    tunnel_channel_signature::{
+        verify_channel_event, verify_channel_invite, ChannelInviteSignedFields, ChannelSignedFields,
     },
 };
 
@@ -1684,6 +1684,7 @@ mod tests {
     ) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
+            id: None,
             did: None,
             owner,
             identity: PrincipalIdentityConfig {
@@ -2486,7 +2487,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let local_runtime_id = app_state.runtime_did();
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
-        let (handle, _rx) = mock_tunnel_handle();
+        let (_handle, _rx) = mock_tunnel_handle();
 
         let kp = peko_identity::keys::KeyPair::generate();
         let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
@@ -2533,7 +2534,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let local_runtime_id = app_state.runtime_did();
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
-        let (handle, _rx) = mock_tunnel_handle();
+        let (_handle, _rx) = mock_tunnel_handle();
 
         let kp_signer = peko_identity::keys::KeyPair::generate();
         let kp_claimed = peko_identity::keys::KeyPair::generate();
@@ -2588,7 +2589,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let local_runtime_id = app_state.runtime_did();
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
-        let (handle, _rx) = mock_tunnel_handle();
+        let (_handle, _rx) = mock_tunnel_handle();
 
         let event = peko_protocol::channel::ChannelEvent::Posted {
             channel: peko_protocol::channel::ChannelId("chan_abcdefgh".to_string()),
@@ -2644,8 +2645,7 @@ mod tests {
         let (_handle, _rx) = mock_tunnel_handle();
 
         let kp = peko_identity::keys::KeyPair::generate();
-        let source_runtime_id =
-            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         let event = peko_protocol::channel::ChannelEvent::Posted {
             channel: channel.clone(),
             author: "prin_bob@runtime-B".into(),
@@ -2714,8 +2714,7 @@ mod tests {
         let (_handle, _rx) = mock_tunnel_handle();
 
         let kp = peko_identity::keys::KeyPair::generate();
-        let source_runtime_id =
-            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         let bogus = peko_protocol::channel::ChannelId("chan_unknown01".into());
         let event = peko_protocol::channel::ChannelEvent::Posted {
             channel: bogus.clone(),
@@ -2826,8 +2825,7 @@ mod tests {
         let (_handle, _rx) = mock_tunnel_handle();
 
         let kp = peko_identity::keys::KeyPair::generate();
-        let source_runtime_id =
-            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         let channel_id = "chan_invite01";
         let initial_members = vec![
             // The source's own row — remote from the receiver's view.
@@ -2948,8 +2946,7 @@ mod tests {
         let host: Arc<dyn TunnelHost> = app_state.clone();
         let dispatcher = TunnelDispatcher::new(host);
         let kp = peko_identity::keys::KeyPair::generate();
-        let source_runtime_id =
-            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         let channel_id = "chan_dminvite";
         let creator_did = "did:peko:principal:aaaabbbbccccdddd";
         let initial_members = vec![
@@ -2998,9 +2995,9 @@ mod tests {
         // The mirror's binding is derived from the receiver's OWN
         // peer child for the creator — the child's real slug, not the
         // wire value.
-        let expected_slug = crate::principal::peer_children::peer_child_slug(
-            &Subject::Principal(creator_did.to_string().into()),
-        )
+        let expected_slug = crate::principal::peer_children::peer_child_slug(&Subject::Principal(
+            creator_did.to_string().into(),
+        ))
         .expect("creator DID yields a peer child slug");
         let expected_binding = format!("/{expected_slug}");
         let channel_typed = peko_channel::ChannelId(channel_id.to_string());
@@ -3056,8 +3053,7 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         let kp = peko_identity::keys::KeyPair::generate();
-        let source_runtime_id =
-            crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         let channel_id = "chan_unknown01";
         let initial_members = vec![peko_protocol::channel::InitialMember {
             principal_did: "did:peko:principal:nobody".to_string(),

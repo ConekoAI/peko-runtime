@@ -188,9 +188,18 @@ Returns:
 
         // Resolve per-principal state from the execution context. Fail closed:
         // no active skill entry means the skill is not enabled for this caller.
+        // Grants match exactly (`skill:docker`) or by prefix wildcard
+        // (`skill:*`), mirroring `Capability::matches` semantics — the
+        // context carries a plain `Vec<String>`, not `Capabilities`.
         let enabled = ctx.capabilities.as_ref().map_or(false, |caps| {
             let required = format!("skill:{name}").to_lowercase();
-            caps.iter().any(|c| c.to_lowercase() == required)
+            caps.iter().any(|c| {
+                let grant = c.to_lowercase();
+                grant == required
+                    || (grant
+                        .strip_suffix('*')
+                        .is_some_and(|prefix| required.starts_with(prefix)))
+            })
         }) || ctx.active_extensions.as_ref().map_or(false, |active| {
             active
                 .iter()
@@ -609,6 +618,22 @@ mod tests {
             result["body"],
             "Open issue 42 on branch main.\nFull: 42 main"
         );
+    }
+
+    #[tokio::test]
+    async fn execute_allows_skill_via_wildcard_grant() {
+        // `skill:*` (shipped by `Capabilities::starter_bundle`) must match
+        // any skill name, mirroring the tool gate's `tool:*` semantics.
+        let _id = next_test_id();
+        let tmp = TempDir::new().unwrap();
+        write_skill(tmp.path(), "fix", "body", &[]);
+        let tool = tool_with_catalog(&[("fix", &tmp.path().join("fix").join("SKILL.md"))]);
+        let result = tool
+            .execute_with_context(json!({ "name": "fix" }), &test_ctx(&["*"], tmp.path()))
+            .await
+            .unwrap();
+        assert_eq!(result["name"], "fix");
+        assert_eq!(result["body"], "body");
     }
 
     #[tokio::test]

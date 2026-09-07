@@ -1262,6 +1262,15 @@ subagent_type = "archivist"        # required, nonempty
 description = "Long-term memory"   # optional; becomes the session title
 ```
 
+**Principal runtime id (2026-09-06).** `principal.toml` carries an
+optional top-level `id = "prin_..."` — the principal's stable runtime
+`PrincipalId`. Written at create; on load a missing `id` (legacy file)
+is generated once and re-persisted. Before this field the id was
+regenerated on every load, which forked peer DM channels on each daemon
+restart. **Agent name-keyed identities:** the root agent's DID is
+resolved through `<identities_dir>/by-name/<name>.json` (a small
+`{"did": "..."}` alias) instead of re-minting per turn.
+
 Each table key (`memory`) is the child's slug and must pass
 `validate_slug` (1–64 chars, no `/`, no surrounding whitespace); a bad
 name or a missing/blank `subagent_type` is a structured load error.

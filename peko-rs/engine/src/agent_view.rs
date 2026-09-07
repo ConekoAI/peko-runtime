@@ -103,6 +103,15 @@ pub trait AgentView: Send + Sync + 'static {
     /// (`{{model_aliases}}`).
     fn model_aliases(&self) -> &[String];
 
+    /// Peer-conversation DM channel id (conversation runs only),
+    /// rendered into the `{{session_context}}` section. `None` for
+    /// non-conversation runs (Agent-tool spawns, trunk turns).
+    fn conversation_channel(&self) -> Option<&str>;
+
+    /// Peer-conversation peer subject in wire form (conversation
+    /// runs only), rendered into the `{{session_context}}` section.
+    fn conversation_peer(&self) -> Option<&str>;
+
     /// Whether to enable F35's `__tool_search` synthetic built-in.
     /// Field access at `agentic_loop.rs:1892` —
     /// `self.agent.config.enable_tool_search`.

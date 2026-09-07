@@ -218,6 +218,13 @@ impl PrincipalManager {
         self
     }
 
+    /// The shared LLM resolver, when bound (daemon path). Used by
+    /// out-of-band turn builders (cron cold-start Agent registration)
+    /// that need model resolution outside a live turn.
+    pub fn llm_resolver(&self) -> Option<Arc<LlmResolver>> {
+        self.resolver.clone()
+    }
+
     /// Attach a daemon extension store. When present, the per-message
     /// `PrincipalCatalog` includes installed extensions alongside built-ins
     /// and principal-scoped agents.
@@ -334,6 +341,9 @@ impl PrincipalManager {
         let mut config = config;
         let identity = self.generate_identity(&name).await?;
         config.did = Some(PrincipalDID(identity.did));
+        // Persist the generated id so daemon restarts load the same
+        // principal identity (peer DM channels are keyed by it).
+        config.id = Some(id.clone());
 
         // Persist principal.toml under the Shared root.
         self.persist_config(&layout.shared.root, &config).await?;
@@ -412,7 +422,7 @@ impl PrincipalManager {
             .await
             .map_err(PrincipalManagerError::Io)?;
 
-        let config: PrincipalConfig = toml::from_str(&config_str)
+        let mut config: PrincipalConfig = toml::from_str(&config_str)
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
 
         let name = config.name.clone();
@@ -438,7 +448,28 @@ impl PrincipalManager {
         // `<data_dir>/principals/{name}/local/cron/`.
         let layout = self.path_resolver.principal_layout(&name);
 
-        let id = PrincipalId::generate();
+        // Stable principal id: use the persisted one when present. For
+        // pre-existing `principal.toml` files without an `id` field,
+        // generate once and re-persist so the id (and everything keyed
+        // by it — peer DM channels, cron ownership, quota state)
+        // stabilizes across daemon restarts. A persist failure is
+        // non-fatal: the in-memory principal still works with the
+        // generated id.
+        let id = match config.id.clone() {
+            Some(id) => id,
+            None => {
+                let id = PrincipalId::generate();
+                config.id = Some(id.clone());
+                if let Err(e) = self.persist_config(&workspace_path, &config).await {
+                    tracing::warn!(
+                        principal = %name,
+                        error = %e,
+                        "failed to persist generated principal id; id will churn on next restart"
+                    );
+                }
+                id
+            }
+        };
         // Phase A: memory factory takes the Local tier root, not
         // the Shared root.
         let memory = self.memory_factory.create(&id, &layout.local.root).await;
@@ -1308,6 +1339,72 @@ async fn discover_agent_prompts(
     Ok(prompts)
 }
 
+/// Render the body of a `ContextInjectionKind::Plan` block from a
+/// `PlanRecord`. Plain-text shape mirrors the rest of the
+/// `ContextInjection.content` surface (memory, session, file, todo
+/// are all free-form strings). Sections:
+///   - header: plan title + plan_id
+///   - "In progress" — `current_focus_nodes` (drive forward)
+///   - "Ready next" — `ready_nodes` (deps satisfied, status Pending)
+///   - "Needs attention" — blocked/failed nodes (warnings)
+fn render_plan_focus_block(record: &PlanRecord) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Plan: {} ({})\n", record.title, record.plan_id));
+
+    let in_progress = record.current_focus_nodes();
+    if !in_progress.is_empty() {
+        out.push_str("\nIn progress:\n");
+        for n in &in_progress {
+            out.push_str(&format!("  - [{}] {}\n", n.node_id.as_str(), n.step));
+        }
+    }
+
+    let ready = record.ready_nodes();
+    if !ready.is_empty() {
+        out.push_str("\nReady next:\n");
+        for n in &ready {
+            out.push_str(&format!("  - [{}] {}\n", n.node_id.as_str(), n.step));
+        }
+    }
+
+    // Blocked + Failed nodes get surfaced as warnings regardless of
+    // current_focus_nodes() membership.
+    let attention: Vec<&peko_plan::PlanNode> = record
+        .nodes
+        .iter()
+        .filter(|n| {
+            matches!(
+                n.status,
+                PlanNodeStatus::Blocked { .. } | PlanNodeStatus::Failed { .. }
+            )
+        })
+        .collect();
+    if !attention.is_empty() {
+        out.push_str("\nNeeds attention:\n");
+        for n in &attention {
+            let reason = match &n.status {
+                PlanNodeStatus::Blocked { reason, .. } => reason.clone(),
+                PlanNodeStatus::Failed { reason, .. } => reason.clone(),
+                _ => String::new(),
+            };
+            let status_label = match &n.status {
+                PlanNodeStatus::Blocked { .. } => "blocked",
+                PlanNodeStatus::Failed { .. } => "failed",
+                _ => "unknown",
+            };
+            out.push_str(&format!(
+                "  - [{}] ({}): {} ({})\n",
+                n.node_id.as_str(),
+                status_label,
+                n.step,
+                reason
+            ));
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1498,6 +1595,7 @@ mod tests {
     fn test_config(name: &str) -> PrincipalConfig {
         PrincipalConfig {
             name: name.to_string(),
+            id: None,
             did: None,
             owner: Subject::User("test-owner".to_string()),
             identity: PrincipalIdentityConfig {
@@ -1806,6 +1904,100 @@ mod tests {
         );
     }
 
+    /// Build a fresh `PrincipalManager` over the same temp dirs —
+    /// the "daemon restart" half of the id-stability tests.
+    async fn build_manager(temp: &TempDir) -> Arc<PrincipalManager> {
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let catalog_path = temp.path().join("models.toml");
+        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(resolver),
+        )
+    }
+
+    /// The principal id must survive a daemon restart: `create`
+    /// persists it into `principal.toml` and a fresh manager's `load`
+    /// recovers the SAME id instead of minting a new one (peer DM
+    /// channels are keyed by it — re-minting fragmented `peko log`
+    /// history across restarts).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn principal_id_is_stable_across_restarts() {
+        let (temp, manager, _adapter, id) = setup().await;
+
+        let config_path = manager
+            .path_resolver
+            .principal_layout("stressy")
+            .shared
+            .config_file;
+        let toml = tokio::fs::read_to_string(&config_path).await.unwrap();
+        assert!(
+            toml.contains(&format!("id = \"{id}\"")),
+            "generated id should be persisted, got: {toml}"
+        );
+
+        // Simulate a daemon restart: a fresh manager loading the same
+        // principal.toml must recover the persisted id.
+        let manager2 = build_manager(&temp).await;
+        let loaded = manager2.load(&config_path).await.expect("load");
+        assert_eq!(loaded.id, id);
+    }
+
+    /// Pre-existing `principal.toml` files without an `id` field: the
+    /// load path generates one, re-persists the config, and the next
+    /// restart recovers the same id.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn load_assigns_and_persists_id_for_legacy_config() {
+        let (temp, manager, _adapter, original_id) = setup().await;
+
+        let config_path = manager
+            .path_resolver
+            .principal_layout("stressy")
+            .shared
+            .config_file;
+
+        // Strip the top-level `id` line to simulate a pre-existing
+        // config. Anchored to the `prin_` prefix so the `[owner]`
+        // table's `id = "user:..."` line survives.
+        let toml = tokio::fs::read_to_string(&config_path).await.unwrap();
+        let legacy = toml
+            .lines()
+            .filter(|line| !line.starts_with("id = \"prin_"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(&config_path, legacy).await.unwrap();
+
+        let manager2 = build_manager(&temp).await;
+        let loaded = manager2.load(&config_path).await.expect("load");
+        assert_ne!(
+            loaded.id, original_id,
+            "legacy config should get a freshly generated id"
+        );
+
+        // The generated id was re-persisted…
+        let toml = tokio::fs::read_to_string(&config_path).await.unwrap();
+        assert!(
+            toml.contains(&format!("id = \"{}\"", loaded.id)),
+            "generated id should be re-persisted, got: {toml}"
+        );
+
+        // …so the next restart recovers it.
+        let manager3 = build_manager(&temp).await;
+        let reloaded = manager3.load(&config_path).await.expect("reload");
+        assert_eq!(reloaded.id, loaded.id);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn create_generates_real_identity() {
@@ -1837,6 +2029,42 @@ mod tests {
         let names: Vec<String> = futures::future::join_all(all.iter().map(|p| p.name())).await;
         assert!(names.contains(&"stressy".to_string()));
         assert!(names.contains(&"beta".to_string()));
+    }
+
+    /// Regression: every principal's sessions must live under its own
+    /// Local tier root (`{data}/principals/{name}/local/sessions/`). The
+    /// memory factory receives the Local tier root whose `file_name()` is
+    /// always `"local"` — factories that re-derived the principal name
+    /// from it once collapsed all sessions into a single shared
+    /// `principals/local/local/sessions/` store, leaking one principal's
+    /// history into another's context.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn principals_have_isolated_session_stores() {
+        let (_temp, manager, _adapter, _id) = setup().await;
+        create_test_principal(&manager, "beta").await;
+
+        let all = manager.list_all().await;
+        assert_eq!(all.len(), 2);
+        let mut sessions_dirs: Vec<std::path::PathBuf> =
+            all.iter().map(|p| p.memory.sessions_dir()).collect();
+        sessions_dirs.sort();
+        assert_ne!(
+            sessions_dirs[0], sessions_dirs[1],
+            "principals must not share a session store"
+        );
+        for dir in &sessions_dirs {
+            let path = dir.to_string_lossy();
+            assert!(
+                path.contains("/principals/stressy/local/sessions")
+                    || path.contains("/principals/beta/local/sessions"),
+                "sessions dir must be scoped to its principal, got {path}"
+            );
+            assert!(
+                !path.contains("/principals/local/local/"),
+                "sessions must not collapse into the shared local/local store, got {path}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2783,17 +3011,15 @@ mod tests {
             .expect("receive_streaming should succeed");
         assert!(response.content.contains("streamed reply"));
 
-        let collected = events.lock().unwrap();
         assert!(
-            collected.iter().any(|e| matches!(
+            events.lock().unwrap().iter().any(|e| matches!(
                 e,
                 peko_engine::AgenticEvent::AssistantText { .. }
                     | peko_engine::AgenticEvent::AssistantDelta { .. }
             )),
             "the sink must see assistant text events; got {} events",
-            collected.len()
+            events.lock().unwrap().len()
         );
-        drop(collected);
 
         // The turn landed in alice's standing child.
         let principal = manager.get(id).await.expect("principal should exist");
@@ -2912,70 +3138,4 @@ mod tests {
             response.content
         );
     }
-}
-
-/// Render the body of a `ContextInjectionKind::Plan` block from a
-/// `PlanRecord`. Plain-text shape mirrors the rest of the
-/// `ContextInjection.content` surface (memory, session, file, todo
-/// are all free-form strings). Sections:
-///   - header: plan title + plan_id
-///   - "In progress" — `current_focus_nodes` (drive forward)
-///   - "Ready next" — `ready_nodes` (deps satisfied, status Pending)
-///   - "Needs attention" — blocked/failed nodes (warnings)
-fn render_plan_focus_block(record: &PlanRecord) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("Plan: {} ({})\n", record.title, record.plan_id));
-
-    let in_progress = record.current_focus_nodes();
-    if !in_progress.is_empty() {
-        out.push_str("\nIn progress:\n");
-        for n in &in_progress {
-            out.push_str(&format!("  - [{}] {}\n", n.node_id.as_str(), n.step));
-        }
-    }
-
-    let ready = record.ready_nodes();
-    if !ready.is_empty() {
-        out.push_str("\nReady next:\n");
-        for n in &ready {
-            out.push_str(&format!("  - [{}] {}\n", n.node_id.as_str(), n.step));
-        }
-    }
-
-    // Blocked + Failed nodes get surfaced as warnings regardless of
-    // current_focus_nodes() membership.
-    let attention: Vec<&peko_plan::PlanNode> = record
-        .nodes
-        .iter()
-        .filter(|n| {
-            matches!(
-                n.status,
-                PlanNodeStatus::Blocked { .. } | PlanNodeStatus::Failed { .. }
-            )
-        })
-        .collect();
-    if !attention.is_empty() {
-        out.push_str("\nNeeds attention:\n");
-        for n in &attention {
-            let reason = match &n.status {
-                PlanNodeStatus::Blocked { reason, .. } => reason.clone(),
-                PlanNodeStatus::Failed { reason, .. } => reason.clone(),
-                _ => String::new(),
-            };
-            let status_label = match &n.status {
-                PlanNodeStatus::Blocked { .. } => "blocked",
-                PlanNodeStatus::Failed { .. } => "failed",
-                _ => "unknown",
-            };
-            out.push_str(&format!(
-                "  - [{}] ({}): {} ({})\n",
-                n.node_id.as_str(),
-                status_label,
-                n.step,
-                reason
-            ));
-        }
-    }
-
-    out
 }

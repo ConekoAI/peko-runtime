@@ -71,11 +71,12 @@
 //! - the grant ends in `*` and the requirement starts with the
 //!   prefix before the wildcard.
 //!
-//! In practice the only wildcards in production are `runtime:*` (no
-//! caller uses it today) and `principal:*` (no caller uses it
-//! today). The `tool:*` wildcard is checked by the F37 funnel on
-//! `Vec<String>` projections of `Capabilities`, not through this
-//! type's `is_granted`.
+//! In practice the wildcards in production are `tool:*`, `agent:*`,
+//! and `skill:*` (all shipped by [`Capabilities::starter_bundle`] and
+//! matched through [`Capabilities::is_granted`] — e.g. the F37 tool
+//! gate's `is_tool_enabled` — or, for the `Skill` tool's string-slice
+//! gate, an equivalent prefix-wildcard check). `runtime:*` and
+//! `principal:*` are legal but no caller uses them today.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -232,25 +233,36 @@ impl Capabilities {
         self.grants.iter().any(|c| c.as_str() == grant)
     }
 
-    /// A safe starter bundle for new Principals.
+    /// The starter bundle for new Principals.
     ///
-    /// Post-Phase 3b (ADR-047 §2.5) this only carries the cross-actor /
-    /// cross-runtime grants that still live on `Capabilities`:
-    /// `principal:write_config`, `principal:write_agents`, and
-    /// `principal:write_identity`.
+    /// The tool catalog gate is **fail-closed**: `list_tool_definitions_with_allowlist`
+    /// and `is_tool_enabled` drop any tool without a matching `tool:<name>`
+    /// grant, so a bundle without tool grants would hand a fresh Principal an
+    /// empty `tools: []` wire catalog. This bundle therefore carries the
+    /// wildcard grants that make a fresh Principal useful out of the box:
+    ///
+    /// - `tool:*` — every tool in the catalog (built-in, workspace, MCP,
+    ///   universal) is visible and callable. Wildcards match by prefix via
+    ///   [`Capability::matches`].
+    /// - `agent:*` — any workspace agent template (`agents/<name>/AGENT.md`)
+    ///   passes the `Agent` tool's `is_subagent_enabled` check.
+    /// - `skill:*` — any workspace skill passes the `Skill` tool's gate
+    ///   (that gate does its own prefix-wildcard match over the
+    ///   `Vec<String>` projection, same `tool:*` semantics).
+    ///
+    /// Plus the cross-actor / cross-runtime grants that still live on
+    /// `Capabilities`: `principal:write_config`, `principal:write_agents`,
+    /// and `principal:write_identity`.
     ///
     /// 2026-08-25: `principal:write_cron` retired. Cron is now an
     /// internal principal tool gated by `tool:Cron{Create,List,Delete}`
-    /// grants (workspace-owned, not on `Capabilities`).
+    /// grants (covered by `tool:*`).
     ///
-    /// The `tool:*` / `agent:*` / `skill:*` / `network` /
-    /// `filesystem.*` / `tunnel:*` grants that used to live here
-    /// retired when the `Authority` envelope was deleted in PR-E
-    /// #1 (network/filesystem/tunnel) or when those concerns moved
-    /// to the per-principal workspace (tool/agent catalog).
-    /// Workspace tools are principal-owned and visible by default;
-    /// no capability gating is required to enumerate them in
-    /// `available_tools`.
+    /// The `network` / `filesystem.*` / `tunnel:*` grants that used to live
+    /// here retired when the `Authority` envelope was deleted in PR-E #1.
+    /// To restrict a Principal, hand-edit `[capabilities].grants` in its
+    /// `principal.toml` and remove the wildcards in favour of specific
+    /// `tool:<name>` / `agent:<name>` / `skill:<name>` grants.
     #[must_use]
     pub fn starter_bundle() -> Self {
         Self::with_grants([
@@ -260,6 +272,11 @@ impl Capabilities {
             // `principal_unpackager::import_identity` so the import
             // path can write the imported DID's identity directory.
             "principal:write_identity",
+            // Fail-closed tool catalog gate: without these wildcards a
+            // fresh Principal sees `tools: []` on the wire.
+            "tool:*",
+            "agent:*",
+            "skill:*",
         ])
     }
 }
@@ -275,6 +292,10 @@ mod tests {
         assert!(!grants.is_granted(&Capability::new("principal:write_agents")));
     }
 
+    /// The starter bundle ships `tool:*` / `agent:*` / `skill:*`
+    /// wildcards (see [`Capabilities::starter_bundle`]); they match
+    /// through this type's `is_granted` exactly like the `runtime:*`
+    /// wildcard in the test below.
     #[test]
     fn wildcard_match() {
         let grants = Capabilities::with_grants(["runtime:*"]);
@@ -283,37 +304,33 @@ mod tests {
         assert!(!grants.is_granted(&Capability::new("principal:write_config")));
     }
 
-    /// Post-Phase 3b the starter bundle carries only the cross-actor /
-    /// cross-runtime grants. Workspace tools are principal-owned and
-    /// visible by default — no per-tool grant is needed.
+    /// The starter bundle carries the cross-actor / cross-runtime grants
+    /// plus the `tool:*` / `agent:*` / `skill:*` wildcards — the catalog
+    /// gate is fail-closed, so a fresh Principal needs them to see any
+    /// tools at all.
     #[test]
-    fn starter_bundle_carries_only_principal_and_runtime_grants() {
+    fn starter_bundle_carries_principal_grants_and_wildcards() {
         let caps = Capabilities::starter_bundle();
         for required in [
             "principal:write_config",
             "principal:write_agents",
             "principal:write_identity",
+            // Wildcards expand by prefix via `Capability::matches`.
+            "tool:Read",
+            "tool:Write",
+            "tool:Bash",
+            "agent:researcher",
+            "skill:docker",
         ] {
             assert!(
                 caps.is_granted(&Capability::new(required)),
-                "starter_bundle must carry {required}"
+                "starter_bundle must grant {required}"
             );
         }
-        for retired in [
-            "tool:Read",
-            "tool:Write",
-            "tool:Edit",
-            "tool:Bash",
-            "tool:Agent",
-            "agent:researcher",
-            "skill:unknown",
-            "network",
-            "tunnel:create",
-            "filesystem.read:/etc",
-        ] {
+        for retired in ["network", "tunnel:create", "filesystem.read:/etc"] {
             assert!(
                 !caps.is_granted(&Capability::new(retired)),
-                "starter_bundle must NOT carry {retired} (Phase 3b retired the kind)"
+                "starter_bundle must NOT carry {retired} (retired kind)"
             );
         }
     }

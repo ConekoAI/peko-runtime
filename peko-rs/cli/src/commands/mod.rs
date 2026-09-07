@@ -270,6 +270,10 @@ pub use peko_core::common::GlobalPaths;
 /// `chan_<id>` channels are not recipient sugar — they stay on the
 /// `peko channel` surface.
 pub(crate) enum Recipient {
+    // The payload is only read by the unit tests below; production
+    // callers match on the `Group` arm and use the original arg
+    // string for the principal path.
+    #[allow(dead_code)]
     Principal(String),
     /// Group slug (the part after `group:`).
     Group(String),

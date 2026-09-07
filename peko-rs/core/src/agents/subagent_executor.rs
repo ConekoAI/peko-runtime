@@ -30,19 +30,16 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::SubagentRunView;
+use crate::extensions::framework::async_exec::executor::SubagentResult;
 use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
-use crate::extensions::framework::async_exec::executor::{
-    AsyncTaskStatus as SubagentStatus, SubagentResult,
-};
-use peko_extension_api::SpawnCleanupPolicy;
 use crate::extensions::framework::types::Capabilities;
 use peko_auth::Subject;
+use peko_extension_api::SpawnCleanupPolicy;
 use peko_observability::Observability;
-use peko_session::context::SessionContext;
 use peko_session::manager::SessionManager;
 use peko_subject::PrincipalId;
 
@@ -133,6 +130,25 @@ pub struct ExecutionConfig {
     /// `execute_subagent_task` → `Agent::with_force_compact` →
     /// `AgenticLoop::with_force_compact`). Default false.
     pub force_compact: bool,
+    /// Conversation mode (peer-ingress turns, 2026-09-06): when true,
+    /// the run is a turn in an ongoing peer conversation, not a
+    /// delegated one-shot task — the task message reaches the loop as
+    /// the plain user text (no `[Subagent Context]` / `[Subagent
+    /// Task]` framing) and the session's prior history is loaded
+    /// (like `force_compact`) so the conversation keeps context
+    /// across messages. Default false: Agent-tool spawns keep the
+    /// task framing.
+    pub conversation: bool,
+    /// Conversation-mode prompt context: the peer's DM channel id
+    /// (`chan_*`), rendered into the `{{session_context}}` section so
+    /// the agent can target `ChannelSend` / cron reminders at the
+    /// channel that reaches the user. `None` for non-conversation
+    /// runs (and standalone/test contexts with no channel port).
+    pub conversation_channel: Option<String>,
+    /// Conversation-mode prompt context: the peer's subject in wire
+    /// form (`user:alice`, `principal:did:…`). `None` for
+    /// non-conversation runs.
+    pub conversation_peer: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -147,6 +163,9 @@ impl Default for ExecutionConfig {
             slug: None,
             agent: None,
             force_compact: false,
+            conversation: false,
+            conversation_channel: None,
+            conversation_peer: None,
         }
     }
 }
@@ -204,6 +223,30 @@ enum AttachKind {
     Resume,
     /// `Agent` tool `action = "compact"`.
     Compact,
+}
+
+/// Peer-bound session delivery surface (2026-09-07, peer-targeted turns
+/// from ANY driver).
+///
+/// Injected by the principal layer (`agents/` must not import
+/// `principal/`). When a run's target session is a peer-bound standing
+/// child (a session carrying peer identity whose slug path is bound to
+/// a DM channel), the executor flips the run into conversation mode and
+/// delivers the final reply text to the peer's DM channel at
+/// completion — so an Agent-tool resume or a cron SpawnTool attach
+/// targeting a peer session reaches the user's channel, not just the
+/// caller's result envelope. The peer-ingress and channel-responder
+/// drivers set conversation mode explicitly and post replies
+/// themselves; their executors do not install this surface, so exactly
+/// one party posts.
+#[async_trait::async_trait]
+pub trait PeerTurnSurface: Send + Sync {
+    /// `(peer_wire_form, dm_channel_id)` when `session_id` is a
+    /// peer-bound session with a DM channel, else `None`.
+    async fn peer_surface(&self, session_id: &str) -> Option<(String, String)>;
+    /// Post a completed turn's reply text to the peer's DM channel.
+    /// Warn-only on failure (the reply is also returned to the caller).
+    async fn post_reply(&self, channel_id: &str, text: &str);
 }
 
 /// Executor for subagent tasks
@@ -291,6 +334,8 @@ pub struct SubagentExecutor {
     /// registry (kept for tests and CLI one-shots where no daemon
     /// state is wired).
     inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
+    /// Optional peer-turn delivery surface — see [`PeerTurnSurface`].
+    peer_turn_surface: Option<Arc<dyn PeerTurnSurface>>,
 }
 
 impl SubagentExecutor {
@@ -340,6 +385,7 @@ impl SubagentExecutor {
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
+            peer_turn_surface: None,
         }
     }
 
@@ -363,6 +409,21 @@ impl SubagentExecutor {
             self.unified_executor =
                 AsyncExecutor::with_registries(async_registry, async_queue_manager, reg);
         }
+        self
+    }
+
+    /// Install the peer-turn delivery surface (2026-09-07). Runs whose
+    /// target session is peer-bound flip into conversation mode and
+    /// deliver their final reply to the peer's DM channel — see
+    /// [`PeerTurnSurface`]. Installed on executors that can drive
+    /// peer-bound sessions from non-ingress paths (the root agent's
+    /// executor, so the Agent tool can target peer sessions; the cron
+    /// cold-start builder). The peer-ingress / channel-responder
+    /// executors deliberately leave this unset: they set conversation
+    /// mode explicitly and post replies themselves.
+    #[must_use]
+    pub fn with_peer_turn_surface(mut self, surface: Option<Arc<dyn PeerTurnSurface>>) -> Self {
+        self.peer_turn_surface = surface;
         self
     }
 
@@ -537,6 +598,7 @@ impl SubagentExecutor {
             principal_plan_port: None,
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
+            peer_turn_surface: None,
         }
     }
 
@@ -639,16 +701,20 @@ impl SubagentExecutor {
         // branch (deleted below); `isolated` was never deserialized
         // from `AgentArgs` and `SessionManager::spawn_session` now
         // always runs in shared-context mode.
-        // Standing-child attach (agent-session paradigm, Phase 2): a
-        // `name` (config.slug) that already matches a STANDING spawned
-        // session in the caller's subtree re-attaches to it via the
-        // resume path instead of minting a fresh session — the call's
-        // `task` drives the turn. A `name` colliding with a
-        // non-standing session is a structured refusal (rename
-        // semantics live in the session tool). This runs BEFORE the
-        // cost pre-flight and before anything is minted;
-        // `resume_and_execute` re-runs the full guard stack (cost
-        // pre-flight included) for the attach branch.
+        // Attach-on-collision (agent-session paradigm, Phase 2; widened
+        // 2026-09-07): a `name` (config.slug) that already matches a
+        // SPAWN-CREATED session in the caller's subtree re-attaches to
+        // it via the resume path instead of minting a fresh session —
+        // the call's `task` drives the turn. This covers both standing
+        // (`[children]`-declared) children and plain Agent-spawned
+        // sessions, so recurring static-parameter callers (cron
+        // SpawnTool) work: fire #1 creates, fire #2+ attaches. A `name`
+        // colliding with a session that was NOT created by an Agent
+        // spawn is still a structured refusal (rename semantics live in
+        // the session tool). This runs BEFORE the cost pre-flight and
+        // before anything is minted; `resume_and_execute` re-runs the
+        // full guard stack (cost pre-flight included) for the attach
+        // branch.
         if let Some(ref slug) = config.slug {
             use crate::session::ownership::{caller_context, descendants_of};
             let (caller, metas) = {
@@ -667,34 +733,38 @@ impl SubagentExecutor {
                     && subtree.contains(&m.session_id.to_string())
             });
             if let Some(found) = found {
-                if found.standing && found.trigger == "spawn" {
+                if found.trigger == "spawn" {
                     let child_id = found.session_id.to_string();
-                    // When the session carries a `[children]`
-                    // declaration, the requested agent template must
-                    // match it. Unrecoverable declarations (no event /
-                    // unreadable JSONL) skip the check — the param is
-                    // required as usual.
-                    if let Some(ref requested) = config.agent {
-                        let sessions_dir =
-                            self.session_manager.read().await.sessions_dir().cloned();
-                        if let Some(dir) = sessions_dir {
-                            if let Some(declared) =
-                                crate::session::standing::declared_subagent_type(&dir, &child_id)
+                    // Standing children may carry a `[children]`
+                    // declaration; then the requested agent template
+                    // must match it. Unrecoverable declarations (no
+                    // event / unreadable JSONL) skip the check — the
+                    // param is required as usual.
+                    if found.standing {
+                        if let Some(ref requested) = config.agent {
+                            let sessions_dir =
+                                self.session_manager.read().await.sessions_dir().cloned();
+                            if let Some(dir) = sessions_dir {
+                                if let Some(declared) =
+                                    crate::session::standing::declared_subagent_type(
+                                        &dir, &child_id,
+                                    )
                                     .await
-                            {
-                                if declared != *requested {
-                                    return Err(
-                                        crate::session::standing::err_declared_type_mismatch(
-                                            slug, &child_id, &declared, requested,
-                                        ),
-                                    );
+                                {
+                                    if declared != *requested {
+                                        return Err(
+                                            crate::session::standing::err_declared_type_mismatch(
+                                                slug, &child_id, &declared, requested,
+                                            ),
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                     info!(
-                        "Attaching to standing child session: slug={} session={}",
-                        slug, child_id
+                        "Attaching to existing spawned session: slug={} session={} standing={}",
+                        slug, child_id, found.standing
                     );
                     return self
                         .resume_and_execute(
@@ -713,11 +783,13 @@ impl SubagentExecutor {
                         )
                         .await;
                 }
-                // Non-standing collision. A DIRECT sibling keeps the
-                // Phase 1b per-parent uniqueness refusal (identical to
-                // what the fresh-spawn pre-flight below would produce);
-                // a non-sibling subtree collision gets the
-                // standing-specific structured refusal.
+                // Non-spawn collision (the session holding the slug was
+                // not created by an Agent spawn — e.g. a user-triggered
+                // session). A DIRECT sibling keeps the Phase 1b
+                // per-parent uniqueness refusal (identical to what the
+                // fresh-spawn pre-flight below would produce); a
+                // non-sibling subtree collision gets the
+                // spawn-specific structured refusal.
                 let found_parent_str = found.parent_session_id.map(|id| id.to_string());
                 // Sprint 6: `parent_session_id` in metadata is the
                 // canonical v5 UUID form of the parent's session id;
@@ -732,7 +804,7 @@ impl SubagentExecutor {
                             Some(peko_session::SessionId::from(parent_key.as_str())),
                         )
                     } else {
-                        crate::session::standing::err_name_not_standing(
+                        crate::session::standing::err_name_not_spawned(
                             slug,
                             &found.session_id.as_str(),
                         )
@@ -1140,8 +1212,7 @@ impl SubagentExecutor {
         // restarts and registry GC. B8c.3 unifies this onto
         // `subagent_depth_of`, the same helper the spawn path uses,
         // so the two answers cannot drift.
-        let child_depth =
-            crate::session::ownership::subagent_depth_of(&resume_session_id, &metas);
+        let child_depth = crate::session::ownership::subagent_depth_of(&resume_session_id, &metas);
         if config.max_depth > 0 && child_depth > config.max_depth {
             return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
                 current: child_depth,
@@ -1307,6 +1378,26 @@ impl SubagentExecutor {
             parent_cancel,
             stream_events,
         } = spec;
+        let mut config = config;
+
+        // Peer-bound delivery (2026-09-07): when the target session is
+        // a peer-bound child with a DM channel, runs from non-ingress
+        // drivers (Agent-tool resume, cron SpawnTool attach) flip into
+        // conversation mode and deliver the final reply to the peer's
+        // DM channel at completion. Explicitly-conversational callers
+        // keep their own peer/channel values (get_or_insert).
+        let deliver_to_channel: Option<String> = match self.peer_turn_surface.as_ref() {
+            Some(surface) => match surface.peer_surface(&child_session_id).await {
+                Some((peer, channel)) => {
+                    config.conversation = true;
+                    config.conversation_channel.get_or_insert(channel.clone());
+                    config.conversation_peer.get_or_insert(peer);
+                    Some(channel)
+                }
+                None => None,
+            },
+            None => None,
+        };
 
         // Build the metadata extension that carries subagent-specific data
         let metadata = TaskMetadata::Subagent(SubagentMetadata {
@@ -1345,7 +1436,6 @@ impl SubagentExecutor {
         let registry_for_task = self.registry().clone();
         let registry_for_completion = self.registry().clone();
         let child_session_key_clone = child_session_key.clone();
-        let child_session_id_clone = child_session_id.clone();
         let parent_session_key_clone = parent_session_key.clone();
         let task_clone = task.clone();
         let label_clone = config.label.clone();
@@ -1384,6 +1474,24 @@ impl SubagentExecutor {
         // 2026-09-05: the compact action's run-scoped force-compact
         // flag; cloned into the task closure like `model_override`.
         let force_compact_for_closure = config.force_compact;
+        // 2026-09-06: conversation mode (peer ingress) — see
+        // `ExecutionConfig::conversation`. Cloned into the task
+        // closure like `force_compact`.
+        let conversation_for_closure = config.conversation;
+        let conversation_channel_clone = config.conversation_channel.clone();
+        let conversation_peer_clone = config.conversation_peer.clone();
+        // Peer-bound delivery: moved into the task closure; at
+        // completion the final reply posts to the peer's DM channel.
+        let peer_surface_for_closure = self.peer_turn_surface.clone();
+        let deliver_channel_for_closure = deliver_to_channel.clone();
+        // ...and propagated onto the child Agent's shared executor so
+        // its `Agent`-tool re-registration keeps the surface.
+        let peer_surface_for_task = peer_surface_for_closure.clone();
+        // The principal's plan port rides the closure so the spawned
+        // Agent registers the `Plan*` tools — previously dropped
+        // between the executor field and the Agent build (the daemon
+        // warned "No principal_plan_port bound" on every peer turn).
+        let plan_port_clone = self.principal_plan_port.clone();
         // Sprint 2 Phase 6: the streaming resume path's event sink.
         // Moved into the task closure; `None` keeps the final-only
         // execution path.
@@ -1427,18 +1535,31 @@ impl SubagentExecutor {
                         run_id_clone, child_session_key_clone
                     );
 
-                    // Build system prompt and task message
-                    let system_prompt = build_subagent_system_prompt(
-                        &parent_session_key_clone,
-                        &child_session_key_clone,
-                        &task_clone,
-                        label_clone.as_deref(),
-                        child_depth,
-                        config.max_depth,
-                    );
-
-                    let task_message =
-                        build_subagent_task_message(&task_clone, child_depth, config.max_depth);
+                    // Build system prompt and task message.
+                    // Conversation mode (peer ingress) skips the
+                    // subagent wrapper entirely: the task IS the
+                    // user's message, and the loop's per-iteration
+                    // renderer rebuild of `messages[0]` supplies the
+                    // persona system prompt.
+                    let (system_prompt, task_message) = if conversation_for_closure {
+                        (String::new(), task_clone.clone())
+                    } else {
+                        (
+                            build_subagent_system_prompt(
+                                &parent_session_key_clone,
+                                &child_session_key_clone,
+                                &task_clone,
+                                label_clone.as_deref(),
+                                child_depth,
+                                config.max_depth,
+                            ),
+                            build_subagent_task_message(
+                                &task_clone,
+                                child_depth,
+                                config.max_depth,
+                            ),
+                        )
+                    };
 
                     // Execute with timeout. The cancel token is
                     // observed via two paths: (1) the child's
@@ -1458,6 +1579,10 @@ impl SubagentExecutor {
                         &task_message,
                         model_override_clone, // Phase 1
                         force_compact_for_closure,
+                        conversation_for_closure,
+                        conversation_channel_clone,
+                        conversation_peer_clone,
+                        plan_port_clone,
                         provider_clone,
                         agent_config_clone,
                         session_manager_clone,
@@ -1473,6 +1598,7 @@ impl SubagentExecutor {
                         caller_principal_did_clone,
                         stream_events_for_closure,
                         inbox_registry_for_closure,
+                        peer_surface_for_task,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -1542,6 +1668,19 @@ impl SubagentExecutor {
                             }
                         }
                     };
+
+                    // Peer-bound delivery: the completed turn's reply
+                    // posts to the peer's DM channel so non-ingress
+                    // drivers (Agent-tool resume, cron attach) reach the
+                    // user. Only successful turns deliver; failures
+                    // surface through the caller's result envelope.
+                    if let (Some(surface), Some(channel), Some(text)) = (
+                        peer_surface_for_closure.as_ref(),
+                        deliver_channel_for_closure.as_ref(),
+                        output.as_ref(),
+                    ) {
+                        surface.post_reply(channel, text).await;
+                    }
 
                     // Update the unified registry with the subagent result.
                     // This is the ONLY state update — no dual registry sync.
@@ -1814,6 +1953,20 @@ async fn execute_subagent_task(
     // force-compacts the session on iteration 1
     // (`CompactionPhase::StandaloneTurn`) before processing the task.
     force_compact: bool,
+    // 2026-09-06: conversation mode (peer-ingress turns). When true,
+    // `task_message` is the plain user text (the subagent wrapper was
+    // skipped at the call site) and the session's prior history is
+    // loaded below so the conversation keeps context across messages.
+    conversation: bool,
+    // Conversation-mode prompt context: the peer's DM channel id +
+    // wire-form subject, bound onto the child Agent so the rendered
+    // `{{session_context}}` section tells the model which channel
+    // reaches the user.
+    conversation_channel: Option<String>,
+    conversation_peer: Option<String>,
+    // The spawning principal's plan DAG port, propagated from the
+    // executor so the child Agent registers the seven `Plan*` tools.
+    principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
     provider: Option<Arc<peko_providers::Provider>>,
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
@@ -1856,6 +2009,14 @@ async fn execute_subagent_task(
     // principal ingress serial-queue fallback (keyed by the child
     // session id). `None` keeps the per-call standalone drain.
     inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
+    // 2026-09-07: the driving executor's peer-turn surface, propagated
+    // onto the child's shared executor so the child Agent's own
+    // `Agent`-tool registration (which REPLACES the global per-principal
+    // registration on every run) keeps peer-bound delivery. Without
+    // this, fire #1 of a cron Agent job delivers to the DM channel via
+    // the cron-registered executor, then the child run's re-registration
+    // silently drops the surface and fires #2+ stop reaching the user.
+    peer_turn_surface: Option<Arc<dyn PeerTurnSurface>>,
 ) -> Result<SubagentTaskOutput> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -1936,6 +2097,10 @@ async fn execute_subagent_task(
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
     }
+    // Peer-turn delivery propagates down the tree (see the parameter
+    // docs): the child Agent's `Agent`-tool registration replaces the
+    // global per-principal one, so the surface must ride along.
+    let shared_executor_builder = shared_executor_builder.with_peer_turn_surface(peer_turn_surface);
     let shared_executor = Arc::new(shared_executor_builder);
 
     // Create a subagent that shares the parent's session manager and executor registry.
@@ -2019,6 +2184,27 @@ async fn execute_subagent_task(
     // session's inbox. `None` keeps the per-call standalone drain.
     subagent = subagent.with_inbox_registry(inbox_registry);
 
+    // Bind the principal's plan port so the child registers the seven
+    // `Plan*` tools (also propagated to the child's own subagent
+    // executor for deeper descendants). Previously dropped between
+    // the executor's `principal_plan_port` field and the Agent build
+    // — the daemon warned "No principal_plan_port bound for agent
+    // 'root'" on every peer-ingress turn.
+    if let Some(plan_port) = principal_plan_port {
+        subagent = subagent.with_principal_plan_port(plan_port);
+    }
+
+    // Conversation mode: surface the peer's DM channel + subject in
+    // the rendered system prompt (the `{{session_context}}` section)
+    // so the model can target `ChannelSend` / cron reminders at the
+    // channel that reaches the user.
+    if let Some(channel) = conversation_channel {
+        subagent = subagent.with_conversation_channel(channel);
+    }
+    if let Some(peer) = conversation_peer {
+        subagent = subagent.with_conversation_peer(peer);
+    }
+
     // B4 cleanup: `DynamicSessionKeyProvider::set_session_key` was the
     // last live consumer of the session-key cell (write-only on the
     // production path — `get_session_key` had no readers). Nested
@@ -2026,12 +2212,19 @@ async fn execute_subagent_task(
     // `ToolContext::session_id` instead.
 
     // Combine subagent context and task into a single user message.
-    // We pass history: None so that run_with_resume prepends the FULL system
-    // prompt (including tool definitions from ExtensionCore). Previously we
-    // passed the subagent context as a system message in history, which caused
-    // run_with_resume to skip the full system prompt — leaving the subagent
-    // without knowledge of available tools.
-    let combined_prompt = format!("{}\n\n{}", system_prompt, task_message);
+    // Conversation mode (peer ingress) skips the wrapper entirely:
+    // the task message IS the user's text. Otherwise we pass
+    // history: None so that run_with_resume prepends the FULL system
+    // prompt (including tool definitions from ExtensionCore).
+    // Previously we passed the subagent context as a system message
+    // in history, which caused run_with_resume to skip the full
+    // system prompt — leaving the subagent without knowledge of
+    // available tools.
+    let combined_prompt = if conversation {
+        task_message.to_string()
+    } else {
+        format!("{}\n\n{}", system_prompt, task_message)
+    };
 
     // Execute the agentic loop with the child session
     info!(
@@ -2050,7 +2243,15 @@ async fn execute_subagent_task(
     // and compact nothing. Load the session's stored history so the
     // driver compacts the full conversation, then continues with the
     // prompt against the compacted context.
-    let history = if force_compact {
+    //
+    // 2026-09-06: conversation runs (peer ingress) also load the
+    // transcript — the resumed peer session's prior messages must
+    // reach the LLM or every user message starts with conversational
+    // amnesia. The loop's per-iteration renderer replaces the loaded
+    // history's system-prompt slot (`history[0]`) with the freshly
+    // rendered prompt, so the persisted system message is never
+    // served stale or duplicated.
+    let history = if force_compact || conversation {
         let loaded = child_session_for_recovery
             .read()
             .await
@@ -2107,7 +2308,7 @@ async fn execute_subagent_task(
             Vec::new(), // subagents carry no recalled context
             child_session,
             history.clone(), // compact runs load the transcript (see above)
-            None, // caller_id: child turns attribute at the principal boundary
+            None,            // caller_id: child turns attribute at the principal boundary
             move |event| sink(event),
             cancel,
             None, // explicit_meter override: None = use the task-local meter
@@ -2678,6 +2879,11 @@ mod tests {
         assert!(config.label.is_none());
         assert!(config.announce_completion);
         assert_eq!(config.max_depth, 1);
+        // Conversation mode is opt-in (peer ingress); Agent-tool
+        // spawns keep the task framing + fresh context.
+        assert!(!config.conversation);
+        assert!(config.conversation_channel.is_none());
+        assert!(config.conversation_peer.is_none());
     }
 
     #[tokio::test]

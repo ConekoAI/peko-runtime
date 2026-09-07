@@ -46,8 +46,6 @@
 //!     `peko principal import` restores into the principal's
 //!     workspace.
 
-use anyhow::Context;
-use peko_core::extensions::framework::store::ExtensionStore;
 use peko_core::principal::config::PrincipalConfig;
 use peko_core::registry::packaging::{
     PrincipalExportOptions, PrincipalImportOptions, PrincipalManifest, PrincipalPackager,

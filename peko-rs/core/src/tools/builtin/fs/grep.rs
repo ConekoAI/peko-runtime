@@ -500,7 +500,7 @@ impl Tool for GrepTool {
 Search file contents using regular expressions. Finds files by their content.
 
 Use when: Finding files containing specific text, searching for patterns across files, locating function definitions.
-Don't use when: You need to list files by name (use Glob) or read file contents (use ReadFile).
+Don't use when: You need to list files by name (use Glob) or read file contents (use Read).
 
 ## Parameters
 

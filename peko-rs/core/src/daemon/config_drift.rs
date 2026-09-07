@@ -195,11 +195,8 @@ pub async fn run_drift_check(
                 }
             };
             let workspace_root = path.parent().map(Path::to_path_buf);
-            let entry = build_baseline_entry(
-                &principal_name,
-                &principal_hash,
-                workspace_root.as_deref(),
-            );
+            let entry =
+                build_baseline_entry(&principal_name, &principal_hash, workspace_root.as_deref());
             current.insert(principal_name, entry);
         }
     }
@@ -264,9 +261,7 @@ pub async fn run_drift_check(
                             }),
                         )
                         .await
-                        .with_context(|| {
-                            format!("emit principal.config_drift event for {name}")
-                        })?;
+                        .with_context(|| format!("emit principal.config_drift event for {name}"))?;
                     warn!("drift: principal {name} changed (kind=changed)");
                     drift_count += 1;
                 }
@@ -491,10 +486,7 @@ async fn emit_workspace_drift(
                                 cat.installed_event
                             )
                         })?;
-                    warn!(
-                        "drift: {principal_name} {} {id} added",
-                        cat.dir_name
-                    );
+                    warn!("drift: {principal_name} {} {id} added", cat.dir_name);
                     count += 1;
                 }
                 Some(prev_hash) if prev_hash.as_str() != current_hash.as_str() => {
@@ -523,10 +515,7 @@ async fn emit_workspace_drift(
                                 cat.installed_event
                             )
                         })?;
-                    warn!(
-                        "drift: {principal_name} {} {id} changed",
-                        cat.dir_name
-                    );
+                    warn!("drift: {principal_name} {} {id} changed", cat.dir_name);
                     count += 1;
                 }
                 _ => {}
@@ -553,15 +542,9 @@ async fn emit_workspace_drift(
                 )
                 .await
                 .with_context(|| {
-                    format!(
-                        "emit {} event for {principal_name}/{id}",
-                        cat.removed_event
-                    )
+                    format!("emit {} event for {principal_name}/{id}", cat.removed_event)
                 })?;
-            warn!(
-                "drift: {principal_name} {} {id} removed",
-                cat.dir_name
-            );
+            warn!("drift: {principal_name} {} {id} removed", cat.dir_name);
             count += 1;
         }
     }

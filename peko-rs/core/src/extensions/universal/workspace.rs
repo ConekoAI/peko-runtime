@@ -133,9 +133,7 @@ pub async fn load_workspace_universal_tools(
             }
         };
 
-        if let Err(e) =
-            BuiltinToolAdapter::register_tool(core, adapter, principal_id).await
-        {
+        if let Err(e) = BuiltinToolAdapter::register_tool(core, adapter, principal_id).await {
             warn!(
                 tool = %tool_name,
                 error = %e,
@@ -220,7 +218,7 @@ mod tests {
         let n = load_workspace_universal_tools(
             std::path::Path::new("/nonexistent/tools"),
             &core,
-            &PrincipalId::system(),
+            PrincipalId::system(),
         )
         .await
         .unwrap();
@@ -234,13 +232,9 @@ mod tests {
         write_tool(tmp.path(), "tool2", "Second");
 
         let core = ExtensionCore::new();
-        let n = load_workspace_universal_tools(
-            tmp.path(),
-            &core,
-            &PrincipalId::system(),
-        )
-        .await
-        .unwrap();
+        let n = load_workspace_universal_tools(tmp.path(), &core, PrincipalId::system())
+            .await
+            .unwrap();
         assert_eq!(n, 2);
         assert_eq!(core.tool_count(PrincipalId::system()).await, 2);
     }

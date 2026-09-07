@@ -391,72 +391,7 @@ impl PrincipalContext {
     /// own extension whitelist; this method does not assume
     /// privilege.
     pub async fn core(&self) -> Arc<ExtensionCore> {
-        let core = global_core().unwrap_or_else(|| {
-            // Fall back to a freshly-allocated core if the daemon
-            // hasn't initialised the global core yet. The
-            // `Agent::new_*` callers depend on `global_core()` being
-            // populated by `init_global_core` at app startup; this
-            // branch is mostly a safety net for unit tests that
-            // construct an `Agent` directly.
-            Arc::new(ExtensionCore::new())
-        });
-        if !core.universal_extensions_loaded() {
-            // Phase 2 PR 1 (ADR-047): skills live under
-            // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
-            // runtime reads from that directory.
-            let skills_dir = self.workspace_path.join("skills");
-            // Phase 2 PR 2 (ADR-047 §2.3): MCP servers live under
-            // `<workspace>/mcp/<id>/server.json`. The workspace
-            // scanner registers each server config with the global
-            // `McpManager` (lazy — servers start on first tool call)
-            // and wraps the manager's running tools as
-            // `McpToolProxy` / `InjectableMcpToolProxy` instances
-            // onto the global core.
-            let mcp_dir = self.workspace_path.join("mcp");
-            // Phase 2 PR 3 (ADR-047 §2.1): universal tools live
-            // under `<workspace>/tools/<id>/manifest.yaml`. The
-            // scanner reads each manifest, constructs the
-            // canonical `peko_tools_core::Tool` impl (no framework
-            // hook layer), and registers it via
-            // `BuiltinToolAdapter::register_tool`.
-            let tools_dir = self.workspace_path.join("tools");
-            // Phase 4 (ADR-047 §5): workspace hooks live under
-            // `<workspace>/hooks/<id>/hook.toml`. See
-            // `extensions::workspace_hooks::load_workspace_hooks`.
-            let hooks_dir = self.workspace_path.join("hooks");
-            // Channel port resolution (2026-08-18 reviewer finding):
-            // principal contexts don't hold their own channel port —
-            // the daemon builds the real file-backed port at startup
-            // and installs it process-wide via
-            // `peko_channel::set_global_channel_port`. We re-resolve
-            // that port here so re-registering `ChannelRead` /
-            // `ChannelSend` against the global core keeps the real
-            // adapter; passing a `NoopChannelPort` would clobber the
-            // daemon-registered tool instances
-            // (`BuiltinToolAdapter::register_tool` unconditionally
-            // overwrites the name-keyed instance side-table) and
-            // leave the tools inert in production. The Noop remains
-            // as the test / standalone fallback when no daemon has
-            // installed a port.
-            let channel_port = resolve_channel_port();
-            if let Err(e) = install_principal_tool_bag(
-                Arc::clone(&core),
-                &skills_dir,
-                &mcp_dir,
-                &tools_dir,
-                &hooks_dir,
-                &self.principal_id,
-                channel_port,
-            )
-            .await
-            {
-                tracing::warn!(
-                    "failed to install principal-scoped tools on the global core: {e}. \
-                     Falling back to built-in tools only."
-                );
-            }
-        }
-        Arc::clone(&core)
+        ensure_principal_tool_bag(&self.workspace_path, &self.principal_id).await
     }
 
     /// Get the principal's resolved root agent prompt.
@@ -490,6 +425,90 @@ impl PrincipalContext {
     pub fn plan_port(&self) -> &Arc<dyn peko_plan::PlanPort> {
         &self.plan_port
     }
+}
+
+/// Ensure the daemon-global [`ExtensionCore`] carries the principal
+/// tool bag: built-ins, the principal-scoped `Skill` tool, workspace
+/// MCP servers / universal tools / hooks, and the `{{agents}}` /
+/// `{{skills}}` prompt-section handlers.
+///
+/// Shared by [`PrincipalContext::core`] (the root-agent path) and
+/// `PeerChildTurns::build` (the peer-ingress path, which builds no
+/// `PrincipalContext`) so peer-child turns see the same tool bag as
+/// the root agent. Honors the core's `universal_extensions_loaded`
+/// once-gate: the first caller performs the install; the prompt
+/// handlers resolve the workspace from the hook context at invoke
+/// time, so one registration serves every principal.
+pub(crate) async fn ensure_principal_tool_bag(
+    workspace_path: &Path,
+    principal_id: &peko_subject::PrincipalId,
+) -> Arc<ExtensionCore> {
+    let core = global_core().unwrap_or_else(|| {
+        // Fall back to a freshly-allocated core if the daemon
+        // hasn't initialised the global core yet. The
+        // `Agent::new_*` callers depend on `global_core()` being
+        // populated by `init_global_core` at app startup; this
+        // branch is mostly a safety net for unit tests that
+        // construct an `Agent` directly.
+        Arc::new(ExtensionCore::new())
+    });
+    if !core.universal_extensions_loaded() {
+        // Phase 2 PR 1 (ADR-047): skills live under
+        // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
+        // runtime reads from that directory.
+        let skills_dir = workspace_path.join("skills");
+        // Phase 2 PR 2 (ADR-047 §2.3): MCP servers live under
+        // `<workspace>/mcp/<id>/server.json`. The workspace
+        // scanner registers each server config with the global
+        // `McpManager` (lazy — servers start on first tool call)
+        // and wraps the manager's running tools as
+        // `McpToolProxy` / `InjectableMcpToolProxy` instances
+        // onto the global core.
+        let mcp_dir = workspace_path.join("mcp");
+        // Phase 2 PR 3 (ADR-047 §2.1): universal tools live
+        // under `<workspace>/tools/<id>/manifest.yaml`. The
+        // scanner reads each manifest, constructs the
+        // canonical `peko_tools_core::Tool` impl (no framework
+        // hook layer), and registers it via
+        // `BuiltinToolAdapter::register_tool`.
+        let tools_dir = workspace_path.join("tools");
+        // Phase 4 (ADR-047 §5): workspace hooks live under
+        // `<workspace>/hooks/<id>/hook.toml`. See
+        // `extensions::workspace_hooks::load_workspace_hooks`.
+        let hooks_dir = workspace_path.join("hooks");
+        // Channel port resolution (2026-08-18 reviewer finding):
+        // principal contexts don't hold their own channel port —
+        // the daemon builds the real file-backed port at startup
+        // and installs it process-wide via
+        // `peko_channel::set_global_channel_port`. We re-resolve
+        // that port here so re-registering `ChannelRead` /
+        // `ChannelSend` against the global core keeps the real
+        // adapter; passing a `NoopChannelPort` would clobber the
+        // daemon-registered tool instances
+        // (`BuiltinToolAdapter::register_tool` unconditionally
+        // overwrites the name-keyed instance side-table) and
+        // leave the tools inert in production. The Noop remains
+        // as the test / standalone fallback when no daemon has
+        // installed a port.
+        let channel_port = resolve_channel_port();
+        if let Err(e) = install_principal_tool_bag(
+            Arc::clone(&core),
+            &skills_dir,
+            &mcp_dir,
+            &tools_dir,
+            &hooks_dir,
+            principal_id,
+            channel_port,
+        )
+        .await
+        {
+            tracing::warn!(
+                "failed to install principal-scoped tools on the global core: {e}. \
+                 Falling back to built-in tools only."
+            );
+        }
+    }
+    core
 }
 
 /// Resolve the `ChannelPort` for the principal tool-bag install.

@@ -74,6 +74,7 @@ async fn create_test_principal(
 
     let config = PrincipalConfig {
         name: name.to_string(),
+        id: None,
         did: None,
         owner,
         identity: Default::default(),
@@ -102,14 +103,11 @@ async fn dm_posted_rows(
     peer: &Subject,
 ) -> Vec<(String, Option<String>, String)> {
     let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
-    let channel = crate::principal::peer_dm::find_peer_dm_channel(
-        port,
-        &principal.id,
-        &format!("/{slug}"),
-    )
-    .await
-    .expect("dm lookup")
-    .expect("DM channel exists after ChannelSend");
+    let channel =
+        crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
+            .await
+            .expect("dm lookup")
+            .expect("DM channel exists after ChannelSend");
     port.peek(&channel, &Checkpoint::default())
         .await
         .expect("peek")
@@ -225,8 +223,9 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
     // bound.
     let tool = ChannelSendTool::new_with_peer(channel_port.clone(), caller_did.clone(), ctx);
     let principal_id_string = caller.id.0.clone();
-    let tool_ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
-        .with_principal_id(principal_id_string);
+    let tool_ctx =
+        peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+            .with_principal_id(principal_id_string);
 
     let result = tool
         .execute_with_context(

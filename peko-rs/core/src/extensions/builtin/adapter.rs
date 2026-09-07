@@ -442,7 +442,6 @@ impl HookHandler for BuiltinExecuteHandler {
 /// wire-only tool catalog. Built-in tool descriptions travel on the
 /// wire as the `tools[]` JSON-schema array; see
 /// `list_tool_definitions_with_allowlist` for the capability gate.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,7 +545,7 @@ mod tests {
         assert!(BuiltinToolAdapter::is_builtin("AsyncSpawn"));
         assert!(BuiltinToolAdapter::is_builtin("AsyncOutput"));
         assert!(BuiltinToolAdapter::is_builtin("CHANNELSEND")); // case insensitive
-                                                                   // Unknown
+                                                                // Unknown
         assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
     }
 
@@ -574,7 +573,7 @@ mod tests {
         assert!(!names.contains(&"AsyncSpawn")); // agent-specific, not global
         assert!(!names.contains(&"AsyncOutput")); // agent-specific, not global
         assert!(!names.contains(&"Agent")); // agent-specific, not global
-        // Sprint 4: ChannelSend is per-agent (needs caller DID bound).
+                                            // Sprint 4: ChannelSend is per-agent (needs caller DID bound).
         assert!(!names.contains(&"ChannelSend"));
         // send_peer is retired outright — no compatibility alias.
         assert!(!names.contains(&"send_peer"));
@@ -593,17 +592,13 @@ mod tests {
     #[test]
     fn test_is_agent_specific_builtin() {
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("Agent"));
-        assert!(BuiltinToolAdapter::is_agent_specific_builtin(
-            "ChannelSend"
-        ));
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("ChannelSend"));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT")); // case insensitive
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("unknown"));
         // send_peer is retired outright — no compatibility alias.
-        assert!(!BuiltinToolAdapter::is_agent_specific_builtin(
-            "send_peer"
-        ));
+        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("send_peer"));
     }
 
     #[tokio::test]

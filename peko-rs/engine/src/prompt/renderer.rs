@@ -194,8 +194,11 @@ impl PromptRenderer {
     /// byte-stable across iterations within a session unless the profile
     /// mutates. Excludes per-iteration fields like `{{iteration_budget}}`,
     /// `{{quota_state}}`, `{{session_context}}`, `{{memory}}`,
-    /// `{{current_time}}`, `{{timezone}}`, `{{soft_cancel}}`, and
+    /// `{{current_time}}`, `{{soft_cancel}}`, and
     /// `{{capability_diff}}` (those go in [`render_per_turn`]).
+    /// `{{timezone}}` is retired from the per-turn suffix (redundant
+    /// with `{{current_time}}`); it still resolves in
+    /// [`render_for_iteration`] for legacy templates.
     /// `{{skills}}` and `{{agents}}` also go in [`render_per_turn`]:
     /// they are workspace-scanned catalogs, so rendering them in the
     /// volatile suffix lets new workspace files appear on the next
@@ -229,7 +232,7 @@ impl PromptRenderer {
     ///
     /// Complements [`render_cache_stable`]: produces the trailing
     /// section of the system prompt that changes every iteration
-    /// (`{{current_time}}`, `{{timezone}}`, `{{memory}}`,
+    /// (`{{current_time}}`, `{{memory}}`,
     /// `{{session_context}}`, `{{agents}}`, `{{skills}}`,
     /// `{{iteration_budget}}`, `{{quota_state}}`, `{{soft_cancel}}`,
     /// `{{capability_diff}}`). The engine loop concatenates this with
@@ -255,7 +258,6 @@ impl PromptRenderer {
         // own line so each section is delimited.
         const VOLATILE_BODY: &str = "\
             {{current_time}}\n\
-            {{timezone}}\n\
             {{memory}}\n\
             {{session_context}}\n\
             {{agents}}\n\
@@ -283,12 +285,17 @@ impl PromptRenderer {
     /// (e.g. the template references no volatile placeholders), the
     /// prefix is returned verbatim so we don't add trailing
     /// whitespace.
+    ///
+    /// Runs of 3+ consecutive newlines are collapsed to a single blank
+    /// line: empty volatile sections (each placeholder sits on its own
+    /// line and renders to "") would otherwise leave 3–4 blank lines
+    /// in the assembled prompt.
     #[must_use]
     pub fn assemble_system_prompt(cache_stable: &str, per_turn: &str) -> String {
         if per_turn.is_empty() {
             cache_stable.to_string()
         } else {
-            format!("{cache_stable}\n\n{per_turn}")
+            collapse_blank_line_runs(&format!("{cache_stable}\n\n{per_turn}"))
         }
     }
 
@@ -418,7 +425,7 @@ fn build_placeholder_values(
     values.insert(Placeholder::Memory, format_memory_section(ctx));
     values.insert(
         Placeholder::SessionContext,
-        format_session_context_section(session_ctx),
+        format_session_context_section(ctx, session_ctx),
     );
 
     // Control surfaces
@@ -517,14 +524,13 @@ fn build_per_turn_placeholder_values(
             Utc::now().to_rfc3339()
         ),
     );
-    values.insert(
-        Placeholder::Timezone,
-        Local::now().format("%:z").to_string(),
-    );
+    // Placeholder::Timezone intentionally omitted — the bare `+08:00`
+    // line was redundant with `{{current_time}}`, whose RFC3339 local
+    // timestamp already carries the offset.
     values.insert(Placeholder::Memory, format_memory_section(ctx));
     values.insert(
         Placeholder::SessionContext,
-        format_session_context_section(session_ctx),
+        format_session_context_section(ctx, session_ctx),
     );
     // Workspace catalogs — refreshed per iteration so newly added
     // workspace files appear immediately.
@@ -562,6 +568,27 @@ fn build_per_turn_placeholder_values(
     );
 
     values
+}
+
+/// Collapse runs of 3+ consecutive newlines down to a single blank
+/// line. Empty volatile sections in the per-turn suffix leave one
+/// blank line per stripped placeholder; without this, the assembled
+/// system prompt carries multi-blank-line gaps.
+fn collapse_blank_line_runs(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut newlines = 0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            newlines += 1;
+            if newlines > 2 {
+                continue;
+            }
+        } else {
+            newlines = 0;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn format_skills_section(text: &str) -> String {
@@ -656,12 +683,28 @@ fn format_memory_section(ctx: &TurnPromptContext) -> String {
     format!("## Your long-term memory (MEMORY.md)\n\n{trimmed}\n")
 }
 
-fn format_session_context_section(text: &str) -> String {
+fn format_session_context_section(ctx: &TurnPromptContext, text: &str) -> String {
+    // Peer-conversation lines (peer-ingress turns only): the DM
+    // channel that reaches the user + the peer's subject, so the
+    // model can target `ChannelSend` / cron reminders correctly.
+    // `None` fields are skipped; a run with neither renders exactly
+    // the pre-conversation-mode section.
+    let mut lines = String::new();
+    if let Some(channel) = ctx.conversation_channel.as_deref() {
+        lines.push_str(&format!("conversation channel: {channel}\n"));
+    }
+    if let Some(peer) = ctx.conversation_peer.as_deref() {
+        lines.push_str(&format!("peer: {peer}\n"));
+    }
     let trimmed = text.trim();
-    if trimmed.is_empty() {
+    if !trimmed.is_empty() {
+        lines.push_str(trimmed);
+        lines.push('\n');
+    }
+    if lines.is_empty() {
         return String::new();
     }
-    format!("## Session context\n\n{trimmed}\n")
+    format!("## Session context\n\n{lines}")
 }
 
 fn render_soft_cancel_section() -> String {
@@ -853,6 +896,8 @@ mod tests {
             sandbox_enabled: false,
             model_aliases: vec![],
             has_gateway: false,
+            conversation_channel: None,
+            conversation_peer: None,
             iteration_budget: None,
             quota_state: None,
             soft_cancel_pending: false,
@@ -1119,6 +1164,57 @@ mod tests {
 
         assert!(suffix_first.contains("Iteration 1 of 10"));
         assert!(suffix_second.contains("Approaching limit"));
+    }
+
+    #[tokio::test]
+    async fn render_per_turn_omits_timezone_line() {
+        // The bare `+08:00` line was redundant with `{{current_time}}`
+        // (whose RFC3339 local timestamp already carries the offset);
+        // it must not appear in the per-turn suffix.
+        let renderer = PromptRenderer::new(empty_funnel());
+        let ctx = empty_ctx();
+        let suffix = renderer.render_per_turn(&ctx).await;
+        let offset = Local::now().format("%:z").to_string();
+        assert!(
+            !suffix.lines().any(|line| line.trim() == offset),
+            "suffix must not contain a bare timezone-offset line; got: {suffix}"
+        );
+    }
+
+    /// Empty volatile sections leave one stripped placeholder line
+    /// each; `assemble_system_prompt` collapses the resulting runs of
+    /// 3+ newlines to a single blank line.
+    #[test]
+    fn assemble_system_prompt_collapses_blank_line_runs() {
+        let assembled = PromptRenderer::assemble_system_prompt(
+            "Prefix.",
+            "Current time: t\n\n\n\n\n## Skills (mandatory)\nx",
+        );
+        assert_eq!(
+            assembled,
+            "Prefix.\n\nCurrent time: t\n\n## Skills (mandatory)\nx"
+        );
+        // 2-newline boundaries are preserved (single blank line).
+        assert_eq!(
+            PromptRenderer::assemble_system_prompt("A.", "B.\n\nC."),
+            "A.\n\nB.\n\nC."
+        );
+    }
+
+    /// End-to-end: with no workspace catalogs, memory, or control
+    /// surfaces, the per-turn suffix is mostly empty sections; the
+    /// assembled prompt must not contain any 3+-newline run.
+    #[tokio::test]
+    async fn assembled_prompt_has_no_blank_line_runs() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let ctx = empty_ctx();
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        let suffix = renderer.render_per_turn(&ctx).await;
+        let assembled = PromptRenderer::assemble_system_prompt(&prefix, &suffix);
+        assert!(
+            !assembled.contains("\n\n\n"),
+            "assembled prompt contains a blank-line run: {assembled:?}"
+        );
     }
 
     #[tokio::test]

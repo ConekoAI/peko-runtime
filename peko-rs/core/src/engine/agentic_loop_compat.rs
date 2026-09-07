@@ -2275,6 +2275,8 @@ mod tests {
             sandbox_enabled: false,
             model_aliases: vec![],
             has_gateway: false,
+            conversation_channel: None,
+            conversation_peer: None,
             iteration_budget: None,
             quota_state: None,
             soft_cancel_pending: false,
@@ -2372,6 +2374,8 @@ mod tests {
             sandbox_enabled: false,
             model_aliases: vec![],
             has_gateway: false,
+            conversation_channel: None,
+            conversation_peer: None,
             iteration_budget: None,
             quota_state: None,
             soft_cancel_pending: false,
@@ -2424,12 +2428,38 @@ mod tests {
         sandbox_enabled: true,
         model_aliases: vec!["sonnet".into(), "haiku".into()],
         has_gateway: true,
+        conversation_channel: None,
+        conversation_peer: None,
         iteration_budget: None,
         quota_state: None,
         soft_cancel_pending: false,
         capability_diff: None,
         tool_definitions: vec![],
     }
+    }
+
+    /// Conversation context (peer-ingress turns, 2026-09-06): the
+    /// peer's DM channel id + subject render into the
+    /// `{{session_context}}` section; a run with neither renders no
+    /// section (unchanged non-peer behavior).
+    #[tokio::test]
+    async fn session_context_renders_conversation_channel_and_peer() {
+        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let ctx = TurnPromptContext {
+            body: "{{session_context}}".into(),
+            conversation_channel: Some("chan_abc123".into()),
+            conversation_peer: Some("user:alice".into()),
+            ..inert_ctx()
+        };
+        let rendered = renderer.render_for_iteration(&ctx).await;
+        assert!(rendered.contains("## Session context"));
+        assert!(rendered.contains("conversation channel: chan_abc123"));
+        assert!(rendered.contains("peer: user:alice"));
+
+        // No conversation context ⇒ no section (hook text is empty
+        // with a bare ExtensionCore).
+        let rendered = renderer.render_for_iteration(&inert_ctx()).await;
+        assert!(!rendered.contains("## Session context"));
     }
 
     #[tokio::test]
@@ -2487,8 +2517,9 @@ mod tests {
     #[tokio::test]
     async fn loop_omits_optional_sections_when_disabled() {
         // Back-compat: agents that don't set the inert fields must
-        // render without those sections, matching the legacy hardcoded
-        // defaults (`"discord"`, `"medium"`, sandbox off, no aliases).
+        // render without those sections. The fixture pins the
+        // historical channel value explicitly; the runtime default is
+        // now `"cli"` (see `AgenticLoop::build_turn_context`).
         let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
         let ctx = TurnPromptContext {
             channel: "discord".into(),
@@ -2809,6 +2840,8 @@ mod tests {
             sandbox_enabled: false,
             model_aliases: vec![],
             has_gateway: true,
+            conversation_channel: None,
+            conversation_peer: None,
             iteration_budget: None,
             quota_state: None,
             soft_cancel_pending: false,
@@ -2885,6 +2918,8 @@ mod tests {
             sandbox_enabled: false,
             model_aliases: vec![],
             has_gateway: true,
+            conversation_channel: None,
+            conversation_peer: None,
             iteration_budget: None,
             quota_state: None,
             soft_cancel_pending: false,
@@ -3235,9 +3270,7 @@ mod tests {
         // before counting (same pattern as the AfterAgent tests).
         let own_events: Vec<&serde_json::Value> = log_snapshot
             .iter()
-            .filter(|v| {
-                v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-end-agent")
-            })
+            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-end-agent"))
             .collect();
         assert_eq!(
             own_events.len(),
@@ -3339,9 +3372,7 @@ mod tests {
         // the clean-End Stop test above).
         let own_events: Vec<&serde_json::Value> = log_snapshot
             .iter()
-            .filter(|v| {
-                v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-cap-agent")
-            })
+            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-cap-agent"))
             .collect();
         assert_eq!(
             own_events.len(),
@@ -3450,8 +3481,7 @@ mod tests {
         let own_events: Vec<&serde_json::Value> = log_snapshot
             .iter()
             .filter(|v| {
-                v.get("agent_name").and_then(|n| n.as_str())
-                    == Some("f31x-stop-interrupt-agent")
+                v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-interrupt-agent")
             })
             .collect();
         assert_eq!(
@@ -3479,7 +3509,6 @@ mod tests {
         peko_identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
-        let core = global_core().unwrap();
         let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         #[derive(Debug)]
@@ -3510,7 +3539,18 @@ mod tests {
             }
         }
 
-        let hook_id = core
+        let agent_name = format!("f31x-after-agent-{}", uuid::Uuid::new_v4());
+        let config = test_agent_config(&agent_name);
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+
+        // Register the hook on the agent's CAPTURED core (what
+        // `Agent::stop` dispatches on), not the global: in test builds
+        // `init_global_core` REPLACES the global core, so a concurrent
+        // core-building test can swap the global between registration
+        // and `stop()` — the hook then never fires (pre-existing
+        // full-suite flake, see the note in daemon::cron_engine tests).
+        let hook_id = agent
+            .extension_core()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::AfterAgent,
                 Arc::new(AfterAgentRecorder { log: log.clone() }),
@@ -3520,12 +3560,9 @@ mod tests {
             .unwrap()
             .id;
 
-        let agent_name = format!("f31x-after-agent-{}", uuid::Uuid::new_v4());
-        let config = test_agent_config(&agent_name);
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
         agent.stop().await.expect("stop should succeed");
 
-        let _ = core.unregister_hook(&hook_id).await;
+        let _ = agent.extension_core().unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
         // The global `ExtensionCore` is shared across tests; other tests
@@ -3791,9 +3828,7 @@ mod tests {
         // the uuid-unique agent name before asserting cardinality.
         let mine: Vec<&serde_json::Value> = log_snapshot
             .iter()
-            .filter(|v| {
-                v.get("agent_name").and_then(|n| n.as_str()) == Some(agent_name.as_str())
-            })
+            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some(agent_name.as_str()))
             .collect();
         assert_eq!(
             mine.len(),
@@ -4315,9 +4350,7 @@ mod tests {
     //    `model.selected` audit event.
     //  - The second call against the same model emits `Info`.
     // ===================================================================
-    use peko_engine::audit_sink::{
-        AuditEventView, AuditSeverity as EngineSeverity, AuditSink,
-    };
+    use peko_engine::audit_sink::{AuditEventView, AuditSeverity as EngineSeverity, AuditSink};
 
     /// Test-only sink that captures every audit event for later
     /// assertion. Mirrors the `CapturingSink` in
@@ -4367,8 +4400,7 @@ mod tests {
             let (provider, mock) = mock_provider();
             mock.queue_text("Hello first call.");
             let config = test_agent_config("audit-first-agent");
-            let agent =
-                Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+            let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
             let extension_core = global_core().unwrap();
             let loop_ = AgenticLoop::new(
                 agent.clone(),
@@ -4403,22 +4435,24 @@ mod tests {
 
         // After the first run, exactly one audit event should have
         // been captured — a `Warning` for `mock-model` with
-        // `first_use = true`.
-        let events = sink.events.lock().unwrap();
-        assert_eq!(
-            events.len(),
-            1,
-            "exactly one audit event expected after the first call"
-        );
-        let ev = &events[0];
-        assert_eq!(ev.event_type, "model.selected");
-        assert_eq!(ev.severity, EngineSeverity::Warning);
-        assert_eq!(ev.model_id.as_deref(), Some("mock-model"));
-        assert_eq!(
-            ev.details["first_use"], true,
-            "first_use flag must be true on the first call"
-        );
-        drop(events);
+        // `first_use = true`. Scoped so the guard drops before the
+        // awaits in the second run below.
+        {
+            let events = sink.events.lock().unwrap();
+            assert_eq!(
+                events.len(),
+                1,
+                "exactly one audit event expected after the first call"
+            );
+            let ev = &events[0];
+            assert_eq!(ev.event_type, "model.selected");
+            assert_eq!(ev.severity, EngineSeverity::Warning);
+            assert_eq!(ev.model_id.as_deref(), Some("mock-model"));
+            assert_eq!(
+                ev.details["first_use"], true,
+                "first_use flag must be true on the first call"
+            );
+        }
 
         // Second run (different agent to keep the loop builder
         // paths simple — the sink + first-use closure are
@@ -4428,8 +4462,7 @@ mod tests {
             let (provider, mock) = mock_provider();
             mock.queue_text("Hello second call.");
             let config = test_agent_config("audit-second-agent");
-            let agent =
-                Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+            let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
             let extension_core = global_core().unwrap();
             let loop_ = AgenticLoop::new(
                 agent.clone(),

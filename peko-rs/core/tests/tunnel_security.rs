@@ -17,7 +17,7 @@ use secrecy::SecretString;
 
 use peko_core::common::vault::Vault;
 use peko_core::tunnel::PekoHubCredential;
-use peko_identity::keychain::{EncryptedKeyStorage, KeyStorageRef, KeychainStorage};
+use peko_identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
 use peko_identity::storage::KeyStorage;
 use peko_identity::{DIDScope, Identity};
 

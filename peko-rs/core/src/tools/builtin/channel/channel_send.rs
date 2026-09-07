@@ -359,7 +359,11 @@ impl ChannelSendTool {
         };
         let own_line = match ctx
             .channel_port
-            .post(&own_channel, &Subject::from(&caller.id), PostMsg::root(message))
+            .post(
+                &own_channel,
+                &Subject::from(&caller.id),
+                PostMsg::root(message),
+            )
             .await
         {
             Ok(l) => l,
@@ -412,7 +416,11 @@ impl ChannelSendTool {
         let mut rx = ctx.channel_port.subscribe_events(&target_channel).await;
         let line = match ctx
             .channel_port
-            .post(&target_channel, &Subject::from(&caller.id), PostMsg::root(message))
+            .post(
+                &target_channel,
+                &Subject::from(&caller.id),
+                PostMsg::root(message),
+            )
             .await
         {
             Ok(l) => l,
@@ -762,7 +770,7 @@ User:         `{ "success": true, "kind": "user", "response": "Delivered as a no
         false
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Bare / Group / Principal can in principle reach this path
         // (none of them need the ToolContext — they get everything
         // from the bound fields + `params`), but in production the F37
@@ -899,7 +907,7 @@ impl ChannelSendTool {
         &self,
         channel_id: &ProtoChannelId,
         text: &str,
-        ctx: &peko_tools_core::exec::ToolContext,
+        _ctx: &peko_tools_core::exec::ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
         let raw = channel_id.as_str();
         let target_principal_did = raw.strip_prefix("principal:").ok_or_else(|| {
@@ -1125,10 +1133,7 @@ mod tests {
             Ok(())
         }
 
-        async fn list_members(
-            &self,
-            channel: &ChannelId,
-        ) -> peko_channel::Result<Vec<Subject>> {
+        async fn list_members(&self, channel: &ChannelId) -> peko_channel::Result<Vec<Subject>> {
             let g = self.members.lock().await;
             Ok(g.get(channel).cloned().unwrap_or_default())
         }

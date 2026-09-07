@@ -9,7 +9,7 @@ use crate::agents::Agent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
 use crate::principal::router::AgentPromptSummary;
 use peko_auth::Subject;
-use peko_engine::{AgenticEvent, McpPromptContextProvider};
+use peko_engine::AgenticEvent;
 use peko_message::LlmMessage;
 use peko_session::manager::{SessionManager, SessionManagerRotationSink};
 use peko_session::SessionCreateOptions;
@@ -378,9 +378,7 @@ where
     // builds a stateless `Agent` without a resolver; in that case
     // the `model_list` tool is intentionally omitted (`None` ⇒
     // `init_builtins_async` skips registration).
-    .with_model_catalog(
-        ctx.resolver.as_ref().map(|r| Arc::clone(r.catalog())),
-    )
+    .with_model_catalog(ctx.resolver.as_ref().map(|r| Arc::clone(r.catalog())))
     // ADR-045 (self-modification gate): bind caller DID so the
     // `send_peer` tool is registered. `None` ⇒ tool is intentionally
     // omitted (no caller identity to attribute sends to).
@@ -442,8 +440,7 @@ where
         let first_use_lookup: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>> = {
             let set = Arc::clone(&seen_set);
             Some(Arc::new(move |model_id: &str| {
-                !set
-                    .lock()
+                !set.lock()
                     .expect("seen_models mutex poisoned")
                     .contains(model_id)
             }) as Arc<dyn Fn(&str) -> bool + Send + Sync>)
@@ -461,9 +458,8 @@ where
     // placeholder to empty via `remove_missing=true`.
     let agent = agent.with_mcp_context_provider(
         crate::extensions::mcp::global::global_mcp_manager().map(|mgr| {
-            Arc::new(
-                crate::extensions::mcp::workspace::McpManagerPromptContextProvider::new(mgr),
-            ) as Arc<dyn peko_engine::McpPromptContextProvider>
+            Arc::new(crate::extensions::mcp::workspace::McpManagerPromptContextProvider::new(mgr))
+                as Arc<dyn peko_engine::McpPromptContextProvider>
         }),
     );
 
@@ -494,6 +490,19 @@ where
         // unattributed. `ctx.quota_meter()` returns `Option` —
         // principals with no quota config keep the old behavior.
         .with_quota_meter(ctx.quota_meter().map(Arc::clone))
+        // Peer-turn delivery (2026-09-07): the root agent's Agent tool
+        // can target peer-bound sessions (`resume /local-user`, and cron
+        // SpawnTool attaches ride the globally-registered Agent tool,
+        // whose executor is THIS one) — flip those runs into
+        // conversation mode and deliver the reply to the peer's DM
+        // channel. No port installed (tests, CLI one-shot) → no surface.
+        .with_peer_turn_surface(core.services().channel_port().map(|port| {
+            Arc::new(crate::principal::child_turns::PeerTurnSurfaceImpl::new(
+                Arc::clone(&session_manager),
+                port,
+                ctx.principal_id().clone(),
+            )) as Arc<dyn crate::agents::subagent_executor::PeerTurnSurface>
+        }))
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so the principal.toml path is

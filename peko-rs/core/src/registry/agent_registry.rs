@@ -243,7 +243,9 @@ pub(crate) fn encode_tag(tag: &str) -> String {
 
 /// Decode a filename produced by [`encode_tag`] back to the original tag.
 ///
-/// B6 cleanup: see `encode_tag`. Still used by `RegistryClient`.
+/// B6 cleanup: see `encode_tag`. Only exercised by `RegistryClient`'s
+/// round-trip test today, hence `#[cfg(test)]`.
+#[cfg(test)]
 pub(crate) fn decode_tag(name: &str) -> String {
     let bytes = name.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

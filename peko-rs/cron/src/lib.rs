@@ -11,8 +11,8 @@
 //!
 //! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`),
 //!   the `CronRuntime` port trait + global registry, the helper functions,
-//!   and the 3 tool impls (`CronCreateTool`, `CronDeleteTool`,
-//!   `CronListTool`).
+//!   and the 4 tool impls (`CronCreateTool`, `CronDeleteTool`,
+//!   `CronListTool`, `CronUpdateTool`).
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
 //! - [`idle`] — scheduler-side submodule for idle detection.
@@ -34,19 +34,18 @@ use tracing::info;
 // All cron-related code (root, daemon, integration tests, CLI commands,
 // IPC handlers) imports from `peko_cron::*` directly.
 #[allow(unused_imports)]
-pub use tools::{
-    calculate_next_interval_anchored, calculate_next_run,
-    global_runtime, normalize_cron_expr, render_job_list,
-    resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
-    CronJob, CronJobAction, CronListTool, CronRuntime, ScheduleKind,
-    DEFAULT_MAX_RETRIES,
-};
-#[allow(unused_imports)]
 pub use cron::Schedule;
 #[allow(unused_imports)]
 pub use peko_subject::PrincipalId;
 #[allow(unused_imports)]
 pub use std::str::FromStr;
+#[allow(unused_imports)]
+pub use tools::{
+    calculate_next_interval_anchored, calculate_next_run, global_runtime, normalize_cron_expr,
+    render_job_list, resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
+    CronJob, CronJobAction, CronListTool, CronRuntime, CronUpdateTool, ScheduleKind,
+    DEFAULT_MAX_RETRIES,
+};
 
 pub use idle::IdleDetector;
 
@@ -336,6 +335,43 @@ impl CronScheduler {
         }
     }
 
+    /// Patch mutable job fields in place (2026-09-07, `CronUpdate`).
+    ///
+    /// `enabled` flips the schedule gate; `wake_on_completion` toggles
+    /// result subscription on `SpawnTool` jobs (a no-op on `Send` jobs,
+    /// whose turn outcome already lands in the trunk session). When
+    /// re-enabling a job the consecutive-failure counter resets — the
+    /// operator/agent re-enabled it deliberately, so the retry budget
+    /// starts fresh instead of re-disabling on the next failure.
+    pub fn update_job_fields(
+        &self,
+        job_id: &str,
+        enabled: Option<bool>,
+        wake_on_completion: Option<bool>,
+    ) -> Result<bool> {
+        let mut db = self.read_db()?;
+        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
+            if let Some(e) = enabled {
+                job.enabled = e;
+                if e {
+                    job.consecutive_failures = 0;
+                }
+            }
+            if let Some(wake) = wake_on_completion {
+                if let crate::CronJobAction::SpawnTool {
+                    wake_on_completion, ..
+                } = &mut job.action
+                {
+                    *wake_on_completion = Some(wake);
+                }
+            }
+            self.write_db(&db)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Record a job run
     pub fn record_run(&self, run: &CronRun) -> Result<()> {
         let mut db = self.read_db()?;
@@ -377,7 +413,8 @@ impl CronScheduler {
     }
 
     /// Get run history for a job
-    pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {        let db = self.read_db()?;
+    pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {
+        let db = self.read_db()?;
         let mut runs: Vec<CronRun> = db.runs.into_iter().filter(|r| r.job_id == job_id).collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
         runs.truncate(limit);
@@ -454,7 +491,7 @@ mod tests {
                 message: "Test message".to_string(),
                 target: None,
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -494,7 +531,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-                        delete_after_run: true,
+            delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -547,7 +584,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 timeout_secs: Some(60),
             },
-                        delete_after_run: true,
+            delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -616,7 +653,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() - chrono::Duration::hours(1),
@@ -636,7 +673,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now() + chrono::Duration::hours(1),
@@ -690,7 +727,7 @@ mod tests {
                 message: "x".to_string(),
                 target: None,
             },
-                        delete_after_run: false,
+            delete_after_run: false,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -857,7 +894,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
             },
-                        delete_after_run: true,
+            delete_after_run: true,
             enabled: true,
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -909,7 +946,7 @@ mod tests {
                     message: "Hello".to_string(),
                     target: None,
                 },
-                                delete_after_run: false,
+                delete_after_run: false,
                 enabled: true,
                 created_at: Utc::now(),
                 next_run: Utc::now(),

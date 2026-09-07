@@ -5,10 +5,14 @@
 //! per the Phase 10 plan rule, built-in tools may not import daemon
 //! state.
 //!
-//! Always writes a `SpawnTool` job — at fire time the daemon asks the
-//! `AsyncExecutor` to run `tool_name` with `tool_params`. Caller must
-//! supply `tool` and `params` (the JSON schema's `required` enforces
-//! this).
+//! Two job shapes:
+//! - `tool` + `params` → `SpawnTool` job: at fire time the daemon asks
+//!   the `AsyncExecutor` to run `tool_name` with `tool_params`. Fixed
+//!   behavior, no LLM cost per fire.
+//! - `message` → `Send` job: at fire time the message lands in the
+//!   principal's trunk session and runs a full agent turn, so the agent
+//!   composes fresh output (and can use tools, e.g. ChannelSend) on
+//!   every fire. LLM-driven; costs tokens per fire.
 
 use crate::tools::{add_job_via_runtime, global_runtime, resolve_schedule_kind};
 use crate::{CronJob, CronJobAction};
@@ -39,9 +43,14 @@ impl Default for CronCreateTool {
 /// `CronCreate` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CronCreateArgs {
-    /// Tool name to invoke at fire time. Required.
+    /// Tool name to invoke at fire time. Mutually exclusive with `message`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Instruction delivered to the principal's trunk session at fire time,
+    /// running a full agent turn (dynamic, LLM-driven output). Mutually
+    /// exclusive with `tool`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// Tool-call parameters for the scheduled `tool` call. Defaults to `{}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
@@ -86,10 +95,7 @@ pub struct CronCreateArgs {
 /// defaults to one-shot (without this a fired `at` job whose model
 /// caller passed no recurrence hint parks on the 100-year sentinel
 /// forever; 2026-08-08 round-4 verification finding).
-fn resolve_one_shot(
-    params: &serde_json::Value,
-    schedule: &crate::ScheduleKind,
-) -> bool {
+fn resolve_one_shot(params: &serde_json::Value, schedule: &crate::ScheduleKind) -> bool {
     params
         .get("one_shot")
         .and_then(|v| v.as_bool())
@@ -137,20 +143,24 @@ impl Tool for CronCreateTool {
     }
 
     fn description(&self) -> String {
-        "Schedule a tool to run at a future time. The tool's parameters are passed verbatim at fire time. Supports cron expressions, one-shot 'at' times, intervals, and idle triggers. Jobs are stored and executed by the daemon.".to_string()
+        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (no LLM cost, parameters verbatim; use for static actions). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Instruction delivered to your trunk session at fire time, running a full agent turn (dynamic, LLM-driven output — e.g. \"compose a fresh ping and ChannelSend it\"). Mutually exclusive with `tool`."
+                },
                 "tool": {
                     "type": "string",
-                    "description": "REQUIRED. Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"Read\", \"ChannelRead\"). The scheduled job calls this tool with `params` at every fire."
+                    "description": "Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"ChannelSend\"). The scheduled job calls this tool with `params` at every fire — fixed behavior, no LLM cost. Mutually exclusive with `message`."
                 },
                 "params": {
                     "type": "object",
-                    "description": "REQUIRED. Tool-call parameters passed to `tool` at fire time. Defaults to {} when omitted."
+                    "description": "Tool-call parameters passed to `tool` at fire time. Defaults to {} when omitted. Only meaningful with `tool`."
                 },
                 "wake_on_completion": {
                     "type": "boolean",
@@ -188,8 +198,7 @@ impl Tool for CronCreateTool {
                     "type": "integer",
                     "description": "Idle duration in milliseconds before triggering"
                 }
-            },
-            "required": ["tool", "params"]
+            }
         })
     }
 
@@ -230,12 +239,40 @@ impl Tool for CronCreateTool {
         let args: CronCreateArgs = serde_json::from_value(params.clone())
             .map_err(|e| anyhow::anyhow!("Invalid CronCreate arguments: {e}"))?;
 
-        let tool = args
-            .tool
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("CronCreate requires `tool`"))?;
-
-        let tool_params = args.params.clone().unwrap_or_else(|| serde_json::json!({}));
+        let action = match (args.tool.clone(), args.message.clone()) {
+            (Some(_), Some(_)) => {
+                anyhow::bail!("CronCreate: `tool` and `message` are mutually exclusive");
+            }
+            (Some(tool_name), None) => {
+                if tool_name.trim().is_empty() {
+                    anyhow::bail!("CronCreate `tool` must be a non-empty tool name");
+                }
+                CronJobAction::SpawnTool {
+                    tool_name,
+                    tool_params: args.params.clone().unwrap_or_else(|| serde_json::json!({})),
+                    wake_on_completion: args.wake_on_completion,
+                    timeout_secs: args.timeout_secs,
+                }
+            }
+            (None, Some(message)) => {
+                if message.trim().is_empty() {
+                    anyhow::bail!("CronCreate `message` must be non-empty");
+                }
+                // `target: None` is the trunk route (Phase 7: the only
+                // destination); the fire lands as a user message in the
+                // principal's own session and runs a full agent turn.
+                CronJobAction::Send {
+                    message,
+                    target: None,
+                }
+            }
+            (None, None) => {
+                anyhow::bail!(
+                    "CronCreate requires either `tool` (+ optional `params`) for a fixed tool call, \
+                     or `message` for an LLM-driven agent turn at fire time"
+                );
+            }
+        };
 
         let schedule = resolve_schedule(&args, &params)?;
         let delete_after_run = resolve_one_shot(&params, &schedule);
@@ -257,12 +294,7 @@ impl Tool for CronCreateTool {
             name: label,
             principal_id: peko_subject::PrincipalId(principal_id.clone()),
             schedule,
-            action: CronJobAction::SpawnTool {
-                tool_name: tool,
-                tool_params,
-                wake_on_completion: args.wake_on_completion,
-                timeout_secs: args.timeout_secs,
-            },
+            action,
             delete_after_run,
             enabled: true,
             created_at: Utc::now(),
@@ -292,21 +324,21 @@ mod tests {
         let tool = CronCreateTool::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
-        // Sprint 7 Commit D: `tool` and `params` are now REQUIRED —
-        // CronCreate is a SpawnTool-only factory and there is no other
-        // valid shape.
-        assert_eq!(
-            params.get("required"),
-            Some(&serde_json::json!(["tool", "params"]))
-        );
+        // Two mutually exclusive shapes (validated in code, not the
+        // schema — JSON-schema `oneOf` hurts more than it helps in
+        // model-facing tool contracts): `tool`+`params` → SpawnTool,
+        // `message` → Send. `message` was restored after Sprint 7's
+        // SpawnTool-only Commit D left the Send fire path uncreatable
+        // (the `peko cron` CLI that used to write Send jobs is retired).
+        assert!(params.get("required").is_none());
         let props = params.get("properties").unwrap();
         assert!(props.get("tool").is_some());
         assert!(props.get("params").is_some());
+        assert!(props.get("message").is_some());
         assert!(props.get("wake_on_completion").is_some());
         assert!(props.get("timeout_secs").is_some());
         // Sprint 7 Commit C + D + E: dropped fields stay gone.
         assert!(props.get("prompt").is_none());
-        assert!(props.get("message").is_none());
         assert!(props.get("target").is_none());
         assert!(props.get("description").is_none());
         assert!(props.get("recurring").is_none());
@@ -361,7 +393,10 @@ mod tests {
         };
         let at = chrono::DateTime::parse_from_rfc3339(at).unwrap();
         let delta = at.timestamp() - chrono::Utc::now().timestamp();
-        assert!((80..=100).contains(&delta), "expected ~90s out, got {delta}s");
+        assert!(
+            (80..=100).contains(&delta),
+            "expected ~90s out, got {delta}s"
+        );
         assert!(resolve_one_shot(&serde_json::json!({}), &schedule));
 
         // Conflict with an explicit schedule field is rejected.
