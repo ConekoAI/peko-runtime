@@ -11,8 +11,9 @@
 //!
 //! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`),
 //!   the `CronRuntime` port trait + global registry, the helper functions,
-//!   and the 4 tool impls (`CronCreateTool`, `CronDeleteTool`,
-//!   `CronListTool`, `CronUpdateTool`).
+//!   and the 6 tool impls (`CronCreateTool`, `CronDeleteTool`,
+//!   `CronListTool`, `CronUpdateTool`, `CronTriggerTool`,
+//!   `CronHistoryTool`).
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
 //! - [`idle`] — scheduler-side submodule for idle detection.
@@ -43,8 +44,8 @@ pub use std::str::FromStr;
 pub use tools::{
     calculate_next_interval_anchored, calculate_next_run, global_runtime, normalize_cron_expr,
     render_job_list, resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
-    CronJob, CronJobAction, CronListTool, CronRuntime, CronUpdateTool, ScheduleKind,
-    DEFAULT_MAX_RETRIES,
+    CronHistoryTool, CronJob, CronJobAction, CronListTool, CronRuntime, CronTriggerTool,
+    CronUpdateTool, ScheduleKind, DEFAULT_MAX_RETRIES,
 };
 
 pub use idle::IdleDetector;

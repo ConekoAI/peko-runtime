@@ -297,10 +297,14 @@ impl CronEngine {
     /// existing in-flight `run_id` and does NOT spawn a second
     /// execution).
     ///
+    /// Called by the `CronTrigger` tool (via the daemon's
+    /// `DaemonCronAdapter`). A manual trigger ignores the job's
+    /// `enabled` flag — firing a paused job is the debugging path
+    /// ("verify the wiring before re-enabling").
+    ///
     /// Errors:
     /// - `"job {id} not found"` if no loaded principal owns the job.
     /// - `"cron lookup"` for low-level scheduler failures.
-    #[cfg(test)]
     pub async fn execute_job_for_id(&self, job_id: &str) -> Result<String> {
         // Walk loaded schedulers looking for the one that owns the
         // job. Schedulers are keyed by principal_id (DID); the

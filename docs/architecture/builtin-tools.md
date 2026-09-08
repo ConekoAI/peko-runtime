@@ -202,6 +202,33 @@ At least one of `enabled` / `wake_on_completion` is required. Use this to
 unsubscribe from a noisy job's results, or to resume a paused job without
 recreating it.
 
+### `CronTrigger` 🔧
+
+Fire a scheduled job immediately, out of schedule, by `id` (or `label`).
+Works even when the job is **disabled** — this is the way to verify a
+freshly-created job's wiring before its first scheduled fire. The run
+executes in the background; a fire against a running job coalesces into
+the in-flight run (returns its `run_id`).
+
+```json
+{ "id": "string", "label": "string? (alternative to id)" }
+```
+
+Returns `{ "triggered": true, "job_id", "run_id", "note" }`. Check the
+outcome with `CronHistory`.
+
+### `CronHistory` 🔧
+
+Read a job's run history by `id` (or `label`), most recent first:
+
+```json
+{ "id": "string", "label": "string?", "limit": "integer? (default 10, max 50)" }
+```
+
+Returns `{ "job_id", "count", "runs": [...] }` where each run carries
+`status`, `started_at`, `finished_at`, `output`, and `error` — the error
+text and trend that `CronList`'s single `last_status` doesn't show.
+
 ### `CronList` 🔧
 
 ```json

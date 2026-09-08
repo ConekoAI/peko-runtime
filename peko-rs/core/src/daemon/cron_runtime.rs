@@ -33,6 +33,10 @@ use crate::principal::manager::PrincipalManager;
 pub struct DaemonCronAdapter {
     path_resolver: PathResolver,
     principal_manager: Arc<PrincipalManager>,
+    /// The daemon's cron engine, bound at startup. Powers
+    /// `trigger_job` (manual fires go through the engine's coalescing
+    /// + spawn logic, not a scheduler side-channel). `None` in tests.
+    cron_engine: Option<Arc<crate::daemon::cron_engine::CronEngine>>,
 }
 
 impl DaemonCronAdapter {
@@ -43,7 +47,14 @@ impl DaemonCronAdapter {
         Self {
             path_resolver,
             principal_manager,
+            cron_engine: None,
         }
+    }
+
+    /// Bind the cron engine (manual-trigger path).
+    pub fn with_cron_engine(mut self, engine: Arc<crate::daemon::cron_engine::CronEngine>) -> Self {
+        self.cron_engine = Some(engine);
+        self
     }
 
     /// Convenience: install this adapter as the global runtime.
@@ -153,6 +164,26 @@ impl CronRuntime for DaemonCronAdapter {
             return Err(anyhow::anyhow!("Job {job_id} not found"));
         }
         Ok(())
+    }
+
+    async fn trigger_job(&self, job_id: &str) -> Result<String> {
+        let engine = self
+            .cron_engine
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("cron engine not available on this runtime"))?;
+        engine.execute_job_for_id(job_id).await
+    }
+
+    async fn run_history(&self, job_id: &str, limit: usize) -> Result<Vec<peko_cron::CronRun>> {
+        let (_name, path) = self
+            .resolve_owner(job_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
+        let scheduler =
+            CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
+        scheduler
+            .get_run_history(job_id, limit)
+            .map_err(|e| anyhow::anyhow!("Failed to read run history: {e}"))
     }
 
     async fn list_jobs(&self) -> Result<Vec<CronJob>> {

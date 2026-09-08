@@ -42,6 +42,8 @@ use peko_subject::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
 
+use crate::CronRun;
+
 /// Default retry budget for cron jobs that have `max_retries: None` on
 /// disk (legacy records serialized before this field was added) or
 /// that have not opted into a custom limit. The engine disables a job
@@ -317,6 +319,17 @@ pub trait CronRuntime: Send + Sync {
         enabled: Option<bool>,
         wake_on_completion: Option<bool>,
     ) -> Result<()>;
+
+    /// Fire a job immediately, out of schedule. Returns the run id;
+    /// coalesces with an in-flight run of the same job (returns the
+    /// existing run id instead of double-firing). Manual triggers
+    /// ignore the job's `enabled` flag (debugging path). The run
+    /// executes in the background; its outcome lands in run history.
+    async fn trigger_job(&self, job_id: &str) -> Result<String>;
+
+    /// Read a job's run history, most recent first, capped at `limit`.
+    /// Errors when the job (or its history) does not exist.
+    async fn run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>>;
 }
 
 // ─── Public helpers used by the cron tools ────────────────────────
@@ -562,12 +575,16 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
 
 pub mod create;
 pub mod delete;
+pub mod history;
 pub mod list;
+pub mod trigger;
 pub mod update;
 
 pub use create::CronCreateTool;
 pub use delete::CronDeleteTool;
+pub use history::CronHistoryTool;
 pub use list::CronListTool;
+pub use trigger::CronTriggerTool;
 pub use update::CronUpdateTool;
 
 /// Register a job via the runtime port. Returns the standard

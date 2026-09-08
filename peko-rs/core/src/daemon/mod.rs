@@ -289,9 +289,9 @@ impl Daemon {
             cron_async_executor,
             cron_extension_core,
         ));
-        // PR 2: hand the engine to AppState so the `CronRun` IPC
-        // handler can dispatch manual triggers through the same
-        // coalescing / spawn logic that scheduled fires use.
+        // Hand the engine to AppState so the `CronTrigger` tool (via
+        // `DaemonCronAdapter::trigger_job`) can dispatch manual fires
+        // through the same coalescing / spawn logic scheduled fires use.
         app_state.set_cron_engine(Arc::new(
             self.cron_engine
                 .as_ref()
@@ -371,11 +371,16 @@ impl Daemon {
         // caps. Idempotent — repeated installs with the same adapter
         // are a no-op.
         {
-            let adapter = std::sync::Arc::new(crate::daemon::cron_runtime::DaemonCronAdapter::new(
+            let mut adapter = crate::daemon::cron_runtime::DaemonCronAdapter::new(
                 app_state.path_resolver.clone(),
                 std::sync::Arc::clone(app_state.principal_manager()),
-            ));
-            adapter.install_as_global();
+            );
+            // Bind the cron engine for the `CronTrigger` tool's manual
+            // fires (coalescing + spawn logic live on the engine).
+            if let Some(engine) = self.cron_engine.as_ref() {
+                adapter = adapter.with_cron_engine(Arc::new(engine.clone()));
+            }
+            std::sync::Arc::new(adapter).install_as_global();
             info!("🕓 Cron runtime port installed (DaemonCronAdapter, in-process)");
         }
 
