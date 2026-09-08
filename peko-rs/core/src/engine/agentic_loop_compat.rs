@@ -1512,19 +1512,17 @@ mod tests {
          ParaB=[{b_start:?}..{b_end:?}] — they should overlap"
         );
 
-        // Total elapsed should be ~120ms (one tool's worth), not
-        // ~240ms (serial). The 300ms upper bound is well below the
-        // ~360ms+ serial-execution floor on the same hardware, while
-        // leaving headroom for the mock-LLM round-trips and other
-        // setup work that `run_with_resume` performs around the tool
-        // execution. Windows CI runners observed 236ms with genuinely
-        // overlapping tools — pure LLM round-trip overhead bumped the
-        // total above the previous 220ms bound even though the fan-out
-        // was correct (the overlap assertion above already passed).
+        // Total elapsed is only a coarse hang guard, NOT the
+        // concurrency proof — the interval-overlap assertion above is.
+        // The bound has been widened repeatedly (220 → 300 ms for
+        // Windows CI, now 2 s for loaded ubuntu runners: 518 ms
+        // observed with genuinely overlapping tools when the runner
+        // was contended). A serial regression still trips the overlap
+        // assertion, so this only needs to catch a wedged loop.
         assert!(
-            total_elapsed < Duration::from_millis(300),
-            "total elapsed {total_elapsed:?} suggests serial execution; \
-         expected ~120ms with parallel fan-out"
+            total_elapsed < Duration::from_millis(2000),
+            "total elapsed {total_elapsed:?} suggests a wedged loop; \
+         overlap assertion above is the concurrency proof"
         );
     }
 
