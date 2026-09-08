@@ -98,27 +98,36 @@ impl FileLock {
             }
         }
 
-        // Create lock file with our PID
+        // Create the lock file with O_EXCL (`create_new`) — the atomic
+        // test-and-set that makes this a real lock. The previous
+        // write-tmp-then-rename sequence was NOT exclusive: two
+        // same-process acquirers both observed `exists() == false` and
+        // both renamed over the same path, so both believed they held
+        // the lock (CI flake:
+        // `concurrent_invites_do_not_lose_members` — two "holders"
+        // then raced the members.json tmp-rename and one renamed a
+        // file the other had already moved).
         let payload = LockPayload {
             pid: std::process::id(),
             created_at: chrono::Utc::now().to_rfc3339(),
         };
-
         let json = serde_json::to_string(&payload)?;
-
-        // Write to temp file then rename for atomicity
-        let temp_path = lock_path.with_extension("tmp");
-        {
-            let mut file = fs::File::create(&temp_path)
-                .await
-                .context("Failed to create temp lock file")?;
-            file.write_all(json.as_bytes()).await?;
-            file.flush().await?;
-        }
-
-        fs::rename(&temp_path, lock_path)
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock_path)
             .await
-            .context("Failed to rename temp lock file")?;
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(anyhow::anyhow!("Lock file exists and is active"));
+            }
+            Err(e) => {
+                return Err(e).context("Failed to create lock file");
+            }
+        };
+        file.write_all(json.as_bytes()).await?;
+        file.flush().await?;
 
         debug!("Acquired lock: {}", lock_path.display());
 
@@ -141,8 +150,26 @@ impl FileLock {
             }
         };
 
-        let payload: LockPayload =
-            serde_json::from_str(&content).context("Failed to parse lock file")?;
+        let payload: LockPayload = match serde_json::from_str(&content) {
+            Ok(p) => p,
+            Err(_) => {
+                // The payload is missing or half-written: a concurrent
+                // acquirer may have created the file (O_EXCL) but not
+                // finished writing yet — that window is not atomic.
+                // Treat a YOUNG file as active (never delete another
+                // acquirer's fresh lock); only an old corrupt file is
+                // stale and removable.
+                let age_ms = fs::metadata(lock_path)
+                    .await
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|d| d.as_millis() as i64);
+                return Ok(age_ms
+                    .map(|a| a > DEFAULT_STALE_LOCK_MS as i64)
+                    .unwrap_or(true));
+            }
+        };
 
         // Check if PID is still alive
         if !Self::is_pid_alive(payload.pid) {
