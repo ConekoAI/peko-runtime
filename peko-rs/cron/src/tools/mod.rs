@@ -275,6 +275,15 @@ pub struct CronJob {
     /// applied by the engine when this is `None`.
     #[serde(default)]
     pub max_retries: Option<u32>,
+    /// The session the job was created from (2026-09-08). At fire
+    /// time the job runs with THIS session as its caller context —
+    /// relative `Agent` paths resolve against it, SpawnTool runs
+    /// attribute to it, and `Send` (message) jobs land in it, so a
+    /// "remind me" created from `/user-bob` reaches bob's conversation
+    /// instead of the trunk. `None` (legacy jobs, trunk-created jobs)
+    /// falls back to the trunk session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<String>,
 }
 
 impl CronJob {
@@ -730,6 +739,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         let json = serde_json::to_string(&job).unwrap();
         let back: CronJob = serde_json::from_str(&json).unwrap();
@@ -877,6 +887,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
 
         let json = serde_json::to_string(&job).unwrap();

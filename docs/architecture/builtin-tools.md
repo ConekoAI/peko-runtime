@@ -264,8 +264,18 @@ Spawn a subagent.
 ```
 
 **Peko extensions:** `action` (3-value enum: `new` | `resume` | `compact`),
-`path` (the slug path under the parent's tree; replaces the Claude Code
+`path` (a uniform session address — see below; replaces the Claude Code
 `session_key` / `name` pair).
+
+**Path addressing (2026-09-08).** `path` is a uniform address for all
+actions: a RELATIVE slug segment (no `/`) resolves against the caller's
+session (`<caller>/<slug>`); an ABSOLUTE `/a/b` path resolves from the
+tree root. `new` is create-or-resume: when the addressed spawn-created
+session exists, the call attaches to it (recurring callers keep one
+continuous session); multi-segment absolute paths can only attach, not
+mint. Any session in the principal's store may be addressed (e.g. a
+peer's `/user-bob`) — the principal is the trust boundary, not the
+session tree.
 
 `compact` (2026-09-05) no longer flags the session for a later run — it
 starts a continuation run on the target immediately: the run

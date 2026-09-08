@@ -2636,3 +2636,148 @@ async fn peer_bound_run_delivers_reply_via_surface() {
         posted[0].1
     );
 }
+
+/// 2026-09-08: the principal is the trust boundary — any session may
+/// attach to any other in the same store (the old subtree guard is
+/// gone). A caller in one peer subtree can resume a sibling peer's
+/// session directly, matching what cron fires could already do via
+/// the trunk.
+#[tokio::test]
+async fn resume_allows_cross_subtree_target() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(&session_manager, &agent_name, "user-a", Some("root-sess"), "spawn")
+        .await;
+    create_linked_session(&session_manager, &agent_name, "user-b", Some("root-sess"), "spawn")
+        .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager,
+        &agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+    // Caller /user-a resumes sibling /user-b — previously refused
+    // with err_out_of_tree.
+    let run_id = executor
+        .resume_and_execute(
+            "cross-subtree turn",
+            path!("user-b"),
+            &sid("user-a"),
+            ExecutionConfig {
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id.starts_with("run_"));
+}
+
+/// 2026-09-08: `new` with an ABSOLUTE path attaches when the session
+/// exists (create-or-resume at the tree root level) and mints at the
+/// top level when it does not.
+#[tokio::test]
+async fn new_with_absolute_path_attaches_or_mints_top_level() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(&session_manager, &agent_name, "user-a", Some("root-sess"), "spawn")
+        .await;
+    create_linked_session(&session_manager, &agent_name, "user-b", Some("root-sess"), "spawn")
+        .await;
+
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        &agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    );
+
+    // Attach: /user-b exists at top level — the call drives a turn
+    // THERE, not under /user-a.
+    let run_id = executor
+        .spawn_and_execute(
+            "turn in user-b",
+            &sid("user-a"),
+            ExecutionConfig {
+                slug: Some("/user-b".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        let terminal = {
+            let guard = registry.read().await;
+            guard
+                .get(&run_id)
+                .map(|e| e.status.is_terminal())
+                .unwrap_or(false)
+        };
+        if terminal {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        run_child_session_id(&registry, &run_id).await.as_deref(),
+        Some(sid("user-b").as_str()),
+        "absolute new must attach to the existing top-level session"
+    );
+
+    // Mint: /fresh-top does not exist — created under the tree root,
+    // NOT under /user-a.
+    let run_id2 = executor
+        .spawn_and_execute(
+            "new top-level session",
+            &sid("user-a"),
+            ExecutionConfig {
+                slug: Some("/fresh-top".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(run_id2.starts_with("run_"));
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let fresh = metas
+        .iter()
+        .find(|m| m.slug.as_deref() == Some("fresh-top"))
+        .expect("fresh-top minted");
+    assert_eq!(
+        fresh.parent_session_id.map(|id| id.to_string()).as_deref(),
+        Some(sid("root-sess").as_str()),
+        "absolute new must mint under the tree root, not the caller"
+    );
+
+    // Multi-segment absolute paths cannot be minted.
+    let err = executor
+        .spawn_and_execute(
+            "bad",
+            &sid("user-a"),
+            ExecutionConfig {
+                slug: Some("/no/such/deep".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("intermediate segments"),
+        "{err}"
+    );
+}

@@ -156,6 +156,47 @@ agent's need. Verified live: `CronTrigger` on a disabled job fired it
 immediately; `CronHistory` read back both the in-band failure
 (active-run guard, session busy) and the successful fire's output.
 
+### Principal-as-trust-boundary sessions + cron origin (2026-09-08)
+
+The session tree is organization, not privilege — any of the
+principal's sessions may address any other, matching what cron fires
+via the trunk could already do:
+
+- **Agent attach/resume is store-wide** — the subtree guard
+  (`err_out_of_tree`) is removed; a peer child can reach a sibling
+  peer's session directly (e.g. user A's session attaching
+  `/user-bob`). Run-integrity guards stay (spawn-trigger, no
+  self/ancestor re-entry, not archived, no active run, depth, cost).
+  The subtree rule survives only for the session tool's destructive
+  ops (delete/move/rename).
+- **Uniform path addressing** — `path` means the same thing for all
+  Agent actions: a relative slug resolves against the caller
+  (`<caller>/<slug>`), an absolute `/a/b` path against the tree root.
+  `new` accepts absolute paths (create-or-resume; multi-segment
+  absolute paths attach-only).
+- **Cross-user `ChannelSend`** — the originating-user gate is
+  removed; any of the principal's conversations may note any user.
+  Cross-user notes carry attribution by default
+  (`📨 [via user:alice]`) so the recipient can tell which
+  conversation initiated them.
+- **Cron jobs record their origin session** — `CronCreate` stamps the
+  creating session on the job; fires use it as the caller context
+  (relative `Agent` paths, task attribution, audit). `message` jobs
+  created from a live peer session now fire INTO that session — a
+  "remind me" from `/user-bob` runs there and the reply posts to
+  bob's DM channel — instead of always landing in the trunk.
+  Legacy/gone-origin jobs fall back to the trunk.
+- **Peer discovery in the prompt** — `{{session_context}}` now lists
+  the principal's peer sessions with their peer subjects and DM
+  channel ids (`PeersSessionContextHandler` on the
+  `SessionContextBuild` hook), so the model can address any peer
+  directly without guessing the `user-<id>` slug convention.
+
+Verified live (MiniMax-M3): the peers section renders in the system
+prompt; a 90-second "drink water" reminder created from the owner's
+conversation fired into `/local-user` (not the trunk) and the reply
+landed in the DM channel; trunk message count unchanged.
+
 ### Peer-ingress conversation mode (2026-09-06)
 
 Peer-ingress turns (`peko send`, Hub webchat, tunnel A2A, channel

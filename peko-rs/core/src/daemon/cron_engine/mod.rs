@@ -599,6 +599,83 @@ impl CronEngine {
             _ => {}
         }
 
+        // 2026-09-08: a `Send` job created from a live non-trunk
+        // session (e.g. `/user-bob`) fires INTO that session — "remind
+        // me" reaches the creating conversation, and the reply posts
+        // to the peer's DM channel (the same projection the peer
+        // ingress driver performs). Trunk-origin and legacy jobs keep
+        // the trunk route.
+        let trunk_key = crate::principal::routers::root::trunk_session_id();
+        let origin = self
+            .resolve_origin_session(&principal, job, &trunk_key)
+            .await;
+        if origin != trunk_key {
+            let resolver = match pm.llm_resolver() {
+                Some(r) => r,
+                None => {
+                    return Ok((
+                        "failed".to_string(),
+                        Some("no LLM resolver bound; cannot drive origin session".to_string()),
+                    ));
+                }
+            };
+            match crate::principal::child_turns::PeerChildTurns::build(
+                &principal,
+                &resolver,
+                Arc::clone(&self.observability),
+                Some(pm.shared_inbox_registry()),
+            )
+            .await
+            {
+                Ok(turns) => {
+                    let sink: crate::agents::subagent_executor::AgenticEventSink =
+                        Arc::new(|_| {});
+                    let outcome = turns
+                        .drive_turn_streaming(&origin, &job.task_description(), sink, None, None)
+                        .await;
+                    return match outcome {
+                        Ok(outcome) => {
+                            // PeerChildTurns' own executor deliberately
+                            // carries no peer surface (the ingress driver
+                            // posts replies itself), so deliver here —
+                            // the same DM projection, once.
+                            if let Some(core) = self.extension_core.upgrade() {
+                                if let Some(port) = core.services().channel_port() {
+                                    let surface = crate::principal::child_turns::PeerTurnSurfaceImpl::new(
+                                        Arc::clone(turns.session_manager()),
+                                        port,
+                                        principal.id.clone(),
+                                    );
+                                    use crate::agents::subagent_executor::PeerTurnSurface as _;
+                                    if let Some((_peer, channel)) =
+                                        surface.peer_surface(&origin).await
+                                    {
+                                        surface
+                                            .post_reply(&channel, &outcome.final_text)
+                                            .await;
+                                    }
+                                }
+                            }
+                            self.idle_detector
+                                .record_activity(&principal.name().await)
+                                .await;
+                            Ok(("success".to_string(), Some(outcome.final_text)))
+                        }
+                        Err(e) => Ok((
+                            "failed".to_string(),
+                            Some(format!("origin-session turn error: {e}")),
+                        )),
+                    };
+                }
+                Err(e) => {
+                    warn!(
+                        job = %job.id,
+                        "cron Send: cannot build origin-session driver ({e:#}); falling back to trunk"
+                    );
+                }
+            }
+        }
+
         match pm
             .receive_trunk(principal.id.clone(), job.task_description(), None)
             .await
@@ -707,6 +784,15 @@ impl CronEngine {
                 ));
             }
         };
+        // 2026-09-08: the job's caller context is its ORIGIN session
+        // (the conversation that created it) when that session is still
+        // live — relative `Agent` paths resolve against it, the run
+        // attributes to it, and the audit trail shows which
+        // conversation owns the job. Falls back to the trunk for legacy
+        // jobs and for origin sessions that have been archived/removed.
+        let caller_session_key = self
+            .resolve_origin_session(&principal, job, &trunk_session_key)
+            .await;
         // Snapshot the principal's grants at fire time, then derive active
         // extensions from that same snapshot. Both values flow through the
         // canonical tool funnel so extension ownership requirements cannot be
@@ -810,7 +896,7 @@ impl CronEngine {
         let config = AsyncToolConfig {
             timeout_secs: timeout,
             wake_on_completion: wake,
-            principal_root_session_key: Some(trunk_session_key.clone()),
+            principal_root_session_key: Some(caller_session_key.clone()),
             label: Some(job.name.clone()),
             ..Default::default()
         };
@@ -831,17 +917,18 @@ impl CronEngine {
             crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
                 tool_name.clone(),
                 tool_params.clone(),
-                trunk_session_key.clone(),
+                caller_session_key.clone(),
             )
             .for_principal(snapshot_principal_id, snapshot_capabilities)
             .with_principal_name(snapshot_principal_name)
             // The spawned tool runs unattributed to any live turn, so
-            // give it the trunk session id as its own session context —
-            // tools that resolve the caller session (Agent's
-            // `resolve_reference`, session/Task attribution) refuse the
-            // funnel's "unknown" default. The trunk id is a v5 UUID,
-            // which `resolve_reference` accepts as a raw id.
-            .with_session_id(trunk_session_key.clone())
+            // give it the job's ORIGIN session id as its own session
+            // context (the trunk for legacy jobs) — tools that resolve
+            // the caller session (Agent's `resolve_reference`,
+            // session/Task attribution) refuse the funnel's "unknown"
+            // default, and relative `Agent` paths follow the creating
+            // conversation.
+            .with_session_id(caller_session_key.clone())
             .with_active_extensions(snapshot_active_extensions);
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
@@ -944,6 +1031,47 @@ impl CronEngine {
             }
         }
         Ok(finalized)
+    }
+
+    /// Resolve a job's caller session for fire time (2026-09-08): the
+    /// ORIGIN session the job was created from, when it still exists
+    /// and is not archived; otherwise the trunk. `None` origin (legacy
+    /// jobs) is the trunk by definition.
+    async fn resolve_origin_session(
+        &self,
+        principal: &Arc<crate::principal::Principal>,
+        job: &CronJob,
+        trunk_session_key: &str,
+    ) -> String {
+        let Some(origin) = job.origin_session.clone() else {
+            return trunk_session_key.to_string();
+        };
+        if origin == trunk_session_key || origin.is_empty() {
+            return trunk_session_key.to_string();
+        }
+        let mut manager =
+            peko_session::manager::SessionManager::new().with_sessions_dir_internal(principal.memory.sessions_dir());
+        match manager.list_all_sessions(false).await {
+            Ok(metas) => {
+                let live = metas
+                    .iter()
+                    .any(|m| m.session_id.to_string() == origin && !m.archived);
+                if live {
+                    origin
+                } else {
+                    warn!(
+                        job = %job.id,
+                        origin_session = %origin,
+                        "cron job's origin session is gone or archived; firing from the trunk"
+                    );
+                    trunk_session_key.to_string()
+                }
+            }
+            Err(e) => {
+                warn!(job = %job.id, "cron origin-session lookup failed ({e}); firing from the trunk");
+                trunk_session_key.to_string()
+            }
+        }
     }
 
     /// Register the `Agent` tool for a principal whose cron SpawnTool
@@ -1318,6 +1446,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -1390,6 +1519,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -1516,6 +1646,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -1698,6 +1829,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -1886,6 +2018,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -2010,6 +2143,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
         // No PrincipalManager in this test: install the scheduler into
@@ -2173,6 +2307,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
 
         // The engine now awaits the tool's outcome, so the stub has
@@ -2301,6 +2436,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -2399,6 +2535,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -2530,6 +2667,7 @@ mod tests {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            origin_session: None,
         };
         scheduler.add_job(&job).unwrap();
 

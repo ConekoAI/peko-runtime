@@ -576,6 +576,107 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
     }
 }
 
+/// Prompt-section handler rendering the principal's peer sessions and
+/// their DM channels into the `{{session_context}}` section
+/// (2026-09-08).
+///
+/// The model can then address any peer directly — `Agent` with
+/// `path="/user-bob"` or `ChannelSend` to the listed channel — instead
+/// of guessing the `user-<id>` slug convention. Registered once on the
+/// daemon-global core (per-principal state is resolved per invoke from
+/// the hook context's workspace + principal id, like the workspace
+/// `{{agents}}` / `{{skills}}` catalog handlers). Renders nothing when
+/// the principal has no peer sessions yet.
+#[derive(Debug)]
+pub(crate) struct PeersSessionContextHandler;
+
+#[async_trait::async_trait]
+impl crate::extensions::framework::core::HookHandler for PeersSessionContextHandler {
+    async fn handle(
+        &self,
+        ctx: crate::extensions::framework::core::HookContext,
+    ) -> crate::extensions::framework::types::HookResult {
+        use crate::extensions::framework::types::{HookOutput, HookResult};
+
+        let tool_ctx = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
+        let (workspace, principal_id) = match tool_ctx {
+            Some(rtc) => (rtc.workspace.clone(), rtc.principal_id.clone()),
+            None => (None, None),
+        };
+        let (Some(workspace), Some(principal_id)) = (workspace, principal_id) else {
+            return HookResult::PassThrough;
+        };
+        if workspace.is_empty() || principal_id.is_empty() {
+            return HookResult::PassThrough;
+        }
+        let Some(name) = std::path::Path::new(&workspace)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+        else {
+            return HookResult::PassThrough;
+        };
+        let sessions_dir = crate::common::paths::PathResolver::new()
+            .principal_layout(&name)
+            .local
+            .root
+            .join("sessions");
+        if !sessions_dir.exists() {
+            return HookResult::PassThrough;
+        }
+        let metas = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir)
+            .list_all_sessions(false)
+            .await
+            .unwrap_or_default();
+        let port = match ctx.services.channel_port() {
+            Some(p) => p,
+            None => return HookResult::PassThrough,
+        };
+        let principal_id = peko_subject::PrincipalId(principal_id);
+
+        let mut lines = String::new();
+        for meta in &metas {
+            if !meta.standing {
+                continue;
+            }
+            let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
+                (Some("user"), Some(id)) => format!("user:{id}"),
+                (Some("principal"), Some(id)) => format!("principal:{id}"),
+                _ => continue,
+            };
+            let Some(slug) = meta.slug.as_deref() else {
+                continue;
+            };
+            let channel = find_peer_dm_channel(&port, &principal_id, &format!("/{slug}"))
+                .await
+                .ok()
+                .flatten()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            lines.push_str(&format!("- `/{slug}` — {peer} — channel {channel}\n"));
+        }
+        if lines.is_empty() {
+            return HookResult::PassThrough;
+        }
+        HookResult::Continue(HookOutput::Text(format!(
+            "peer sessions (address with Agent path or ChannelSend):\n{lines}"
+        )))
+    }
+
+    fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+        crate::extensions::framework::core::HookPoint::SessionContextBuild
+    }
+
+    fn priority(&self) -> i32 {
+        100
+    }
+
+    fn name(&self) -> String {
+        "PeersSessionContextHandler".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -624,6 +624,21 @@ async fn install_principal_tool_bag(
         }
     }
 
+    // Peer discovery (2026-09-08): render the principal's peer sessions
+    // + DM channels into the `{{session_context}}` section so the model
+    // can address any peer directly (Agent path / ChannelSend target)
+    // instead of guessing the `user-<id>` slug convention.
+    if let Err(e) = core
+        .register_hook(
+            HookPoint::SessionContextBuild,
+            Arc::new(crate::principal::child_turns::PeersSessionContextHandler),
+            &ExtensionId::new("principal:peers-context"),
+        )
+        .await
+    {
+        tracing::warn!("peers session-context hook registration failed: {e}");
+    }
+
     // Phase 2 PR 2 (ADR-047 §2.3): MCP servers are workspace-resident.
     // The scanner walks `<workspace>/mcp/<id>/server.json` and
     // registers each with the global McpManager. After that, every

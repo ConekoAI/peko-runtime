@@ -226,12 +226,12 @@ impl ChannelSendTool {
     /// session via the peer-messenger port. Fire-and-forget — users do
     /// not reply synchronously; the note appears in their next turn.
     ///
-    /// Gate (v1): the target must be the user who originated this run
-    /// (derived from `session_id` via the messenger's parentage walk).
-    /// Cross-user sends have no grant model yet and are rejected.
-    ///
-    /// Free-standing over `&dyn PeerMessenger` so unit tests can
-    /// substitute a stub without touching the global registry.
+    /// 2026-09-08: cross-user sends are permitted — the principal is
+    /// the trust boundary, and any of its conversations may address a
+    /// user. The originating peer is still resolved for ATTRIBUTION:
+    /// a cross-user note's default label records which conversation it
+    /// came from (`via user:alice`), so the recipient can tell who
+    /// initiated it. Self-sends keep the plain `agent` label.
     async fn execute_user_target(
         messenger: &dyn crate::principal::messenger::PeerMessenger,
         principal_id: &str,
@@ -254,30 +254,22 @@ impl ChannelSendTool {
             .expect("ChannelSendResult must serialize to JSON")
         };
 
-        let originating = match messenger.originating_peer(principal_id, session_id).await {
-            Ok(o) => o,
-            Err(e) => return user_error(format!("ChannelSend: peer resolution failed: {e}")),
+        let originating = messenger
+            .originating_peer(principal_id, session_id)
+            .await
+            .ok()
+            .flatten();
+        let default_label = match &originating {
+            // Cross-user: attribute the note to the originating
+            // conversation for audit.
+            Some(o) if o != target => format!("via {o}"),
+            _ => "agent".to_string(),
         };
-        match originating {
-            Some(o) if &o == target => {}
-            Some(o) => {
-                return user_error(format!(
-                    "ChannelSend: can only message the user who started this conversation ({o}); \
-                     cross-user sends to {target} are not permitted"
-                ));
-            }
-            None => {
-                return user_error(
-                    "ChannelSend: could not resolve the user who started this conversation"
-                        .to_string(),
-                );
-            }
-        }
 
         let label = label
             .filter(|l| !l.is_empty())
             .or(agent_label.filter(|l| !l.is_empty()))
-            .unwrap_or("agent");
+            .unwrap_or(default_label.as_str());
         let note = format!("📨 [{label}] {message}");
         let caller_label = format!("agent {session_id}");
         match messenger
@@ -985,8 +977,8 @@ impl ChannelSendTool {
     }
 
     /// User branch: fire-and-forget note via the peer-messenger port.
-    /// The originating-user gate (only the user who started this run
-    /// may be addressed) lives inside `execute_user_target`.
+    /// Cross-user sends are permitted (2026-09-08); attribution is
+    /// derived from the originating peer inside `execute_user_target`.
     async fn execute_user_branch(
         &self,
         channel_id: &ProtoChannelId,
@@ -1487,5 +1479,91 @@ mod tests {
 
         let group = ProtoChannelId::parse("group:eng-standup").unwrap();
         assert_eq!(group.kind(), ProtoChannelKind::Group);
+    }
+    // ---- user branch: cross-user sends + attribution (2026-09-08) ----
+
+    #[derive(Default)]
+    struct StubMessenger {
+        origin: Option<Subject>,
+        notes: Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::principal::messenger::PeerMessenger for StubMessenger {
+        async fn deliver_note(
+            &self,
+            _principal_id: &str,
+            target: &Subject,
+            note: &str,
+            _source: MessageSource,
+            _caller_label: Option<&str>,
+        ) -> anyhow::Result<bool> {
+            self.notes
+                .lock()
+                .unwrap()
+                .push((target.to_string(), note.to_string()));
+            Ok(true)
+        }
+
+        async fn originating_peer(
+            &self,
+            _principal_id: &str,
+            _session_id: &str,
+        ) -> anyhow::Result<Option<Subject>> {
+            Ok(self.origin.clone())
+        }
+    }
+
+    /// Cross-user sends are permitted; the note's default label
+    /// records which conversation initiated it.
+    #[tokio::test]
+    async fn cross_user_send_is_attributed_to_originating_conversation() {
+        let messenger = StubMessenger {
+            origin: Some(Subject::User("alice".to_string())),
+            ..Default::default()
+        };
+        let target = Subject::User("bob".to_string());
+        let out = ChannelSendTool::execute_user_target(
+            &messenger,
+            "prin_x",
+            "sess-1",
+            None,
+            None,
+            &target,
+            "hello bob",
+        )
+        .await;
+        assert_eq!(out["success"], true, "{out}");
+        let notes = messenger.notes.lock().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].0, "user:bob");
+        assert!(
+            notes[0].1.contains("[via user:alice]"),
+            "cross-user note must carry origin attribution: {}",
+            notes[0].1
+        );
+    }
+
+    /// Same-user sends keep the plain `agent` label.
+    #[tokio::test]
+    async fn self_user_send_keeps_agent_label() {
+        let messenger = StubMessenger {
+            origin: Some(Subject::User("bob".to_string())),
+            ..Default::default()
+        };
+        let target = Subject::User("bob".to_string());
+        let out = ChannelSendTool::execute_user_target(
+            &messenger,
+            "prin_x",
+            "sess-1",
+            None,
+            None,
+            &target,
+            "hi",
+        )
+        .await;
+        assert_eq!(out["success"], true, "{out}");
+        let notes = messenger.notes.lock().unwrap();
+        assert!(notes[0].1.contains("[agent]"), "note: {}", notes[0].1);
     }
 }

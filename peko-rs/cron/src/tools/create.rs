@@ -304,6 +304,11 @@ impl Tool for CronCreateTool {
             run_count: 0,
             consecutive_failures: 0,
             max_retries: None,
+            // Record the creating session: at fire time the job runs
+            // with it as the caller (relative paths, attribution, and
+            // message-job delivery all follow it). Trunk-context calls
+            // carry the trunk id here, which is the default anyway.
+            origin_session: ctx.session_id.clone(),
         };
         add_job_via_runtime(&runtime, job).await
     }
