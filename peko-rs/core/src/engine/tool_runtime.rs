@@ -20,7 +20,9 @@ use crate::tools::builtin::BashTool;
 use crate::tools::builtin::{ChannelReadTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use anyhow::Result;
 use peko_channel::{ChannelPort, NoopChannelPort};
-use peko_cron::{CronCreateTool, CronDeleteTool, CronListTool, CronUpdateTool};
+use peko_cron::{
+    CronCreateTool, CronDeleteTool, CronHistoryTool, CronListTool, CronTriggerTool, CronUpdateTool,
+};
 use peko_tools_core::Tool;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -204,6 +206,8 @@ impl ToolRuntime {
             Arc::new(CronDeleteTool::new()),
             Arc::new(CronListTool::new()),
             Arc::new(CronUpdateTool::new()),
+            Arc::new(CronTriggerTool::new()),
+            Arc::new(CronHistoryTool::new()),
             // PR-4a — channel reading as a tool. The principal's
             // agentic loop calls this on demand; the daemon-side
             // audit ring buffer (PR-3c) observes every channel event

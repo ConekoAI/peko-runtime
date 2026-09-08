@@ -131,6 +131,31 @@ a recurring `Agent new path="local-user"` job attached to the peer
 child every minute and each in-character reply landed in the user's
 DM channel (`peko log`).
 
+### Agent-manageable cron observability (2026-09-08)
+
+Completes the "agents manage their own cron jobs" story (reviewer
+follow-up to PR #364):
+
+- **`CronTrigger` tool** — fire a job immediately, out of schedule
+  (by id or label). Works on disabled jobs (the debugging path:
+  verify a fresh job's wiring before enabling). Fires route through
+  `CronEngine::execute_job_for_id` — previously `#[cfg(test)]`-gated —
+  so manual fires share the scheduled-fire coalescing rule (a fire
+  against a running job returns the in-flight run id). The daemon's
+  `DaemonCronAdapter` now binds the cron engine for this.
+- **`CronHistory` tool** — read a job's run history (status,
+  timestamps, output, error; most recent first, limit ≤ 50). The data
+  already lived in the schedule file (1000-run cap); this is the
+  agent-facing reader, so "why did my reminder not arrive" is
+  answerable without shelling out to disk. CronList's `last_status`
+  alone couldn't show the error text or trend.
+
+Deliberately out of scope: an audit-event reader tool — audit is the
+operator surface (`peko audit tail`); `CronHistory` covers the
+agent's need. Verified live: `CronTrigger` on a disabled job fired it
+immediately; `CronHistory` read back both the in-band failure
+(active-run guard, session busy) and the successful fire's output.
+
 ### Peer-ingress conversation mode (2026-09-06)
 
 Peer-ingress turns (`peko send`, Hub webchat, tunnel A2A, channel
