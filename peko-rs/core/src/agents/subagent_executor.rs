@@ -701,115 +701,129 @@ impl SubagentExecutor {
         // branch (deleted below); `isolated` was never deserialized
         // from `AgentArgs` and `SessionManager::spawn_session` now
         // always runs in shared-context mode.
-        // Attach-on-collision (agent-session paradigm, Phase 2; widened
-        // 2026-09-07): a `name` (config.slug) that already matches a
-        // SPAWN-CREATED session in the caller's subtree re-attaches to
-        // it via the resume path instead of minting a fresh session —
-        // the call's `task` drives the turn. This covers both standing
-        // (`[children]`-declared) children and plain Agent-spawned
-        // sessions, so recurring static-parameter callers (cron
-        // SpawnTool) work: fire #1 creates, fire #2+ attaches. A `name`
-        // colliding with a session that was NOT created by an Agent
-        // spawn is still a structured refusal (rename semantics live in
-        // the session tool). This runs BEFORE the cost pre-flight and
-        // before anything is minted; `resume_and_execute` re-runs the
-        // full guard stack (cost pre-flight included) for the attach
-        // branch.
-        if let Some(ref slug) = config.slug {
+        // Uniform path addressing (2026-09-08): `path` is a uniform
+        // address. A RELATIVE slug is caller-relative
+        // (`<caller>/<slug>`); an ABSOLUTE `/a/b` path resolves from
+        // the tree root. Create-or-resume: when the addressed
+        // spawn-created session already exists, the call ATTACHES to
+        // it (resume) instead of minting a fresh session — recurring
+        // static-parameter callers (cron SpawnTool) work: fire #1
+        // creates, fire #2+ attaches. A path colliding with a session
+        // NOT created by an Agent spawn is a structured refusal.
+        // This runs BEFORE the cost pre-flight and before anything is
+        // minted; the attach path re-runs the full guard stack.
+        //
+        // `effective_parent_key` / `effective_slug` are what the fresh
+        // spawn below uses: by default the caller and the relative
+        // slug; absolute-new retargets the parent to the tree root.
+        let mut effective_parent_key = parent_session_key.to_string();
+        let mut effective_slug: Option<String> = config.slug.clone();
+        if let Some(ref path) = config.slug {
             use crate::session::ownership::{caller_context, descendants_of};
             let (caller, metas) = {
                 let mut manager = self.session_manager.write().await;
                 let metas = manager.list_all_sessions(false).await?;
                 (caller_context(parent_session_key, &metas), metas)
             };
-            // The caller's subtree = its own session + all descendants.
-            let subtree: std::collections::HashSet<String> =
-                descendants_of(&caller.current_session_id, &metas)
-                    .into_iter()
-                    .chain(std::iter::once(caller.current_session_id.clone()))
-                    .collect();
-            let found = metas.iter().find(|m| {
-                m.slug.as_deref() == Some(slug.as_str())
-                    && subtree.contains(&m.session_id.to_string())
-            });
-            if let Some(found) = found {
-                if found.trigger == "spawn" {
-                    let child_id = found.session_id.to_string();
-                    // Standing children may carry a `[children]`
-                    // declaration; then the requested agent template
-                    // must match it. Unrecoverable declarations (no
-                    // event / unreadable JSONL) skip the check — the
-                    // param is required as usual.
-                    if found.standing {
-                        if let Some(ref requested) = config.agent {
-                            let sessions_dir =
-                                self.session_manager.read().await.sessions_dir().cloned();
-                            if let Some(dir) = sessions_dir {
-                                if let Some(declared) =
-                                    crate::session::standing::declared_subagent_type(
-                                        &dir, &child_id,
-                                    )
-                                    .await
-                                {
-                                    if declared != *requested {
-                                        return Err(
-                                            crate::session::standing::err_declared_type_mismatch(
-                                                slug, &child_id, &declared, requested,
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
+            if path.starts_with('/') {
+                // Absolute address. Attach when it resolves; mint only
+                // single-segment top-level paths (intermediate
+                // segments are not materialized).
+                let caller_id =
+                    peko_session::SessionId::from(caller.current_session_id.as_str());
+                match peko_session::path::resolve_reference(&metas, caller_id, path) {
+                    Ok(resolved) => {
+                        let found = metas
+                            .iter()
+                            .find(|m| m.session_id == resolved)
+                            .cloned()
+                            .expect("resolve_reference returned an id present in metas");
+                        if found.trigger == "spawn" {
+                            return self
+                                .attach_existing_spawn(
+                                    task,
+                                    &found,
+                                    config,
+                                    parent_session_key,
+                                    parent_cancel,
+                                )
+                                .await;
                         }
-                    }
-                    info!(
-                        "Attaching to existing spawned session: slug={} session={} standing={}",
-                        slug, child_id, found.standing
-                    );
-                    return self
-                        .resume_and_execute(
-                            task,
-                            // B2 fix: pass the slug path the model
-                            // would have supplied (`/<slug>`), not the
-                            // raw UUID. `resume_and_execute` resolves
-                            // via `resolve_reference` which refuses raw
-                            // UUIDs (the v5-derive fallback silently
-                            // misrouted pre-fix; see PR review
-                            // finding B2).
-                            &format!("/{slug}"),
-                            parent_session_key,
-                            config,
-                            parent_cancel,
-                        )
-                        .await;
-                }
-                // Non-spawn collision (the session holding the slug was
-                // not created by an Agent spawn — e.g. a user-triggered
-                // session). A DIRECT sibling keeps the Phase 1b
-                // per-parent uniqueness refusal (identical to what the
-                // fresh-spawn pre-flight below would produce); a
-                // non-sibling subtree collision gets the
-                // spawn-specific structured refusal.
-                let found_parent_str = found.parent_session_id.map(|id| id.to_string());
-                // Sprint 6: `parent_session_id` in metadata is the
-                // canonical v5 UUID form of the parent's session id;
-                // canonicalize the input here so the sibling-vs-foreign
-                // branch picks the right error.
-                let parent_key = peko_session::SessionId::from(parent_session_key).to_string();
-                return Err(
-                    if found_parent_str.as_deref() == Some(parent_key.as_str()) {
-                        peko_session::path::err_slug_conflict(
-                            slug,
-                            found.session_id,
-                            Some(peko_session::SessionId::from(parent_key.as_str())),
-                        )
-                    } else {
-                        crate::session::standing::err_name_not_spawned(
-                            slug,
+                        return Err(crate::session::standing::err_name_not_spawned(
+                            path,
                             &found.session_id.as_str(),
-                        )
-                    },
-                );
+                        ));
+                    }
+                    Err(_) => {
+                        let segment = path.trim_start_matches('/');
+                        if segment.is_empty() || segment.contains('/') {
+                            return Err(anyhow::anyhow!(
+                                "action \"new\" with absolute path '{path}': no session exists \
+                                 there and intermediate segments are not materialized — only \
+                                 single-segment top-level paths (e.g. \"/user-bob\") can be \
+                                 created"
+                            ));
+                        }
+                        peko_session::path::validate_slug(segment)?;
+                        // Mint at the top level: the caller's tree root.
+                        effective_parent_key = caller
+                            .ancestors
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| caller.current_session_id.clone());
+                        effective_slug = Some(segment.to_string());
+                    }
+                }
+            } else {
+                // Relative slug: caller-relative (`<caller>/<slug>`).
+                // Collision search in the caller's subtree.
+                let subtree: std::collections::HashSet<String> =
+                    descendants_of(&caller.current_session_id, &metas)
+                        .into_iter()
+                        .chain(std::iter::once(caller.current_session_id.clone()))
+                        .collect();
+                let found = metas.iter().find(|m| {
+                    m.slug.as_deref() == Some(path.as_str())
+                        && subtree.contains(&m.session_id.to_string())
+                });
+                if let Some(found) = found {
+                    if found.trigger == "spawn" {
+                        return self
+                            .attach_existing_spawn(
+                                task,
+                                found,
+                                config,
+                                parent_session_key,
+                                parent_cancel,
+                            )
+                            .await;
+                    }
+                    // Non-spawn collision (the session holding the
+                    // slug was not created by an Agent spawn — e.g. a
+                    // user-triggered session). A DIRECT sibling keeps
+                    // the Phase 1b per-parent uniqueness refusal
+                    // (identical to what the fresh-spawn pre-flight
+                    // below would produce); a non-sibling subtree
+                    // collision gets the spawn-specific structured
+                    // refusal.
+                    let found_parent_str = found.parent_session_id.map(|id| id.to_string());
+                    let parent_key =
+                        peko_session::SessionId::from(parent_session_key).to_string();
+                    return Err(
+                        if found_parent_str.as_deref() == Some(parent_key.as_str()) {
+                            peko_session::path::err_slug_conflict(
+                                path,
+                                found.session_id,
+                                Some(peko_session::SessionId::from(parent_key.as_str())),
+                            )
+                        } else {
+                            crate::session::standing::err_name_not_spawned(
+                                path,
+                                &found.session_id.as_str(),
+                            )
+                        },
+                    );
+                }
             }
         }
 
@@ -848,11 +862,12 @@ impl SubagentExecutor {
                 .list_all_sessions(false)
                 .await?;
             // The new subagent's depth = 1 + depth of its parent.
-            // When `parent_session_key` itself is a spawned subagent,
-            // the helper counts it as 1, so spawning from a depth-N
+            // When the parent itself is a spawned subagent, the
+            // helper counts it as 1, so spawning from a depth-N
             // subagent yields depth N+1 — the test_spawn_depth_limit
-            // invariant.
-            1 + subagent_depth_of(parent_session_key, &metas)
+            // invariant. Absolute `new` retargets the parent to the
+            // tree root, so its children are always depth 1.
+            1 + subagent_depth_of(&effective_parent_key, &metas)
         };
 
         if config.max_depth > 0 && child_depth > config.max_depth {
@@ -871,23 +886,23 @@ impl SubagentExecutor {
             }));
         }
 
-        // Slug pre-flight (Agent tool `name` param): validate the
+        // Slug pre-flight (Agent tool `path` param): validate the
         // format and check per-parent uniqueness BEFORE spawning, so a
         // conflict refuses before any session is created. Siblings are
         // the existing children of the parent session. The production
-        // path passes the caller's session id as `parent_session_key`;
-        // when it doesn't resolve to a metadata entry (legacy session
-        // KEY shapes) the pre-check is skipped and the post-spawn
+        // path passes the caller's session id as the parent; when it
+        // doesn't resolve to a metadata entry (legacy session KEY
+        // shapes) the pre-check is skipped and the post-spawn
         // `set_session_slug` below still enforces the invariant.
-        if let Some(ref slug) = config.slug {
+        if let Some(ref slug) = effective_slug {
             peko_session::path::validate_slug(slug)?;
             let mut manager = self.session_manager.write().await;
             let metas = manager.list_all_sessions(false).await?;
             if metas
                 .iter()
-                .any(|m| m.session_id.to_string() == parent_session_key)
+                .any(|m| m.session_id.to_string() == effective_parent_key)
             {
-                let parent_id = peko_session::SessionId::from(parent_session_key);
+                let parent_id = peko_session::SessionId::from(effective_parent_key.as_str());
                 if let Some(conflict) = peko_session::path::slug_conflict(
                     &metas,
                     Some(parent_id),
@@ -915,7 +930,7 @@ impl SubagentExecutor {
                     &self.agent_name,
                     &peer,
                     task,
-                    parent_session_key,
+                    &effective_parent_key,
                     Some(config.timeout_seconds),
                 )
                 .await
@@ -926,14 +941,14 @@ impl SubagentExecutor {
         let child_session_id = spawn_resolved.context.session_id.clone();
         let child_base = spawn_resolved.handle.base().clone();
 
-        // Stamp the child's slug (Agent tool `name`) onto the same
+        // Stamp the child's slug (Agent tool `path`) onto the same
         // index entry `stamp_spawn_parent_linkage` just patched. The
         // pre-flight above already validated format + uniqueness when
         // the parent resolved; `set_session_slug` re-enforces both
         // (closing the race with a concurrent same-name spawn) and a
         // failure here refuses the spawn — the run is not yet
         // registered, so no LLM traffic has happened.
-        if let Some(ref slug) = config.slug {
+        if let Some(ref slug) = effective_slug {
             self.session_manager
                 .read()
                 .await
@@ -956,6 +971,50 @@ impl SubagentExecutor {
             stream_events: None,
         })
         .await
+    }
+
+    /// Shared attach branch for `new` collision resolution (relative
+    /// and absolute addressing): re-attach the call to the existing
+    /// spawn-created session via the resume path. Standing children
+    /// carrying a `[children]` declaration must match the requested
+    /// agent template; unrecoverable declarations skip the check.
+    /// The resume re-runs the full guard stack (cost pre-flight
+    /// included). Attaches by session id — `resolve_reference` accepts
+    /// the raw UUID form for engine-internal callers.
+    async fn attach_existing_spawn(
+        &self,
+        task: &str,
+        found: &peko_session::SessionMetadata,
+        config: ExecutionConfig,
+        parent_session_key: &str,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        let child_id = found.session_id.to_string();
+        if found.standing {
+            if let Some(ref requested) = config.agent {
+                let sessions_dir = self.session_manager.read().await.sessions_dir().cloned();
+                if let Some(dir) = sessions_dir {
+                    if let Some(declared) =
+                        crate::session::standing::declared_subagent_type(&dir, &child_id).await
+                    {
+                        if declared != *requested {
+                            return Err(crate::session::standing::err_declared_type_mismatch(
+                                found.slug.as_deref().unwrap_or(child_id.as_str()),
+                                &child_id,
+                                &declared,
+                                requested,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        info!(
+            "Attaching to existing spawned session: slug={:?} session={} standing={}",
+            found.slug, child_id, found.standing
+        );
+        self.resume_and_execute(task, &child_id, parent_session_key, config, parent_cancel)
+            .await
     }
 
     /// Re-attach a new task run to an existing spawned session
@@ -1108,9 +1167,8 @@ impl SubagentExecutor {
         kind: AttachKind,
     ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
-            caller_context, err_compact_ancestor, err_compact_archived, err_out_of_tree,
-            err_resume_archived, err_resume_into_own_run, err_resume_not_spawned, err_run_active,
-            in_subtree,
+            caller_context, err_compact_ancestor, err_compact_archived, err_resume_archived,
+            err_resume_into_own_run, err_resume_not_spawned, err_run_active,
         };
 
         // Same spawn-time cost pre-flight as the spawn path — a resume
@@ -1175,15 +1233,14 @@ impl SubagentExecutor {
         if kind == AttachKind::Resume && target_meta.trigger != "spawn" {
             return Err(err_resume_not_spawned(&resume_session_id));
         }
-        // Guard: subtree callers stay inside their subtree (principal-
-        // level callers pass automatically).
-        if !caller.is_base && !caller.privileged && !in_subtree(&caller, &resume_session_id, &metas)
-        {
-            return Err(err_out_of_tree(
-                &resume_session_id,
-                &caller.current_session_id,
-            ));
-        }
+        // 2026-09-08: the subtree guard was removed. The principal is
+        // the trust boundary — the session tree is organization, not
+        // privilege. Any session in the principal's store may attach to
+        // any other (a peer child can reach a sibling peer's session
+        // directly, matching what cron fires could already do via the
+        // trunk). The guards that remain are run-integrity guards:
+        // spawn-trigger, no self/ancestor re-entry, not archived, no
+        // active run, depth, and the cost pre-flight.
         // Guard: archived sessions have no business running.
         if target_meta.archived {
             return Err(match kind {

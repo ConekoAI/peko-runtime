@@ -10,6 +10,15 @@
 //! `SessionManagerRuntime` adapter (session tool) and the
 //! `SubagentExecutor` / `AgentTool` path (Agent tool).
 //!
+//! **2026-09-08 scope note.** The subtree rule now governs only
+//! session MANAGEMENT (the session tool's destructive ops — delete /
+//! move / rename). Agent `attach` / `resume` / `new` is store-wide:
+//! the principal is the trust boundary and the session tree is
+//! organization, not privilege, so any session may drive a turn in any
+//! other (what cron fires via the trunk could already do). The Agent
+//! path keeps only run-integrity guards (spawn-trigger, no
+//! self/ancestor re-entry, not archived, no active run, depth, cost).
+//!
 //! The principal's trunk session (`root:self` — the only `root:*` id
 //! left after Phase 7 retired the per-peer `root:{peer}` /
 //! `root:cron:{peer}` sessions) is **continuous**: the engine owns its

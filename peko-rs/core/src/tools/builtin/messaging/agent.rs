@@ -132,21 +132,26 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"new\" requires 'prompt' and 'agent'"
                 ));
             }
-            // The new session's address is its path; raw ids and
-            // caller-relative slugs are refused at the runtime layer
-            // via `resolve_reference`. The new action's path must be a
-            // SINGLE slug segment — intermediate segments are not
-            // materialized, so a multi-segment path like
-            // `feature-b/task-1` would never be reachable. Validate
-            // the segment shape here so the model gets an actionable
-            // error before the runtime touches state.
+            // `path` is a uniform address (2026-09-08): a RELATIVE
+            // slug segment (no `/`) mints/attaches `<caller>/<slug>`;
+            // an ABSOLUTE `/a/b` path resolves from the tree root and
+            // attaches when the session exists — only single-segment
+            // absolute paths may be minted (intermediate segments are
+            // not materialized). Raw UUIDs are refused either way.
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"new\" requires 'path' — a single slug segment (1-64 chars, \
-                     no '/') naming the new session (no raw UUIDs)"
+                    "action \"new\" requires 'path' — a slug segment (1-64 chars, no '/') for a \
+                     caller-relative session, or an absolute path (\"/user-bob\") for a \
+                     top-level one"
                 ));
             }
-            if let Err(e) = peko_session::path::validate_slug(&args.path) {
+            if args.path.starts_with('/') {
+                if let Err(e) = peko_session::path::validate_path(&args.path) {
+                    return Err(anyhow::anyhow!(
+                        "action \"new\" 'path' is not a valid slug path: {e}"
+                    ));
+                }
+            } else if let Err(e) = peko_session::path::validate_slug(&args.path) {
                 return Err(anyhow::anyhow!(
                     "action \"new\" 'path' is not a valid slug: {e}"
                 ));
@@ -584,8 +589,8 @@ impl Tool for AgentTool {
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Actions:
-- new (default): Spawn a sub-agent run in a new session under your tree. Requires prompt + agent + path. `path` is a SINGLE slug segment (no `/`s) — the new session's address. Raw UUIDs and caller-relative slugs are REFUSED. Create-or-resume: if a spawn-created session in your tree already owns that slug, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session.
-- resume: Re-attach this run to an existing spawned session you own. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + agent.
+- new (default): Spawn a sub-agent run. Requires prompt + agent + path. `path` is a uniform address: a RELATIVE slug segment (no `/`s) mints/attaches a session under YOUR current session (`<you>/<slug>`); an ABSOLUTE path (`/user-bob`) addresses a top-level session from the tree root. Raw UUIDs and caller-relative slugs are REFUSED. Create-or-resume: if the addressed spawn-created session already exists, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session. You may address ANY session in the principal's store (e.g. a peer's `/user-bob`); multi-segment absolute paths can only attach, not mint.
+- resume: Re-attach this run to an existing spawned session. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + agent.
 - compact: Compact the session NOW and continue it with `prompt` in one run — the continuation run summarizes older messages first (phase `standalone_turn`), then processes the prompt against the compacted history. `path` is an absolute slug path (`/a/b/c`). Requires path + prompt + agent. Returns the run's outcome like resume does. Works on any session in your tree (unlike resume, the target need not be a spawned session).
 
 Parameters:
@@ -641,7 +646,7 @@ Examples:
                 },
                 "path": {
                     "type": "string",
-                    "description": "Target session. For `new`: a single slug segment (1-64 chars, no '/') naming the new session's address. For `resume` and `compact`: an absolute slug path ('/a/b/c' from your tree root) from the session tool's list (`path` field). Raw session ids and caller-relative slugs are refused. Required for all actions."
+                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('/a/b/c' from your tree root) from the session tool's list (`path` field). Raw session ids and caller-relative slugs are refused. Required for all actions."
                 },
                 "model": {
                     "type": "string",
