@@ -104,8 +104,13 @@ impl PeerConfig {
 /// [`PrincipalManager`](super::manager::PrincipalManager) for the
 /// slim subset of operations peers need.
 pub struct PeerRegistry {
-    /// `peer_id` → `Arc<Peer>`. The inner `Arc<QuotaMeter>` is what
-    /// call sites stack via `QuotaScope::with`.
+    /// `peer_id` → `Arc<Peer>`. The inner `Arc<QuotaMeter>` is
+    /// persisted and configurable via `peko peer quota {get,set,reset}`
+    /// but is **not** currently inserted into any `QuotaScope::with`
+    /// call site — see B5 (2026-08-22) for the F20 removal. LLM
+    /// usage is charged against the principal's meter only; the
+    /// peer meter exists today as config + persistence surface,
+    /// not as a live charge target.
     peers: RwLock<HashMap<String, Arc<Peer>>>,
 
     /// `<config_dir>/peers/`. Used by [`Self::get_or_create`] to

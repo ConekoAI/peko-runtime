@@ -24,10 +24,21 @@
 //! }).await
 //! ```
 //!
-//! ## Stacking (B5e)
+//! ## Stacking (B5e, post-B5)
 //!
 //! Multiple meters can be active simultaneously by nesting `with`
-//! calls. Each `with` appends to the active stack:
+//! calls. Each `with` appends to the active stack. Production
+//! topology as of 2026-09:
+//!
+//! - **Outer** — the spawning principal's meter. Opened at every
+//!   run entrypoint (`engine/src/agentic_loop.rs:971`,
+//!   `core/src/extensions/mcp/protocol/sampling.rs:158`,
+//!   `session/src/compaction/background.rs:213`). This is the
+//!   **only** meter that can trip.
+//! - **Inner** — `SubagentExecutor::agent_meter`. Opened at the
+//!   subagent wrap (`core/src/agents/subagent_executor.rs:2385-2389`).
+//!   Defaults to `QuotaMeter::unlimited()`; accumulates per-agent
+//!   audit counters but does not enforce.
 //!
 //! ```ignore
 //! QuotaScope::with(principal_meter, async move {
@@ -38,10 +49,12 @@
 //! }).await
 //! ```
 //!
-//! Single-meter callers see a stack of length 1 (the agentic loop
-//! opens exactly one scope per run). The principal's overall
-//! consumption is the sum of every spawned agent's meter; use
-//! `peko_quota::aggregate::sum_meters` to compute it.
+//! Single-meter callers (the engine loop, the MCP sampler, the
+//! compactor) see a stack of length 1. The agentic loop opens
+//! exactly one scope per run. B5 (2026-08-22) removed the F20
+//! peer-meter nesting; `peer_meter` is no longer in any stack —
+//! see `core/src/principal/peer.rs` for the still-configurable
+//! but non-charging peer quota surface.
 //!
 //! [`QuotaScope::current`] returns the innermost meter;
 //! [`QuotaScope::collect_stack`] returns the full vec.
