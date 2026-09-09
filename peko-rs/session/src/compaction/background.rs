@@ -158,9 +158,9 @@ impl BackgroundCompactor {
     /// F19: `meter` is the principal's quota meter. The spawned
     /// worker task opens a [`QuotaScope::with`] around every LLM
     /// call so the summarization call goes through a
-    /// [`MeteredProvider`] and auto-charges. Pass
-    /// [`QuotaMeter::unlimited()`] for unquota'd sessions
-    /// (CLI / tests / legacy one-shots).
+    /// [`StackedMeteredProvider`](peko_engine::StackedMeteredProvider)
+    /// and auto-charges. Pass [`QuotaMeter::unlimited()`] for
+    /// unquota'd sessions (CLI / tests / legacy one-shots).
     ///
     /// B5 (2026-08-22): the F20 `peer_meter` parameter was removed
     /// — peer attribution was broken for agents serving many peers
@@ -196,7 +196,7 @@ impl BackgroundCompactor {
 
                     // Process compaction request — the inner
                     // `Compactor::compact` builds a
-                    // `MeteredProvider` via
+                    // `StackedMeteredProvider` via
                     // `StackedMeteredProvider::from_current_scope`
                     // so the summarization LLM call auto-charges
                     // the principal meter in the active
@@ -492,9 +492,9 @@ async fn process_compaction_request_with_config(
 
     // Perform compaction. The worker task is already inside a
     // `QuotaScope::with` (see `BackgroundCompactor::new`/`with_config`),
-    // so `Compactor::compact` builds its own `MeteredProvider` from
-    // the active task-local inside `generate_summary_with_llm`. The
-    // summarization LLM call then auto-charges.
+    // so `Compactor::compact` builds its own `StackedMeteredProvider`
+    // from the active task-local inside `generate_summary_with_llm`.
+    // The summarization LLM call then auto-charges.
     let mut compactor = Compactor::with_config(config, request.previous_summary.clone());
 
     match compactor

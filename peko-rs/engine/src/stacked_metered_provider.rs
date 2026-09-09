@@ -10,12 +10,12 @@
 //! (`chat_response`, `chat_response_with_system`, `chat`, `chat_with_system`,
 //! `inner`) that root still has.
 //!
-//! Mirrors [`MeteredProvider`](crate::providers::MeteredProvider) but
-//! reads the full nested-scope stack via
+//! Reads the full nested-scope stack via
 //! [`QuotaScope::collect_stack`](peko_quota::QuotaScope::collect_stack)
-//! instead of just the innermost meter. Each LLM call charges every
-//! meter in the stack, innermost first (agent → principal → …) so a
-//! "more specific" meter trip fails fast.
+//! and charges every meter in the stack, innermost first (agent →
+//! principal → …) so a "more specific" meter trip fails fast. A
+//! single-meter scope (length-1 stack) behaves like the legacy
+//! F19 single-dimension wrapper this module replaced.
 //!
 //! ## Use case
 //!
@@ -102,23 +102,6 @@ impl StackedMeteredProvider {
         }
     }
 
-    /// Same, but pass the stack explicitly. Used by tests that don't
-    /// want to wrap the call in `QuotaScope::with`.
-    #[must_use]
-    pub fn with_explicit_stack(inner: Arc<dyn ProviderView>, meters: Vec<Arc<QuotaMeter>>) -> Self {
-        Self { inner, meters }
-    }
-
-    /// Wrap a provider view with no meters (passthrough). Equivalent
-    /// to `with_explicit_stack(inner, vec![])`.
-    #[must_use]
-    pub fn passthrough(inner: Arc<dyn ProviderView>) -> Self {
-        Self {
-            inner,
-            meters: Vec::new(),
-        }
-    }
-
     /// Provider name (delegates to inner).
     #[must_use]
     pub fn name(&self) -> &str {
@@ -193,8 +176,8 @@ impl StackedMeteredProvider {
     /// intercepted: when the wrapper sees one, it charges every meter
     /// in the stack (innermost-first) and emits the event unchanged.
     /// If any meter rejects (exhausted), the error is folded into the
-    /// stream as the next item — same behavior as
-    /// [`MeteredProvider`](crate::providers::MeteredProvider).
+    /// stream as the next item. Single-meter callers see a 1-element
+    /// stack and trip immediately.
     ///
     /// Phase 3 — cost is computed from the inner provider's
     /// `ModelSpec::pricing` (`input_per_million * input / 1e6 +

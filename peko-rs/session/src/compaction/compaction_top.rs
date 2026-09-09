@@ -503,13 +503,13 @@ impl Compactor {
         // text task — pass an empty tools list and a single-message
         // `Vec<LlmMessage>` of the prompt.
         //
-        // F19: build a `MeteredProvider` from the active task-local
-        // scope (the BackgroundCompactor worker opens a `QuotaScope::with`
-        // around this call). The metered wrapper auto-charges after
-        // the call returns. If no scope is active (CLI / tests /
-        // passthrough wrappers), `from_current_scope` returns a
-        // passthrough wrapper with an unlimited meter — same behavior
-        // as F18's no-op charge.
+        // F19: build a `StackedMeteredProvider` from the active
+        // task-local scope (the BackgroundCompactor worker opens a
+        // `QuotaScope::with` around this call). The metered wrapper
+        // auto-charges after the call returns. If no scope is active
+        // (CLI / tests / passthrough wrappers), `from_current_scope`
+        // returns a passthrough wrapper with an unlimited meter —
+        // same behavior as F18's no-op charge.
         //
         // F19/F20 simplification for Phase 7: `Compactor::compact`
         // was previously wrapped in `StackedMeteredProvider` so both

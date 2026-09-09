@@ -423,7 +423,7 @@ audit measured the current tool surface against that need:
 | Live-run flag on `list` | ✅ | `run_active` ORs `InboxRegistry` permits with the `AsyncTaskRegistry` subagent-run check (`session/session_runtime_impl.rs`, Phase 0 sprint fix) |
 | Per-child token usage | ⚠️ partial | per-session `status` only (`UsageStats`, lifetime not windowed); not on `list` |
 | `compact_requested` visibility | ❌ | the flag is write-only from the tool surface; a supervisor cannot tell whether it already flagged a session |
-| Per-child spend / budget view | ❌ | quota is per-principal (+ peer meters); no session/subtree attribution, and no built-in tool reads quota state at all |
+| Per-child spend / budget view | ❌ | quota is per-principal (+ unlimited agent_meter audit counters); no session/subtree attribution, and no built-in tool reads quota state at all |
 | Compact a child without it running | ⚠️ deferred only | `compact` sets a flag consumed at the target's *next run*; no offline/headless compaction exists |
 | Archive a finished subtree | ✅ | with run-permit + subagent-run guards (`session_runtime_impl.rs:376-504`) |
 | Wake on child completion | ✅ | subagent announcements to parent inbox; cron `wake_on_completion` |

@@ -7,27 +7,38 @@
 //!
 //! F19 replaces the per-struct plumbing with a single task-local:
 //! callers open a [`QuotaScope::with`] at the run entrypoint, and
-//! every [`MeteredProvider`](crate::providers::MeteredProvider) created
-//! inside that scope automatically charges the right meter. New
-//! LLM-call sites (MCP sampling, future RAG, future agent-to-agent
-//! bridges) get attribution for free as long as the spawning code
-//! opens a scope.
+//! every [`StackedMeteredProvider`](peko_engine::StackedMeteredProvider)
+//! created inside that scope automatically charges the right meter
+//! (or every meter in the active stack — F20). New LLM-call sites
+//! (MCP sampling, future RAG, future agent-to-agent bridges) get
+//! attribution for free as long as the spawning code opens a scope.
 //!
 //! ## Usage
 //!
 //! ```ignore
 //! // Run entrypoint
 //! QuotaScope::with(meter, async move {
-//!     let provider = resolver.build(...).await?;
-//!     let metered = MeteredProvider::from_current_scope(provider);
+//!     let provider = resolver.build_view(...).await?;
+//!     let metered = StackedMeteredProvider::from_current_scope(provider);
 //!     metered.chat_with_tools(...).await  // auto-charges `meter`
 //! }).await
 //! ```
 //!
-//! ## Stacking (B5e)
+//! ## Stacking (B5e, post-B5)
 //!
 //! Multiple meters can be active simultaneously by nesting `with`
-//! calls. Each `with` appends to the active stack:
+//! calls. Each `with` appends to the active stack. Production
+//! topology as of 2026-09:
+//!
+//! - **Outer** — the spawning principal's meter. Opened at every
+//!   run entrypoint (`engine/src/agentic_loop.rs:971`,
+//!   `core/src/extensions/mcp/protocol/sampling.rs:158`,
+//!   `session/src/compaction/background.rs:213`). This is the
+//!   **only** meter that can trip.
+//! - **Inner** — `SubagentExecutor::agent_meter`. Opened at the
+//!   subagent wrap (`core/src/agents/subagent_executor.rs:2385-2389`).
+//!   Defaults to `QuotaMeter::unlimited()`; accumulates per-agent
+//!   audit counters but does not enforce.
 //!
 //! ```ignore
 //! QuotaScope::with(principal_meter, async move {
@@ -38,10 +49,12 @@
 //! }).await
 //! ```
 //!
-//! Single-meter callers see a stack of length 1 (the agentic loop
-//! opens exactly one scope per run). The principal's overall
-//! consumption is the sum of every spawned agent's meter; use
-//! `peko_quota::aggregate::sum_meters` to compute it.
+//! Single-meter callers (the engine loop, the MCP sampler, the
+//! compactor) see a stack of length 1. The agentic loop opens
+//! exactly one scope per run. B5 (2026-08-22) removed the F20
+//! peer-meter nesting; `peer_meter` is no longer in any stack —
+//! see `core/src/principal/peer.rs` for the still-configurable
+//! but non-charging peer quota surface.
 //!
 //! [`QuotaScope::current`] returns the innermost meter;
 //! [`QuotaScope::collect_stack`] returns the full vec.
@@ -69,18 +82,18 @@ tokio::task_local! {
     /// inherited principal scope (B5e) see a stack of length 2.
     ///
     /// Read by:
-    /// - [`MeteredProvider::from_current_scope`](crate::providers::MeteredProvider::from_current_scope)
-    ///   — reads the innermost meter (single-dimension callers).
-    /// - [`StackedMeteredProvider::from_current_scope`](crate::providers::StackedMeteredProvider::from_current_scope)
+    /// - [`StackedMeteredProvider::from_current_scope`](peko_engine::StackedMeteredProvider::from_current_scope)
     ///   — reads the full stack via [`QuotaScope::collect_stack`].
+    ///   Single-dimension callers see a stack of length 1 and
+    ///   charge the only meter in it.
     pub(crate) static QUOTA_METER_STACK: Vec<Arc<QuotaMeter>>;
 }
 
 /// Run a future with a quota meter bound as the current task-local.
 ///
-/// Every [`MeteredProvider`](crate::providers::MeteredProvider) built
-/// inside the await tree of `fut` will charge `meter` for its LLM
-/// usage. No caller inside the scope has to remember to do anything
+/// Every [`StackedMeteredProvider`](peko_engine::StackedMeteredProvider)
+/// built inside the await tree of `fut` will charge `meter` for its
+/// LLM usage. No caller inside the scope has to remember to do anything
 /// — that's the whole point.
 ///
 /// # Nesting (B5e)
@@ -118,8 +131,9 @@ impl QuotaScope {
     /// Read the innermost task-local meter, if any. Returns `None` if
     /// no [`QuotaScope::with`] is active in this task tree.
     ///
-    /// Used by [`MeteredProvider::from_current_scope`](crate::providers::MeteredProvider::from_current_scope).
-    /// For stacked callers (F20), use [`Self::collect_stack`] instead.
+    /// For stacked callers (F20), prefer [`Self::collect_stack`]
+    /// over this — `StackedMeteredProvider::from_current_scope` uses
+    /// the full stack to charge every meter on every LLM call.
     #[must_use]
     pub fn current() -> Option<Arc<QuotaMeter>> {
         QUOTA_METER_STACK
@@ -132,7 +146,7 @@ impl QuotaScope {
     /// last). Returns an empty vec if no [`QuotaScope::with`] is
     /// active.
     ///
-    /// Used by [`StackedMeteredProvider::from_current_scope`](crate::providers::StackedMeteredProvider::from_current_scope)
+    /// Used by [`StackedMeteredProvider::from_current_scope`](peko_engine::StackedMeteredProvider::from_current_scope)
     /// to charge every meter in the stack on every LLM call.
     #[must_use]
     pub fn collect_stack() -> Vec<Arc<QuotaMeter>> {

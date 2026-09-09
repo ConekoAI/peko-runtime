@@ -2038,8 +2038,8 @@ async fn execute_subagent_task(
     // spawned `tokio::task` does NOT inherit the parent's
     // `QuotaScope::with` task-local, so we re-open the scope here
     // before calling `subagent.execute_with_session(...)` so the
-    // subagent's `MeteredProvider::from_current_scope` charges the
-    // parent principal. `None` falls open to
+    // subagent's `StackedMeteredProvider::from_current_scope` charges
+    // the parent principal. `None` falls open to
     // `QuotaMeter::unlimited()` (matches F19/F20 behavior).
     parent_quota_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
     // B5e: the executor's per-agent `QuotaMeter` (audit-only by
@@ -2320,7 +2320,7 @@ async fn execute_subagent_task(
     };
 
     // F39: subagent runs inside `QuotaScope::with(parent_quota_meter, ...)`
-    // so the spawned `tokio::task`'s `MeteredProvider::from_current_scope`
+    // so the spawned `tokio::task`'s `StackedMeteredProvider::from_current_scope`
     // charges against the parent principal's meter instead of falling
     // open to `unlimited()`. F19 removed this plumbing because the
     // original F19 design assumed the parent's `QuotaScope::with`
@@ -2673,9 +2673,9 @@ mod tests {
     /// `subagent.execute_with_session(...)`, and the subagent's
     /// `StackedMeteredProvider::from_current_scope` then charges
     /// that meter on every LLM call. Without the F39 wrap, the
-    /// subagent's `MeteredProvider::from_current_scope` would see
-    /// no active scope and fall open to `unlimited()` (F19 pre-fix
-    /// behavior) — the request_count would stay at 0.
+    /// subagent's `StackedMeteredProvider::from_current_scope` would
+    /// see no active scope and fall open to `unlimited()` (F19
+    /// pre-fix behavior) — the request_count would stay at 0.
     #[tokio::test]
     async fn subagent_quota_charges_parent_meter() {
         let (provider, meter) = make_provider_and_meter(10).await;
