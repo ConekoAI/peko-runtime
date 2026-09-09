@@ -1472,8 +1472,8 @@ impl Agent {
     ///
     /// F19: optional `quota_meter` is the principal's quota meter
     /// from `Principal::quota_meter`. When supplied, every LLM call
-    /// auto-charges via `MeteredProvider`; when omitted, defaults to
-    /// an unlimited meter (test / CLI paths).
+    /// auto-charges via `StackedMeteredProvider`; when omitted, defaults
+    /// to an unlimited meter (test / CLI paths).
     ///
     /// B5 (2026-08-22): the F20 `peer_meter` parameter was removed —
     /// peer attribution was broken for agents serving many peers
@@ -1636,7 +1636,7 @@ impl Agent {
     ///
     /// F19: `quota_meter` is the principal's quota meter. The loop
     /// opens a `QuotaScope::with` around the run so every LLM call
-    /// auto-charges via `MeteredProvider`. Pass
+    /// auto-charges via `StackedMeteredProvider`. Pass
     /// `Arc::new(QuotaMeter::unlimited())` for unquota'd / test paths.
     ///
     /// B5 (2026-08-22): the F20 `peer_meter` parameter was removed —
@@ -1861,8 +1861,8 @@ impl Agent {
         //
         // F19: `quota_meter` is bound here from the principal the
         // agent belongs to. The loop opens a `QuotaScope::with` at
-        // run entrypoint and `MeteredProvider` auto-charges every
-        // LLM call against this meter.
+        // run entrypoint and `StackedMeteredProvider` auto-charges
+        // every LLM call against this meter.
         //
         // Phase 9b.N.5b.9c: supply the compactor factory (captures
         // the provider view + rebuilds a fresh `BackgroundCompactor`

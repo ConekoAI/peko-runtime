@@ -111,9 +111,9 @@ pub struct AgenticLoop {
     /// F19: per-principal token quota meter. The loop opens a
     /// `QuotaScope::with` around `run_inner` so every LLM call routed
     /// through this loop (or its compactor worker) auto-charges via
-    /// `MeteredProvider`. For unquota'd principals (or test fixtures
-    /// that don't bind a meter) this is an unlimited meter — every
-    /// charge succeeds without persistence.
+    /// `StackedMeteredProvider`. For unquota'd principals (or test
+    /// fixtures that don't bind a meter) this is an unlimited meter —
+    /// every charge succeeds without persistence.
     quota_meter: Arc<peko_quota::QuotaMeter>,
     /// F31b: per-iteration streaming retry budget. Mirrors codex
     /// `run_sampling_request`'s `stream_max_retries` (turn.rs:1123-1218).
@@ -375,7 +375,7 @@ impl AgenticLoop {
 
     /// F19: bind a per-principal quota meter. The loop opens a
     /// `QuotaScope::with` around `run_inner` so every LLM call
-    /// routed through this loop auto-charges via `MeteredProvider`.
+    /// routed through this loop auto-charges via `StackedMeteredProvider`.
     /// For unquota'd principals (or test fixtures that don't bind
     /// a meter), the unlimited default returned by `new` is
     /// sufficient and this method can be skipped.
@@ -940,7 +940,7 @@ impl AgenticLoop {
         streaming_config: OrchestratorConfig,
     ) -> Result<AgenticResult> {
         // F19: open a `QuotaScope::with` so every LLM call inside this
-        // run auto-charges `self.quota_meter` via `MeteredProvider`.
+        // run auto-charges `self.quota_meter` via `StackedMeteredProvider`.
         //
         // B5 (2026-08-22): the F20 peer-meter nesting was removed —
         // peer attribution was broken for agents serving many peers
@@ -993,7 +993,7 @@ impl AgenticLoop {
     /// F20: parameter type changed from `MeteredProvider` to
     /// `StackedMeteredProvider`. The two types expose the same
     /// surface (`.name()`, `.model_id()`, `.supports_native_tools()`,
-    /// `.inner()`, `.chat_with_tools()`, `.stream_with_tools()`);
+    /// `.chat_with_tools()`, `.stream_with_tools()`);
     /// `StackedMeteredProvider` with a 1-element stack behaves
     /// identically to `MeteredProvider`.
     async fn run_inner_with_meter(
@@ -1309,7 +1309,7 @@ impl AgenticLoop {
             // parity with what the provider actually billed.
             //
             // F19: the summarization call is auto-charged by
-            // `MeteredProvider` inside the BackgroundCompactor's
+            // `StackedMeteredProvider` inside the BackgroundCompactor's
             // worker task (which opens its own `QuotaScope::with`
             // around the LLM call). No manual charge here.
             if let Some(compaction_usage) = compaction_driver.last_compaction_usage() {
@@ -1466,10 +1466,10 @@ impl AgenticLoop {
 
             // F19: pre-LLM quota check. The pre-check used to be done
             // manually via `quota_meter.check()` after `advance_if_needed`.
-            // With `MeteredProvider` handling per-call charges, the only
-            // job left here is the *pre-flight* check — refuse to even
-            // start a call when the principal is already over a limit.
-            // (The wrapper charges after the call completes; the
+            // With `StackedMeteredProvider` handling per-call charges,
+            // the only job left here is the *pre-flight* check — refuse
+            // to even start a call when the principal is already over a
+            // limit. (The wrapper charges after the call completes; the
             // pre-flight check aborts mid-flight if the persisted state
             // already shows exhaustion.) For unquota'd principals the
             // meter is `unlimited()` and this is a no-op.
@@ -1500,7 +1500,7 @@ impl AgenticLoop {
             // For providers that don't support native streaming, we synthesize a stream
             // from the blocking response so the rest of the loop stays uniform.
             //
-            // F19: the provider here is a `MeteredProvider`. Its
+            // F19: the provider here is a `StackedMeteredProvider`. Its
             // `stream_with_tools` charges on each `StreamEvent::Usage`
             // event; `chat_with_tools` charges once after the call.
             // Charge failures surface as `Err` stream items / call
@@ -1867,9 +1867,9 @@ impl AgenticLoop {
             total_usage.total += iteration_usage.total;
 
             // F19: per-iteration usage is already charged by
-            // `MeteredProvider` — either inline (streaming: on the
-            // `Usage` event) or once at the end of the blocking call.
-            // No manual charge here.
+            // `StackedMeteredProvider` — either inline (streaming: on
+            // the `Usage` event) or once at the end of the blocking
+            // call. No manual charge here.
 
             // Handle tool calls
             if !tool_calls.is_empty() {

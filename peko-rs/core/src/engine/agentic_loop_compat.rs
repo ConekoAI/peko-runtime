@@ -24,6 +24,7 @@ mod tests {
     use peko_message::{ContentBlock, LlmMessage, MessageRole};
     use peko_provider_api::StopReason;
     use peko_providers::{AnyAdapter, MockAdapter, Provider};
+    use peko_engine::StackedMeteredProvider;
     use peko_quota::QuotaScope;
     use peko_session::manager::SessionManager;
     use peko_session::Session;
@@ -1905,8 +1906,6 @@ mod tests {
     // opens a single `QuotaScope::with(meter, ...)` and charges only
     // the supplied principal meter. The integration tests below pin
     // down that the underlying `StackedMeteredProvider` primitive
-    // (still used inside `MeteredProvider::from_current_scope` for
-    // outer-scope propagation when subagents open their own scope)
     // charges every meter in the active task-local stack — the
     // primitive is correct; the loop just feeds it one meter now.
     // -----------------------------------------------------------------
@@ -1991,7 +1990,7 @@ mod tests {
         let catalog = tmp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog).await;
         let (provider, _choice) = resolver
-            .build(peko_providers::resolver::ResolveRequest {
+            .build_view(peko_providers::resolver::ResolveRequest {
                 override_model: Some("mock"),
                 ..Default::default()
             })
@@ -1999,7 +1998,7 @@ mod tests {
             .unwrap();
 
         QuotaScope::with(principal.clone(), async {
-            let metered = peko_providers::MeteredProvider::from_current_scope(provider);
+            let metered = StackedMeteredProvider::from_current_scope(provider);
             let _ = metered
                 .chat_with_tools(
                     "default",

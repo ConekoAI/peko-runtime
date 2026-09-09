@@ -202,55 +202,8 @@ impl QuotaMeter {
     /// one, advances the window if needed, and returns the first
     /// limit crossed (if any). On success, persists to disk.
     pub async fn charge(&self, usage: &TokenUsage) -> Result<(), QuotaError> {
-        // 1. Advance the window under the lock.
-        {
-            let mut state = self.state.lock().expect("quota state mutex poisoned");
-            let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
-            let drift = state.cycle != config_cycle;
-            let now = Utc::now();
-            if drift || now >= state.window_end {
-                let (start, end) = config_cycle.window_bounds(now);
-                state.window_start = start;
-                state.window_end = end;
-                state.cycle = config_cycle;
-                state.input_tokens = 0;
-                state.output_tokens = 0;
-                state.request_count = 0;
-                // Phase 3 — reset cycle budget counter on roll.
-                state.cost_usd = Some(0.0);
-            }
-            // 2. Fold usage via the shared accumulate helper so
-            //    cache and reasoning sub-fields flow into the same
-            //    input/output buckets the quota tracks.
-            state.input_tokens = state.input_tokens.saturating_add(usage.input);
-            state.output_tokens = state.output_tokens.saturating_add(usage.output);
-            state.request_count = state.request_count.saturating_add(1);
-        }
-        // 3. Check under the lock (re-acquire to satisfy borrowck).
-        let exceeded = {
-            let state = self.state.lock().expect("quota state mutex poisoned");
-            let config = self.config.lock().expect("quota config poisoned");
-            Self::check_inner(&config, &state)
-        };
-        if let Some(err) = exceeded {
-            // Don't persist a state that crossed a limit — the
-            // operator's view is "quota tripped", not "counters
-            // kept climbing past the wall".
-            return Err(err);
-        }
-        // 4. Persist on success. Clone the state under the lock, drop
-        //    the guard, then await the save — holding the mutex
-        //    across an await point would make this non-Send.
-        if let Some(path) = self.state_path.clone() {
-            let snapshot = self
-                .state
-                .lock()
-                .expect("quota state mutex poisoned")
-                .clone();
-            if let Err(e) = snapshot.save(&path).await {
-                tracing::warn!("failed to persist quota state to {}: {}", path.display(), e);
-            }
-        }
+        self.charge_inner(usage, None)?;
+        self.persist_state().await;
         Ok(())
     }
 
@@ -325,7 +278,7 @@ impl QuotaMeter {
     }
 
     /// F19: sync version of [`Self::charge`]. Used by the streaming
-    /// metering path (`MeteredProvider::stream_with_tools` intercepts
+    /// metering path (the metered provider intercepts
     /// `StreamEvent::Usage` events inside the stream `map` closure,
     /// which is sync). Skips persistence — the next blocking
     /// `charge` (e.g. the following iteration's LLM call) writes
@@ -335,30 +288,7 @@ impl QuotaMeter {
     /// Folds usage, advances the window, increments `request_count`,
     /// and returns the first limit crossed (if any). **No I/O.**
     pub fn try_charge(&self, usage: &TokenUsage) -> Result<(), QuotaError> {
-        let mut state = self.state.lock().expect("quota state mutex poisoned");
-        let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
-        let drift = state.cycle != config_cycle;
-        let now = Utc::now();
-        if drift || now >= state.window_end {
-            let (start, end) = config_cycle.window_bounds(now);
-            state.window_start = start;
-            state.window_end = end;
-            state.cycle = config_cycle;
-            state.input_tokens = 0;
-            state.output_tokens = 0;
-            state.request_count = 0;
-            // Phase 3 — reset cycle budget counter on roll.
-            state.cost_usd = Some(0.0);
-        }
-        state.input_tokens = state.input_tokens.saturating_add(usage.input);
-        state.output_tokens = state.output_tokens.saturating_add(usage.output);
-        state.request_count = state.request_count.saturating_add(1);
-        let config = self.config.lock().expect("quota config poisoned");
-        if let Some(err) = Self::check_inner(&config, &state) {
-            Err(err)
-        } else {
-            Ok(())
-        }
+        self.charge_inner(usage, None)
     }
 
     /// Phase 3 of `feature/multi-model-subagents`: streaming
@@ -377,6 +307,37 @@ impl QuotaMeter {
         usage: &TokenUsage,
         cost_usd: f64,
     ) -> Result<(), QuotaError> {
+        self.charge_inner(usage, Some(cost_usd))
+    }
+
+    /// Blocking variant of [`try_charge_with_cost`](Self::try_charge_with_cost)
+    /// for the `StackedMeteredProvider::chat_with_tools` path
+    /// (the streaming variant mirrors it). Persists to disk on
+    /// success — same contract as [`charge`](Self::charge).
+    pub async fn charge_with_cost(
+        &self,
+        usage: &TokenUsage,
+        cost_usd: f64,
+    ) -> Result<(), QuotaError> {
+        self.charge_inner(usage, Some(cost_usd))?;
+        self.persist_state().await;
+        Ok(())
+    }
+
+    /// Shared advance + fold + check skeleton used by all four
+    /// public charge methods. Sync by design — the async wrappers
+    /// call `persist_state()` separately after this returns `Ok`,
+    /// so the lock is never held across an `await` point. Cost
+    /// folding is opt-in via `cost_usd: Some(_)`; the no-cost
+    /// variants simply leave `cost_usd` untouched.
+    ///
+    /// Returns the first limit crossed (if any). On success, the
+    /// caller is responsible for any persistence step.
+    fn charge_inner(
+        &self,
+        usage: &TokenUsage,
+        cost_usd: Option<f64>,
+    ) -> Result<(), QuotaError> {
         let mut state = self.state.lock().expect("quota state mutex poisoned");
         let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
         let drift = state.cycle != config_cycle;
@@ -389,60 +350,28 @@ impl QuotaMeter {
             state.input_tokens = 0;
             state.output_tokens = 0;
             state.request_count = 0;
+            // Phase 3 — reset cycle budget counter on roll.
             state.cost_usd = Some(0.0);
         }
         state.input_tokens = state.input_tokens.saturating_add(usage.input);
         state.output_tokens = state.output_tokens.saturating_add(usage.output);
         state.request_count = state.request_count.saturating_add(1);
-        state.cost_usd = Some(state.cost_usd.unwrap_or(0.0) + cost_usd);
+        if let Some(c) = cost_usd {
+            state.cost_usd = Some(state.cost_usd.unwrap_or(0.0) + c);
+        }
         let config = self.config.lock().expect("quota config poisoned");
-        if let Some(err) = Self::check_inner(&config, &state) {
-            Err(err)
-        } else {
-            Ok(())
+        match Self::check_inner(&config, &state) {
+            Some(err) => Err(err),
+            None => Ok(()),
         }
     }
 
-    /// Blocking variant of [`try_charge_with_cost`](Self::try_charge_with_cost)
-    /// for the `StackedMeteredProvider::chat_with_tools` path
-    /// (the streaming variant mirrors it). Persists to disk on
-    /// success — same contract as [`charge`](Self::charge).
-    pub async fn charge_with_cost(
-        &self,
-        usage: &TokenUsage,
-        cost_usd: f64,
-    ) -> Result<(), QuotaError> {
-        // Advance + fold (mirrors `charge`).
-        {
-            let mut state = self.state.lock().expect("quota state mutex poisoned");
-            let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
-            let drift = state.cycle != config_cycle;
-            let now = Utc::now();
-            if drift || now >= state.window_end {
-                let (start, end) = config_cycle.window_bounds(now);
-                state.window_start = start;
-                state.window_end = end;
-                state.cycle = config_cycle;
-                state.input_tokens = 0;
-                state.output_tokens = 0;
-                state.request_count = 0;
-                state.cost_usd = Some(0.0);
-            }
-            state.input_tokens = state.input_tokens.saturating_add(usage.input);
-            state.output_tokens = state.output_tokens.saturating_add(usage.output);
-            state.request_count = state.request_count.saturating_add(1);
-            state.cost_usd = Some(state.cost_usd.unwrap_or(0.0) + cost_usd);
-        }
-        // Re-check under the lock.
-        let exceeded = {
-            let state = self.state.lock().expect("quota state mutex poisoned");
-            let config = self.config.lock().expect("quota config poisoned");
-            Self::check_inner(&config, &state)
-        };
-        if let Some(err) = exceeded {
-            return Err(err);
-        }
-        // Persist on success — same path as `charge`.
+    /// Persist the current `QuotaState` to disk, if a state path
+    /// was configured. Called only from async charge methods after
+    /// `charge_inner` returns `Ok` — the contract mirrors the
+    /// pre-refactor behavior where the lock was dropped before
+    /// the `await` point to keep the future `Send`.
+    async fn persist_state(&self) {
         if let Some(path) = self.state_path.clone() {
             let snapshot = self
                 .state
@@ -453,7 +382,6 @@ impl QuotaMeter {
                 tracing::warn!("failed to persist quota state to {}: {}", path.display(), e);
             }
         }
-        Ok(())
     }
 }
 

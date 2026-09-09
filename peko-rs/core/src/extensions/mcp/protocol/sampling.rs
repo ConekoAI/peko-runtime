@@ -7,11 +7,15 @@
 //!
 //! F19: `SamplingRequestHandler` carries the principal's quota meter
 //! (captured at server-start time) and opens a `QuotaScope::with`
-//! around the LLM call so a `MeteredProvider` constructed inside
-//! auto-charges the right principal. Daemon-level auto-start passes
-//! an unlimited meter (no principal); tool-call-driven auto-start
+//! around the LLM call so a `StackedMeteredProvider` constructed
+//! inside auto-charges the right principal. Daemon-level auto-start
+//! passes an unlimited meter (no principal); tool-call-driven auto-start
 //! captures the principal from `ToolContext::principal_id` and passes
 //! the matching `Arc<QuotaMeter>`.
+//!
+//! 2026-09 cleanup: migrated from `MeteredProvider` to
+//! `StackedMeteredProvider` so cost folding into `budget_per_cycle`
+//! is restored for MCP sampling (the legacy wrapper did not fold cost).
 
 use crate::extensions::mcp::protocol::{
     client::ServerRequestHandler,
@@ -22,10 +26,10 @@ use crate::extensions::mcp::protocol::{
 };
 use async_trait::async_trait;
 use base64::Engine;
+use peko_engine::StackedMeteredProvider;
 use peko_message::{extract_dimensions_from_base64, ContentBlock, ImageSource, MessageRole};
 use peko_provider_api::{ChatOptions, StopReason, ToolDefinition};
 use peko_providers::resolver::{LlmResolver, ResolveRequest};
-use peko_providers::MeteredProvider;
 use peko_quota::{QuotaMeter, QuotaScope};
 use std::sync::Arc;
 use tracing::debug;
@@ -133,7 +137,7 @@ impl ServerRequestHandler for SamplingRequestHandler {
         let agent_model = models[0].id.clone();
         let (provider, choice) = self
             .resolver
-            .build(ResolveRequest {
+            .build_view(ResolveRequest {
                 agent_model: Some(&agent_model),
                 ..Default::default()
             })
@@ -145,8 +149,8 @@ impl ServerRequestHandler for SamplingRequestHandler {
             })?;
         let model_id = choice.model_id.clone();
 
-        // F19: open `QuotaScope::with` so the `MeteredProvider` built
-        // below auto-charges this server's principal. We move the
+        // F19: open `QuotaScope::with` so the `StackedMeteredProvider`
+        // built below auto-charges this server's principal. We move the
         // provider into the closure (consumed) and rebuild it as
         // metered; the unwrapped response is what we return.
         let meter = Arc::clone(&self.meter);
@@ -156,7 +160,7 @@ impl ServerRequestHandler for SamplingRequestHandler {
         };
 
         let response_result = QuotaScope::with(meter, async move {
-            let metered = MeteredProvider::from_current_scope(provider);
+            let metered = StackedMeteredProvider::from_current_scope(provider);
             metered
                 .chat_with_tools(&model_id, &messages, &tools, &options)
                 .await
@@ -315,8 +319,8 @@ mod tests {
     /// F19: a `SamplingRequestHandler` built with a real
     /// (non-unlimited) `QuotaMeter` must charge that meter on every
     /// sampling request — the quota scope is opened inside
-    /// `handle_request`, so a `MeteredProvider` constructed there auto-
-    /// charges the right meter.
+    /// `handle_request`, so a `StackedMeteredProvider` constructed
+    /// there auto-charges the right meter.
     #[tokio::test]
     async fn test_sampling_handler_charges_principal_meter() {
         let adapter = peko_providers::MockAdapter::new();

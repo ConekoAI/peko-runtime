@@ -3,7 +3,7 @@ name = "peko-providers"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@peko.ai>"]
-description = "Concrete LLM provider implementations (Phase 6). Owns the unified Provider core, HTTP transport, per-adapter request builders (OpenAI Chat Completions / OpenAI Responses / Anthropic Messages / OpenAI-compatible), the model catalog, templates, mock adapter, metered wrapper, validator, and the LlmResolver + rotation state. Replaces root `src/providers/`."
+description = "Concrete LLM provider implementations (Phase 6). Owns the unified Provider core, HTTP transport, per-adapter request builders (OpenAI Chat Completions / OpenAI Responses / Anthropic Messages / OpenAI-compatible), the model catalog, templates, mock adapter, validator, and the LlmResolver + rotation state. Providers are wrapped by `peko_engine::StackedMeteredProvider` at call sites — that wrapper lives in `peko-engine`, not here. Replaces root `src/providers/`."
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
@@ -18,8 +18,8 @@ peko-provider-api = { path = "../provider-api" }
 # provider request/response pipelines (LlmMessage, ContentBlock, TokenUsage).
 peko-message = { path = "../message" }
 
-# Workspace member — quota meter the `MeteredProvider` wrapper charges
-# through the current `QuotaScope::current()`.
+# Workspace member — quota meter the `StackedMeteredProvider` wrapper
+# (in `peko-engine`) charges via the active `QuotaScope` stack.
 peko-quota = { path = "../quota" }
 
 # Workspace member — agentic events the unified `Provider` emits

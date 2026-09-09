@@ -1,7 +1,7 @@
 //! `Peer` and `PeerRegistry` — per-peer quota attribution (F20).
 //!
 //! F19 wired per-principal quota metering via `QuotaScope` (task-local)
-//! + `MeteredProvider` (auto-charging wrapper). F20 adds a second
+//! + `StackedMeteredProvider` (auto-charging wrapper). F20 adds a second
 //! dimension: per-peer metering. A `peer_id` identifies the channel
 //! that triggered an LLM call (pekohub user sub, API key id, "local",
 //! or an arbitrary peer-shaped string).

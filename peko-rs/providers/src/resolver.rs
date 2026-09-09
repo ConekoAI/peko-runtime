@@ -30,6 +30,7 @@ use std::sync::Arc;
 use crate::catalog::{ModelCatalog, ModelConfig};
 use crate::core::Provider;
 use crate::factory::create_provider_for_model;
+use crate::provider_view::ProviderView;
 use crate::secret_store::SecretStore;
 use peko_provider_api::credentials::{CredentialError, CredentialProvider};
 
@@ -260,6 +261,19 @@ impl LlmResolver {
         let choice = self.resolve(req).await?;
         let provider = self.build_provider(&choice.config).await?;
         Ok((provider, choice))
+    }
+
+    /// Like [`Self::build`] but returns the trait-object form
+    /// `Arc<dyn ProviderView>`. Used by callers that want to wrap the
+    /// provider in `StackedMeteredProvider` without depending on the
+    /// root-only `Provider` type. Migrated from `MeteredProvider` in
+    /// the 2026-09 cleanup.
+    pub async fn build_view(
+        &self,
+        req: ResolveRequest<'_>,
+    ) -> Result<(Arc<dyn ProviderView>, ResolvedChoice)> {
+        let (provider, choice) = self.build(req).await?;
+        Ok((provider as Arc<dyn ProviderView>, choice))
     }
 
     /// Build a one-shot `Provider` for the given configured model.

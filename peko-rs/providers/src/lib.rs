@@ -11,8 +11,9 @@
 //! - **Resolver** (`resolver`): `LlmResolver` plus rotation state for
 //!   automatic 401-driven credential rotation.
 //! - **Mock** (`mock`): `MockAdapter` for tests and CLI dry-runs.
-//! - **Metered** (`metered`): `MeteredProvider` wrapper that charges
-//!   the current `QuotaScope`.
+//! - **Metered**: providers are wrapped by `peko_engine::StackedMeteredProvider`
+//!   at call sites (engine loop, MCP sampling, compactor, subagents) — the
+//!   wrapper charges every meter in the active `QuotaScope` task-local stack.
 //! - **Validator** (`validator`): Cheap authenticated probe of an
 //!   API key without paying for a real chat call.
 //! - **SecretStore** (`secret_store`): Read-side secret-store trait +
@@ -29,7 +30,6 @@ pub mod adapters;
 pub mod catalog;
 pub mod core;
 pub mod factory;
-pub mod metered;
 pub mod mock;
 pub mod provider_view;
 pub mod resolver;
@@ -49,7 +49,6 @@ pub use adapters::{
 pub use catalog::{ApiFormat, ModelCatalog, ModelCatalogFile, ModelConfig};
 pub use core::{Provider, ProviderRuntimeOptions};
 pub use factory::create_provider_for_model;
-pub use metered::MeteredProvider;
 pub use mock::{MockAdapter, MockResponse};
 pub use provider_view::ProviderView;
 pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, ResolvedChoice};
