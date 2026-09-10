@@ -213,6 +213,98 @@ fn last_assistant_turn_usage(
     })
 }
 
+/// Derive the uncached portion of one turn's reported input.
+///
+/// `TokenUsage::input` semantics are adapter-dependent — OpenAI-style
+/// adapters include cached tokens in `input`, Anthropic-style adapters
+/// report uncached input only. Per turn we disambiguate by comparison:
+/// when `input >= cache_read + cache_creation` the turn is treated as
+/// cache-inclusive (uncached = `input - read - creation`); otherwise
+/// it must be cache-exclusive (uncached = `input`). The rare
+/// Anthropic turn whose uncached input alone exceeds the cached total
+/// is indistinguishable from an OpenAI turn and resolves as
+/// cache-inclusive — the window rate stays an approximation in that
+/// case, which the field docs call out.
+fn uncached_input(usage: &TokenUsage) -> u64 {
+    let cached = usage
+        .cache_read_input_tokens
+        .unwrap_or(0)
+        .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
+    if usage.input >= cached {
+        usage.input - cached
+    } else {
+        usage.input
+    }
+}
+
+/// Aggregate cache + input usage over the session's current **cache
+/// window**: every assistant turn since the last compaction boundary
+/// (`SessionEvent::System` with `event == "compaction"` — the same
+/// durable marker [`peko_session::pages::is_compaction_boundary`]
+/// detects), or since session start when the session was never
+/// compacted.
+///
+/// Returns `(cache_read_total, cache_creation_total, uncached_input)`
+/// — see [`uncached_input`] for the adapter-dependent derivation of
+/// the third component.
+fn cache_window_totals(events: &[peko_session::SessionEvent]) -> (u64, u64, u64) {
+    let mut read = 0u64;
+    let mut creation = 0u64;
+    let mut uncached = 0u64;
+    for event in events.iter().rev() {
+        if peko_session::pages::is_compaction_boundary(event) {
+            break;
+        }
+        let peko_session::SessionEvent::MessageV2(msg) = event else {
+            continue;
+        };
+        let Some(usage) = msg.usage() else {
+            continue;
+        };
+        read = read.saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
+        creation = creation.saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
+        uncached = uncached.saturating_add(uncached_input(usage));
+    }
+    (read, creation, uncached)
+}
+
+/// Cache hit rate over a window: `read / (read + creation +
+/// uncached)` — the fraction of input tokens served from cache.
+/// `None` when the denominator is 0 (no assistant turn in the window
+/// reported usage).
+fn cache_hit_rate(read: u64, creation: u64, uncached: u64) -> Option<f64> {
+    let denominator = read + creation + uncached;
+    (denominator > 0).then(|| read as f64 / denominator as f64)
+}
+
+/// Count assistant iterations in the session's current run: assistant
+/// messages carrying a provider usage stamp since the last external
+/// user ingress — a user-role message whose `MessageSource` is not
+/// `Hook` (tool results and hook-injected `<runtime-context>` notes
+/// don't reset the count). 0 when no run has started.
+fn count_current_run_iterations(events: &[peko_session::SessionEvent]) -> usize {
+    let mut iterations = 0usize;
+    for event in events.iter().rev() {
+        let peko_session::SessionEvent::MessageV2(msg) = event else {
+            continue;
+        };
+        match msg.role() {
+            MessageRole::Assistant => {
+                if msg.usage().is_some() {
+                    iterations += 1;
+                }
+            }
+            MessageRole::User => {
+                if msg.source() != Some(peko_session::message::MessageSource::Hook) {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    iterations
+}
+
 #[async_trait]
 impl SessionRuntime for SessionManagerRuntime {
     async fn list_sessions(
@@ -416,8 +508,17 @@ impl SessionRuntime for SessionManagerRuntime {
         // counters we accumulated locally. We scan events from the end
         // so we don't pay O(n_messages) for long-running sessions.
         let session_id_str = metadata.session_id.to_string();
-        let events = SessionStorage::new(sessions_dir).load_events(&session_id_str).await?;
+        let events = SessionStorage::new(sessions_dir)
+            .load_events(&session_id_str)
+            .await?;
         let last_turn = last_assistant_turn_usage(&events);
+
+        // Cache-window totals (since the last compaction boundary)
+        // and the current run's iteration count come from the same
+        // stitched event list.
+        let (cache_read_total, cache_creation_total, uncached_input) = cache_window_totals(&events);
+        let cache_hit_rate = cache_hit_rate(cache_read_total, cache_creation_total, uncached_input);
+        let current_run_iterations = count_current_run_iterations(&events);
 
         // Principal-scoped quota snapshot — read-only view of the
         // principal's `QuotaMeter`. Omitted when the runtime was
@@ -439,6 +540,8 @@ impl SessionRuntime for SessionManagerRuntime {
                 // exists so a follow-up can format the end-of-window
                 // without changing the wire schema.
                 tripped: meter.is_exhausted(),
+                cache_read_tokens: snapshot.cache_read_tokens,
+                cache_creation_tokens: snapshot.cache_creation_tokens,
             }
         });
 
@@ -472,8 +575,12 @@ impl SessionRuntime for SessionManagerRuntime {
                 cache_creation_tokens: last_turn.and_then(|u| u.cache_creation_input_tokens),
                 reasoning_tokens: last_turn.and_then(|u| u.reasoning_output_tokens),
                 model_context_limit: metadata.model_context_limit,
+                cache_read_total,
+                cache_creation_total,
+                cache_hit_rate,
             },
             quota,
+            current_run_iterations,
             peer_type: metadata.peer_type,
             peer_id: metadata.peer_id,
             label: metadata.title,
@@ -953,7 +1060,7 @@ mod tests {
     /// `InboxRegistry` (standalone factory), caller's current session
     /// settable per test.
     struct Harness {
-        runtime: SessionManagerRuntime,
+        runtime: Arc<SessionManagerRuntime>,
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
         current: Arc<tokio::sync::RwLock<Option<String>>>,
         registry: Arc<InboxRegistry>,
@@ -972,14 +1079,14 @@ mod tests {
             let current = Arc::new(tokio::sync::RwLock::new(None));
             let registry =
                 crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
-            let runtime = SessionManagerRuntime::new(
+            let runtime = Arc::new(SessionManagerRuntime::new(
                 Arc::clone(&manager),
                 Arc::clone(&current),
                 "test-agent".to_string(),
                 Some(Arc::clone(&registry)),
                 // No quota meter bound in tests; `quota` field stays None.
                 None,
-            );
+            ));
             Self {
                 runtime,
                 manager,
@@ -1022,6 +1129,56 @@ mod tests {
                 .unwrap()
                 .expect("session openable");
             handle.add_user(text).await.unwrap();
+        }
+
+        /// Append an assistant message carrying a provider usage
+        /// stamp (the per-iteration record the cache-window and
+        /// current-run-iteration scans aggregate).
+        async fn add_assistant_with_usage(&self, id: &str, text: &str, usage: TokenUsage) {
+            let id = peko_session::SessionId::from(id).to_string();
+            let mut manager = self.manager.write().await;
+            let handle = manager
+                .open_session(&id)
+                .await
+                .unwrap()
+                .expect("session openable");
+            handle.add_assistant(text, None, Some(usage)).await.unwrap();
+        }
+
+        /// Append a user-role message with an explicit source tag
+        /// (e.g. `Hook` for `<runtime-context>` injections).
+        async fn add_user_with_source(
+            &self,
+            id: &str,
+            text: &str,
+            source: peko_session::message::MessageSource,
+        ) {
+            let id = peko_session::SessionId::from(id).to_string();
+            let mut manager = self.manager.write().await;
+            let handle = manager
+                .open_session(&id)
+                .await
+                .unwrap()
+                .expect("session openable");
+            handle.add_user_with_source(text, source).await.unwrap();
+        }
+
+        /// Append a compaction boundary event directly to the
+        /// session JSONL (the durable marker the cache window
+        /// stops at).
+        async fn add_compaction(&self, id: &str) {
+            let id = peko_session::SessionId::from(id).to_string();
+            let sessions_dir = self
+                .manager
+                .read()
+                .await
+                .sessions_dir()
+                .cloned()
+                .expect("sessions dir set");
+            SessionStorage::new(sessions_dir)
+                .append_compaction(&id, None, "summary", 1, 100, 10, 1, None)
+                .await
+                .unwrap();
         }
     }
 
@@ -1983,6 +2140,8 @@ mod tests {
             request_limit: Some(20),
             window_end: Some("2026-09-10T00:00:00Z".to_string()),
             tripped: false,
+            cache_read_tokens: 90,
+            cache_creation_tokens: 30,
         };
         let json = serde_json::to_value(&snap).unwrap();
         assert_eq!(json["input_tokens"], 200);
@@ -1994,5 +2153,196 @@ mod tests {
             "None limits must be skipped; got {json}"
         );
         assert_eq!(json["tripped"], false);
+    }
+
+    // ─── Cache window + current-run iterations ─────────────────────
+
+    fn usage(input: u64, cache_read: u64, cache_creation: u64) -> TokenUsage {
+        TokenUsage {
+            input,
+            output: 1,
+            total: input + 1,
+            cache_creation_input_tokens: Some(cache_creation),
+            cache_read_input_tokens: Some(cache_read),
+            reasoning_output_tokens: None,
+        }
+    }
+
+    fn assistant_event(u: TokenUsage) -> peko_session::SessionEvent {
+        peko_session::SessionEvent::MessageV2(
+            peko_session::message::SessionMessage::assistant_with_blocks(
+                vec![ContentBlock::Text {
+                    text: "answer".into(),
+                }],
+                "test-provider",
+                "test-model",
+                u,
+            ),
+        )
+    }
+
+    fn user_event(source: peko_session::message::MessageSource) -> peko_session::SessionEvent {
+        peko_session::SessionEvent::MessageV2(peko_session::message::SessionMessage::user(
+            "hello", source,
+        ))
+    }
+
+    fn tool_result_event() -> peko_session::SessionEvent {
+        peko_session::SessionEvent::MessageV2(peko_session::message::SessionMessage::tool_result(
+            "tc1", "Read", "contents", false,
+        ))
+    }
+
+    fn compaction_event() -> peko_session::SessionEvent {
+        peko_session::SessionEvent::System(peko_session::events::SystemEvent {
+            envelope: peko_session::events::EventEnvelope::new(),
+            event: "compaction".to_string(),
+            detail: serde_json::json!({"compaction_number": 1}),
+        })
+    }
+
+    #[test]
+    fn cache_window_totals_stop_at_last_compaction_boundary() {
+        let events = vec![
+            assistant_event(usage(100, 10, 5)), // before the boundary — excluded
+            compaction_event(),
+            assistant_event(usage(85, 20, 5)),
+            assistant_event(usage(70, 30, 0)),
+        ];
+        let (read, creation, uncached) = cache_window_totals(&events);
+        assert_eq!(read, 50);
+        assert_eq!(creation, 5);
+        // (85 - 25) + (70 - 30)
+        assert_eq!(uncached, 100);
+        assert_eq!(cache_hit_rate(read, creation, uncached), Some(50.0 / 155.0));
+    }
+
+    #[test]
+    fn cache_window_totals_without_compaction_cover_session_start() {
+        let events = vec![
+            user_event(peko_session::message::MessageSource::User),
+            assistant_event(usage(100, 10, 5)),
+            assistant_event(usage(50, 20, 5)),
+        ];
+        let (read, creation, uncached) = cache_window_totals(&events);
+        assert_eq!(read, 30);
+        assert_eq!(creation, 10);
+        assert_eq!(uncached, 110);
+    }
+
+    #[test]
+    fn cache_hit_rate_handles_both_adapter_conventions() {
+        // OpenAI-style: `input` includes cached tokens.
+        // read=60, creation=20, input=100 → uncached=20, rate=60/100.
+        let (read, creation, uncached) =
+            cache_window_totals(&[assistant_event(usage(100, 60, 20))]);
+        assert_eq!((read, creation, uncached), (60, 20, 20));
+        assert_eq!(cache_hit_rate(read, creation, uncached), Some(0.6));
+
+        // Anthropic-style: `input` excludes cached tokens (input <
+        // read + creation ⇒ the whole `input` is uncached).
+        // read=60, creation=20, input=20 → uncached=20, rate=60/100.
+        let (read, creation, uncached) = cache_window_totals(&[assistant_event(usage(20, 60, 20))]);
+        assert_eq!((read, creation, uncached), (60, 20, 20));
+        assert_eq!(cache_hit_rate(read, creation, uncached), Some(0.6));
+
+        // Denominator 0 → None (no usage reported in the window).
+        assert_eq!(cache_hit_rate(0, 0, 0), None);
+        let (read, creation, uncached) = cache_window_totals(&[]);
+        assert_eq!(cache_hit_rate(read, creation, uncached), None);
+    }
+
+    #[test]
+    fn current_run_iterations_counts_since_last_external_ingress() {
+        use peko_session::message::MessageSource;
+        // Two iterations in the current run; the Hook note and the
+        // tool result in between don't reset the count.
+        let events = vec![
+            user_event(MessageSource::User),
+            assistant_event(usage(100, 0, 0)),
+            user_event(MessageSource::User),
+            assistant_event(usage(100, 0, 0)),
+            tool_result_event(),
+            user_event(MessageSource::Hook), // <runtime-context> injection
+            assistant_event(usage(100, 0, 0)),
+        ];
+        assert_eq!(count_current_run_iterations(&events), 2);
+
+        // No run started → 0.
+        assert_eq!(count_current_run_iterations(&[]), 0);
+        assert_eq!(
+            count_current_run_iterations(&[user_event(MessageSource::User)]),
+            0
+        );
+
+        // Cron / A2A / agent notes are external ingress — they reset
+        // the run window like a typed user message.
+        let events = vec![
+            assistant_event(usage(100, 0, 0)),
+            user_event(MessageSource::Cron),
+            assistant_event(usage(100, 0, 0)),
+        ];
+        assert_eq!(count_current_run_iterations(&events), 1);
+    }
+
+    #[tokio::test]
+    async fn get_status_reports_cache_window_and_current_run_iterations() {
+        use peko_session::message::MessageSource;
+        let h = tree_harness("root:user:alice").await;
+        // Archived page: one pre-compaction turn (excluded from the
+        // cache window).
+        h.add_user_message("spawn2", "old question").await;
+        h.add_assistant_with_usage("spawn2", "old answer", usage(100, 10, 5))
+            .await;
+        h.add_compaction("spawn2").await;
+        // Live page: ingress + two iterations with a hook note in
+        // between.
+        h.add_user_message("spawn2", "new question").await;
+        h.add_assistant_with_usage("spawn2", "first", usage(85, 20, 5))
+            .await;
+        h.add_user_with_source(
+            "spawn2",
+            "<runtime-context>x</runtime-context>",
+            MessageSource::Hook,
+        )
+        .await;
+        h.add_assistant_with_usage("spawn2", "second", usage(70, 30, 0))
+            .await;
+
+        let status = h.runtime.get_status("/c").await.unwrap();
+        assert_eq!(status.usage.cache_read_total, 50);
+        assert_eq!(status.usage.cache_creation_total, 5);
+        // uncached = (85 - 25) + (70 - 30) = 100; rate = 50 / 155.
+        assert_eq!(status.usage.cache_hit_rate, Some(50.0 / 155.0));
+        assert_eq!(status.current_run_iterations, 2);
+    }
+
+    /// A4: `session status` with no session argument resolves to the
+    /// calling session. The defaulting lives in the tool layer
+    /// (`tool.rs` — `session_key.unwrap_or_else(current_session_key)`);
+    /// this pins it end-to-end through the production runtime adapter.
+    #[tokio::test]
+    async fn status_without_session_argument_resolves_calling_session() {
+        use crate::tools::builtin::session::{SessionTool, SharedSessionRuntime};
+        use peko_tools_core::traits::Tool as _;
+
+        let h = tree_harness("spawn2").await;
+        h.add_user_message("spawn2", "hello").await;
+        let tool = SessionTool::new(h.runtime.clone() as SharedSessionRuntime);
+
+        let result = tool.execute(json!({"action": "status"})).await.unwrap();
+        assert_eq!(result["session_id"], sid("spawn2"));
+
+        // No current session bound → structured refusal, not a panic.
+        let h2 = Harness::new().await;
+        let tool2 = SessionTool::new(h2.runtime.clone() as SharedSessionRuntime);
+        let err = tool2
+            .execute(json!({"action": "status"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("No current session available"),
+            "{err}"
+        );
     }
 }

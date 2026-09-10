@@ -1632,4 +1632,92 @@ mod tests {
         assert!(defs.is_empty(), "empty caps must yield empty catalog");
         assert!(!defs_contain(&defs, "Read"));
     }
+
+    // ─────────────── prompt-cache prefix stability (tool catalog) ───────────
+    //
+    // The LLM request prefix (system → tools → messages) must be byte-stable
+    // across agentic-loop iterations or provider prompt caches break at the
+    // `tools[]` array. The tool registry previously collected tool names
+    // from a fresh `HashSet` per call, randomizing catalog order on every
+    // iteration. This test is the regression gate: two consecutive calls
+    // with the same registered tools must serialize byte-identically.
+
+    /// Helper: register a tool with a non-trivial JSON schema so the test
+    /// also covers schema byte stability, not just list ordering.
+    async fn register_schema_tool(core: &ExtensionCore, name: &str) {
+        let meta = ToolMetadata::new(
+            name.to_string(),
+            format!("The {name} tool — read/write files, run commands, manage sessions."),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "recursive": {"type": "boolean", "default": false},
+                },
+                "required": ["path"],
+                "additionalProperties": false,
+            }),
+            crate::extensions::framework::types::ToolSource::BuiltIn,
+        );
+        let handler = Arc::new(MockHandler {
+            point: HookPoint::ToolExecute {
+                tool_name: name.to_string(),
+            },
+            output: HookResult::PassThrough,
+        });
+        let ext = ExtensionId::new(format!("builtin:tool:{name}"));
+        core.register_tool(meta, handler, &ext, PrincipalId::system())
+            .await
+            .expect("test tool should register");
+    }
+
+    #[tokio::test]
+    async fn catalog_is_byte_stable_across_calls() {
+        let core = ExtensionCore::new();
+        // A realistic built-in set, registered in scrambled order.
+        for name in [
+            "Grep", "Read", "Bash", "Write", "Agent", "Edit", "Glob", "Session", "Cron", "Task",
+        ] {
+            register_schema_tool(&core, name).await;
+        }
+
+        let caps = Capabilities::with_grants(["tool:*"]);
+        let first = core
+            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
+            .await;
+        let first_vec_bytes = serde_json::to_string(&first).expect("catalog serializes");
+        let first_elem_bytes: Vec<String> = first
+            .iter()
+            .map(|d| serde_json::to_string(d).expect("definition serializes"))
+            .collect();
+
+        // 64 calls: a per-call-randomized `HashSet` collect shuffles order
+        // with probability 1 - 1/n! per call, so this fails essentially
+        // always when the registry is nondeterministic.
+        for call in 1..=64 {
+            let defs = core
+                .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
+                .await;
+            assert_eq!(
+                first.len(),
+                defs.len(),
+                "call {call}: catalog length changed"
+            );
+            let elem_bytes: Vec<String> = defs
+                .iter()
+                .map(|d| serde_json::to_string(d).expect("definition serializes"))
+                .collect();
+            assert_eq!(
+                first_elem_bytes, elem_bytes,
+                "call {call}: per-element bytes differ"
+            );
+            let vec_bytes = serde_json::to_string(&defs).expect("catalog serializes");
+            assert_eq!(
+                first_vec_bytes, vec_bytes,
+                "call {call}: catalog Vec bytes differ"
+            );
+        }
+    }
 }

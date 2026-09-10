@@ -2,12 +2,12 @@
 //!
 //! Discovers `AGENT.md` files in the principal's workspace
 //! (`<workspace>/agents/<id>.md` or `<workspace>/agents/<id>/AGENT.md`)
-//! and renders them into the `agents` system-prompt section via the
+//! and renders them into the `agents` prompt section via the
 //! workspace-scanning [`WorkspaceAgentsPromptHandler`]. The engine
-//! prompt renderer dispatches that hook on every iteration as part of
-//! the per-turn volatile suffix (see
+//! prompt renderer dispatches that hook on every iteration for the
+//! tail `<runtime-context>` message (see
 //! `peko-rs/engine/src/prompt/renderer.rs`), so agents added to the
-//! workspace appear in the prompt on the next iteration.
+//! workspace appear in the conversation on the next iteration.
 //!
 //! PR-C.4: `ExtensionTypeAdapter` trait impl + `AgentPromptHandlerFactory`
 //! deleted. The trait impl was the framework-coupling path; both it

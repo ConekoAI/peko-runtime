@@ -78,6 +78,10 @@ pub fn sum_states(states: &[QuotaState], now: chrono::DateTime<chrono::Utc>) -> 
         total.input_tokens = total.input_tokens.saturating_add(s.input_tokens);
         total.output_tokens = total.output_tokens.saturating_add(s.output_tokens);
         total.request_count = total.request_count.saturating_add(s.request_count);
+        total.cache_read_tokens = total.cache_read_tokens.saturating_add(s.cache_read_tokens);
+        total.cache_creation_tokens = total
+            .cache_creation_tokens
+            .saturating_add(s.cache_creation_tokens);
         total.cost_usd = match (total.cost_usd, s.cost_usd) {
             (Some(a), Some(b)) => Some(a + b),
             (Some(a), None) => Some(a),
@@ -126,12 +130,16 @@ mod tests {
             output_tokens: 50,
             request_count: 3,
             cost_usd: Some(0.01),
+            cache_read_tokens: 10,
+            cache_creation_tokens: 5,
         };
         let total = sum_states(std::slice::from_ref(&s), now);
         assert_eq!(total.input_tokens, 100);
         assert_eq!(total.output_tokens, 50);
         assert_eq!(total.request_count, 3);
         assert_eq!(total.cost_usd, Some(0.01));
+        assert_eq!(total.cache_read_tokens, 10);
+        assert_eq!(total.cache_creation_tokens, 5);
     }
 
     /// `sum_states` adds counters field-by-field and unions cost.
@@ -146,6 +154,8 @@ mod tests {
             output_tokens: 50,
             request_count: 3,
             cost_usd: Some(0.01),
+            cache_read_tokens: 10,
+            cache_creation_tokens: 5,
         };
         let b = QuotaState {
             window_start: ts(2026, 8, 22, 14),
@@ -155,11 +165,15 @@ mod tests {
             output_tokens: 75,
             request_count: 5,
             cost_usd: Some(0.02),
+            cache_read_tokens: 20,
+            cache_creation_tokens: 7,
         };
         let total = sum_states(&[a, b], now);
         assert_eq!(total.input_tokens, 300);
         assert_eq!(total.output_tokens, 125);
         assert_eq!(total.request_count, 8);
+        assert_eq!(total.cache_read_tokens, 30);
+        assert_eq!(total.cache_creation_tokens, 12);
         assert!(
             (total.cost_usd.unwrap() - 0.03).abs() < 1e-9,
             "cost_usd should sum to 0.03"
@@ -179,6 +193,8 @@ mod tests {
             output_tokens: 50,
             request_count: 3,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         };
         let some_cost = QuotaState {
             cost_usd: Some(0.05),

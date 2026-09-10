@@ -242,14 +242,14 @@ impl Agent {
             self.current_session_id.clone(),
             self.config.name.clone(),
             self.inbox_registry.clone(),
-            // F19: Agent no longer carries a quota_meter field; the
-            // principal's meter is fetched from
-            // `Principal.quota_meter` at runtime. The session tool's
-            // `quota` snapshot therefore stays `None` until a
-            // follow-up threads the principal meter through here
-            // (see PR-10 audit #5 — quota_tripped is a sufficient
-            // trip signal in the meantime).
-            None,
+            // The principal's meter is chained onto the subagent
+            // executor by `Agent::with_quota_meter` (agent_runner /
+            // child_turns) before the lazy `init_builtins_async`
+            // call runs, so reading it back here threads the
+            // principal meter through without a new Agent field.
+            // `None` (CLI one-shots, tests with no quota config)
+            // keeps the session tool's `quota` snapshot at `None`.
+            self.subagent_executor.quota_meter().cloned(),
         );
         tools.push(Arc::new(SessionTool::new(
             std::sync::Arc::new(session_runtime)

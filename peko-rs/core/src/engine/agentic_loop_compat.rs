@@ -94,8 +94,9 @@ mod tests {
 
     // ===================================================================
     // Per-turn SessionContextBuild hook: bootstrap context is rendered
-    // into the system prompt for the {{session_context}} placeholder
-    // on every iteration (replaces the legacy one-shot SessionStart).
+    // into the tail `<runtime-context>` user message (the volatile
+    // `{{session_context}}` section) on the iteration it changes
+    // (replaces the legacy one-shot SessionStart).
     // ===================================================================
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
@@ -184,9 +185,10 @@ mod tests {
             result.err()
         );
 
-        // The first recorded request's system message should contain
-        // the SessionContextBuild output (rendered into the
-        // `{{session_context}}` placeholder).
+        // The first recorded request's TAIL message should contain the
+        // SessionContextBuild output: volatile context now rides an
+        // append-only `<runtime-context>` user message at the end of
+        // the conversation, not the frozen system prompt.
         let recorded = mock.recorded_requests();
         assert!(
             !recorded.is_empty(),
@@ -201,8 +203,33 @@ mod tests {
             })
             .collect();
         assert!(
-            system_text.contains("Always use the Superpowers skill pack."),
-            "expected SessionContextBuild output in system prompt, got: {system_text}"
+            !system_text.contains("Always use the Superpowers skill pack."),
+            "volatile context must not leak into the frozen system prompt, got: {system_text}"
+        );
+        let tail = recorded[0]
+            .messages
+            .last()
+            .expect("runtime-context tail message present");
+        assert!(
+            matches!(tail.role, MessageRole::User),
+            "runtime-context tail must be a user message, got: {:?}",
+            tail.role
+        );
+        let tail_text: String = tail
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            tail_text.contains("<runtime-context>"),
+            "expected runtime-context envelope at the tail, got: {tail_text}"
+        );
+        assert!(
+            tail_text.contains("Always use the Superpowers skill pack."),
+            "expected SessionContextBuild output in the tail message, got: {tail_text}"
         );
     }
 
@@ -590,10 +617,21 @@ mod tests {
                 })
             })
             .collect();
+        // 1. The persisted session history must contain the raw user
+        //    text verbatim. The only other user rows are the loop's
+        //    `<runtime-context>` tail injections (one per iteration) —
+        //    automation notes, not human input.
         assert_eq!(
-            user_texts,
-            vec!["Persist this"],
-            "persisted user message must be exactly the raw user text; got {user_texts:?}"
+            user_texts.first(),
+            Some(&"Persist this"),
+            "persisted human user message must be exactly the raw user text; got {user_texts:?}"
+        );
+        assert!(
+            user_texts.len() > 1
+                && user_texts[1..]
+                    .iter()
+                    .all(|t| t.contains("<runtime-context>")),
+            "non-human persisted user rows must be runtime-context injections; got {user_texts:?}"
         );
 
         // 2. The LLM request must include the ephemeral recalled-context
@@ -2015,14 +2053,15 @@ mod tests {
     }
 
     // ===================================================================
-    // Phase 1: Per-turn system prompt rebuild
+    // Phase 1: Frozen system prompt + tail runtime-context injection
     //
-    // These tests pin down the Phase 1 contract: the renderer is the
-    // single source of truth, every iteration rebuilds messages[0],
-    // JSONL sessions never carry MessageV2{role:"system"} rows from
-    // the loop, and the four hook-driven sections plus
-    // SessionContextBuild all fire concurrently with a 2s soft-fail
-    // timeout.
+    // These tests pin down the contract: the renderer is the single
+    // source of truth, `messages[0]` is rendered once and frozen for
+    // the run (per-iteration volatile context rides an append-only
+    // `<runtime-context>` user message at the tail), JSONL sessions
+    // never carry MessageV2{role:"system"} rows from the loop, and the
+    // hook-driven sections plus SessionContextBuild all fire
+    // concurrently with a 2s soft-fail timeout.
     // ===================================================================
 
     /// Phase 1 contract: a JSONL that has a stale
@@ -2183,6 +2222,165 @@ mod tests {
             "JSONL must not carry MessageV2{{role:system}} rows from the loop; found {system_rows}"
         );
         let _ = history;
+    }
+
+    /// Frozen system prompt + tail runtime-context injection
+    /// (2026-09-10 prompt-caching fix): across a 2-iteration run,
+    /// `messages[0]` must be byte-identical on the wire (provider
+    /// prefix caches match from the front), a `<runtime-context>` user
+    /// message rides the TAIL every iteration (the iteration-budget
+    /// line is always due), and memory is injected on iteration 1 but
+    /// NOT re-injected on iteration 2 when unchanged (per-section
+    /// change detection).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn loop_freezes_system_prompt_and_injects_runtime_context_at_tail() {
+        peko_identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+
+        // Iteration 1: tool call. Iteration 2: final text answer.
+        mock.queue_tool_call("tc_1", "echo", serde_json::json!({"msg": "hello"}));
+        mock.queue_text("Done.");
+
+        // Bind a principal workspace with a MEMORY.md so the
+        // `{{memory}}` section has content to inject.
+        let workspace = temp_dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("MEMORY.md"), "remember the alamo").unwrap();
+
+        let agent_name = format!("frozen-prompt-agent-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.prompt = Some("You are {{agent_name}}.".to_string());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path())
+                .await
+                .unwrap()
+                .with_principal_workspace(workspace),
+        );
+        let extension_core = global_core().unwrap();
+        let loop_ = AgenticLoop::new(
+        agent.clone(),
+        provider.clone(),
+        extension_core,
+        std::sync::Arc::new(
+            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+            ),
+        ),
+        peko_engine::CompactionConfig::default(),
+    )
+    .await;
+
+        let session = test_session(&agent_name, temp_dir.path()).await;
+        let session_id = session.id().await;
+        let result = loop_
+            .run_with_resume("Use echo tool", Vec::new(), |_| {}, &session, None)
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "agentic loop should succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().iterations, 2);
+
+        let recorded = mock.recorded_requests();
+        assert_eq!(recorded.len(), 2, "expected exactly 2 LLM calls");
+
+        let text_of = |msg: &LlmMessage| -> String {
+            msg.content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // (1) `messages[0]` is byte-identical across iterations and
+        // carries no volatile content.
+        let sys1 = text_of(&recorded[0].messages[0]);
+        let sys2 = text_of(&recorded[1].messages[0]);
+        assert_eq!(
+            recorded[0].messages[0].content, recorded[1].messages[0].content,
+            "messages[0] must be byte-identical across iterations;\niter1: {sys1}\niter2: {sys2}"
+        );
+        assert!(sys1.contains("You are"), "system prompt was: {sys1}");
+        assert!(
+            !sys1.contains("remember the alamo"),
+            "memory must not leak into the frozen system prompt: {sys1}"
+        );
+        assert!(
+            !sys1.contains("Current time:"),
+            "clock must not leak into the frozen system prompt: {sys1}"
+        );
+
+        // (2) Iteration 1: the tail message is a `<runtime-context>`
+        // user message carrying memory + the iteration-budget line.
+        let tail1 = recorded[0]
+            .messages
+            .last()
+            .expect("tail message present on iteration 1");
+        assert!(matches!(tail1.role, MessageRole::User));
+        let tail1_text = text_of(tail1);
+        assert!(
+            tail1_text.contains("<runtime-context>"),
+            "iteration 1 tail was: {tail1_text}"
+        );
+        assert!(
+            tail1_text.contains("Iteration 1 of 10"),
+            "iteration 1 tail was: {tail1_text}"
+        );
+        assert!(
+            tail1_text.contains("remember the alamo"),
+            "memory must ride the tail on iteration 1: {tail1_text}"
+        );
+
+        // (3) Iteration 2: the tail rides again with the fresh
+        // iteration-budget line, but memory is NOT re-injected
+        // (unchanged since iteration 1).
+        let tail2 = recorded[1]
+            .messages
+            .last()
+            .expect("tail message present on iteration 2");
+        assert!(matches!(tail2.role, MessageRole::User));
+        let tail2_text = text_of(tail2);
+        assert!(
+            tail2_text.contains("<runtime-context>"),
+            "iteration 2 tail was: {tail2_text}"
+        );
+        assert!(
+            tail2_text.contains("Iteration 2 of 10"),
+            "iteration 2 tail was: {tail2_text}"
+        );
+        assert!(
+            !tail2_text.contains("remember the alamo"),
+            "unchanged memory must not be re-injected on iteration 2: {tail2_text}"
+        );
+
+        // (4) The runtime-context messages persist to the session
+        // JSONL as user rows (tagged `MessageSource::Hook`), mirroring
+        // how steering messages persist.
+        let sessions_dir = temp_dir.path().join("data").join("sessions");
+        let storage = peko_session::jsonl::SessionStorage::new(sessions_dir);
+        let events = storage.load_events(&session_id).await.unwrap();
+        let runtime_rows = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    peko_session::events::SessionEvent::MessageV2(m)
+                        if matches!(m.role(), peko_message::MessageRole::User)
+                            && m.text_content().contains("<runtime-context>")
+                )
+            })
+            .count();
+        assert_eq!(
+            runtime_rows, 2,
+            "both iterations' runtime-context messages must persist to JSONL; found {runtime_rows}"
+        );
     }
 
     /// Phase 1 contract: hook-driven sections fire in parallel. Four

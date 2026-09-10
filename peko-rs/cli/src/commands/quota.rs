@@ -274,6 +274,28 @@ fn render_status(name: &str, config: &QuotaConfig, state: &QuotaState, json: boo
     fmt_limit("output:", config.output_tokens, state.output_tokens);
     fmt_limit("requests:", config.request_count, state.request_count);
 
+    // Informational prompt-cache split of the window's input tokens
+    // (not gated by any limit). `input_tokens` semantics are
+    // adapter-dependent (OpenAI includes cached tokens, Anthropic
+    // excludes them) and the aggregate counters can't be
+    // disambiguated per turn, so the denominator is `max(input,
+    // read + creation)` — exact for OpenAI-style accounting, a
+    // slight underestimate of the total for Anthropic-style.
+    if state.cache_read_tokens > 0 || state.cache_creation_tokens > 0 {
+        println!("  cache read: {:>10}", state.cache_read_tokens);
+        println!("  cache write:{:>10}", state.cache_creation_tokens);
+        let uncached = state
+            .input_tokens
+            .saturating_sub(state.cache_read_tokens + state.cache_creation_tokens);
+        let total = state.cache_read_tokens + state.cache_creation_tokens + uncached;
+        if total > 0 {
+            println!(
+                "  cache hit:  {:>9.1}%",
+                100.0 * state.cache_read_tokens as f64 / total as f64
+            );
+        }
+    }
+
     let end: DateTime<Utc> = state.window_end;
     let start: DateTime<Utc> = state.window_start;
     println!(

@@ -284,14 +284,16 @@ impl AgenticLoop {
             .to_string();
 
         // Phase 1: the system prompt is no longer precomputed at loop
-        // construction. `PromptRenderer::render_for_iteration` rebuilds
-        // it from a fresh `TurnPromptContext` every iteration, fed by
-        // the principal, session, and iteration state the loop threads
-        // in. The legacy `system_prompt` field is kept (and is a
-        // placeholder identity fallback) for back-compat with any
-        // callers that still read `AgenticLoop::system_prompt()` —
-        // they get a one-line identity, which is what they'd see if
-        // they ran an agent with no body anyway.
+        // construction. `PromptRenderer::render_cache_stable` renders it
+        // once on iteration 1 of the first run and the loop freezes it as
+        // `messages[0]`; per-iteration volatile context rides the tail
+        // `<runtime-context>` user message instead (see the injection
+        // site in `run_inner_with_meter`). The legacy `system_prompt`
+        // field is kept (and is a placeholder identity fallback) for
+        // back-compat with any callers that still read
+        // `AgenticLoop::system_prompt()` — they get a one-line identity,
+        // which is what they'd see if they ran an agent with no body
+        // anyway.
         let placeholder_prompt = format!("You are {}.", agent.name());
 
         Self {
@@ -328,10 +330,10 @@ impl AgenticLoop {
                 peko_providers::factory::default_max_attempts(),
             ),
             resolved_model_id,
-            // F23: cache-stable prefix starts un-rendered. The first
-            // iteration of `run_inner_with_meter` triggers
-            // `render_cache_stable` via the `cache_stable_prompt`
-            // access in the messages[0] rebuild block.
+            // F23: cache-stable system prompt starts un-rendered. The
+            // first iteration of `run_inner_with_meter` triggers
+            // `render_cache_stable` and freezes the result as
+            // `messages[0]` (see the injection block there).
             cache_stable_prompt: std::sync::Mutex::new(None),
             // Phase 9b.N.5b.9c: caller supplies the config. Root
             // loads it from `~/.peko/config.toml`; tests pass
@@ -1063,6 +1065,12 @@ impl AgenticLoop {
         let mut iteration = 0;
         let mut total_usage = TokenUsage::default();
 
+        // Per-run change-detection state for the tail runtime-context
+        // message (see the injection site inside the loop). A section
+        // is re-injected only when its rendered text differs from the
+        // last injected value.
+        let mut runtime_ctx_state = crate::RuntimeContextState::default();
+
         // Initialize compaction driver. The model's max context
         // length is the single source of truth from `ProviderCatalog`
         // (resolved via the agent's `LlmResolver`). When the catalog
@@ -1226,28 +1234,27 @@ impl AgenticLoop {
             // never references it (F36 wire-only catalogs).
             let tool_defs = self.build_tool_definitions().await;
 
-            // F23: Rebuild the system prompt via the two-phase render
-            // (`cache_stable` + `per_turn`) so the byte-stable prefix
-            // hits the provider's prompt cache turn-over-turn. The
-            // cache-stable prefix is re-rendered only when the cached
-            // value is missing — tool-table mutations no longer
-            // matter since the prefix doesn't reference tools (F36).
-            // Profile changes are loop-level: today's loop is bound
-            // to a single agent for its lifetime, so a fresh render
-            // after the first miss is correct for the whole session.
-            // The per-turn suffix is rebuilt every iteration because
-            // it carries volatile fields like `{{iteration_budget}}`,
-            // `{{quota_tripped}}`, `{{session_context}}`, and
-            // `{{capability_diff}}`.
+            // Frozen system prompt + tail runtime-context injection
+            // (2026-09-10 prompt-caching fix). Both Anthropic explicit
+            // `cache_control` breakpoints and OpenAI/DeepSeek automatic
+            // prefix caching match from the FRONT of the payload, so
+            // `messages[0]` must be byte-identical across iterations:
+            // it carries only the `render_cache_stable` output, frozen
+            // on iteration 1 and never rebuilt. Per-iteration volatile
+            // context (clock, memory, session context, workspace
+            // catalogs, iteration budget, one-shot banners) travels as
+            // an append-only `<runtime-context>` user message at the
+            // TAIL of the conversation, with per-section change
+            // detection (`RuntimeContextState`) so large rarely-changing
+            // sections are not re-injected.
             //
-            // The previous Phase-1 path rebuilt the entire prompt
-            // every iteration. That defeated provider prefix caches
-            // because volatile fields landed inline with the body
-            // and mutated the prefix bytes turn-over-turn. Today we
-            // keep the rebuild path (still always-overwrites
-            // `messages[0]`) but split it into cache-stable +
-            // per-turn so cache markers on the prefix can do their
-            // job.
+            // The previous two-phase scheme concatenated a volatile
+            // suffix (`{{current_time}}`, `{{iteration_budget}}`, ...)
+            // into `messages[0]` every iteration. That mutated the head
+            // of the payload and destroyed prefix caching for the
+            // ENTIRE history — the suffix changed even when the prefix
+            // hit. The tail layout matches codex / kimi-code /
+            // deepseek-harness.
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
                 let ctx = self.build_turn_context(iteration, &tool_defs, &session_id);
                 let renderer = PromptRenderer::with_mcp_context_provider(
@@ -1255,47 +1262,67 @@ impl AgenticLoop {
                     Arc::clone(&self.mcp_context_provider),
                 );
 
-                // F36: the prefix no longer references tool names, so
-                // there is no per-tool-table signal to invalidate on.
-                // Render once per session and reuse the cached
-                // `Arc<String>` on subsequent iterations. The
-                // `std::sync::MutexGuard` is `!Send`, so we cannot
+                // Freeze `messages[0]` on iteration 1. F36: the prompt
+                // no longer references tool names, so there is no
+                // per-tool-table signal to invalidate on; the cached
+                // `Arc<String>` is reused across runs of this loop.
+                // The `std::sync::MutexGuard` is `!Send`, so we cannot
                 // hold it across the renderer's `.await`; the
                 // split-acquire pattern keeps every lock acquisition
                 // local to a `Send`-safe block.
-                let cache_stable: Arc<String> = {
-                    let cached = {
-                        let slot = self
-                            .cache_stable_prompt
-                            .lock()
-                            .expect("cache_stable_prompt mutex poisoned");
-                        slot.as_ref().map(Arc::clone)
-                    };
-                    match cached {
-                        Some(arc) => arc,
-                        None => {
-                            let rendered = renderer.render_cache_stable(&ctx).await;
-                            let arc = Arc::new(rendered);
-                            let mut slot = self
+                if iteration == 1 {
+                    let cache_stable: Arc<String> = {
+                        let cached = {
+                            let slot = self
                                 .cache_stable_prompt
                                 .lock()
                                 .expect("cache_stable_prompt mutex poisoned");
-                            // Last-write-wins. Two concurrent first
-                            // renders race here; either Arc is
-                            // byte-identical for the same agent body,
-                            // so the providers see the same prefix
-                            // either way.
-                            *slot = Some(Arc::clone(&arc));
-                            arc
+                            slot.as_ref().map(Arc::clone)
+                        };
+                        match cached {
+                            Some(arc) => arc,
+                            None => {
+                                let rendered = renderer.render_cache_stable(&ctx).await;
+                                let arc = Arc::new(rendered);
+                                let mut slot = self
+                                    .cache_stable_prompt
+                                    .lock()
+                                    .expect("cache_stable_prompt mutex poisoned");
+                                // Last-write-wins. Two concurrent first
+                                // renders race here; either Arc is
+                                // byte-identical for the same agent body,
+                                // so the providers see the same prefix
+                                // either way.
+                                *slot = Some(Arc::clone(&arc));
+                                arc
+                            }
                         }
-                    }
-                };
+                    };
+                    messages[0] = LlmMessage::system((*cache_stable).clone());
+                }
 
-                // Per-turn suffix is always rebuilt — it carries
-                // the volatile fields.
-                let per_turn = renderer.render_per_turn(&ctx).await;
-                let assembled = PromptRenderer::assemble_system_prompt(&cache_stable, &per_turn);
-                messages[0] = LlmMessage::system(assembled);
+                // Tail injection: one small user message per iteration
+                // (the iteration-budget line is always due); the heavy
+                // sections ride along only when changed. Persisted like
+                // the steering user messages above so the next reload
+                // sees the same conversation the provider saw. Tagged
+                // `MessageSource::Hook` — automation-injected, not human
+                // input.
+                if let Some(runtime_context) = renderer
+                    .render_runtime_context(&ctx, &mut runtime_ctx_state)
+                    .await
+                {
+                    if let Err(e) = session
+                        .add_user_with_source(
+                            runtime_context.clone(),
+                            peko_session::events::MessageSource::Hook,
+                        )
+                        .await
+                    {
+                        warn!("AgenticLoop: failed to persist runtime-context message: {e}");
+                    }
+                    messages.push(LlmMessage::user(runtime_context));
+                }
             }
 
             // ============================================================
@@ -1728,6 +1755,17 @@ impl AgenticLoop {
                                                 .reasoning_output_tokens
                                                 .get_or_insert(0) += reasoning_output_tokens;
                                         }
+                                        // Prompt-cache observability:
+                                        // with the frozen system prompt +
+                                        // tail runtime-context layout,
+                                        // `cache_read` should dominate
+                                        // `cache_creation` on iterations
+                                        // after the first.
+                                        debug!(
+                                            "Iteration {iteration} usage: input={input} output={output} \
+                                             cache_read_input_tokens={cache_read_input_tokens} \
+                                             cache_creation_input_tokens={cache_creation_input_tokens}"
+                                        );
                                     }
                                     _ => {}
                                 }

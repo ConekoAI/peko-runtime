@@ -121,7 +121,7 @@ pub use peko_session::compaction::{
     ContextUsageEstimate,
 };
 pub use prompt::renderer::{
-    EmptyMcpPromptContextProvider, McpPromptContextProvider, PromptRenderer,
+    EmptyMcpPromptContextProvider, McpPromptContextProvider, PromptRenderer, RuntimeContextState,
 };
 pub use spec_gate::{check as check_spec, SpecGateError};
 pub use prompt::{

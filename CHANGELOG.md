@@ -4,6 +4,72 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Auditability: cache metrics + run iterations on session/quota status (2026-09-10)
+
+- **Session tool `status`** — `UsageStats` gains `cache_read_total`,
+  `cache_creation_total`, and `cache_hit_rate` aggregated over the
+  current **cache window** (every assistant turn since the last
+  compaction boundary event — `SessionEvent::System` with
+  `event == "compaction"` — or session start when never compacted).
+  The rate is the fraction of window input tokens served from cache;
+  `None` when no turn in the window reported usage. `input`
+  semantics are adapter-dependent (Anthropic excludes cached tokens,
+  OpenAI includes them); the runtime disambiguates per turn.
+  `SessionStatusResult` gains `current_run_iterations` — assistant
+  messages with a usage stamp since the last external user ingress
+  (tool results and `MessageSource::Hook` `<runtime-context>`
+  injections don't reset the count).
+- **Session tool `status.quota` populated on the main path** —
+  `Agent::init_builtins_async` now threads the principal's
+  `Arc<QuotaMeter>` (chained onto the subagent executor by
+  `Agent::with_quota_meter`) into `SessionManagerRuntime`, so the
+  quota snapshot is no longer always `None`.
+- **Principal cache counters** — `QuotaState` gains
+  `cache_read_tokens` / `cache_creation_tokens` (`serde(default)`
+  keeps existing `quota_state.json` files loadable), folded from
+  each charged `TokenUsage` inside `QuotaMeter` and rolled over with
+  the quota window like the other counters. The session tool's
+  `QuotaSnapshot` carries them, and `peko quota status` prints cache
+  read/write lines plus a window cache hit rate.
+
+### Prompt-caching fix: frozen system prompt + tail runtime context (2026-09-10)
+
+The agentic loop rebuilt `messages[0]` every iteration as
+`cache_stable + "\n\n" + volatile_suffix`, and the volatile suffix
+(`{{current_time}}`, `{{iteration_budget}}`, ...) mutated the head of
+the payload each turn — destroying LLM prompt-prefix caching for the
+ENTIRE history (both Anthropic explicit `cache_control` breakpoints and
+OpenAI/DeepSeek automatic prefix caching match from the front).
+
+- **Frozen system prompt** — `messages[0]` is now the
+  `render_cache_stable()` output only, rendered once per run and never
+  rebuilt. `render_per_turn` / `assemble_system_prompt` /
+  `VOLATILE_BODY` are retired.
+- **Tail runtime-context injection** — per-iteration volatile context
+  travels as an append-only user-role `<runtime-context>` message at
+  the end of the conversation (`PromptRenderer::render_runtime_context`),
+  persisted to the session JSONL tagged `MessageSource::Hook`. The
+  iteration-budget line rides every iteration; current time (now
+  minute-granularity), memory, session context, and the agents/skills
+  workspace catalogs are re-injected only when their rendered text
+  changes (per-section change detection via `RuntimeContextState`);
+  `quota_tripped` / `soft_cancel` / `capability_diff` keep their
+  rising-edge semantics.
+- **Anthropic multi-system fix** — `convert_messages` no longer lets a
+  mid-history System-role message (e.g. the post-compaction summary)
+  overwrite the `system` wire parameter: the FIRST system message is
+  the prompt, subsequent ones become in-place user messages.
+- **Observability** — per-iteration `cache_read_input_tokens` /
+  `cache_creation_input_tokens` are logged at debug level alongside
+  input/output tokens.
+- **Byte-stable tool catalog** — `ToolRegistry::list_tool_names`
+  collected the principal-visible name union from a fresh `HashSet`
+  per call, so the `tools[]` array order shuffled on EVERY agentic-loop
+  iteration and provider prompt caches broke exactly at the tools
+  block (live: only the ~1234-token frozen system prompt cached). The
+  catalog is now sorted by tool name, making the request prefix
+  byte-stable across iterations.
+
 ### Agent-surface E2E fixes (2026-09-06)
 
 Follow-ups from a live end-to-end audit (real LLM, wire-logged):
