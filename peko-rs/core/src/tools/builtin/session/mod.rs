@@ -126,27 +126,117 @@ pub struct ToolResultInfo {
 
 /// Token usage stats for a session.
 ///
-/// The two cumulative fields reflect what the LLM has reported
-/// across the session's lifetime. The two single-turn fields
-/// describe the most recent turn — `last_total_tokens` is what
-/// the model told us on its last reply, while `model_context_limit`
-/// is the model's maximum context window (or `null` when the
-/// session has not been opened against a known model).
+/// **Cumulative** fields (`cumulative_input_tokens`,
+/// `cumulative_output_tokens`) reflect what the LLM has reported
+/// across the session's lifetime — sourced from each assistant
+/// message's [`TokenUsage`](peko_message::TokenUsage) stamp in the
+/// session JSONL.
+///
+/// **Per-turn** fields (`current_prompt_tokens`, `cache_read_tokens`,
+/// `cache_creation_tokens`, `reasoning_tokens`) describe the most
+/// recent assistant turn — `current_prompt_tokens` is the input
+/// token count the provider reported on its last reply (the
+/// authoritative number for context-window fill), and the cache /
+/// reasoning fields surface the matching breakdown from the same
+/// `TokenUsage` so the agent can see how much of the prompt hit
+/// the provider's prefix cache and how many tokens went to
+/// reasoning vs visible output.
+///
+/// `last_total_tokens` is the provider's reported `total_tokens`
+/// (NOT the context-window size — see `model_context_limit`). When
+/// the provider omits `total_tokens`, the runtime fills this in as
+/// `current_prompt_tokens + completion_tokens` so the field is
+/// always meaningful.
+///
+/// `model_context_limit` is the model's maximum context window, in
+/// tokens. `None` for legacy sessions and sessions opened without a
+/// provider/model reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageStats {
     /// Cumulative input tokens across the session (session lifetime).
-    pub prompt_tokens: u64,
+    #[serde(rename = "prompt_tokens")]
+    pub cumulative_input_tokens: u64,
     /// Cumulative output tokens across the session (session lifetime).
-    pub completion_tokens: u64,
-    /// `total_tokens` reported by the provider on the most recent
-    /// assistant turn. NOT the model's context window size — see
-    /// `model_context_limit` for that.
+    #[serde(rename = "completion_tokens")]
+    pub cumulative_output_tokens: u64,
+    /// Provider-reported `total_tokens` on the most recent assistant
+    /// turn (input + output for that single turn). When the provider
+    /// omits `total_tokens`, the runtime falls back to
+    /// `current_prompt_tokens + last_output_tokens`. NOT the model's
+    /// context window size — see `model_context_limit`.
     pub last_total_tokens: u64,
+    /// Input tokens on the most recent assistant turn (the
+    /// authoritative per-turn context-fill number — derived from the
+    /// provider's `TokenUsage::input` on the most recent assistant
+    /// message). `None` when the session has no assistant turn yet.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub current_prompt_tokens: Option<u64>,
+    /// Cache-read tokens on the most recent assistant turn — what the
+    /// provider charged against its prompt cache for that turn. `None`
+    /// when the session has no assistant turn yet.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cache_read_tokens: Option<u64>,
+    /// Cache-creation tokens on the most recent assistant turn —
+    /// tokens the provider charged for writing into its prompt cache.
+    /// `None` when the session has no assistant turn yet.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cache_creation_tokens: Option<u64>,
+    /// Reasoning tokens on the most recent assistant turn — tokens
+    /// the model spent on internal reasoning (Anthropic `thinking`,
+    /// OpenAI `reasoning_tokens`). `None` when the session has no
+    /// assistant turn yet or the provider did not report reasoning.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_tokens: Option<u64>,
     /// The model's maximum context window size, in tokens. `None`
     /// for legacy sessions and sessions opened without a provider/
     /// model reference.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_context_limit: Option<usize>,
+}
+
+/// Principal-scoped quota snapshot returned by the `session` tool's
+/// `status` action.
+///
+/// Counters (`input_tokens`, `output_tokens`, `request_count`) are
+/// the principal's running totals in the current window; limits
+/// (`input_limit`, `output_limit`, `request_limit`) are the
+/// configured ceilings (or `None` when no limit is configured for
+/// that axis). `window_end` is the next window rollover in RFC 3339
+/// form, or `None` when the principal has no windowed quota
+/// configured.
+///
+/// Source of truth is `peko_quota::QuotaMeter::snapshot()` +
+/// `QuotaMeter::config()`, both owned by the principal. The session
+/// tool reports this snapshot read-only; the LLM never sees the
+/// `{{quota_state}}` system-prompt section any more (retired
+/// 2026-09-09 — see `Placeholder::QuotaState`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuotaSnapshot {
+    /// Input tokens consumed in the current window.
+    pub input_tokens: u64,
+    /// Output tokens consumed in the current window.
+    pub output_tokens: u64,
+    /// Number of LLM requests made in the current window.
+    pub request_count: u64,
+    /// Configured input-token ceiling, or `None` when unlimited.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub input_limit: Option<u64>,
+    /// Configured output-token ceiling, or `None` when unlimited.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_limit: Option<u64>,
+    /// Configured request-count ceiling, or `None` when unlimited.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub request_limit: Option<u64>,
+    /// End of the current quota window in RFC 3339 form, or `None`
+    /// when the principal has no windowed quota configured.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub window_end: Option<String>,
+    /// True when at least one configured limit is currently
+    /// exhausted (i.e. `QuotaMeter::is_exhausted()`). The LLM sees
+    /// this flag in the snapshot so it can correlate with the
+    /// single-shot `{{quota_tripped}}` banner and know that the
+    /// banner will not fire again until the window rolls over.
+    pub tripped: bool,
 }
 
 /// Session status result
@@ -162,6 +252,11 @@ pub struct SessionStatusResult {
     pub timestamp: String,
     pub message_count: usize,
     pub usage: UsageStats,
+    /// Principal-scoped quota snapshot. `None` when the session has
+    /// no quota meter bound (legacy fixtures, agents whose principal
+    /// never configured `[quota]` in its TOML).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub quota: Option<QuotaSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -468,11 +563,25 @@ mod tests {
             timestamp: String::new(),
             message_count: 10,
             usage: UsageStats {
-                prompt_tokens: 100,
-                completion_tokens: 50,
+                cumulative_input_tokens: 100,
+                cumulative_output_tokens: 50,
                 last_total_tokens: 1500,
+                current_prompt_tokens: Some(120),
+                cache_read_tokens: Some(80),
+                cache_creation_tokens: Some(20),
+                reasoning_tokens: None,
                 model_context_limit: Some(128_000),
             },
+            quota: Some(QuotaSnapshot {
+                input_tokens: 200,
+                output_tokens: 75,
+                request_count: 4,
+                input_limit: Some(1000),
+                output_limit: None,
+                request_limit: Some(20),
+                window_end: Some("2026-09-10T00:00:00Z".to_string()),
+                tripped: false,
+            }),
             peer_type: None,
             peer_id: None,
             label: None,

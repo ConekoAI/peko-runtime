@@ -126,7 +126,7 @@ pub use prompt::renderer::{
 pub use spec_gate::{check as check_spec, SpecGateError};
 pub use prompt::{
     builder::{PromptMode, SystemPromptBuilder},
-    context::{IterationBudgetState, QuotaStateView, TurnPromptContext},
+    context::{IterationBudgetState, TurnPromptContext},
     memory::{
         directory_from_tool_params, discover_shared_context, load_principal_memory,
         PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,

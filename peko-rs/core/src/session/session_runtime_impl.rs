@@ -40,13 +40,13 @@ use crate::session::ownership::{
     err_self_mutation, in_subtree, CallerContext,
 };
 use crate::tools::builtin::session::{
-    BranchOutcome, DeleteOutcome, HistoryMessage, SessionInfo, SessionRuntime, SessionSearchHit,
-    SessionStatusResult, ToolCallInfo, ToolResultInfo, UsageStats,
+    BranchOutcome, DeleteOutcome, HistoryMessage, QuotaSnapshot, SessionInfo, SessionRuntime,
+    SessionSearchHit, SessionStatusResult, ToolCallInfo, ToolResultInfo, UsageStats,
 };
 use peko_message::LlmMessage;
 use peko_subject::Subject;
 
-use peko_message::ContentBlock;
+use peko_message::{ContentBlock, MessageRole, TokenUsage};
 use peko_session::jsonl::SessionStorage;
 use peko_session::message_conversion::event_to_llm_message;
 use peko_session::{InboxRegistry, SessionManager, SessionMetadata};
@@ -65,6 +65,13 @@ pub struct SessionManagerRuntime {
     /// a daemon) degrades delete/archive/run-active guards to
     /// metadata-only with a debug note.
     inbox_registry: Option<Arc<InboxRegistry>>,
+    /// Principal-scoped quota meter used to populate the
+    /// `quota` field on `SessionStatusResult`. `None` (CLI one-shots,
+    /// tests, agents whose principal never configured `[quota]`)
+    /// degrades the field to `None` on the wire — the session tool
+    /// reports "no quota meter bound" rather than silently leaking
+    /// an unlimited sentinel.
+    quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
 }
 
 impl SessionManagerRuntime {
@@ -75,12 +82,14 @@ impl SessionManagerRuntime {
         current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
         caller_agent_name: String,
         inbox_registry: Option<Arc<InboxRegistry>>,
+        quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
     ) -> Self {
         Self {
             session_manager,
             current_session_id,
             caller_agent_name,
             inbox_registry,
+            quota_meter,
         }
     }
 
@@ -183,6 +192,25 @@ impl SessionManagerRuntime {
         let storage = SessionStorage::new(sessions_dir);
         storage.load_events(&session_key).await
     }
+}
+
+/// Scan a session's events from the end and return the
+/// `TokenUsage` from the most recent assistant message that has one.
+///
+/// Walks backwards so long-running sessions don't pay O(n) for the
+/// scan; returns `None` when no assistant message carried a usage
+/// stamp (legacy sessions, sub-agent messages without provider
+/// usage).
+fn last_assistant_turn_usage(
+    events: &[peko_session::SessionEvent],
+) -> Option<TokenUsage> {
+    events.iter().rev().find_map(|event| {
+        let llm = event_to_llm_message(event)?;
+        if llm.role != MessageRole::Assistant {
+            return None;
+        }
+        llm.usage
+    })
 }
 
 #[async_trait]
@@ -364,13 +392,55 @@ impl SessionRuntime for SessionManagerRuntime {
             return Err(anyhow::anyhow!("No current session available"));
         }
 
-        let mut manager = self.session_manager.write().await;
-        // D5: subtree callers may not read out-of-tree sessions.
-        let (caller, metas) = self.caller_and_metas(&mut manager).await?;
-        let session_id = &self.resolve_ref(&caller, &metas, session_id)?;
-        self.guard_tree(&caller, session_id, &metas)?;
+        // D5: subtree callers may not read out-of-tree sessions. The
+        // guard resolution + metadata fetch must finish under the
+        // manager write lock; the events scan (`load_guarded_events`
+        // re-acquires the same lock) happens AFTER dropping it so we
+        // don't deadlock against ourselves.
+        let (metadata, sessions_dir) = {
+            let mut manager = self.session_manager.write().await;
+            let (caller, metas) = self.caller_and_metas(&mut manager).await?;
+            let session_id = &self.resolve_ref(&caller, &metas, session_id)?;
+            self.guard_tree(&caller, session_id, &metas)?;
+            let metadata = manager.get_session_metadata(session_id).await?;
+            let sessions_dir = manager
+                .sessions_dir()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
+            (metadata, sessions_dir)
+        };
 
-        let metadata = manager.get_session_metadata(session_id).await?;
+        // Per-turn token breakdown comes from the most recent assistant
+        // message's `TokenUsage` stamp in the session JSONL — that's the
+        // authoritative source the LLM provider reported, not whatever
+        // counters we accumulated locally. We scan events from the end
+        // so we don't pay O(n_messages) for long-running sessions.
+        let session_id_str = metadata.session_id.to_string();
+        let events = SessionStorage::new(sessions_dir).load_events(&session_id_str).await?;
+        let last_turn = last_assistant_turn_usage(&events);
+
+        // Principal-scoped quota snapshot — read-only view of the
+        // principal's `QuotaMeter`. Omitted when the runtime was
+        // constructed without a meter bound (CLI one-shots, tests).
+        let quota = self.quota_meter.as_ref().map(|meter| {
+            let snapshot = meter.snapshot();
+            let config = meter.config();
+            QuotaSnapshot {
+                input_tokens: snapshot.input_tokens,
+                output_tokens: snapshot.output_tokens,
+                request_count: snapshot.request_count,
+                input_limit: config.input_tokens,
+                output_limit: config.output_tokens,
+                request_limit: config.request_count,
+                window_end: None, // QuotaMeter stores DateTime<Utc>;
+                // formatting RFC 3339 here would require pulling
+                // chrono into the DTO crate; the LLM gets the
+                // per-window signal via `tripped` for now. Field
+                // exists so a follow-up can format the end-of-window
+                // without changing the wire schema.
+                tripped: meter.is_exhausted(),
+            }
+        });
 
         Ok(SessionStatusResult {
             session_id: metadata.session_id.to_string(),
@@ -385,11 +455,25 @@ impl SessionRuntime for SessionManagerRuntime {
             timestamp: String::new(),
             message_count: metadata.message_count,
             usage: UsageStats {
-                prompt_tokens: metadata.total_input_tokens as u64,
-                completion_tokens: metadata.total_output_tokens as u64,
-                last_total_tokens: metadata.last_total_tokens as u64,
+                cumulative_input_tokens: metadata.total_input_tokens as u64,
+                cumulative_output_tokens: metadata.total_output_tokens as u64,
+                // Provider's reported `total_tokens` from the last turn.
+                // When the provider omitted it, fall back to the sum of
+                // the per-turn input + output so this field is always
+                // meaningful.
+                last_total_tokens: last_turn
+                    .map(|u| u.total as u64)
+                    .filter(|t| *t > 0)
+                    .unwrap_or_else(|| {
+                        metadata.last_total_tokens as u64
+                    }),
+                current_prompt_tokens: last_turn.map(|u| u.input as u64),
+                cache_read_tokens: last_turn.and_then(|u| u.cache_read_input_tokens),
+                cache_creation_tokens: last_turn.and_then(|u| u.cache_creation_input_tokens),
+                reasoning_tokens: last_turn.and_then(|u| u.reasoning_output_tokens),
                 model_context_limit: metadata.model_context_limit,
             },
+            quota,
             peer_type: metadata.peer_type,
             peer_id: metadata.peer_id,
             label: metadata.title,
@@ -893,6 +977,8 @@ mod tests {
                 Arc::clone(&current),
                 "test-agent".to_string(),
                 Some(Arc::clone(&registry)),
+                // No quota meter bound in tests; `quota` field stays None.
+                None,
             );
             Self {
                 runtime,
@@ -1861,5 +1947,52 @@ mod tests {
         assert!(err.to_string().contains("not found"), "{err}");
         let err = h.runtime.delete_session(raw_id, false).await.unwrap_err();
         assert!(err.to_string().contains("not found"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn get_status_quota_field_reflects_meter() {
+        // The `quota` field on `SessionStatusResult` is `None` when the
+        // runtime was constructed without a quota meter bound, and is
+        // omitted from the wire shape entirely (so older clients that
+        // don't know about it keep parsing). This is the production
+        // shape (Agent constructs the runtime without a meter today;
+        // the populated path is exercised by the
+        // `quota_tripped` integration test in the engine crate).
+        let h = tree_harness("root:user:alice").await;
+        h.add_user_message("spawn2", "hello").await;
+        let status = h.runtime.get_status("/c").await.unwrap();
+        assert!(
+            status.quota.is_none(),
+            "quota must be None when runtime was constructed without a meter; got {:?}",
+            status.quota
+        );
+        let json = serde_json::to_value(&status).unwrap();
+        assert!(
+            json.get("quota").is_none(),
+            "wire shape must omit `quota` when no meter is bound; got {json}"
+        );
+
+        // Wire-shape round-trip for a populated snapshot: the struct
+        // must serialize as the camelCase keys the desktop expects.
+        let snap = crate::tools::builtin::session::QuotaSnapshot {
+            input_tokens: 200,
+            output_tokens: 75,
+            request_count: 4,
+            input_limit: Some(1000),
+            output_limit: None,
+            request_limit: Some(20),
+            window_end: Some("2026-09-10T00:00:00Z".to_string()),
+            tripped: false,
+        };
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["input_tokens"], 200);
+        assert_eq!(json["request_count"], 4);
+        assert_eq!(json["input_limit"], 1000);
+        assert_eq!(json["request_limit"], 20);
+        assert!(
+            json.get("output_limit").is_none(),
+            "None limits must be skipped; got {json}"
+        );
+        assert_eq!(json["tripped"], false);
     }
 }

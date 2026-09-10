@@ -56,7 +56,23 @@ pub enum Placeholder {
     /// Iteration budget state - {{iteration_budget}}
     IterationBudget,
     /// Quota state snapshot - {{quota_state}}
+    ///
+    /// **Retired from the renderer (2026-09-09).** The marker string is
+    /// preserved for back-compat with existing AGENT.md templates; the
+    /// renderer no longer inserts a value, so templates that still
+    /// reference `{{quota_state}}` get the marker stripped by
+    /// `remove_missing=true`. Quota state now lives on the `session`
+    /// tool's `status` action (see `QuotaSnapshot` in
+    /// `peko_core::tools::builtin::session`).
     QuotaState,
+    /// Quota-tripped tripwire - {{quota_tripped}}
+    ///
+    /// Volatile, per-turn, but only on the rising edge: rendered as a
+    /// short banner the iteration the principal's quota first trips;
+    /// subsequent iterations while still tripped render to empty so the
+    /// banner doesn't spam the prompt. Mirrors the `{{soft_cancel}}`
+    /// single-shot pattern.
+    QuotaTripped,
     /// Soft-cancel pending flag - {{soft_cancel}}
     SoftCancel,
     /// Capability-diff since last render - {{capability_diff}}
@@ -85,6 +101,7 @@ impl Placeholder {
             Self::SessionContext => "{{session_context}}",
             Self::IterationBudget => "{{iteration_budget}}",
             Self::QuotaState => "{{quota_state}}",
+            Self::QuotaTripped => "{{quota_tripped}}",
             Self::SoftCancel => "{{soft_cancel}}",
             Self::CapabilityDiff => "{{capability_diff}}",
         }
@@ -130,6 +147,7 @@ mod tests {
             "{{iteration_budget}}"
         );
         assert_eq!(Placeholder::QuotaState.marker(), "{{quota_state}}");
+        assert_eq!(Placeholder::QuotaTripped.marker(), "{{quota_tripped}}");
         assert_eq!(Placeholder::SoftCancel.marker(), "{{soft_cancel}}");
         assert_eq!(Placeholder::CapabilityDiff.marker(), "{{capability_diff}}");
     }

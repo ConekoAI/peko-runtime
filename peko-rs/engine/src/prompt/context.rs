@@ -12,7 +12,7 @@
 //! Four long-horizon control surfaces are first-class fields:
 //!
 //! - [`TurnPromptContext::iteration_budget`] — emitted at `{{iteration_budget}}`
-//! - [`TurnPromptContext::quota_state`] — emitted at `{{quota_state}}`
+//! - [`TurnPromptContext::quota_tripped`] — emitted at `{{quota_tripped}}` (rising edge only)
 //! - [`TurnPromptContext::soft_cancel_pending`] — emitted at `{{soft_cancel}}`
 //! - [`TurnPromptContext::capability_diff`] — emitted at `{{capability_diff}}`
 //!
@@ -44,7 +44,6 @@ use peko_extension_api::{ActiveExtensionSet, Capabilities};
 use peko_provider_api::ToolDefinition;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 // Capability diff types live in `crate::iteration_state` (Phase 9b.N.5a).
 // Re-export here so renderer + tests keep their existing import paths.
@@ -84,87 +83,19 @@ impl IterationBudgetState {
     }
 }
 
-/// Quota state for the `{{quota_state}}` control surface.
+/// Render the `{{quota_tripped}}` banner. Empty string when the trip
+/// indicator is `false` (the template's `remove_missing=true` strips
+/// the marker); otherwise the short advisory the LLM should see at the
+/// moment the principal's quota first trips.
 ///
-/// `None` ⇒ the principal is unquota'd and the section is omitted
-/// entirely (the template's `remove_missing=true` semantics handle the
-/// empty case too, but skipping avoids even computing the section).
-#[derive(Debug, Clone)]
-pub struct QuotaStateView {
-    /// Live snapshot from `QuotaMeter::snapshot()`.
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub request_count: u64,
-    /// Window end timestamp (ISO 8601 when rendered).
-    pub window_end: SystemTime,
-    /// Configured limits (`None` ⇒ unlimited for that dimension).
-    pub input_limit: Option<u64>,
-    pub output_limit: Option<u64>,
-    pub request_limit: Option<u64>,
-}
-
-impl QuotaStateView {
-    /// Render the section body. Returns the empty string when the
-    /// config has no limits (Phase 3 may revisit this).
-    #[must_use]
-    pub fn render(&self) -> String {
-        if self.input_limit.is_none() && self.output_limit.is_none() && self.request_limit.is_none()
-        {
-            return String::new();
-        }
-        let pct = |used, limit: Option<u64>| -> String {
-            match limit {
-                Some(l) if l > 0 => {
-                    let p = (used as f64 / l as f64) * 100.0;
-                    format!("{}%", p.round() as u64)
-                }
-                _ => "—".to_string(),
-            }
-        };
-        let mut lines = vec!["## Quota status (current window)".to_string()];
-        lines.push(format!(
-            "Input tokens:    {}/{} ({})",
-            self.input_tokens,
-            self.input_limit.map_or("—".to_string(), |n| n.to_string()),
-            pct(self.input_tokens, self.input_limit)
-        ));
-        lines.push(format!(
-            "Output tokens:   {}/{} ({})",
-            self.output_tokens,
-            self.output_limit.map_or("—".to_string(), |n| n.to_string()),
-            pct(self.output_tokens, self.output_limit)
-        ));
-        lines.push(format!(
-            "Requests:        {}/{} ({})",
-            self.request_count,
-            self.request_limit
-                .map_or("—".to_string(), |n| n.to_string()),
-            pct(self.request_count, self.request_limit)
-        ));
-        let reset = self
-            .window_end
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| {
-                chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_else(|| "unknown".to_string())
-            })
-            .unwrap_or_else(|_| "unknown".to_string());
-        lines.push(format!("Window resets:   {reset}"));
-
-        let tripped = [
-            (self.input_limit, self.input_tokens),
-            (self.output_limit, self.output_tokens),
-            (self.request_limit, self.request_count),
-        ]
-        .iter()
-        .any(|(l, u)| l.is_some_and(|lim| u >= &lim));
-        if tripped {
-            lines.push("Quota tripped — pause non-essential work.".to_string());
-        }
-
-        lines.join("\n") + "\n"
-    }
+/// Mirrors `render_soft_cancel_section` (see `renderer.rs`) — both
+/// single-shot banners render to empty unless their flag is set.
+#[must_use]
+pub fn render_quota_tripped_section() -> String {
+    "## Quota tripped\n\
+     The principal's quota was just tripped. Wrap up non-essential work,\
+     finish the current step cleanly, and do not start a new tool round.\n"
+        .to_string()
 }
 
 /// The single typed input the renderer reads each iteration.
@@ -220,8 +151,15 @@ pub struct TurnPromptContext {
     // ---- Control surfaces ----
     /// Iteration-budget state (`None` ⇒ `{{iteration_budget}}` not rendered).
     pub iteration_budget: Option<IterationBudgetState>,
-    /// Quota snapshot (`None` ⇒ `{{quota_state}}` not rendered).
-    pub quota_state: Option<QuotaStateView>,
+    /// Quota-tripped rising-edge flag (`false` ⇒ `{{quota_tripped}}` not
+    /// rendered). Set by `build_turn_context` on the iteration the
+    /// principal's `QuotaMeter` first trips; cleared on subsequent
+    /// iterations until quota rolls over and trips again. Single-shot so
+    /// the banner doesn't spam the prompt every turn while the run
+    /// stays tripped. Full quota state (counters, limits, window) is
+    /// available via the `session` tool's `status` action — see
+    /// `QuotaSnapshot`.
+    pub quota_tripped: bool,
     /// Soft-cancel pending flag (`false` ⇒ `{{soft_cancel}}` not rendered).
     pub soft_cancel_pending: bool,
     /// Capability diff vs last observation (`None` ⇒ `{{capability_diff}}` not rendered).
@@ -356,47 +294,12 @@ mod tests {
     }
 
     #[test]
-    fn quota_state_render_unlimited_returns_empty() {
-        let v = QuotaStateView {
-            input_tokens: 0,
-            output_tokens: 0,
-            request_count: 0,
-            window_end: SystemTime::UNIX_EPOCH,
-            input_limit: None,
-            output_limit: None,
-            request_limit: None,
-        };
-        assert_eq!(v.render(), "");
-    }
-
-    #[test]
-    fn quota_state_render_includes_pct() {
-        let v = QuotaStateView {
-            input_tokens: 50,
-            output_tokens: 0,
-            request_count: 0,
-            window_end: SystemTime::UNIX_EPOCH,
-            input_limit: Some(100),
-            output_limit: None,
-            request_limit: None,
-        };
-        let rendered = v.render();
-        assert!(rendered.contains("50/100"));
-        assert!(rendered.contains("50%"));
-    }
-
-    #[test]
-    fn quota_state_render_trip_message_when_exceeded() {
-        let v = QuotaStateView {
-            input_tokens: 100,
-            output_tokens: 0,
-            request_count: 0,
-            window_end: SystemTime::UNIX_EPOCH,
-            input_limit: Some(100),
-            output_limit: None,
-            request_limit: None,
-        };
-        let rendered = v.render();
-        assert!(rendered.contains("Quota tripped"));
+    fn quota_tripped_section_renders_banner() {
+        // The trip banner is the rising-edge payload the renderer
+        // substitutes into `{{quota_tripped}}`. Mirrors the soft-cancel
+        // pattern: empty when the flag is false, advisory when true.
+        let rendered = render_quota_tripped_section();
+        assert!(rendered.contains("## Quota tripped"));
+        assert!(rendered.contains("non-essential"));
     }
 }

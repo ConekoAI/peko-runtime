@@ -204,6 +204,14 @@ pub struct AgenticLoop {
     /// regardless of the threshold gates, then continues with the
     /// run's prompt. Default false.
     force_compact: bool,
+    /// Last-iteration `QuotaMeter::is_exhausted()` observation, used by
+    /// [`AgenticLoop::build_turn_context`] to detect the **rising edge**
+    /// of a quota trip. The renderer surfaces `{{quota_tripped}}` only
+    /// on the iteration the meter first goes from not-exhausted →
+    /// exhausted so the banner doesn't spam the prompt every turn
+    /// while the run stays tripped. Mutex because `build_turn_context`
+    /// takes `&self`. Default `false` (no quota tripped yet).
+    last_quota_tripped: std::sync::Mutex<bool>,
     /// Phase 4 (`feature/multi-model-subagents`): optional audit
     /// sink. When `Some`, the loop emits one `model.selected` audit
     /// event per successful LLM call (after `stream_with_eviction`
@@ -330,6 +338,7 @@ impl AgenticLoop {
             // `CompactionConfig::default()`.
             compaction_config,
             force_compact: false,
+            last_quota_tripped: std::sync::Mutex::new(false),
             // Phase 4: opt-in audit sink. Callers (root's
             // `Agent::new_with_shared_executor`) attach via
             // `with_audit_sink` after `new` so the engine stays
@@ -1228,7 +1237,7 @@ impl AgenticLoop {
             // after the first miss is correct for the whole session.
             // The per-turn suffix is rebuilt every iteration because
             // it carries volatile fields like `{{iteration_budget}}`,
-            // `{{quota_state}}`, `{{session_context}}`, and
+            // `{{quota_tripped}}`, `{{session_context}}`, and
             // `{{capability_diff}}`.
             //
             // The previous Phase-1 path rebuilt the entire prompt
@@ -2249,7 +2258,7 @@ impl AgenticLoop {
     /// fields. Phase 2 will populate `channel`, `thinking_level`,
     /// `sandbox_enabled`, `model_aliases` from `AgentConfig`. Phase 3
     /// will populate the four control surfaces
-    /// (`iteration_budget`, `quota_state`, `soft_cancel_pending`,
+    /// (`iteration_budget`, `quota_tripped`, `soft_cancel_pending`,
     /// `capability_diff`).
     pub fn build_turn_context(
         &self,
@@ -2298,11 +2307,24 @@ impl AgenticLoop {
         //   passed in by `run_inner_with_meter` plus the loop's
         //   `max_iterations` ceiling. Always populated so a template
         //   that opts in sees progress even on iteration 1.
-        // - `quota_state`: read directly from the loop's principal
-        //   `QuotaMeter` (not via `QuotaScope::current()` — the inner
+        // - `quota_tripped`: rising-edge flag. Read the live
+        //   `QuotaMeter::is_exhausted()` from the loop's principal
+        //   meter (not via `QuotaScope::current()` — the inner
         //   peer meter would otherwise leak into the principal's
-        //   prompt). Both `snapshot()` and `config()` return owned
-        //   clones so the lock is released before the renderer runs.
+        //   prompt). `last_quota_tripped` carries the previous
+        //   observation across iterations; `quota_tripped` is set
+        //   on `TurnPromptContext` only on the **rising edge**
+        //   (false → true) so the `{{quota_tripped}}` banner doesn't
+        //   spam the prompt every iteration while the run stays
+        //   tripped. The next iteration while still tripped sees
+        //   `quota_tripped = false` on the context, and the banner
+        //   is omitted by `remove_missing=true`. When the meter
+        //   recovers (window roll, reset), the next fresh trip
+        //   trips again on the next false → true edge. Full quota
+        //   state (counters, limits, window) lives on the
+        //   `session` tool's `status` action — see
+        //   `QuotaSnapshot` in
+        //   `peko_core::tools::builtin::session`.
         // - `soft_cancel_pending`: already wired in Phase 1; the token
         //   is set by the IPC handler when `PrincipalStop`
         //   arrives. Surfaced verbatim at `{{soft_cancel}}`.
@@ -2313,22 +2335,18 @@ impl AgenticLoop {
             max_iterations: self.max_iterations,
         });
 
-        let quota_state = {
-            let snapshot = self.quota_meter.snapshot();
-            let config = self.quota_meter.config();
-            Some(crate::QuotaStateView {
-                input_tokens: snapshot.input_tokens,
-                output_tokens: snapshot.output_tokens,
-                request_count: snapshot.request_count,
-                // QuotaMeter stores `window_end` as `DateTime<Utc>` but
-                // `QuotaStateView` takes a `SystemTime` (renderer
-                // formats ISO 8601 from epoch secs). `From` is identity
-                // on the underlying instant so the conversion is lossless.
-                window_end: snapshot.window_end.into(),
-                input_limit: config.input_tokens,
-                output_limit: config.output_tokens,
-                request_limit: config.request_count,
-            })
+        // Rising-edge trip detection: only surface the banner on the
+        // iteration the meter first goes not-exhausted → exhausted.
+        // See the field doc on `last_quota_tripped` for rationale.
+        let quota_tripped = {
+            let now_tripped = self.quota_meter.is_exhausted();
+            let mut last = self
+                .last_quota_tripped
+                .lock()
+                .expect("last_quota_tripped mutex poisoned");
+            let rising_edge = now_tripped && !*last;
+            *last = now_tripped;
+            rising_edge
         };
 
         TurnPromptContext {
@@ -2357,7 +2375,7 @@ impl AgenticLoop {
             conversation_peer: self.agent.conversation_peer().map(str::to_string),
             // Phase 3: control surfaces fully populated each iteration.
             iteration_budget,
-            quota_state,
+            quota_tripped,
             soft_cancel_pending: self.cancel.as_ref().is_some_and(|t| t.is_cancelled()),
             capability_diff,
             tool_definitions: tool_defs.to_vec(),
