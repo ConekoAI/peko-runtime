@@ -62,6 +62,13 @@ OpenAI/DeepSeek automatic prefix caching match from the front).
 - **Observability** — per-iteration `cache_read_input_tokens` /
   `cache_creation_input_tokens` are logged at debug level alongside
   input/output tokens.
+- **Byte-stable tool catalog** — `ToolRegistry::list_tool_names`
+  collected the principal-visible name union from a fresh `HashSet`
+  per call, so the `tools[]` array order shuffled on EVERY agentic-loop
+  iteration and provider prompt caches broke exactly at the tools
+  block (live: only the ~1234-token frozen system prompt cached). The
+  catalog is now sorted by tool name, making the request prefix
+  byte-stable across iterations.
 
 ### Agent-surface E2E fixes (2026-09-06)
 

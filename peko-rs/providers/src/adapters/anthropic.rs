@@ -1640,6 +1640,84 @@ mod tests {
         assert_eq!(body["metadata"]["user_id"], "sess-123");
     }
 
+    /// Prompt-cache prefix stability: two `build_request` calls with
+    /// identical inputs must serialize byte-identically — body, system
+    /// block, and the `tools[]` array. The provider prompt cache keys
+    /// on the request prefix, so any per-call nondeterminism here
+    /// would break cache reads at exactly the point the byte stream
+    /// diverges.
+    #[test]
+    fn test_build_request_is_byte_stable_for_identical_inputs() {
+        let adapter = AnthropicAdapter::new();
+        let tools = vec![
+            ToolDefinition {
+                name: "Read".to_string(),
+                description: "Read a file".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute path"},
+                        "offset": {"type": "integer", "minimum": 0},
+                        "limit": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false,
+                }),
+            },
+            ToolDefinition {
+                name: "Write".to_string(),
+                description: "Write a file".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                }),
+            },
+        ];
+        let options = ChatOptions {
+            cache_retention: CacheRetention::Default,
+            prompt_cache_key: Some("sess-123".to_string()),
+            ..Default::default()
+        };
+
+        let (_, first) = adapter
+            .build_request(
+                "claude-3-sonnet",
+                &sample_messages(),
+                Some(&tools),
+                &options,
+                false,
+            )
+            .unwrap();
+        let first_bytes = serde_json::to_string(&first).unwrap();
+        let first_tools = serde_json::to_string(&first["tools"]).unwrap();
+
+        for call in 1..=32 {
+            let (_, body) = adapter
+                .build_request(
+                    "claude-3-sonnet",
+                    &sample_messages(),
+                    Some(&tools),
+                    &options,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(
+                first_tools,
+                serde_json::to_string(&body["tools"]).unwrap(),
+                "call {call}: tools[] bytes differ"
+            );
+            assert_eq!(
+                first_bytes,
+                serde_json::to_string(&body).unwrap(),
+                "call {call}: request body bytes differ"
+            );
+        }
+    }
+
     /// `CacheControl::for_retention` returns the right shape for each
     /// variant — the helper is the source of truth for the wire form.
     #[test]

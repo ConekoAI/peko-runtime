@@ -209,8 +209,16 @@ impl ToolRegistry {
     ///
     /// Union of `(name, PrincipalId::system())` and `(name, principal_id)`,
     /// with the latter taking precedence on name collision.
+    ///
+    /// The result is sorted by name. The union is collected from a
+    /// per-call `HashSet`, whose iteration order is randomized on every
+    /// call (`RandomState`); without a canonical sort the wire tool
+    /// catalog shuffles between agentic-loop iterations and breaks
+    /// provider prompt-cache prefix matching at the `tools[]` array.
     pub async fn list_tool_names(&self, principal_id: &PrincipalId) -> Vec<String> {
-        self.visible_names(principal_id).await.into_iter().collect()
+        let mut names: Vec<String> = self.visible_names(principal_id).await.into_iter().collect();
+        names.sort_unstable();
+        names
     }
 
     /// Internal helper: the set of tool names `principal_id` can see.
