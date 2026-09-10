@@ -8,7 +8,7 @@
 //! [`super::context::TurnPromptContext`]. The renderer dispatches all
 //! hook-driven sections (`tools`, `skills`, `agents`, `mcp_context`,
 //! `SessionContextBuild`) via [`ExtensionCore`] and threads the four
-//! long-horizon control surfaces (`iteration_budget`, `quota_state`,
+//! long-horizon control surfaces (`iteration_budget`, `quota_tripped`,
 //! `soft_cancel`, `capability_diff`) into the body.
 //!
 //! This module survives as a **test-only** static renderer — a pure

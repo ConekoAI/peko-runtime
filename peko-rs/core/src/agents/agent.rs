@@ -242,6 +242,14 @@ impl Agent {
             self.current_session_id.clone(),
             self.config.name.clone(),
             self.inbox_registry.clone(),
+            // F19: Agent no longer carries a quota_meter field; the
+            // principal's meter is fetched from
+            // `Principal.quota_meter` at runtime. The session tool's
+            // `quota` snapshot therefore stays `None` until a
+            // follow-up threads the principal meter through here
+            // (see PR-10 audit #5 — quota_tripped is a sufficient
+            // trip signal in the meantime).
+            None,
         );
         tools.push(Arc::new(SessionTool::new(
             std::sync::Arc::new(session_runtime)

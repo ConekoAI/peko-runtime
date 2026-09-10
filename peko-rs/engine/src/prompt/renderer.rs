@@ -49,8 +49,8 @@
 // them as unused. Allow explicitly to keep `--lib` clean.
 #[allow(unused_imports)]
 use super::context::{
-    CapabilityChange, CapabilityChangeKind, CapabilityDiff, IterationBudgetState, QuotaStateView,
-    TurnPromptContext,
+    render_quota_tripped_section, CapabilityChange, CapabilityChangeKind, CapabilityDiff,
+    IterationBudgetState, TurnPromptContext,
 };
 use super::placeholder::{replace_placeholders, Placeholder};
 use async_trait::async_trait;
@@ -193,7 +193,7 @@ impl PromptRenderer {
     /// fields, and the `mcp_context` section — i.e. everything that is
     /// byte-stable across iterations within a session unless the profile
     /// mutates. Excludes per-iteration fields like `{{iteration_budget}}`,
-    /// `{{quota_state}}`, `{{session_context}}`, `{{memory}}`,
+    /// `{{quota_tripped}}`, `{{session_context}}`, `{{memory}}`,
     /// `{{current_time}}`, `{{soft_cancel}}`, and
     /// `{{capability_diff}}` (those go in [`render_per_turn`]).
     /// `{{timezone}}` is retired from the per-turn suffix (redundant
@@ -234,11 +234,17 @@ impl PromptRenderer {
     /// section of the system prompt that changes every iteration
     /// (`{{current_time}}`, `{{memory}}`,
     /// `{{session_context}}`, `{{agents}}`, `{{skills}}`,
-    /// `{{iteration_budget}}`, `{{quota_state}}`, `{{soft_cancel}}`,
+    /// `{{iteration_budget}}`, `{{quota_tripped}}`, `{{soft_cancel}}`,
     /// `{{capability_diff}}`). The engine loop concatenates this with
     /// the cached prefix via [`assemble_system_prompt`]; the result is
     /// byte-stable across the prefix (cache hit) plus a fresh suffix
     /// each iteration.
+    ///
+    /// `{{quota_state}}` was retired 2026-09-09 — the principal's live
+    /// quota snapshot now lives on the `session` tool's `status` action
+    /// (`QuotaSnapshot`). `{{quota_tripped}}` stays as a single-shot
+    /// rising-edge banner (mirrors `{{soft_cancel}}`) so the agent
+    /// still sees an advisory the moment the principal trips.
     ///
     /// `{{agents}}` / `{{skills}}` live here (not in the prefix) so a
     /// workspace-scanned catalog picks up new files on the next
@@ -263,7 +269,7 @@ impl PromptRenderer {
             {{agents}}\n\
             {{skills}}\n\
             {{iteration_budget}}\n\
-            {{quota_state}}\n\
+            {{quota_tripped}}\n\
             {{soft_cancel}}\n\
             {{capability_diff}}";
 
@@ -437,11 +443,12 @@ fn build_placeholder_values(
             .unwrap_or_default(),
     );
     values.insert(
-        Placeholder::QuotaState,
-        ctx.quota_state
-            .as_ref()
-            .map(QuotaStateView::render)
-            .unwrap_or_default(),
+        Placeholder::QuotaTripped,
+        if ctx.quota_tripped {
+            render_quota_tripped_section()
+        } else {
+            String::new()
+        },
     );
     values.insert(
         Placeholder::SoftCancel,
@@ -471,7 +478,7 @@ fn build_placeholder_values(
 /// suffix ([`PromptRenderer::render_per_turn`]) so new workspace files
 /// appear on the next iteration; the other volatile placeholders
 /// (`timezone`, `memory`, `session_context`, `iteration_budget`,
-/// `quota_state`, `soft_cancel`, `capability_diff`) are omitted as
+/// `quota_tripped`, `soft_cancel`, `capability_diff`) are omitted as
 /// before — `remove_missing=true` strips them on render.
 fn build_stable_placeholder_values(
     ctx: &TurnPromptContext,
@@ -496,7 +503,7 @@ fn build_stable_placeholder_values(
         format_self_update_section(ctx.has_gateway),
     );
     values.insert(Placeholder::McpContext, mcp.to_string());
-    // Memory, SessionContext, IterationBudget, QuotaState, SoftCancel,
+    // Memory, SessionContext, IterationBudget, QuotaTripped, SoftCancel,
     // CapabilityDiff intentionally omitted — volatile.
 
     values
@@ -545,11 +552,12 @@ fn build_per_turn_placeholder_values(
             .unwrap_or_default(),
     );
     values.insert(
-        Placeholder::QuotaState,
-        ctx.quota_state
-            .as_ref()
-            .map(QuotaStateView::render)
-            .unwrap_or_default(),
+        Placeholder::QuotaTripped,
+        if ctx.quota_tripped {
+            render_quota_tripped_section()
+        } else {
+            String::new()
+        },
     );
     values.insert(
         Placeholder::SoftCancel,
@@ -899,7 +907,7 @@ mod tests {
             conversation_channel: None,
             conversation_peer: None,
             iteration_budget: None,
-            quota_state: None,
+            quota_tripped: false,
             soft_cancel_pending: false,
             capability_diff: None,
             tool_definitions: vec![],
@@ -967,7 +975,7 @@ mod tests {
     // Phase 3: control-surface end-to-end coverage. Each test pins a
     // single field on `ctx`, renders, and asserts on the resulting
     // Markdown body. Together these prove the renderer correctly wires
-    // `{{iteration_budget}}`, `{{quota_state}}`, and
+    // `{{iteration_budget}}`, `{{quota_tripped}}`, and
     // `{{capability_diff}}` from `TurnPromptContext` into the
     // rendered prompt. (`{{soft_cancel}}` is already covered above.)
 
@@ -1002,67 +1010,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_emits_quota_state_with_pct_when_set() {
-        use std::time::SystemTime;
+    async fn render_emits_quota_tripped_banner_when_pending() {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
-        ctx.body = "{{quota_state}}".to_string();
-        ctx.quota_state = Some(QuotaStateView {
-            input_tokens: 50,
-            output_tokens: 0,
-            request_count: 3,
-            window_end: SystemTime::UNIX_EPOCH,
-            input_limit: Some(100),
-            output_limit: None,
-            request_limit: Some(10),
-        });
+        ctx.body = "{{quota_tripped}}".to_string();
+        ctx.quota_tripped = true;
         let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(rendered.contains("## Quota status (current window)"));
-        assert!(rendered.contains("Input tokens:"));
-        assert!(rendered.contains("Output tokens:"));
-        assert!(rendered.contains("Requests:"));
-        assert!(rendered.contains("Window resets:"));
-        assert!(rendered.contains("50/100"));
-        assert!(rendered.contains("50%"));
-        assert!(rendered.contains("3/10"));
+        assert!(rendered.contains("## Quota tripped"));
+        assert!(rendered.contains("non-essential"));
     }
 
     #[tokio::test]
-    async fn render_emits_quota_state_trip_message_when_exceeded() {
-        use std::time::SystemTime;
+    async fn render_omits_quota_tripped_when_false() {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
-        ctx.body = "{{quota_state}}".to_string();
-        ctx.quota_state = Some(QuotaStateView {
-            input_tokens: 100,
-            output_tokens: 0,
-            request_count: 0,
-            window_end: SystemTime::UNIX_EPOCH,
-            input_limit: Some(100),
-            output_limit: None,
-            request_limit: None,
-        });
+        ctx.body = "{{quota_tripped}}".to_string();
+        ctx.quota_tripped = false;
         let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(rendered.contains("Quota tripped"));
+        assert_eq!(rendered, "");
     }
 
     #[tokio::test]
-    async fn render_collapses_quota_state_when_unlimited() {
-        use std::time::SystemTime;
+    async fn render_drops_unknown_quota_state_marker() {
+        // `{{quota_state}}` was retired 2026-09-09; legacy templates
+        // that still reference it must have the marker stripped
+        // rather than crash or leak an old section.
         let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
-        ctx.body = "{{quota_state}}".to_string();
-        ctx.quota_state = Some(QuotaStateView {
-            input_tokens: 0,
-            output_tokens: 0,
-            request_count: 0,
-            window_end: SystemTime::UNIX_EPOCH,
-            input_limit: None,
-            output_limit: None,
-            request_limit: None,
-        });
+        ctx.body = "before {{quota_state}} after".to_string();
         let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(!rendered.contains("## Quota status"));
+        assert!(!rendered.contains("{{quota_state}}"));
+        assert!(rendered.contains("before "));
+        assert!(rendered.contains(" after"));
     }
 
     #[tokio::test]
@@ -1104,7 +1083,7 @@ mod tests {
     /// Two renderings of the cache-stable prefix with the same context
     /// produce byte-identical strings — the foundation of provider
     /// prefix-cache hits. The volatile placeholders
-    /// (`{{iteration_budget}}`, `{{quota_state}}`, `{{session_context}}`)
+    /// (`{{iteration_budget}}`, `{{quota_tripped}}`, `{{session_context}}`)
     /// are absent from the prefix; mutating them between renders
     /// must not change the prefix.
     #[tokio::test]
@@ -1149,7 +1128,7 @@ mod tests {
     async fn render_per_turn_changes_with_volatile_fields() {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
-        ctx.body = "{{iteration_budget}} {{quota_state}}".to_string();
+        ctx.body = "{{iteration_budget}} {{quota_tripped}}".to_string();
         ctx.iteration_budget = Some(IterationBudgetState {
             iteration: 1,
             max_iterations: 10,

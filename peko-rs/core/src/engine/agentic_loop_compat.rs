@@ -2275,7 +2275,7 @@ mod tests {
             conversation_channel: None,
             conversation_peer: None,
             iteration_budget: None,
-            quota_state: None,
+            quota_tripped: false,
             soft_cancel_pending: false,
             capability_diff: None,
             tool_definitions: vec![],
@@ -2374,7 +2374,7 @@ mod tests {
             conversation_channel: None,
             conversation_peer: None,
             iteration_budget: None,
-            quota_state: None,
+            quota_tripped: false,
             soft_cancel_pending: false,
             capability_diff: None,
             tool_definitions: vec![],
@@ -2428,7 +2428,7 @@ mod tests {
         conversation_channel: None,
         conversation_peer: None,
         iteration_budget: None,
-        quota_state: None,
+        quota_tripped: false,
         soft_cancel_pending: false,
         capability_diff: None,
         tool_definitions: vec![],
@@ -2591,7 +2591,7 @@ mod tests {
         // so we catch regressions in `replace_placeholders`.
         cfg.prompt = Some(
             "iter={{iteration_budget}}\n\
-         quota={{quota_state}}\n\
+         quota={{quota_tripped}}\n\
          cancel={{soft_cancel}}\n\
          diff={{capability_diff}}\n"
                 .to_string(),
@@ -2652,12 +2652,14 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial(core)]
-    async fn loop_renders_quota_state_when_meter_configured() {
-        // Phase 3: a configured `QuotaMeter` flows through
-        // `build_turn_context` into `ctx.quota_state: Some(view)`. The
-        // renderer then emits the `## Quota status` section. We pin
-        // the field directly AND verify the rendered body to catch
-        // regressions in either the loop plumbing or the render path.
+    async fn loop_emits_quota_tripped_on_rising_edge() {
+        // Phase 3 (post-2026-09-09 refactor): a configured
+        // `QuotaMeter` whose `is_exhausted()` flips false → true
+        // surfaces `ctx.quota_tripped: true` on exactly one iteration
+        // (the rising edge), and `false` on subsequent iterations while
+        // the meter stays exhausted. Verifies the rising-edge gate so
+        // the `{{quota_tripped}}` banner doesn't spam the prompt.
+        use peko_message::TokenUsage;
         use peko_quota::{QuotaConfig, QuotaMeter};
         peko_identity::init_test_env();
         ensure_global_core();
@@ -2667,15 +2669,17 @@ mod tests {
         let (provider, _adapter) = mock_provider();
 
         let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-quota"), &temp)
+            Agent::new_for_test(loop_test_agent("phase3-quota-trip"), &temp)
                 .await
                 .unwrap(),
         );
+        // Limit 100 input tokens; the next 60-token charge puts the
+        // meter over the limit and trips `is_exhausted()`.
         let meter = Arc::new(QuotaMeter::new(
             QuotaConfig {
-                input_tokens: Some(1000),
+                input_tokens: Some(100),
                 output_tokens: None,
-                request_count: Some(10),
+                request_count: None,
                 ..Default::default()
             },
             None,
@@ -2693,23 +2697,55 @@ mod tests {
         peko_engine::CompactionConfig::default(),
     )
     .await
-    .with_quota_meter(meter);
+    .with_quota_meter(Arc::clone(&meter));
 
-        let ctx = loop_.build_turn_context(1, &[], "test-session");
-        let qs = ctx
-            .quota_state
-            .as_ref()
-            .expect("quota_state must be populated when a meter is bound");
-        assert_eq!(qs.input_limit, Some(1000));
-        assert_eq!(qs.request_limit, Some(10));
-        assert_eq!(qs.request_count, 0);
+        // Iteration 1: meter not exhausted yet → rising edge false.
+        let ctx_pre = loop_.build_turn_context(1, &[], "test-session");
+        assert!(
+            !ctx_pre.quota_tripped,
+            "iteration 1 must not surface quota_tripped; meter not exhausted"
+        );
+
+        // Trip the meter.
+        meter
+            .charge(&TokenUsage {
+                input: 60,
+                output: 0,
+                ..Default::default()
+            })
+            .await
+            .expect("first charge should succeed (60/100)");
+        meter
+            .charge(&TokenUsage {
+                input: 60,
+                output: 0,
+                ..Default::default()
+            })
+            .await
+            .expect_err("second charge should trip the 100-token input limit");
+
+        // Iteration 2: rising edge → ctx.quota_tripped must be true.
+        let ctx_trip = loop_.build_turn_context(2, &[], "test-session");
+        assert!(
+            ctx_trip.quota_tripped,
+            "iteration 2 must surface quota_tripped on the rising edge"
+        );
 
         let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
-        let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(rendered.contains("## Quota status (current window)"));
-        assert!(rendered.contains("Requests:"));
-        assert!(rendered.contains("1000"));
-        assert!(rendered.contains("/10"));
+        let rendered = renderer.render_for_iteration(&ctx_trip).await;
+        assert!(rendered.contains("## Quota tripped"));
+
+        // Iteration 3: still tripped, but no rising edge → banner gone.
+        let ctx_post = loop_.build_turn_context(3, &[], "test-session");
+        assert!(
+            !ctx_post.quota_tripped,
+            "iteration 3 must NOT re-surface quota_tripped; rising edge already fired"
+        );
+        let rendered_post = renderer.render_for_iteration(&ctx_post).await;
+        assert!(
+            !rendered_post.contains("## Quota tripped"),
+            "post-rising-edge iterations must not contain the trip banner"
+        );
     }
 
     #[tokio::test]
@@ -2840,7 +2876,7 @@ mod tests {
             conversation_channel: None,
             conversation_peer: None,
             iteration_budget: None,
-            quota_state: None,
+            quota_tripped: false,
             soft_cancel_pending: false,
             capability_diff: Some(diff),
             tool_definitions: vec![],
@@ -2918,7 +2954,7 @@ mod tests {
             conversation_channel: None,
             conversation_peer: None,
             iteration_budget: None,
-            quota_state: None,
+            quota_tripped: false,
             soft_cancel_pending: false,
             capability_diff: Some(diff),
             tool_definitions: vec![],

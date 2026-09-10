@@ -10,8 +10,8 @@
 //! - [`renderer`] — `PromptRenderer` (the production hook-driven
 //!   renderer; holds `Arc<dyn ToolFunnel>`).
 //! - [`context`] — `TurnPromptContext` (the typed input the renderer
-//!   reads) + `IterationBudgetState` / `QuotaStateView` control-surface
-//!   types + re-exports of `CapabilityChange*` / `CapabilityDiffTracker`
+//!   reads) + `IterationBudgetState` control-surface type +
+//!   re-exports of `CapabilityChange*` / `CapabilityDiffTracker`
 //!   from `crate::iteration_state`.
 //! - [`placeholder`] — `Placeholder` enum + `replace_placeholders`
 //!   template substitution (the engine that combines hook outputs with
