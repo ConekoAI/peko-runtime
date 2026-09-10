@@ -392,20 +392,32 @@ impl SessionRuntime for SessionManagerRuntime {
             return Err(anyhow::anyhow!("No current session available"));
         }
 
-        let mut manager = self.session_manager.write().await;
-        // D5: subtree callers may not read out-of-tree sessions.
-        let (caller, metas) = self.caller_and_metas(&mut manager).await?;
-        let session_id = &self.resolve_ref(&caller, &metas, session_id)?;
-        self.guard_tree(&caller, session_id, &metas)?;
-
-        let metadata = manager.get_session_metadata(session_id).await?;
+        // D5: subtree callers may not read out-of-tree sessions. The
+        // guard resolution + metadata fetch must finish under the
+        // manager write lock; the events scan (`load_guarded_events`
+        // re-acquires the same lock) happens AFTER dropping it so we
+        // don't deadlock against ourselves.
+        let (metadata, sessions_dir) = {
+            let mut manager = self.session_manager.write().await;
+            let (caller, metas) = self.caller_and_metas(&mut manager).await?;
+            let session_id = &self.resolve_ref(&caller, &metas, session_id)?;
+            self.guard_tree(&caller, session_id, &metas)?;
+            let metadata = manager.get_session_metadata(session_id).await?;
+            let sessions_dir = manager
+                .sessions_dir()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
+            (metadata, sessions_dir)
+        };
 
         // Per-turn token breakdown comes from the most recent assistant
         // message's `TokenUsage` stamp in the session JSONL — that's the
         // authoritative source the LLM provider reported, not whatever
         // counters we accumulated locally. We scan events from the end
         // so we don't pay O(n_messages) for long-running sessions.
-        let last_turn = last_assistant_turn_usage(&self.load_guarded_events(session_id).await?);
+        let session_id_str = metadata.session_id.to_string();
+        let events = SessionStorage::new(sessions_dir).load_events(&session_id_str).await?;
+        let last_turn = last_assistant_turn_usage(&events);
 
         // Principal-scoped quota snapshot — read-only view of the
         // principal's `QuotaMeter`. Omitted when the runtime was
