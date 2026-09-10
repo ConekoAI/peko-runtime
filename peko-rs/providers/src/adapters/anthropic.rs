@@ -112,6 +112,14 @@ impl AnthropicAdapter {
     /// - System prompt is separate from messages
     /// - Messages only have "user" and "assistant" roles
     /// - Tool results are sent as user messages with `tool_result` content
+    ///
+    /// Only the FIRST System-role message becomes the `system` wire
+    /// parameter. Any subsequent System-role message (e.g. the
+    /// post-compaction summary that sits at index 1, right behind the
+    /// frozen system prompt) is converted to a user-role message in
+    /// place — position and text preserved. Previously every System
+    /// message overwrote the parameter ("last one wins"), so a
+    /// compaction summary silently clobbered the real system prompt.
     fn convert_messages(&self, messages: &[LlmMessage]) -> (Option<String>, Vec<AnthropicMessage>) {
         let mut system_prompt = None;
         let mut anthropic_messages = Vec::new();
@@ -119,8 +127,19 @@ impl AnthropicAdapter {
         for msg in messages {
             match msg.role {
                 MessageRole::System => {
-                    // System messages go in the system parameter, not messages array
-                    system_prompt = Some(extract_text_content(&msg.content));
+                    if system_prompt.is_none() {
+                        // System prompt goes in the system parameter,
+                        // not the messages array.
+                        system_prompt = Some(extract_text_content(&msg.content));
+                    } else {
+                        // A mid-history system note (compaction summary)
+                        // must not clobber the prompt — demote it to a
+                        // user message in place.
+                        anthropic_messages.push(AnthropicMessage {
+                            role: "user".to_string(),
+                            content: Content::Text(extract_text_content(&msg.content)),
+                        });
+                    }
                 }
                 MessageRole::User => {
                     // F28: user messages may carry ContentBlock::Image
@@ -1099,6 +1118,33 @@ mod tests {
         assert_eq!(system, Some("You are helpful".to_string()));
         assert_eq!(anthropic_msgs.len(), 1);
         assert_eq!(anthropic_msgs[0].role, "user");
+    }
+
+    /// Multi-system-message fix: the FIRST System-role message becomes
+    /// the `system` wire parameter; any subsequent System-role message
+    /// (e.g. a post-compaction summary at index 1) is demoted to a
+    /// user-role message in place — position and text preserved — so it
+    /// can no longer clobber the real system prompt on the wire.
+    #[test]
+    fn test_convert_messages_second_system_becomes_user_in_place() {
+        let adapter = AnthropicAdapter::new();
+        let messages = vec![
+            LlmMessage::system("REAL SYSTEM PROMPT"),
+            LlmMessage::system("COMPACTION SUMMARY"),
+            LlmMessage::user("continue"),
+        ];
+
+        let (system, anthropic_msgs) = adapter.convert_messages(&messages);
+        assert_eq!(system, Some("REAL SYSTEM PROMPT".to_string()));
+        assert_eq!(anthropic_msgs.len(), 2);
+        // The summary keeps its position (directly after the prompt
+        // slot) as a user message with its text intact.
+        assert_eq!(anthropic_msgs[0].role, "user");
+        match &anthropic_msgs[0].content {
+            Content::Text(text) => assert_eq!(text, "COMPACTION SUMMARY"),
+            other => panic!("expected flattened text content, got {other:?}"),
+        }
+        assert_eq!(anthropic_msgs[1].role, "user");
     }
 
     #[test]

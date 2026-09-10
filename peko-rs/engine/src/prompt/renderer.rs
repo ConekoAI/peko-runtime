@@ -1,9 +1,13 @@
 //! Per-turn system prompt renderer.
 //!
 //! [`PromptRenderer`] is the single source of truth for the system prompt.
-//! It is invoked by `AgenticLoop::run_inner` at the top of every iteration,
-//! fed a [`TurnPromptContext`], and returns the freshly rendered Markdown
-//! body that becomes `messages[0]`. (The loop itself still lives in root
+//! The loop renders [`PromptRenderer::render_cache_stable`] once per run
+//! and freezes the result as `messages[0]`; per-iteration volatile
+//! context (clock, memory, session context, workspace catalogs,
+//! iteration budget, one-shot banners) is rendered by
+//! [`PromptRenderer::render_runtime_context`] and appended by the loop
+//! as a user-role `<runtime-context>` message at the TAIL of the
+//! conversation. (The loop itself still lives in root
 //! at `src/engine/agentic_loop.rs`; this module lifted in Phase 9b.N.5b.4
 //! so the renderer can hold `Arc<dyn ToolFunnel>` instead of the concrete
 //! root `ExtensionCore` type — the trait port keeps the renderer free of
@@ -11,9 +15,21 @@
 //!
 //! ## Design
 //!
-//! - **Stateless.** The renderer carries no per-iteration state. The
-//!   capability-diff tracker lives on the loop and is observed upstream
-//!   of the renderer call.
+//! - **Frozen system prompt + tail injection.** Both Anthropic explicit
+//!   `cache_control` breakpoints and OpenAI/DeepSeek automatic prefix
+//!   caching match from the front of the payload, so the head must be
+//!   byte-stable across iterations. The old scheme concatenated a
+//!   volatile suffix (`{{current_time}}`, `{{iteration_budget}}`, ...)
+//!   into `messages[0]` every iteration, which mutated the head and
+//!   destroyed prefix caching for the ENTIRE history. The 2026-09-10
+//!   fix freezes `messages[0]` and moves volatile context to an
+//!   append-only tail message with per-section change detection
+//!   ([`RuntimeContextState`]) so large rarely-changing sections are
+//!   not re-injected. Matches the codex / kimi-code / deepseek-harness
+//!   layout.
+//! - **Stateless renderer.** The renderer carries no per-iteration
+//!   state. The capability-diff tracker and the runtime-context
+//!   change-detection state live on the loop and are passed in.
 //! - **Parallel hook dispatch.** The `mcp_context` section and the
 //!   per-turn `SessionContextBuild` / `skills` / `agents` hooks all fire
 //!   concurrently via [`tokio::join!`]. Each handler is wrapped
@@ -24,12 +40,13 @@
 //!   `crate::agentic_loop::build_tool_definitions` and the
 //!   `list_tool_definitions_with_allowlist` filter in
 //!   `peko_core::extensions::framework::core::registry`).
-//! - **`skills` / `agents` are volatile.** Both sections render in the
-//!   per-turn suffix ([`PromptRenderer::render_per_turn`]), not the
-//!   cache-stable prefix, so agents/skills added to the workspace appear
-//!   on the very next iteration. The suffix already changes every
-//!   iteration via `{{current_time}}`, so this costs nothing in
-//!   provider-cache stability and makes the prefix strictly more stable.
+//! - **`skills` / `agents` ride the tail.** Both sections render in the
+//!   runtime-context message ([`PromptRenderer::render_runtime_context`]),
+//!   not the frozen system prompt, so agents/skills added to the
+//!   workspace appear on the very next iteration while `messages[0]`
+//!   stays byte-identical for the provider prefix cache. Per-section
+//!   change detection means the catalogs are only re-injected when the
+//!   scan result actually changes.
 //! - **`mcp_context` normalized.** This section previously used plain
 //!   `invoke_hook_text`; the rest use the trait-port
 //!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_api::ToolFunnel::invoke_prompt_section_hook).
@@ -187,7 +204,7 @@ impl PromptRenderer {
         replace_placeholders(&ctx.body, &values, true)
     }
 
-    /// F23: render only the cache-stable prefix of the system prompt.
+    /// F23: render the cache-stable system prompt.
     ///
     /// Includes the agent body, inline identity / runtime / sandbox
     /// fields, and the `mcp_context` section — i.e. everything that is
@@ -195,22 +212,23 @@ impl PromptRenderer {
     /// mutates. Excludes per-iteration fields like `{{iteration_budget}}`,
     /// `{{quota_tripped}}`, `{{session_context}}`, `{{memory}}`,
     /// `{{current_time}}`, `{{soft_cancel}}`, and
-    /// `{{capability_diff}}` (those go in [`render_per_turn`]).
-    /// `{{timezone}}` is retired from the per-turn suffix (redundant
+    /// `{{capability_diff}}` (those go in the tail runtime-context
+    /// message — see [`render_runtime_context`]).
+    /// `{{timezone}}` is retired from the per-turn context (redundant
     /// with `{{current_time}}`); it still resolves in
     /// [`render_for_iteration`] for legacy templates.
-    /// `{{skills}}` and `{{agents}}` also go in [`render_per_turn`]:
-    /// they are workspace-scanned catalogs, so rendering them in the
-    /// volatile suffix lets new workspace files appear on the next
-    /// iteration (the suffix already changes every iteration via
-    /// `{{current_time}}`, so this costs nothing in provider-cache
-    /// stability and makes the prefix strictly more stable). Tool
-    /// catalogs are not part of the prefix; they reach the model on the
-    /// wire as the `tools[]` JSON-schema array.
+    /// `{{skills}}` and `{{agents}}` also go in
+    /// [`render_runtime_context`]: they are workspace-scanned catalogs,
+    /// so rendering them in the tail message lets new workspace files
+    /// appear on the next iteration while the frozen system prompt
+    /// stays byte-identical for the provider prefix cache. Tool
+    /// catalogs are not part of the system prompt; they reach the model
+    /// on the wire as the `tools[]` JSON-schema array.
     ///
-    /// The engine loop caches the returned string in an `Arc<String>`
-    /// and re-renders on profile changes. Adapter cache markers on
-    /// this prefix give the provider byte-identical prefix matching
+    /// The engine loop renders this once per run, caches the string in
+    /// an `Arc<String>`, and freezes it as `messages[0]` — it is never
+    /// rebuilt mid-run. Adapter cache markers on this fully-static
+    /// prompt give the provider byte-identical prefix matching
     /// turn-over-turn.
     #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name))]
     pub async fn render_cache_stable(&self, ctx: &TurnPromptContext) -> String {
@@ -228,81 +246,118 @@ impl PromptRenderer {
         replace_placeholders(&ctx.body, &values, true)
     }
 
-    /// F23: render only the per-turn volatile suffix.
+    /// Render the per-iteration runtime-context message body.
     ///
-    /// Complements [`render_cache_stable`]: produces the trailing
-    /// section of the system prompt that changes every iteration
-    /// (`{{current_time}}`, `{{memory}}`,
+    /// Complements [`render_cache_stable`]: produces the volatile
+    /// context that used to ride in the system prompt's per-turn
+    /// suffix (`{{current_time}}`, `{{memory}}`,
     /// `{{session_context}}`, `{{agents}}`, `{{skills}}`,
     /// `{{iteration_budget}}`, `{{quota_tripped}}`, `{{soft_cancel}}`,
-    /// `{{capability_diff}}`). The engine loop concatenates this with
-    /// the cached prefix via [`assemble_system_prompt`]; the result is
-    /// byte-stable across the prefix (cache hit) plus a fresh suffix
-    /// each iteration.
+    /// `{{capability_diff}}`). The engine loop appends the returned
+    /// string as a user-role message at the TAIL of the conversation,
+    /// so `messages[0]` stays byte-identical across iterations and the
+    /// provider's front-anchored prefix cache (Anthropic explicit
+    /// breakpoints, OpenAI/DeepSeek automatic) keeps hitting.
+    ///
+    /// Section injection policy:
+    ///
+    /// - **Always** (tiny): the iteration-budget line.
+    /// - **On change**: current time (minute granularity, so it changes
+    ///   at most once a minute), memory, session context, and the
+    ///   agents/skills workspace catalogs. Each section's rendered text
+    ///   is value-compared against the last injected value carried in
+    ///   `state`; only changed sections are re-injected, so large
+    ///   rarely-changing sections (memory, catalogs) don't bloat every
+    ///   iteration.
+    /// - **Event-edged**: `quota_tripped`, `soft_cancel`,
+    ///   `capability_diff` — included only when the corresponding
+    ///   `TurnPromptContext` field fires (the loop computes the rising
+    ///   edges upstream).
+    ///
+    /// Returns `None` when no section is due this iteration (in
+    /// practice only possible when `iteration_budget` is unset, since
+    /// that line is always included when present). The body is wrapped
+    /// in a `<runtime-context>...</runtime-context>` envelope.
     ///
     /// `{{quota_state}}` was retired 2026-09-09 — the principal's live
     /// quota snapshot now lives on the `session` tool's `status` action
     /// (`QuotaSnapshot`). `{{quota_tripped}}` stays as a single-shot
     /// rising-edge banner (mirrors `{{soft_cancel}}`) so the agent
     /// still sees an advisory the moment the principal trips.
-    ///
-    /// `{{agents}}` / `{{skills}}` live here (not in the prefix) so a
-    /// workspace-scanned catalog picks up new files on the next
-    /// iteration instead of being frozen for the loop's lifetime.
-    #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
-    pub async fn render_per_turn(&self, ctx: &TurnPromptContext) -> String {
-        // The per-turn suffix is built from a stripped-down body that
-        // only carries the volatile placeholders. We don't ship a
-        // separate template per agent; instead we run
-        // `replace_placeholders` over a synthetic body containing just
-        // the volatile placeholders, with `remove_missing=true` so any
-        // template that doesn't reference a volatile placeholder yields
-        // an empty string (the engine loop will then reuse the cached
-        // prefix as-is).
-        //
-        // The synthetic body lists each volatile placeholder on its
-        // own line so each section is delimited.
-        const VOLATILE_BODY: &str = "\
-            {{current_time}}\n\
-            {{memory}}\n\
-            {{session_context}}\n\
-            {{agents}}\n\
-            {{skills}}\n\
-            {{iteration_budget}}\n\
-            {{quota_tripped}}\n\
-            {{soft_cancel}}\n\
-            {{capability_diff}}";
-
+    #[tracing::instrument(skip(self, ctx, state), fields(agent = %ctx.agent_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
+    pub async fn render_runtime_context(
+        &self,
+        ctx: &TurnPromptContext,
+        state: &mut RuntimeContextState,
+    ) -> Option<String> {
         // Parallel hook dispatch: the workspace-catalog sections
         // (`agents`, `skills`) and `SessionContextBuild` are independent,
         // so fire them concurrently. Each `dispatch_text` carries its
-        // own 2s timeout.
+        // own 2s timeout. The handlers mtime-cache their scans, so
+        // rendering every iteration purely for the change compare is
+        // cheap.
         let (agents, skills, session_ctx) = tokio::join!(
             self.dispatch_text("agents", ctx),
             self.dispatch_text("skills", ctx),
             self.dispatch_session_context(ctx),
         );
-        let values = build_per_turn_placeholder_values(ctx, &agents, &skills, &session_ctx);
-        replace_placeholders(VOLATILE_BODY, &values, true)
-    }
 
-    /// Assemble the cache-stable prefix and the per-turn suffix into
-    /// the final system prompt string. When the suffix is empty
-    /// (e.g. the template references no volatile placeholders), the
-    /// prefix is returned verbatim so we don't add trailing
-    /// whitespace.
-    ///
-    /// Runs of 3+ consecutive newlines are collapsed to a single blank
-    /// line: empty volatile sections (each placeholder sits on its own
-    /// line and renders to "") would otherwise leave 3–4 blank lines
-    /// in the assembled prompt.
-    #[must_use]
-    pub fn assemble_system_prompt(cache_stable: &str, per_turn: &str) -> String {
-        if per_turn.is_empty() {
-            cache_stable.to_string()
-        } else {
-            collapse_blank_line_runs(&format!("{cache_stable}\n\n{per_turn}"))
+        let mut sections: Vec<String> = Vec::new();
+
+        // On-change sections. Empty renders are recorded but never
+        // injected (there is nothing to retract — a section that
+        // disappears simply stops riding the tail).
+        if let Some(section) = state.take_changed(SectionSlot::CurrentTime, render_current_time()) {
+            sections.push(section);
         }
+        if let Some(section) = state.take_changed(SectionSlot::Memory, format_memory_section(ctx)) {
+            sections.push(section);
+        }
+        if let Some(section) = state.take_changed(
+            SectionSlot::SessionContext,
+            format_session_context_section(ctx, &session_ctx),
+        ) {
+            sections.push(section);
+        }
+        if let Some(section) =
+            state.take_changed(SectionSlot::Agents, format_agents_section(&agents))
+        {
+            sections.push(section);
+        }
+        if let Some(section) =
+            state.take_changed(SectionSlot::Skills, format_skills_section(&skills))
+        {
+            sections.push(section);
+        }
+
+        // Always-on section: the iteration budget is one line, so it
+        // rides every iteration and doubles as the turn heartbeat.
+        if let Some(budget) = ctx.iteration_budget.as_ref() {
+            sections.push(budget.render().trim_end().to_string());
+        }
+
+        // Event-edged sections: the loop sets these fields only on the
+        // iteration the event fires.
+        if ctx.quota_tripped {
+            sections.push(render_quota_tripped_section().trim_end().to_string());
+        }
+        if ctx.soft_cancel_pending {
+            sections.push(render_soft_cancel_section().trim_end().to_string());
+        }
+        if let Some(diff) = ctx.capability_diff.as_ref() {
+            let rendered = diff.render();
+            if !rendered.is_empty() {
+                sections.push(rendered.trim_end().to_string());
+            }
+        }
+
+        if sections.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "<runtime-context>\n{}\n</runtime-context>",
+            sections.join("\n\n")
+        ))
     }
 
     /// Dispatch a single `PromptSystemSection` hook with a 2s timeout.
@@ -396,6 +451,77 @@ impl PromptRenderer {
     }
 }
 
+/// The on-change sections tracked by [`RuntimeContextState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionSlot {
+    CurrentTime,
+    Memory,
+    SessionContext,
+    Agents,
+    Skills,
+}
+
+/// Per-section last-injected values for the tail runtime-context
+/// message.
+///
+/// Lives on the agentic loop as per-run state (one per `run_inner`
+/// invocation) and is passed to
+/// [`PromptRenderer::render_runtime_context`] every iteration. A
+/// section is re-injected only when its rendered text differs from the
+/// value recorded here, so large rarely-changing sections (memory,
+/// agents/skills catalogs) ride the tail once and are not re-injected
+/// until they actually change. `None` = never injected this run, so
+/// iteration 1 injects every non-empty section.
+#[derive(Debug, Default)]
+pub struct RuntimeContextState {
+    current_time: Option<String>,
+    memory: Option<String>,
+    session_context: Option<String>,
+    agents: Option<String>,
+    skills: Option<String>,
+}
+
+impl RuntimeContextState {
+    /// Compare-and-record one section. Returns `Some(rendered)` when
+    /// the rendered text differs from the last injected value (or the
+    /// section was never rendered this run); returns `None` when
+    /// unchanged. Empty renders are recorded but never returned — a
+    /// section that renders empty simply doesn't ride the tail (there
+    /// is nothing to retract; prior injections age out via compaction).
+    fn take_changed(&mut self, slot: SectionSlot, rendered: String) -> Option<String> {
+        let cell = match slot {
+            SectionSlot::CurrentTime => &mut self.current_time,
+            SectionSlot::Memory => &mut self.memory,
+            SectionSlot::SessionContext => &mut self.session_context,
+            SectionSlot::Agents => &mut self.agents,
+            SectionSlot::Skills => &mut self.skills,
+        };
+        if cell.as_deref() == Some(rendered.as_str()) {
+            return None;
+        }
+        let changed = (!rendered.is_empty()).then_some(rendered.clone());
+        *cell = Some(rendered);
+        changed
+    }
+}
+
+/// Render the `{{current_time}}` line at MINUTE granularity. The clock
+/// rides the runtime-context tail message, not the frozen system
+/// prompt; truncating to whole minutes means the section changes at
+/// most once a minute, so back-to-back iterations within the same
+/// minute don't re-inject it (change detection in
+/// [`RuntimeContextState`]).
+///
+/// The RFC3339 local timestamp already carries the offset, so no
+/// separate timezone line is emitted.
+fn render_current_time() -> String {
+    format!(
+        "Current time: {} (local) / {} (UTC)",
+        Local::now().format("%Y-%m-%dT%H:%M%:z"),
+        Utc::now().format("%Y-%m-%dT%H:%MZ")
+    )
+}
+
 /// Build the placeholder → value map for one iteration.
 fn build_placeholder_values(
     ctx: &TurnPromptContext,
@@ -474,12 +600,13 @@ fn build_placeholder_values(
 /// Same shape as `build_placeholder_values`, but only fills the
 /// placeholders that are byte-stable across iterations: inline
 /// identity, runtime, sandbox, model aliases, self-update, and the
-/// `mcp_context` section. `skills` and `agents` moved to the volatile
-/// suffix ([`PromptRenderer::render_per_turn`]) so new workspace files
-/// appear on the next iteration; the other volatile placeholders
-/// (`timezone`, `memory`, `session_context`, `iteration_budget`,
-/// `quota_tripped`, `soft_cancel`, `capability_diff`) are omitted as
-/// before — `remove_missing=true` strips them on render.
+/// `mcp_context` section. `skills` and `agents` moved to the tail
+/// runtime-context message ([`PromptRenderer::render_runtime_context`])
+/// so new workspace files appear on the next iteration; the other
+/// volatile placeholders (`timezone`, `memory`, `session_context`,
+/// `iteration_budget`, `quota_tripped`, `soft_cancel`,
+/// `capability_diff`) are omitted as before — `remove_missing=true`
+/// strips them on render.
 fn build_stable_placeholder_values(
     ctx: &TurnPromptContext,
     mcp: &str,
@@ -494,7 +621,8 @@ fn build_stable_placeholder_values(
     // Placeholder::Timezone intentionally omitted — volatile.
 
     // Hook-driven sections. Tools are wire-only. Skills / Agents
-    // intentionally omitted — they moved to the volatile suffix.
+    // intentionally omitted — they moved to the tail runtime-context
+    // message.
     values.insert(Placeholder::Runtime, format_runtime_section(ctx));
     values.insert(Placeholder::Sandbox, format_sandbox_section(ctx));
     values.insert(Placeholder::ModelAliases, format_model_aliases_section(ctx));
@@ -507,96 +635,6 @@ fn build_stable_placeholder_values(
     // CapabilityDiff intentionally omitted — volatile.
 
     values
-}
-
-/// F23: build the placeholder → value map for the per-turn suffix.
-///
-/// Only fills the volatile placeholders — including the `agents` /
-/// `skills` workspace catalogs, which refresh every iteration. Stable
-/// placeholders are omitted; `remove_missing=true` strips any leftover
-/// references in the synthetic body.
-fn build_per_turn_placeholder_values(
-    ctx: &TurnPromptContext,
-    agents: &str,
-    skills: &str,
-    session_ctx: &str,
-) -> HashMap<Placeholder, String> {
-    let mut values = HashMap::new();
-
-    values.insert(
-        Placeholder::CurrentTime,
-        format!(
-            "Current time: {} (local) / {} (UTC)",
-            Local::now().to_rfc3339(),
-            Utc::now().to_rfc3339()
-        ),
-    );
-    // Placeholder::Timezone intentionally omitted — the bare `+08:00`
-    // line was redundant with `{{current_time}}`, whose RFC3339 local
-    // timestamp already carries the offset.
-    values.insert(Placeholder::Memory, format_memory_section(ctx));
-    values.insert(
-        Placeholder::SessionContext,
-        format_session_context_section(ctx, session_ctx),
-    );
-    // Workspace catalogs — refreshed per iteration so newly added
-    // workspace files appear immediately.
-    values.insert(Placeholder::Agents, format_agents_section(agents));
-    values.insert(Placeholder::Skills, format_skills_section(skills));
-
-    values.insert(
-        Placeholder::IterationBudget,
-        ctx.iteration_budget
-            .as_ref()
-            .map(IterationBudgetState::render)
-            .unwrap_or_default(),
-    );
-    values.insert(
-        Placeholder::QuotaTripped,
-        if ctx.quota_tripped {
-            render_quota_tripped_section()
-        } else {
-            String::new()
-        },
-    );
-    values.insert(
-        Placeholder::SoftCancel,
-        if ctx.soft_cancel_pending {
-            render_soft_cancel_section()
-        } else {
-            String::new()
-        },
-    );
-    values.insert(
-        Placeholder::CapabilityDiff,
-        ctx.capability_diff
-            .as_ref()
-            .map(CapabilityDiff::render)
-            .unwrap_or_default(),
-    );
-
-    values
-}
-
-/// Collapse runs of 3+ consecutive newlines down to a single blank
-/// line. Empty volatile sections in the per-turn suffix leave one
-/// blank line per stripped placeholder; without this, the assembled
-/// system prompt carries multi-blank-line gaps.
-fn collapse_blank_line_runs(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut newlines = 0;
-    for ch in text.chars() {
-        if ch == '\n' {
-            newlines += 1;
-            if newlines > 2 {
-                continue;
-            }
-        } else {
-            newlines = 0;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 fn format_skills_section(text: &str) -> String {
@@ -1078,7 +1116,7 @@ mod tests {
         assert!(!rendered.contains("## Capability changes"));
     }
 
-    // ---------- F23: cache_stable + per_turn split ----------
+    // ---------- Frozen system prompt + tail runtime context ----------
 
     /// Two renderings of the cache-stable prefix with the same context
     /// produce byte-identical strings — the foundation of provider
@@ -1104,157 +1142,284 @@ mod tests {
         assert_eq!(prefix_first, prefix_second);
     }
 
-    /// `assemble_system_prompt` returns the prefix verbatim when the
-    /// suffix is empty; otherwise concatenates with a blank-line
-    /// separator.
-    #[test]
-    fn assemble_system_prompt_concatenates_with_separator() {
-        // Empty suffix: prefix returned unchanged.
-        assert_eq!(
-            PromptRenderer::assemble_system_prompt("Hello.", ""),
-            "Hello."
-        );
-        // Non-empty suffix: joined with one blank line.
-        assert_eq!(
-            PromptRenderer::assemble_system_prompt("Prefix.", "Suffix."),
-            "Prefix.\n\nSuffix."
-        );
-    }
-
-    /// The per-turn suffix contains the volatile placeholders the
-    /// template references. Mutating a volatile field between calls
-    /// changes the suffix (proves it isn't accidentally stable).
+    /// The frozen system prompt must not carry any volatile content:
+    /// no leftover `{{placeholder}}` tokens and no volatile sections
+    /// (clock, memory, iteration budget, catalogs). Everything the
+    /// provider's front-anchored prefix cache matches on is static.
     #[tokio::test]
-    async fn render_per_turn_changes_with_volatile_fields() {
-        let renderer = PromptRenderer::new(empty_funnel());
+    async fn render_cache_stable_contains_no_volatile_content() {
+        let renderer = PromptRenderer::new(catalog_funnel());
         let mut ctx = empty_ctx();
-        ctx.body = "{{iteration_budget}} {{quota_tripped}}".to_string();
+        ctx.body = "You are {{agent_name}}.\n{{current_time}}\n{{memory}}\n\
+                    {{iteration_budget}}\n{{agents}}\n{{skills}}\n{{session_context}}"
+            .to_string();
+        ctx.principal_memory = Some("remember this".to_string());
         ctx.iteration_budget = Some(IterationBudgetState {
             iteration: 1,
             max_iterations: 10,
         });
 
-        let suffix_first = renderer.render_per_turn(&ctx).await;
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        assert!(!prefix.contains("{{"), "prefix was: {prefix}");
+        assert!(!prefix.contains("Current time:"), "prefix was: {prefix}");
+        assert!(!prefix.contains("remember this"), "prefix was: {prefix}");
+        assert!(
+            !prefix.contains("## Iteration budget"),
+            "prefix was: {prefix}"
+        );
+        assert!(
+            !prefix.contains("## Available Agents"),
+            "prefix was: {prefix}"
+        );
+        assert!(
+            !prefix.contains("## Skills (mandatory)"),
+            "prefix was: {prefix}"
+        );
+        assert!(
+            prefix.contains("You are test-agent."),
+            "prefix was: {prefix}"
+        );
+    }
+
+    /// The runtime-context message is wrapped in the
+    /// `<runtime-context>` envelope; the iteration-budget line rides
+    /// every render (it is the always-on section), and mutating it
+    /// between renders changes the message (proves the tail isn't
+    /// accidentally stable).
+    #[tokio::test]
+    async fn runtime_context_envelope_and_iteration_budget() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 1,
+            max_iterations: 10,
+        });
+
+        let first = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("iteration budget is always due");
+        assert!(first.starts_with("<runtime-context>\n"), "got: {first}");
+        assert!(first.ends_with("\n</runtime-context>"), "got: {first}");
+        assert!(first.contains("Iteration 1 of 10"), "got: {first}");
+
         ctx.iteration_budget = Some(IterationBudgetState {
             iteration: 9,
             max_iterations: 10,
         });
-        let suffix_second = renderer.render_per_turn(&ctx).await;
+        let second = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("iteration budget is always due");
+        assert!(second.contains("Iteration 9 of 10"), "got: {second}");
+        assert!(second.contains("Approaching limit"), "got: {second}");
+    }
 
-        assert!(suffix_first.contains("Iteration 1 of 10"));
-        assert!(suffix_second.contains("Approaching limit"));
+    /// Change detection: the second render with unchanged inputs
+    /// re-injects NONE of the on-change sections (clock, memory,
+    /// session context, catalogs) — only the always-on iteration
+    /// budget line changes.
+    #[tokio::test]
+    async fn runtime_context_renders_only_changed_sections() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.principal_memory = Some("remember this".to_string());
+        ctx.conversation_channel = Some("chan_abc123".to_string());
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 1,
+            max_iterations: 10,
+        });
+
+        // Iteration 1: every non-empty section is due (state is cold).
+        let first = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("first render must inject sections");
+        assert!(first.contains("Current time:"), "got: {first}");
+        assert!(first.contains("remember this"), "got: {first}");
+        assert!(
+            first.contains("conversation channel: chan_abc123"),
+            "got: {first}"
+        );
+        assert!(first.contains("## Available Agents"), "got: {first}");
+        assert!(first.contains("## Skills (mandatory)"), "got: {first}");
+
+        // Iteration 2: unchanged inputs → the heavy sections are NOT
+        // re-injected; only the fresh iteration-budget line rides.
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 2,
+            max_iterations: 10,
+        });
+        let second = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("iteration budget is always due");
+        assert!(second.contains("Iteration 2 of 10"), "got: {second}");
+        assert!(!second.contains("Current time:"), "got: {second}");
+        assert!(!second.contains("remember this"), "got: {second}");
+        assert!(!second.contains("## Available Agents"), "got: {second}");
+        assert!(!second.contains("## Skills (mandatory)"), "got: {second}");
+
+        // Iteration 3: memory changed → only memory is re-injected.
+        ctx.principal_memory = Some("remember this AND that".to_string());
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 3,
+            max_iterations: 10,
+        });
+        let third = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("iteration budget is always due");
+        assert!(third.contains("remember this AND that"), "got: {third}");
+        assert!(!third.contains("## Available Agents"), "got: {third}");
+        assert!(!third.contains("Current time:"), "got: {third}");
+    }
+
+    /// The clock renders at minute granularity (no seconds), so the
+    /// current-time section changes at most once a minute and
+    /// back-to-back iterations within the same minute don't re-inject
+    /// it.
+    #[tokio::test]
+    async fn runtime_context_current_time_is_minute_granularity() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 1,
+            max_iterations: 10,
+        });
+
+        let first = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("first render must inject the clock");
+        let expected = format!(
+            "Current time: {} (local) / {} (UTC)",
+            Local::now().format("%Y-%m-%dT%H:%M%:z"),
+            Utc::now().format("%Y-%m-%dT%H:%MZ")
+        );
+        assert!(first.contains(&expected), "got: {first}");
+        // No seconds component: with seconds the local timestamp would
+        // read `HH:MM:SS+oo:oo`, so the minute string would be followed
+        // by `:SS` instead of the offset / `Z`.
+        let with_seconds = format!("Current time: {}:", Local::now().format("%Y-%m-%dT%H:%M"));
+        assert!(!first.contains(&with_seconds), "got: {first}");
+
+        // A second render in the same minute must NOT re-inject the
+        // clock (change detection sees the identical minute string).
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 2,
+            max_iterations: 10,
+        });
+        let second = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("iteration budget is always due");
+        assert!(!second.contains("Current time:"), "got: {second}");
     }
 
     #[tokio::test]
-    async fn render_per_turn_omits_timezone_line() {
-        // The bare `+08:00` line was redundant with `{{current_time}}`
+    async fn runtime_context_omits_timezone_line() {
+        // The bare `+08:00` line was redundant with the clock line
         // (whose RFC3339 local timestamp already carries the offset);
-        // it must not appear in the per-turn suffix.
+        // it must not appear in the runtime-context message.
         let renderer = PromptRenderer::new(empty_funnel());
-        let ctx = empty_ctx();
-        let suffix = renderer.render_per_turn(&ctx).await;
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 1,
+            max_iterations: 10,
+        });
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("iteration budget is always due");
         let offset = Local::now().format("%:z").to_string();
         assert!(
-            !suffix.lines().any(|line| line.trim() == offset),
-            "suffix must not contain a bare timezone-offset line; got: {suffix}"
+            !body.lines().any(|line| line.trim() == offset),
+            "runtime context must not contain a bare timezone-offset line; got: {body}"
         );
     }
 
-    /// Empty volatile sections leave one stripped placeholder line
-    /// each; `assemble_system_prompt` collapses the resulting runs of
-    /// 3+ newlines to a single blank line.
-    #[test]
-    fn assemble_system_prompt_collapses_blank_line_runs() {
-        let assembled = PromptRenderer::assemble_system_prompt(
-            "Prefix.",
-            "Current time: t\n\n\n\n\n## Skills (mandatory)\nx",
-        );
-        assert_eq!(
-            assembled,
-            "Prefix.\n\nCurrent time: t\n\n## Skills (mandatory)\nx"
-        );
-        // 2-newline boundaries are preserved (single blank line).
-        assert_eq!(
-            PromptRenderer::assemble_system_prompt("A.", "B.\n\nC."),
-            "A.\n\nB.\n\nC."
-        );
-    }
-
-    /// End-to-end: with no workspace catalogs, memory, or control
-    /// surfaces, the per-turn suffix is mostly empty sections; the
-    /// assembled prompt must not contain any 3+-newline run.
+    /// Event-edged sections ride only on the iteration they fire:
+    /// `quota_tripped` / `soft_cancel` / `capability_diff` are included
+    /// when the ctx flags them and absent otherwise (the loop computes
+    /// the rising edges upstream of the renderer).
     #[tokio::test]
-    async fn assembled_prompt_has_no_blank_line_runs() {
+    async fn runtime_context_event_edged_sections() {
         let renderer = PromptRenderer::new(empty_funnel());
-        let ctx = empty_ctx();
-        let prefix = renderer.render_cache_stable(&ctx).await;
-        let suffix = renderer.render_per_turn(&ctx).await;
-        let assembled = PromptRenderer::assemble_system_prompt(&prefix, &suffix);
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.quota_tripped = true;
+        ctx.soft_cancel_pending = true;
+        ctx.capability_diff = Some(CapabilityDiff {
+            granted: vec![CapabilityChange {
+                capability: "tool:Write".to_string(),
+                kind: CapabilityChangeKind::Granted,
+            }],
+            revoked: vec![],
+        });
+
+        let fired = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("edged sections fire");
+        assert!(fired.contains("## Quota tripped"), "got: {fired}");
+        assert!(fired.contains("## Cancellation requested"), "got: {fired}");
         assert!(
-            !assembled.contains("\n\n\n"),
-            "assembled prompt contains a blank-line run: {assembled:?}"
+            fired.contains("## Capability changes since last turn"),
+            "got: {fired}"
         );
-    }
 
-    #[tokio::test]
-    async fn render_per_turn_includes_current_time() {
-        let renderer = PromptRenderer::new(empty_funnel());
-        let ctx = empty_ctx();
-        let suffix = renderer.render_per_turn(&ctx).await;
-        assert!(suffix.contains("Current time:"), "suffix was: {suffix}");
-        assert!(suffix.contains("(UTC)"), "suffix was: {suffix}");
-        // The clock is volatile — it must NOT leak into the
-        // cache-stable prefix (provider prefix caching depends on the
-        // prefix being byte-stable across turns).
-        let prefix = renderer.render_cache_stable(&ctx).await;
-        assert!(!prefix.contains("Current time:"), "prefix was: {prefix}");
+        ctx.quota_tripped = false;
+        ctx.soft_cancel_pending = false;
+        ctx.capability_diff = None;
+        // Nothing due at all now (no iteration budget set, on-change
+        // sections unchanged) → the whole message is skipped.
+        let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(quiet.is_none(), "got: {quiet:?}");
     }
 
     /// The `agents` / `skills` workspace catalogs render in the
-    /// per-turn suffix when a `PromptSystemSection` handler returns
-    /// text for them.
+    /// runtime-context message when a `PromptSystemSection` handler
+    /// returns text for them.
     #[tokio::test]
-    async fn render_per_turn_includes_agents_and_skills_sections() {
+    async fn runtime_context_includes_agents_and_skills_sections() {
         let renderer = PromptRenderer::new(catalog_funnel());
-        let ctx = empty_ctx();
-        let suffix = renderer.render_per_turn(&ctx).await;
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 1,
+            max_iterations: 10,
+        });
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("sections due on first render");
+        assert!(body.contains("## Available Agents"), "got: {body}");
+        assert!(body.contains("<available_agents>"), "got: {body}");
         assert!(
-            suffix.contains("## Available Agents"),
-            "suffix was: {suffix}"
+            body.contains("- Reviewer (id: reviewer): reviews code"),
+            "got: {body}"
         );
-        assert!(
-            suffix.contains("<available_agents>"),
-            "suffix was: {suffix}"
-        );
-        assert!(
-            suffix.contains("- Reviewer (id: reviewer): reviews code"),
-            "suffix was: {suffix}"
-        );
-        assert!(
-            suffix.contains("## Skills (mandatory)"),
-            "suffix was: {suffix}"
-        );
-        assert!(
-            suffix.contains("<available_skills>"),
-            "suffix was: {suffix}"
-        );
-        assert!(
-            suffix.contains("- docker: Docker ops"),
-            "suffix was: {suffix}"
-        );
+        assert!(body.contains("## Skills (mandatory)"), "got: {body}");
+        assert!(body.contains("<available_skills>"), "got: {body}");
+        assert!(body.contains("- docker: Docker ops"), "got: {body}");
     }
 
     /// The `agents` / `skills` catalogs must NOT leak into the
-    /// cache-stable prefix — they moved to the volatile suffix so new
-    /// workspace files appear on the next iteration and the prefix
-    /// stays byte-stable.
+    /// cache-stable prefix — they moved to the tail runtime-context
+    /// message so new workspace files appear on the next iteration and
+    /// the prefix stays byte-stable.
     #[tokio::test]
     async fn render_cache_stable_omits_agents_and_skills_sections() {
         let renderer = PromptRenderer::new(catalog_funnel());
         let mut ctx = empty_ctx();
         // Even when the template references the placeholders, the
         // prefix strips them (`remove_missing=true`) — the sections
-        // only ever render via the per-turn suffix.
+        // only ever render via the tail runtime-context message.
         ctx.body = "{{agents}}\n{{skills}}\nYou are {{agent_name}}.".to_string();
         let prefix = renderer.render_cache_stable(&ctx).await;
         assert!(
@@ -1273,21 +1438,23 @@ mod tests {
         );
     }
 
-    /// Without registered section handlers the suffix omits the
-    /// catalog sections entirely (no empty headers).
+    /// Without registered section handlers the runtime-context message
+    /// omits the catalog sections entirely (no empty headers).
     #[tokio::test]
-    async fn render_per_turn_omits_catalogs_without_handlers() {
+    async fn runtime_context_omits_catalogs_without_handlers() {
         let renderer = PromptRenderer::new(empty_funnel());
-        let ctx = empty_ctx();
-        let suffix = renderer.render_per_turn(&ctx).await;
-        assert!(
-            !suffix.contains("## Available Agents"),
-            "suffix was: {suffix}"
-        );
-        assert!(
-            !suffix.contains("## Skills (mandatory)"),
-            "suffix was: {suffix}"
-        );
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.iteration_budget = Some(IterationBudgetState {
+            iteration: 1,
+            max_iterations: 10,
+        });
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("iteration budget is always due");
+        assert!(!body.contains("## Available Agents"), "got: {body}");
+        assert!(!body.contains("## Skills (mandatory)"), "got: {body}");
     }
 
     /// Prompt identity: the `SessionContextBuild` hook receives the

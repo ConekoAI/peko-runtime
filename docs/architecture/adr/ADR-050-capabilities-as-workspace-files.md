@@ -63,6 +63,15 @@ truth and the prompt view disagreed for the run's whole lifetime.
 
 ### D2 — Agents/skills catalogs render per-turn from the workspace
 
+> **Amended 2026-09-10** (prompt-caching fix): the volatile system-prompt
+> suffix described below was retired. `{{agents}}` / `{{skills}}` (and
+> the other per-turn sections) now ride an append-only
+> `<runtime-context>` user message at the tail of the conversation,
+> rendered by `render_runtime_context` with per-section change
+> detection; `messages[0]` is the frozen `render_cache_stable` output.
+> The scanning-hook mechanics (mtime cache, 2 s timeout, presence =
+> visibility) are unchanged.
+
 The `{{agents}}` and `{{skills}}` sections move from the cache-stable
 prompt prefix to the per-turn volatile suffix
 (`peko-rs/engine/src/prompt/renderer.rs` — `render_per_turn`'s

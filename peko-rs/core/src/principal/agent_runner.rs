@@ -316,13 +316,13 @@ where
     }
     // SessionStart hook was removed (per-turn rebuild refactor):
     // the bootstrap context is now produced by `SessionContextBuild`
-    // hooks fired by `PromptRenderer::render_for_iteration` on every
-    // iteration, so a one-shot fire here would be redundant and stale.
+    // hooks fired by the `PromptRenderer` on every iteration, so a
+    // one-shot fire here would be redundant and stale.
 
     // SessionStart hook was removed (per-turn rebuild refactor):
     // the bootstrap context is now produced by `SessionContextBuild`
-    // hooks fired by `PromptRenderer::render_for_iteration` on every
-    // iteration, so a one-shot fire here would be redundant and stale.
+    // hooks fired by the `PromptRenderer` on every iteration, so a
+    // one-shot fire here would be redundant and stale.
 
     let history: Vec<LlmMessage> = session.read().await.load_history().await?;
 

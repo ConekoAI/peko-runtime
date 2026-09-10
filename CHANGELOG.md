@@ -4,6 +4,37 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Prompt-caching fix: frozen system prompt + tail runtime context (2026-09-10)
+
+The agentic loop rebuilt `messages[0]` every iteration as
+`cache_stable + "\n\n" + volatile_suffix`, and the volatile suffix
+(`{{current_time}}`, `{{iteration_budget}}`, ...) mutated the head of
+the payload each turn — destroying LLM prompt-prefix caching for the
+ENTIRE history (both Anthropic explicit `cache_control` breakpoints and
+OpenAI/DeepSeek automatic prefix caching match from the front).
+
+- **Frozen system prompt** — `messages[0]` is now the
+  `render_cache_stable()` output only, rendered once per run and never
+  rebuilt. `render_per_turn` / `assemble_system_prompt` /
+  `VOLATILE_BODY` are retired.
+- **Tail runtime-context injection** — per-iteration volatile context
+  travels as an append-only user-role `<runtime-context>` message at
+  the end of the conversation (`PromptRenderer::render_runtime_context`),
+  persisted to the session JSONL tagged `MessageSource::Hook`. The
+  iteration-budget line rides every iteration; current time (now
+  minute-granularity), memory, session context, and the agents/skills
+  workspace catalogs are re-injected only when their rendered text
+  changes (per-section change detection via `RuntimeContextState`);
+  `quota_tripped` / `soft_cancel` / `capability_diff` keep their
+  rising-edge semantics.
+- **Anthropic multi-system fix** — `convert_messages` no longer lets a
+  mid-history System-role message (e.g. the post-compaction summary)
+  overwrite the `system` wire parameter: the FIRST system message is
+  the prompt, subsequent ones become in-place user messages.
+- **Observability** — per-iteration `cache_read_input_tokens` /
+  `cache_creation_input_tokens` are logged at debug level alongside
+  input/output tokens.
+
 ### Agent-surface E2E fixes (2026-09-06)
 
 Follow-ups from a live end-to-end audit (real LLM, wire-logged):

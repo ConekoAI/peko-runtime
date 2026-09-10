@@ -1,5 +1,6 @@
-//! Workspace-scanning prompt handler for the `skills` system-prompt
-//! section (Part B: dynamic per-turn workspace catalog).
+//! Workspace-scanning prompt handler for the `skills` prompt section
+//! (Part B: dynamic per-turn workspace catalog). The section rides the
+//! tail `<runtime-context>` message, not the frozen system prompt.
 //!
 //! Registered **once** per core (see `principal/context.rs`). At invoke
 //! time the handler resolves the workspace from the hook context's

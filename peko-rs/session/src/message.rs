@@ -32,10 +32,11 @@ pub enum MessageSource {
     SpawnParent,
     /// Appended by the cron engine (fired-job notification note).
     /// User-role in storage on purpose: the Anthropic-style provider
-    /// adapter maps ANY system-role message to the top-level system
-    /// parameter (last one wins), so a mid-history system note would
-    /// clobber the agent's system prompt. The source tag lets
-    /// consumers distinguish automation notes from human input.
+    /// adapter lifts the FIRST system-role message into the top-level
+    /// system parameter and demotes any later system note to a user
+    /// message anyway, so storing automation notes as user-role keeps
+    /// the wire shape explicit. The source tag lets consumers
+    /// distinguish automation notes from human input.
     Cron,
     /// Pushed by an agent (root or subagent) via the `send_peer` tool —
     /// an agent-originated note to a human peer's conversational

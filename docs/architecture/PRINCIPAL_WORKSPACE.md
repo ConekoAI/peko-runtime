@@ -73,10 +73,11 @@ rm -r ~/.peko/principal/<name>/skills/<id>                      # remove
 peko principal show                  # includes catalog summary
 ```
 
-The system prompt renders the workspace `agents/` and `skills/`
-catalogs **per turn** (volatile prompt suffix, mtime-keyed scan), so a
-file added to either directory is visible to the model on the next
-iteration — no restart. Presence in the workspace = visibility.
+The workspace `agents/` and `skills/` catalogs render **per turn** into
+the tail `<runtime-context>` user message (mtime-keyed scan, re-injected
+only when the rendered catalog changes), so a file added to either
+directory is visible to the model on the next iteration — no restart.
+Presence in the workspace = visibility.
 
 The legacy `peko ext *` command tree was retired in Phase 5.
 
