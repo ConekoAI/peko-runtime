@@ -23,6 +23,9 @@
 //!   `cost_usd` is Phase 3 of `feature/multi-model-subagents`;
 //!   `serde(default, skip_serializing_if = "Option::is_none")`
 //!   keeps pre-Phase-3 state files loadable.
+//! - `cache_read_tokens` / `cache_creation_tokens` — informational
+//!   prompt-cache split of the window's input tokens. Not gated by
+//!   any limit; `serde(default)` keeps older state files loadable.
 //!
 //!   `Eq` removed from the derive because `f64` (cost) doesn't
 //!   implement `Eq`. Tests compare fields individually.
@@ -57,6 +60,20 @@ pub struct QuotaState {
     /// `0.0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Cumulative cache-read input tokens in the current window
+    /// (tokens the provider served from its prompt cache).
+    /// Informational — not gated by any limit. `serde(default)`
+    /// keeps state files written before this field existed
+    /// loadable (they deserialize as `0`).
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Cumulative cache-creation input tokens in the current
+    /// window (tokens the provider charged for writing into its
+    /// prompt cache). Informational — not gated by any limit.
+    /// `serde(default)` for the same backward-compat reason as
+    /// `cache_read_tokens`.
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
 }
 
 impl QuotaState {
@@ -74,6 +91,8 @@ impl QuotaState {
             output_tokens: 0,
             request_count: 0,
             cost_usd: Some(0.0),
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         }
     }
 
@@ -164,6 +183,8 @@ mod tests {
             output_tokens: 567,
             request_count: 9,
             cost_usd: Some(0.0123),
+            cache_read_tokens: 42,
+            cache_creation_tokens: 7,
         };
         original.save(&path).await.unwrap();
         let loaded = QuotaState::load(&path).await.unwrap().unwrap();
@@ -173,6 +194,8 @@ mod tests {
         assert_eq!(loaded.request_count, original.request_count);
         assert_eq!(loaded.cycle, original.cycle);
         assert_eq!(loaded.cost_usd, original.cost_usd);
+        assert_eq!(loaded.cache_read_tokens, original.cache_read_tokens);
+        assert_eq!(loaded.cache_creation_tokens, original.cache_creation_tokens);
         // ts must round-trip too — verifies the DateTime<Utc>
         // serde wire format stays stable.
         assert_eq!(loaded.window_start, original.window_start);
@@ -215,6 +238,10 @@ mod tests {
         let loaded = QuotaState::load(&path).await.unwrap().unwrap();
         assert!(loaded.cost_usd.is_none(), "missing field defaults to None");
         assert_eq!(loaded.input_tokens, 1234);
+        // Cache counters predate this state file; `serde(default)`
+        // deserializes them as 0 rather than failing the read.
+        assert_eq!(loaded.cache_read_tokens, 0);
+        assert_eq!(loaded.cache_creation_tokens, 0);
     }
 
     #[tokio::test]

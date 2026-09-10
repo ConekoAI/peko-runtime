@@ -192,6 +192,34 @@ pub struct UsageStats {
     /// model reference.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_context_limit: Option<usize>,
+    /// Cache-read tokens summed over the current **cache window**:
+    /// every assistant turn since the last compaction boundary
+    /// (`SessionEvent::System` with `event == "compaction"`), or
+    /// since session start when the session was never compacted.
+    #[serde(default)]
+    pub cache_read_total: u64,
+    /// Cache-creation tokens summed over the same cache window as
+    /// `cache_read_total`.
+    #[serde(default)]
+    pub cache_creation_total: u64,
+    /// Fraction of input tokens served from cache in the cache
+    /// window: `cache_read_total / (cache_read_total +
+    /// cache_creation_total + uncached input)`. `None` when the
+    /// denominator is 0 (no assistant turn in the window reported
+    /// usage).
+    ///
+    /// NOTE: `TokenUsage::input` semantics are adapter-dependent —
+    /// Anthropic-style adapters report uncached input only, while
+    /// OpenAI-style adapters include cached tokens in `input`. The
+    /// runtime disambiguates per turn (`input >= read + creation` ⇒
+    /// cache-inclusive, otherwise cache-exclusive), so the rate is a
+    /// "fraction of input tokens served from cache in this window"
+    /// under either convention; the rare Anthropic turn whose
+    /// uncached input alone exceeds the cached total is
+    /// indistinguishable from an OpenAI turn and makes the rate an
+    /// approximation.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cache_hit_rate: Option<f64>,
 }
 
 /// Principal-scoped quota snapshot returned by the `session` tool's
@@ -237,6 +265,14 @@ pub struct QuotaSnapshot {
     /// single-shot `{{quota_tripped}}` banner and know that the
     /// banner will not fire again until the window rolls over.
     pub tripped: bool,
+    /// Cache-read input tokens consumed in the current window.
+    /// Informational — not gated by any limit.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Cache-creation input tokens consumed in the current window.
+    /// Informational — not gated by any limit.
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
 }
 
 /// Session status result
@@ -252,6 +288,14 @@ pub struct SessionStatusResult {
     pub timestamp: String,
     pub message_count: usize,
     pub usage: UsageStats,
+    /// Assistant iterations in the current run: the count of
+    /// assistant messages carrying a provider usage stamp since the
+    /// last external user ingress message (a user-role message whose
+    /// `MessageSource` is not `Hook` — tool results and hook-injected
+    /// `<runtime-context>` notes don't reset the count). 0 when no
+    /// run has started in this session.
+    #[serde(default)]
+    pub current_run_iterations: usize,
     /// Principal-scoped quota snapshot. `None` when the session has
     /// no quota meter bound (legacy fixtures, agents whose principal
     /// never configured `[quota]` in its TOML).
@@ -571,6 +615,9 @@ mod tests {
                 cache_creation_tokens: Some(20),
                 reasoning_tokens: None,
                 model_context_limit: Some(128_000),
+                cache_read_total: 240,
+                cache_creation_total: 60,
+                cache_hit_rate: Some(0.5),
             },
             quota: Some(QuotaSnapshot {
                 input_tokens: 200,
@@ -581,7 +628,10 @@ mod tests {
                 request_limit: Some(20),
                 window_end: Some("2026-09-10T00:00:00Z".to_string()),
                 tripped: false,
+                cache_read_tokens: 90,
+                cache_creation_tokens: 30,
             }),
+            current_run_iterations: 3,
             peer_type: None,
             peer_id: None,
             label: None,
@@ -592,6 +642,10 @@ mod tests {
         assert_eq!(json["usage"]["model_context_limit"], 128_000);
         let back: SessionStatusResult = serde_json::from_value(json).unwrap();
         assert_eq!(back.usage.model_context_limit, Some(128_000));
+        assert_eq!(back.usage.cache_read_total, 240);
+        assert_eq!(back.usage.cache_hit_rate, Some(0.5));
+        assert_eq!(back.current_run_iterations, 3);
+        assert_eq!(back.quota.as_ref().unwrap().cache_read_tokens, 90);
     }
 
     #[test]

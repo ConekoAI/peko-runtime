@@ -4,6 +4,34 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Auditability: cache metrics + run iterations on session/quota status (2026-09-10)
+
+- **Session tool `status`** — `UsageStats` gains `cache_read_total`,
+  `cache_creation_total`, and `cache_hit_rate` aggregated over the
+  current **cache window** (every assistant turn since the last
+  compaction boundary event — `SessionEvent::System` with
+  `event == "compaction"` — or session start when never compacted).
+  The rate is the fraction of window input tokens served from cache;
+  `None` when no turn in the window reported usage. `input`
+  semantics are adapter-dependent (Anthropic excludes cached tokens,
+  OpenAI includes them); the runtime disambiguates per turn.
+  `SessionStatusResult` gains `current_run_iterations` — assistant
+  messages with a usage stamp since the last external user ingress
+  (tool results and `MessageSource::Hook` `<runtime-context>`
+  injections don't reset the count).
+- **Session tool `status.quota` populated on the main path** —
+  `Agent::init_builtins_async` now threads the principal's
+  `Arc<QuotaMeter>` (chained onto the subagent executor by
+  `Agent::with_quota_meter`) into `SessionManagerRuntime`, so the
+  quota snapshot is no longer always `None`.
+- **Principal cache counters** — `QuotaState` gains
+  `cache_read_tokens` / `cache_creation_tokens` (`serde(default)`
+  keeps existing `quota_state.json` files loadable), folded from
+  each charged `TokenUsage` inside `QuotaMeter` and rolled over with
+  the quota window like the other counters. The session tool's
+  `QuotaSnapshot` carries them, and `peko quota status` prints cache
+  read/write lines plus a window cache hit rate.
+
 ### Prompt-caching fix: frozen system prompt + tail runtime context (2026-09-10)
 
 The agentic loop rebuilt `messages[0]` every iteration as

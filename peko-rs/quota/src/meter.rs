@@ -190,6 +190,9 @@ impl QuotaMeter {
             state.request_count = 0;
             // Phase 3 — reset cycle budget counter on roll.
             state.cost_usd = Some(0.0);
+            // Informational cache counters roll with the window too.
+            state.cache_read_tokens = 0;
+            state.cache_creation_tokens = 0;
             true
         } else {
             false
@@ -223,6 +226,8 @@ impl QuotaMeter {
             state.request_count = 0;
             // Phase 3 — reset cycle budget counter.
             state.cost_usd = Some(0.0);
+            state.cache_read_tokens = 0;
+            state.cache_creation_tokens = 0;
         }
         if let Some(path) = self.state_path.clone() {
             let snapshot = self
@@ -352,10 +357,22 @@ impl QuotaMeter {
             state.request_count = 0;
             // Phase 3 — reset cycle budget counter on roll.
             state.cost_usd = Some(0.0);
+            state.cache_read_tokens = 0;
+            state.cache_creation_tokens = 0;
         }
         state.input_tokens = state.input_tokens.saturating_add(usage.input);
         state.output_tokens = state.output_tokens.saturating_add(usage.output);
         state.request_count = state.request_count.saturating_add(1);
+        // Informational prompt-cache split — folded alongside the
+        // cache-inclusive `input` total so `peko quota status` and
+        // the session tool can report a window cache hit rate.
+        // `None` (provider did not report a split) adds nothing.
+        state.cache_read_tokens = state
+            .cache_read_tokens
+            .saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
+        state.cache_creation_tokens = state
+            .cache_creation_tokens
+            .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
         if let Some(c) = cost_usd {
             state.cost_usd = Some(state.cost_usd.unwrap_or(0.0) + c);
         }
@@ -877,5 +894,71 @@ mod tests {
             }
             other => panic!("expected InputTokensExceeded, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn charge_accumulates_cache_counters() {
+        // The informational cache split accumulates alongside the
+        // cache-inclusive `input` total. `None` sub-fields (provider
+        // did not report a split) add nothing.
+        let meter = QuotaMeter::load_or_init(
+            cfg(Some(1000), Some(1000), Some(100)),
+            None,
+            ts(2026, 7, 12, 14, 0, 0),
+        )
+        .await
+        .unwrap();
+
+        let u = TokenUsage {
+            input: 110,
+            output: 10,
+            total: 120,
+            cache_creation_input_tokens: Some(20),
+            cache_read_input_tokens: Some(30),
+            reasoning_output_tokens: None,
+        };
+        meter.charge(&u).await.unwrap();
+        meter.charge(&usage(50, 5)).await.unwrap(); // no cache split
+        let snap = meter.snapshot();
+        assert_eq!(snap.cache_read_tokens, 30);
+        assert_eq!(snap.cache_creation_tokens, 20);
+        assert_eq!(snap.input_tokens, 160);
+    }
+
+    #[tokio::test]
+    async fn cache_counters_reset_on_window_advance_and_reset() {
+        // Cache counters roll over with the quota window exactly
+        // like input_tokens/output_tokens. Anchor to wall-clock so
+        // `charge`'s internal `Utc::now()` roll check doesn't fire
+        // early (same pattern as the cost_usd rollover test).
+        let start = Utc::now();
+        let meter = QuotaMeter::load_or_init(cfg(Some(1000), None, None), None, start)
+            .await
+            .unwrap();
+        let u = TokenUsage {
+            input: 100,
+            output: 10,
+            total: 110,
+            cache_creation_input_tokens: Some(40),
+            cache_read_input_tokens: Some(60),
+            reasoning_output_tokens: None,
+        };
+        meter.charge(&u).await.unwrap();
+        assert_eq!(meter.snapshot().cache_read_tokens, 60);
+
+        // Window advance clears them.
+        let next = start + chrono::Duration::hours(1) + chrono::Duration::seconds(1);
+        assert!(meter.advance_if_needed(next));
+        let snap = meter.snapshot();
+        assert_eq!(snap.cache_read_tokens, 0);
+        assert_eq!(snap.cache_creation_tokens, 0);
+
+        // So does an explicit `reset`.
+        meter.charge(&u).await.unwrap();
+        assert_eq!(meter.snapshot().cache_creation_tokens, 40);
+        meter.reset(Utc::now()).await;
+        let snap = meter.snapshot();
+        assert_eq!(snap.cache_read_tokens, 0);
+        assert_eq!(snap.cache_creation_tokens, 0);
     }
 }
