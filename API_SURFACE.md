@@ -978,6 +978,20 @@ format is unchanged. New/changed public items:
 | `SubagentExecutor::compact_and_execute` / `SubagentRuntime::compact_and_execute` | `agents::subagent_executor`, `tools::builtin::messaging` | ✅ New | `Agent` `action:"compact"` — starts a continuation run that force-compacts first, then processes the prompt; guard stack is `resume_preflight` with `AttachKind::Compact` (no spawned-only gate) |
 | `SessionEntry.compact_requested` + `SessionManager`/`MetadataController`/`SessionCore` flag methods + `CompactRequestOutcome` | `peko_session`, `tools::builtin::session` | ❌ Removed | The persisted flag-and-defer machinery; old `sessions.json` files carrying the field still deserialize (no `deny_unknown_fields`) |
 
+### ADR-052 (2026-09-11) — tiered system prompt (D2/D4/D5 prototype slices + D3 fix)
+
+Prototype on branch `adr-052-tiered-system-prompt`; see
+`docs/architecture/adr/ADR-052-tiered-system-prompt.md`. New/changed public
+items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ExecutionConfig.role_prompt` | `agents::subagent_executor` | ✅ New | D3: the resolved role Markdown body (`SpawnRequest.subagent_config.body`) threaded config → run closure → `execute_subagent_task`, where it replaces the child `AgentConfig.prompt` (spawn + resume). `None` inherits the parent persona |
+| `RuntimeContextState` (D2 notice semantics) | `peko_engine::prompt::renderer` | ⚠️ Changed | `take_changed` now decorates re-injections with an `_Updated — replaces the previous "…" section._` notice and retracts a newly-empty section once with `_The "…" section no longer applies._`; `CurrentTime` exempt. Signature unchanged |
+| `WorkspaceIdentityPromptHandler` / `IDENTITY_HOOK_PRIORITY` | `principal::identity_prompt` | ✅ New | D4: renders `[identity]` + `[intent]` from `<workspace>/principal.toml` into the `identity` prompt section; cached on the file's `(path, mtime, len)`; registered on the daemon-global core next to the agents/skills catalog handlers |
+| `WorkspaceAgentsPromptHandler` / `WorkspaceSkillsPromptHandler` cache keys | `extensions::agent::adapter`, `extensions::skill::prompt` | ⚠️ Changed | D2 cache fix: per-file `(relative_path, mtime, len)` fingerprints replace `(dir_mtime, child_count)` — in-place content edits now invalidate the catalogs |
+| `SelfPositionSessionContextHandler` | `principal::child_turns` | ✅ New (crate-internal) | D5: renders the agent's own session slug path + role line into `{{session_context}}`, aggregated above the peers list (priority 110 vs 100) |
+
 ---
 
 ## Test Coverage Requirements

@@ -18,12 +18,13 @@
 pub mod agent_prompt;
 pub mod agent_runner;
 pub mod capability_evaluator;
+pub mod catalog;
 pub(crate) mod child_turns;
 pub mod children;
-pub mod catalog;
 pub mod config;
 pub mod context;
 pub mod factory;
+pub mod identity_prompt;
 pub mod manager;
 pub mod memory;
 pub mod messenger;
@@ -57,7 +58,7 @@ pub use factory::{
 pub use manager::{PrincipalManager, PrincipalManagerError};
 pub use memory::{DefaultPrincipalMemory, MemoryError, PrincipalMemory, SessionArtifact};
 pub use messenger::{
-    PrincipalPeerMessenger, PeerMessenger, global_messenger, set_global_messenger,
+    global_messenger, set_global_messenger, PeerMessenger, PrincipalPeerMessenger,
 };
 pub use peer::{Peer, PeerConfig, PeerError, PeerRegistry};
 pub use router::{

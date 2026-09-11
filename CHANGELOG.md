@@ -4,6 +4,52 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-052 D2/D4/D5: tiered-prompt prototype slices (2026-09-11)
+
+- **D2 — change/removal notices in the tail change-detector** —
+  `RuntimeContextState::take_changed` now implements codex-style diff
+  semantics: a section whose text changed is re-injected with a
+  trailing `_Updated — replaces the previous "…" section._` notice; a
+  previously non-empty section that renders empty is retracted exactly
+  once with `_The "…" section no longer applies._` instead of vanishing
+  silently. `CurrentTime` is exempt (it changes every minute); first
+  injections carry no notice.
+- **D4 — T0 principal-identity tail section** — the principal's
+  `[identity]` (display name, description) + `[intent]` (goals, values,
+  preferences) from `<workspace>/principal.toml` now render as a
+  `## Principal identity` section of the tail `<runtime-context>`
+  message, so the config reaches every agent in the tree. Engine side:
+  new `SectionSlot::Identity` + `"identity"` prompt-section dispatch
+  (soft-fails to empty with no handler). Core side: new
+  `WorkspaceIdentityPromptHandler`
+  (`peko-rs/core/src/principal/identity_prompt.rs`), cached on the
+  FILE's `(mtime, len)`, registered next to the agents/skills catalog
+  handlers. Empty fields → no section (presence = visibility).
+- **D5 — T2 self-position in session context** — new
+  `SelfPositionSessionContextHandler` renders the agent's OWN session
+  slug path + role line (e.g. "your position: `/local-user` — standing
+  peer child of the trunk (peer: user:local)") into the
+  `{{session_context}}` section, aggregated above the existing peer
+  list (the hook registry concatenates multiple `SessionContextBuild`
+  handlers, higher priority first — 110 vs the peers handler's 100).
+  The trunk renders as `/` — root session.
+- **D2 cache fix — file-level keys for the agents/skills catalogs** —
+  `WorkspaceAgentsPromptHandler` / `WorkspaceSkillsPromptHandler` cache
+  keys are now per-file `(relative_path, mtime, len)` fingerprints of
+  every scanned file instead of `(dir_mtime, child_count)`, so in-place
+  edits to an existing `AGENT.md` / `SKILL.md` invalidate the catalog
+  on the next iteration (dir mtime only moved on add/remove).
+
+### ADR-052 D3: named subagents run their own role prompt (2026-09-11)
+
+- **Agent tool spawn/resume** — the resolved `<workspace>/agents/<name>.md`
+  (or `<name>/AGENT.md`) Markdown body now threads from
+  `SpawnRequest.subagent_config` through the root
+  `ExecutionConfig.role_prompt` into `execute_subagent_task`, replacing the
+  child `AgentConfig`'s `prompt` so a named subagent runs its own role
+  persona instead of the parent's `AgentConfig` verbatim. Empty bodies fall
+  back to the inherited persona; conversation-mode peer turns are unchanged.
+
 ### Auditability: cache metrics + run iterations on session/quota status (2026-09-10)
 
 - **Session tool `status`** — `UsageStats` gains `cache_read_total`,

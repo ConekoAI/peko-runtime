@@ -592,15 +592,26 @@ async fn install_principal_tool_bag(
     }
 
     // Part B (dynamic per-turn workspace catalog): register the
-    // workspace-scanning `agents` / `skills` prompt-section handlers
-    // once on the daemon-global core. The handlers resolve the
-    // workspace from the hook context at invoke time and re-scan
-    // `<workspace>/agents/` / `<workspace>/skills/` whenever the
-    // directory mtime changes, so agents/skills added to any
-    // principal's workspace appear in the per-turn prompt suffix on
-    // the next iteration. Presence in the workspace = visible
-    // (ADR-047) — no capability or active-extension filter.
-    let catalog_hooks: [(HookPoint, Arc<dyn HookHandler>, ExtensionId); 2] = [
+    // workspace-scanning `identity` / `agents` / `skills`
+    // prompt-section handlers once on the daemon-global core. The
+    // handlers resolve the workspace from the hook context at invoke
+    // time; the catalog handlers re-scan `<workspace>/agents/` /
+    // `<workspace>/skills/` whenever a scanned file's `(mtime, len)`
+    // changes, and the identity handler re-reads
+    // `<workspace>/principal.toml` on the same file-level key, so
+    // edits to any principal's workspace appear in the per-turn
+    // prompt suffix on the next iteration (ADR-052 D2/D4). Presence
+    // in the workspace = visible (ADR-047) — no capability or
+    // active-extension filter.
+    let catalog_hooks: [(HookPoint, Arc<dyn HookHandler>, ExtensionId); 3] = [
+        (
+            HookPoint::PromptSystemSection {
+                section: "identity".to_string(),
+                priority: crate::principal::identity_prompt::IDENTITY_HOOK_PRIORITY,
+            },
+            Arc::new(crate::principal::identity_prompt::WorkspaceIdentityPromptHandler::new()),
+            ExtensionId::new("principal:workspace-identity"),
+        ),
         (
             HookPoint::PromptSystemSection {
                 section: "agents".to_string(),
@@ -622,6 +633,22 @@ async fn install_principal_tool_bag(
         if let Err(e) = core.register_hook(point, handler, &extension_id).await {
             tracing::warn!("workspace catalog hook registration failed for {extension_id}: {e}");
         }
+    }
+
+    // Self-position (ADR-052 D5, 2026-09-11): render the agent's OWN
+    // session slug path + role into the `{{session_context}}` section,
+    // aggregated above the peer list below (the hook registry
+    // concatenates multiple SessionContextBuild handlers' text
+    // outputs, higher priority first).
+    if let Err(e) = core
+        .register_hook(
+            HookPoint::SessionContextBuild,
+            Arc::new(crate::principal::child_turns::SelfPositionSessionContextHandler),
+            &ExtensionId::new("principal:self-position-context"),
+        )
+        .await
+    {
+        tracing::warn!("self-position session-context hook registration failed: {e}");
     }
 
     // Peer discovery (2026-09-08): render the principal's peer sessions

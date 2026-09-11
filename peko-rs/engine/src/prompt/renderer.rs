@@ -262,13 +262,17 @@ impl PromptRenderer {
     /// Section injection policy:
     ///
     /// - **Always** (tiny): the iteration-budget line.
-    /// - **On change**: current time (minute granularity, so it changes
-    ///   at most once a minute), memory, session context, and the
-    ///   agents/skills workspace catalogs. Each section's rendered text
-    ///   is value-compared against the last injected value carried in
-    ///   `state`; only changed sections are re-injected, so large
-    ///   rarely-changing sections (memory, catalogs) don't bloat every
-    ///   iteration.
+    /// - **On change**: principal identity, current time (minute
+    ///   granularity, so it changes at most once a minute), memory,
+    ///   session context, and the agents/skills workspace catalogs.
+    ///   Each section's rendered text is value-compared against the
+    ///   last injected value carried in `state`; only changed sections
+    ///   are re-injected, so large rarely-changing sections (memory,
+    ///   catalogs) don't bloat every iteration. ADR-052 D2: a
+    ///   re-injection carries an "_Updated — replaces…_" notice and a
+    ///   section that turns empty is retracted once with a "_… no
+    ///   longer applies._" notice (`CurrentTime` exempt — it changes
+    ///   every minute).
     /// - **Event-edged**: `quota_tripped`, `soft_cancel`,
     ///   `capability_diff` — included only when the corresponding
     ///   `TurnPromptContext` field fires (the loop computes the rising
@@ -291,12 +295,15 @@ impl PromptRenderer {
         state: &mut RuntimeContextState,
     ) -> Option<String> {
         // Parallel hook dispatch: the workspace-catalog sections
-        // (`agents`, `skills`) and `SessionContextBuild` are independent,
-        // so fire them concurrently. Each `dispatch_text` carries its
-        // own 2s timeout. The handlers mtime-cache their scans, so
-        // rendering every iteration purely for the change compare is
-        // cheap.
-        let (agents, skills, session_ctx) = tokio::join!(
+        // (`identity`, `agents`, `skills`) and `SessionContextBuild` are
+        // independent, so fire them concurrently. Each `dispatch_text`
+        // carries its own 2s timeout. The handlers cache their scans
+        // (keyed on file-level `(mtime, len)` stats), so rendering every
+        // iteration purely for the change compare is cheap. `identity`
+        // soft-fails to empty when no handler is registered — the
+        // section then simply doesn't ride.
+        let (identity, agents, skills, session_ctx) = tokio::join!(
+            self.dispatch_text("identity", ctx),
             self.dispatch_text("agents", ctx),
             self.dispatch_text("skills", ctx),
             self.dispatch_session_context(ctx),
@@ -304,9 +311,17 @@ impl PromptRenderer {
 
         let mut sections: Vec<String> = Vec::new();
 
-        // On-change sections. Empty renders are recorded but never
-        // injected (there is nothing to retract — a section that
-        // disappears simply stops riding the tail).
+        // On-change sections. A changed section is re-injected with an
+        // "Updated — replaces…" notice; a section that turns empty is
+        // retracted once with a "no longer applies" notice instead of
+        // vanishing silently (ADR-052 D2, codex-style diff semantics).
+        // `CurrentTime` is exempt (it changes every minute; notices
+        // would be noise).
+        if let Some(section) =
+            state.take_changed(SectionSlot::Identity, format_identity_section(&identity))
+        {
+            sections.push(section);
+        }
         if let Some(section) = state.take_changed(SectionSlot::CurrentTime, render_current_time()) {
             sections.push(section);
         }
@@ -454,11 +469,34 @@ impl PromptRenderer {
 /// The on-change sections tracked by [`RuntimeContextState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SectionSlot {
+    Identity,
     CurrentTime,
     Memory,
     SessionContext,
     Agents,
     Skills,
+}
+
+impl SectionSlot {
+    /// Human-readable section name used in the update/retraction
+    /// notice lines (ADR-052 D2).
+    fn label(self) -> &'static str {
+        match self {
+            SectionSlot::Identity => "principal identity",
+            SectionSlot::CurrentTime => "current time",
+            SectionSlot::Memory => "memory",
+            SectionSlot::SessionContext => "session context",
+            SectionSlot::Agents => "agents",
+            SectionSlot::Skills => "skills",
+        }
+    }
+
+    /// Whether a text change re-injects with an "Updated — replaces…"
+    /// notice. `CurrentTime` is exempt: it changes every minute, so
+    /// notices would be pure noise.
+    fn notice_on_update(self) -> bool {
+        !matches!(self, SectionSlot::CurrentTime)
+    }
 }
 
 /// Per-section last-injected values for the tail runtime-context
@@ -472,8 +510,15 @@ enum SectionSlot {
 /// agents/skills catalogs) ride the tail once and are not re-injected
 /// until they actually change. `None` = never injected this run, so
 /// iteration 1 injects every non-empty section.
+///
+/// ADR-052 D2 (codex-style diff semantics): a re-injection after a
+/// text change carries an "_Updated — replaces the previous …_"
+/// notice (except `CurrentTime`), and a section that turns empty after
+/// being non-empty is retracted exactly once with a "_… no longer
+/// applies._" notice instead of vanishing silently.
 #[derive(Debug, Default)]
 pub struct RuntimeContextState {
+    identity: Option<String>,
     current_time: Option<String>,
     memory: Option<String>,
     session_context: Option<String>,
@@ -482,14 +527,27 @@ pub struct RuntimeContextState {
 }
 
 impl RuntimeContextState {
-    /// Compare-and-record one section. Returns `Some(rendered)` when
-    /// the rendered text differs from the last injected value (or the
-    /// section was never rendered this run); returns `None` when
-    /// unchanged. Empty renders are recorded but never returned — a
-    /// section that renders empty simply doesn't ride the tail (there
-    /// is nothing to retract; prior injections age out via compaction).
+    /// Compare-and-record one section. Returns the text to inject, or
+    /// `None` when unchanged. The recorded value is always the raw
+    /// render (never the notice-decorated text), so the next compare
+    /// is against content, not notices.
+    ///
+    /// Injection policy:
+    ///
+    /// - First render of a section this run: plain injection when
+    ///   non-empty; empty renders are recorded but not injected.
+    /// - Changed text after a non-empty injection: re-injected with a
+    ///   trailing "_Updated — replaces…_" notice (except
+    ///   `CurrentTime`, which re-injects plain).
+    /// - Empty text after a non-empty injection: a one-line "_… no
+    ///   longer applies._" retraction, injected exactly once (the
+    ///   recorded value becomes empty, so the next empty render
+    ///   dedupes away).
+    /// - Non-empty text after an empty/absent record: plain injection
+    ///   (a retraction already told the model the section was gone).
     fn take_changed(&mut self, slot: SectionSlot, rendered: String) -> Option<String> {
         let cell = match slot {
+            SectionSlot::Identity => &mut self.identity,
             SectionSlot::CurrentTime => &mut self.current_time,
             SectionSlot::Memory => &mut self.memory,
             SectionSlot::SessionContext => &mut self.session_context,
@@ -499,9 +557,20 @@ impl RuntimeContextState {
         if cell.as_deref() == Some(rendered.as_str()) {
             return None;
         }
-        let changed = (!rendered.is_empty()).then_some(rendered.clone());
-        *cell = Some(rendered);
-        changed
+        let previous = cell.replace(rendered.clone()).unwrap_or_default();
+        if rendered.is_empty() {
+            // Retraction fires only when a previously non-empty section
+            // turns empty; `CurrentTime` never renders empty.
+            return (!previous.is_empty() && slot.notice_on_update())
+                .then(|| format!("_The \"{}\" section no longer applies._", slot.label()));
+        }
+        if !previous.is_empty() && slot.notice_on_update() {
+            return Some(format!(
+                "{rendered}\n\n_Updated — replaces the previous \"{}\" section._",
+                slot.label()
+            ));
+        }
+        Some(rendered)
     }
 }
 
@@ -666,6 +735,25 @@ When delegating, choose the most appropriate agent from the list below. Each age
 <available_agents>
 {text}
 </available_agents>"
+    )
+}
+
+/// ADR-052 D4 (T0): the principal's `[identity]` + `[intent]` from
+/// `principal.toml`, rendered by the core-side
+/// `WorkspaceIdentityPromptHandler` into the `identity` prompt section.
+/// Empty text (no handler, missing file, all fields empty) → no
+/// section (presence = visibility).
+fn format_identity_section(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    format!(
+        r"## Principal identity
+Who this principal is and what it wants — applies to every agent in the tree.
+
+<principal_identity>
+{text}
+</principal_identity>"
     )
 }
 
@@ -1477,5 +1565,151 @@ mod tests {
             .expect("snapshots mutex poisoned");
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].session_id, "root:user:alice");
+    }
+
+    // ---------- ADR-052 D2: change/removal notices ----------
+
+    #[test]
+    fn take_changed_first_injection_carries_no_notice() {
+        let mut state = RuntimeContextState::default();
+        let injected = state
+            .take_changed(SectionSlot::Agents, "## Available Agents\n- a".to_string())
+            .expect("first render injects");
+        assert_eq!(injected, "## Available Agents\n- a");
+        assert!(!injected.contains("Updated — replaces"));
+    }
+
+    #[test]
+    fn take_changed_first_empty_render_injects_nothing() {
+        let mut state = RuntimeContextState::default();
+        assert_eq!(state.take_changed(SectionSlot::Agents, String::new()), None);
+    }
+
+    #[test]
+    fn take_changed_update_carries_notice() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::Agents, "v1".to_string());
+        let injected = state
+            .take_changed(SectionSlot::Agents, "v2".to_string())
+            .expect("changed section re-injects");
+        assert!(injected.starts_with("v2"), "got: {injected}");
+        assert!(
+            injected.contains("_Updated — replaces the previous \"agents\" section._"),
+            "got: {injected}"
+        );
+    }
+
+    #[test]
+    fn take_changed_removal_retracts_exactly_once() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::Skills, "skills v1".to_string());
+
+        let retraction = state
+            .take_changed(SectionSlot::Skills, String::new())
+            .expect("disappearing section retracts once");
+        assert_eq!(
+            retraction, "_The \"skills\" section no longer applies._",
+            "got: {retraction}"
+        );
+
+        // The retraction is single-shot: the recorded value is now
+        // empty, so further empty renders dedupe away.
+        assert_eq!(state.take_changed(SectionSlot::Skills, String::new()), None);
+    }
+
+    #[test]
+    fn take_changed_reappearance_after_retraction_is_plain() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::Agents, "v1".to_string());
+        state.take_changed(SectionSlot::Agents, String::new());
+        let injected = state
+            .take_changed(SectionSlot::Agents, "v2".to_string())
+            .expect("reappearing section re-injects");
+        // The retraction already told the model the section was gone;
+        // the reappearance is a plain injection, not an "Updated" one.
+        assert_eq!(injected, "v2");
+    }
+
+    #[test]
+    fn take_changed_current_time_is_notice_exempt() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::CurrentTime, "t1".to_string());
+        // Text change: plain replacement, no notice.
+        let injected = state
+            .take_changed(SectionSlot::CurrentTime, "t2".to_string())
+            .expect("clock re-injects");
+        assert_eq!(injected, "t2");
+    }
+
+    #[tokio::test]
+    async fn runtime_context_update_notice_rides_changed_section() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.principal_memory = Some("remember this".to_string());
+
+        let _ = renderer.render_runtime_context(&ctx, &mut state).await;
+
+        // Memory changes → the re-injected section carries the notice.
+        ctx.principal_memory = Some("remember something else".to_string());
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("changed memory is due");
+        assert!(
+            body.contains("_Updated — replaces the previous \"memory\" section._"),
+            "got: {body}"
+        );
+
+        // Memory disappears → one retraction line, and no header.
+        ctx.principal_memory = None;
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("retraction is due");
+        assert!(
+            body.contains("_The \"memory\" section no longer applies._"),
+            "got: {body}"
+        );
+        assert!(!body.contains("## Your long-term memory"), "got: {body}");
+
+        // Next render with memory still absent → nothing more is due.
+        let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(quiet.is_none(), "got: {quiet:?}");
+    }
+
+    /// ADR-052 D4 (T0): the `identity` prompt section renders as a
+    /// `## Principal identity` tail section when a handler is
+    /// registered, and is absent otherwise.
+    #[tokio::test]
+    async fn runtime_context_identity_section() {
+        let core = EmptyExtensionCore::default();
+        core.section_texts
+            .lock()
+            .expect("section_texts poisoned")
+            .insert(
+                "identity".to_string(),
+                "name: Peko\ngoals:\n- help".to_string(),
+            );
+        let renderer = PromptRenderer::new(Arc::new(core));
+        let mut state = RuntimeContextState::default();
+        let ctx = empty_ctx();
+
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("identity section is due on first render");
+        assert!(body.contains("## Principal identity"), "got: {body}");
+        assert!(body.contains("name: Peko"), "got: {body}");
+
+        // No handler → no section.
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut state = RuntimeContextState::default();
+        let body = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(
+            body.as_deref()
+                .is_none_or(|b| !b.contains("## Principal identity")),
+            "got: {body:?}"
+        );
     }
 }

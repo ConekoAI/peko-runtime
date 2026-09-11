@@ -1559,7 +1559,7 @@ mod tests {
         // was contended). A serial regression still trips the overlap
         // assertion, so this only needs to catch a wedged loop.
         assert!(
-            total_elapsed < Duration::from_millis(2000),
+            total_elapsed < Duration::from_secs(2),
             "total elapsed {total_elapsed:?} suggests a wedged loop; \
          overlap assertion above is the concurrency proof"
         );

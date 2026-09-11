@@ -18,7 +18,8 @@
 //! `AgentPromptHandler` + `register_agents_with_core` registration was
 //! replaced by the single scanning `WorkspaceAgentsPromptHandler`,
 //! which resolves the workspace from the hook context at invoke time
-//! and re-scans `agents/` whenever the directory mtime changes.
+//! and re-scans `agents/` whenever a scanned file's `(mtime, len)`
+//! changes (ADR-052 D2 — in-place edits included).
 //! Presence in the workspace = visible (ADR-047) — no capability or
 //! active-extension filter. The remaining surface is
 //! `AgentAdapter::discover_agents` (also called from
@@ -223,14 +224,24 @@ struct AgentFrontmatter {
 /// an empty `agents/` directory yields [`HookResult::PassThrough`] so
 /// the section is stripped from the prompt.
 ///
-/// The scan result is cached in a `Mutex` keyed on the `agents/`
-/// directory's mtime — each call `stat`s the directory (cheap) and only
-/// re-reads the agent files when the mtime changed. That keeps the
-/// handler well within the renderer's 2-second hook timeout.
+/// The scan result is cached in a `Mutex` keyed on a per-file
+/// `(mtime, len)` fingerprint of every scanned agent file
+/// (`<id>.md` / `<id>/AGENT.md`) — each call `stat`s the scanned files
+/// (a handful; cheap) and only re-reads them when the fingerprint
+/// changed. Unlike the previous dir-mtime key, in-place edits to an
+/// existing agent file invalidate the catalog on the next iteration
+/// (ADR-052 D2). That keeps the handler well within the renderer's
+/// 2-second hook timeout.
 #[derive(Debug, Default)]
 pub struct WorkspaceAgentsPromptHandler {
-    cache: Mutex<Option<((SystemTime, usize), String)>>,
+    cache: Mutex<Option<(DirFingerprint, String)>>,
 }
+
+/// Cache key: per-file `(relative_path, mtime, len)` stats for every
+/// scanned file in the catalog dir, sorted by path for determinism.
+/// File-level stats (not dir mtime) so in-place content edits
+/// invalidate the cache (ADR-052 D2).
+type DirFingerprint = Vec<(String, SystemTime, u64)>;
 
 impl WorkspaceAgentsPromptHandler {
     /// Create a new workspace-scanning agents handler.
@@ -239,22 +250,18 @@ impl WorkspaceAgentsPromptHandler {
         Self::default()
     }
 
-    /// Render the agents catalog for `workspace`, using the mtime-keyed
-    /// cache. Returns `None` when there is nothing to render (no
-    /// `agents/` dir, or no agents discovered).
+    /// Render the agents catalog for `workspace`, using the
+    /// fingerprint-keyed cache. Returns `None` when there is nothing
+    /// to render (no `agents/` dir, or no agents discovered).
     ///
-    /// The cache key is `(dir_mtime, immediate_child_count)`. Mtime alone
-    /// is unreliable on Windows NTFS for fast back-to-back subdir/file
-    /// creations (the parent dir's mtime can read back the same value
-    /// before the metadata update has been flushed); counting children
-    /// catches added/removed entries even when mtime is stale. Same
-    /// shape as the sibling `WorkspaceSkillsPromptHandler` cache.
+    /// The cache key folds each scanned agent file's `(mtime, len)`
+    /// in, so in-place content edits invalidate the catalog on the
+    /// next call — the previous `(dir_mtime, child_count)` key only
+    /// caught added/removed entries (dir mtime doesn't move on content
+    /// writes).
     fn render_catalog(&self, workspace: &str) -> Option<String> {
         let agents_dir = Path::new(workspace).join("agents");
-        let metadata = std::fs::metadata(&agents_dir).ok()?;
-        let mtime = metadata.modified().ok()?;
-        let child_count = std::fs::read_dir(&agents_dir).ok()?.count();
-        let key = (mtime, child_count);
+        let key = agents_dir_fingerprint(&agents_dir)?;
 
         {
             let cache = self.cache.lock().expect("agents catalog cache poisoned");
@@ -293,6 +300,45 @@ impl WorkspaceAgentsPromptHandler {
 
         (!text.is_empty()).then_some(text)
     }
+}
+
+/// Fingerprint every file [`AgentAdapter::discover_agents`] would scan
+/// — flat `<id>.md` files and `<id>/AGENT.md` files — as
+/// `(relative_path, mtime, len)` entries, sorted by path. `None` when
+/// the dir doesn't exist. Files whose metadata can't be read are
+/// skipped, mirroring the scanner's skip-unreadable behavior.
+fn agents_dir_fingerprint(agents_dir: &Path) -> Option<DirFingerprint> {
+    let mut stats = Vec::new();
+    for entry in std::fs::read_dir(agents_dir).ok()?.flatten() {
+        let path = entry.path();
+        let file = if path.is_dir() {
+            path.join("AGENT.md")
+        } else {
+            path
+        };
+        let is_markdown = file
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+        if !is_markdown {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&file) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        let rel = file
+            .strip_prefix(agents_dir)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        stats.push((rel, mtime, meta.len()));
+    }
+    stats.sort();
+    Some(stats)
 }
 
 #[async_trait]
@@ -583,6 +629,48 @@ color: '#ff0000'
             HookResult::Continue(HookOutput::Text(text)) => {
                 assert!(text.contains("math"), "got: {text}");
                 assert!(text.contains("reviewer"), "got: {text}");
+            }
+            _ => panic!("Expected Continue with Text, got {second:?}"),
+        }
+    }
+
+    /// ADR-052 D2: an in-place CONTENT edit to an existing AGENT.md
+    /// (same filename, no dir entry added/removed, so the `agents/`
+    /// dir mtime is untouched) must invalidate the catalog on the next
+    /// call. The previous `(dir_mtime, child_count)` key served the
+    /// stale catalog here.
+    #[tokio::test]
+    async fn workspace_agents_handler_rescans_on_in_place_content_edit() {
+        let temp = TempDir::new().unwrap();
+        let agents_dir = temp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+        let agent_md = create_test_agent(&agents_dir, "math", "Math operations");
+
+        let handler = WorkspaceAgentsPromptHandler::new();
+        let ws = temp.path().to_string_lossy().to_string();
+
+        let first = handler.handle(agents_hook_ctx(Some(&ws))).await;
+        match &first {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("Math operations"), "got: {text}");
+            }
+            _ => panic!("Expected Continue with Text, got {first:?}"),
+        }
+
+        // Rewrite the same file with a longer description — the file's
+        // `(mtime, len)` changes; the dir mtime does not.
+        let content = std::fs::read_to_string(&agent_md)
+            .unwrap()
+            .replace("Math operations", "Math operations and symbolic algebra");
+        std::fs::write(&agent_md, content).unwrap();
+
+        let second = handler.handle(agents_hook_ctx(Some(&ws))).await;
+        match &second {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(
+                    text.contains("Math operations and symbolic algebra"),
+                    "got: {text}"
+                );
             }
             _ => panic!("Expected Continue with Text, got {second:?}"),
         }
