@@ -243,7 +243,8 @@ impl PromptRenderer {
         let mcp = self.mcp_context_provider.render_mcp_context().await;
 
         let values = build_stable_placeholder_values(ctx, &mcp);
-        replace_placeholders(&ctx.body, &values, true)
+        let rendered = replace_placeholders(&ctx.body, &values, true);
+        append_missing_stable_sections(&ctx.body, rendered, &values)
     }
 
     /// Render the per-iteration runtime-context message body.
@@ -262,13 +263,19 @@ impl PromptRenderer {
     /// Section injection policy:
     ///
     /// - **Always** (tiny): the iteration-budget line.
-    /// - **On change**: current time (minute granularity, so it changes
-    ///   at most once a minute), memory, session context, and the
-    ///   agents/skills workspace catalogs. Each section's rendered text
-    ///   is value-compared against the last injected value carried in
-    ///   `state`; only changed sections are re-injected, so large
-    ///   rarely-changing sections (memory, catalogs) don't bloat every
-    ///   iteration.
+    /// - **On change**: principal identity, current time (minute
+    ///   granularity, so it changes at most once a minute), memory,
+    ///   session context, and the agents/skills workspace catalogs.
+    ///   Each section's rendered text is value-compared against the
+    ///   last injected value carried in `state`; only changed sections
+    ///   are re-injected, so large rarely-changing sections (memory,
+    ///   catalogs) don't bloat every iteration. ADR-052 D2: a
+    ///   re-injection carries an "_Updated — replaces…_" notice and a
+    ///   section that turns empty is retracted once with a "_… no
+    ///   longer applies._" notice (`CurrentTime` exempt — it changes
+    ///   every minute). Workspace-hook prompt sections (ADR-052 D6,
+    ///   `PromptSection` binds) follow the same on-change policy under
+    ///   their own names.
     /// - **Event-edged**: `quota_tripped`, `soft_cancel`,
     ///   `capability_diff` — included only when the corresponding
     ///   `TurnPromptContext` field fires (the loop computes the rising
@@ -291,12 +298,15 @@ impl PromptRenderer {
         state: &mut RuntimeContextState,
     ) -> Option<String> {
         // Parallel hook dispatch: the workspace-catalog sections
-        // (`agents`, `skills`) and `SessionContextBuild` are independent,
-        // so fire them concurrently. Each `dispatch_text` carries its
-        // own 2s timeout. The handlers mtime-cache their scans, so
-        // rendering every iteration purely for the change compare is
-        // cheap.
-        let (agents, skills, session_ctx) = tokio::join!(
+        // (`identity`, `agents`, `skills`) and `SessionContextBuild` are
+        // independent, so fire them concurrently. Each `dispatch_text`
+        // carries its own 2s timeout. The handlers cache their scans
+        // (keyed on file-level `(mtime, len)` stats), so rendering every
+        // iteration purely for the change compare is cheap. `identity`
+        // soft-fails to empty when no handler is registered — the
+        // section then simply doesn't ride.
+        let (identity, agents, skills, session_ctx) = tokio::join!(
+            self.dispatch_text("identity", ctx),
             self.dispatch_text("agents", ctx),
             self.dispatch_text("skills", ctx),
             self.dispatch_session_context(ctx),
@@ -304,13 +314,29 @@ impl PromptRenderer {
 
         let mut sections: Vec<String> = Vec::new();
 
-        // On-change sections. Empty renders are recorded but never
-        // injected (there is nothing to retract — a section that
-        // disappears simply stops riding the tail).
+        // On-change sections. A changed section is re-injected with an
+        // "Updated — replaces…" notice; a section that turns empty is
+        // retracted once with a "no longer applies" notice instead of
+        // vanishing silently (ADR-052 D2, codex-style diff semantics).
+        // `CurrentTime` is exempt (it changes every minute; notices
+        // would be noise).
+        if let Some(section) =
+            state.take_changed(SectionSlot::Identity, format_identity_section(&identity))
+        {
+            sections.push(section);
+        }
         if let Some(section) = state.take_changed(SectionSlot::CurrentTime, render_current_time()) {
             sections.push(section);
         }
-        if let Some(section) = state.take_changed(SectionSlot::Memory, format_memory_section(ctx)) {
+        if let Some(section) =
+            state.take_changed(SectionSlot::Memory, format_memory_section(ctx))
+        {
+            sections.push(section);
+        }
+        if let Some(section) = state.take_changed(
+            SectionSlot::ProjectContext,
+            format_project_context_section(ctx),
+        ) {
             sections.push(section);
         }
         if let Some(section) = state.take_changed(
@@ -328,6 +354,40 @@ impl PromptRenderer {
             state.take_changed(SectionSlot::Skills, format_skills_section(&skills))
         {
             sections.push(section);
+        }
+
+        // ADR-052 D6: custom prompt sections contributed by workspace
+        // hooks (`PromptSection` binds in `<workspace>/hooks/<id>/hook.toml`).
+        // Enumerate the section names registered for this principal,
+        // drop names already dispatched as built-ins (a hook augmenting
+        // "agents" rides the built-in dispatch above — no double
+        // dispatch), sort for byte-stable ordering, and dispatch each
+        // with the same 2s soft-fail budget as the built-ins. Each
+        // result rides the custom-section change tracker, so unchanged
+        // custom sections cost zero tokens after first injection, edits
+        // re-inject with the update notice, and a hook that stops
+        // producing output retracts once.
+        let mut custom_names = self
+            .extension_core
+            .registered_prompt_sections(
+                Some(ctx.principal_id.as_str()),
+                Some(ctx.active_extension_vec()),
+            )
+            .await;
+        custom_names.retain(|name| !BUILTIN_PROMPT_SECTIONS.contains(&name.as_str()));
+        custom_names.sort();
+        custom_names.dedup();
+        if !custom_names.is_empty() {
+            let dispatched = futures::future::join_all(custom_names.iter().map(|name| async move {
+                (name.clone(), self.dispatch_text(name, ctx).await)
+            }))
+            .await;
+            for (name, text) in dispatched {
+                let rendered = format_custom_section(&name, &text);
+                if let Some(section) = state.take_changed_custom(&name, rendered) {
+                    sections.push(section);
+                }
+            }
         }
 
         // Always-on section: the iteration budget is one line, so it
@@ -454,11 +514,43 @@ impl PromptRenderer {
 /// The on-change sections tracked by [`RuntimeContextState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SectionSlot {
+    Identity,
     CurrentTime,
     Memory,
+    ProjectContext,
     SessionContext,
     Agents,
     Skills,
+}
+
+/// ADR-052 D6: prompt-section names the renderer dispatches as
+/// built-ins. `registered_prompt_sections` names matching one of these
+/// are deduped away — a workspace hook binding e.g. "agents" augments
+/// the built-in catalog via registry aggregation and must not cause a
+/// second dispatch under the custom-section path.
+const BUILTIN_PROMPT_SECTIONS: [&str; 3] = ["identity", "agents", "skills"];
+
+impl SectionSlot {
+    /// Human-readable section name used in the update/retraction
+    /// notice lines (ADR-052 D2).
+    fn label(self) -> &'static str {
+        match self {
+            SectionSlot::Identity => "principal identity",
+            SectionSlot::CurrentTime => "current time",
+            SectionSlot::Memory => "memory",
+            SectionSlot::ProjectContext => "project instructions",
+            SectionSlot::SessionContext => "session context",
+            SectionSlot::Agents => "agents",
+            SectionSlot::Skills => "skills",
+        }
+    }
+
+    /// Whether a text change re-injects with an "Updated — replaces…"
+    /// notice. `CurrentTime` is exempt: it changes every minute, so
+    /// notices would be pure noise.
+    fn notice_on_update(self) -> bool {
+        !matches!(self, SectionSlot::CurrentTime)
+    }
 }
 
 /// Per-section last-injected values for the tail runtime-context
@@ -472,37 +564,111 @@ enum SectionSlot {
 /// agents/skills catalogs) ride the tail once and are not re-injected
 /// until they actually change. `None` = never injected this run, so
 /// iteration 1 injects every non-empty section.
+///
+/// ADR-052 D2 (codex-style diff semantics): a re-injection after a
+/// text change carries an "_Updated — replaces the previous …_"
+/// notice (except `CurrentTime`), and a section that turns empty after
+/// being non-empty is retracted exactly once with a "_… no longer
+/// applies._" notice instead of vanishing silently.
 #[derive(Debug, Default)]
 pub struct RuntimeContextState {
+    identity: Option<String>,
     current_time: Option<String>,
     memory: Option<String>,
+    project_context: Option<String>,
     session_context: Option<String>,
     agents: Option<String>,
     skills: Option<String>,
+    /// ADR-052 D6: last injected raw render per custom (workspace-hook)
+    /// prompt-section name. A missing key means "never injected this
+    /// run" — the same `None` case as the fixed slots above.
+    custom_sections: HashMap<String, String>,
 }
 
 impl RuntimeContextState {
-    /// Compare-and-record one section. Returns `Some(rendered)` when
-    /// the rendered text differs from the last injected value (or the
-    /// section was never rendered this run); returns `None` when
-    /// unchanged. Empty renders are recorded but never returned — a
-    /// section that renders empty simply doesn't ride the tail (there
-    /// is nothing to retract; prior injections age out via compaction).
+    /// Compare-and-record one fixed-slot section. Returns the text to
+    /// inject, or `None` when unchanged. The recorded value is always
+    /// the raw render (never the notice-decorated text), so the next
+    /// compare is against content, not notices.
+    ///
+    /// Injection policy:
+    ///
+    /// - First render of a section this run: plain injection when
+    ///   non-empty; empty renders are recorded but not injected.
+    /// - Changed text after a non-empty injection: re-injected with a
+    ///   trailing "_Updated — replaces…_" notice (except
+    ///   `CurrentTime`, which re-injects plain).
+    /// - Empty text after a non-empty injection: a one-line "_… no
+    ///   longer applies._" retraction, injected exactly once (the
+    ///   recorded value becomes empty, so the next empty render
+    ///   dedupes away).
+    /// - Non-empty text after an empty/absent record: plain injection
+    ///   (a retraction already told the model the section was gone).
     fn take_changed(&mut self, slot: SectionSlot, rendered: String) -> Option<String> {
         let cell = match slot {
+            SectionSlot::Identity => &mut self.identity,
             SectionSlot::CurrentTime => &mut self.current_time,
             SectionSlot::Memory => &mut self.memory,
+            SectionSlot::ProjectContext => &mut self.project_context,
             SectionSlot::SessionContext => &mut self.session_context,
             SectionSlot::Agents => &mut self.agents,
             SectionSlot::Skills => &mut self.skills,
         };
-        if cell.as_deref() == Some(rendered.as_str()) {
-            return None;
-        }
-        let changed = (!rendered.is_empty()).then_some(rendered.clone());
-        *cell = Some(rendered);
-        changed
+        take_changed_cell(cell, rendered, slot.label(), slot.notice_on_update())
     }
+
+    /// ADR-052 D6: compare-and-record one custom (workspace-hook)
+    /// prompt section. Same injection policy as [`Self::take_changed`]
+    /// with notices always on and the section name as the label.
+    fn take_changed_custom(&mut self, section: &str, rendered: String) -> Option<String> {
+        // Lift the stored raw render into the `Option<String>` shape
+        // the shared helper expects, decide, then write it back. A
+        // missing key maps to `None` (never injected).
+        let mut cell = self.custom_sections.get(section).cloned();
+        let decision = take_changed_cell(&mut cell, rendered, section, true);
+        match cell {
+            Some(value) => {
+                self.custom_sections.insert(section.to_string(), value);
+            }
+            None => {
+                self.custom_sections.remove(section);
+            }
+        }
+        decision
+    }
+}
+
+/// Shared compare-and-decide for one change-tracked section — the fixed
+/// [`SectionSlot`] path and the ADR-052 D6 custom-section path both
+/// funnel through here so their notice semantics stay identical.
+///
+/// `cell` holds the last injected raw render (`None` = never injected
+/// this run); on a change it is replaced with `rendered` and the text
+/// to inject is returned (`None` = unchanged, inject nothing). The
+/// recorded value is always the raw render, never the notice-decorated
+/// text, so the next compare is against content, not notices.
+fn take_changed_cell(
+    cell: &mut Option<String>,
+    rendered: String,
+    label: &str,
+    notice_on_update: bool,
+) -> Option<String> {
+    if cell.as_deref() == Some(rendered.as_str()) {
+        return None;
+    }
+    let previous = cell.replace(rendered.clone()).unwrap_or_default();
+    if rendered.is_empty() {
+        // Retraction fires only when a previously non-empty section
+        // turns empty; `CurrentTime` never renders empty.
+        return (!previous.is_empty() && notice_on_update)
+            .then(|| format!("_The \"{label}\" section no longer applies._"));
+    }
+    if !previous.is_empty() && notice_on_update {
+        return Some(format!(
+            "{rendered}\n\n_Updated — replaces the previous \"{label}\" section._"
+        ));
+    }
+    Some(rendered)
 }
 
 /// Render the `{{current_time}}` line at MINUTE granularity. The clock
@@ -637,6 +803,49 @@ fn build_stable_placeholder_values(
     values
 }
 
+/// The generated sections that every frozen prefix must carry, in
+/// append order. These are run-stable (host, OS, model, workspace,
+/// sandbox, aliases, gateway), so appending them keeps the prefix
+/// byte-identical across iterations.
+const GENERATED_STABLE_SECTIONS: [Placeholder; 4] = [
+    Placeholder::Runtime,
+    Placeholder::Sandbox,
+    Placeholder::ModelAliases,
+    Placeholder::SelfUpdate,
+];
+
+/// Append the generated stable sections the template didn't place
+/// itself (ADR-052 D2: the frozen prefix is "role body + generated
+/// runtime sections"). Role files and custom personas typically carry
+/// no `{{...}}` tokens at all — without this, their system prompt was
+/// the raw body and nothing else: no workspace, no model, no runtime
+/// context (found by the `tiered-prompt-explore` e2e experiment,
+/// 2026-09-11). A template that places a section via its placeholder
+/// keeps full control — nothing is appended twice. Empty sections
+/// (e.g. no model aliases configured) are skipped.
+fn append_missing_stable_sections(
+    template: &str,
+    rendered: String,
+    values: &HashMap<Placeholder, String>,
+) -> String {
+    let mut out = rendered;
+    for ph in GENERATED_STABLE_SECTIONS {
+        if template.contains(ph.marker()) {
+            continue;
+        }
+        let Some(section) = values.get(&ph) else {
+            continue;
+        };
+        let section = section.trim();
+        if section.is_empty() {
+            continue;
+        }
+        out.push_str("\n\n");
+        out.push_str(section);
+    }
+    out
+}
+
 fn format_skills_section(text: &str) -> String {
     if text.is_empty() {
         return String::new();
@@ -666,6 +875,39 @@ When delegating, choose the most appropriate agent from the list below. Each age
 <available_agents>
 {text}
 </available_agents>"
+    )
+}
+
+/// ADR-052 D6: a workspace-hook prompt section renders as a plain
+/// `## <section-name>` header plus the hook's stdout. Unlike the
+/// built-in sections there is no canned guidance wrapper — the hook
+/// authors its own content. Empty or whitespace-only output renders
+/// empty so the change tracker retracts the section when the hook
+/// stops producing output.
+fn format_custom_section(name: &str, text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    format!("## {name}\n\n{trimmed}")
+}
+
+/// ADR-052 D4 (T0): the principal's `[identity]` + `[intent]` from
+/// `principal.toml`, rendered by the core-side
+/// `WorkspaceIdentityPromptHandler` into the `identity` prompt section.
+/// Empty text (no handler, missing file, all fields empty) → no
+/// section (presence = visibility).
+fn format_identity_section(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    format!(
+        r"## Principal identity
+Who this principal is and what it wants — applies to every agent in the tree.
+
+<principal_identity>
+{text}
+</principal_identity>"
     )
 }
 
@@ -729,6 +971,28 @@ fn format_memory_section(ctx: &TurnPromptContext) -> String {
     format!("## Your long-term memory (MEMORY.md)\n\n{trimmed}\n")
 }
 
+/// ADR-052 D5 (T2): the nearest `AGENTS.md` above the run's focus
+/// directory, rendered with its own path as the label and an explicit
+/// environment-provided provenance note so its authority ranks below
+/// the principal's instructions (the whole section rides the
+/// user-role tail, not the frozen system prompt). `None` on the
+/// context (no `AGENTS.md` in scope) renders empty, so the change
+/// tracker retracts the section when the agent leaves every AGENTS.md
+/// scope.
+fn format_project_context_section(ctx: &TurnPromptContext) -> String {
+    let Some((label, content)) = ctx.project_instructions.as_ref() else {
+        return String::new();
+    };
+    if content.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "## Project instructions ({label})\n\
+         _Environment-provided project notes — below principal instructions in authority._\n\n\
+         {content}"
+    )
+}
+
 fn format_session_context_section(ctx: &TurnPromptContext, text: &str) -> String {
     // Peer-conversation lines (peer-ingress turns only): the DM
     // channel that reaches the user + the peer's subject, so the
@@ -783,11 +1047,14 @@ mod tests {
     /// Tests that need a prompt section to render text populate
     /// `section_texts` (keyed by section name, e.g. `"agents"`) —
     /// `invoke_prompt_section_hook` then returns that text, mimicking
-    /// a registered `PromptSystemSection` handler.
+    /// a registered `PromptSystemSection` handler. Tests for ADR-052
+    /// D6 custom sections additionally populate `registered_sections`
+    /// with the section names the (real) hook registry would enumerate.
     #[derive(Default)]
     struct EmptyExtensionCore {
         session_context_snapshots: std::sync::Mutex<Vec<SessionSnapshot>>,
         section_texts: std::sync::Mutex<HashMap<String, String>>,
+        registered_sections: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -886,6 +1153,16 @@ mod tests {
                 .get(section)
                 .cloned()
         }
+        async fn registered_prompt_sections(
+            &self,
+            _principal_id: Option<&str>,
+            _active_extensions: Option<Vec<String>>,
+        ) -> Vec<String> {
+            self.registered_sections
+                .lock()
+                .expect("registered_sections mutex poisoned")
+                .clone()
+        }
         async fn invoke_session_context_build_hook(
             &self,
             _snapshot: SessionSnapshot,
@@ -935,6 +1212,7 @@ mod tests {
             capabilities: None,
             active_extensions: None,
             principal_memory: None,
+            project_instructions: None,
             workspace: PathBuf::from("/tmp/workspace"),
             resolved_model: "default".to_string(),
             channel: "discord".to_string(),
@@ -1179,6 +1457,47 @@ mod tests {
             prefix.contains("You are test-agent."),
             "prefix was: {prefix}"
         );
+    }
+
+    /// ADR-052 D2 (2026-09-11): a placeholder-free prompt body (the
+    /// typical shape for role files and custom personas) still carries
+    /// the generated stable sections — without them the frozen prefix
+    /// was the raw body and nothing else (no workspace, no model, no
+    /// runtime context).
+    #[tokio::test]
+    async fn render_cache_stable_appends_generated_sections_for_bare_body() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut ctx = empty_ctx();
+        ctx.body = "You are the researcher role.".to_string();
+
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        assert!(
+            prefix.starts_with("You are the researcher role."),
+            "prefix was: {prefix}"
+        );
+        assert!(prefix.contains("## Runtime"), "prefix was: {prefix}");
+        // Empty generated sections stay out: sandbox disabled, no
+        // aliases, no gateway in `empty_ctx()`.
+        assert!(!prefix.contains("## Sandbox"), "prefix was: {prefix}");
+        assert!(!prefix.contains("## Model Aliases"), "prefix was: {prefix}");
+        assert!(!prefix.contains("## Self-Update"), "prefix was: {prefix}");
+    }
+
+    /// A template that places a generated section via its placeholder
+    /// keeps full control — the section is NOT appended a second time.
+    #[tokio::test]
+    async fn render_cache_stable_does_not_duplicate_placed_sections() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut ctx = empty_ctx();
+        ctx.body = "Header.\n{{runtime}}\nFooter.".to_string();
+
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        assert_eq!(
+            prefix.matches("## Runtime").count(),
+            1,
+            "prefix was: {prefix}"
+        );
+        assert!(prefix.contains("Footer."), "prefix was: {prefix}");
     }
 
     /// The runtime-context message is wrapped in the
@@ -1477,5 +1796,388 @@ mod tests {
             .expect("snapshots mutex poisoned");
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].session_id, "root:user:alice");
+    }
+
+    // ---------- ADR-052 D2: change/removal notices ----------
+
+    #[test]
+    fn take_changed_first_injection_carries_no_notice() {
+        let mut state = RuntimeContextState::default();
+        let injected = state
+            .take_changed(SectionSlot::Agents, "## Available Agents\n- a".to_string())
+            .expect("first render injects");
+        assert_eq!(injected, "## Available Agents\n- a");
+        assert!(!injected.contains("Updated — replaces"));
+    }
+
+    #[test]
+    fn take_changed_first_empty_render_injects_nothing() {
+        let mut state = RuntimeContextState::default();
+        assert_eq!(state.take_changed(SectionSlot::Agents, String::new()), None);
+    }
+
+    #[test]
+    fn take_changed_update_carries_notice() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::Agents, "v1".to_string());
+        let injected = state
+            .take_changed(SectionSlot::Agents, "v2".to_string())
+            .expect("changed section re-injects");
+        assert!(injected.starts_with("v2"), "got: {injected}");
+        assert!(
+            injected.contains("_Updated — replaces the previous \"agents\" section._"),
+            "got: {injected}"
+        );
+    }
+
+    #[test]
+    fn take_changed_removal_retracts_exactly_once() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::Skills, "skills v1".to_string());
+
+        let retraction = state
+            .take_changed(SectionSlot::Skills, String::new())
+            .expect("disappearing section retracts once");
+        assert_eq!(
+            retraction, "_The \"skills\" section no longer applies._",
+            "got: {retraction}"
+        );
+
+        // The retraction is single-shot: the recorded value is now
+        // empty, so further empty renders dedupe away.
+        assert_eq!(state.take_changed(SectionSlot::Skills, String::new()), None);
+    }
+
+    #[test]
+    fn take_changed_reappearance_after_retraction_is_plain() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::Agents, "v1".to_string());
+        state.take_changed(SectionSlot::Agents, String::new());
+        let injected = state
+            .take_changed(SectionSlot::Agents, "v2".to_string())
+            .expect("reappearing section re-injects");
+        // The retraction already told the model the section was gone;
+        // the reappearance is a plain injection, not an "Updated" one.
+        assert_eq!(injected, "v2");
+    }
+
+    #[test]
+    fn take_changed_current_time_is_notice_exempt() {
+        let mut state = RuntimeContextState::default();
+        state.take_changed(SectionSlot::CurrentTime, "t1".to_string());
+        // Text change: plain replacement, no notice.
+        let injected = state
+            .take_changed(SectionSlot::CurrentTime, "t2".to_string())
+            .expect("clock re-injects");
+        assert_eq!(injected, "t2");
+    }
+
+    #[tokio::test]
+    async fn runtime_context_update_notice_rides_changed_section() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.principal_memory = Some("remember this".to_string());
+
+        let _ = renderer.render_runtime_context(&ctx, &mut state).await;
+
+        // Memory changes → the re-injected section carries the notice.
+        ctx.principal_memory = Some("remember something else".to_string());
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("changed memory is due");
+        assert!(
+            body.contains("_Updated — replaces the previous \"memory\" section._"),
+            "got: {body}"
+        );
+
+        // Memory disappears → one retraction line, and no header.
+        ctx.principal_memory = None;
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("retraction is due");
+        assert!(
+            body.contains("_The \"memory\" section no longer applies._"),
+            "got: {body}"
+        );
+        assert!(!body.contains("## Your long-term memory"), "got: {body}");
+
+        // Next render with memory still absent → nothing more is due.
+        let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(quiet.is_none(), "got: {quiet:?}");
+    }
+
+    // ---------- ADR-052 D5 (T2): project instructions section ----------
+
+    /// The project-instructions section renders with its AGENTS.md
+    /// path as the label, the provenance note, and the content; it
+    /// follows the same change detection as the other content
+    /// sections — rides once, re-injects with an update notice when
+    /// the agent moves to a different project, and retracts when the
+    /// agent leaves all AGENTS.md scopes.
+    #[tokio::test]
+    async fn runtime_context_project_instructions_lifecycle() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut state = RuntimeContextState::default();
+        let mut ctx = empty_ctx();
+        ctx.project_instructions = Some((
+            "/repos/alpha/AGENTS.md".to_string(),
+            "Use make.sh, not cargo.".to_string(),
+        ));
+
+        // First render: plain injection with label + provenance note.
+        let first = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("project instructions are due on first render");
+        assert!(
+            first.contains("## Project instructions (/repos/alpha/AGENTS.md)"),
+            "got: {first}"
+        );
+        assert!(
+            first.contains(
+                "_Environment-provided project notes — below principal instructions in authority._"
+            ),
+            "got: {first}"
+        );
+        assert!(first.contains("Use make.sh, not cargo."), "got: {first}");
+
+        // Unchanged → not re-injected.
+        let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(quiet.is_none(), "got: {quiet:?}");
+
+        // Agent moved to a different project → update notice rides.
+        ctx.project_instructions = Some((
+            "/repos/beta/AGENTS.md".to_string(),
+            "Run ./check_module_boundaries.sh.".to_string(),
+        ));
+        let moved = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("changed project is due");
+        assert!(
+            moved.contains("## Project instructions (/repos/beta/AGENTS.md)"),
+            "got: {moved}"
+        );
+        assert!(
+            moved.contains(
+                "_Updated — replaces the previous \"project instructions\" section._"
+            ),
+            "got: {moved}"
+        );
+
+        // Agent leaves all AGENTS.md scopes → one retraction, then quiet.
+        ctx.project_instructions = None;
+        let retracted = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("retraction is due");
+        assert!(
+            retracted.contains("_The \"project instructions\" section no longer applies._"),
+            "got: {retracted}"
+        );
+        assert!(
+            !retracted.contains("## Project instructions"),
+            "got: {retracted}"
+        );
+        let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(quiet.is_none(), "got: {quiet:?}");
+    }
+
+    /// ADR-052 D4 (T0): the `identity` prompt section renders as a
+    /// `## Principal identity` tail section when a handler is
+    /// registered, and is absent otherwise.
+    #[tokio::test]
+    async fn runtime_context_identity_section() {
+        let core = EmptyExtensionCore::default();
+        core.section_texts
+            .lock()
+            .expect("section_texts poisoned")
+            .insert(
+                "identity".to_string(),
+                "name: Peko\ngoals:\n- help".to_string(),
+            );
+        let renderer = PromptRenderer::new(Arc::new(core));
+        let mut state = RuntimeContextState::default();
+        let ctx = empty_ctx();
+
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("identity section is due on first render");
+        assert!(body.contains("## Principal identity"), "got: {body}");
+        assert!(body.contains("name: Peko"), "got: {body}");
+
+        // No handler → no section.
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut state = RuntimeContextState::default();
+        let body = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(
+            body.as_deref()
+                .is_none_or(|b| !b.contains("## Principal identity")),
+            "got: {body:?}"
+        );
+    }
+
+    // ---------- ADR-052 D6: workspace-hook custom prompt sections ----------
+
+    /// Funnel stub with one custom prompt section ("status-board")
+    /// registered, mimicking a workspace hook's `PromptSection` bind.
+    fn custom_section_funnel(initial_text: &str) -> Arc<EmptyExtensionCore> {
+        let core = EmptyExtensionCore::default();
+        core.registered_sections
+            .lock()
+            .expect("registered_sections poisoned")
+            .push("status-board".to_string());
+        core.section_texts
+            .lock()
+            .expect("section_texts poisoned")
+            .insert("status-board".to_string(), initial_text.to_string());
+        Arc::new(core)
+    }
+
+    /// Custom-section lifecycle: first injection is a plain
+    /// `## <name>` section; an edit re-injects with the update notice;
+    /// the hook going quiet retracts the section exactly once.
+    #[tokio::test]
+    async fn runtime_context_custom_section_lifecycle() {
+        let core = custom_section_funnel("all systems green");
+        let renderer = PromptRenderer::new(core.clone());
+        let mut state = RuntimeContextState::default();
+        let ctx = empty_ctx();
+
+        // First render: plain injection with the section-name header.
+        let first = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("custom section is due on first render");
+        assert!(first.contains("## status-board"), "got: {first}");
+        assert!(first.contains("all systems green"), "got: {first}");
+        assert!(!first.contains("Updated — replaces"), "got: {first}");
+
+        // Unchanged → nothing due.
+        let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(quiet.is_none(), "got: {quiet:?}");
+
+        // Edited output → re-injected with the update notice.
+        core.section_texts
+            .lock()
+            .expect("section_texts poisoned")
+            .insert("status-board".to_string(), "one worker down".to_string());
+        let updated = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("edited section is due");
+        assert!(updated.contains("one worker down"), "got: {updated}");
+        assert!(
+            updated.contains("_Updated — replaces the previous \"status-board\" section._"),
+            "got: {updated}"
+        );
+
+        // Hook stops producing output → one retraction, then quiet.
+        core.section_texts
+            .lock()
+            .expect("section_texts poisoned")
+            .remove("status-board");
+        let retracted = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("retraction is due");
+        assert!(
+            retracted.contains("_The \"status-board\" section no longer applies._"),
+            "got: {retracted}"
+        );
+        assert!(!retracted.contains("## status-board"), "got: {retracted}");
+        let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(quiet.is_none(), "got: {quiet:?}");
+    }
+
+    /// A workspace hook binding a built-in section name (e.g.
+    /// "agents") must NOT cause a second dispatch under the
+    /// custom-section path — registry aggregation already folds its
+    /// output into the built-in dispatch.
+    #[tokio::test]
+    async fn runtime_context_custom_section_dedupes_builtin_names() {
+        let core = EmptyExtensionCore::default();
+        {
+            let mut registered = core.registered_sections.lock().expect("poisoned");
+            registered.push("agents".to_string());
+            let mut texts = core.section_texts.lock().expect("poisoned");
+            texts.insert("agents".to_string(), "- Reviewer: reviews code".to_string());
+        }
+        let renderer = PromptRenderer::new(Arc::new(core));
+        let mut state = RuntimeContextState::default();
+        let ctx = empty_ctx();
+
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("agents catalog is due on first render");
+        // Exactly one dispatch: the built-in "## Available Agents"
+        // rendering, and no custom "## agents" header.
+        assert_eq!(body.matches("## Available Agents").count(), 1, "got: {body}");
+        assert!(!body.contains("## agents\n"), "got: {body}");
+        assert!(body.contains("- Reviewer: reviews code"), "got: {body}");
+    }
+
+    /// Two custom sections render in sorted (byte-stable) order
+    /// regardless of the order the registry enumerated them.
+    #[tokio::test]
+    async fn runtime_context_custom_sections_render_in_sorted_order() {
+        let core = EmptyExtensionCore::default();
+        {
+            let mut registered = core.registered_sections.lock().expect("poisoned");
+            registered.push("zeta".to_string());
+            registered.push("alpha".to_string());
+            let mut texts = core.section_texts.lock().expect("poisoned");
+            texts.insert("zeta".to_string(), "z-text".to_string());
+            texts.insert("alpha".to_string(), "a-text".to_string());
+        }
+        let renderer = PromptRenderer::new(Arc::new(core));
+        let mut state = RuntimeContextState::default();
+        let ctx = empty_ctx();
+
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("custom sections are due on first render");
+        let alpha_pos = body.find("## alpha").expect("alpha section renders");
+        let zeta_pos = body.find("## zeta").expect("zeta section renders");
+        assert!(alpha_pos < zeta_pos, "got: {body}");
+        assert!(body.contains("a-text"), "got: {body}");
+        assert!(body.contains("z-text"), "got: {body}");
+    }
+
+    #[test]
+    fn take_changed_custom_matches_slot_semantics() {
+        let mut state = RuntimeContextState::default();
+        // First injection: plain.
+        let injected = state
+            .take_changed_custom("weather", "sunny".to_string())
+            .expect("first render injects");
+        assert_eq!(injected, "sunny");
+        // Unchanged dedupes.
+        assert_eq!(state.take_changed_custom("weather", "sunny".to_string()), None);
+        // Update carries the notice with the section name as label.
+        let updated = state
+            .take_changed_custom("weather", "rain".to_string())
+            .expect("change re-injects");
+        assert!(
+            updated.contains("_Updated — replaces the previous \"weather\" section._"),
+            "got: {updated}"
+        );
+        // Disappearance retracts once.
+        let retracted = state
+            .take_changed_custom("weather", String::new())
+            .expect("retraction fires");
+        assert_eq!(retracted, "_The \"weather\" section no longer applies._");
+        assert_eq!(state.take_changed_custom("weather", String::new()), None);
+        // Independent names track independently.
+        assert_eq!(
+            state.take_changed_custom("other", "x".to_string()),
+            Some("x".to_string())
+        );
     }
 }

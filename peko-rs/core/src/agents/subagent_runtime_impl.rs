@@ -222,46 +222,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         let timeout_seconds = request.timeout_seconds;
         let parent_session_key = request.parent_session_key.clone();
         let prompt = request.prompt.clone();
-        // Phase 1: the parent-driven model id (if any). Caller puts
-        // it on `ExecutionConfig.model_override`; we lift it onto the
-        // root-side `ExecutionConfig` and clear it from the source so
-        // the built-in shape stays single-source. When `request.model`
-        // is `Some`, it wins — the parent picked it directly.
-        let model_override = request
-            .model
-            .clone()
-            .or_else(|| request.config.model_override.clone());
-
-        // Translate the built-in's `ExecutionConfig` to the root's
-        // `ExecutionConfig`. Sprint 7 Commit 3 collapsed the
-        // built-in `ExecutionConfig`'s `cleanup` / `label` fields —
-        // root-side always sees `Keep` / `None`. The remaining
-        // fields (timeout, announce_completion, max_depth,
-        // model_override) project verbatim.
-        let root_config = crate::agents::subagent_executor::ExecutionConfig {
-            timeout_seconds: request.config.timeout_seconds,
-            cleanup: SpawnCleanupPolicy::Keep,
-            label: None,
-            announce_completion: request.config.announce_completion,
-            max_depth: request.config.max_depth,
-            model_override,
-            // Agent tool `name` → the child session's slug (stamped by
-            // `spawn_and_execute`; ignored on the resume path).
-            slug: request.name.clone(),
-            // Phase 2 (standing named children): threaded so the
-            // attach-by-name branch can check the requested agent
-            // template against the standing child's `[children]`
-            // declaration.
-            agent: Some(request.agent.clone()),
-            // Spawn/resume never force-compact; that flag is armed by
-            // the compact action's own adapter path below.
-            force_compact: false,
-            // Agent-tool spawns are delegated tasks, not peer
-            // conversations — keep the subagent task framing.
-            conversation: false,
-            conversation_channel: None,
-            conversation_peer: None,
-        };
+        let root_config = build_root_execution_config(&request);
 
         let view = if let Some(ref resume_target) = request.resume_session {
             // Phase 5b: persistent subagents — re-attach to an
@@ -379,6 +340,64 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     }
 }
 
+/// Translate a built-in [`SpawnRequest`] into the root-side
+/// `agents::subagent_executor::ExecutionConfig` shared by the spawn
+/// and resume branches of `execute_and_wait`.
+///
+/// Sprint 7 Commit 3 collapsed the built-in `ExecutionConfig`'s
+/// `cleanup` / `label` fields — root-side always sees `Keep` /
+/// `None`. The remaining fields (timeout, announce_completion,
+/// max_depth, model_override) project verbatim.
+///
+/// ADR-052 D3: the resolved role body (`request.subagent_config.body`)
+/// rides `role_prompt` so the spawned child runs the named agent's
+/// own persona instead of the parent's `AgentConfig` verbatim. An
+/// empty/whitespace body maps to `None` (inherit the parent persona)
+/// rather than overriding the child's system prompt with blank text.
+fn build_root_execution_config(
+    request: &SpawnRequest,
+) -> crate::agents::subagent_executor::ExecutionConfig {
+    // Phase 1: the parent-driven model id (if any). Caller puts
+    // it on `ExecutionConfig.model_override`; we lift it onto the
+    // root-side `ExecutionConfig` and clear it from the source so
+    // the built-in shape stays single-source. When `request.model`
+    // is `Some`, it wins — the parent picked it directly.
+    let model_override = request
+        .model
+        .clone()
+        .or_else(|| request.config.model_override.clone());
+    let role_prompt = {
+        let body = request.subagent_config.body.clone();
+        (!body.trim().is_empty()).then_some(body)
+    };
+
+    crate::agents::subagent_executor::ExecutionConfig {
+        timeout_seconds: request.config.timeout_seconds,
+        cleanup: SpawnCleanupPolicy::Keep,
+        label: None,
+        announce_completion: request.config.announce_completion,
+        max_depth: request.config.max_depth,
+        model_override,
+        // Agent tool `name` → the child session's slug (stamped by
+        // `spawn_and_execute`; ignored on the resume path).
+        slug: request.name.clone(),
+        // Phase 2 (standing named children): threaded so the
+        // attach-by-name branch can check the requested agent
+        // template against the standing child's `[children]`
+        // declaration.
+        agent: Some(request.agent.clone()),
+        // Spawn/resume never force-compact; that flag is armed by
+        // the compact action's own adapter path below.
+        force_compact: false,
+        // Agent-tool spawns are delegated tasks, not peer
+        // conversations — keep the subagent task framing.
+        conversation: false,
+        conversation_channel: None,
+        conversation_peer: None,
+        role_prompt,
+    }
+}
+
 /// Translate the root's `SubagentRunView` to the built-in's. The
 /// struct fields are identical by design; this projection keeps the
 /// port boundary explicit so changes in either side surface as a
@@ -490,4 +509,59 @@ fn parse_frontmatter(content: &str) -> (AgentPromptFrontmatter, String) {
     }
 
     (AgentPromptFrontmatter::default(), content.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spawn_request_with_body(body: &str) -> SpawnRequest {
+        SpawnRequest {
+            prompt: "review the diff".to_string(),
+            agent: "reviewer".to_string(),
+            parent_session_key: "parent-session".to_string(),
+            config: crate::tools::builtin::messaging::dto::ExecutionConfig::default(),
+            timeout_seconds: 300,
+            parent_cancel: None,
+            subagent_config: Arc::new(AgentPrompt {
+                name: "reviewer".to_string(),
+                path: PathBuf::from("/ws/agents/reviewer.md"),
+                frontmatter: AgentPromptFrontmatter::default(),
+                body: body.to_string(),
+            }),
+            model: None,
+            resume_session: None,
+            caller_session_key: None,
+            name: Some("reviewer".to_string()),
+        }
+    }
+
+    /// ADR-052 D3: the adapter forwards the resolved role body into
+    /// the root `ExecutionConfig.role_prompt` so the spawned child
+    /// runs the named agent's persona, not the parent's.
+    #[test]
+    fn root_config_forwards_role_body() {
+        let request = spawn_request_with_body("You are a code reviewer.");
+        let root = build_root_execution_config(&request);
+        assert_eq!(
+            root.role_prompt.as_deref(),
+            Some("You are a code reviewer.")
+        );
+        // The same config serves both spawn and resume; the framing
+        // flags stay as before.
+        assert!(!root.conversation);
+        assert!(!root.force_compact);
+        assert_eq!(root.agent.as_deref(), Some("reviewer"));
+        assert_eq!(root.slug.as_deref(), Some("reviewer"));
+    }
+
+    /// ADR-052 D3: an empty/whitespace role body must NOT blank the
+    /// child's system prompt — it maps to `None` (inherit the parent
+    /// persona, the pre-D3 behavior).
+    #[test]
+    fn root_config_empty_role_body_falls_back_to_none() {
+        let request = spawn_request_with_body("   \n  ");
+        let root = build_root_execution_config(&request);
+        assert!(root.role_prompt.is_none());
+    }
 }

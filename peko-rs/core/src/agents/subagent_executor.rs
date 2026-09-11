@@ -149,6 +149,16 @@ pub struct ExecutionConfig {
     /// form (`user:alice`, `principal:did:…`). `None` for
     /// non-conversation runs.
     pub conversation_peer: Option<String>,
+    /// ADR-052 D3: the spawned role's Markdown body, resolved by the
+    /// `Agent` tool from `<workspace>/agents/<name>.md` (or
+    /// `<name>/AGENT.md`) and threaded by the runtime adapter from
+    /// `SpawnRequest.subagent_config.body`. When `Some`,
+    /// `execute_subagent_task` replaces the child `AgentConfig`'s
+    /// `prompt` with this body so the named subagent runs its own
+    /// role persona instead of the parent's verbatim. `None` keeps
+    /// the inherited parent config (conversation-mode peer turns,
+    /// cron runs, and tests always pass `None`).
+    pub role_prompt: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -166,6 +176,7 @@ impl Default for ExecutionConfig {
             conversation: false,
             conversation_channel: None,
             conversation_peer: None,
+            role_prompt: None,
         }
     }
 }
@@ -1528,6 +1539,11 @@ impl SubagentExecutor {
         // `execute_subagent_task` (task-locals don't cross
         // `tokio::spawn`, but plain owned Strings do).
         let model_override_clone = config.model_override.clone();
+        // ADR-052 D3: the spawned role's Markdown body, cloned into
+        // the task closure like `model_override` so
+        // `execute_subagent_task` can replace the child AgentConfig's
+        // prompt with the role persona.
+        let role_prompt_clone = config.role_prompt.clone();
         // 2026-09-05: the compact action's run-scoped force-compact
         // flag; cloned into the task closure like `model_override`.
         let force_compact_for_closure = config.force_compact;
@@ -1635,6 +1651,7 @@ impl SubagentExecutor {
                         &system_prompt,
                         &task_message,
                         model_override_clone, // Phase 1
+                        role_prompt_clone,      // ADR-052 D3
                         force_compact_for_closure,
                         conversation_for_closure,
                         conversation_channel_clone,
@@ -1969,6 +1986,19 @@ struct SubagentTaskOutput {
     token_usage: Option<(usize, usize, usize)>,
 }
 
+/// ADR-052 D3: apply the spawned role's Markdown body as the child
+/// `AgentConfig`'s system prompt. Only the `prompt` field is
+/// overridden — name, capabilities, and every other field of the
+/// inherited parent config stay intact. `None` leaves the config
+/// untouched (the child inherits the parent persona verbatim, the
+/// pre-D3 behavior that conversation-mode peer turns and cron runs
+/// keep).
+fn apply_role_prompt_override(config: &mut AgentConfig, role_prompt: Option<String>) {
+    if let Some(body) = role_prompt {
+        config.prompt = Some(body);
+    }
+}
+
 /// Execute a subagent task
 ///
 /// This is the core execution function that runs in a background task.
@@ -2005,6 +2035,13 @@ async fn execute_subagent_task(
     // `SpecGate::check` against the new spec before handing the
     // provider to `Agent::new_with_shared_executor`.
     model_override: Option<String>,
+    // ADR-052 D3: the spawned role's Markdown body (from the resolved
+    // `AgentPrompt`). When `Some`, it replaces the child
+    // `AgentConfig`'s `prompt` below so a named subagent runs its own
+    // role persona instead of the parent's verbatim. `None` keeps the
+    // inherited config untouched (conversation-mode peer turns, cron
+    // runs, and tests always pass `None`).
+    role_prompt: Option<String>,
     // 2026-09-05: run-scoped force-compact flag (Agent tool
     // `action = "compact"`). When true, the child Agent's loop
     // force-compacts the session on iteration 1
@@ -2120,11 +2157,15 @@ async fn execute_subagent_task(
     let resolved_model_id_override: Option<String> = model_override.clone();
 
     // Build agent config for the subagent
-    let config = agent_config.unwrap_or_else(|| {
+    let mut config = agent_config.unwrap_or_else(|| {
         let mut cfg = AgentConfig::default();
         cfg.name = agent_name.to_string();
         cfg
     });
+    // ADR-052 D3: a named subagent runs its own role persona — the
+    // resolved Markdown body replaces ONLY the prompt; name,
+    // capabilities, and every other inherited field stay intact.
+    apply_role_prompt_override(&mut config, role_prompt);
 
     // Create a shared executor with the parent's registry so nested spawn depth
     // is tracked correctly across the whole tree. Propagate the principal
@@ -3049,5 +3090,40 @@ mod tests {
             Some(&allowed),
             "clone should preserve the capability snapshot"
         );
+    }
+
+    /// ADR-052 D3: the role override replaces ONLY the child config's
+    /// prompt — name and every other inherited field stay intact.
+    #[test]
+    fn role_prompt_override_replaces_prompt_only() {
+        let mut config = AgentConfig {
+            name: "parent-agent".to_string(),
+            prompt: Some("You are the root persona.".to_string()),
+            ..Default::default()
+        };
+        apply_role_prompt_override(&mut config, Some("You are a code reviewer.".to_string()));
+        assert_eq!(config.prompt.as_deref(), Some("You are a code reviewer."));
+        assert_eq!(config.name, "parent-agent");
+    }
+
+    /// ADR-052 D3: `None` leaves the inherited parent persona
+    /// untouched (conversation-mode peer turns, cron runs, unnamed
+    /// spawns).
+    #[test]
+    fn role_prompt_override_none_keeps_parent_prompt() {
+        let mut config = AgentConfig {
+            name: "parent-agent".to_string(),
+            prompt: Some("You are the root persona.".to_string()),
+            ..Default::default()
+        };
+        apply_role_prompt_override(&mut config, None);
+        assert_eq!(config.prompt.as_deref(), Some("You are the root persona."));
+    }
+
+    /// ADR-052 D3: `ExecutionConfig::default()` carries no role
+    /// prompt — only the Agent-tool adapter populates it.
+    #[test]
+    fn execution_config_default_has_no_role_prompt() {
+        assert!(ExecutionConfig::default().role_prompt.is_none());
     }
 }

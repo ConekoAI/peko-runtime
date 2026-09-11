@@ -201,9 +201,7 @@ impl SessionManagerRuntime {
 /// scan; returns `None` when no assistant message carried a usage
 /// stamp (legacy sessions, sub-agent messages without provider
 /// usage).
-fn last_assistant_turn_usage(
-    events: &[peko_session::SessionEvent],
-) -> Option<TokenUsage> {
+fn last_assistant_turn_usage(events: &[peko_session::SessionEvent]) -> Option<TokenUsage> {
     events.iter().rev().find_map(|event| {
         let llm = event_to_llm_message(event)?;
         if llm.role != MessageRole::Assistant {
@@ -567,9 +565,7 @@ impl SessionRuntime for SessionManagerRuntime {
                 last_total_tokens: last_turn
                     .map(|u| u.total as u64)
                     .filter(|t| *t > 0)
-                    .unwrap_or_else(|| {
-                        metadata.last_total_tokens as u64
-                    }),
+                    .unwrap_or(metadata.last_total_tokens as u64),
                 current_prompt_tokens: last_turn.map(|u| u.input as u64),
                 cache_read_tokens: last_turn.and_then(|u| u.cache_read_input_tokens),
                 cache_creation_tokens: last_turn.and_then(|u| u.cache_creation_input_tokens),

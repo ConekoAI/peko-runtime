@@ -13,10 +13,13 @@
 //! directory name — the same key `WorkspaceSkillRuntime::resolve_skill`
 //! uses — so every rendered line is invocable via the `Skill` tool.
 //!
-//! The scan result is cached in a `Mutex` keyed on the `skills/`
-//! directory's mtime — each call `stat`s the directory (cheap) and only
-//! re-reads the SKILL.md files when the mtime changed. That keeps the
-//! handler well within the renderer's 2-second hook timeout.
+//! The scan result is cached in a `Mutex` keyed on a per-file
+//! `(mtime, len)` fingerprint of every `<name>/SKILL.md` — each call
+//! `stat`s the scanned files (a handful; cheap) and only re-reads them
+//! when the fingerprint changed. Unlike the previous dir-mtime key,
+//! in-place edits to an existing SKILL.md invalidate the catalog on
+//! the next iteration (ADR-052 D2). That keeps the handler well within
+//! the renderer's 2-second hook timeout.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -38,6 +41,12 @@ pub const SKILL_CATALOG_HOOK_PRIORITY: i32 = 90;
 /// the on-disk directory is appended instead.
 const SKILLS_CATALOG_MAX_BYTES: usize = 8 * 1024;
 
+/// Cache key: per-file `(relative_path, mtime, len)` stats for every
+/// scanned file in the catalog dir, sorted by path for determinism.
+/// File-level stats (not dir mtime) so in-place content edits
+/// invalidate the cache (ADR-052 D2).
+type DirFingerprint = Vec<(String, SystemTime, u64)>;
+
 /// Workspace-scanning handler for the `skills` prompt section.
 ///
 /// See the module doc for the scanning/caching contract. A missing
@@ -46,7 +55,7 @@ const SKILLS_CATALOG_MAX_BYTES: usize = 8 * 1024;
 /// prompt.
 #[derive(Debug, Default)]
 pub struct WorkspaceSkillsPromptHandler {
-    cache: Mutex<Option<((SystemTime, usize), String)>>,
+    cache: Mutex<Option<(DirFingerprint, String)>>,
 }
 
 impl WorkspaceSkillsPromptHandler {
@@ -56,20 +65,18 @@ impl WorkspaceSkillsPromptHandler {
         Self::default()
     }
 
-    /// Render the skills catalog for `workspace`, using the mtime-keyed
-    /// cache. Returns `None` when there is nothing to render.
+    /// Render the skills catalog for `workspace`, using the
+    /// fingerprint-keyed cache. Returns `None` when there is nothing
+    /// to render.
     ///
-    /// The cache key is `(dir_mtime, immediate_child_count)`. Mtime alone
-    /// is unreliable on Windows NTFS for fast back-to-back subdir
-    /// creations (the parent dir's mtime can read back the same value
-    /// before the metadata update has been flushed); counting children
-    /// catches added/removed subdirs even when mtime is stale.
+    /// The cache key folds each scanned `<name>/SKILL.md` file's
+    /// `(mtime, len)` in, so in-place content edits invalidate the
+    /// catalog on the next call — the previous `(dir_mtime,
+    /// child_count)` key only caught added/removed entries (dir mtime
+    /// doesn't move on content writes).
     fn render_catalog(&self, workspace: &str) -> Option<String> {
         let skills_dir = Path::new(workspace).join("skills");
-        let metadata = std::fs::metadata(&skills_dir).ok()?;
-        let mtime = metadata.modified().ok()?;
-        let child_count = std::fs::read_dir(&skills_dir).ok()?.count();
-        let key = (mtime, child_count);
+        let key = skills_dir_fingerprint(&skills_dir)?;
 
         {
             let cache = self.cache.lock().expect("skills catalog cache poisoned");
@@ -87,6 +94,33 @@ impl WorkspaceSkillsPromptHandler {
 
         (!text.is_empty()).then_some(text)
     }
+}
+
+/// Fingerprint every `<name>/SKILL.md` under `skills_dir` as
+/// `(relative_path, mtime, len)` entries, sorted by path. `None` when
+/// the dir doesn't exist. Files whose metadata can't be read are
+/// skipped, mirroring the scanner's skip-unreadable behavior.
+fn skills_dir_fingerprint(skills_dir: &Path) -> Option<DirFingerprint> {
+    let mut stats = Vec::new();
+    for entry in std::fs::read_dir(skills_dir).ok()?.flatten() {
+        let skill_md = entry.path().join("SKILL.md");
+        let Ok(meta) = std::fs::metadata(&skill_md) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        let rel = skill_md
+            .strip_prefix(skills_dir)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        stats.push((rel, mtime, meta.len()));
+    }
+    stats.sort();
+    Some(stats)
 }
 
 #[async_trait]
@@ -328,6 +362,37 @@ mod tests {
             .expect("expected catalog text");
         assert!(second.contains("docker"), "got: {second}");
         assert!(second.contains("git"), "got: {second}");
+    }
+
+    /// ADR-052 D2: an in-place CONTENT edit to an existing SKILL.md
+    /// (same filename, no dir entry added/removed, so the `skills/`
+    /// dir mtime is untouched) must invalidate the catalog on the next
+    /// call. The previous `(dir_mtime, child_count)` key served the
+    /// stale catalog here.
+    #[tokio::test]
+    async fn workspace_skills_handler_rescans_on_in_place_content_edit() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir(&skills_dir).unwrap();
+        make_skill(&skills_dir, "docker", "Docker ops");
+
+        let handler = WorkspaceSkillsPromptHandler::new();
+        let ws = temp.path().to_string_lossy().to_string();
+
+        let first = handle_text(handler.handle(skills_hook_ctx(Some(&ws))).await)
+            .expect("expected catalog text");
+        assert!(first.contains("Docker ops"), "got: {first}");
+
+        // Rewrite the same file with a longer description — len
+        // changes; dir mtime does not.
+        make_skill(&skills_dir, "docker", "Docker ops, compose, and swarm");
+
+        let second = handle_text(handler.handle(skills_hook_ctx(Some(&ws))).await)
+            .expect("expected updated catalog text");
+        assert!(
+            second.contains("Docker ops, compose, and swarm"),
+            "got: {second}"
+        );
     }
 
     #[test]

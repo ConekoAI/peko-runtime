@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -30,6 +31,36 @@ pub fn load_agent_prompt(path: &PathBuf) -> anyhow::Result<AgentPrompt> {
         .unwrap_or_else(|| "agent".to_string());
 
     Ok(parse_agent_prompt(file_stem, path.clone(), &content))
+}
+
+/// Resolve a named agent prompt from a workspace agents directory.
+///
+/// Two on-disk shapes are supported, matching the Agent tool's lookup
+/// order (`SubagentExecutorRuntime::resolve_principal_agent`):
+/// - directory layout: `<agents_dir>/<name>/AGENT.md`
+/// - flat layout: `<agents_dir>/<name>.md`
+///
+/// Errors if neither exists.
+pub fn resolve_agent_prompt(
+    name: &str,
+    agents_dir: &std::path::Path,
+) -> anyhow::Result<AgentPrompt> {
+    let dir_layout = agents_dir.join(name).join("AGENT.md");
+    let flat_layout = agents_dir.join(format!("{name}.md"));
+
+    let agent_md = if dir_layout.exists() {
+        dir_layout
+    } else if flat_layout.exists() {
+        flat_layout
+    } else {
+        anyhow::bail!(
+            "No agent prompt found for '{name}' at {:?} or {:?}",
+            dir_layout,
+            flat_layout
+        );
+    };
+
+    load_agent_prompt(&agent_md).with_context(|| format!("Failed to load agent prompt '{name}'"))
 }
 
 /// Parse an agent prompt from its raw Markdown content.

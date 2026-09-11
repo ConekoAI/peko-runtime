@@ -4,6 +4,148 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-052 e2e findings: generated sections for bare prompt bodies + label fix (2026-09-11)
+
+- **Frozen prefix gains generated sections for placeholder-free bodies** —
+  `render_cache_stable` now appends `## Runtime` / `## Sandbox` /
+  `## Model Aliases` / `## Self-Update` when the prompt template doesn't
+  place them via `{{...}}` tokens (empty sections skipped). Previously a
+  role file or custom persona with no placeholders produced a system
+  prompt of raw body and nothing else — no workspace, model, or runtime
+  context (found by the `tiered-prompt-explore` e2e experiment).
+  Templates that place a section keep full control; nothing is appended
+  twice. **This changes the frozen prefix of every existing prompt body
+  that lacked the placeholders** (including the compiled-in default root
+  persona, which only carried `{{mcp_context}}`).
+- **Project-instructions label keeps the path as typed** —
+  `discover_project_instructions` no longer canonicalizes the focus
+  directory, so the section header shows `/tmp/...` instead of the
+  `/private/tmp/...` macOS resolves it to.
+- **New e2e coverage** — `peko-rs/core/tests/tiered_prompt.rs` (7
+  mock-LLM cases: D3 role prompt on the wire, D4 identity, D5
+  self-position + AGENTS.md project context, D2 update notice, D6 hook
+  sections, `peer_agent`) + `scripts/e2e/flows/tiered-prompt-explore.sh`
+  (qualitative prompt dump) + `make test-tiered-prompt`. Cross-run
+  notice semantics documented as a follow-up in ADR-052 §4.
+
+### ADR-052 D6: user-defined prompt sections via workspace hooks (2026-09-11)
+
+- **`PromptSection` bind point for workspace hooks** — a
+  `<workspace>/hooks/<id>/hook.toml` may now bind
+  `{ point = "PromptSection", section = "<name>", priority = <int?> }`
+  (`BindSpec` gains optional `section` / `priority` fields; `priority`
+  defaults to 100; empty/whitespace names and names containing control
+  characters are rejected at scan time). When the section is dispatched,
+  the hook's command runs and its stdout becomes a `## <name>` section
+  of the per-iteration `<runtime-context>` tail message.
+- **`ToolFunnel::registered_prompt_sections` port** — new trait method
+  (default impl returns `vec![]`, so test doubles and other impls keep
+  compiling). The root impl scans the hook registry for
+  `PromptSystemSection` points visible to the calling principal:
+  principal-scoped extension ids (`principal:<pid>/hook:<id>`) are
+  visible only to their own principal, everything else is system scope.
+- **Renderer dispatch + change detection** —
+  `PromptRenderer::render_runtime_context` dispatches the registered
+  custom sections after the built-ins: names colliding with a built-in
+  dispatch (`identity` / `agents` / `skills`) are deduped (a hook
+  augmenting a built-in catalog rides the built-in dispatch via
+  registry aggregation — no double dispatch), the rest are sorted for
+  byte-stable ordering and fired concurrently with the same 2s
+  soft-fail budget. `RuntimeContextState` gains an open
+  `HashMap<String, String>` tracker sharing the D2 notice-decision
+  helper with the fixed slots: first injection is plain, an edit
+  re-injects with the `_Updated — replaces…_` notice, and a hook that
+  stops producing output retracts once with `_The "<name>" section no
+  longer applies._`.
+
+### ADR-052 D5 (second half): AGENTS.md project-context as a T2 tail section (2026-09-11)
+
+- **Per-run focus directory** — the agentic loop tracks the directory
+  the agent most recently touched via a path-bearing tool call
+  (`Read`/`Write`/`Edit` `file_path`, `Glob` `directory`, `Grep`
+  `path`, `Bash` `cwd`) and the AGENTS.md discovery in
+  `AgenticLoop::build_turn_context` walks up from it, defaulting to the
+  principal workspace while nothing has been touched yet.
+- **`discover_project_instructions`** (`peko-engine::prompt::memory`) —
+  walks up from the focus directory to the nearest `AGENTS.md`, no
+  principal-workspace constraint (agents typically work on repos outside
+  it). Stop conditions: after checking a directory containing `.git`
+  (the repo root is checked, nothing above it), or the filesystem root.
+  Non-empty content only, capped at 32 KiB
+  (`PROJECT_INSTRUCTIONS_MAX_BYTES`) with a truncation notice. The old
+  `discover_shared_context` helper is untouched.
+- **`## Project instructions (<path>)` tail section** — new
+  `SectionSlot::ProjectContext` in the runtime-context change detector,
+  rendered from the new `TurnPromptContext.project_instructions` field
+  with the file's own path as the label and a one-line provenance note
+  (`_Environment-provided project notes — below principal instructions
+  in authority._`). It participates in the D2 update/retraction
+  semantics: rides once, re-injects with an update notice when the
+  agent moves to a different project or the file changes, and retracts
+  when the agent leaves every AGENTS.md scope. Trust posture: the
+  section rides the user-role tail (not the frozen prefix) and is
+  presence = visibility, same as the workspace catalogs.
+
+### ADR-052 D2/D4/D5: tiered-prompt prototype slices (2026-09-11)
+
+- **D2 — change/removal notices in the tail change-detector** —
+  `RuntimeContextState::take_changed` now implements codex-style diff
+  semantics: a section whose text changed is re-injected with a
+  trailing `_Updated — replaces the previous "…" section._` notice; a
+  previously non-empty section that renders empty is retracted exactly
+  once with `_The "…" section no longer applies._` instead of vanishing
+  silently. `CurrentTime` is exempt (it changes every minute); first
+  injections carry no notice.
+- **D4 — T0 principal-identity tail section** — the principal's
+  `[identity]` (display name, description) + `[intent]` (goals, values,
+  preferences) from `<workspace>/principal.toml` now render as a
+  `## Principal identity` section of the tail `<runtime-context>`
+  message, so the config reaches every agent in the tree. Engine side:
+  new `SectionSlot::Identity` + `"identity"` prompt-section dispatch
+  (soft-fails to empty with no handler). Core side: new
+  `WorkspaceIdentityPromptHandler`
+  (`peko-rs/core/src/principal/identity_prompt.rs`), cached on the
+  FILE's `(mtime, len)`, registered next to the agents/skills catalog
+  handlers. Empty fields → no section (presence = visibility).
+- **D5 — T2 self-position in session context** — new
+  `SelfPositionSessionContextHandler` renders the agent's OWN session
+  slug path + role line (e.g. "your position: `/local-user` — standing
+  peer child of the trunk (peer: user:local)") into the
+  `{{session_context}}` section, aggregated above the existing peer
+  list (the hook registry concatenates multiple `SessionContextBuild`
+  handlers, higher priority first — 110 vs the peers handler's 100).
+  The trunk renders as `/` — root session.
+- **D2 cache fix — file-level keys for the agents/skills catalogs** —
+  `WorkspaceAgentsPromptHandler` / `WorkspaceSkillsPromptHandler` cache
+  keys are now per-file `(relative_path, mtime, len)` fingerprints of
+  every scanned file instead of `(dir_mtime, child_count)`, so in-place
+  edits to an existing `AGENT.md` / `SKILL.md` invalidate the catalog
+  on the next iteration (dir mtime only moved on add/remove).
+
+### ADR-052 D3: opt-in T1 role for peer-facing turns (2026-09-11)
+
+- **`[routing].peer_agent`** — `principal.toml` gains an optional
+  `routing.peer_agent` naming a workspace role file
+  (`agents/<name>.md` or `agents/<name>/AGENT.md`, Agent-tool lookup
+  order) whose Markdown body peer-facing turns — peer-DM ingress
+  children, passive channel bindings, group wakes — run as their T1
+  role instead of inheriting the root persona
+  (`peer_child_agent_config` in `principal::child_turns`). Only the
+  prompt body swaps; the executor registry key and session-stamp name
+  stay the root prompt's. Unresolvable roles warn and fall back to the
+  root persona, so a bad value never breaks peer ingress. Shared
+  resolver: `principal::agent_prompt::resolve_agent_prompt`.
+
+### ADR-052 D3: named subagents run their own role prompt (2026-09-11)
+
+- **Agent tool spawn/resume** — the resolved `<workspace>/agents/<name>.md`
+  (or `<name>/AGENT.md`) Markdown body now threads from
+  `SpawnRequest.subagent_config` through the root
+  `ExecutionConfig.role_prompt` into `execute_subagent_task`, replacing the
+  child `AgentConfig`'s `prompt` so a named subagent runs its own role
+  persona instead of the parent's `AgentConfig` verbatim. Empty bodies fall
+  back to the inherited persona; conversation-mode peer turns are unchanged.
+
 ### Auditability: cache metrics + run iterations on session/quota status (2026-09-10)
 
 - **Session tool `status`** — `UsageStats` gains `cache_read_total`,

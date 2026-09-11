@@ -1460,6 +1460,26 @@ IPC
 drive turns in the peer's child via the shared
 `principal::child_turns::PeerChildTurns` bundle.
 
+**Peer-facing T1 role (`[routing].peer_agent`, ADR-052 D3 —
+2026-09-11).** By default every peer-facing turn (peer-DM ingress
+children, passive channel bindings, group wakes) inherits the
+principal's ROOT persona. A principal may opt out per-workspace by
+naming a role in `principal.toml`:
+
+```toml
+[routing]
+peer_agent = "channel-comm"   # Optional. Default: None (root persona)
+```
+
+The value resolves through the Agent tool's lookup order —
+`<workspace>/agents/<name>/AGENT.md` then
+`<workspace>/agents/<name>.md` — and that file's Markdown body
+replaces the root prompt body for those turns. Only the prompt body
+swaps: the agent/session naming stays the root prompt's name (the
+cross-path active-run guard keys on it). An unresolvable or
+unparseable role logs a warning and falls back to the root persona —
+a bad value never breaks peer ingress.
+
 **Recall artifact target (Phase 6, wired in Phase 7 — 2026-08-17).**
 The `memory_index.json` `SessionArtifact` shape is unchanged, but the
 `session_id` VALUE for peer-chat recall is re-pointed: pre-paradigm
@@ -2459,6 +2479,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-09-11 | ADR-052 D6: the workspace hook manifest (`<workspace>/hooks/<id>/hook.toml`, layout in `docs/architecture/PRINCIPAL_WORKSPACE.md`) gains a `PromptSection` bind point — `binds = [{ point = "PromptSection", section = "<name>", priority = <int?> }]` (new optional `section` / `priority` bind fields; `priority` defaults to 100). The hook command's stdout renders as a `## <name>` section of the per-iteration `<runtime-context>` tail message with the standard change-detection semantics (first injection plain, update notice on edit, one-shot retraction when output stops). Binding a built-in name (`identity` / `agents` / `skills`) augments the built-in catalog via registry aggregation instead of double-dispatching. |
 | 0.1.0 | 2026-08-20 | Sprint 6: opaque UUID session ids + peer via parent walk (§5, §5.9, §5.10). `peko_session::SessionId` newtype around `Uuid`; engine-internal `SessionMetadata.session_id` and `parent_session_id` are `SessionId`; the legacy `root:self` magic-string trunk is retired (anchor = `find_trunk_session(metas)`, the session with `parent_session_id = None`); peer routing walks the parent chain via `resolve_peer_via_parent_walk`, reading stamped `peer_type`/`peer_id`; `peer_from_session_key`, `parse_session_key_v2`, `parse_session_key` v1, `base_key_from_overlay`, `trunk_session_id`, `looks_like_session_id`, and `resolve_id_or_path` deleted. Path resolver grammar collapsed from three forms (sprint 5) to two: slug path or caller self-reference. |
 | 0.1.0 | 2026-08-19 | Phase 13 (sprint 3): §5½ Chat Log RETIRED — the `peko-chat-log` crate left the workspace; the cron `Send` fired-prompt projection (`record_cron_input`) dropped (fired prompts live in the trunk session JSONL); `PathResolver::chat_logs_dir` removed. The `peko log` row DTO moved to `peko_core::ipc::packet::PrincipalLogMessage` (wire shape unchanged); the peer DM channels (§5¾) are the consumer-visible conversation record. |
 | 0.1.0 | 2026-08-17 | Phase 7 ingress re-route (§5.9/§5.10): all external peer ingress lands in per-peer standing children of the trunk; per-peer root sessions (`root:{peer}`, `root:cron:{peer}`) retired (routing deleted); cron `Send` default target is the trunk (`target = "trunk"` accepted, same route); cron notes target the owner's peer child + `[notify]` self-view in the trunk; engine-managed guards + prune exemption narrowed to exactly `root:self`. |

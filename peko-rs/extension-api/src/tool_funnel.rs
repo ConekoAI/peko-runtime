@@ -309,6 +309,31 @@ pub trait ToolFunnel: Send + Sync + 'static {
         workspace: Option<String>,
     ) -> Option<String>;
 
+    /// ADR-052 D6: enumerate the prompt-section names with at least one
+    /// registered handler visible to `principal_id`. The lifted
+    /// `PromptRenderer::render_runtime_context`
+    /// (`peko_engine::prompt::renderer`) calls this after its built-in
+    /// `identity` / `agents` / `skills` dispatches so workspace hooks
+    /// (`<workspace>/hooks/<id>/hook.toml` with a `PromptSection` bind)
+    /// can contribute additional named tail sections. Names that
+    /// duplicate a built-in dispatch are deduped by the renderer.
+    ///
+    /// The impl hides the hook-registry scan so the trait stays free of
+    /// root-only `HookPoint` / `RegisteredHook` types. `active_extensions`
+    /// mirrors the invoke path's context argument; today's impls scope
+    /// by principal only.
+    ///
+    /// Default: no extra sections — test doubles and impls without a
+    /// hook registry keep compiling.
+    async fn registered_prompt_sections(
+        &self,
+        principal_id: Option<&str>,
+        active_extensions: Option<Vec<String>>,
+    ) -> Vec<String> {
+        let _ = (principal_id, active_extensions);
+        Vec::new()
+    }
+
     /// Fire `HookPoint::SessionContextBuild` with
     /// `HookInput::SessionState(snapshot)`. The lifted
     /// `PromptRenderer::dispatch_session_context`

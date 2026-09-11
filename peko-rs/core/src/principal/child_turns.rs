@@ -20,13 +20,18 @@
 //!
 //! ## Persona inheritance
 //!
-//! Peer children run the principal's persona. The builder resolves the
-//! principal's root agent prompt exactly as the router factory does
+//! Peer children run the principal's persona by default. The builder
+//! resolves the principal's root agent prompt exactly as the router
+//! factory does
 //! ([`DefaultPrincipalRouterFactory::resolve_root_agent_prompt`]) and
 //! carries it on the executor's `AgentConfig` snapshot — closing the
 //! pre-Phase-6 gap where the channel driver's executor had no
 //! `.with_agent_config` and child turns fell back to a blank default
-//! prompt.
+//! prompt. ADR-052 D3 makes the persona an explicit policy: when
+//! `routing.peer_agent` names a workspace role file
+//! (`agents/<name>.md` / `agents/<name>/AGENT.md`), that role's
+//! prompt body replaces the root persona for all peer-facing turns;
+//! unresolvable roles warn and fall back to the root persona.
 //!
 //! ## Registry key (cross-guard)
 //!
@@ -61,20 +66,38 @@ use crate::principal::router::AgentPromptSummary;
 use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
-/// Resolve the principal's root agent prompt and build the
-/// `AgentConfig` snapshot peer-child turns inherit (the persona).
+/// Resolve the agent prompt peer-child turns run and build the
+/// `AgentConfig` snapshot carrying it.
 ///
-/// Resolution order is the router factory's: `principal.toml`
-/// `routing.root_prompt` file → `<workspace>/agents/root.md` (or
-/// `agents/root/AGENT.md`) → compiled-in default. Factored out of
-/// [`PeerChildTurns::build`] so the persona mapping is unit-testable
-/// without a full `Principal`.
+/// Default is **persona inheritance**: resolution order is the router
+/// factory's — `principal.toml` `routing.root_prompt` file →
+/// `<workspace>/agents/root.md` (or `agents/root/AGENT.md`) →
+/// compiled-in default. When `routing.peer_agent` names a workspace
+/// role (ADR-052 D3), that role's prompt BODY replaces the root
+/// prompt's body; any resolution failure logs a warning and falls
+/// back to the root persona so a bad config value never breaks peer
+/// ingress. Only the body swaps — the `AgentConfig` keeps the root
+/// prompt's name, preserving the registry-key / session-stamp
+/// invariants of [`PeerChildTurns::build`].
+///
+/// Factored out of [`PeerChildTurns::build`] so the persona mapping
+/// is unit-testable without a full `Principal`.
 pub(crate) fn peer_child_agent_config(
     config: &PrincipalConfig,
     workspace_path: &std::path::Path,
 ) -> AgentConfig {
     let agents_dir = workspace_path.join("agents");
-    let prompt = DefaultPrincipalRouterFactory::resolve_root_agent_prompt(config, &agents_dir);
+    let mut prompt = DefaultPrincipalRouterFactory::resolve_root_agent_prompt(config, &agents_dir);
+    // ADR-052 D3: opt-in T1 role for peer-facing turns.
+    if let Some(role) = config.routing.peer_agent.as_deref() {
+        match crate::principal::agent_prompt::resolve_agent_prompt(role, &agents_dir) {
+            Ok(role_prompt) => prompt.body = role_prompt.body,
+            Err(e) => tracing::warn!(
+                "Failed to resolve routing.peer_agent role '{role}': {e:#}. \
+                 Falling back to the root persona."
+            ),
+        }
+    }
     build_agent_config(
         &prompt,
         &config.capabilities,
@@ -587,8 +610,136 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
 /// the hook context's workspace + principal id, like the workspace
 /// `{{agents}}` / `{{skills}}` catalog handlers). Renders nothing when
 /// the principal has no peer sessions yet.
+///
+/// The agent's OWN position in the session tree is rendered by the
+/// sibling [`SelfPositionSessionContextHandler`] (ADR-052 D5), whose
+/// output is aggregated above this handler's peer list by the hook
+/// registry (higher priority first).
 #[derive(Debug)]
 pub(crate) struct PeersSessionContextHandler;
+
+/// Resolve the principal's sessions directory from the hook context's
+/// workspace path (`<workspace>` → principal name →
+/// `PathResolver::principal_layout`). Shared by the two
+/// `SessionContextBuild` handlers in this module.
+fn sessions_dir_for_workspace(workspace: &str) -> Option<std::path::PathBuf> {
+    let name = std::path::Path::new(workspace)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())?;
+    let sessions_dir = crate::common::paths::PathResolver::new()
+        .principal_layout(&name)
+        .local
+        .root
+        .join("sessions");
+    sessions_dir.exists().then_some(sessions_dir)
+}
+
+/// Render the agent's own position in the session tree (ADR-052 D5 —
+/// T2 instance context): its slug path plus a role line derived from
+/// the session metadata. `None` when the session has no metadata in
+/// the store (e.g. a bare unit-test run).
+///
+/// Role lines:
+/// - trunk (`parent_session_id == None`) → "root session"; the trunk
+///   carries no slug and is addressable as `/` from inside its own
+///   tree (`peko_session::path`).
+/// - standing peer child → the peer it serves.
+/// - anything else → "spawned child session".
+fn render_self_position(
+    metas: &[peko_session::metadata::SessionMetadata],
+    session_id: peko_session::id::SessionId,
+) -> Option<String> {
+    let meta = metas.iter().find(|m| m.session_id == session_id)?;
+    if meta.parent_session_id.is_none() {
+        return Some("your position: `/` — root session (the principal's trunk)".to_string());
+    }
+    let path = peko_session::path::compute_path(metas, session_id);
+    let role = match (
+        meta.standing,
+        meta.peer_type.as_deref(),
+        meta.peer_id.as_deref(),
+    ) {
+        (true, Some("user"), Some(id)) => {
+            format!("standing peer child of the trunk (peer: user:{id})")
+        }
+        (true, Some("principal"), Some(id)) => {
+            format!("standing peer child of the trunk (peer: principal:{id})")
+        }
+        (true, _, _) => "standing named child".to_string(),
+        _ => "spawned child session".to_string(),
+    };
+    Some(format!("your position: `{path}` — {role}"))
+}
+
+/// Prompt-section handler rendering the agent's OWN position in the
+/// session tree into the `{{session_context}}` section (ADR-052 D5 —
+/// T2 instance context, 2026-09-11).
+///
+/// Until now the section only listed OTHER peers' `/slug` paths (see
+/// [`PeersSessionContextHandler`]); the agent had no rendering of
+/// where it sits itself. The hook registry aggregates multiple
+/// `SessionContextBuild` handlers by concatenating their text outputs,
+/// and this handler's priority (110) keeps the self-position line
+/// above the peer list. Renders nothing when the session id isn't in
+/// the store or the workspace doesn't resolve.
+#[derive(Debug)]
+pub(crate) struct SelfPositionSessionContextHandler;
+
+#[async_trait::async_trait]
+impl crate::extensions::framework::core::HookHandler for SelfPositionSessionContextHandler {
+    async fn handle(
+        &self,
+        ctx: crate::extensions::framework::core::HookContext,
+    ) -> crate::extensions::framework::types::HookResult {
+        use crate::extensions::framework::types::{HookOutput, HookResult};
+
+        let session_id = match &ctx.input {
+            crate::extensions::framework::types::HookInput::SessionState(snapshot) => {
+                peko_session::id::SessionId::parse(&snapshot.session_id)
+            }
+            _ => None,
+        };
+        let Some(session_id) = session_id else {
+            return HookResult::PassThrough;
+        };
+        let workspace = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .and_then(|rtc| rtc.workspace.clone())
+            .filter(|w| !w.is_empty());
+        let Some(workspace) = workspace else {
+            return HookResult::PassThrough;
+        };
+        let Some(sessions_dir) = sessions_dir_for_workspace(&workspace) else {
+            return HookResult::PassThrough;
+        };
+        let metas = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir)
+            .list_all_sessions(false)
+            .await
+            .unwrap_or_default();
+
+        match render_self_position(&metas, session_id) {
+            Some(text) => HookResult::Continue(HookOutput::Text(text)),
+            None => HookResult::PassThrough,
+        }
+    }
+
+    fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
+        crate::extensions::framework::core::HookPoint::SessionContextBuild
+    }
+
+    fn priority(&self) -> i32 {
+        // Above `PeersSessionContextHandler` (100): the hook registry
+        // invokes higher-priority handlers first, and the aggregated
+        // text outputs concatenate in invocation order, so the
+        // self-position line lands above the peer list.
+        110
+    }
+
+    fn name(&self) -> String {
+        "SelfPositionSessionContextHandler".to_string()
+    }
+}
 
 #[async_trait::async_trait]
 impl crate::extensions::framework::core::HookHandler for PeersSessionContextHandler {
@@ -610,20 +761,9 @@ impl crate::extensions::framework::core::HookHandler for PeersSessionContextHand
         if workspace.is_empty() || principal_id.is_empty() {
             return HookResult::PassThrough;
         }
-        let Some(name) = std::path::Path::new(&workspace)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-        else {
+        let Some(sessions_dir) = sessions_dir_for_workspace(&workspace) else {
             return HookResult::PassThrough;
         };
-        let sessions_dir = crate::common::paths::PathResolver::new()
-            .principal_layout(&name)
-            .local
-            .root
-            .join("sessions");
-        if !sessions_dir.exists() {
-            return HookResult::PassThrough;
-        }
         let metas = peko_session::manager::SessionManager::new()
             .with_sessions_dir_internal(sessions_dir)
             .list_all_sessions(false)
@@ -775,6 +915,120 @@ mod tests {
         assert!(
             prompt.contains("OVERRIDE_MARKER"),
             "explicit root_prompt override must win; got: {prompt}"
+        );
+    }
+
+    // ─── ADR-052 D3: opt-in T1 role via `routing.peer_agent` ───
+
+    /// `peer_agent` set + role file present → the child config's
+    /// prompt is the role body; the config NAME stays the root
+    /// prompt's (the executor registry key + session-stamp
+    /// invariants rely on it).
+    #[test]
+    fn peer_agent_role_body_replaces_persona_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("channel-comm.md"),
+            "---\ndescription: \"Channel voice\"\n---\n\nYou are CHANNEL_ROLE_MARKER, the peer-facing voice.\n",
+        )
+        .unwrap();
+        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: Some("channel-comm".to_string()),
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        assert_eq!(
+            agent_config.name, "root",
+            "role swap must not change the agent name (registry-key invariant)"
+        );
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("CHANNEL_ROLE_MARKER"),
+            "peer_agent role body must replace the persona prompt; got: {prompt}"
+        );
+        assert!(
+            !prompt.contains("PERSONA_MARKER"),
+            "root persona body must not leak into a role-bound turn; got: {prompt}"
+        );
+    }
+
+    /// Directory layout (`agents/<name>/AGENT.md`) resolves too —
+    /// same lookup order as the Agent tool.
+    #[test]
+    fn peer_agent_role_resolves_directory_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let role_dir = tmp.path().join("agents").join("channel-comm");
+        std::fs::create_dir_all(&role_dir).unwrap();
+        std::fs::write(role_dir.join("AGENT.md"), "DIR_LAYOUT_ROLE_MARKER\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: Some("channel-comm".to_string()),
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("DIR_LAYOUT_ROLE_MARKER"),
+            "directory-layout role file must resolve; got: {prompt}"
+        );
+    }
+
+    /// `peer_agent` set + role file MISSING → warn + fall back to the
+    /// root persona; peer ingress must never break on a bad value.
+    #[test]
+    fn peer_agent_missing_role_falls_back_to_root_persona() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: Some("does-not-exist".to_string()),
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        assert_eq!(agent_config.name, "root");
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("PERSONA_MARKER"),
+            "unresolvable peer_agent must fall back to the root persona; got: {prompt}"
+        );
+    }
+
+    /// `peer_agent: None` → today's persona inheritance, unchanged.
+    #[test]
+    fn peer_agent_none_inherits_root_persona() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+        std::fs::write(agents_dir.join("channel-comm.md"), "role body\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: None,
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("PERSONA_MARKER"),
+            "peer_agent None must inherit the root persona; got: {prompt}"
         );
     }
 
@@ -1053,5 +1307,107 @@ mod tests {
         let (peer_str, channel) = turns.conversation_context(&ingress.child_id).await;
         assert_eq!(peer_str.as_deref(), Some("user:alice"));
         assert!(channel.is_none());
+    }
+
+    // ─── ADR-052 D5: self-position rendering ───────────────────────
+
+    fn position_meta(
+        id: peko_session::id::SessionId,
+        parent: Option<peko_session::id::SessionId>,
+        slug: Option<&str>,
+    ) -> peko_session::metadata::SessionMetadata {
+        peko_session::metadata::SessionMetadata {
+            session_id: id,
+            agent_name: "root".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            message_count: 0,
+            turn_count: 0,
+            last_total_tokens: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            model_context_limit: None,
+            transcript_file: format!("{id}.jsonl"),
+            title: None,
+            parent_session_id: parent,
+            trigger: "user".to_string(),
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            standing: false,
+            privileged: false,
+            slug: slug.map(String::from),
+            compaction_count: 0,
+            last_compaction_at: None,
+            consecutive_auto_compactions: 0,
+            consecutive_compaction_failures: 0,
+        }
+    }
+
+    /// trunk (no slug, no parent) ── local-user (standing peer child)
+    ///                             └─ memory ── task-b (spawned child)
+    fn position_tree() -> (
+        peko_session::id::SessionId,
+        peko_session::id::SessionId,
+        peko_session::id::SessionId,
+        Vec<peko_session::metadata::SessionMetadata>,
+    ) {
+        let trunk =
+            peko_session::id::SessionId::parse("00000000-0000-0000-0000-000000000001").unwrap();
+        let local_user =
+            peko_session::id::SessionId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+        let memory =
+            peko_session::id::SessionId::parse("00000000-0000-0000-0000-000000000003").unwrap();
+        let task =
+            peko_session::id::SessionId::parse("00000000-0000-0000-0000-000000000004").unwrap();
+        let mut peer_child = position_meta(local_user, Some(trunk), Some("local-user"));
+        peer_child.standing = true;
+        peer_child.peer_type = Some("user".to_string());
+        peer_child.peer_id = Some("local".to_string());
+        let metas = vec![
+            position_meta(trunk, None, None),
+            peer_child,
+            position_meta(memory, Some(trunk), Some("memory")),
+            position_meta(task, Some(memory), Some("task-b")),
+        ];
+        (trunk, local_user, task, metas)
+    }
+
+    #[test]
+    fn self_position_trunk_renders_root_session() {
+        let (trunk, _, _, metas) = position_tree();
+        let rendered = render_self_position(&metas, trunk).expect("trunk has a position");
+        assert_eq!(
+            rendered, "your position: `/` — root session (the principal's trunk)",
+            "got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn self_position_peer_child_renders_path_and_peer() {
+        let (_, local_user, _, metas) = position_tree();
+        let rendered = render_self_position(&metas, local_user).expect("peer child has a position");
+        assert_eq!(
+            rendered,
+            "your position: `/local-user` — standing peer child of the trunk (peer: user:local)",
+            "got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn self_position_spawned_child_renders_nested_path() {
+        let (_, _, task, metas) = position_tree();
+        let rendered = render_self_position(&metas, task).expect("spawned child has a position");
+        assert_eq!(
+            rendered, "your position: `/memory/task-b` — spawned child session",
+            "got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn self_position_unknown_session_renders_nothing() {
+        let (_, _, _, metas) = position_tree();
+        let ghost = peko_session::id::SessionId::new();
+        assert_eq!(render_self_position(&metas, ghost), None);
     }
 }

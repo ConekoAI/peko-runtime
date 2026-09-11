@@ -128,8 +128,8 @@ pub use prompt::{
     builder::{PromptMode, SystemPromptBuilder},
     context::{IterationBudgetState, TurnPromptContext},
     memory::{
-        directory_from_tool_params, discover_shared_context, load_principal_memory,
-        PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,
+        directory_from_tool_params, discover_project_instructions, discover_shared_context,
+        load_principal_memory, PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,
     },
     placeholder::{replace_placeholders, Placeholder},
 };

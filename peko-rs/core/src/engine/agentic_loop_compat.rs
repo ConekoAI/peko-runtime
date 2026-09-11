@@ -1559,7 +1559,7 @@ mod tests {
         // was contended). A serial regression still trips the overlap
         // assertion, so this only needs to catch a wedged loop.
         assert!(
-            total_elapsed < Duration::from_millis(2000),
+            total_elapsed < Duration::from_secs(2),
             "total elapsed {total_elapsed:?} suggests a wedged loop; \
          overlap assertion above is the concurrency proof"
         );
@@ -2463,6 +2463,7 @@ mod tests {
             capabilities: None,
             active_extensions: None,
             principal_memory: None,
+            project_instructions: None,
             workspace: tempdir_unused(),
             resolved_model: "default".into(),
             channel: "discord".into(),
@@ -2562,6 +2563,7 @@ mod tests {
             capabilities: None,
             active_extensions: None,
             principal_memory: None,
+            project_instructions: None,
             workspace: tempdir_unused(),
             resolved_model: "default".into(),
             channel: "discord".into(),
@@ -2616,6 +2618,7 @@ mod tests {
         capabilities: None,
         active_extensions: None,
         principal_memory: None,
+        project_instructions: None,
         workspace: tempdir_unused(),
         resolved_model: "claude-sonnet-4-6".into(),
         channel: "cli".into(),
@@ -2832,7 +2835,7 @@ mod tests {
     .await;
 
         // Pin the field: `iteration=3, max=10` → Some(state { 3, 10 }).
-        let ctx = loop_.build_turn_context(3, &[], "test-session");
+        let ctx = loop_.build_turn_context(3, &[], "test-session", None);
         let ib = ctx
             .iteration_budget
             .expect("iteration_budget must be populated each iteration");
@@ -2898,7 +2901,7 @@ mod tests {
     .with_quota_meter(Arc::clone(&meter));
 
         // Iteration 1: meter not exhausted yet → rising edge false.
-        let ctx_pre = loop_.build_turn_context(1, &[], "test-session");
+        let ctx_pre = loop_.build_turn_context(1, &[], "test-session", None);
         assert!(
             !ctx_pre.quota_tripped,
             "iteration 1 must not surface quota_tripped; meter not exhausted"
@@ -2923,7 +2926,7 @@ mod tests {
             .expect_err("second charge should trip the 100-token input limit");
 
         // Iteration 2: rising edge → ctx.quota_tripped must be true.
-        let ctx_trip = loop_.build_turn_context(2, &[], "test-session");
+        let ctx_trip = loop_.build_turn_context(2, &[], "test-session", None);
         assert!(
             ctx_trip.quota_tripped,
             "iteration 2 must surface quota_tripped on the rising edge"
@@ -2934,7 +2937,7 @@ mod tests {
         assert!(rendered.contains("## Quota tripped"));
 
         // Iteration 3: still tripped, but no rising edge → banner gone.
-        let ctx_post = loop_.build_turn_context(3, &[], "test-session");
+        let ctx_post = loop_.build_turn_context(3, &[], "test-session", None);
         assert!(
             !ctx_post.quota_tripped,
             "iteration 3 must NOT re-surface quota_tripped; rising edge already fired"
@@ -2984,7 +2987,7 @@ mod tests {
     .await
     .with_cancel_token(cancel);
 
-        let ctx = loop_.build_turn_context(1, &[], "test-session");
+        let ctx = loop_.build_turn_context(1, &[], "test-session", None);
         assert!(ctx.soft_cancel_pending);
 
         let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
@@ -3037,7 +3040,7 @@ mod tests {
     .await;
 
         // First observation: baseline → diff is `None` (no section).
-        let ctx1 = loop_.build_turn_context(1, &[], "test-session");
+        let ctx1 = loop_.build_turn_context(1, &[], "test-session", None);
         assert!(
             ctx1.capability_diff.is_none(),
             "first observation must be the baseline (no diff)"
@@ -3064,6 +3067,7 @@ mod tests {
             capabilities: Some(expanded_caps),
             active_extensions: None,
             principal_memory: None,
+            project_instructions: None,
             workspace: tempdir_unused(),
             resolved_model: "mock-model".into(),
             channel: "discord".into(),
@@ -3142,6 +3146,7 @@ mod tests {
             capabilities: Some(shrunk_caps),
             active_extensions: None,
             principal_memory: None,
+            project_instructions: None,
             workspace: tempdir_unused(),
             resolved_model: "mock-model".into(),
             channel: "discord".into(),
@@ -3229,7 +3234,7 @@ mod tests {
         );
 
         // Iteration 1: render with the v1 body.
-        let ctx1 = loop_.build_turn_context(1, &[], "test-session");
+        let ctx1 = loop_.build_turn_context(1, &[], "test-session", None);
         assert_eq!(ctx1.body, "v1: You are {{agent_name}}.");
         let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered1 = renderer.render_for_iteration(&ctx1).await;
@@ -3248,7 +3253,7 @@ mod tests {
             .expect("loop is the unique Arc<AgentView> owner")
             .set_config_prompt_body_for_test(Some("v2: You are {{agent_name}}.".to_string()));
 
-        let ctx2 = loop_.build_turn_context(2, &[], "test-session");
+        let ctx2 = loop_.build_turn_context(2, &[], "test-session", None);
         assert_eq!(
             ctx2.body, "v2: You are {{agent_name}}.",
             "iteration 2 must read the fresh body — no caching"
@@ -3266,7 +3271,7 @@ mod tests {
             .expect("loop is still the unique Arc<AgentView> owner")
             .set_config_prompt_body_for_test(Some("v3: You are {{agent_name}}.".to_string()));
 
-        let ctx3 = loop_.build_turn_context(3, &[], "test-session");
+        let ctx3 = loop_.build_turn_context(3, &[], "test-session", None);
         let rendered3 = renderer.render_for_iteration(&ctx3).await;
         assert!(
             rendered3.starts_with("v3: You are phase4-rebuild-v1."),
