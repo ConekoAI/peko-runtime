@@ -153,13 +153,13 @@ pub fn directory_from_tool_params(
 /// [`PROJECT_INSTRUCTIONS_MAX_BYTES`] with a notice.
 #[must_use]
 pub fn discover_project_instructions(start: &Path) -> Option<(PathBuf, String)> {
-    // Canonicalize when possible (resolves symlinks and `..`), but
-    // fall back to the raw path so a focus directory that does not
-    // exist yet (e.g. a `Write` into a brand-new directory) still
-    // searches its parents.
-    let mut current: PathBuf = start
-        .canonicalize()
-        .unwrap_or_else(|_| start.to_path_buf());
+    // Walk the path AS GIVEN — no canonicalize — so the returned label
+    // preserves the form the agent actually typed (`/tmp/...` stays
+    // `/tmp/...`, not the `/private/tmp/...` macOS resolves it to —
+    // found by the tiered-prompt-explore e2e experiment). Symlinks and
+    // `..` still work: `is_file` / `read_to_string` follow them, and
+    // `parent()` walks upward regardless.
+    let mut current: PathBuf = start.to_path_buf();
     if current.is_file() {
         current = current.parent()?.to_path_buf();
     }

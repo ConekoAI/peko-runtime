@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-052 e2e findings: generated sections for bare prompt bodies + label fix (2026-09-11)
+
+- **Frozen prefix gains generated sections for placeholder-free bodies** —
+  `render_cache_stable` now appends `## Runtime` / `## Sandbox` /
+  `## Model Aliases` / `## Self-Update` when the prompt template doesn't
+  place them via `{{...}}` tokens (empty sections skipped). Previously a
+  role file or custom persona with no placeholders produced a system
+  prompt of raw body and nothing else — no workspace, model, or runtime
+  context (found by the `tiered-prompt-explore` e2e experiment).
+  Templates that place a section keep full control; nothing is appended
+  twice. **This changes the frozen prefix of every existing prompt body
+  that lacked the placeholders** (including the compiled-in default root
+  persona, which only carried `{{mcp_context}}`).
+- **Project-instructions label keeps the path as typed** —
+  `discover_project_instructions` no longer canonicalizes the focus
+  directory, so the section header shows `/tmp/...` instead of the
+  `/private/tmp/...` macOS resolves it to.
+- **New e2e coverage** — `peko-rs/core/tests/tiered_prompt.rs` (7
+  mock-LLM cases: D3 role prompt on the wire, D4 identity, D5
+  self-position + AGENTS.md project context, D2 update notice, D6 hook
+  sections, `peer_agent`) + `scripts/e2e/flows/tiered-prompt-explore.sh`
+  (qualitative prompt dump) + `make test-tiered-prompt`. Cross-run
+  notice semantics documented as a follow-up in ADR-052 §4.
+
 ### ADR-052 D6: user-defined prompt sections via workspace hooks (2026-09-11)
 
 - **`PromptSection` bind point for workspace hooks** — a

@@ -198,3 +198,27 @@ files render as absent sections (presence = visibility, ADR-050 D3).
 The T1 plumbing fix changes spawned-subagent behavior immediately:
 named agents finally run their own prompt, which is the behavior
 `agents/<name>.md` files were written for.
+
+## 4. Follow-ups (found by the tiered-prompt e2e, 2026-09-11)
+
+The mock-LLM e2e suite (`peko-rs/core/tests/tiered_prompt.rs`, 7 cases)
+and the `scripts/e2e/flows/tiered-prompt-explore.sh` experiment verified
+D2–D6 against the real daemon. Two findings were fixed immediately —
+placeholder-free prompt bodies gained the generated stable sections
+(`render_cache_stable` appends `## Runtime` / `## Sandbox` /
+`## Model Aliases` / `## Self-Update` when the template doesn't place
+them), and the project-instructions label keeps the path as typed
+instead of the canonicalized form. One remains open:
+
+- **Cross-run diff semantics.** `RuntimeContextState` is per-run, so
+  the update/retraction notices (D2) only fire *within* a run. A new
+  run on an existing session re-injects the current tier content
+  plainly — content is always correct and fresh, but a tier edited
+  between runs (the common case: the user edits MEMORY.md between two
+  `peko send`s) re-injects without the "_Updated — replaces…_" notice,
+  and a tier removed between runs vanishes silently (its last
+  injection ages out via compaction). Closing this needs a codex-style
+  persisted per-session snapshot, or rehydration of
+  `RuntimeContextState` from the last persisted `<runtime-context>`
+  message at run start. Deliberately deferred: the failure mode is
+  cosmetic (missing notice), never stale content.

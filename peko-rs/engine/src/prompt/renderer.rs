@@ -243,7 +243,8 @@ impl PromptRenderer {
         let mcp = self.mcp_context_provider.render_mcp_context().await;
 
         let values = build_stable_placeholder_values(ctx, &mcp);
-        replace_placeholders(&ctx.body, &values, true)
+        let rendered = replace_placeholders(&ctx.body, &values, true);
+        append_missing_stable_sections(&ctx.body, rendered, &values)
     }
 
     /// Render the per-iteration runtime-context message body.
@@ -800,6 +801,49 @@ fn build_stable_placeholder_values(
     // CapabilityDiff intentionally omitted — volatile.
 
     values
+}
+
+/// The generated sections that every frozen prefix must carry, in
+/// append order. These are run-stable (host, OS, model, workspace,
+/// sandbox, aliases, gateway), so appending them keeps the prefix
+/// byte-identical across iterations.
+const GENERATED_STABLE_SECTIONS: [Placeholder; 4] = [
+    Placeholder::Runtime,
+    Placeholder::Sandbox,
+    Placeholder::ModelAliases,
+    Placeholder::SelfUpdate,
+];
+
+/// Append the generated stable sections the template didn't place
+/// itself (ADR-052 D2: the frozen prefix is "role body + generated
+/// runtime sections"). Role files and custom personas typically carry
+/// no `{{...}}` tokens at all — without this, their system prompt was
+/// the raw body and nothing else: no workspace, no model, no runtime
+/// context (found by the `tiered-prompt-explore` e2e experiment,
+/// 2026-09-11). A template that places a section via its placeholder
+/// keeps full control — nothing is appended twice. Empty sections
+/// (e.g. no model aliases configured) are skipped.
+fn append_missing_stable_sections(
+    template: &str,
+    rendered: String,
+    values: &HashMap<Placeholder, String>,
+) -> String {
+    let mut out = rendered;
+    for ph in GENERATED_STABLE_SECTIONS {
+        if template.contains(ph.marker()) {
+            continue;
+        }
+        let Some(section) = values.get(&ph) else {
+            continue;
+        };
+        let section = section.trim();
+        if section.is_empty() {
+            continue;
+        }
+        out.push_str("\n\n");
+        out.push_str(section);
+    }
+    out
 }
 
 fn format_skills_section(text: &str) -> String {
@@ -1413,6 +1457,47 @@ mod tests {
             prefix.contains("You are test-agent."),
             "prefix was: {prefix}"
         );
+    }
+
+    /// ADR-052 D2 (2026-09-11): a placeholder-free prompt body (the
+    /// typical shape for role files and custom personas) still carries
+    /// the generated stable sections — without them the frozen prefix
+    /// was the raw body and nothing else (no workspace, no model, no
+    /// runtime context).
+    #[tokio::test]
+    async fn render_cache_stable_appends_generated_sections_for_bare_body() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut ctx = empty_ctx();
+        ctx.body = "You are the researcher role.".to_string();
+
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        assert!(
+            prefix.starts_with("You are the researcher role."),
+            "prefix was: {prefix}"
+        );
+        assert!(prefix.contains("## Runtime"), "prefix was: {prefix}");
+        // Empty generated sections stay out: sandbox disabled, no
+        // aliases, no gateway in `empty_ctx()`.
+        assert!(!prefix.contains("## Sandbox"), "prefix was: {prefix}");
+        assert!(!prefix.contains("## Model Aliases"), "prefix was: {prefix}");
+        assert!(!prefix.contains("## Self-Update"), "prefix was: {prefix}");
+    }
+
+    /// A template that places a generated section via its placeholder
+    /// keeps full control — the section is NOT appended a second time.
+    #[tokio::test]
+    async fn render_cache_stable_does_not_duplicate_placed_sections() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut ctx = empty_ctx();
+        ctx.body = "Header.\n{{runtime}}\nFooter.".to_string();
+
+        let prefix = renderer.render_cache_stable(&ctx).await;
+        assert_eq!(
+            prefix.matches("## Runtime").count(),
+            1,
+            "prefix was: {prefix}"
+        );
+        assert!(prefix.contains("Footer."), "prefix was: {prefix}");
     }
 
     /// The runtime-context message is wrapped in the

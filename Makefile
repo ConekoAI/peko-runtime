@@ -215,6 +215,15 @@ test-cli-subagent: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_subagent -- --include-ignored
 
+# ADR-052 tiered system prompt slice (D2/D3/D4/D5/D6). All `#[serial]`:
+# the tests share the mock's per-substring counter, and the two
+# wire-recording tests (D3 spawn + peer_agent) briefly override the
+# process-wide MOCK_LLM_URL to route the daemon through an in-process
+# recording proxy.
+test-tiered-prompt: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test tiered_prompt -- --include-ignored --test-threads=1
+
 # Built-in tools (shell / read_file / write_file / glob / grep /
 # str_replace_file) slice. All single-turn tests, all `#[serial]`
 # because they share the mock LLM's per-substring counter. The
