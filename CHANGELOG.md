@@ -4,6 +4,64 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-052 D6: user-defined prompt sections via workspace hooks (2026-09-11)
+
+- **`PromptSection` bind point for workspace hooks** — a
+  `<workspace>/hooks/<id>/hook.toml` may now bind
+  `{ point = "PromptSection", section = "<name>", priority = <int?> }`
+  (`BindSpec` gains optional `section` / `priority` fields; `priority`
+  defaults to 100; empty/whitespace names and names containing control
+  characters are rejected at scan time). When the section is dispatched,
+  the hook's command runs and its stdout becomes a `## <name>` section
+  of the per-iteration `<runtime-context>` tail message.
+- **`ToolFunnel::registered_prompt_sections` port** — new trait method
+  (default impl returns `vec![]`, so test doubles and other impls keep
+  compiling). The root impl scans the hook registry for
+  `PromptSystemSection` points visible to the calling principal:
+  principal-scoped extension ids (`principal:<pid>/hook:<id>`) are
+  visible only to their own principal, everything else is system scope.
+- **Renderer dispatch + change detection** —
+  `PromptRenderer::render_runtime_context` dispatches the registered
+  custom sections after the built-ins: names colliding with a built-in
+  dispatch (`identity` / `agents` / `skills`) are deduped (a hook
+  augmenting a built-in catalog rides the built-in dispatch via
+  registry aggregation — no double dispatch), the rest are sorted for
+  byte-stable ordering and fired concurrently with the same 2s
+  soft-fail budget. `RuntimeContextState` gains an open
+  `HashMap<String, String>` tracker sharing the D2 notice-decision
+  helper with the fixed slots: first injection is plain, an edit
+  re-injects with the `_Updated — replaces…_` notice, and a hook that
+  stops producing output retracts once with `_The "<name>" section no
+  longer applies._`.
+
+### ADR-052 D5 (second half): AGENTS.md project-context as a T2 tail section (2026-09-11)
+
+- **Per-run focus directory** — the agentic loop tracks the directory
+  the agent most recently touched via a path-bearing tool call
+  (`Read`/`Write`/`Edit` `file_path`, `Glob` `directory`, `Grep`
+  `path`, `Bash` `cwd`) and the AGENTS.md discovery in
+  `AgenticLoop::build_turn_context` walks up from it, defaulting to the
+  principal workspace while nothing has been touched yet.
+- **`discover_project_instructions`** (`peko-engine::prompt::memory`) —
+  walks up from the focus directory to the nearest `AGENTS.md`, no
+  principal-workspace constraint (agents typically work on repos outside
+  it). Stop conditions: after checking a directory containing `.git`
+  (the repo root is checked, nothing above it), or the filesystem root.
+  Non-empty content only, capped at 32 KiB
+  (`PROJECT_INSTRUCTIONS_MAX_BYTES`) with a truncation notice. The old
+  `discover_shared_context` helper is untouched.
+- **`## Project instructions (<path>)` tail section** — new
+  `SectionSlot::ProjectContext` in the runtime-context change detector,
+  rendered from the new `TurnPromptContext.project_instructions` field
+  with the file's own path as the label and a one-line provenance note
+  (`_Environment-provided project notes — below principal instructions
+  in authority._`). It participates in the D2 update/retraction
+  semantics: rides once, re-injects with an update notice when the
+  agent moves to a different project or the file changes, and retracts
+  when the agent leaves every AGENTS.md scope. Trust posture: the
+  section rides the user-role tail (not the frozen prefix) and is
+  presence = visibility, same as the workspace catalogs.
+
 ### ADR-052 D2/D4/D5: tiered-prompt prototype slices (2026-09-11)
 
 - **D2 — change/removal notices in the tail change-detector** —
@@ -39,6 +97,20 @@ All notable changes to Peko.
   every scanned file instead of `(dir_mtime, child_count)`, so in-place
   edits to an existing `AGENT.md` / `SKILL.md` invalidate the catalog
   on the next iteration (dir mtime only moved on add/remove).
+
+### ADR-052 D3: opt-in T1 role for peer-facing turns (2026-09-11)
+
+- **`[routing].peer_agent`** — `principal.toml` gains an optional
+  `routing.peer_agent` naming a workspace role file
+  (`agents/<name>.md` or `agents/<name>/AGENT.md`, Agent-tool lookup
+  order) whose Markdown body peer-facing turns — peer-DM ingress
+  children, passive channel bindings, group wakes — run as their T1
+  role instead of inheriting the root persona
+  (`peer_child_agent_config` in `principal::child_turns`). Only the
+  prompt body swaps; the executor registry key and session-stamp name
+  stay the root prompt's. Unresolvable roles warn and fall back to the
+  root persona, so a bad value never breaks peer ingress. Shared
+  resolver: `principal::agent_prompt::resolve_agent_prompt`.
 
 ### ADR-052 D3: named subagents run their own role prompt (2026-09-11)
 

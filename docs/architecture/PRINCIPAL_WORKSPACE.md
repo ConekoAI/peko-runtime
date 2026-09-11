@@ -48,7 +48,7 @@ For the trust-and-audit posture that makes this safe, see
 | `tools/<id>/tool.toml`     | Universal tool manifests                                                  |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
-| `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent]`)      |
+| `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
 | `plugins/<id>/`            | Opaque plugin — any shape, runtime does not parse                         |
 | `peers.json`               | Trusted peer DIDs                                                          |
 

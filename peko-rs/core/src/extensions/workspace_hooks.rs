@@ -2,10 +2,12 @@
 //!
 //! Hooks live under `<workspace>/hooks/<id>/hook.toml`. Each hook
 //! declares a `binds` list with one or more of the four F31x observe-only
-//! hook points (`PreToolUse` / `PostToolUse` / `Stop` / `AfterAgent`)
-//! and an external `command` to spawn when the hook fires. Output
-//! defaults to JSON (matches Claude Code's hook protocol) and falls
-//! back to plain text on the remaining hook points.
+//! hook points (`PreToolUse` / `PostToolUse` / `Stop` / `AfterAgent`),
+//! plus — since ADR-052 D6 — `PromptSection` binds whose command stdout
+//! becomes a named section of the per-iteration `<runtime-context>`
+//! tail message. Each bind names an external `command` to spawn when
+//! the hook fires. Output defaults to JSON (matches Claude Code's hook
+//! protocol) and falls back to plain text on the remaining hook points.
 //!
 //! The scanner is the single canonical path for hook discovery. The
 //! legacy general-extension `hooks:` YAML block continues to work as a
@@ -17,6 +19,8 @@
 //! # ~/.peko/principal/alice/hooks/notify-on-write/hook.toml
 //! binds = [
 //!   { point = "PostToolUse", tool_name = "Write" },
+//!   # ADR-052 D6: stdout becomes the `## weather` runtime-context section.
+//!   { point = "PromptSection", section = "weather", priority = 50 },
 //! ]
 //!
 //! command = "/usr/local/bin/peko-notify"
@@ -28,7 +32,12 @@
 //!
 //! `tool_name` is required for `PreToolUse` / `PostToolUse` and ignored
 //! for `Stop` / `AfterAgent`. Wildcard patterns (`"mcp:*"`) match the
-//! `HookRegistry::get_hooks_for_point` grammar.
+//! `HookRegistry::get_hooks_for_point` grammar. `section` is required
+//! for `PromptSection` (non-empty, no control characters); `priority`
+//! is optional (default 100) and orders handlers within a section.
+//! A `PromptSection` bind MAY deliberately reuse a built-in name
+//! (`identity` / `agents` / `skills`) to augment the built-in catalog —
+//! the registry aggregates all handlers for the section.
 //!
 //! ## Failure isolation
 //!
@@ -53,14 +62,24 @@ use tracing::{debug, info, warn};
 
 /// One entry in a hook's `binds` list.
 ///
-/// `point` selects one of the four F31x observe-only hook points; the
-/// remaining fields are point-specific. `tool_name` is required for
-/// `PreToolUse` / `PostToolUse` and ignored for `Stop` / `AfterAgent`.
+/// `point` selects one of the four F31x observe-only hook points or —
+/// since ADR-052 D6 — `PromptSection`; the remaining fields are
+/// point-specific. `tool_name` is required for `PreToolUse` /
+/// `PostToolUse` and ignored for `Stop` / `AfterAgent`. `section` is
+/// required for `PromptSection`; `priority` optionally overrides the
+/// default section priority (100).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindSpec {
     pub point: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// ADR-052 D6: prompt-section name for `PromptSection` binds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    /// ADR-052 D6: handler ordering within the section (higher first;
+    /// default 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
 }
 
 /// The shape of a `<workspace>/hooks/<id>/hook.toml` manifest.
@@ -174,7 +193,7 @@ async fn register_one_hook(
     if manifest.binds.is_empty() {
         return Err(anyhow!(
             "hook {} has empty `binds` list — at least one of \
-             PreToolUse / PostToolUse / Stop / AfterAgent is required",
+             PreToolUse / PostToolUse / Stop / AfterAgent / PromptSection is required",
             manifest_path.display()
         ));
     }
@@ -251,9 +270,36 @@ fn bind_to_point(bind: &BindSpec, hook_id: &str) -> Result<HookPoint> {
         }
         "Stop" => Ok(HookPointBuilder::stop()),
         "AfterAgent" => Ok(HookPointBuilder::after_agent()),
+        // ADR-052 D6: a `PromptSection` bind turns the command's stdout
+        // into a named `<runtime-context>` tail section. No other
+        // validation — a hook MAY deliberately bind a built-in name
+        // ("identity" / "agents" / "skills") to augment the built-in
+        // catalog; registry aggregation concatenates all handlers for
+        // the section.
+        "PromptSection" => {
+            let section = bind.section.as_deref().ok_or_else(|| {
+                anyhow!("PromptSection bind requires `section` (hook {hook_id})")
+            })?;
+            if section.trim().is_empty() {
+                return Err(anyhow!(
+                    "PromptSection bind `section` must not be empty or whitespace-only \
+                     (hook {hook_id})"
+                ));
+            }
+            if section.chars().any(char::is_control) {
+                return Err(anyhow!(
+                    "PromptSection bind `section` must not contain control characters \
+                     or newlines (hook {hook_id})"
+                ));
+            }
+            Ok(HookPoint::PromptSystemSection {
+                section: section.to_string(),
+                priority: bind.priority.unwrap_or(100),
+            })
+        }
         other => Err(anyhow!(
             "hook {hook_id} bind point `{other}` is not supported; \
-             allowed: PreToolUse | PostToolUse | Stop | AfterAgent"
+             allowed: PreToolUse | PostToolUse | Stop | AfterAgent | PromptSection"
         )),
     }
 }
@@ -309,6 +355,8 @@ output = "text"
         let bind = BindSpec {
             point: "PreToolUse".into(),
             tool_name: None,
+            section: None,
+            priority: None,
         };
         let err = bind_to_point(&bind, "h").unwrap_err();
         assert!(err.to_string().contains("requires `tool_name`"));
@@ -319,6 +367,8 @@ output = "text"
         let bind = BindSpec {
             point: "SessionStart".into(),
             tool_name: None,
+            section: None,
+            priority: None,
         };
         let err = bind_to_point(&bind, "h").unwrap_err();
         assert!(err.to_string().contains("SessionStart"));
@@ -331,6 +381,8 @@ output = "text"
             &BindSpec {
                 point: "PreToolUse".into(),
                 tool_name: Some("Bash".into()),
+                section: None,
+                priority: None,
             },
             "h",
         )
@@ -339,6 +391,8 @@ output = "text"
             &BindSpec {
                 point: "PostToolUse".into(),
                 tool_name: Some("Bash".into()),
+                section: None,
+                priority: None,
             },
             "h",
         )
@@ -347,6 +401,8 @@ output = "text"
             &BindSpec {
                 point: "Stop".into(),
                 tool_name: None,
+                section: None,
+                priority: None,
             },
             "h",
         )
@@ -355,6 +411,8 @@ output = "text"
             &BindSpec {
                 point: "AfterAgent".into(),
                 tool_name: None,
+                section: None,
+                priority: None,
             },
             "h",
         )
@@ -363,6 +421,97 @@ output = "text"
         assert_eq!(post.name(), "tool.post.Bash");
         assert_eq!(stop.name(), "loop.stop");
         assert_eq!(after.name(), "agent.after");
+    }
+
+    #[test]
+    fn parses_prompt_section_bind() {
+        let raw = r#"
+binds = [
+    { point = "PromptSection", section = "weather", priority = 50 },
+    { point = "PromptSection", section = "status-board" },
+]
+command = "/bin/echo"
+"#;
+        let m: HookManifest = toml::from_str(raw).unwrap();
+        assert_eq!(m.binds.len(), 2);
+        assert_eq!(m.binds[0].point, "PromptSection");
+        assert_eq!(m.binds[0].section.as_deref(), Some("weather"));
+        assert_eq!(m.binds[0].priority, Some(50));
+        assert_eq!(m.binds[1].section.as_deref(), Some("status-board"));
+        assert_eq!(m.binds[1].priority, None);
+        assert_eq!(m.binds[0].tool_name, None);
+    }
+
+    #[test]
+    fn bind_to_point_prompt_section_default_and_custom_priority() {
+        let default = bind_to_point(
+            &BindSpec {
+                point: "PromptSection".into(),
+                tool_name: None,
+                section: Some("weather".into()),
+                priority: None,
+            },
+            "h",
+        )
+        .unwrap();
+        assert_eq!(default.name(), "prompt.system_section.weather");
+        assert_eq!(default.priority(), Some(100));
+
+        let custom = bind_to_point(
+            &BindSpec {
+                point: "PromptSection".into(),
+                tool_name: None,
+                section: Some("weather".into()),
+                priority: Some(50),
+            },
+            "h",
+        )
+        .unwrap();
+        assert_eq!(custom.priority(), Some(50));
+    }
+
+    #[test]
+    fn bind_to_point_prompt_section_requires_section() {
+        let bind = BindSpec {
+            point: "PromptSection".into(),
+            tool_name: None,
+            section: None,
+            priority: None,
+        };
+        let err = bind_to_point(&bind, "h").unwrap_err();
+        assert!(err.to_string().contains("requires `section`"));
+    }
+
+    #[test]
+    fn bind_to_point_prompt_section_rejects_blank_and_control_names() {
+        for bad in ["", "   ", "with\nnewline", "with\ttab"] {
+            let bind = BindSpec {
+                point: "PromptSection".into(),
+                tool_name: None,
+                section: Some(bad.into()),
+                priority: None,
+            };
+            let err = bind_to_point(&bind, "h").unwrap_err();
+            assert!(
+                err.to_string().contains("PromptSection bind `section`"),
+                "section {bad:?} should be rejected, got: {err}"
+            );
+        }
+    }
+
+    /// A `PromptSection` bind MAY reuse a built-in section name to
+    /// augment the built-in catalog — `bind_to_point` does not reject
+    /// `identity` / `agents` / `skills`.
+    #[test]
+    fn bind_to_point_prompt_section_allows_builtin_names() {
+        let bind = BindSpec {
+            point: "PromptSection".into(),
+            tool_name: None,
+            section: Some("agents".into()),
+            priority: None,
+        };
+        let point = bind_to_point(&bind, "h").unwrap();
+        assert_eq!(point.name(), "prompt.system_section.agents");
     }
 
     #[test]
@@ -453,6 +602,83 @@ output = "text"
                 );
             }
             other => panic!("expected HookResult::Continue(Text), got {other:?}"),
+        }
+    }
+
+    /// ADR-052 D6 end-to-end: write a workspace `hooks/<id>/hook.toml`
+    /// with a `PromptSection` bind, run the scanner, then fire the
+    /// section through the same `ToolFunnel` port the renderer uses
+    /// (`invoke_prompt_section_hook`) and assert the command's stdout
+    /// comes back. Also pins the `registered_prompt_sections` scoping:
+    /// the owning principal sees the section, another principal doesn't.
+    #[tokio::test]
+    async fn end_to_end_prompt_section_bind_fires_via_funnel_port() {
+        use peko_extension_api::ToolFunnel;
+        use peko_subject::PrincipalId;
+
+        let tmp = tempfile::tempdir().unwrap();
+
+        let (script_name, script_body) = if cfg!(windows) {
+            ("echo-section.bat", "@echo off\r\necho clear-skies\r\n")
+        } else {
+            ("echo-section.sh", "#!/bin/sh\necho clear-skies\n")
+        };
+        let script_path = tmp.path().join(script_name);
+        std::fs::write(&script_path, script_body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&script_path).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perm).unwrap();
+        }
+
+        let hook_dir = tmp.path().join("hooks").join("weather");
+        std::fs::create_dir_all(&hook_dir).unwrap();
+        let manifest = format!(
+            r#"
+binds = [{{ point = "PromptSection", section = "weather", priority = 50 }}]
+command = "{}"
+args = []
+output = "text"
+"#,
+            script_path.display().to_string().replace('\\', "\\\\")
+        );
+        std::fs::write(hook_dir.join("hook.toml"), manifest).unwrap();
+
+        let core = ExtensionCore::new();
+        let pid = PrincipalId::generate();
+        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), &core, &pid)
+            .await
+            .unwrap();
+        assert_eq!(loaded, 1, "exactly one binding registered");
+
+        // The funnel port enumerates the section for the owning
+        // principal only.
+        let pid_str = pid.to_string();
+        let mine = core
+            .registered_prompt_sections(Some(pid_str.as_str()), None)
+            .await;
+        assert_eq!(mine, vec!["weather".to_string()], "got: {mine:?}");
+        let other = PrincipalId::generate().to_string();
+        let theirs = core
+            .registered_prompt_sections(Some(other.as_str()), None)
+            .await;
+        assert!(
+            !theirs.contains(&"weather".to_string()),
+            "other principal must not see the hook, got: {theirs:?}"
+        );
+
+        // Fire the section through the same port the renderer uses.
+        let text = core
+            .invoke_prompt_section_hook("weather", 100, Some(pid_str.as_str()), None, None, None)
+            .await;
+        match text {
+            Some(text) => assert!(
+                text.contains("clear-skies"),
+                "expected hook command stdout in section text, got: {text:?}"
+            ),
+            None => panic!("expected Some(section text), got None"),
         }
     }
 

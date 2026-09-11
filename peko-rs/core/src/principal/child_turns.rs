@@ -20,13 +20,18 @@
 //!
 //! ## Persona inheritance
 //!
-//! Peer children run the principal's persona. The builder resolves the
-//! principal's root agent prompt exactly as the router factory does
+//! Peer children run the principal's persona by default. The builder
+//! resolves the principal's root agent prompt exactly as the router
+//! factory does
 //! ([`DefaultPrincipalRouterFactory::resolve_root_agent_prompt`]) and
 //! carries it on the executor's `AgentConfig` snapshot — closing the
 //! pre-Phase-6 gap where the channel driver's executor had no
 //! `.with_agent_config` and child turns fell back to a blank default
-//! prompt.
+//! prompt. ADR-052 D3 makes the persona an explicit policy: when
+//! `routing.peer_agent` names a workspace role file
+//! (`agents/<name>.md` / `agents/<name>/AGENT.md`), that role's
+//! prompt body replaces the root persona for all peer-facing turns;
+//! unresolvable roles warn and fall back to the root persona.
 //!
 //! ## Registry key (cross-guard)
 //!
@@ -61,20 +66,38 @@ use crate::principal::router::AgentPromptSummary;
 use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
-/// Resolve the principal's root agent prompt and build the
-/// `AgentConfig` snapshot peer-child turns inherit (the persona).
+/// Resolve the agent prompt peer-child turns run and build the
+/// `AgentConfig` snapshot carrying it.
 ///
-/// Resolution order is the router factory's: `principal.toml`
-/// `routing.root_prompt` file → `<workspace>/agents/root.md` (or
-/// `agents/root/AGENT.md`) → compiled-in default. Factored out of
-/// [`PeerChildTurns::build`] so the persona mapping is unit-testable
-/// without a full `Principal`.
+/// Default is **persona inheritance**: resolution order is the router
+/// factory's — `principal.toml` `routing.root_prompt` file →
+/// `<workspace>/agents/root.md` (or `agents/root/AGENT.md`) →
+/// compiled-in default. When `routing.peer_agent` names a workspace
+/// role (ADR-052 D3), that role's prompt BODY replaces the root
+/// prompt's body; any resolution failure logs a warning and falls
+/// back to the root persona so a bad config value never breaks peer
+/// ingress. Only the body swaps — the `AgentConfig` keeps the root
+/// prompt's name, preserving the registry-key / session-stamp
+/// invariants of [`PeerChildTurns::build`].
+///
+/// Factored out of [`PeerChildTurns::build`] so the persona mapping
+/// is unit-testable without a full `Principal`.
 pub(crate) fn peer_child_agent_config(
     config: &PrincipalConfig,
     workspace_path: &std::path::Path,
 ) -> AgentConfig {
     let agents_dir = workspace_path.join("agents");
-    let prompt = DefaultPrincipalRouterFactory::resolve_root_agent_prompt(config, &agents_dir);
+    let mut prompt = DefaultPrincipalRouterFactory::resolve_root_agent_prompt(config, &agents_dir);
+    // ADR-052 D3: opt-in T1 role for peer-facing turns.
+    if let Some(role) = config.routing.peer_agent.as_deref() {
+        match crate::principal::agent_prompt::resolve_agent_prompt(role, &agents_dir) {
+            Ok(role_prompt) => prompt.body = role_prompt.body,
+            Err(e) => tracing::warn!(
+                "Failed to resolve routing.peer_agent role '{role}': {e:#}. \
+                 Falling back to the root persona."
+            ),
+        }
+    }
     build_agent_config(
         &prompt,
         &config.capabilities,
@@ -892,6 +915,120 @@ mod tests {
         assert!(
             prompt.contains("OVERRIDE_MARKER"),
             "explicit root_prompt override must win; got: {prompt}"
+        );
+    }
+
+    // ─── ADR-052 D3: opt-in T1 role via `routing.peer_agent` ───
+
+    /// `peer_agent` set + role file present → the child config's
+    /// prompt is the role body; the config NAME stays the root
+    /// prompt's (the executor registry key + session-stamp
+    /// invariants rely on it).
+    #[test]
+    fn peer_agent_role_body_replaces_persona_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("channel-comm.md"),
+            "---\ndescription: \"Channel voice\"\n---\n\nYou are CHANNEL_ROLE_MARKER, the peer-facing voice.\n",
+        )
+        .unwrap();
+        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: Some("channel-comm".to_string()),
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        assert_eq!(
+            agent_config.name, "root",
+            "role swap must not change the agent name (registry-key invariant)"
+        );
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("CHANNEL_ROLE_MARKER"),
+            "peer_agent role body must replace the persona prompt; got: {prompt}"
+        );
+        assert!(
+            !prompt.contains("PERSONA_MARKER"),
+            "root persona body must not leak into a role-bound turn; got: {prompt}"
+        );
+    }
+
+    /// Directory layout (`agents/<name>/AGENT.md`) resolves too —
+    /// same lookup order as the Agent tool.
+    #[test]
+    fn peer_agent_role_resolves_directory_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let role_dir = tmp.path().join("agents").join("channel-comm");
+        std::fs::create_dir_all(&role_dir).unwrap();
+        std::fs::write(role_dir.join("AGENT.md"), "DIR_LAYOUT_ROLE_MARKER\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: Some("channel-comm".to_string()),
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("DIR_LAYOUT_ROLE_MARKER"),
+            "directory-layout role file must resolve; got: {prompt}"
+        );
+    }
+
+    /// `peer_agent` set + role file MISSING → warn + fall back to the
+    /// root persona; peer ingress must never break on a bad value.
+    #[test]
+    fn peer_agent_missing_role_falls_back_to_root_persona() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: Some("does-not-exist".to_string()),
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        assert_eq!(agent_config.name, "root");
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("PERSONA_MARKER"),
+            "unresolvable peer_agent must fall back to the root persona; got: {prompt}"
+        );
+    }
+
+    /// `peer_agent: None` → today's persona inheritance, unchanged.
+    #[test]
+    fn peer_agent_none_inherits_root_persona() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+        std::fs::write(agents_dir.join("channel-comm.md"), "role body\n").unwrap();
+
+        let config = test_config(
+            "persona-test",
+            PrincipalRoutingConfig {
+                peer_agent: None,
+                ..Default::default()
+            },
+        );
+        let agent_config = peer_child_agent_config(&config, tmp.path());
+        let prompt = agent_config.prompt.expect("persona prompt must be set");
+        assert!(
+            prompt.contains("PERSONA_MARKER"),
+            "peer_agent None must inherit the root persona; got: {prompt}"
         );
     }
 

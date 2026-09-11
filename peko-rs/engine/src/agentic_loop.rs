@@ -1071,6 +1071,14 @@ impl AgenticLoop {
         // last injected value.
         let mut runtime_ctx_state = crate::RuntimeContextState::default();
 
+        // ADR-052 D5 (T2): per-run "focus directory" — the directory
+        // the agent most recently touched via a path-bearing tool call
+        // (Read/Write/Edit/Glob/Grep/Bash). Updated after each tool
+        // round below; the AGENTS.md discovery in `build_turn_context`
+        // walks up from here (defaulting to the principal workspace
+        // while nothing has been touched yet).
+        let mut focus_dir: Option<std::path::PathBuf> = None;
+
         // Initialize compaction driver. The model's max context
         // length is the single source of truth from `ProviderCatalog`
         // (resolved via the agent's `LlmResolver`). When the catalog
@@ -1256,7 +1264,8 @@ impl AgenticLoop {
             // hit. The tail layout matches codex / kimi-code /
             // deepseek-harness.
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
-                let ctx = self.build_turn_context(iteration, &tool_defs, &session_id);
+                let ctx =
+                    self.build_turn_context(iteration, &tool_defs, &session_id, focus_dir.as_deref());
                 let renderer = PromptRenderer::with_mcp_context_provider(
                     Arc::clone(&self.extension_core),
                     Arc::clone(&self.mcp_context_provider),
@@ -2075,6 +2084,27 @@ impl AgenticLoop {
                     messages.push(r.message);
                 }
 
+                // ADR-052 D5 (T2): track the latest directory touched
+                // by a path-bearing tool call so the next iteration's
+                // AGENTS.md discovery follows the agent's actual work
+                // area (the project-instructions tail section). Only
+                // non-None extractions move the focus — a round of
+                // pathless tools leaves it where it was.
+                for tc in &tool_calls {
+                    if let ContentBlock::ToolCall {
+                        name, arguments, ..
+                    } = tc
+                    {
+                        if let Some(dir) = crate::prompt::memory::directory_from_tool_params(
+                            name,
+                            arguments,
+                            &self.principal_workspace_or_default(),
+                        ) {
+                            focus_dir = Some(dir);
+                        }
+                    }
+                }
+
                 // PR 3 mid-turn trigger: after tool execution, before
                 // the next iteration, check if the cumulative message
                 // window is approaching the limit. If so, fire a
@@ -2286,11 +2316,26 @@ impl AgenticLoop {
         defs
     }
 
+    /// Workspace: the principal's workspace is the canonical answer
+    /// for any agent spawned under a principal; fall back to a
+    /// per-agent default for tests / compiled-in agents that bypass
+    /// the principal path.
+    fn principal_workspace_or_default(&self) -> std::path::PathBuf {
+        self.agent
+            .principal_workspace()
+            .cloned()
+            .unwrap_or_else(|| peko_extension_api::default_agent_workspace(self.agent.name()))
+    }
+
     /// Build a [`TurnPromptContext`] for the current iteration.
     ///
     /// This is the single typed input the renderer reads. It carries the
     /// principal, session, iteration, and control-surface state for one
-    /// iteration. Cheap to construct (mostly `Arc` clones).
+    /// iteration. Cheap to construct (mostly `Arc` clones). `focus_dir`
+    /// is the run's current focus directory (the last directory a
+    /// path-bearing tool call touched) — the AGENTS.md
+    /// project-instructions discovery (ADR-052 D5) walks up from it,
+    /// defaulting to the principal workspace when `None`.
     ///
     /// Phase 1 wires up the principal/workspace/body/resolved-model
     /// fields. Phase 2 will populate `channel`, `thinking_level`,
@@ -2303,23 +2348,13 @@ impl AgenticLoop {
         iteration: usize,
         tool_defs: &[ToolDefinition],
         session_id: &str,
+        focus_dir: Option<&std::path::Path>,
     ) -> TurnPromptContext {
         // Body lives on `AgentConfig::prompt` as `Option<String>`. Empty
         // body is supported (renderer falls back to one-line identity).
         let body = self.agent.config_prompt_body().unwrap_or_default();
 
-        // Workspace: the principal's workspace is the canonical answer
-        // for any agent spawned under a principal; fall back to a
-        // per-agent default for tests / compiled-in agents that bypass
-        // the principal path.
-        let workspace = self
-            .agent
-            .principal_workspace()
-            .cloned()
-            .unwrap_or_else(|| {
-                let resolver = peko_extension_api::default_agent_workspace(self.agent.name());
-                resolver
-            });
+        let workspace = self.principal_workspace_or_default();
 
         // Resolved model id: cached at loop construction in `new()`
         // from the agent's resolved catalog id (falls back to
@@ -2387,6 +2422,16 @@ impl AgenticLoop {
             rising_edge
         };
 
+        // ADR-052 D5 (T2): discover the nearest AGENTS.md walking up
+        // from the run's focus directory (the last directory a
+        // path-bearing tool call touched), defaulting to the principal
+        // workspace. No workspace constraint — the rendered section is
+        // labeled with the file's own path and an environment-provided
+        // authority note instead.
+        let project_instructions =
+            crate::prompt::memory::discover_project_instructions(focus_dir.unwrap_or(&workspace))
+                .map(|(path, content)| (path.display().to_string(), content));
+
         TurnPromptContext {
             principal_id: self.agent_principal_id.clone(),
             session_id: session_id.to_string(),
@@ -2395,6 +2440,7 @@ impl AgenticLoop {
             capabilities: self.agent.principal_capabilities().cloned(),
             active_extensions: self.agent.principal_active_extensions().cloned(),
             principal_memory: crate::load_principal_memory(&workspace),
+            project_instructions,
             workspace,
             resolved_model,
             // Phase 2 wiring: read from `AgentConfig`. Agents that

@@ -123,6 +123,14 @@ pub struct TurnPromptContext {
     /// Per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
     /// Rendered into the system prompt at the `{{memory}}` placeholder.
     pub principal_memory: Option<String>,
+    /// ADR-052 D5 (T2): the nearest `AGENTS.md` discovered above the
+    /// run's focus directory, as `(label, content)` where the label is
+    /// the file's path. Rendered as the `## Project instructions`
+    /// runtime-context tail section (explicitly labeled as
+    /// environment-provided, below principal instructions in
+    /// authority). `None` when no `AGENTS.md` is in scope — the change
+    /// tracker then retracts the section.
+    pub project_instructions: Option<(String, String)>,
     /// Workspace path (for `{{workspace}}`).
     pub workspace: PathBuf,
     /// Resolved model id for the LLM call this iteration (for `{{runtime}}`).

@@ -33,6 +33,11 @@ pub const PRINCIPAL_MEMORY_MAX_BYTES: u64 = 256 * 1024; // 256 KiB
 /// Maximum total bytes of AGENTS.md to load per directory.
 pub const SHARED_CONTEXT_MAX_BYTES: u64 = 64 * 1024; // 64 KiB
 
+/// Maximum total bytes of AGENTS.md content injected as the
+/// project-instructions tail section. Matches the 32 KiB cap codex
+/// applies to its whole instruction hierarchy.
+pub const PROJECT_INSTRUCTIONS_MAX_BYTES: u64 = 32 * 1024; // 32 KiB
+
 /// Load the principal's long-term memory from `<workspace>/MEMORY.md`.
 ///
 /// Returns `None` if the file does not exist, is empty, or cannot be
@@ -135,6 +140,58 @@ pub fn directory_from_tool_params(
     Some(dir)
 }
 
+/// Walk up from `start` looking for the nearest `AGENTS.md`. Stops
+/// after checking a directory that contains a `.git` entry (the repo
+/// root is checked, but nothing above it), or at the filesystem root.
+///
+/// Unlike [`discover_shared_context`] there is NO principal-workspace
+/// constraint: agents typically work on repos outside the principal
+/// workspace, so provenance is communicated via the rendered section's
+/// label (the file's own path) and an explicit environment-provided
+/// authority note instead of a path cap. Returns the file's path and
+/// its contents (non-empty only), truncated at
+/// [`PROJECT_INSTRUCTIONS_MAX_BYTES`] with a notice.
+#[must_use]
+pub fn discover_project_instructions(start: &Path) -> Option<(PathBuf, String)> {
+    // Canonicalize when possible (resolves symlinks and `..`), but
+    // fall back to the raw path so a focus directory that does not
+    // exist yet (e.g. a `Write` into a brand-new directory) still
+    // searches its parents.
+    let mut current: PathBuf = start
+        .canonicalize()
+        .unwrap_or_else(|_| start.to_path_buf());
+    if current.is_file() {
+        current = current.parent()?.to_path_buf();
+    }
+    loop {
+        let candidate = current.join(SHARED_CONTEXT_FILE);
+        if candidate.is_file() {
+            if let Ok(raw) = std::fs::read_to_string(&candidate) {
+                if !raw.trim().is_empty() {
+                    let content = truncate_with_notice(
+                        raw,
+                        candidate.clone(),
+                        PROJECT_INSTRUCTIONS_MAX_BYTES,
+                    );
+                    return Some((candidate, content));
+                }
+            }
+        }
+
+        // Repo boundary: check the directory that owns `.git`, then
+        // stop — an AGENTS.md above the repo root does not describe
+        // this project.
+        if current.join(".git").exists() {
+            return None;
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+}
+
 fn truncate_with_notice(raw: String, path: PathBuf, max_bytes: u64) -> String {
     let len = raw.len() as u64;
     if len <= max_bytes {
@@ -232,6 +289,97 @@ mod tests {
         let sub = tmp.path().join("sub");
         std::fs::create_dir_all(&sub).unwrap();
         assert!(discover_shared_context(&sub, tmp.path()).is_none());
+    }
+
+    #[test]
+    fn discover_project_instructions_finds_nearest_from_nested_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let nested = project.join("src").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "repo rules").unwrap();
+
+        let (path, content) = discover_project_instructions(&nested).unwrap();
+        assert_eq!(content, "repo rules");
+        assert!(path.ends_with("AGENTS.md"), "path was: {path:?}");
+        assert!(path.parent().unwrap().ends_with("project"));
+    }
+
+    #[test]
+    fn discover_project_instructions_prefers_nearest_over_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path().join("outer");
+        let inner = outer.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(outer.join("AGENTS.md"), "outer rules").unwrap();
+        std::fs::write(inner.join("AGENTS.md"), "inner rules").unwrap();
+
+        let (path, content) = discover_project_instructions(&inner).unwrap();
+        assert_eq!(content, "inner rules");
+        assert!(path.parent().unwrap().ends_with("inner"));
+    }
+
+    #[test]
+    fn discover_project_instructions_does_not_cross_git_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        // AGENTS.md ABOVE the repo root must not be found.
+        std::fs::write(tmp.path().join("AGENTS.md"), "above the repo").unwrap();
+        let repo = tmp.path().join("repo");
+        let nested = repo.join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+
+        assert!(
+            discover_project_instructions(&nested).is_none(),
+            "discovery must stop at the .git boundary"
+        );
+    }
+
+    #[test]
+    fn discover_project_instructions_checks_git_root_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "repo rules").unwrap();
+
+        let (_, content) = discover_project_instructions(&repo).unwrap();
+        assert_eq!(content, "repo rules");
+    }
+
+    #[test]
+    fn discover_project_instructions_ignores_empty_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "  \n  ").unwrap();
+        std::fs::create_dir(project.join(".git")).unwrap();
+
+        assert!(
+            discover_project_instructions(&project).is_none(),
+            "whitespace-only AGENTS.md must be ignored"
+        );
+    }
+
+    #[test]
+    fn discover_project_instructions_truncates_at_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let big = "x".repeat((PROJECT_INSTRUCTIONS_MAX_BYTES + 4096) as usize);
+        std::fs::write(project.join("AGENTS.md"), big).unwrap();
+
+        let (_, content) = discover_project_instructions(&project).unwrap();
+        assert!(
+            content.len() < (PROJECT_INSTRUCTIONS_MAX_BYTES + 4096) as usize,
+            "content was not capped: {} bytes",
+            content.len()
+        );
+        assert!(
+            content.contains("truncated:"),
+            "truncation notice missing: {}",
+            &content[content.len() - 200..]
+        );
     }
 
     #[test]

@@ -306,6 +306,17 @@ pub struct PrincipalRoutingConfig {
     #[serde(default)]
     pub root_prompt: Option<PathBuf>,
 
+    /// Optional name of a workspace agent role (`agents/<name>.md` or
+    /// `agents/<name>/AGENT.md`) whose prompt body peer-facing turns
+    /// (peer-DM ingress children, passive channel bindings, group
+    /// wakes) run as their T1 role instead of the root persona
+    /// (ADR-052 D3). Omitted = persona inheritance from the root
+    /// prompt. Resolution failures (missing file, parse error) fall
+    /// back to the root persona with a warning — a bad value here
+    /// must never break peer ingress.
+    #[serde(default)]
+    pub peer_agent: Option<String>,
+
     #[serde(default = "default_recall_top_k")]
     pub recall_top_k: usize,
 
@@ -317,6 +328,7 @@ impl Default for PrincipalRoutingConfig {
     fn default() -> Self {
         Self {
             root_prompt: None,
+            peer_agent: None,
             recall_top_k: default_recall_top_k(),
             max_router_iterations: default_max_router_iterations(),
         }

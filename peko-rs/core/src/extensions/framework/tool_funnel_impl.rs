@@ -216,6 +216,38 @@ impl ToolFunnel for ExtensionCore {
         .await
     }
 
+    async fn registered_prompt_sections(
+        &self,
+        principal_id: Option<&str>,
+        _active_extensions: Option<Vec<String>>,
+    ) -> Vec<String> {
+        // ADR-052 D6: scan the hook registry for `PromptSystemSection`
+        // points so workspace hooks (`principal:<pid>/hook:<id>`) can
+        // contribute named tail sections. Scoping mirrors the
+        // principal-visibility rule used for workspace-hook
+        // registration: a principal-scoped extension id is visible only
+        // to its own principal; every other id is system scope and
+        // visible to all. (`active_extensions` is accepted for parity
+        // with the invoke path's context but not consulted — the hook
+        // invoke path doesn't filter by it either.)
+        let hooks = self.get_all_hooks().await;
+        let mut sections: Vec<String> = hooks
+            .iter()
+            .filter(|hook| hook.enabled)
+            .filter_map(|hook| match &hook.point {
+                HookPoint::PromptSystemSection { section, .. } => {
+                    Some((section.clone(), hook.extension_id.0.as_str()))
+                }
+                _ => None,
+            })
+            .filter(|(_section, ext_id)| prompt_section_visible_to(ext_id, principal_id))
+            .map(|(section, _ext_id)| section)
+            .collect();
+        sections.sort();
+        sections.dedup();
+        sections
+    }
+
     async fn invoke_session_context_build_hook(
         &self,
         snapshot: SessionSnapshot,
@@ -235,5 +267,40 @@ impl ToolFunnel for ExtensionCore {
             workspace,
         )
         .await
+    }
+}
+
+/// ADR-052 D6 scope rule for [`ToolFunnel::registered_prompt_sections`]:
+/// a hook registered under a principal-scoped extension id
+/// (`principal:<pid>/...`, e.g. workspace hooks, or the tool registry's
+/// `principal:<pid>:<name>` form) is visible only to that principal;
+/// every other extension id is system scope, visible to all. A `None`
+/// principal (system scope) sees only non-principal-scoped hooks.
+fn prompt_section_visible_to(extension_id: &str, principal_id: Option<&str>) -> bool {
+    match extension_id.strip_prefix("principal:") {
+        Some(rest) => {
+            let owner = rest.split(['/', ':']).next().unwrap_or(rest);
+            Some(owner) == principal_id
+        }
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_section_visible_to;
+
+    #[test]
+    fn prompt_section_visibility_scoping() {
+        // System-scope ids are visible to everyone, including `None`.
+        assert!(prompt_section_visible_to("builtin:tool:Bash", Some("alice")));
+        assert!(prompt_section_visible_to("builtin:tool:Bash", None));
+        // Workspace-hook ids are visible only to their principal.
+        assert!(prompt_section_visible_to("principal:alice/hook:weather", Some("alice")));
+        assert!(!prompt_section_visible_to("principal:alice/hook:weather", Some("bob")));
+        assert!(!prompt_section_visible_to("principal:alice/hook:weather", None));
+        // The tool-registry `principal:<pid>:<name>` form scopes the same.
+        assert!(prompt_section_visible_to("principal:alice:customskill", Some("alice")));
+        assert!(!prompt_section_visible_to("principal:alice:customskill", Some("bob")));
     }
 }
