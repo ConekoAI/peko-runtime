@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Default session nodes `/tmp` and `/trash` (2026-09-12)
+
+- **Every new principal is seeded with two ordinary standing sessions**
+  under its trunk at creation (`PrincipalManager::create` →
+  `principal::default_nodes::seed_default_nodes`): `/tmp` — a parking
+  spot for transient, single-use work sessions — and `/trash` — the
+  holding area for removals (`session move` stages a session subtree
+  there; a later `session remove recursive:true` performs the
+  permanent purge). Created with metadata + created-event only (no
+  LLM turn), `standing` + `trigger = "spawn"`, parented at the
+  still-dangling trunk like declared children.
+- **Create-once semantics, no reserved behavior** — seeding happens
+  only at principal creation, never at boot or root-run setup: a
+  principal that removes either node keeps it removed (the Session
+  tool has no create action). The nodes are ordinary sessions —
+  renameable, moveable, removable; no guard, tool action, or sweeper
+  treats them specially. No auto-clean: trash entries persist until
+  explicitly removed (a config-driven TTL sweeper may be layered on
+  later without changing the seeding).
+- **Convention surfaced to agents** via a new "Default nodes" para­graph
+  in the `session` tool description. Slug squatting is tolerated: a
+  plain session already holding `tmp` or `trash` under the trunk
+  blocks only that node's seeding (no adoption, no collision error).
+
 ### Channel-activity digest in the session-context tail (2026-09-12)
 
 - **Posts that never became wakes now reach the bound agent** — while

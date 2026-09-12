@@ -350,6 +350,29 @@ impl PrincipalManager {
 
         let memory = self.memory_factory.create(&id, &layout.local.root).await;
 
+        // Default session nodes (`/tmp`, `/trash`): seeded ONCE here at
+        // principal creation as ordinary standing sessions parented at
+        // the (still-dangling) trunk. Deliberately NOT ensured at boot
+        // or root-run setup — a principal that removes them keeps them
+        // removed (create-once semantics; see
+        // `principal::default_nodes` module docs). Best-effort: failures
+        // warn and continue, never blocking principal creation (the
+        // `seen_models.json` tolerated-corruption precedent).
+        {
+            let seed_manager = peko_session::manager::SessionManager::new()
+                .with_sessions_dir_internal(memory.sessions_dir());
+            let seed_manager = Arc::new(tokio::sync::RwLock::new(seed_manager));
+            match crate::principal::default_nodes::seed_default_nodes("root", &seed_manager).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!("principal '{name}': seeded {n} default session node(s)")
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("principal '{name}': failed to seed default session nodes: {e}")
+                }
+            }
+        }
+
         // F18: build the quota meter first so the router can capture
         // the same Arc. The meter is built before the router because
         // `RouterFactory::create` takes `Arc<QuotaMeter>` — both the
