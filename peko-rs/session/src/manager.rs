@@ -1431,8 +1431,7 @@ impl SessionManager {
     }
 
     /// Set the standing flag on a session (passthrough to the
-    /// `MetadataController`). Standing sessions are exempt from
-    /// maintenance pruning. Errors when the session does not exist.
+    /// `MetadataController`). Errors when the session does not exist.
     pub async fn set_standing(&self, session_id: &str, standing: bool) -> Result<()> {
         self.metadata_controller
             .write()

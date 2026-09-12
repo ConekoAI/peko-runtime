@@ -7,7 +7,7 @@
 //! - Centralized reconciliation
 
 use crate::id::SessionId;
-use crate::index::{MaintenanceConfig, MaintenanceReport, SessionEntry, SessionIndex};
+use crate::index::{SessionEntry, SessionIndex};
 use crate::jsonl::SessionStorage;
 use crate::metadata::{ReconciliationResult, SessionMetadata};
 use anyhow::{Context, Result};
@@ -315,9 +315,7 @@ impl MetadataController {
     ///
     /// Same update pattern as the other flag setters: load the entry,
     /// mutate the flag, and write it back through the delta-merge-safe
-    /// index save. Standing sessions are exempt from maintenance
-    /// pruning (`SessionIndex::maintenance`). Errors when the session
-    /// does not exist.
+    /// index save. Errors when the session does not exist.
     pub async fn set_standing(&mut self, session_id: &str, standing: bool) -> Result<()> {
         debug!("Setting standing={} for session {}", standing, session_id);
 
@@ -955,13 +953,6 @@ impl MetadataController {
     /// Get active session for peer (proxy to `SessionIndex`)
     pub async fn get_active_for_peer(&mut self, peer_key: &str) -> Result<Option<SessionEntry>> {
         self.index.get_active_for_peer(peer_key).await
-    }
-
-    /// Run maintenance on sessions (proxy to `SessionIndex`)
-    ///
-    /// This prunes old sessions based on the maintenance configuration.
-    pub async fn maintenance(&mut self, config: &MaintenanceConfig) -> Result<MaintenanceReport> {
-        self.index.maintenance(config).await
     }
 
     /// List all sessions directly from index (proxy to `SessionIndex`)

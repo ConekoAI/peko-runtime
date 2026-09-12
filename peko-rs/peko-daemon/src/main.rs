@@ -92,7 +92,6 @@ async fn main() -> Result<()> {
         poll_interval: Duration::from_secs(interval_secs),
         config_dir: config_dir.clone(),
         data_dir: data_dir.clone(),
-        maintenance_interval: Duration::from_hours(1),
         max_reconnect_attempts,
         launch_mode: if sidecar_mode {
             LaunchMode::Sidecar

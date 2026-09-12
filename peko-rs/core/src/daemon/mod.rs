@@ -4,7 +4,6 @@
 //! - Cron job polling and execution (via `cron_engine`)
 //! - Principal message handling
 //! - Delivery/announcement of results
-//! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
 pub(crate) mod background_runtime;
@@ -14,7 +13,6 @@ pub(crate) mod cron_engine;
 pub(crate) mod cron_runtime;
 pub(crate) mod state;
 
-use crate::common::paths::PathResolver;
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
 use peko_cron::IdleDetector;
@@ -82,8 +80,6 @@ pub struct DaemonConfig {
     pub config_dir: PathBuf,
     /// Data directory for storage
     pub data_dir: PathBuf,
-    /// Session maintenance interval (0 to disable)
-    pub maintenance_interval: Duration,
     /// Maximum number of consecutive PekoHub tunnel reconnect attempts
     /// before the tunnel client stops retrying and reports degraded state.
     /// Issue #8: defaults to 50 (~28 minutes with exponential backoff).
@@ -108,7 +104,6 @@ impl Default for DaemonConfig {
             poll_interval: Duration::from_secs(15),
             config_dir,
             data_dir,
-            maintenance_interval: Duration::from_hours(1), // 1 hour default
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
             launch_mode: LaunchMode::default(),
         }
@@ -177,10 +172,6 @@ impl Daemon {
         // "Cron DB" log line. Each principal's schedule file lives
         // under `<data_dir>/principals/{name}/local/cron/`.
         info!("   Poll interval: {:?}", self.config.poll_interval);
-        info!(
-            "   Maintenance interval: {:?}",
-            self.config.maintenance_interval
-        );
 
         {
             let mut status = self.status.lock().expect("status lock poisoned");
@@ -399,7 +390,6 @@ impl Daemon {
 
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
-        let mut maintenance_tick = interval(self.config.maintenance_interval);
         let mut idle_check_tick = interval(Duration::from_mins(1));
         let mut janitor_tick = interval(Duration::from_hours(1));
 
@@ -407,14 +397,6 @@ impl Daemon {
         let mut shutdown_rx = app_state.subscribe_shutdown();
 
         info!("✅ Daemon ready. Waiting for cron jobs...");
-
-        // Build path resolver for session maintenance
-        let resolver = PathResolver::with_dirs(
-            self.config.config_dir.clone(),
-            self.config.data_dir.clone(),
-            self.config.data_dir.join("cache"),
-        );
-        let sessions_root = resolver.sessions_root();
 
         loop {
             tokio::select! {
@@ -443,13 +425,6 @@ impl Daemon {
                         } else {
                             error!("Error checking idle jobs: {}", e);
                         }
-                    }
-                }
-
-                // Periodic session maintenance
-                _ = maintenance_tick.tick() => {
-                    if let Err(e) = self.run_session_maintenance(&sessions_root).await {
-                        error!("Error running session maintenance: {}", e);
                     }
                 }
 
@@ -515,28 +490,6 @@ impl Daemon {
         info!("👋 Daemon shutdown complete");
         Ok(())
     }
-
-    /// Run session maintenance on all agents by delegating to `session::MaintenanceScheduler`.
-    async fn run_session_maintenance(&self, sessions_root: &std::path::Path) -> Result<()> {
-        if !sessions_root.exists() {
-            debug!("Sessions root does not exist, skipping maintenance");
-            return Ok(());
-        }
-
-        let scheduler = peko_session::MaintenanceScheduler::new(sessions_root.to_path_buf());
-        let report = scheduler.run_maintenance().await?;
-
-        if report.pruned > 0 || report.total > 0 {
-            info!(
-                "🔧 Session maintenance complete: pruned={}, total={}",
-                report.pruned, report.total
-            );
-        } else {
-            debug!("🔧 Session maintenance complete: no action needed");
-        }
-
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -582,7 +535,6 @@ mod tests {
             poll_interval: Duration::from_secs(1),
             config_dir: tmp.path().join("config"),
             data_dir: tmp.path().join("data"),
-            maintenance_interval: Duration::from_mins(1),
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
             launch_mode: LaunchMode::Headless,
         };
