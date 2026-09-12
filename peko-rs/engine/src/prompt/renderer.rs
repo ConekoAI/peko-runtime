@@ -328,9 +328,7 @@ impl PromptRenderer {
         if let Some(section) = state.take_changed(SectionSlot::CurrentTime, render_current_time()) {
             sections.push(section);
         }
-        if let Some(section) =
-            state.take_changed(SectionSlot::Memory, format_memory_section(ctx))
-        {
+        if let Some(section) = state.take_changed(SectionSlot::Memory, format_memory_section(ctx)) {
             sections.push(section);
         }
         if let Some(section) = state.take_changed(
@@ -378,10 +376,11 @@ impl PromptRenderer {
         custom_names.sort();
         custom_names.dedup();
         if !custom_names.is_empty() {
-            let dispatched = futures::future::join_all(custom_names.iter().map(|name| async move {
-                (name.clone(), self.dispatch_text(name, ctx).await)
-            }))
-            .await;
+            let dispatched =
+                futures::future::join_all(custom_names.iter().map(|name| async move {
+                    (name.clone(), self.dispatch_text(name, ctx).await)
+                }))
+                .await;
             for (name, text) in dispatched {
                 let rendered = format_custom_section(&name, &text);
                 if let Some(section) = state.take_changed_custom(&name, rendered) {
@@ -1962,9 +1961,7 @@ mod tests {
             "got: {moved}"
         );
         assert!(
-            moved.contains(
-                "_Updated — replaces the previous \"project instructions\" section._"
-            ),
+            moved.contains("_Updated — replaces the previous \"project instructions\" section._"),
             "got: {moved}"
         );
 
@@ -2117,7 +2114,11 @@ mod tests {
             .expect("agents catalog is due on first render");
         // Exactly one dispatch: the built-in "## Available Agents"
         // rendering, and no custom "## agents" header.
-        assert_eq!(body.matches("## Available Agents").count(), 1, "got: {body}");
+        assert_eq!(
+            body.matches("## Available Agents").count(),
+            1,
+            "got: {body}"
+        );
         assert!(!body.contains("## agents\n"), "got: {body}");
         assert!(body.contains("- Reviewer: reviews code"), "got: {body}");
     }
@@ -2159,7 +2160,10 @@ mod tests {
             .expect("first render injects");
         assert_eq!(injected, "sunny");
         // Unchanged dedupes.
-        assert_eq!(state.take_changed_custom("weather", "sunny".to_string()), None);
+        assert_eq!(
+            state.take_changed_custom("weather", "sunny".to_string()),
+            None
+        );
         // Update carries the notice with the section name as label.
         let updated = state
             .take_changed_custom("weather", "rain".to_string())

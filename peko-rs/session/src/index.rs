@@ -23,7 +23,6 @@
 //! need it.
 
 use crate::id::SessionId;
-use crate::key::safe_filename_component;
 use anyhow::{Context, Result};
 use peko_fs_persistence::FileLock;
 use serde::{Deserialize, Serialize};
@@ -65,10 +64,6 @@ fn dir_lock(dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
 
 /// Default cache TTL (30 seconds)
 pub const DEFAULT_CACHE_TTL_MS: u64 = 30_000;
-
-/// Default maintenance settings
-pub const DEFAULT_PRUNE_AFTER_DAYS: u64 = 30;
-pub const DEFAULT_MAX_SESSIONS: usize = 500;
 
 /// Complete session metadata
 ///
@@ -112,16 +107,6 @@ pub struct SessionEntry {
     /// resume/compact until unarchived (agent-owned session management).
     #[serde(default)]
     pub archived: bool,
-    /// Standing sessions are exempt from maintenance pruning — their
-    /// transcripts are durable regardless of idle age.
-    #[serde(default)]
-    pub standing: bool,
-    /// Privileged sessions give their caller whole-store reach in the
-    /// ownership guards (like a base caller) while keeping their parent
-    /// pointer and tree membership (sprint 2 peer-child provisioning —
-    /// set only for the principal owner's peer child).
-    #[serde(default)]
-    pub privileged: bool,
     /// Per-parent-unique path segment for `/slug/...` addressing
     /// (see `crate::path`). The trunk session (sprint 6:
     /// `parent_session_id == None`) carries no slug.
@@ -180,8 +165,6 @@ impl SessionEntry {
             peer_type: None,
             peer_id: None,
             archived: false,
-            standing: false,
-            privileged: false,
             slug: None,
             compaction_count: 0,
             last_compaction_at: None,
@@ -403,29 +386,6 @@ impl PeerInfo {
 pub struct PeerIndex {
     /// `peer_key` → peer info
     pub peers: HashMap<String, PeerInfo>,
-}
-
-/// Maintenance configuration
-#[derive(Debug, Clone)]
-pub struct MaintenanceConfig {
-    pub prune_after: Duration,
-    pub max_sessions: usize,
-}
-
-impl Default for MaintenanceConfig {
-    fn default() -> Self {
-        Self {
-            prune_after: Duration::from_secs(DEFAULT_PRUNE_AFTER_DAYS * 24 * 60 * 60),
-            max_sessions: DEFAULT_MAX_SESSIONS,
-        }
-    }
-}
-
-/// Maintenance report
-#[derive(Debug, Clone, Default)]
-pub struct MaintenanceReport {
-    pub pruned: usize,
-    pub total: usize,
 }
 
 /// Unified session index manager
@@ -1019,101 +979,6 @@ impl SessionIndex {
         })?;
         Ok(())
     }
-
-    // =================================================================================
-    // Maintenance
-    // =================================================================================
-
-    /// Perform maintenance (prune old sessions)
-    pub async fn maintenance(&mut self, config: &MaintenanceConfig) -> Result<MaintenanceReport> {
-        // First, collect session IDs to prune without holding mutable borrows
-        let to_prune: Vec<String> = {
-            let sessions = self.load_sessions().await?;
-
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-
-            let cutoff = now - config.prune_after.as_millis() as u64;
-
-            sessions
-                .iter()
-                // Prune exemptions: the principal's trunk session
-                // (sprint 6: the entry with `parent_session_id == None`,
-                // looked up via `find_trunk_session`) is continuous and
-                // engine-managed, never idle-prunable; and
-                // archived/standing sessions must never lose their
-                // transcripts — archiving/standing is a durability
-                // promise, not a deletion candidate.
-                .filter(|(_id, e)| {
-                    e.updated_at < cutoff
-                        && e.parent_session_id.is_some()
-                        && !e.archived
-                        && !e.standing
-                })
-                .map(|(k, _)| k.clone())
-                .collect()
-        };
-
-        let mut pruned = 0;
-
-        for session_id in to_prune {
-            // Remove from sessions
-            let sessions = self.load_sessions_mut().await?;
-            sessions.remove(&session_id);
-            self.sessions_modified = true;
-            self.dirty_session_ids.remove(&session_id);
-            self.removed_session_ids.insert(session_id.clone());
-
-            // Remove from peers. Capture the key set before/after so we can
-            // record which peers were modified vs. dropped — the merge-save
-            // path applies these deltas onto the fresh on-disk index.
-            let peers = self.load_peers_mut().await?;
-            let before: HashSet<String> = peers.peers.keys().cloned().collect();
-            for peer_info in peers.peers.values_mut() {
-                peer_info.session_ids.retain(|id| id != &session_id);
-            }
-            // Remove empty peers
-            peers.peers.retain(|_, p| !p.session_ids.is_empty());
-            let after: HashSet<String> = peers.peers.keys().cloned().collect();
-            self.peers_modified = true;
-            // Surviving peers had their session list edited → dirty.
-            for key in &after {
-                self.removed_peer_keys.remove(key);
-                self.dirty_peer_keys.insert(key.clone());
-            }
-            // Peers that disappeared (no sessions left) → removed.
-            for key in before.difference(&after) {
-                self.dirty_peer_keys.remove(key);
-                self.removed_peer_keys.insert(key.clone());
-            }
-
-            // Delete transcript file
-            let transcript_path = self
-                .dir
-                .join(format!("{}.jsonl", safe_filename_component(&session_id)));
-            if transcript_path.exists() {
-                let _ = fs::remove_file(&transcript_path).await;
-            }
-
-            pruned += 1;
-        }
-
-        if pruned > 0 {
-            self.save().await?;
-            info!("Pruned {} old sessions", pruned);
-        }
-
-        // Get total count for report
-        let sessions = self.load_sessions().await?;
-        let total_sessions: usize = sessions.len();
-
-        Ok(MaintenanceReport {
-            pruned,
-            total: total_sessions,
-        })
-    }
 }
 
 /// One-shot backfill for legacy entries that predate `peer_type` /
@@ -1380,8 +1245,8 @@ mod tests {
 
         let entry: SessionEntry = serde_json::from_value(legacy).unwrap();
         assert!(!entry.archived);
-        assert!(!entry.standing);
-        assert!(!entry.privileged);
+        assert!(!entry.archived);
+
         assert_eq!(
             entry.compaction_limits_state(),
             crate::compaction::CompactionLimitsState::default(),
@@ -1391,8 +1256,6 @@ mod tests {
         // And the flags round-trip through serialization once set.
         let mut entry = entry;
         entry.archived = true;
-        entry.standing = true;
-        entry.privileged = true;
         entry.set_compaction_limits_state(crate::compaction::CompactionLimitsState {
             compaction_count: 2,
             last_compaction_at_ms: Some(42),
@@ -1402,132 +1265,10 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
         assert!(reloaded.archived);
-        assert!(reloaded.standing);
-        assert!(reloaded.privileged);
         assert_eq!(reloaded.compaction_count, 2);
         assert_eq!(reloaded.last_compaction_at, Some(42));
         assert_eq!(reloaded.consecutive_auto_compactions, 1);
         assert_eq!(reloaded.consecutive_compaction_failures, 3);
-    }
-
-    /// Maintenance must retain sessions exempt from pruning: the
-    /// principal's trunk (sprint 6: the entry with
-    /// `parent_session_id == None`), archived sessions, and standing
-    /// sessions — while still pruning plain idle sessions past the
-    /// cutoff.
-    #[tokio::test]
-    async fn maintenance_prune_exemptions() {
-        use crate::index::{MaintenanceConfig, DEFAULT_MAX_SESSIONS};
-        use std::time::{Duration, SystemTime};
-        use tokio::fs;
-
-        let temp = TempDir::new().unwrap();
-        let mut index = SessionIndex::open(temp.path());
-
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        let two_days_ms: u64 = 2 * 24 * 60 * 60 * 1000;
-
-        // Distinct UUIDs per slot so the assertions are unambiguous.
-        // The trunk has no parent; everything else points at it.
-        let id_trunk = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
-        let id_archived = Uuid::from_u128(0x2222_2222_2222_2222_2222_2222_2222_2222);
-        let id_standing = Uuid::from_u128(0x3333_3333_3333_3333_3333_3333_3333_3333);
-        let id_plain = Uuid::from_u128(0x4444_4444_4444_4444_4444_4444_4444_4444);
-        let id_legacy_root = Uuid::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555);
-
-        async fn insert_old(
-            index: &mut SessionIndex,
-            id: Uuid,
-            parent: Option<Uuid>,
-            updated_at: u64,
-            mutate: impl FnOnce(&mut SessionEntry),
-        ) {
-            let mut entry = SessionEntry::new(id, "testagent".to_string(), format!("{id}.jsonl"));
-            entry.parent_session_id = parent.map(SessionId::from);
-            entry.updated_at = updated_at;
-            mutate(&mut entry);
-            index.insert(entry).await.unwrap();
-        }
-
-        // One per exemption class, plus two plain idle sessions (the
-        // second still has a parent, so it's NOT the trunk and gets
-        // pruned like any other plain session).
-        insert_old(&mut index, id_trunk, None, now - two_days_ms, |_| {}).await;
-        insert_old(
-            &mut index,
-            id_archived,
-            Some(id_trunk),
-            now - two_days_ms,
-            |e| {
-                e.archived = true;
-            },
-        )
-        .await;
-        insert_old(
-            &mut index,
-            id_standing,
-            Some(id_trunk),
-            now - two_days_ms,
-            |e| {
-                e.standing = true;
-            },
-        )
-        .await;
-        insert_old(
-            &mut index,
-            id_plain,
-            Some(id_trunk),
-            now - two_days_ms,
-            |_| {},
-        )
-        .await;
-        insert_old(
-            &mut index,
-            id_legacy_root,
-            Some(id_trunk),
-            now - two_days_ms,
-            |_| {},
-        )
-        .await;
-        index.save().await.unwrap();
-
-        // Transcripts exist on disk for the exempt + plain sessions.
-        for id in [id_trunk, id_archived, id_standing, id_plain, id_legacy_root] {
-            fs::write(temp.path().join(format!("{id}.jsonl")), "{}\n")
-                .await
-                .unwrap();
-        }
-
-        let config = MaintenanceConfig {
-            prune_after: Duration::from_secs(24 * 60 * 60),
-            max_sessions: DEFAULT_MAX_SESSIONS,
-        };
-        let report = index.maintenance(&config).await.unwrap();
-        assert_eq!(
-            report.pruned, 2,
-            "the plain idle session AND the legacy-shaped root id both prune"
-        );
-        assert_eq!(report.total, 3);
-
-        for id in [id_trunk, id_archived, id_standing] {
-            let id_str = id.to_string();
-            assert!(index.get(&id_str).await.unwrap().is_some(), "{id} retained");
-            assert!(
-                temp.path().join(format!("{id}.jsonl")).exists(),
-                "{id} transcript retained"
-            );
-        }
-        for id in [id_plain, id_legacy_root] {
-            let id_str = id.to_string();
-            assert!(index.get(&id_str).await.unwrap().is_none(), "{id} pruned");
-            assert!(
-                !temp.path().join(format!("{id}.jsonl")).exists(),
-                "{id} transcript pruned"
-            );
-        }
     }
 
     /// `clear_active_for_peer` drops only the active-session pointer;

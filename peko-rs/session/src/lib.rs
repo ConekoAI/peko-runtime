@@ -79,7 +79,9 @@ pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
 // sync.rs, overlay.rs, spawn.rs,
 // todos.rs, todo_runtime_impl.rs, session_runtime_impl.rs,
 // context.rs, test_config.rs, types.rs, unified.rs, manager.rs,
-// inbox_registry.rs, lock_utils.rs, maintenance.rs) into this crate.
+// inbox_registry.rs, lock_utils.rs) into this crate. (`maintenance.rs`
+// was lifted here and then retired — the session GC is gone; sessions
+// persist until explicitly removed.)
 // Re-exports below preserve the historical `peko_session::X` paths.
 // (`directory.rs` + `recovery.rs` were lifted and then retired in B3
 // cleanup — see the cleanup phase index in AGENTS.md.)
@@ -93,7 +95,6 @@ pub mod index;
 pub mod jsonl;
 pub mod key;
 pub mod lock_utils;
-pub mod maintenance;
 pub mod manager;
 pub mod message;
 pub mod message_conversion;
@@ -134,7 +135,6 @@ pub use lock_utils::{
     try_read_lock, try_read_lock_default, try_write_lock, try_write_lock_default, LockError,
     DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
 };
-pub use maintenance::MaintenanceScheduler;
 pub use manager::{OverlayRef, SessionCreateOptions, SessionHandle, SessionManager};
 pub use metadata::{ReconciliationResult, SessionMetadata};
 pub use metadata_controller::MetadataController;

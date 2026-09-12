@@ -832,7 +832,9 @@ async fn unsafe_new_name_rejected() {
         trust_policy: TrustPolicy::AllowUntrusted,
         ..Default::default()
     };
-    let err = run_import(&files, opts).await.expect_err("unsafe new_name should fail");
+    let err = run_import(&files, opts)
+        .await
+        .expect_err("unsafe new_name should fail");
     assert_error_code(err, "[unsafe_name]", "unsafe_new_name_rejected");
 }
 
@@ -909,7 +911,10 @@ async fn unsafe_sessions_entry_path_rejected() {
         &keys_bytes,
     );
     let mut files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
-    files.insert("sessions/../../../escape.jsonl".to_string(), b"pwned".to_vec());
+    files.insert(
+        "sessions/../../../escape.jsonl".to_string(),
+        b"pwned".to_vec(),
+    );
 
     let opts = PrincipalImportOptions {
         import_sessions: true,

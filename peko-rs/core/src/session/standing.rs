@@ -1,13 +1,21 @@
-//! Standing named children — session-level helpers shared by the
-//! principal ensure-declared path (`crate::principal::children`) and
-//! the Agent tool's attach-by-name path (`SubagentExecutor`).
+//! Standing named children — session-level JSONL helpers for the
+//! LEGACY `[children]` declaration record (agent-session paradigm,
+//! Phase 2, retired 2026-09-12).
 //!
-//! A standing child is a session created from a `[children]` entry in
-//! `principal.toml`: `trigger == "spawn"`, `standing == true`, `slug ==
-//! <name>`, parented at the principal's owner root session. The
-//! declaration (`subagent_type`, `description`) is recorded as a
-//! `System` event in the child's JSONL so a later attach can recover
-//! the declared type without re-reading the principal config.
+//! Declared children are no longer provisioned: sessions are spawned
+//! on demand via the `Agent` tool, and the only auto-created nodes are
+//! the default `/tmp` and `/trash` (`crate::principal::default_nodes`).
+//! This module survives for BACKWARD COMPATIBILITY with sessions that
+//! were created under the old regime: their JSONL carries a
+//! `standing_child_declared` `System` event recording the declared
+//! `subagent_type`/`description`, and the Agent tool's attach-by-name
+//! path (`SubagentExecutor`) still recovers that default on resume.
+//! `record_declared_child` is no longer called by production code; it
+//! remains for tests exercising the legacy read path.
+//!
+//! A standing child is a session that was created from a `[children]`
+//! entry in `principal.toml`: `trigger == "spawn"`, `standing == true`,
+//! `slug == <name>`, parented at the principal's owner root session.
 //!
 //! This module is pure session-level I/O (append / read events) plus
 //! refusal constructors in the `session::ownership` style — it lives

@@ -596,12 +596,7 @@ mod tests {
         let events = storage.load_events(session_id).await.unwrap();
         let message_v2_count = events
             .iter()
-            .filter(|ev| {
-                matches!(
-                    ev,
-                    peko_session::events::SessionEvent::MessageV2(_)
-                )
-            })
+            .filter(|ev| matches!(ev, peko_session::events::SessionEvent::MessageV2(_)))
             .count();
         assert_eq!(
             message_v2_count, 0,

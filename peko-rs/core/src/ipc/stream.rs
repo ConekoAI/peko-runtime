@@ -250,13 +250,10 @@ mod tests {
         server_std.set_nonblocking(true).unwrap();
 
         let conn = ConnectionHandle::Unix {
-            socket: std::sync::Arc::new(
-                tokio::net::UnixDatagram::from_std(client_std).unwrap(),
-            ),
+            socket: std::sync::Arc::new(tokio::net::UnixDatagram::from_std(client_std).unwrap()),
             path: client_path.clone(),
         };
-        let (router, handle) =
-            spawn_receiver_with_timeout(conn, Duration::from_millis(50));
+        let (router, handle) = spawn_receiver_with_timeout(conn, Duration::from_millis(50));
 
         // Idle for ~4x the cadence: the receiver must NOT exit.
         tokio::time::sleep(Duration::from_millis(210)).await;

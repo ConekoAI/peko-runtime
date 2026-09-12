@@ -628,8 +628,7 @@ impl CronEngine {
             .await
             {
                 Ok(turns) => {
-                    let sink: crate::agents::subagent_executor::AgenticEventSink =
-                        Arc::new(|_| {});
+                    let sink: crate::agents::subagent_executor::AgenticEventSink = Arc::new(|_| {});
                     let outcome = turns
                         .drive_turn_streaming(&origin, &job.task_description(), sink, None, None)
                         .await;
@@ -641,18 +640,17 @@ impl CronEngine {
                             // the same DM projection, once.
                             if let Some(core) = self.extension_core.upgrade() {
                                 if let Some(port) = core.services().channel_port() {
-                                    let surface = crate::principal::child_turns::PeerTurnSurfaceImpl::new(
-                                        Arc::clone(turns.session_manager()),
-                                        port,
-                                        principal.id.clone(),
-                                    );
+                                    let surface =
+                                        crate::principal::child_turns::PeerTurnSurfaceImpl::new(
+                                            Arc::clone(turns.session_manager()),
+                                            port,
+                                            principal.id.clone(),
+                                        );
                                     use crate::agents::subagent_executor::PeerTurnSurface as _;
                                     if let Some((_peer, channel)) =
                                         surface.peer_surface(&origin).await
                                     {
-                                        surface
-                                            .post_reply(&channel, &outcome.final_text)
-                                            .await;
+                                        surface.post_reply(&channel, &outcome.final_text).await;
                                     }
                                 }
                             }
@@ -1049,8 +1047,8 @@ impl CronEngine {
         if origin == trunk_session_key || origin.is_empty() {
             return trunk_session_key.to_string();
         }
-        let mut manager =
-            peko_session::manager::SessionManager::new().with_sessions_dir_internal(principal.memory.sessions_dir());
+        let mut manager = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir());
         match manager.list_all_sessions(false).await {
             Ok(metas) => {
                 let live = metas

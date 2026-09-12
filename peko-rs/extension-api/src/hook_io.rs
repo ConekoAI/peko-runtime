@@ -64,7 +64,6 @@ pub enum HookOutput {
     // `HookPoint::PromptPreProcess` (also retired) were the only
     // remaining mentions. Use `HookOutput::Json(value)` to carry
     // any message-shape payload going forward.
-
     /// Generic JSON value
     Json(serde_json::Value),
 
@@ -209,7 +208,6 @@ pub enum HookInput {
     // production callers of their own, so they stay exported for
     // any future caller — see `session.rs` for the canonical
     // contract.
-
     /// Tool call parameters
     ToolCall {
         tool_name: String,

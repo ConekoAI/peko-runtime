@@ -1,12 +1,12 @@
 //! Ownership + self-guard primitives for agent-owned session
 //! management.
 //!
-//! Sessions form trees via `SessionMetadata::parent_session_id`. A
-//! caller running in a **base session** (no parent — the principal's
-//! root agent) manages the whole store; a caller in a **spawned
-//! session** manages only its own subtree. This module classifies the
-//! caller and produces structured, LLM-actionable guard refusals over
-//! plain metadata slices — no IO, no locks — so it is shared by the
+//! Sessions form trees via `SessionMetadata::parent_session_id`. The
+//! hierarchy is purely organizational (2026-09-12 filesystem model):
+//! every caller in a principal's store has whole-store reach. This
+//! module classifies the caller (base / spawned / dangling) and
+//! produces structured, LLM-actionable guard refusals over plain
+//! metadata slices — no IO, no locks — so it is shared by the
 //! `SessionManagerRuntime` adapter (session tool) and the
 //! `SubagentExecutor` / `AgentTool` path (Agent tool).
 //!
@@ -19,6 +19,17 @@
 //! path keeps only run-integrity guards (spawn-trigger, no
 //! self/ancestor re-entry, not archived, no active run, depth, cost).
 //!
+//! **2026-09-12 filesystem model.** The subtree rule is retired
+//! entirely: EVERY caller in a principal's store has whole-store reach
+//! for list / find / copy / move / remove. The hierarchy is purely
+//! organizational — like paths on a filesystem, it names sessions but
+//! grants nothing and denies nothing. What survives is only
+//! run-integrity and self-safety: the caller cannot mutate the session
+//! it is running in, cannot delete/move its own ancestors, cannot
+//! touch the engine-managed trunk, and run-active refusals still hold.
+//! The `privileged` flag (sprint 2 peer-child provisioning) is
+//! removed with it.
+//!
 //! The principal's trunk session (`root:self` — the only `root:*` id
 //! left after Phase 7 retired the per-peer `root:{peer}` /
 //! `root:cron:{peer}` sessions) is **continuous**: the engine owns its
@@ -30,20 +41,6 @@
 //! *classification* (the walk ends there), but a dangling id in the
 //! caller's ancestor chain stays in `ancestors` so the delete-ancestor
 //! guard still blocks deleting it.
-//!
-//! ## Privileged callers (sprint 2 peer-child provisioning)
-//!
-//! A session whose metadata carries `privileged = true` gives its
-//! caller **whole-store reach** in the ownership guards — the guard
-//! sites read `caller.is_base || caller.privileged` where they used to
-//! read `caller.is_base` alone. Privilege affects guard reach ONLY:
-//! the session keeps its `parent_session_id` and stays in the trunk's
-//! tree, so path addressing, the ancestor guards (`err_delete_ancestor`,
-//! `err_move_ancestor`), the self-mutation guard, and the `root:*`
-//! family guards all still apply to it, and `descendants_of`
-//! supervision is unchanged. Only the principal owner's peer child
-//! (`/local-user`) is provisioned privileged; every other peer child
-//! stays subtree-scoped.
 
 use peko_session::SessionMetadata;
 
@@ -62,15 +59,6 @@ pub struct CallerContext {
     /// "missing = base" default was a privilege-escalation hole — see
     /// PR review 2026-08-10.
     pub is_base: bool,
-    /// True when the caller's session metadata carries the
-    /// `privileged` flag (sprint 2 peer-child provisioning): the
-    /// caller gets whole-store reach in the ownership guards, like a
-    /// base caller. Unlike `is_base`, this does NOT change tree
-    /// membership — the session keeps its parent pointer, so the
-    /// ancestor / self-mutation / `root:*` guards still apply.
-    /// Populated from the caller's own metadata, so a dangling caller
-    /// is never privileged.
-    pub privileged: bool,
     /// True when the caller's own session metadata is missing from
     /// `metas`. Guards treat dangling callers like subtree callers
     /// with an empty ancestor chain — every ownership check fails,
@@ -93,11 +81,7 @@ pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext
     // callers do (`SessionId::from`) so the find below matches stored
     // metadata.
     let canonical = peko_session::SessionId::from(current).to_string();
-    let find = |id: &str| {
-        metas
-            .iter()
-            .find(|m| m.session_id.to_string() == id)
-    };
+    let find = |id: &str| metas.iter().find(|m| m.session_id.to_string() == id);
 
     let current_meta = find(&canonical);
     let dangling = current_meta.is_none();
@@ -106,9 +90,6 @@ pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext
     // has no parent recorded. A missing-metadata caller is dangling,
     // not base.
     let is_base = first_parent.is_none() && !dangling;
-    // Privilege comes from the caller's own metadata; a dangling
-    // caller (no metadata) is never privileged.
-    let privileged = current_meta.is_some_and(|m| m.privileged);
 
     let mut ancestors: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -125,7 +106,6 @@ pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext
     CallerContext {
         current_session_id: canonical,
         is_base,
-        privileged,
         dangling,
         ancestors,
     }
@@ -473,36 +453,6 @@ mod tests {
     }
 
     #[test]
-    fn caller_context_privileged_from_metadata() {
-        // A spawned session flagged `privileged` keeps its parent
-        // pointer (is_base stays false, ancestors intact) — privilege
-        // affects guard reach only, not tree membership.
-        let mut metas = tree();
-        metas
-            .iter_mut()
-            .find(|m| m.session_id == SessionId::from("spawn1"))
-            .unwrap()
-            .privileged = true;
-        let spawn1 = SessionId::from("spawn1").to_string();
-        let spawn2 = SessionId::from("spawn2").to_string();
-        let ghost = SessionId::from("ghost").to_string();
-        let root = SessionId::from("root:user:alice").to_string();
-        let ctx = caller_context(&spawn1, &metas);
-        assert!(!ctx.is_base);
-        assert!(ctx.privileged);
-        assert!(!ctx.dangling);
-        assert_eq!(ctx.ancestors, vec![root.clone()]);
-        // in_subtree is unchanged: the root is still not in the
-        // privileged caller's subtree.
-        assert!(!in_subtree(&ctx, &root, &metas));
-
-        // Defaults to false for unflagged sessions, and a dangling
-        // caller is never privileged.
-        assert!(!caller_context(&spawn2, &metas).privileged);
-        assert!(!caller_context(&ghost, &metas).privileged);
-    }
-
-    #[test]
     fn dangling_ancestor_stays_in_chain() {
         // spawn1's parent metadata is absent: the id stays in the
         // ancestor chain (delete-ancestor guard) but the walk ends.
@@ -563,11 +513,7 @@ mod tests {
         fn naive_descendants(target: &str, metas: &[SessionMetadata]) -> Vec<String> {
             fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
                 let canonical = SessionId::from(id).to_string();
-                let find = |id: &str| {
-                    metas
-                        .iter()
-                        .find(|m| m.session_id.to_string() == id)
-                };
+                let find = |id: &str| metas.iter().find(|m| m.session_id.to_string() == id);
                 let mut chain = Vec::new();
                 let mut seen = std::collections::HashSet::new();
                 let mut cursor = find(&canonical).and_then(|m| m.parent_session_id.clone());
@@ -614,10 +560,7 @@ mod tests {
             naive.sort();
             let mut bfs = descendants_of(target, &metas);
             bfs.sort();
-            assert_eq!(
-                naive, bfs,
-                "target={target}: BFS diverged from naive O(N²)"
-            );
+            assert_eq!(naive, bfs, "target={target}: BFS diverged from naive O(N²)");
         }
 
         // Cycle: x → y → x. Both must be returned when querying x OR y.

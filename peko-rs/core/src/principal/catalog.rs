@@ -276,7 +276,10 @@ impl PrincipalCatalog {
                         }
                     }
                     "agent" => {
-                        for cap in [format!("agent:{}", entry.id), format!("agent:{}", entry.name)] {
+                        for cap in [
+                            format!("agent:{}", entry.id),
+                            format!("agent:{}", entry.name),
+                        ] {
                             if capabilities.is_granted(&Capability::new(&cap)) {
                                 set.insert(cap);
                             }
@@ -380,8 +383,7 @@ mod tests {
         let mut allowed = Capabilities::new();
         allowed.push("tool:Bash");
 
-        let catalog =
-            PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &[]);
+        let catalog = PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &[]);
         let bash = catalog
             .entries()
             .iter()
@@ -395,8 +397,7 @@ mod tests {
         let workspace = empty_workspace();
         let allowed = Capabilities::with_grants(["tool:*"]);
 
-        let catalog =
-            PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &[]);
+        let catalog = PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &[]);
         let read = catalog
             .entries()
             .iter()
@@ -414,8 +415,7 @@ mod tests {
         let mut agents = HashMap::new();
         agents.insert("math".to_string(), agent("math"));
 
-        let catalog =
-            PrincipalCatalog::build(workspace.path(), &allowed, &agents, &[]);
+        let catalog = PrincipalCatalog::build(workspace.path(), &allowed, &agents, &[]);
         let math = catalog
             .entries()
             .iter()
@@ -435,8 +435,7 @@ mod tests {
         agents.insert("writer".to_string(), agent("writer"));
         agents.insert("researcher".to_string(), agent("researcher"));
 
-        let catalog =
-            PrincipalCatalog::build(workspace.path(), &allowed, &agents, &[]);
+        let catalog = PrincipalCatalog::build(workspace.path(), &allowed, &agents, &[]);
         let researcher = catalog
             .entries()
             .iter()
@@ -460,8 +459,7 @@ mod tests {
             requires: vec![],
         }];
 
-        let catalog =
-            PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &global);
+        let catalog = PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &global);
         let docker = catalog
             .entries()
             .iter()
@@ -485,8 +483,7 @@ mod tests {
             requires: vec!["tool:Read".to_string()],
         }];
 
-        let catalog =
-            PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &global);
+        let catalog = PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &global);
         let net = catalog
             .entries()
             .iter()
@@ -503,8 +500,7 @@ mod tests {
         let mut allowed = Capabilities::new();
         allowed.push("tool:my-tool");
 
-        let catalog =
-            PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &[]);
+        let catalog = PrincipalCatalog::build(workspace.path(), &allowed, &HashMap::new(), &[]);
         let tool = catalog
             .entries()
             .iter()
@@ -537,8 +533,7 @@ mod tests {
     #[test]
     fn workspace_plugin_entry_always_enabled() {
         let workspace = empty_workspace();
-        std::fs::create_dir_all(workspace.path().join("plugins").join("weird-thing"))
-            .unwrap();
+        std::fs::create_dir_all(workspace.path().join("plugins").join("weird-thing")).unwrap();
 
         let catalog = PrincipalCatalog::build(
             workspace.path(),
@@ -568,7 +563,12 @@ mod tests {
         let workspace_entries: Vec<_> = catalog
             .entries()
             .iter()
-            .filter(|e| matches!(e.kind.as_str(), "tool" | "skill" | "mcp" | "hook" | "plugin"))
+            .filter(|e| {
+                matches!(
+                    e.kind.as_str(),
+                    "tool" | "skill" | "mcp" | "hook" | "plugin"
+                )
+            })
             .collect();
         assert!(workspace_entries.is_empty());
     }

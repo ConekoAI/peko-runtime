@@ -417,7 +417,8 @@ mod tests {
         // originator is only reachable via the parent-linkage walk
         // (needs the session store; covered by the `originating_peer`
         // integration path). Same for the `standing_*` placeholder
-        // `ensure_declared_children` stamps on declared children.
+        // the retired declared-children path stamped on its children
+        // (legacy sessions may still carry it).
         assert_eq!(
             peer_from_session_key("agent:x:peer:principal:spawn_abc123"),
             None

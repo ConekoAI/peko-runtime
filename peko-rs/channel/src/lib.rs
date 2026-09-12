@@ -88,14 +88,15 @@ pub mod subscription;
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
+pub use port::{
+    global_channel_port, set_global_channel_port, ChannelError, ChannelPort, ChannelQuery,
+    Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage, Tier,
+};
 pub use read_marks::ChannelReadMarks;
-pub use port::{ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage, Tier, global_channel_port, set_global_channel_port};
-pub use store::{subject_wire_form, ChannelConfig, ChannelStore};
 pub use responder::{ChannelResponder, NoopChannelResponder, RespondCtx};
+pub use store::{subject_wire_form, ChannelConfig, ChannelStore};
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 
 // Wire types live in `peko-protocol`; re-exported here for ergonomic
 // callers so `peko_channel::ChannelId` reads naturally.
-pub use peko_protocol::channel::{
-    ChannelEvent, ChannelId, ChannelMembership,
-};
+pub use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};

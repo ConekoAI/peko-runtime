@@ -108,9 +108,8 @@ pub fn validate_path(path: &str) -> anyhow::Result<()> {
             ));
         }
         // Each segment is a slug; reuse the slug rules.
-        validate_slug(segment).map_err(|e| {
-            anyhow::anyhow!("path '{path}' segment '{segment}': {e}")
-        })?;
+        validate_slug(segment)
+            .map_err(|e| anyhow::anyhow!("path '{path}' segment '{segment}': {e}"))?;
     }
     Ok(())
 }
@@ -127,13 +126,21 @@ pub fn slug_conflict(
 ) -> Option<SessionId> {
     metas
         .iter()
-        .find(|m| m.session_id != exclude && m.parent_session_id == parent && m.slug.as_deref() == Some(slug))
+        .find(|m| {
+            m.session_id != exclude
+                && m.parent_session_id == parent
+                && m.slug.as_deref() == Some(slug)
+        })
         .map(|m| m.session_id)
 }
 
 /// Per-parent slug uniqueness violation, naming the conflicting
 /// session id (ownership.rs refusal style).
-pub fn err_slug_conflict(slug: &str, conflicting_id: SessionId, parent: Option<SessionId>) -> anyhow::Error {
+pub fn err_slug_conflict(
+    slug: &str,
+    conflicting_id: SessionId,
+    parent: Option<SessionId>,
+) -> anyhow::Error {
     let under = parent
         .map(|p| p.to_string())
         .unwrap_or_else(|| "<tree root>".to_string());
@@ -195,9 +202,9 @@ pub fn resolve_path(
     let mut seen = std::collections::HashSet::new();
     seen.insert(current);
     for segment in segments {
-        let child = metas.iter().find(|m| {
-            m.parent_session_id == Some(current) && m.slug.as_deref() == Some(segment)
-        });
+        let child = metas
+            .iter()
+            .find(|m| m.parent_session_id == Some(current) && m.slug.as_deref() == Some(segment));
         match child {
             Some(c) if seen.insert(c.session_id) => {
                 current = c.session_id;
@@ -412,8 +419,6 @@ mod tests {
             peer_type: None,
             peer_id: None,
             archived: false,
-            standing: false,
-            privileged: false,
             slug: slug.map(String::from),
             compaction_count: 0,
             last_compaction_at: None,
@@ -498,10 +503,7 @@ mod tests {
             resolve_path(&metas, s_notes, "/memory/task-b").unwrap(),
             s_task
         );
-        assert_eq!(
-            resolve_path(&metas, s_task, "/memory").unwrap(),
-            s_memory
-        );
+        assert_eq!(resolve_path(&metas, s_task, "/memory").unwrap(), s_memory);
         // Empty segments are tolerated ("//memory//").
         assert_eq!(
             resolve_path(&metas, s_task, "//memory//").unwrap(),
@@ -679,7 +681,10 @@ mod tests {
         let metas = tree();
         let root = metas[0].session_id;
         // Caller's own id: accepted.
-        assert_eq!(resolve_reference(&metas, root, &root.to_string()).unwrap(), root);
+        assert_eq!(
+            resolve_reference(&metas, root, &root.to_string()).unwrap(),
+            root
+        );
         // Bare UUID: accepted (no metadata check at this layer).
         let raw_uuid = "550e8400-e29b-41d4-a716-446655440000";
         let resolved = resolve_reference(&metas, root, raw_uuid).unwrap();

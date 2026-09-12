@@ -167,10 +167,7 @@ impl BackgroundCompactor {
     /// simultaneously. Per-agent attribution (the `agent_meter` on
     /// `SubagentExecutor`) replaces it; compactor LLM calls now only
     /// charge the principal meter.
-    pub fn new(
-        provider: Arc<dyn ProviderView>,
-        meter: Arc<QuotaMeter>,
-    ) -> Self {
+    pub fn new(provider: Arc<dyn ProviderView>, meter: Arc<QuotaMeter>) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<CompactionRequest>(4);
         let state = Arc::new(Mutex::new(WorkerState {
             last_compaction: None,

@@ -173,10 +173,8 @@ pub mod extension_types {
     /// Check if a type is valid
     #[must_use]
     pub fn is_valid_type(ext_type: &str) -> bool {
-        matches!(
-            ext_type,
-            SKILL | AGENT | MCP | UNIVERSAL_TOOL | GENERAL
-        ) || ext_type.starts_with(CUSTOM_PREFIX)
+        matches!(ext_type, SKILL | AGENT | MCP | UNIVERSAL_TOOL | GENERAL)
+            || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types

@@ -98,8 +98,7 @@ async fn mock_llm_script_list_returns_ith_element_per_call() {
         .enumerate()
     {
         let prompt = format!("please react to {needle} turn {i}");
-        let (stdout, stderr, status) =
-            send_once(&cli, &["send", "seq-agent", &prompt]);
+        let (stdout, stderr, status) = send_once(&cli, &["send", "seq-agent", &prompt]);
         assert_eq!(
             status.code(),
             Some(0),
@@ -137,8 +136,7 @@ async fn mock_llm_script_list_clamps_to_last_element_after_exhaustion() {
 
     for (i, expected) in ["R1", "R2", "R2", "R2"].iter().enumerate() {
         let prompt = format!("needle {needle} call {i}");
-        let (stdout, stderr, status) =
-            send_once(&cli, &["send", "clamp-agent", &prompt]);
+        let (stdout, stderr, status) = send_once(&cli, &["send", "clamp-agent", &prompt]);
         assert_eq!(
             status.code(),
             Some(0),

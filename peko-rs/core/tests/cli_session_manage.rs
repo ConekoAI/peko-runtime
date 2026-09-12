@@ -189,11 +189,7 @@ async fn session_new_refused_live_id_stays_stable() {
         "Start a fresh chapter of this conversation with the session tool, then \
          respond with NEW_REFUSED regardless of the outcome. Use the needle '{first_needle}'."
     );
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, &prompt],
-        Duration::from_secs(30),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, &prompt], Duration::from_secs(30));
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("NEW_REFUSED"),
@@ -213,11 +209,7 @@ async fn session_new_refused_live_id_stays_stable() {
     configure_mock(&mock_url, &script).await;
 
     let prompt = format!("Say SECOND_TURN_OK. Use the needle '{second_needle}'.");
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, &prompt],
-        Duration::from_secs(30),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, &prompt], Duration::from_secs(30));
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("SECOND_TURN_OK"),
@@ -288,11 +280,7 @@ async fn session_delete_current_session_refused() {
     let script = serde_json::json!({ first_needle: ["FIRST_OK"] }).to_string();
     configure_mock(&mock_url, &script).await;
     let prompt = format!("Say FIRST_OK. Use the needle '{first_needle}'.");
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, &prompt],
-        Duration::from_secs(30),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, &prompt], Duration::from_secs(30));
     assert_ok(&out, &err, &status);
     assert!(out.contains("FIRST_OK"), "stdout={out} stderr={err}");
 
@@ -318,11 +306,7 @@ async fn session_delete_current_session_refused() {
         "Remove the current session with the session tool, then respond with \
          REMOVE_REFUSED regardless of the outcome. Use the needle '{second_needle}'."
     );
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, &prompt],
-        Duration::from_secs(30),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, &prompt], Duration::from_secs(30));
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("REMOVE_REFUSED"),
@@ -394,11 +378,7 @@ async fn agent_spawn_list_resume_with_history() {
          then list your sessions with the session tool, then respond with SPAWN_DONE. \
          Use the needle '{p1}'."
     );
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, &prompt],
-        Duration::from_secs(45),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, &prompt], Duration::from_secs(45));
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("SPAWN_DONE"),
@@ -439,11 +419,7 @@ async fn agent_spawn_list_resume_with_history() {
         "Re-attach the previous subagent session to continue its task, then respond \
          with RESUME_DONE. Use the needle '{p2}'."
     );
-    let (out, err, status) = run(
-        &cli,
-        &["send", principal, &prompt],
-        Duration::from_secs(45),
-    );
+    let (out, err, status) = run(&cli, &["send", principal, &prompt], Duration::from_secs(45));
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("RESUME_DONE"),

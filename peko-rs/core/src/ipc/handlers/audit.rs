@@ -27,8 +27,8 @@ use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
-use peko_observability::{AuditEvent, Observability};
 use peko_auth::caller::CallerContext;
+use peko_observability::{AuditEvent, Observability};
 
 /// Narrow port the `audit` handler uses to reach daemon state.
 ///
@@ -94,8 +94,16 @@ impl RequestHandler for AuditHandler {
             .await;
         let filtered: Vec<AuditEvent> = pool
             .into_iter()
-            .filter(|e| event_type_prefix.as_deref().is_none_or(|p| e.event_type.starts_with(p)))
-            .filter(|e| principal.as_deref().is_none_or(|p| event_matches_principal(e, p)))
+            .filter(|e| {
+                event_type_prefix
+                    .as_deref()
+                    .is_none_or(|p| e.event_type.starts_with(p))
+            })
+            .filter(|e| {
+                principal
+                    .as_deref()
+                    .is_none_or(|p| event_matches_principal(e, p))
+            })
             .take(limit.max(1) as usize)
             .collect();
 

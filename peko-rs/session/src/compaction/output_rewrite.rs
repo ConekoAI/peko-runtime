@@ -181,8 +181,9 @@ pub fn rewrite_oversized_tool_results(
             // Token reclamation is the *original* count (the
             // sentinel is ~50 tokens; rounding error is fine for
             // observability).
-            stats.tokens_reclaimed_estimate =
-                stats.tokens_reclaimed_estimate.saturating_add(original_tokens);
+            stats.tokens_reclaimed_estimate = stats
+                .tokens_reclaimed_estimate
+                .saturating_add(original_tokens);
         }
     }
 
@@ -266,7 +267,10 @@ mod tests {
         let mut messages = vec![tool_result_msg("tc1", &big_body)];
 
         let stats = rewrite_oversized_tool_results(&mut messages, 128_000, 16_384);
-        assert_eq!(stats.rewritten_count, 1, "should rewrite the oversize result");
+        assert_eq!(
+            stats.rewritten_count, 1,
+            "should rewrite the oversize result"
+        );
         assert_eq!(stats.inspected_count, 1);
         assert!(
             stats.tokens_reclaimed_estimate >= 50_000,
@@ -311,9 +315,7 @@ mod tests {
                 ContentBlock::ToolResult {
                     tool_call_id: "tc1".to_string(),
                     name: "Read".to_string(),
-                    content: vec![ContentBlock::Text {
-                        text: big_body,
-                    }],
+                    content: vec![ContentBlock::Text { text: big_body }],
                     is_error: false,
                 },
             ],
@@ -323,10 +325,7 @@ mod tests {
         rewrite_oversized_tool_results(&mut messages, 128_000, 16_384);
 
         // ToolCall is the first block; its JSON args are still intact.
-        let ContentBlock::ToolCall {
-            id, arguments, ..
-        } = &messages[0].content[0]
-        else {
+        let ContentBlock::ToolCall { id, arguments, .. } = &messages[0].content[0] else {
             panic!("ToolCall was modified")
         };
         assert_eq!(id, "tc1");
@@ -368,7 +367,10 @@ mod tests {
         assert_eq!(stats.rewritten_count, 1);
 
         // User text + assistant tool call + assistant text are byte-identical.
-        assert_eq!(messages[0].content[0].approx_text_len(), "what's in /etc/passwd?".len());
+        assert_eq!(
+            messages[0].content[0].approx_text_len(),
+            "what's in /etc/passwd?".len()
+        );
         let ContentBlock::ToolCall { id, .. } = &messages[1].content[0] else {
             panic!("ToolCall mutated")
         };
@@ -403,9 +405,7 @@ mod tests {
             content: vec![ContentBlock::ToolResult {
                 tool_call_id: "tc1".to_string(),
                 name: "Bash".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: big_err,
-                }],
+                content: vec![ContentBlock::Text { text: big_err }],
                 is_error: true,
             }],
             ..Default::default()

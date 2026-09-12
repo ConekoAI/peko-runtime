@@ -110,7 +110,10 @@ pub fn canonical_pre_image(fields: ChannelSignedFields<'_>) -> Vec<u8> {
         &[
             ("request_id", fields.request_id.as_bytes()),
             ("source_runtime_id", fields.source_runtime_id.as_bytes()),
-            ("recipient_runtime_id", fields.recipient_runtime_id.as_bytes()),
+            (
+                "recipient_runtime_id",
+                fields.recipient_runtime_id.as_bytes(),
+            ),
             (
                 "source_principal_did",
                 fields.source_principal_did.as_bytes(),
@@ -131,10 +134,7 @@ pub fn canonical_pre_image(fields: ChannelSignedFields<'_>) -> Vec<u8> {
 /// re-serialize (that would risk key-order drift across serde_json
 /// versions).
 #[must_use]
-pub fn sign_channel_event(
-    signing_key: &SigningKey,
-    fields: ChannelSignedFields<'_>,
-) -> String {
+pub fn sign_channel_event(signing_key: &SigningKey, fields: ChannelSignedFields<'_>) -> String {
     let pre_image = canonical_pre_image(fields);
     let sig: Signature = signing_key.sign(&pre_image);
     URL_SAFE_NO_PAD.encode(sig.to_bytes())
@@ -175,9 +175,7 @@ pub fn verify_channel_event(
     }
     let sig_arr: [u8; 64] = sig_bytes
         .try_into()
-        .map_err(|v: Vec<u8>| {
-            anyhow!("signature length is {} bytes; expected 64", v.len())
-        })?;
+        .map_err(|v: Vec<u8>| anyhow!("signature length is {} bytes; expected 64", v.len()))?;
     let sig = Signature::from_bytes(&sig_arr);
     verifying_key
         .verify(&pre_image, &sig)
@@ -259,7 +257,10 @@ pub fn invite_canonical_pre_image(fields: ChannelInviteSignedFields<'_>) -> Vec<
         &[
             ("request_id", fields.request_id.as_bytes()),
             ("source_runtime_id", fields.source_runtime_id.as_bytes()),
-            ("recipient_runtime_id", fields.recipient_runtime_id.as_bytes()),
+            (
+                "recipient_runtime_id",
+                fields.recipient_runtime_id.as_bytes(),
+            ),
             (
                 "source_principal_did",
                 fields.source_principal_did.as_bytes(),
@@ -329,9 +330,7 @@ pub fn verify_channel_invite(
     }
     let sig_arr: [u8; 64] = sig_bytes
         .try_into()
-        .map_err(|v: Vec<u8>| {
-            anyhow!("signature length is {} bytes; expected 64", v.len())
-        })?;
+        .map_err(|v: Vec<u8>| anyhow!("signature length is {} bytes; expected 64", v.len()))?;
     let sig = Signature::from_bytes(&sig_arr);
     verifying_key
         .verify(&pre_image, &sig)
@@ -362,7 +361,10 @@ mod tests {
         };
         let signature = sign_channel_event(signing_key, fields);
         let verified = verify_channel_event(&kp.verifying_key, fields, &signature);
-        assert!(verified.is_ok(), "freshly signed event must verify: {verified:?}");
+        assert!(
+            verified.is_ok(),
+            "freshly signed event must verify: {verified:?}"
+        );
     }
 
     /// A tampered `event_bytes` fails verification. This is the
@@ -551,7 +553,10 @@ mod tests {
         };
         let signature = sign_channel_invite(signing_key, fields);
         let verified = verify_channel_invite(&kp.verifying_key, fields, &signature);
-        assert!(verified.is_ok(), "freshly signed invite must verify: {verified:?}");
+        assert!(
+            verified.is_ok(),
+            "freshly signed invite must verify: {verified:?}"
+        );
     }
 
     /// A tampered `initial_members_bytes` fails verification. Pins

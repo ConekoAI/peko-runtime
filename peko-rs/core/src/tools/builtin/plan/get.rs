@@ -69,12 +69,16 @@ principal (PrincipalMismatch — a corruption signal)."
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("PlanGet requires 'planId'"))?
             .to_string();
-        match self.plan_port.get_for_principal(&plan_id, &principal_id).await {
+        match self
+            .plan_port
+            .get_for_principal(&plan_id, &principal_id)
+            .await
+        {
             Ok(rec) => Ok(serde_json::to_value(rec)?),
             // Soft-error JSON so the LLM can react — mirrors Task*.
-            Err(peko_plan::PlanError::NotFound) => Ok(crate::tools::builtin::plan::not_found_error(
-                "Plan", &plan_id,
-            )),
+            Err(peko_plan::PlanError::NotFound) => Ok(
+                crate::tools::builtin::plan::not_found_error("Plan", &plan_id),
+            ),
             // Hard errors propagate so the framework surfaces them as
             // `success=false` with the PlanError::Display message.
             Err(e) => Err(anyhow::anyhow!("{e}")),
@@ -90,8 +94,7 @@ mod tests {
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PlanGet")
-            .with_principal_id(id.0)
+        ToolContext::for_hook_run("run", "tc", "PlanGet").with_principal_id(id.0)
     }
 
     #[tokio::test]
@@ -121,10 +124,7 @@ mod tests {
         let p = peko_subject::PrincipalId::generate();
         let tool = PlanGetTool::new(port);
         let got = tool
-            .execute_with_context(
-                json!({ "planId": "plan_doesnotexist" }),
-                &ctx_with(p),
-            )
+            .execute_with_context(json!({ "planId": "plan_doesnotexist" }), &ctx_with(p))
             .await
             .unwrap();
         assert_eq!(got["error"], "Plan not found");

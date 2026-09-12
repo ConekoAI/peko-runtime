@@ -170,10 +170,7 @@ impl Tool for ModelListTool {
         matched.sort_by(|a, b| a.id.cmp(&b.id));
 
         // ── 4. Project to the canonical ModelSummary wire shape ─────────
-        let summaries: Vec<Value> = matched
-            .iter()
-            .map(|e| model_summary_to_json(e))
-            .collect();
+        let summaries: Vec<Value> = matched.iter().map(|e| model_summary_to_json(e)).collect();
 
         Ok(json!({
             "count": summaries.len(),
@@ -297,9 +294,7 @@ fn spec_to_json(s: &peko_providers::spec::ModelSpec) -> Value {
 mod tests {
     use super::*;
     use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelCatalogFile, ModelConfig};
-    use peko_providers::spec::{
-        ModelSpec, PricingHint, ThinkingMode, ToolSupport,
-    };
+    use peko_providers::spec::{ModelSpec, PricingHint, ThinkingMode, ToolSupport};
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -313,11 +308,8 @@ mod tests {
             version: "1".to_string(),
             entries,
         };
-        std::fs::write(
-            &path,
-            toml::to_string(&file).expect("serialize catalog"),
-        )
-        .expect("write catalog");
+        std::fs::write(&path, toml::to_string(&file).expect("serialize catalog"))
+            .expect("write catalog");
         ModelCatalog::load_or_init(&path)
             .await
             .expect("load catalog")
@@ -469,8 +461,8 @@ mod tests {
 
     #[tokio::test]
     async fn model_list_contains_matches_id_and_display_name() {
-        let cat = catalog_with_entry(entry("haiku", "Haiku 4.5", Some(text_only_spec()), None))
-            .await;
+        let cat =
+            catalog_with_entry(entry("haiku", "Haiku 4.5", Some(text_only_spec()), None)).await;
 
         let tool = ModelListTool::new(Arc::downgrade(&cat));
         let out = tool

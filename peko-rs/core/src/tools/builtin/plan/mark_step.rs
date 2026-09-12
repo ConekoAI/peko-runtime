@@ -86,7 +86,10 @@ found in the plan."
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("PlanMarkStep requires 'status'"))?
             .to_string();
-        let reason = params.get("reason").and_then(|v| v.as_str()).map(String::from);
+        let reason = params
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let node_id = NodeId::parse(&node_id_str).map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut status = parse_status_param(&status_str)?;
         if let Some(reason_text) = reason {
@@ -125,8 +128,7 @@ mod tests {
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PlanMarkStep")
-            .with_principal_id(id.0)
+        ToolContext::for_hook_run("run", "tc", "PlanMarkStep").with_principal_id(id.0)
     }
 
     #[tokio::test]

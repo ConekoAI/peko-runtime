@@ -71,9 +71,11 @@ pub fn repair_history(messages: Vec<LlmMessage>) -> Vec<LlmMessage> {
         if msg.role == MessageRole::Tool {
             for block in msg.content {
                 if let ContentBlock::ToolResult { tool_call_id, .. } = &block {
-                    results
-                        .entry(tool_call_id.clone())
-                        .or_insert((block, msg.timestamp, msg.tool_call_id.clone()));
+                    results.entry(tool_call_id.clone()).or_insert((
+                        block,
+                        msg.timestamp,
+                        msg.tool_call_id.clone(),
+                    ));
                 }
             }
             continue;
@@ -89,10 +91,14 @@ pub fn repair_history(messages: Vec<LlmMessage>) -> Vec<LlmMessage> {
             let mut kept = Vec::with_capacity(msg.content.len());
             for block in msg.content {
                 match block {
-                    ContentBlock::ToolResult { ref tool_call_id, .. } => {
-                        results
-                            .entry(tool_call_id.clone())
-                            .or_insert((block, msg.timestamp, msg.tool_call_id.clone()));
+                    ContentBlock::ToolResult {
+                        ref tool_call_id, ..
+                    } => {
+                        results.entry(tool_call_id.clone()).or_insert((
+                            block,
+                            msg.timestamp,
+                            msg.tool_call_id.clone(),
+                        ));
                     }
                     other => kept.push(other),
                 }
@@ -129,22 +135,20 @@ pub fn repair_history(messages: Vec<LlmMessage>) -> Vec<LlmMessage> {
             let mut result_msg_id = None;
             let content = call_ids
                 .into_iter()
-                .map(|id| {
-                    match results.remove(&id) {
-                        Some((block, ts, msg_id)) => {
-                            result_ts = ts;
-                            result_msg_id = msg_id;
-                            block
-                        }
-                        None => ContentBlock::ToolResult {
-                            tool_call_id: id.clone(),
-                            name: String::new(),
-                            content: vec![ContentBlock::Text {
-                                text: INTERRUPTED_RESULT.to_string(),
-                            }],
-                            is_error: true,
-                        },
+                .map(|id| match results.remove(&id) {
+                    Some((block, ts, msg_id)) => {
+                        result_ts = ts;
+                        result_msg_id = msg_id;
+                        block
                     }
+                    None => ContentBlock::ToolResult {
+                        tool_call_id: id.clone(),
+                        name: String::new(),
+                        content: vec![ContentBlock::Text {
+                            text: INTERRUPTED_RESULT.to_string(),
+                        }],
+                        is_error: true,
+                    },
                 })
                 .collect();
             out.push(LlmMessage {
@@ -168,7 +172,9 @@ mod tests {
     fn text(role: MessageRole, t: &str) -> LlmMessage {
         LlmMessage {
             role,
-            content: vec![ContentBlock::Text { text: t.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: t.to_string(),
+            }],
             timestamp: Utc::now(),
             ..LlmMessage::default()
         }
@@ -194,7 +200,9 @@ mod tests {
             content: vec![ContentBlock::ToolResult {
                 tool_call_id: id.to_string(),
                 name: "Bash".to_string(),
-                content: vec![ContentBlock::Text { text: body.to_string() }],
+                content: vec![ContentBlock::Text {
+                    text: body.to_string(),
+                }],
                 is_error: false,
             }],
             timestamp: Utc::now(),
@@ -240,7 +248,9 @@ mod tests {
         );
         // The real result content rides with the call, not dropped.
         match &out[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert!(!is_error);
                 assert!(matches!(&content[0], ContentBlock::Text { text } if text == "slept 70s"));
             }
@@ -251,7 +261,10 @@ mod tests {
     #[test]
     fn missing_result_gets_synthetic_error() {
         let out = repair_history(vec![text(MessageRole::User, "go"), call("y")]);
-        assert_eq!(roles(&out), vec![MessageRole::User, MessageRole::Assistant, MessageRole::Tool]);
+        assert_eq!(
+            roles(&out),
+            vec![MessageRole::User, MessageRole::Assistant, MessageRole::Tool]
+        );
         match &out[2].content[0] {
             ContentBlock::ToolResult { is_error, .. } => assert!(is_error),
             other => panic!("expected ToolResult, got {other:?}"),
@@ -265,10 +278,7 @@ mod tests {
             result("ghost", "stale"),
             text(MessageRole::Assistant, "hello"),
         ]);
-        assert_eq!(
-            roles(&out),
-            vec![MessageRole::User, MessageRole::Assistant]
-        );
+        assert_eq!(roles(&out), vec![MessageRole::User, MessageRole::Assistant]);
     }
 
     #[test]

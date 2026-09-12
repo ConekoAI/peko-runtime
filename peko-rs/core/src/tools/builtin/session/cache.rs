@@ -467,7 +467,6 @@ impl SessionRuntime for SessionCache {
 
         Ok(DeleteOutcome { deleted: subtree })
     }
-
 }
 
 #[cfg(test)]

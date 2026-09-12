@@ -1275,10 +1275,7 @@ mod tests {
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
         let token = format!("{message}.{sig_b64}");
 
-        assert_eq!(
-            validator.validate(&token).await,
-            Err(JwtError::MissingJti)
-        );
+        assert_eq!(validator.validate(&token).await, Err(JwtError::MissingJti));
     }
 
     /// `prune_revocations` drops entries whose `exp` has passed —
@@ -1292,16 +1289,18 @@ mod tests {
         );
 
         let now = chrono::Utc::now().timestamp();
-        validator.load_revocations(vec![
-            RevokedJwt {
-                jti: "fresh".into(),
-                exp: now + 3600,
-            },
-            RevokedJwt {
-                jti: "stale".into(),
-                exp: now - 60,
-            },
-        ]).await;
+        validator
+            .load_revocations(vec![
+                RevokedJwt {
+                    jti: "fresh".into(),
+                    exp: now + 3600,
+                },
+                RevokedJwt {
+                    jti: "stale".into(),
+                    exp: now - 60,
+                },
+            ])
+            .await;
 
         assert_eq!(validator.revocation_entries().await.len(), 2);
         let pruned = validator.prune_revocations().await;

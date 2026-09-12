@@ -78,16 +78,13 @@ impl SeenModels {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
             Ok(bytes) => {
-                let seen: Self = serde_json::from_slice(&bytes).with_context(|| {
-                    format!("parse seen_models JSON at {}", path.display())
-                })?;
+                let seen: Self = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("parse seen_models JSON at {}", path.display()))?;
                 Ok(seen)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::empty()),
-            Err(e) => Err(anyhow::Error::from(e).context(format!(
-                "read seen_models.json at {}",
-                path.display()
-            ))),
+            Err(e) => Err(anyhow::Error::from(e)
+                .context(format!("read seen_models.json at {}", path.display()))),
         }
     }
 
@@ -95,23 +92,21 @@ impl SeenModels {
     /// the real file. Creates parent dirs if missing.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("create parent dir {}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
         }
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_vec_pretty(self).context("serialize seen_models")?;
         {
-            let mut file = std::fs::File::create(&tmp)
-                .with_context(|| format!("create {}", tmp.display()))?;
+            let mut file =
+                std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
             file.write_all(&json)
                 .with_context(|| format!("write {}", tmp.display()))?;
             file.sync_all()
                 .with_context(|| format!("fsync {}", tmp.display()))?;
         }
-        std::fs::rename(&tmp, path).with_context(|| {
-            format!("rename {} → {}", tmp.display(), path.display())
-        })?;
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("rename {} → {}", tmp.display(), path.display()))?;
         Ok(())
     }
 
@@ -222,11 +217,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = seen_models_path(dir.path());
         std::fs::create_dir_all(dir.path()).unwrap();
-        std::fs::write(
-            &path,
-            r#"{ "models": ["claude-sonnet-4-6"] }"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{ "models": ["claude-sonnet-4-6"] }"#).unwrap();
         let loaded = SeenModels::load(&path).unwrap();
         assert_eq!(loaded.version, 1);
         assert!(loaded.contains("claude-sonnet-4-6"));

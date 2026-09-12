@@ -1069,9 +1069,7 @@ impl SessionManager {
             .clone();
 
         // Use provided session ID or generate a new one
-        let session_id = options
-            .session_id
-            .unwrap_or_default();
+        let session_id = options.session_id.unwrap_or_default();
         let session_key = derive_base_session_key(agent, peer);
 
         // 1. Create JSONL file directly using SessionStorage. The
@@ -1182,7 +1180,12 @@ impl SessionManager {
 
         // Create handle with shared metadata controller (no circular reference)
         let metadata_arc = self.metadata_controller.clone();
-        Ok(SessionHandle::new(session_id.to_string(), arc, None, metadata_arc))
+        Ok(SessionHandle::new(
+            session_id.to_string(),
+            arc,
+            None,
+            metadata_arc,
+        ))
     }
 
     /// Open an existing session by ID
@@ -1352,7 +1355,10 @@ impl SessionManager {
         let mut new_metadata = SessionMetadata::new(
             new_session_id,
             &agent,
-            format!("{}.jsonl", safe_filename_component(&new_session_id.to_string())),
+            format!(
+                "{}.jsonl",
+                safe_filename_component(&new_session_id.to_string())
+            ),
         );
         // Sprint 6: accept v5-derived fallback for fixture-style ids,
         // matching `SessionId::from`. Production callers pass UUIDs.
@@ -1381,8 +1387,7 @@ impl SessionManager {
         // copied history (ADR-051 D2).
         new_metadata.compaction_count = parent_metadata.compaction_count;
         new_metadata.last_compaction_at = parent_metadata.last_compaction_at;
-        new_metadata.consecutive_auto_compactions =
-            parent_metadata.consecutive_auto_compactions;
+        new_metadata.consecutive_auto_compactions = parent_metadata.consecutive_auto_compactions;
         new_metadata.consecutive_compaction_failures =
             parent_metadata.consecutive_compaction_failures;
 
@@ -1422,29 +1427,6 @@ impl SessionManager {
             .write()
             .await
             .set_slug(session_id, slug)
-            .await
-    }
-
-    /// Set the standing flag on a session (passthrough to the
-    /// `MetadataController`). Standing sessions are exempt from
-    /// maintenance pruning. Errors when the session does not exist.
-    pub async fn set_standing(&self, session_id: &str, standing: bool) -> Result<()> {
-        self.metadata_controller
-            .write()
-            .await
-            .set_standing(session_id, standing)
-            .await
-    }
-
-    /// Set the privileged flag on a session (passthrough to the
-    /// `MetadataController`). A privileged session's caller gets
-    /// whole-store reach in the ownership guards (sprint 2 peer-child
-    /// provisioning). Errors when the session does not exist.
-    pub async fn set_privileged(&self, session_id: &str, privileged: bool) -> Result<()> {
-        self.metadata_controller
-            .write()
-            .await
-            .set_privileged(session_id, privileged)
             .await
     }
 
@@ -1509,7 +1491,6 @@ impl SessionManager {
             .delete_session(session_id)
             .await
     }
-
 
     /// Get active session ID for a peer
     pub async fn get_active_session_id(&mut self, peer: &Subject) -> Result<Option<String>> {
@@ -3225,7 +3206,10 @@ mod tests {
             .await
             .unwrap();
 
-        let branch_meta = manager.get_session_metadata(&branch_id.to_string()).await.unwrap();
+        let branch_meta = manager
+            .get_session_metadata(&branch_id.to_string())
+            .await
+            .unwrap();
         assert_eq!(branch_meta.peer_type.as_deref(), Some("user"));
         assert_eq!(branch_meta.peer_id.as_deref(), Some("alice"));
         assert_eq!(

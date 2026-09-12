@@ -129,10 +129,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "model.selected");
         assert_eq!(events[0].severity, AuditSeverity::Info);
-        assert_eq!(
-            events[0].model_id.as_deref(),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(events[0].model_id.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(events[0].details["first_use"], true);
     }
 

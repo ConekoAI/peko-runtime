@@ -1333,9 +1333,7 @@ mod tests {
         });
         // Delta has no input_tokens field — fallback path.
         let data = r#"{"type":"message_delta","usage":{"output_tokens":7}}"#;
-        let event = adapter
-            .parse_sse_event("claude-3-7-sonnet", data)
-            .unwrap();
+        let event = adapter.parse_sse_event("claude-3-7-sonnet", data).unwrap();
         match event {
             Some(crate::StreamEvent::Usage {
                 input,

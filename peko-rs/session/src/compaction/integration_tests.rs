@@ -9,11 +9,11 @@
 //! - Cache validation and invalidation
 
 use crate::compaction::{
+    output_rewrite::{rewrite_oversized_tool_results, RewriteStats},
     summary_format::{
         compute_cumulative_details, extract_file_ops_from_messages, format_summary_with_file_ops,
         CompactionDetails,
     },
-    output_rewrite::{rewrite_oversized_tool_results, RewriteStats},
     turn_boundaries::{
         classify_message, find_cut_points, select_messages_respecting_boundaries, MessageKind,
     },
@@ -348,9 +348,11 @@ fn test_rewriter_then_extract_file_ops_survives() {
     // 2. Run the rewriter (mirrors what `stream_with_eviction` does
     //    when the provider returns `ContextWindowExceeded`).
     let mut messages = messages;
-    let stats: RewriteStats =
-        rewrite_oversized_tool_results(&mut messages, 128_000, 16_384);
-    assert_eq!(stats.rewritten_count, 1, "should rewrite the oversize result");
+    let stats: RewriteStats = rewrite_oversized_tool_results(&mut messages, 128_000, 16_384);
+    assert_eq!(
+        stats.rewritten_count, 1,
+        "should rewrite the oversize result"
+    );
 
     // 3. The non-oversize result is untouched and the tool call side
     //    of the conversation survives.

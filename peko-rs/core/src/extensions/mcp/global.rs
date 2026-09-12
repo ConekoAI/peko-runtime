@@ -14,8 +14,8 @@
 //! are visible to `peko ext start/stop`.
 
 use crate::common::vault::Vault;
-use crate::extensions::mcp::protocol::manager::McpManager;
 use crate::daemon::background_runtime::BackgroundRuntimeManager;
+use crate::extensions::mcp::protocol::manager::McpManager;
 use crate::extensions::mcp::runtime::McpClientRegistry;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;

@@ -326,6 +326,7 @@ impl PrincipalManager {
         config: PrincipalConfig,
     ) -> Result<Arc<Principal>, PrincipalManagerError> {
         let name = config.name.clone();
+        config.warn_deprecated_children(&name);
         {
             let by_name = self.principals_by_name.read().await;
             if by_name.contains_key(&name) {
@@ -349,6 +350,29 @@ impl PrincipalManager {
         self.persist_config(&layout.shared.root, &config).await?;
 
         let memory = self.memory_factory.create(&id, &layout.local.root).await;
+
+        // Default session nodes (`/tmp`, `/trash`): seeded ONCE here at
+        // principal creation as ordinary standing sessions parented at
+        // the (still-dangling) trunk. Deliberately NOT ensured at boot
+        // or root-run setup — a principal that removes them keeps them
+        // removed (create-once semantics; see
+        // `principal::default_nodes` module docs). Best-effort: failures
+        // warn and continue, never blocking principal creation (the
+        // `seen_models.json` tolerated-corruption precedent).
+        {
+            let seed_manager = peko_session::manager::SessionManager::new()
+                .with_sessions_dir_internal(memory.sessions_dir());
+            let seed_manager = Arc::new(tokio::sync::RwLock::new(seed_manager));
+            match crate::principal::default_nodes::seed_default_nodes("root", &seed_manager).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!("principal '{name}': seeded {n} default session node(s)")
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("principal '{name}': failed to seed default session nodes: {e}")
+                }
+            }
+        }
 
         // F18: build the quota meter first so the router can capture
         // the same Arc. The meter is built before the router because
@@ -426,6 +450,7 @@ impl PrincipalManager {
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
 
         let name = config.name.clone();
+        config.warn_deprecated_children(&name);
         {
             let by_name = self.principals_by_name.read().await;
             if let Some(id) = by_name.get(&name) {
@@ -2909,8 +2934,6 @@ mod tests {
             .find(|m| m.session_id.to_string() == child_id)
             .expect("child metadata");
         assert_eq!(child.slug.as_deref(), Some("local-user"));
-        assert!(child.standing);
-        assert!(child.privileged, "owner's child must be privileged");
         assert_eq!(
             child.parent_session_id.map(|id| id.to_string()).as_deref(),
             Some(
@@ -2972,10 +2995,10 @@ mod tests {
             "A2A child slug must be /principal-{{fragment}}, got {:?}",
             child.slug
         );
-        assert!(child.standing);
+
         assert!(
-            !child.privileged,
-            "a stranger's child must stay subtree-scoped"
+            child.slug.is_some(),
+            "a stranger's child still gets a provisioned session"
         );
         assert_eq!(child.peer_type.as_deref(), Some("principal"));
         assert_eq!(child.peer_id.as_deref(), Some("did:key:z6MkA2aPeerExample"));

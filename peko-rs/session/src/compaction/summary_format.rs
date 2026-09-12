@@ -75,7 +75,9 @@ impl CompactionDetails {
         }
         // Image token counts are summed (not deduplicated) because
         // each compact measures its own slice.
-        self.image_token_count = self.image_token_count.saturating_add(other.image_token_count);
+        self.image_token_count = self
+            .image_token_count
+            .saturating_add(other.image_token_count);
         // Phase is last-write-wins: the most recent compaction's
         // phase is the phase of the cumulative details. Most
         // sessions stay in `PreTurn` (the default); flipping to

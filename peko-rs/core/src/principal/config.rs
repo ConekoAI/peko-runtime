@@ -154,60 +154,49 @@ pub struct PrincipalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaConfig>,
 
-    /// Standing named children (agent-session paradigm, Phase 2).
+    /// Deprecated capture for legacy `[children.<name>]` tables.
     ///
-    /// On disk: `[children.<name>]` tables. Each `<name>` is the
-    /// child's slug (per-parent-unique path segment, validated at
-    /// load) and maps to `{ subagent_type, description? }`. The
-    /// runtime ensures each declared child exists as a `standing`
-    /// session under the principal's owner root session at root-agent
-    /// run setup (`principal::children::ensure_declared_children`);
-    /// the `Agent` tool's `new` action with a matching `name`
-    /// attaches to the standing session instead of spawning fresh.
+    /// Standing named children (agent-session paradigm, Phase 2) were
+    /// removed on 2026-09-12: the runtime no longer provisions declared
+    /// children at root-agent run setup — sessions are spawned on
+    /// demand via the `Agent` tool, ingress peers get standing children
+    /// automatically, and the only auto-created nodes are the default
+    /// `/tmp` and `/trash` (see `principal::default_nodes`). The table
+    /// is still parsed (unvalidated) so legacy `principal.toml` files
+    /// keep loading; `warn_deprecated_children` names the ignored
+    /// entries at load time.
     ///
     /// `BTreeMap` keeps the serialized form stable (sorted by name).
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "deserialize_children"
-    )]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub children: BTreeMap<String, ChildDeclaration>,
 }
 
-/// A standing named child declared under `[children]` in
-/// `principal.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChildDeclaration {
-    /// Agent type the child runs as when attached/resumed (required;
-    /// must be nonempty).
-    pub subagent_type: String,
-    /// Optional human-readable description; becomes the session title
-    /// when the child is created.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-/// Deserialize + validate the `[children]` table: every key must pass
-/// slug validation (`peko_session::path::validate_slug`) and every
-/// entry needs a nonempty `subagent_type`. A missing `subagent_type`
-/// key is refused by serde itself (`missing field` error); the checks
-/// here cover the key shape and blank values.
-fn deserialize_children<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<String, ChildDeclaration>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let map = BTreeMap::<String, ChildDeclaration>::deserialize(deserializer)?;
-    for (name, decl) in &map {
-        peko_session::path::validate_slug(name).map_err(serde::de::Error::custom)?;
-        if decl.subagent_type.trim().is_empty() {
-            return Err(serde::de::Error::custom(format!(
-                "children.{name}: subagent_type must not be empty"
-            )));
+impl PrincipalConfig {
+    /// Log a warning for every entry in the deprecated `[children]`
+    /// table so operators learn their declarations are ignored.
+    pub fn warn_deprecated_children(&self, principal: &str) {
+        for name in self.children.keys() {
+            tracing::warn!(
+                "principal '{principal}': [children.{name}] is deprecated and ignored — \
+                 declared standing children are no longer provisioned; spawn sessions \
+                 on demand via the Agent tool instead"
+            );
         }
     }
-    Ok(map)
+}
+
+/// A legacy standing named child declared under `[children]` in
+/// `principal.toml`. Parsed only so legacy configs keep loading; the
+/// runtime ignores the declarations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildDeclaration {
+    /// Agent type the child ran as when attached/resumed. Defaults to
+    /// empty: the capture tolerates half-written legacy declarations.
+    #[serde(default)]
+    pub subagent_type: String,
+    /// Optional human-readable description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -805,41 +794,35 @@ mod tests {
         );
     }
 
-    /// A `[children]` key that fails slug validation is a structured
-    /// load error (no silent acceptance of unusable names).
+    /// Declared-children provisioning is REMOVED (2026-09-12): the
+    /// `[children]` table is an unvalidated legacy capture, so
+    /// previously-rejected shapes now parse fine (they are ignored).
     #[test]
-    fn children_rejects_invalid_names() {
-        // Quoted TOML keys so `/` and whitespace survive to the
-        // validator (a bare `with/slash` would be a TOML syntax error
-        // before our check runs).
+    fn children_invalid_names_are_tolerated() {
+        // Quoted TOML keys so `/` and whitespace survive into the map.
         for bad_key in [
             r#"children."with/slash""#,
             "children.' leading'",
             "children.'trailing '",
         ] {
             let toml = format!("name = \"x\"\n\n[{bad_key}]\nsubagent_type = \"t\"\n");
-            let err = toml::from_str::<PrincipalConfig>(&toml).unwrap_err();
-            assert!(
-                err.to_string().contains("invalid slug"),
-                "key {bad_key}: {err}"
-            );
+            let cfg = toml::from_str::<PrincipalConfig>(&toml).expect("legacy shapes parse");
+            assert_eq!(cfg.children.len(), 1, "key {bad_key} captured");
         }
     }
 
-    /// `subagent_type` is required (missing key ⇒ serde `missing
-    /// field`) and must not be blank.
+    /// The legacy capture does not validate `subagent_type` either —
+    /// even a missing key parses (serde default for the field is not
+    /// required since `description` is optional and `subagent_type`
+    /// remains required by the struct shape; a declaration missing it
+    /// is refused by serde itself, which is fine for a legacy shim:
+    /// such a config was already broken under the old validator).
     #[test]
-    fn children_requires_nonempty_subagent_type() {
+    fn children_capture_requires_subagent_type_field() {
         let missing = "name = \"x\"\n\n[children.memory]\ndescription = \"d\"\n";
-        let err = toml::from_str::<PrincipalConfig>(missing).unwrap_err();
-        assert!(err.to_string().contains("subagent_type"), "missing: {err}");
-
-        let blank = "name = \"x\"\n\n[children.memory]\nsubagent_type = \"  \"\n";
-        let err = toml::from_str::<PrincipalConfig>(blank).unwrap_err();
-        assert!(
-            err.to_string().contains("must not be empty"),
-            "blank: {err}"
-        );
+        let cfg = toml::from_str::<PrincipalConfig>(missing)
+            .expect("missing subagent_type is tolerated by the capture");
+        assert_eq!(cfg.children["memory"].subagent_type, "");
     }
 
     /// The `[children]` table round-trips losslessly so config

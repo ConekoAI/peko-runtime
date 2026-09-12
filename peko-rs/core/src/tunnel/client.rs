@@ -114,11 +114,7 @@ impl TunnelHandle {
     /// web chat can break assistant text into one bubble per
     /// agentic iteration and show a "thinking" indicator while
     /// awaiting the next iteration's first token.
-    pub fn send_stream_iteration(
-        &self,
-        request_id: String,
-        iteration: u32,
-    ) -> anyhow::Result<()> {
+    pub fn send_stream_iteration(&self, request_id: String, iteration: u32) -> anyhow::Result<()> {
         self.send(TunnelMessage::StreamIteration {
             request_id,
             iteration,

@@ -72,10 +72,7 @@ impl std::fmt::Display for SpawnError {
                 )
             }
             SpawnError::SpecGateFailed { model_id, reason } => {
-                write!(
-                    f,
-                    "Model '{model_id}' cannot serve this subagent: {reason}"
-                )
+                write!(f, "Model '{model_id}' cannot serve this subagent: {reason}")
             }
         }
     }

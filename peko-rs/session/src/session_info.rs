@@ -360,10 +360,7 @@ mod tests {
         );
 
         let info: SessionInfo = entry.into();
-        assert_eq!(
-            info.id,
-            crate::id::SessionId::from("sess_123").to_string()
-        );
+        assert_eq!(info.id, crate::id::SessionId::from("sess_123").to_string());
         assert_eq!(info.agent_name, "myagent");
     }
 

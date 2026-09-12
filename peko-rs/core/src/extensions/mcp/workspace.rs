@@ -286,9 +286,7 @@ fn unified_yaml_to_mcp_server_config(
 /// Returns the empty string when no servers are configured — the
 /// `PromptRenderer`'s `remove_missing=true` placeholder substitution
 /// strips the placeholder in that case.
-pub async fn render_mcp_prompt_context(
-    manager: &Arc<TokioRwLock<McpManager>>,
-) -> String {
+pub async fn render_mcp_prompt_context(manager: &Arc<TokioRwLock<McpManager>>) -> String {
     let mgr = manager.read().await;
     let server_states = mgr.list_server_prompt_context().await;
     drop(mgr);
@@ -401,12 +399,9 @@ mod tests {
     #[tokio::test]
     async fn load_skips_missing_dir() {
         let manager = Arc::new(TokioRwLock::new(McpManager::new(Default::default())));
-        let n = load_workspace_mcp_servers(
-            std::path::Path::new("/nonexistent/mcp"),
-            &manager,
-        )
-        .await
-        .unwrap();
+        let n = load_workspace_mcp_servers(std::path::Path::new("/nonexistent/mcp"), &manager)
+            .await
+            .unwrap();
         assert_eq!(n, 0);
     }
 
@@ -427,7 +422,9 @@ mod tests {
         std::fs::write(server_dir.join("server.json"), server_json.to_string()).unwrap();
 
         let manager = Arc::new(TokioRwLock::new(McpManager::new(Default::default())));
-        let n = load_workspace_mcp_servers(tmp.path(), &manager).await.unwrap();
+        let n = load_workspace_mcp_servers(tmp.path(), &manager)
+            .await
+            .unwrap();
         assert_eq!(n, 1);
 
         let mgr = manager.read().await;
@@ -450,7 +447,9 @@ mcp_servers:
         std::fs::write(server_dir.join("manifest.yaml"), yaml).unwrap();
 
         let manager = Arc::new(TokioRwLock::new(McpManager::new(Default::default())));
-        let n = load_workspace_mcp_servers(tmp.path(), &manager).await.unwrap();
+        let n = load_workspace_mcp_servers(tmp.path(), &manager)
+            .await
+            .unwrap();
         assert_eq!(n, 1);
 
         let mgr = manager.read().await;
@@ -472,8 +471,12 @@ mcp_servers:
         std::fs::write(server_dir.join("server.json"), server_json.to_string()).unwrap();
 
         let manager = Arc::new(TokioRwLock::new(McpManager::new(Default::default())));
-        let n1 = load_workspace_mcp_servers(tmp.path(), &manager).await.unwrap();
-        let n2 = load_workspace_mcp_servers(tmp.path(), &manager).await.unwrap();
+        let n1 = load_workspace_mcp_servers(tmp.path(), &manager)
+            .await
+            .unwrap();
+        let n2 = load_workspace_mcp_servers(tmp.path(), &manager)
+            .await
+            .unwrap();
         assert_eq!(n1, 1);
         assert_eq!(n2, 0);
     }

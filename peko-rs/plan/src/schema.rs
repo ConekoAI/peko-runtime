@@ -65,9 +65,9 @@ fn base36_id(n: u32) -> String {
 }
 
 fn parse_id_suffix(s: &str, prefix: &str) -> Result<String> {
-    let rest = s.strip_prefix(prefix).ok_or_else(|| {
-        PlanError::InvalidNodeId(format!("missing {prefix} prefix: {s:?}"))
-    })?;
+    let rest = s
+        .strip_prefix(prefix)
+        .ok_or_else(|| PlanError::InvalidNodeId(format!("missing {prefix} prefix: {s:?}")))?;
     if rest.len() != ID_SUFFIX_LEN {
         return Err(PlanError::InvalidNodeId(format!(
             "expected {ID_SUFFIX_LEN} base36 chars after {prefix:?}, got {} in {s:?}",
@@ -345,9 +345,7 @@ pub enum PlanNodeStatus {
     /// Done. `completed_at` is the wall-clock when the transition
     /// happened (mirrors the last `updated_at`, but carried in the
     /// variant payload for downstream serialization).
-    Completed {
-        completed_at: DateTime<Utc>,
-    },
+    Completed { completed_at: DateTime<Utc> },
     /// Blocked on something outside the plan's control. Carries a
     /// human-readable reason and the timestamp of when the blocker was
     /// first recorded (vs. `last_attempt_at` for `Failed`).
@@ -531,7 +529,11 @@ mod tests {
 
     fn sample_record() -> PlanRecord {
         let principal = PrincipalId::generate();
-        PlanRecord::new(principal, "Migrate auth".to_string(), vec![sample_node("Wire SQLX")])
+        PlanRecord::new(
+            principal,
+            "Migrate auth".to_string(),
+            vec![sample_node("Wire SQLX")],
+        )
     }
 
     #[test]
@@ -707,7 +709,9 @@ mod tests {
             created_at: ts(1_700_000_000),
             updated_at: ts(1_700_000_000),
         }];
-        let err = record.validate_dag().expect_err("missing dep must be rejected");
+        let err = record
+            .validate_dag()
+            .expect_err("missing dep must be rejected");
         assert!(matches!(err, PlanError::InvalidNodeId(_)));
     }
 

@@ -4,6 +4,67 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Filesystem model: whole-store reach, no GC, no privilege (2026-09-12)
+
+- **The session hierarchy is now purely organizational** — like paths
+  on a filesystem, it names sessions but grants nothing and denies
+  nothing. Every caller in a principal's store has whole-store reach
+  for `list` / `find` / `history` / `status` / `copy` / `move` /
+  `remove`: `guard_tree` subtree scoping and the `list`/`find`
+  visibility filters are gone. What survives are run-integrity and
+  self-safety guards only: no mutating the session you run in, no
+  deleting/moving your own ancestors, the engine-managed trunk is
+  refused, run-active refusals hold, and move cycles stay impossible.
+- **`privileged` flag removed** — it stamped the owner's
+  `/local-user` peer child with whole-store reach; that reach is now
+  universal, so the flag (and `ensure_peer_child`'s `owner` parameter,
+  which only decided it) is gone. Multi-principal isolation is
+  unchanged — it lives at the store level (each principal has its own
+  sessions dir), not in the guards.
+- **`standing` flag removed** from `SessionMetadata` / `SessionEntry`.
+  Peer-child identity now keys on the stamped `peer_type`/`peer_id`
+  plus `trigger == "spawn"`; the flag had no remaining job after the
+  GC removal. Persisted `sessions.json` files carrying the old keys
+  deserialize fine (unknown fields are ignored).
+- **The session GC is retired.** The daemon's periodic maintenance
+  tick hard-deleted transcripts for idle non-trunk, non-archived,
+  non-standing sessions past 30 days — sessions now persist until
+  explicitly removed. Deleted: `session::maintenance`
+  (`MaintenanceScheduler`), the daemon tick +
+  `DaemonConfig.maintenance_interval`, `SessionIndex::maintenance` /
+  `MetadataController::maintenance`, `MaintenanceConfig` /
+  `MaintenanceReport` / `DEFAULT_PRUNE_AFTER_DAYS` /
+  `DEFAULT_MAX_SESSIONS`. Cleanup is the principal's explicit job
+  (e.g. stage in `/trash`, purge with `session remove recursive:true`,
+  or schedule a cron recycler).
+- **Declared children fully removed** (follow-up to the earlier
+  deprecation shim): nothing reads `[children]` anymore beyond the
+  parse-tolerant capture + load-time warning.
+
+### Default session nodes `/tmp` and `/trash` (2026-09-12)
+
+- **Every new principal is seeded with two ordinary standing sessions**
+  under its trunk at creation (`PrincipalManager::create` →
+  `principal::default_nodes::seed_default_nodes`): `/tmp` — a parking
+  spot for transient, single-use work sessions — and `/trash` — the
+  holding area for removals (`session move` stages a session subtree
+  there; a later `session remove recursive:true` performs the
+  permanent purge). Created with metadata + created-event only (no
+  LLM turn), `standing` + `trigger = "spawn"`, parented at the
+  still-dangling trunk like declared children.
+- **Create-once semantics, no reserved behavior** — seeding happens
+  only at principal creation, never at boot or root-run setup: a
+  principal that removes either node keeps it removed (the Session
+  tool has no create action). The nodes are ordinary sessions —
+  renameable, moveable, removable; no guard, tool action, or sweeper
+  treats them specially. No auto-clean: trash entries persist until
+  explicitly removed (a config-driven TTL sweeper may be layered on
+  later without changing the seeding).
+- **Convention surfaced to agents** via a new "Default nodes" para­graph
+  in the `session` tool description. Slug squatting is tolerated: a
+  plain session already holding `tmp` or `trash` under the trunk
+  blocks only that node's seeding (no adoption, no collision error).
+
 ### Channel-activity digest in the session-context tail (2026-09-12)
 
 - **Posts that never became wakes now reach the bound agent** — while

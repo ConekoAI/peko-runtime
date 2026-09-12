@@ -51,7 +51,6 @@ struct DisabledToolFilter {
 
 #[cfg(test)]
 impl DisabledToolFilter {
-
     fn new(disabled_tools: &[String]) -> Self {
         let disabled_set: HashSet<String> =
             disabled_tools.iter().map(|s| s.to_lowercase()).collect();

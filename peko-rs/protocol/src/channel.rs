@@ -175,7 +175,10 @@ impl ChannelId {
         if rest.len() != Self::SUFFIX_LEN {
             return None;
         }
-        if !rest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        if !rest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
             // accept 0-9a-z only (matches peko-plan's BASE36)
             let valid = rest
                 .bytes()
@@ -524,10 +527,42 @@ mod tests {
     #[test]
     fn channel_event_kind_helper() {
         let cases = [
-            (ChannelEvent::Created { channel: chan(), creator: "p".into(), name: "n".into(), at: "2026".into() }, "created"),
-            (ChannelEvent::Posted { channel: chan(), author: "p".into(), parent: None, text: "t".into(), at: "2026".into(), via: None }, "posted"),
-            (ChannelEvent::MemberJoined { channel: chan(), member: "p".into(), at: "2026".into() }, "member_joined"),
-            (ChannelEvent::MemberLeft { channel: chan(), member: "p".into(), at: "2026".into() }, "member_left"),
+            (
+                ChannelEvent::Created {
+                    channel: chan(),
+                    creator: "p".into(),
+                    name: "n".into(),
+                    at: "2026".into(),
+                },
+                "created",
+            ),
+            (
+                ChannelEvent::Posted {
+                    channel: chan(),
+                    author: "p".into(),
+                    parent: None,
+                    text: "t".into(),
+                    at: "2026".into(),
+                    via: None,
+                },
+                "posted",
+            ),
+            (
+                ChannelEvent::MemberJoined {
+                    channel: chan(),
+                    member: "p".into(),
+                    at: "2026".into(),
+                },
+                "member_joined",
+            ),
+            (
+                ChannelEvent::MemberLeft {
+                    channel: chan(),
+                    member: "p".into(),
+                    at: "2026".into(),
+                },
+                "member_left",
+            ),
         ];
         for (ev, expected) in cases {
             assert_eq!(ev.kind(), expected, "kind() mismatch for {ev:?}");
@@ -540,7 +575,10 @@ mod tests {
     fn channel_id_generate_has_prefix() {
         let id = ChannelId::generate();
         assert!(id.as_str().starts_with(ChannelId::PREFIX));
-        assert_eq!(id.as_str().len(), ChannelId::PREFIX.len() + ChannelId::SUFFIX_LEN);
+        assert_eq!(
+            id.as_str().len(),
+            ChannelId::PREFIX.len() + ChannelId::SUFFIX_LEN
+        );
     }
 
     #[test]
@@ -611,9 +649,15 @@ mod tests {
     /// string-dispatch helper.
     #[test]
     fn channel_id_kind_matches_constructor() {
-        assert_eq!(ChannelId::for_principal("did:key:zAlice").kind(), ChannelKind::Principal);
+        assert_eq!(
+            ChannelId::for_principal("did:key:zAlice").kind(),
+            ChannelKind::Principal
+        );
         assert_eq!(ChannelId::for_user("alice").kind(), ChannelKind::User);
-        assert_eq!(ChannelId::for_group("eng-standup").kind(), ChannelKind::Group);
+        assert_eq!(
+            ChannelId::for_group("eng-standup").kind(),
+            ChannelKind::Group
+        );
         assert_eq!(ChannelId::generate().kind(), ChannelKind::Bare);
     }
 
@@ -688,7 +732,10 @@ mod tests {
     #[test]
     fn channel_id_for_user_and_group_are_deterministic() {
         assert_eq!(ChannelId::for_user("alice").as_str(), "user:alice");
-        assert_eq!(ChannelId::for_group("eng-standup").as_str(), "group:eng-standup");
+        assert_eq!(
+            ChannelId::for_group("eng-standup").as_str(),
+            "group:eng-standup"
+        );
     }
 
     /// Round-trip: every constructor → parse → constructor produces

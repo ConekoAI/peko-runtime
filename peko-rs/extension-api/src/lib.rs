@@ -86,6 +86,4 @@ pub use reserved_params::{ConfigFormat, ParamSource, ReservedParamsConfig, Reser
 pub use session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
 pub use subagent::SpawnCleanupPolicy;
 pub use tool::{ToolMetadata, ToolSource};
-pub use types::{
-    ExtensionId, HookId, HookPriority, ToolRuntimeContext, DEFAULT_HOOK_PRIORITY,
-};
+pub use types::{ExtensionId, HookId, HookPriority, ToolRuntimeContext, DEFAULT_HOOK_PRIORITY};

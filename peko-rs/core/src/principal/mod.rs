@@ -21,9 +21,9 @@ pub mod capability_evaluator;
 pub mod catalog;
 pub(crate) mod channel_digest;
 pub(crate) mod child_turns;
-pub mod children;
 pub mod config;
 pub mod context;
+pub mod default_nodes;
 pub mod factory;
 pub mod identity_prompt;
 pub mod manager;
@@ -44,9 +44,7 @@ pub mod seen_models;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
-pub use catalog::{
-    capability_kind_for_extension_type, CatalogEntry, PrincipalCatalog,
-};
+pub use catalog::{capability_kind_for_extension_type, CatalogEntry, PrincipalCatalog};
 pub use config::{
     ArtifactKind, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig,
     PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,

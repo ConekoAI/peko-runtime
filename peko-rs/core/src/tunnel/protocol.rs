@@ -247,10 +247,7 @@ pub enum TunnelMessage {
     /// `PrincipalSentIteration` packet's wire shape; iteration is
     /// 1-based and per `request_id`.
     #[serde(rename = "stream_iteration", rename_all = "camelCase")]
-    StreamIteration {
-        request_id: String,
-        iteration: u32,
-    },
+    StreamIteration { request_id: String, iteration: u32 },
 
     // --- Instance lifecycle ---
     /// Instance announcement

@@ -799,7 +799,10 @@ mod tests {
             note: Some(too_long),
         };
         let err = cat.upsert(entry).await.expect_err("must reject");
-        assert!(err.to_string().contains("500"), "expected 500-char message, got: {err}");
+        assert!(
+            err.to_string().contains("500"),
+            "expected 500-char message, got: {err}"
+        );
     }
 
     #[tokio::test]

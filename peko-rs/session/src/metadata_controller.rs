@@ -7,7 +7,7 @@
 //! - Centralized reconciliation
 
 use crate::id::SessionId;
-use crate::index::{MaintenanceConfig, MaintenanceReport, SessionEntry, SessionIndex};
+use crate::index::{SessionEntry, SessionIndex};
 use crate::jsonl::SessionStorage;
 use crate::metadata::{ReconciliationResult, SessionMetadata};
 use anyhow::{Context, Result};
@@ -308,57 +308,6 @@ impl MetadataController {
         }
 
         info!("Set slug for session {}", session_id);
-        Ok(())
-    }
-
-    /// Set the standing flag on a session.
-    ///
-    /// Same update pattern as the other flag setters: load the entry,
-    /// mutate the flag, and write it back through the delta-merge-safe
-    /// index save. Standing sessions are exempt from maintenance
-    /// pruning (`SessionIndex::maintenance`). Errors when the session
-    /// does not exist.
-    pub async fn set_standing(&mut self, session_id: &str, standing: bool) -> Result<()> {
-        debug!("Setting standing={} for session {}", standing, session_id);
-
-        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
-            anyhow::anyhow!("Cannot set standing for non-existent session {session_id}")
-        })?;
-
-        if entry.standing != standing {
-            entry.standing = standing;
-            entry.touch();
-            self.update_entry(entry).await?;
-        }
-
-        info!("Set standing={} for session {}", standing, session_id);
-        Ok(())
-    }
-
-    /// Set the privileged flag on a session.
-    ///
-    /// Same update pattern as [`Self::set_standing`]: load the entry,
-    /// mutate the flag, and write it back through the delta-merge-safe
-    /// index save. A privileged session's caller gets whole-store
-    /// reach in the ownership guards (sprint 2 peer-child
-    /// provisioning). Errors when the session does not exist.
-    pub async fn set_privileged(&mut self, session_id: &str, privileged: bool) -> Result<()> {
-        debug!(
-            "Setting privileged={} for session {}",
-            privileged, session_id
-        );
-
-        let mut entry = self.get_entry(session_id, false).await?.ok_or_else(|| {
-            anyhow::anyhow!("Cannot set privileged for non-existent session {session_id}")
-        })?;
-
-        if entry.privileged != privileged {
-            entry.privileged = privileged;
-            entry.touch();
-            self.update_entry(entry).await?;
-        }
-
-        info!("Set privileged={} for session {}", privileged, session_id);
         Ok(())
     }
 
@@ -957,13 +906,6 @@ impl MetadataController {
         self.index.get_active_for_peer(peer_key).await
     }
 
-    /// Run maintenance on sessions (proxy to `SessionIndex`)
-    ///
-    /// This prunes old sessions based on the maintenance configuration.
-    pub async fn maintenance(&mut self, config: &MaintenanceConfig) -> Result<MaintenanceReport> {
-        self.index.maintenance(config).await
-    }
-
     /// List all sessions directly from index (proxy to `SessionIndex`)
     ///
     /// This bypasses the metadata cache and returns raw `SessionEntry` objects.
@@ -1253,105 +1195,6 @@ mod tests {
             .set_slug("sess_nope", Some("x".to_string()))
             .await
             .is_err());
-    }
-
-    /// `set_standing` round-trips the flag through the index and
-    /// errors on a non-existent session.
-    #[tokio::test]
-    async fn test_set_standing() {
-        let (mut controller, _temp) = setup_controller().await;
-        let peer = Subject::User("alice".to_string());
-        let peer_key = derive_base_session_key("test_agent", &peer);
-        let entry = SessionEntry::with_peer(
-            "sess_a".to_string(),
-            "test_agent".to_string(),
-            "sess_a.jsonl".to_string(),
-            "user",
-            "alice",
-        );
-        controller.create_for_peer(entry, &peer_key).await.unwrap();
-        controller.save_index().await.unwrap();
-
-        assert!(
-            !controller
-                .get_entry("sess_a", false)
-                .await
-                .unwrap()
-                .unwrap()
-                .standing
-        );
-        controller.set_standing("sess_a", true).await.unwrap();
-        assert!(
-            controller
-                .get_entry("sess_a", false)
-                .await
-                .unwrap()
-                .unwrap()
-                .standing
-        );
-        // Idempotent + reversible.
-        controller.set_standing("sess_a", true).await.unwrap();
-        controller.set_standing("sess_a", false).await.unwrap();
-        assert!(
-            !controller
-                .get_entry("sess_a", false)
-                .await
-                .unwrap()
-                .unwrap()
-                .standing
-        );
-        // Non-existent session errors.
-        assert!(controller.set_standing("sess_nope", true).await.is_err());
-    }
-
-    /// `set_privileged` round-trips the flag through the index and
-    /// errors on a non-existent session (same contract as
-    /// `set_standing`).
-    #[tokio::test]
-    async fn test_set_privileged() {
-        let (mut controller, _temp) = setup_controller().await;
-        let peer = Subject::User("alice".to_string());
-        let peer_key = derive_base_session_key("test_agent", &peer);
-        let entry = SessionEntry::with_peer(
-            "sess_a".to_string(),
-            "test_agent".to_string(),
-            "sess_a.jsonl".to_string(),
-            "user",
-            "alice",
-        );
-        controller.create_for_peer(entry, &peer_key).await.unwrap();
-        controller.save_index().await.unwrap();
-
-        assert!(
-            !controller
-                .get_entry("sess_a", false)
-                .await
-                .unwrap()
-                .unwrap()
-                .privileged
-        );
-        controller.set_privileged("sess_a", true).await.unwrap();
-        assert!(
-            controller
-                .get_entry("sess_a", false)
-                .await
-                .unwrap()
-                .unwrap()
-                .privileged
-        );
-        // Idempotent + reversible.
-        controller.set_privileged("sess_a", true).await.unwrap();
-        controller.set_privileged("sess_a", false).await.unwrap();
-        assert!(
-            !controller
-                .get_entry("sess_a", false)
-                .await
-                .unwrap()
-                .unwrap()
-                .privileged
-        );
-        // Non-existent session errors.
-        assert!(controller.set_privileged("sess_nope", true).await.is_err());
     }
 
     /// Deleting a session scrubs its id from the peer's `session_ids`

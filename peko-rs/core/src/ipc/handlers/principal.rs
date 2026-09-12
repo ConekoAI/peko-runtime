@@ -3957,7 +3957,7 @@ mod tests {
                 peko_session::manager::SessionManager::new()
                     .with_sessions_dir_internal(principal.memory.sessions_dir()),
             ));
-            let child_id = ensure_peer_child("root", &owner, &peer, &session_manager)
+            let child_id = ensure_peer_child("root", &peer, &session_manager)
                 .await
                 .expect("peer child");
             let port: Arc<dyn ChannelPort> = store.clone();

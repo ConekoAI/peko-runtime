@@ -1380,7 +1380,6 @@ async fn create_standing_child(
         mgr.set_session_slug(&canonical_id, Some(slug.to_string()))
             .await
             .unwrap();
-        mgr.set_standing(&canonical_id, true).await.unwrap();
     }
     if let Some(declared) = declared_type {
         let dir = session_manager
@@ -1536,7 +1535,6 @@ async fn new_with_fresh_name_spawns_new_session() {
         .find(|m| m.session_id.to_string() == child_id)
         .expect("fresh child metadata exists");
     assert_eq!(fresh.slug.as_deref(), Some("about-user"));
-    assert!(!fresh.standing, "fresh spawns are not standing");
 }
 
 #[tokio::test]
@@ -2646,10 +2644,22 @@ async fn peer_bound_run_delivers_reply_via_surface() {
 async fn resume_allows_cross_subtree_target() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
-    create_linked_session(&session_manager, &agent_name, "user-a", Some("root-sess"), "spawn")
-        .await;
-    create_linked_session(&session_manager, &agent_name, "user-b", Some("root-sess"), "spawn")
-        .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-b",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
 
     let executor = SubagentExecutor::with_registry(
         registry,
@@ -2683,10 +2693,22 @@ async fn resume_allows_cross_subtree_target() {
 async fn new_with_absolute_path_attaches_or_mints_top_level() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
-    create_linked_session(&session_manager, &agent_name, "user-a", Some("root-sess"), "spawn")
-        .await;
-    create_linked_session(&session_manager, &agent_name, "user-b", Some("root-sess"), "spawn")
-        .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-b",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
 
     let executor = SubagentExecutor::with_registry(
         registry.clone(),
@@ -2776,8 +2798,5 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
         )
         .await
         .unwrap_err();
-    assert!(
-        err.to_string().contains("intermediate segments"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("intermediate segments"), "{err}");
 }

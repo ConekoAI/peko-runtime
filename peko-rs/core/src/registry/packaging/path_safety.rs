@@ -43,9 +43,7 @@ pub fn safe_join(parent: &Path, rel: &str) -> anyhow::Result<PathBuf> {
                 anyhow::bail!("[unsafe_path] relative path contains '..' segment: {rel}");
             }
             Component::RootDir | Component::Prefix(_) => {
-                anyhow::bail!(
-                    "[unsafe_path] relative path contains root or drive prefix: {rel}"
-                );
+                anyhow::bail!("[unsafe_path] relative path contains root or drive prefix: {rel}");
             }
             Component::CurDir | Component::Normal(_) => {}
         }
@@ -53,9 +51,7 @@ pub fn safe_join(parent: &Path, rel: &str) -> anyhow::Result<PathBuf> {
 
     let joined = parent.join(rel_path);
     if !joined.starts_with(parent) {
-        anyhow::bail!(
-            "[unsafe_path] joined path '{joined:?}' escapes parent '{parent:?}'"
-        );
+        anyhow::bail!("[unsafe_path] joined path '{joined:?}' escapes parent '{parent:?}'");
     }
 
     Ok(joined)

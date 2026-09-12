@@ -272,10 +272,9 @@ impl Tool for ChannelReadTool {
         // Advance the session's digest read mark to the newest returned
         // line — only on success and only when the page was non-empty.
         // Best-effort: a persistence failure must not fail the read.
-        if let (Some(session_key), Some(mark)) = (
-            ctx.session_id.clone().filter(|s| !s.is_empty()),
-            max_seen,
-        ) {
+        if let (Some(session_key), Some(mark)) =
+            (ctx.session_id.clone().filter(|s| !s.is_empty()), max_seen)
+        {
             if let Err(e) = self
                 .port
                 .advance_read_mark(&channel_id, &session_key, mark)
@@ -408,11 +407,10 @@ mod tests {
             session_key: &str,
             mark: String,
         ) -> peko_channel::Result<()> {
-            self.advanced.lock().await.push((
-                channel.clone(),
-                session_key.to_string(),
-                mark,
-            ));
+            self.advanced
+                .lock()
+                .await
+                .push((channel.clone(), session_key.to_string(), mark));
             Ok(())
         }
 
@@ -811,10 +809,7 @@ mod tests {
 
         let tool = ChannelReadTool::new(port.clone());
         let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str() }),
-                &ctx_with(alice),
-            )
+            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx_with(alice))
             .await
             .unwrap();
         assert_eq!(got["events"].as_array().unwrap().len(), 1);

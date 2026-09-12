@@ -39,10 +39,7 @@ pub mod dto;
 pub mod subagent_runtime;
 
 pub use agent::{AgentArgs, AgentTool};
-pub use dto::{
-    ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult,
-    SubagentRunView,
-};
+pub use dto::{ExecutionConfig, SpawnCleanupPolicy, SpawnError, SubagentResult, SubagentRunView};
 pub use subagent_runtime::{SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime};
 
 // Phase F4: `agent_compat` exposes the executor-typed constructor

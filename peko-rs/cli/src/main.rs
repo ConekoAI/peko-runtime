@@ -12,9 +12,9 @@ use std::io::Write;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crate::commands::{
-    audit, auth, channel, config, credential, daemon, from_cli,
-    init_logging, log, model, principal, quota, registry, runtime, search, send, stop,
-    system, tunnel, update, vault, version, Cli, Commands, GlobalPaths,
+    audit, auth, channel, config, credential, daemon, from_cli, init_logging, log, model,
+    principal, quota, registry, runtime, search, send, stop, system, tunnel, update, vault,
+    version, Cli, Commands, GlobalPaths,
 };
 
 // `peko-rs/cli/` is a binary-only crate (no `src/lib.rs`), so the

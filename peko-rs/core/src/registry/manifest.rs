@@ -662,10 +662,7 @@ impl RegistryManifest {
             {
                 self.principal_name = Some(v.to_string());
             }
-            if let Some(v) = map
-                .get("dev.pekohub.extensionId")
-                .and_then(|v| v.as_str())
-            {
+            if let Some(v) = map.get("dev.pekohub.extensionId").and_then(|v| v.as_str()) {
                 self.extension_id = Some(v.to_string());
             }
         }

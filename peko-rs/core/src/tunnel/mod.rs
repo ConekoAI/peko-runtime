@@ -46,7 +46,7 @@ pub use protocol::TunnelMessage;
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::TunnelChannelPort;
 pub use tunnel_channel_signature::{
-    sign_channel_event, verify_channel_event, ChannelSignedFields, CHANNEL_SIGNATURE_DOMAIN,
-    sign_channel_invite, verify_channel_invite, ChannelInviteSignedFields,
-    CHANNEL_INVITE_SIGNATURE_DOMAIN,
+    sign_channel_event, sign_channel_invite, verify_channel_event, verify_channel_invite,
+    ChannelInviteSignedFields, ChannelSignedFields, CHANNEL_INVITE_SIGNATURE_DOMAIN,
+    CHANNEL_SIGNATURE_DOMAIN,
 };

@@ -2068,7 +2068,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !events.iter().any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
+            !events
+                .iter()
+                .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
                 if *author == principal.to_string())),
             "nothing may be posted when the steering was already drained; got {events:?}"
         );
@@ -2123,7 +2125,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !events.iter().any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
+            !events
+                .iter()
+                .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
                 if *author == principal.to_string())),
             "a non-collision failure posts nothing; got {events:?}"
         );

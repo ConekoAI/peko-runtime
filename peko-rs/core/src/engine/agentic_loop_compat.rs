@@ -20,11 +20,11 @@ mod tests {
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use peko_auth::Subject;
     use peko_engine::AgenticEvent;
+    use peko_engine::StackedMeteredProvider;
     use peko_engine::{AgentView, AgenticLoop, LifecyclePhase, SessionView};
     use peko_message::{ContentBlock, LlmMessage, MessageRole};
     use peko_provider_api::StopReason;
     use peko_providers::{AnyAdapter, MockAdapter, Provider};
-    use peko_engine::StackedMeteredProvider;
     use peko_quota::QuotaScope;
     use peko_session::manager::SessionManager;
     use peko_session::Session;

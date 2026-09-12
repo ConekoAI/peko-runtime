@@ -93,8 +93,7 @@ fn send_default_response_streams_to_stdout() {
 
     let _daemon = DaemonGuard::spawn(&cli);
 
-    let (stdout, stderr, status) =
-        send(&cli, &["send", "test-agent", "Hello there"]);
+    let (stdout, stderr, status) = send(&cli, &["send", "test-agent", "Hello there"]);
     assert_send_ok(&stdout, &stderr, &status);
     // The CI mock LLM is configured with `DEFAULT_RESPONSE=SUCCESS` in
     // tests/docker/docker-compose.integration.yml — every prompt that
@@ -160,12 +159,7 @@ fn send_file_option_reads_message_from_file() {
 
     let (stdout, stderr, status) = send(
         &cli,
-        &[
-            "send",
-            "file-agent",
-            "--file",
-            test_file.to_str().unwrap(),
-        ],
+        &["send", "file-agent", "--file", test_file.to_str().unwrap()],
     );
     assert_send_ok(&stdout, &stderr, &status);
     assert!(
@@ -291,15 +285,9 @@ fn send_posts_both_directions_to_peer_dm_channel() {
 
     let _daemon = DaemonGuard::spawn(&cli);
 
-    let (stdout, stderr, status) = send(
-        &cli,
-        &["send", "dm-agent", "FIRST_DM_MESSAGE"],
-    );
+    let (stdout, stderr, status) = send(&cli, &["send", "dm-agent", "FIRST_DM_MESSAGE"]);
     assert_send_ok(&stdout, &stderr, &status);
-    let (stdout, stderr, status) = send(
-        &cli,
-        &["send", "dm-agent", "SECOND_DM_MESSAGE"],
-    );
+    let (stdout, stderr, status) = send(&cli, &["send", "dm-agent", "SECOND_DM_MESSAGE"]);
     assert_send_ok(&stdout, &stderr, &status);
 
     let logs = channel_event_logs(cli.home());
@@ -310,10 +298,14 @@ fn send_posts_both_directions_to_peer_dm_channel() {
     );
 
     let rows = posted_rows(&logs[0]);
-    let inbound: Vec<&(String, String)> =
-        rows.iter().filter(|(author, _)| author.starts_with("user:")).collect();
-    let replies: Vec<&(String, String)> =
-        rows.iter().filter(|(author, _)| author.starts_with("prin_")).collect();
+    let inbound: Vec<&(String, String)> = rows
+        .iter()
+        .filter(|(author, _)| author.starts_with("user:"))
+        .collect();
+    let replies: Vec<&(String, String)> = rows
+        .iter()
+        .filter(|(author, _)| author.starts_with("prin_"))
+        .collect();
 
     let inbound_texts: Vec<&str> = inbound.iter().map(|(_, text)| text.as_str()).collect();
     assert_eq!(
