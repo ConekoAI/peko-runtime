@@ -88,17 +88,47 @@
 //!   `has_active_subagent_run_for_child` guard: the driver's executor
 //!   deliberately shares the root agent's global registry key
 //!   (`default_root_prompt().name`), so both paths see each other's
-//!   runs and the loser is refused with `err_run_active` (logged, turn
-//!   skipped).
+//!   runs and the loser is refused with `err_run_active`.
+//! - **Run-active collision → queued steering.** An `err_run_active`
+//!   refusal (and ONLY that refusal — every other failure keeps the
+//!   log-only skip below) is NOT dropped: the post text is pushed into
+//!   the bound session's daemon-shared steering inbox
+//!   (`SteeringMessage::new(text)`), the same conversion the IPC
+//!   ingress path uses. The running loop drains steering as user-role
+//!   input at its next iteration boundary, whichever path drives that
+//!   run, so the post reaches the agent with the live turn's own
+//!   delivery semantics — and gets NO threaded channel reply from the
+//!   responder. Leftover watch: steering pushed during the active
+//!   run's FINAL iteration would sit undrained forever (the IPC
+//!   path's "Gap-2" race), so the responder — still holding
+//!   `turn_lock`, preserving per-channel ordering — polls until the
+//!   session's run ends (bounded by the driver's turn timeout +
+//!   `COMPLETION_WAIT_MARGIN_SECS` + slack), then atomically drains
+//!   the inbox and drives one successor turn per leftover message,
+//!   posting each reply as a ROOT post (the original event
+//!   correlation is lost once converted to steering, so there is
+//!   nothing to thread onto; principal-authored root posts are
+//!   self-suppressed by `response_trigger`, so this is loop-safe).
+//!   An empty drain means the active run consumed the steering
+//!   itself — the common case — and nothing more happens; a wait
+//!   timeout leaves the steering queued for a future run (no
+//!   infinite retry). IPC-queued and collision-queued steering share
+//!   the inbox; the atomic `drain_all` means whoever drains it
+//!   drives the turn — no double-driving.
 //! - **Failure policy: log-only.** A failed resolution or turn logs a
 //!   warning and posts NOTHING — a broken binding must never error-spam
 //!   a channel its other members read. (The trunk/cron paths follow the
 //!   same log-only idiom.)
 //! - **Restart semantics.** Subscriber cursors are persisted (Phase 0)
 //!   and loaded at spawn; a daemon restart does not re-fire channel
-//!   history through the responder. Caveat: a message whose turn task
-//!   was in flight when the daemon died is not retried (the cursor
-//!   advanced past it at delivery) — at-most-once delivery, by design.
+//!   history through the responder. Delivery is still at-most-once
+//!   across a daemon death: a message whose turn task was in flight
+//!   when the daemon died is not retried (the cursor advanced past it
+//!   at delivery), and collision-queued steering lives in the
+//!   in-memory inbox registry, so a restart drops it too. Within a
+//!   daemon lifetime, though, a wake is never silently dropped: it
+//!   either drives a turn, converts to steering (above), or logs the
+//!   failure.
 //!
 //! ## ADR-049 Phase 3: the group wake (D4)
 //!
@@ -134,8 +164,10 @@
 //! serializes wake runs for one (principal, channel) — a second user
 //! post arriving mid-run queues behind the first and gets its own turn
 //! — and `resume_and_execute`'s `has_active_subagent_run_for_child`
-//! guard refuses cross-path double-runs (a root agent resuming the
-//! same group child mid-wake loses with `err_run_active`, logged).
+//! guard refuses cross-path double-runs. A wake that loses that race
+//! (a root agent resuming the same group child mid-wake) converts to
+//! queued steering via the shared `run_turn` collision path — see the
+//! "Run-active collision" bullet above.
 //!
 //! There is no duplicate-run path for `peko send group:` (Phase 2):
 //! the `ChannelPost` IPC handler posts the message and nothing more —
@@ -160,6 +192,7 @@ use peko_channel::{
     ChannelCursors, ChannelEvent, ChannelId, ChannelMeter, ChannelPort, ChannelResponder,
     ChannelSubscriber, NoopChannelResponder, PostMsg, RespondCtx, SubscriptionConfig,
 };
+use peko_extension_api::{AsyncInboxItem, SteeringMessage};
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
 use peko_subject::{PrincipalId, Subject};
@@ -169,6 +202,7 @@ use crate::extensions::framework::async_exec::executor::registry::TaskMetadata;
 use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::Principal;
+use crate::session::ownership::is_run_active_error;
 
 /// Extra slack on top of the turn's own timeout when waiting for a
 /// bound-session run to reach a terminal registry state.
@@ -187,12 +221,49 @@ const COMPLETION_POLL_MS: u64 = 50;
 /// and returns the final response text. Trait seam so the responder's
 /// decision logic is unit-testable without a provider; the production
 /// impl is [`SubagentResumeDriver`].
+///
+/// The three collision-seam methods (`steering_inbox`,
+/// `has_active_run`, `active_run_wait_bound`) support the run-active
+/// collision path: when `drive_turn` refuses with `err_run_active`,
+/// the responder converts the post to queued steering via
+/// [`Self::steering_inbox`], polls [`Self::has_active_run`] until the
+/// in-flight run ends (bounded by [`Self::active_run_wait_bound`]),
+/// and drives successor turns for whatever steering was left
+/// undrained. They ride this trait (rather than extra fields on
+/// `ResponderInner`) because `ResponderInner` already holds the driver
+/// and the probe must stay stubbable in tests. The defaults disable
+/// the collision path entirely (the wake keeps the log-only skip).
 #[async_trait]
 pub(crate) trait BoundTurnDriver: Send + Sync + 'static {
     /// Run a turn in `session_id` (a canonical id — the responder
     /// resolves `/`-paths before calling) with `message` as the user
     /// input. Returns the final response text.
     async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String>;
+
+    /// The daemon-shared steering inbox registry this driver's turns
+    /// drain, when bound. `None` (the default) disables the run-active
+    /// collision conversion — the wake stays log-only.
+    fn steering_inbox(&self) -> Option<Arc<peko_session::InboxRegistry>> {
+        None
+    }
+
+    /// `true` while a run is in flight for `session_id` — the same
+    /// check `drive_turn`'s preflight refuses on, keyed by the same
+    /// canonical session id. Default: `false`.
+    async fn has_active_run(&self, session_id: &str) -> bool {
+        let _ = session_id;
+        false
+    }
+
+    /// Upper bound for the post-collision leftover watch: how long the
+    /// in-flight run may still take. Mirrors `drive_turn`'s own
+    /// completion wait (`ExecutionConfig::timeout_seconds` +
+    /// [`COMPLETION_WAIT_MARGIN_SECS`]) plus a small slack.
+    fn active_run_wait_bound(&self) -> Duration {
+        Duration::from_secs(
+            ExecutionConfig::default().timeout_seconds + COMPLETION_WAIT_MARGIN_SECS + 5,
+        )
+    }
 }
 
 /// Resolves a channel's passive binding (raw session id or `/path`) to
@@ -351,11 +422,136 @@ impl ResponderInner {
                 }
             }
             Err(e) => {
+                // Run-active collision: another path (Agent-tool
+                // resume, streaming ingress) is driving a run on the
+                // bound session. Convert the wake to queued steering
+                // instead of dropping it — see `handle_busy_collision`
+                // and the module docs' "Run-active collision" bullet.
+                // Every other failure keeps the log-only skip.
+                if is_run_active_error(&e) {
+                    self.handle_busy_collision(&session_id, &text).await;
+                } else {
+                    warn!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: turn failed (posting nothing): {e:#}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Run-active collision recovery: the bound session already has a
+    /// run in flight, so the wake could not drive its own turn. Push
+    /// the post into the session's daemon-shared steering inbox — the
+    /// running loop drains steering as user-role input at its next
+    /// iteration boundary, whichever path drives that run — then
+    /// watch for leftovers: steering pushed during the active run's
+    /// FINAL iteration would sit undrained forever (the IPC ingress
+    /// path's "Gap-2" race, see `drain_pending_steering` in
+    /// `ipc::handlers::principal`). Still holding `turn_lock`, so
+    /// per-channel ordering is preserved.
+    ///
+    /// Once the active run ends, atomically drain the inbox and drive
+    /// one successor turn per leftover steering message, posting each
+    /// reply as a ROOT post — NOT threaded: the original event
+    /// correlation is lost once the post was converted to steering, so
+    /// there is nothing to thread onto. Principal-authored root posts
+    /// are self-suppressed by `response_trigger`, so this is
+    /// loop-safe. An empty drain means the active run consumed the
+    /// steering itself (the common case) and nothing more happens; a
+    /// wait timeout leaves the steering queued for a future run (no
+    /// infinite retry).
+    async fn handle_busy_collision(&self, session_id: &str, text: &str) {
+        let Some(inbox_registry) = self.driver.steering_inbox() else {
+            warn!(
+                channel = %self.channel,
+                session = %session_id,
+                "channel binding: run-active collision but no steering inbox is bound; \
+                 dropping the wake (log-only)"
+            );
+            return;
+        };
+
+        // Same call shape as the IPC ingress path
+        // (`PrincipalManager`'s serial-queue fallback).
+        inbox_registry
+            .get_or_create(session_id)
+            .await
+            .push(SteeringMessage::new(text.to_string()).into())
+            .await;
+        debug!(
+            channel = %self.channel,
+            session = %session_id,
+            "channel binding: run-active collision converted to queued steering"
+        );
+
+        // Leftover watch: poll until the in-flight run ends, bounded
+        // by the driver's turn-timeout-derived bound.
+        let deadline = tokio::time::Instant::now() + self.driver.active_run_wait_bound();
+        loop {
+            if !self.driver.has_active_run(session_id).await {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
                 warn!(
                     channel = %self.channel,
                     session = %session_id,
-                    "channel binding: turn failed (posting nothing): {e:#}"
+                    "channel binding: active run outlasted the collision watch; \
+                     steering stays queued for a future run"
                 );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
+        }
+
+        // Atomic drain: IPC-queued and collision-queued steering share
+        // the inbox; whoever drains it drives the turn, so there is no
+        // double-driving. An empty drain is the common case — the
+        // active run consumed the steering at its own iteration
+        // boundary.
+        let Some(inbox) = inbox_registry.peek_inbox(session_id).await else {
+            return;
+        };
+        let leftovers = inbox.drain_all().await;
+        for item in leftovers {
+            // Completion envelopes are not ours to drive; the IPC
+            // drain (`drain_pending_steering`) filters them out the
+            // same way.
+            let AsyncInboxItem::Steering(envelope) = item else {
+                continue;
+            };
+            match self.driver.drive_turn(session_id, &envelope.content).await {
+                Ok(reply) => {
+                    let reply = reply.trim();
+                    if reply.is_empty() {
+                        continue;
+                    }
+                    if let Err(e) = self
+                        .port
+                        .post(
+                            &self.channel,
+                            &Subject::from(&self.principal),
+                            PostMsg::root(reply),
+                        )
+                        .await
+                    {
+                        warn!(
+                            channel = %self.channel,
+                            "channel binding: successor-turn reply post failed: {e}"
+                        );
+                    }
+                }
+                Err(e) => {
+                    // No re-queue: the steering was consumed by the
+                    // drain, and an infinite retry loop is worse than
+                    // the log-only skip every other failure gets.
+                    warn!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: successor turn failed (posting nothing): {e:#}"
+                    );
+                }
             }
         }
     }
@@ -651,6 +847,22 @@ impl BoundTurnDriver for SubagentResumeDriver {
                 }
             }
         }
+    }
+
+    /// The daemon-shared steering inbox the executor was bound to at
+    /// construction (`PeerChildTurns::build` passes the principal
+    /// manager's registry), so collision-queued steering lands in the
+    /// same inbox the running loop drains.
+    fn steering_inbox(&self) -> Option<Arc<peko_session::InboxRegistry>> {
+        self.executor.inbox_registry()
+    }
+
+    /// The same registry check `resume_and_execute`'s preflight
+    /// refuses on, keyed by the same canonical child session id the
+    /// responder resolved (resolution is the identity for an
+    /// already-canonical id, so the keys cannot drift).
+    async fn has_active_run(&self, session_id: &str) -> bool {
+        self.executor.has_active_run_for_child(session_id).await
     }
 }
 
@@ -1274,7 +1486,7 @@ mod tests {
 
     async fn bound_responder(
         label_principal: &str,
-        driver: StubDriver,
+        driver: impl BoundTurnDriver,
         resolver: StubResolver,
     ) -> (
         PassiveBindingResponder,
@@ -1613,6 +1825,280 @@ mod tests {
                 .iter()
                 .any(|ev| matches!(ev, ChannelEvent::Posted { .. })),
             "empty replies must not be posted; got {events:?}"
+        );
+    }
+
+    // -- run-active collision → steering conversion ---------------------
+
+    /// Stub driver for the collision path: the FIRST `drive_turn`
+    /// fails with a caller-supplied error (the collision refusal);
+    /// later calls succeed with `reply`. `has_active_run` reports
+    /// `active_runs > 0` so the test controls when the "colliding
+    /// run" ends, and `steering_inbox` hands out a shared registry
+    /// the test can observe.
+    struct CollisionStubDriver {
+        calls: Arc<StdMutex<Vec<(String, String)>>>,
+        reply: String,
+        inbox: Arc<peko_session::InboxRegistry>,
+        active_runs: Arc<AtomicUsize>,
+        first_error: StdMutex<Option<anyhow::Error>>,
+    }
+
+    impl CollisionStubDriver {
+        fn new(reply: &str, first_error: anyhow::Error) -> Self {
+            Self {
+                calls: Arc::new(StdMutex::new(Vec::new())),
+                reply: reply.to_string(),
+                inbox:
+                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                active_runs: Arc::new(AtomicUsize::new(0)),
+                first_error: StdMutex::new(Some(first_error)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl BoundTurnDriver for CollisionStubDriver {
+        async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), message.to_string()));
+            if let Some(err) = self.first_error.lock().unwrap().take() {
+                return Err(err);
+            }
+            Ok(self.reply.clone())
+        }
+
+        fn steering_inbox(&self) -> Option<Arc<peko_session::InboxRegistry>> {
+            Some(Arc::clone(&self.inbox))
+        }
+
+        async fn has_active_run(&self, _session_id: &str) -> bool {
+            self.active_runs.load(Ordering::SeqCst) > 0
+        }
+    }
+
+    /// Collision with no active run by the time the watcher polls:
+    /// the post converts to steering, the watcher's first poll sees
+    /// the run gone, the drain picks the steering back up, and a
+    /// successor turn drives it — with the reply posted as a ROOT
+    /// post (the original event correlation is lost in the steering
+    /// conversion, so there is nothing to thread onto).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_active_collision_converts_to_steering_and_drives_successor() {
+        let driver = CollisionStubDriver::new(
+            "the successor reply",
+            crate::session::ownership::err_run_active("session-1"),
+        );
+        let calls = Arc::clone(&driver.calls);
+        let inbox_registry = Arc::clone(&driver.inbox);
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        let other = pid("prin_other");
+        store
+            .invite(&channel, &principal, &Subject::from(&other))
+            .await
+            .unwrap();
+        let line = store
+            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
+            .await
+            .unwrap();
+
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                &line,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+
+        // Two drive_turn calls: the refused wake, then the successor
+        // turn for the leftover steering (same session, same text).
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
+        assert_eq!(
+            calls.lock().unwrap()[0],
+            ("session-1".to_string(), "hi".to_string())
+        );
+        assert_eq!(
+            calls.lock().unwrap()[1],
+            ("session-1".to_string(), "hi".to_string())
+        );
+
+        // The steering round-tripped through the inbox: the watcher
+        // drained it, so nothing is left queued.
+        let inbox = inbox_registry.get_or_create("session-1").await;
+        assert!(
+            inbox.drain_all().await.is_empty(),
+            "the watcher must have drained the collision steering"
+        );
+
+        // The successor reply lands as a ROOT post (parent: None),
+        // NOT threaded onto the triggering event.
+        let store2 = Arc::clone(&store);
+        let channel2 = channel.clone();
+        let principal2 = principal.clone();
+        assert!(
+            eventually(|| async {
+                store2
+                    .peek(&channel2, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|ev| {
+                        matches!(ev, ChannelEvent::Posted { author, text, parent, .. }
+                    if *author == principal2.to_string()
+                        && text == "the successor reply"
+                        && parent.is_none())
+                    })
+            })
+            .await,
+            "successor reply must land as a ROOT post"
+        );
+    }
+
+    /// Collision where the ACTIVE RUN drains the steering itself (the
+    /// common case): the watcher finds the inbox empty after the run
+    /// ends, drives NO successor, and posts nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_active_collision_drained_by_active_run_posts_nothing() {
+        let driver = CollisionStubDriver::new(
+            "unused",
+            crate::session::ownership::err_run_active("session-1"),
+        );
+        let calls = Arc::clone(&driver.calls);
+        let active_runs = Arc::clone(&driver.active_runs);
+        // The colliding run is in flight when the wake hits.
+        active_runs.store(1, Ordering::SeqCst);
+        let drain_registry = Arc::clone(&driver.inbox);
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        // Simulate the active run's iteration-boundary drain: wait
+        // for the steering to land, drain it, then mark the run
+        // finished — the watcher's next poll sees the run gone and
+        // its drain comes back empty.
+        let drain_active = Arc::clone(&active_runs);
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(inbox) = drain_registry.peek_inbox("session-1").await {
+                    if !inbox.drain_all().await.is_empty() {
+                        break;
+                    }
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "collision steering never landed in the inbox"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            drain_active.store(0, Ordering::SeqCst);
+        });
+
+        let other = pid("prin_other");
+        store
+            .invite(&channel, &principal, &Subject::from(&other))
+            .await
+            .unwrap();
+        let line = store
+            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
+            .await
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                &line,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+
+        // The refused wake happened, and the simulated run ended.
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        assert!(eventually(|| async { active_runs.load(Ordering::SeqCst) == 0 }).await);
+        // Give the watcher time to run its (empty) drain and exit.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "no successor turn when the active run drained the steering itself"
+        );
+        let events = store
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        assert!(
+            !events.iter().any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
+                if *author == principal.to_string())),
+            "nothing may be posted when the steering was already drained; got {events:?}"
+        );
+    }
+
+    /// A non-run-active driver failure keeps the log-only skip: no
+    /// steering is queued, no successor turn, no posts.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_run_active_error_stays_log_only() {
+        let driver = CollisionStubDriver::new("unused", anyhow::anyhow!("provider exploded"));
+        let calls = Arc::clone(&driver.calls);
+        let inbox_registry = Arc::clone(&driver.inbox);
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, store, channel, principal, _tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+
+        let other = pid("prin_other");
+        store
+            .invite(&channel, &principal, &Subject::from(&other))
+            .await
+            .unwrap();
+        let line = store
+            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
+            .await
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                &line,
+                posted("prin_other", "hi"),
+            ))
+            .await
+            .unwrap();
+
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "a non-collision failure must not drive a successor turn"
+        );
+        assert!(
+            inbox_registry.peek_inbox("session-1").await.is_none(),
+            "a non-collision failure must not queue steering"
+        );
+        let events = store
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        assert!(
+            !events.iter().any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
+                if *author == principal.to_string())),
+            "a non-collision failure posts nothing; got {events:?}"
         );
     }
 

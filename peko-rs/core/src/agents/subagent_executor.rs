@@ -676,6 +676,29 @@ impl SubagentExecutor {
         self.unified_executor.registry()
     }
 
+    /// The daemon-shared inbox registry bound via
+    /// [`Self::with_inbox_registry`], if any. The channel-binding
+    /// responder uses it to convert an `err_run_active` wake collision
+    /// into queued steering (see `daemon::channel_binding`).
+    #[must_use]
+    pub fn inbox_registry(&self) -> Option<Arc<peko_session::InboxRegistry>> {
+        self.inbox_registry.clone()
+    }
+
+    /// `true` while a run registered against `child_session_key` is in
+    /// flight — the same registry check [`Self::resume_preflight`]
+    /// refuses on. The key is the canonical child session id
+    /// `resume_preflight` computes via
+    /// `peko_session::path::resolve_reference` (for an
+    /// already-canonical id the resolution is the identity, so callers
+    /// holding a canonical id can pass it verbatim).
+    pub async fn has_active_run_for_child(&self, child_session_key: &str) -> bool {
+        self.registry()
+            .read()
+            .await
+            .has_active_subagent_run_for_child(child_session_key)
+    }
+
     /// Get a reference to the async queue manager
     #[must_use]
     pub fn async_queue_manager(&self) -> &SharedAsyncResultQueueManager {

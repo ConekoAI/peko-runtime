@@ -298,6 +298,20 @@ pub fn err_run_active(target: &str) -> anyhow::Error {
     )
 }
 
+/// `true` when `err` (or anything in its `anyhow` chain) is an
+/// [`err_run_active`] refusal. Cross-layer callers that want to
+/// distinguish the run-active collision from generic failures match
+/// on the fixed wording — string-matching anyhow errors is the
+/// established pattern for that in this codebase (e.g. the IPC
+/// streaming handler's cancel detection). The channel-binding
+/// responder uses this to convert the collision into queued steering
+/// instead of dropping the wake.
+#[must_use]
+pub fn is_run_active_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|e| e.to_string().contains("has an active run in flight"))
+}
+
 /// `compact` on an archived session.
 ///
 /// B3 cleanup: the archived-write chain (`set_archived` /
@@ -412,6 +426,20 @@ mod tests {
             meta("spawn2", Some("root:user:alice")),
             meta("child1", Some("spawn1")),
         ]
+    }
+
+    #[test]
+    fn is_run_active_error_matches_the_err_run_active_shape() {
+        // Positive: the bare refusal, and the same refusal wrapped in
+        // a caller's context (matching through the anyhow chain).
+        assert!(is_run_active_error(&err_run_active("session-1")));
+        let wrapped = err_run_active("session-1").context("bound-session turn failed");
+        assert!(is_run_active_error(&wrapped));
+
+        // Negative: other ownership refusals and unrelated errors.
+        assert!(!is_run_active_error(&err_resume_self("session-1")));
+        assert!(!is_run_active_error(&err_resume_archived("session-1")));
+        assert!(!is_run_active_error(&anyhow::anyhow!("provider exploded")));
     }
 
     #[test]

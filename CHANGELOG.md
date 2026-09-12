@@ -4,6 +4,37 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel-binding wake collision converts to queued steering (2026-09-12)
+
+- **A channel wake that collides with an active run is no longer
+  dropped** — when `PassiveBindingResponder`/`GroupWakeResponder` loses
+  `resume_and_execute`'s `has_active_subagent_run_for_child` race (an
+  Agent-tool resume or streaming ingress is driving the bound session),
+  `ResponderInner::run_turn` now pushes the post into the session's
+  daemon-shared steering inbox (`SteeringMessage::new(text)`, same call
+  shape as the IPC ingress serial-queue fallback) instead of logging and
+  skipping. The running loop drains steering as user-role input at its
+  next iteration boundary, whichever path drives that run.
+- **Leftover watch closes the final-iteration race** — steering pushed
+  during the active run's final iteration would sit undrained forever
+  (the IPC path's "Gap-2"), so the responder — still holding the
+  per-channel `turn_lock` — polls the run-active check (bounded by the
+  driver's turn timeout + margin + slack), then atomically drains the
+  inbox and drives one successor turn per leftover message, posting each
+  reply as a channel ROOT post (threading correlation is lost in the
+  steering conversion; principal-authored root posts are self-suppressed
+  by `response_trigger`, so this is loop-safe). An empty drain (the
+  common case — the active run consumed the steering) does nothing; a
+  wait timeout leaves the steering queued for a future run. Only the
+  `err_run_active` shape takes this path (`ownership::is_run_active_error`
+  matches it through the anyhow chain); every other failure keeps the
+  log-only skip.
+- **New public surface** — `session::ownership::is_run_active_error`;
+  `SubagentExecutor::{inbox_registry, has_active_run_for_child}`
+  accessors (see API_SURFACE.md). The collision seam rides the
+  crate-internal `BoundTurnDriver` trait, so both DM and group wakes are
+  covered (group inputs already carry `{author}: {text}` attribution).
+
 ### ADR-052 e2e findings: generated sections for bare prompt bodies + label fix (2026-09-11)
 
 - **Frozen prefix gains generated sections for placeholder-free bodies** —

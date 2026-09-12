@@ -999,6 +999,21 @@ items:
 | `BindSpec.{section, priority}` + `PromptSection` bind point | `extensions::workspace_hooks` | ✅ New | D6: `hook.toml` binds may name `point = "PromptSection"` with a non-empty `section` (control chars/newlines rejected) and optional `priority` (default 100) → `HookPoint::PromptSystemSection`; the command's stdout becomes a `## <name>` runtime-context tail section |
 | `RuntimeContextState` custom-section map + `take_changed_custom` | `peko_engine::prompt::renderer` | ✅ New | D6: open `HashMap<String, String>` change tracker for workspace-hook sections; shares the D2 notice-decision helper (`take_changed_cell`) with the fixed slots — notices always on, label = section name. `render_runtime_context` dedupes `registered_prompt_sections` against the built-in dispatches and renders sorted for byte-stable ordering |
 
+### Channel-binding wake collision → queued steering (2026-09-12)
+
+Branch `fix/channel-wake-steering-on-collision`; see the module docs in
+`daemon::channel_binding` ("Run-active collision" bullet). A channel wake
+that loses `resume_and_execute`'s run-active guard is no longer dropped —
+it converts to queued steering in the bound session's daemon-shared inbox,
+with a bounded leftover watch that drives successor turns (replies posted
+as channel ROOT posts). New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ownership::is_run_active_error` | `session::ownership` | ✅ New | anyhow-chain matcher for the `err_run_active` wording — lets the channel responder distinguish the run-active collision (convert to steering) from generic failures (log-only skip) |
+| `SubagentExecutor::inbox_registry` | `agents::subagent_executor` | ✅ New | Accessor for the daemon-shared `InboxRegistry` bound via `with_inbox_registry` (the steering push target) |
+| `SubagentExecutor::has_active_run_for_child` | `agents::subagent_executor` | ✅ New | The `resume_preflight` run-active registry check as a probe, keyed by the same canonical child session id (the collision watcher's poll) |
+
 ---
 
 ## Test Coverage Requirements
