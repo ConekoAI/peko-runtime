@@ -326,6 +326,7 @@ impl PrincipalManager {
         config: PrincipalConfig,
     ) -> Result<Arc<Principal>, PrincipalManagerError> {
         let name = config.name.clone();
+        config.warn_deprecated_children(&name);
         {
             let by_name = self.principals_by_name.read().await;
             if by_name.contains_key(&name) {
@@ -449,6 +450,7 @@ impl PrincipalManager {
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
 
         let name = config.name.clone();
+        config.warn_deprecated_children(&name);
         {
             let by_name = self.principals_by_name.read().await;
             if let Some(id) = by_name.get(&name) {

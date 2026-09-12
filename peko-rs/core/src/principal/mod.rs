@@ -21,7 +21,6 @@ pub mod capability_evaluator;
 pub mod catalog;
 pub(crate) mod channel_digest;
 pub(crate) mod child_turns;
-pub mod children;
 pub mod config;
 pub mod context;
 pub mod default_nodes;

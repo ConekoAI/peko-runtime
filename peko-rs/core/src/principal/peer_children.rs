@@ -34,7 +34,7 @@
 //!
 //! Creation is serialized by holding the shared per-principal
 //! `SessionManager` write lock across the whole find-or-create (the
-//! `ensure_declared_children` pattern): every ingress path for a
+//! former `ensure_declared_children` pattern): every ingress path for a
 //! principal shares one manager, so concurrent first-contact for the
 //! same peer cannot double-create.
 
@@ -47,7 +47,6 @@ use peko_session::path::MAX_SLUG_LEN;
 use peko_session::{SessionCreateOptions, SessionMetadata};
 use tokio::sync::RwLock;
 
-use crate::principal::children::find_declared_child;
 use crate::principal::routers::root::trunk_session_id;
 
 /// Upper bound on `-N` suffix attempts when a peer's derived slug
@@ -117,16 +116,41 @@ pub fn find_peer_child(metas: &[SessionMetadata], peer: &Subject) -> Option<Stri
     find_standing_child(metas, &base_slug, peer)
 }
 
+/// A standing spawn child of the trunk carrying exactly `slug` (any
+/// peer). The successor of `children::find_declared_child` (which died
+/// with declared-children provisioning): peer-child identity now keys
+/// on the stamped peer, not on `principal.toml` declarations.
+fn find_trunk_standing_child<'a>(
+    metas: &'a [SessionMetadata],
+    trunk: &str,
+    slug: &str,
+) -> Option<&'a SessionMetadata> {
+    metas.iter().find(|m| {
+        m.slug.as_deref() == Some(slug)
+            && m.standing
+            && m.trigger == "spawn"
+            && m.parent_session_id
+                .as_ref()
+                .map(|p| p.to_string())
+                .as_deref()
+                == Some(trunk)
+    })
+}
+
 /// The shared find half of the standing-child match rule: walk
 /// `base`, `base-2`, … under the trunk for a standing spawn child
 /// stamped with THIS peer. Factored out of [`find_peer_child`] so
 /// [`ensure_group_child`] (ADR-049 Phase 3) matches on its own slug
 /// space instead of the peer-derived one.
-fn find_standing_child(metas: &[SessionMetadata], base_slug: &str, peer: &Subject) -> Option<String> {
+fn find_standing_child(
+    metas: &[SessionMetadata],
+    base_slug: &str,
+    peer: &Subject,
+) -> Option<String> {
     let trunk = trunk_session_id();
     for attempt in 0..MAX_SLUG_ATTEMPTS {
         let candidate = suffixed_slug(base_slug, attempt);
-        match find_declared_child(metas, &trunk, &candidate) {
+        match find_trunk_standing_child(metas, &trunk, &candidate) {
             Some(m) if peer_matches(m, peer) => return Some(m.session_id.to_string()),
             Some(_) => continue,
             None => return None,
@@ -142,7 +166,7 @@ fn find_standing_child(metas: &[SessionMetadata], base_slug: &str, peer: &Subjec
 /// (`principal.toml`); the child is flagged `privileged` iff `peer ==
 /// owner` (the `/local-user` case). `agent_name` is stamped on a
 /// created session's metadata (the root agent's prompt name on the
-/// production path), matching [`crate::principal::children`].
+/// production path).
 ///
 /// Match: a session whose `slug == peer_child_slug(peer)` AND
 /// `standing == true` AND `trigger == "spawn"` whose parent chain
@@ -206,7 +230,15 @@ pub async fn ensure_group_child(
     let base_slug = group_child_base_slug(channel);
     peko_session::path::validate_slug(&base_slug)?;
     let peer = Subject::User(channel.to_string());
-    ensure_standing_child(agent_name, &peer, &base_slug, false, channel, session_manager).await
+    ensure_standing_child(
+        agent_name,
+        &peer,
+        &base_slug,
+        false,
+        channel,
+        session_manager,
+    )
+    .await
 }
 
 /// The shared find-or-create core for standing children of the trunk.
@@ -238,7 +270,7 @@ async fn ensure_standing_child(
     let mut create_slug = None;
     for attempt in 0..MAX_SLUG_ATTEMPTS {
         let candidate = suffixed_slug(base_slug, attempt);
-        match find_declared_child(&metas, &trunk, &candidate) {
+        match find_trunk_standing_child(&metas, &trunk, &candidate) {
             Some(_) => continue,
             None => {
                 create_slug = Some(candidate);
@@ -254,7 +286,7 @@ async fn ensure_standing_child(
     })?;
 
     // Create with the REAL peer stamped (not the `standing_*`
-    // placeholder `ensure_declared_children` uses).
+    // placeholder the retired declared-children path used).
     let options = SessionCreateOptions::new()
         .with_parent(trunk.clone())
         // `with_parent` presets trigger="branch"; the explicit trigger
@@ -655,7 +687,10 @@ mod tests {
         let eng_again = ensure_group_child("root", "group:eng-standup", &manager)
             .await
             .unwrap();
-        assert_eq!(eng, eng_again, "same channel must resolve to the same child");
+        assert_eq!(
+            eng, eng_again,
+            "same channel must resolve to the same child"
+        );
 
         let ops = ensure_group_child("root", "group:ops", &manager)
             .await
@@ -663,7 +698,11 @@ mod tests {
         assert_ne!(eng, ops, "distinct channels must get distinct children");
 
         let metas = metas_of(&manager).await;
-        assert_eq!(metas.len(), 2, "exactly one child per channel; got {metas:?}");
+        assert_eq!(
+            metas.len(),
+            2,
+            "exactly one child per channel; got {metas:?}"
+        );
         let child = metas
             .iter()
             .find(|m| m.session_id.to_string() == eng)

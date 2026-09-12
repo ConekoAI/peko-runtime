@@ -17,9 +17,9 @@
 //!   `PrincipalManager::create` — never at boot, never at root-agent
 //!   run setup. A principal that removes either node keeps it removed
 //!   (the Session tool has no create action, so there is no built-in
-//!   resurrection path). This is the essential difference from
-//!   `children::ensure_declared_children`, which re-creates missing
-//!   declared children on every root run.
+//!   resurrection path). This is the essential difference from the
+//!   retired `children::ensure_declared_children`, which re-created
+//!   missing declared children on every root run.
 //! - **No reserved semantics.** The nodes are ordinary sessions:
 //!   renameable, moveable, removable, subject to the same guards.
 //!   No tool action, guard, or sweeper treats them specially. The
@@ -36,11 +36,11 @@
 //!
 //! ## Dangling trunk
 //!
-//! Like `ensure_declared_children`, seeding runs before the trunk
-//! session exists (its lifecycle belongs to the engine's first
-//! self-turn): the nodes' `parent_session_id` dangles until then,
-//! which the ownership layer tolerates by design (see
-//! `children.rs` module docs, "Dangling trunk").
+//! Seeding runs before the trunk session exists (its lifecycle
+//! belongs to the engine's first self-turn): the nodes'
+//! `parent_session_id` dangles until then, which the ownership layer
+//! tolerates by design (see the retired `children.rs` docs, "Dangling
+//! trunk" — same tolerance, now exercised by this module).
 
 use std::sync::Arc;
 
@@ -85,9 +85,9 @@ pub async fn seed_default_nodes(
         if default_node_exists(&metas, &trunk, slug) {
             continue;
         }
-        // Peer subject mirrors the `standing_{name}` placeholder
-        // `ensure_declared_children` uses: these nodes are principal
-        // infrastructure, not bound to any external peer.
+        // Peer subject mirrors the `standing_{name}` placeholder the
+        // retired declared-children path used: these nodes are
+        // principal infrastructure, not bound to any external peer.
         let peer = Subject::Principal(format!("default_nodes_{slug}").into());
         let options = SessionCreateOptions::new()
             .with_parent(trunk.clone())
