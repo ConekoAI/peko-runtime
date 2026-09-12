@@ -25,6 +25,8 @@
 //!   `tick_once` is the test seam).
 //! - [`cursors`] — `ChannelCursors` (per-channel runtime-tier
 //!   "last_read_task_id" map).
+//! - [`read_marks`] — `ChannelReadMarks` (per-SESSION digest read
+//!   positions; sibling of the per-principal subscriber cursors).
 //! - [`cost`] — metering bridge (PR-3c wires `AuditChannelMeter`).
 //! - [`cli_handlers`] — handler bodies wired into `peko-rs/cli`.
 //!
@@ -75,6 +77,7 @@ pub mod cost;
 pub mod cursors;
 pub mod fs;
 pub mod port;
+pub mod read_marks;
 pub mod responder;
 pub mod store;
 pub mod subscription;
@@ -85,6 +88,7 @@ pub mod subscription;
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
+pub use read_marks::ChannelReadMarks;
 pub use port::{ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage, Tier, global_channel_port, set_global_channel_port};
 pub use store::{subject_wire_form, ChannelConfig, ChannelStore};
 pub use responder::{ChannelResponder, NoopChannelResponder, RespondCtx};

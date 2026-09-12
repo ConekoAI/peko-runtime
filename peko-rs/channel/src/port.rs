@@ -315,6 +315,37 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(None)
     }
 
+    /// Per-session digest read position: the highest line-number
+    /// [`TaskId`] `session_key` has observed on `channel`. Keyed by
+    /// session-id string in the channel's `read_marks.json` — a
+    /// sibling of the per-principal subscriber `cursors.json`, which
+    /// can never represent "what has this session been shown" (the
+    /// subscriber cursor advances on every observed event).
+    ///
+    /// The default impl returns `None` ("never observed") so adapters
+    /// without read-mark persistence (`NoopChannelPort`, in-memory
+    /// test ports) don't need to override; the digest handler treats
+    /// `None` as first-observation.
+    async fn read_mark(&self, channel: &ChannelId, session_key: &str) -> Result<Option<TaskId>> {
+        let _ = (channel, session_key);
+        Ok(None)
+    }
+
+    /// Advance `session_key`'s read position on `channel` to `mark`.
+    /// Implementations backed by the JSONL store refuse to rewind a
+    /// numeric line number (a backward-paging `ChannelRead` must not
+    /// move the digest position backwards). The default impl is a
+    /// no-op so in-memory adapters don't need to override.
+    async fn advance_read_mark(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        mark: TaskId,
+    ) -> Result<()> {
+        let _ = (channel, session_key, mark);
+        Ok(())
+    }
+
     /// PR-2b: subscribe to live events for `channel`. The returned
     /// receiver yields every event appended to the channel after this
     /// call (events appended before subscription are NOT replayed —

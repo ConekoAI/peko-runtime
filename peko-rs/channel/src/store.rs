@@ -616,6 +616,59 @@ impl ChannelStore {
     }
 
     // -----------------------------------------------------------------
+    // Read marks (per-session digest positions)
+    // -----------------------------------------------------------------
+
+    /// Resolve the channel's on-disk directory for read-mark
+    /// persistence, probing the Runtime tier first then Shared —
+    /// mirrors the `passive_binding` probe so a pinned-to-shared
+    /// channel's marks live beside its events.
+    async fn channel_dir_for_marks(&self, channel: &ChannelId) -> Result<PathBuf> {
+        let runtime_dir = self.cfg.channel_dir(channel);
+        match MetaJson::load(&runtime_dir, channel).await {
+            Ok(_) => Ok(runtime_dir),
+            Err(ChannelError::NotFound(_)) => match self.cfg.shared_channels_dir() {
+                Some(shared) => {
+                    let shared_dir = shared.join(channel_dir_name(channel));
+                    MetaJson::load(&shared_dir, channel).await?;
+                    Ok(shared_dir)
+                }
+                None => Err(ChannelError::NotFound(channel.clone())),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `session_key`'s read position on `channel` (`None` = first
+    /// observation). See [`crate::read_marks`].
+    pub async fn read_mark(&self, channel: &ChannelId, session_key: &str) -> Result<Option<TaskId>> {
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
+        Ok(marks.get(session_key).cloned())
+    }
+
+    /// Advance `session_key`'s read position to `mark`. Strictly
+    /// monotonic for numeric line-number ids: an existing mark at or
+    /// beyond `mark` makes the call a no-op (a backward-paging
+    /// `ChannelRead` must not rewind the digest position).
+    pub async fn advance_read_mark(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        mark: TaskId,
+    ) -> Result<()> {
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let mut marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
+        if let (Some(existing), Ok(new_n)) = (marks.get(session_key), mark.parse::<u64>()) {
+            if existing.parse::<u64>().map(|old_n| old_n >= new_n).unwrap_or(false) {
+                return Ok(());
+            }
+        }
+        marks.set(session_key.to_string(), mark);
+        marks.save(&chan_dir).await
+    }
+
+    // -----------------------------------------------------------------
     // Event log helpers
     // -----------------------------------------------------------------
 
@@ -1691,6 +1744,25 @@ impl ChannelPort for ChannelStore {
         }
     }
 
+    /// Per-session digest read position — delegates to the inherent
+    /// method (see `read_mark` above the trait impl). Overridden so
+    /// the trait default (`Ok(None)`, "never observed") doesn't
+    /// shadow the persisted mark on the store-backed path.
+    async fn read_mark(&self, channel: &ChannelId, session_key: &str) -> Result<Option<TaskId>> {
+        ChannelStore::read_mark(self, channel, session_key).await
+    }
+
+    /// Advance the per-session digest read position — delegates to
+    /// the inherent method (monotonic, atomic save).
+    async fn advance_read_mark(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        mark: TaskId,
+    ) -> Result<()> {
+        ChannelStore::advance_read_mark(self, channel, session_key, mark).await
+    }
+
     async fn leave(
         &self,
         channel: &ChannelId,
@@ -2226,12 +2298,65 @@ mod tests {
         }
     }
 
+    /// Per-session read marks round-trip through `read_marks.json`, and
+    /// `advance_read_mark` is monotonic: a backward page (or a stale
+    /// caller) must not rewind the digest position.
+    #[tokio::test]
+    async fn read_mark_round_trip_and_monotonic_guard() {
+        let cfg = tmp_cfg("read-marks");
+        let store = ChannelStore::new(cfg);
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("dm"))
+            .await
+            .unwrap();
+        let session_key = "sess-abc";
+
+        // First observation: no mark yet.
+        assert_eq!(
+            store.read_mark(&channel, session_key).await.unwrap(),
+            None
+        );
+
+        store
+            .advance_read_mark(&channel, session_key, "5".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read_mark(&channel, session_key).await.unwrap(),
+            Some("5".to_string())
+        );
+
+        // Forward advance persists.
+        store
+            .advance_read_mark(&channel, session_key, "9".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read_mark(&channel, session_key).await.unwrap(),
+            Some("9".to_string())
+        );
+
+        // Backward advance is refused (mark stays at the high-water line).
+        store
+            .advance_read_mark(&channel, session_key, "3".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read_mark(&channel, session_key).await.unwrap(),
+            Some("9".to_string()),
+            "read marks must never rewind"
+        );
+
+        // Marks are per-session, not global.
+        assert_eq!(store.read_mark(&channel, "other-sess").await.unwrap(), None);
+    }
+
     /// Concurrent membership changes must not lose rows: N overlapping
     /// invites all land in `members.json` (the FileLock serializes the
     /// load→mutate→save cycle).
     #[tokio::test]
-    async fn concurrent_invites_do_not_lose_members() {
-        let cfg = tmp_cfg("concurrent-invites");
+    async fn concurrent_invites_do_not_lose_members() {        let cfg = tmp_cfg("concurrent-invites");
         let store = ChannelStore::new(cfg);
         let creator = pid("prin_alice");
         let channel = store

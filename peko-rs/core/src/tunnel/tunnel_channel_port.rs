@@ -843,6 +843,30 @@ impl ChannelPort for TunnelChannelPort {
         self.local.passive_binding(channel).await
     }
 
+    /// Per-session digest read positions: delegate to the local
+    /// store, same as `passive_binding` above — read marks are a
+    /// local-persistence concern (the digest handler runs where the
+    /// session's bound channel log lives), so there is no
+    /// cross-runtime fan-out.
+    async fn read_mark(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+    ) -> Result<Option<peko_channel::port::TaskId>> {
+        self.local.read_mark(channel, session_key).await
+    }
+
+    /// Advance the per-session digest read position on the local
+    /// store (monotonic; see `ChannelStore::advance_read_mark`).
+    async fn advance_read_mark(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        mark: peko_channel::port::TaskId,
+    ) -> Result<()> {
+        self.local.advance_read_mark(channel, session_key, mark).await
+    }
+
     async fn pin_to_shared(
         &self,
         channel: &ChannelId,

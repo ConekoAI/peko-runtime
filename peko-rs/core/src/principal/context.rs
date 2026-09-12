@@ -666,6 +666,23 @@ async fn install_principal_tool_bag(
         tracing::warn!("peers session-context hook registration failed: {e}");
     }
 
+    // Channel-activity digest (2026-09-12): render "N new messages on
+    // #channel" for posts that land on the session's bound channels
+    // without a wake (same-principal posts by other agents, threaded
+    // replies, other principals' group posts, human CLI posts). Rides
+    // the same ADR-052 change-detection as the handlers above; the
+    // digest's read marks live in each channel's `read_marks.json`.
+    if let Err(e) = core
+        .register_hook(
+            HookPoint::SessionContextBuild,
+            Arc::new(crate::principal::channel_digest::ChannelDigestSessionContextHandler),
+            &ExtensionId::new("principal:channel-digest-context"),
+        )
+        .await
+    {
+        tracing::warn!("channel-digest session-context hook registration failed: {e}");
+    }
+
     // Phase 2 PR 2 (ADR-047 §2.3): MCP servers are workspace-resident.
     // The scanner walks `<workspace>/mcp/<id>/server.json` and
     // registers each with the global McpManager. After that, every

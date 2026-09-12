@@ -1684,6 +1684,7 @@ channels.
   events.jsonl    # current page: one ChannelEvent per line, append-only
   events.<n>.jsonl # rotated pages, 1 = oldest (present only after rotation)
   cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)
+  read_marks.json # per-session digest read positions (HashMap<session-id, TaskId>)
 ```
 
 The current page rotates aside to `events.<n>.jsonl` when an append
@@ -1693,6 +1694,16 @@ would push it past 8 MiB (`DEFAULT_ROTATE_BYTES`), mirroring
 never reset on rotation, so cursors, reply `parent` references, and
 `peko log` pagination survive page rolls. Pre-paging channels (a lone
 `events.jsonl`) are simply a one-page log — no migration needed.
+
+`read_marks.json` is a **sibling of `cursors.json`, not a reuse**: the
+subscriber cursor is per-principal and advances on every event the
+subscription loop observes (delivery-oriented), so it can never
+represent "what has this *session* actually been shown". Read marks
+are keyed by session id and advance only when the session's
+`{{session_context}}` digest renders (or filters) activity up to a
+line, or when its `ChannelRead` returns that line — they are what the
+channel-activity digest means by "since you last read". Both files
+share the atomic tmp+fsync+rename save convention.
 
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
 under `<shared_dir>/channels/<channel_id>/`.

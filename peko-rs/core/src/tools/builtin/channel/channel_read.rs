@@ -247,6 +247,15 @@ impl Tool for ChannelReadTool {
             }
         };
 
+        // Reading marks everything up to the newest returned line as
+        // seen by this session (2026-09-12): the `{{session_context}}`
+        // digest advances its read mark on the same (channel, session)
+        // pair, so a post the agent just read here never re-reports as
+        // "new". Captured before the events are consumed below; the
+        // store's monotonic guard keeps a backward page (`before`)
+        // from rewinding the mark.
+        let max_seen = events.last().map(|(id, _)| id.clone());
+
         // Serialize each event with its line-number id merged in, so
         // the caller can thread replies (`parent`) and page cursors.
         let events = events
@@ -259,6 +268,22 @@ impl Tool for ChannelReadTool {
                 Ok(v)
             })
             .collect::<serde_json::Result<Vec<_>>>()?;
+
+        // Advance the session's digest read mark to the newest returned
+        // line — only on success and only when the page was non-empty.
+        // Best-effort: a persistence failure must not fail the read.
+        if let (Some(session_key), Some(mark)) = (
+            ctx.session_id.clone().filter(|s| !s.is_empty()),
+            max_seen,
+        ) {
+            if let Err(e) = self
+                .port
+                .advance_read_mark(&channel_id, &session_key, mark)
+                .await
+            {
+                tracing::debug!("ChannelRead: advance_read_mark failed: {e}");
+            }
+        }
 
         Ok(json!({
             "channel": channel_id.as_str(),
@@ -287,6 +312,10 @@ mod tests {
     struct TestChannelPort {
         events: Mutex<HashMap<ChannelId, Vec<ChannelEvent>>>,
         members: AsyncMutex<HashMap<ChannelId, Vec<Subject>>>,
+        /// Recorded `(channel, session_key, mark)` for
+        /// `advance_read_mark` calls — lets tests assert the read path
+        /// advances the session's digest position.
+        advanced: AsyncMutex<Vec<(ChannelId, String, String)>>,
     }
 
     #[async_trait]
@@ -369,6 +398,22 @@ mod tests {
             _principal: &PrincipalId,
         ) -> peko_channel::Result<Vec<ChannelId>> {
             Ok(Vec::new())
+        }
+
+        /// Recording fake: the tool's read path must advance the
+        /// session's digest mark; the store-backed impl persists it.
+        async fn advance_read_mark(
+            &self,
+            channel: &ChannelId,
+            session_key: &str,
+            mark: String,
+        ) -> peko_channel::Result<()> {
+            self.advanced.lock().await.push((
+                channel.clone(),
+                session_key.to_string(),
+                mark,
+            ));
+            Ok(())
         }
 
         async fn pin_to_shared(
@@ -677,6 +722,105 @@ mod tests {
         assert!(
             res.is_err(),
             "bare execute must surface principal-missing error"
+        );
+    }
+
+    /// The read path advances the session's digest read mark to the
+    /// newest returned line id (2026-09-12 digest work).
+    #[tokio::test]
+    async fn read_advances_session_read_mark() {
+        let port = Arc::new(TestChannelPort::default());
+        let channel = chan_id();
+        let alice = PrincipalId::generate();
+        {
+            let mut members = port.members.lock().await;
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
+        }
+        {
+            let mut events = port.events.lock().unwrap();
+            events.insert(
+                channel.clone(),
+                vec![
+                    ChannelEvent::Created {
+                        channel: channel.clone(),
+                        creator: alice.0.clone(),
+                        name: "team".into(),
+                        at: "2026-08-05T12:00:00Z".into(),
+                    },
+                    ChannelEvent::Posted {
+                        channel: channel.clone(),
+                        author: "user:bob".into(),
+                        parent: None,
+                        text: "one".into(),
+                        at: "2026-08-05T12:00:30Z".into(),
+                        via: None,
+                    },
+                    ChannelEvent::Posted {
+                        channel: channel.clone(),
+                        author: alice.0.clone(),
+                        parent: None,
+                        text: "two".into(),
+                        at: "2026-08-05T12:01:00Z".into(),
+                        via: None,
+                    },
+                ],
+            );
+        }
+
+        let tool = ChannelReadTool::new(port.clone());
+        let ctx = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
+            .with_principal_id(alice.0.clone())
+            .with_session_id("sess-xyz");
+        let got = tool
+            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(got["events"].as_array().unwrap().len(), 3);
+
+        let advanced = port.advanced.lock().await;
+        assert_eq!(advanced.len(), 1, "one advance for the successful read");
+        assert_eq!(advanced[0].1, "sess-xyz");
+        assert_eq!(advanced[0].2, "3", "mark = newest returned line id");
+    }
+
+    /// Without a session id on the context, no mark is advanced
+    /// (fakes/standalone callers stay no-ops through the trait default).
+    #[tokio::test]
+    async fn read_without_session_does_not_advance_mark() {
+        let port = Arc::new(TestChannelPort::default());
+        let channel = chan_id();
+        let alice = PrincipalId::generate();
+        {
+            let mut members = port.members.lock().await;
+            members.insert(channel.clone(), vec![Subject::from(&alice)]);
+        }
+        {
+            let mut events = port.events.lock().unwrap();
+            events.insert(
+                channel.clone(),
+                vec![ChannelEvent::Posted {
+                    channel: channel.clone(),
+                    author: alice.0.clone(),
+                    parent: None,
+                    text: "one".into(),
+                    at: "2026-08-05T12:00:30Z".into(),
+                    via: None,
+                }],
+            );
+        }
+
+        let tool = ChannelReadTool::new(port.clone());
+        let got = tool
+            .execute_with_context(
+                json!({ "channel": channel.as_str() }),
+                &ctx_with(alice),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got["events"].as_array().unwrap().len(), 1);
+        assert!(
+            port.advanced.lock().await.is_empty(),
+            "no session id ⇒ no mark advance"
         );
     }
 }

@@ -4,6 +4,36 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel-activity digest in the session-context tail (2026-09-12)
+
+- **Posts that never became wakes now reach the bound agent** — while
+  an agent's loop runs, posts land on channels bound to its session
+  that are not delivered as wakes (same-principal posts by other
+  agents, threaded replies, other principals' group posts, human CLI
+  posts). A new `ChannelDigestSessionContextHandler`
+  (`SessionContextBuild`, priority 90) renders a per-iteration
+  `channel activity since you last read:` block — `N new message(s)`
+  per bound channel with up to 5 previews (`[via <path>]` when the
+  post carries the Stage A `via` attribution, else `[<author>]`) — into
+  the `{{session_context}}` section. It rides the existing ADR-052
+  change-detection, so each batch of posts is injected once and
+  unchanged iterations cost nothing.
+- **Per-session read positions** — new `read_marks.json` per channel
+  (`ChannelReadMarks`, keyed by session id) records the highest line a
+  session has observed; a sibling of the per-principal subscriber
+  `cursors.json`, which cannot express "what this session has been
+  shown". First observation adopts the current tip and renders nothing
+  (never dumps history); the mark then advances to the max line
+  observed each iteration, even when every event was filtered out.
+  `ChannelRead` also advances the mark to the newest returned line, so
+  a post the agent just read never re-reports as new.
+- **New public surface** — `ChannelReadMarks` (`peko_channel::read_marks`),
+  `ChannelPort::read_mark` / `advance_read_mark` (default no-op, so
+  in-memory adapters are unaffected), `ChannelStore` inherent +
+  trait-impl overrides (monotonic), `TunnelChannelPort` delegation, and
+  `principal::channel_digest::ChannelDigestSessionContextHandler`
+  (see API_SURFACE.md, DATA_MODEL.md §5¾).
+
 ### Channel `via` attribution on posted events (2026-09-12)
 
 - **`ChannelEvent::Posted` gains an optional `via` field** — the

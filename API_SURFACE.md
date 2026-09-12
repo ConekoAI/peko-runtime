@@ -1025,6 +1025,22 @@ posting agent's session slug path within the author's principal
 | `ChannelEvent::Posted::via` | `peko_protocol::channel` | ✅ New | Optional `Option<String>` on the wire enum (`#[serde(default, skip_serializing_if = "Option::is_none")]`) — old lines and mixed-version peers deserialize to `None`; `None` emits nothing on the wire |
 | `PostMsg::via` + `PostMsg::with_via` | `peko_channel::port` | ✅ New | Builder-stamped attribution propagated verbatim onto the persisted `Posted` event (`ChannelStore::post_attributed_with_event`); `root()`/`reply()` default to `None` |
 
+### Channel-activity digest (2026-09-12)
+
+Same branch. A `SessionContextBuild` handler renders unread channel
+activity into the `{{session_context}}` tail section, backed by
+per-session read positions (see DATA_MODEL.md §5¾.1). New/changed
+public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ChannelReadMarks` | `peko_channel::read_marks` | ✅ New | `HashMap<session-id, TaskId>` persisted at `<channel_dir>/read_marks.json`; `path_in`/`load` (missing ⇒ empty)/atomic `save` (tmp + fsync + rename), mirroring `cursors.rs`. Re-exported as `peko_channel::ChannelReadMarks` |
+| `ChannelPort::read_mark` / `advance_read_mark` | `peko_channel::port` | ✅ New (defaulted) | Async, defaulted to `Ok(None)` / `Ok(())` so `NoopChannelPort` and in-memory test ports compile unchanged; store-backed impls override |
+| `ChannelStore::read_mark` / `advance_read_mark` (+ `channel_dir_for_marks`) | `peko_channel::store` | ✅ New | Inherent methods on the JSONL store; trait-impl overrides delegate to them. `advance_read_mark` is **monotonic** for numeric line ids — a backward page never rewinds the digest position. Dir resolution probes Runtime then Shared, mirroring `passive_binding` |
+| `TunnelChannelPort::read_mark` / `advance_read_mark` | `core::tunnel::tunnel_channel_port` | ✅ New | Delegates to the wrapped local store (local-persistence concern; no cross-runtime fan-out) |
+| `ChannelDigestSessionContextHandler` / `CHANNEL_DIGEST_HOOK_PRIORITY` | `principal::channel_digest` | ✅ New (crate-internal) | Renders `channel activity since you last read:` — per bound channel (DM via `passive_binding`, group via the session's `peer_id == <channel wire id>` stamp) a `N new message(s)` header with ≤5 previews (`[via <path>]` else `[<author>]`), an overflow line, and a 2 KiB whole-line cap. First observation adopts the tip and renders nothing; the mark then advances to the max line observed. Registered on the daemon-global core as `principal:channel-digest-context` (priority 90) |
+| `ChannelReadTool::execute_with_context` mark advance | `tools::builtin::channel::channel_read` | ⚠️ Changed | On a successful, non-empty page with `ctx.session_id` set, advances the session's read mark to the newest returned line id (best-effort; a persistence failure never fails the read) |
+
 ---
 
 ## Test Coverage Requirements
