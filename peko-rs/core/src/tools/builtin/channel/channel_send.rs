@@ -1594,13 +1594,7 @@ mod tests {
         };
         let target = Subject::User("bob".to_string());
         let out = ChannelSendTool::execute_user_target(
-            &messenger,
-            "prin_x",
-            "sess-1",
-            None,
-            None,
-            &target,
-            "hi",
+            &messenger, "prin_x", "sess-1", None, None, &target, "hi",
         )
         .await;
         assert_eq!(out["success"], true, "{out}");

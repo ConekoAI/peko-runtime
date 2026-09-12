@@ -143,7 +143,10 @@ impl std::fmt::Debug for RouterContext {
             .field("session_creation_lock", &"<Mutex>")
             .field("observability", &self.observability)
             .field("override_model", &self.override_model)
-            .field("quota_meter", &self.quota_meter.as_ref().map(|m| m.is_exhausted()))
+            .field(
+                "quota_meter",
+                &self.quota_meter.as_ref().map(|m| m.is_exhausted()),
+            )
             .finish()
     }
 }

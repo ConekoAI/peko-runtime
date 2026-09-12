@@ -205,10 +205,9 @@ for line in sys.stdin:
     // path (which iterated built-in adapters to enumerate extensions)
     // no longer finds tools. The new canonical path is the workspace
     // scanner at `peko_core::extensions::universal::discover_workspace_universal_tools`.
-    let discovered =
-        crate::extensions::universal::discover_workspace_universal_tools(dir)
-            .await
-            .unwrap();
+    let discovered = crate::extensions::universal::discover_workspace_universal_tools(dir)
+        .await
+        .unwrap();
     assert_eq!(discovered.len(), 1);
     // The discovered entry's first tuple slot is the tool name from
     // the parsed `Manifest`.

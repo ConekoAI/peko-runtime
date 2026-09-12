@@ -488,4 +488,3 @@ impl SessionService {
         session_event_to_history(event, session_id, session_started_at)
     }
 }
-

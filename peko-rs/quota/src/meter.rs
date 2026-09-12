@@ -338,11 +338,7 @@ impl QuotaMeter {
     ///
     /// Returns the first limit crossed (if any). On success, the
     /// caller is responsible for any persistence step.
-    fn charge_inner(
-        &self,
-        usage: &TokenUsage,
-        cost_usd: Option<f64>,
-    ) -> Result<(), QuotaError> {
+    fn charge_inner(&self, usage: &TokenUsage, cost_usd: Option<f64>) -> Result<(), QuotaError> {
         let mut state = self.state.lock().expect("quota state mutex poisoned");
         let config_cycle = self.config.lock().expect("quota config poisoned").cycle;
         let drift = state.cycle != config_cycle;
@@ -701,9 +697,7 @@ mod tests {
         let meter = QuotaMeter::new(cfg_with_budget, None, ts(2026, 7, 12, 14, 0, 0));
         meter.try_charge_with_cost(&usage(0, 0), 0.40).unwrap();
         meter.try_charge_with_cost(&usage(0, 0), 0.40).unwrap();
-        let err = meter
-            .try_charge_with_cost(&usage(0, 0), 0.40)
-            .unwrap_err();
+        let err = meter.try_charge_with_cost(&usage(0, 0), 0.40).unwrap_err();
         match err {
             QuotaError::BudgetExceeded { used, limit, .. } => {
                 assert!((used - 1.20).abs() < 1e-9, "used={used}");
@@ -860,7 +854,7 @@ mod tests {
         };
         let mut state = QuotaState::fresh(QuotaCycle::Hourly, ts(2026, 7, 12, 14, 0, 0));
         state.cost_usd = None; // simulate pre-Phase-3 load
-        // `check_inner` reads `state.cost_usd.unwrap_or(0.0)`.
+                               // `check_inner` reads `state.cost_usd.unwrap_or(0.0)`.
         let result = QuotaMeter::check_inner(&cfg, &state);
         assert!(result.is_none(), "missing cost_usd must not trip gate");
     }

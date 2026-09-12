@@ -69,10 +69,7 @@ mod tests {
     #[test]
     fn principal_id_replaces_all_colons() {
         let id = ChannelId::for_principal("did:key:zAlice");
-        assert_eq!(
-            channel_dir_name(&id),
-            "principal.3A.did.3A.key.3A.zAlice"
-        );
+        assert_eq!(channel_dir_name(&id), "principal.3A.did.3A.key.3A.zAlice");
         let back = channel_dir_name_inverse("principal.3A.did.3A.key.3A.zAlice").unwrap();
         assert_eq!(back, id);
     }
@@ -119,14 +116,12 @@ mod tests {
         assert!(!id_needs_colon_normalization(
             &ChannelId::parse("chan_a1b2c3d4").unwrap()
         ));
-        assert!(id_needs_colon_normalization(
-            &ChannelId::for_principal("did:key:zAlice")
-        ));
-        assert!(id_needs_colon_normalization(
-            &ChannelId::for_user("alice")
-        ));
-        assert!(id_needs_colon_normalization(
-            &ChannelId::for_group("eng-standup")
-        ));
+        assert!(id_needs_colon_normalization(&ChannelId::for_principal(
+            "did:key:zAlice"
+        )));
+        assert!(id_needs_colon_normalization(&ChannelId::for_user("alice")));
+        assert!(id_needs_colon_normalization(&ChannelId::for_group(
+            "eng-standup"
+        )));
     }
 }

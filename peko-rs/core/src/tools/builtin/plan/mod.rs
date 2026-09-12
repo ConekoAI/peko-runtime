@@ -187,10 +187,7 @@ impl PlanPort for TestPlanPort {
         principal_id: &PrincipalId,
     ) -> Result<PlanRecord> {
         let plans = self.plans.lock().unwrap();
-        let rec = plans
-            .get(plan_id)
-            .cloned()
-            .ok_or(PlanError::NotFound)?;
+        let rec = plans.get(plan_id).cloned().ok_or(PlanError::NotFound)?;
         if &rec.principal_id != principal_id {
             return Err(PlanError::PrincipalMismatch {
                 expected: rec.principal_id.0.clone(),
@@ -200,10 +197,7 @@ impl PlanPort for TestPlanPort {
         Ok(rec)
     }
 
-    async fn list_for_principal(
-        &self,
-        principal_id: &PrincipalId,
-    ) -> Result<Vec<PlanRecord>> {
+    async fn list_for_principal(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
         Ok(self
             .plans
             .lock()
@@ -214,34 +208,29 @@ impl PlanPort for TestPlanPort {
             .collect())
     }
 
-    async fn current_focus(
-        &self,
-        principal_id: &PrincipalId,
-    ) -> Result<Option<PlanRecord>> {
-        let plans = self.plans.lock().unwrap();
-        Ok(plans
-            .values()
-            .filter(|r| &r.principal_id == principal_id && r.closed.is_none())
-            .filter(|r| r.nodes.iter().any(|n| matches!(n.status, PlanNodeStatus::InProgress)))
-            .max_by_key(|r| r.updated_at)
-            .cloned())
-    }
-
-    async fn load_resumable(
-        &self,
-        principal_id: &PrincipalId,
-    ) -> Result<Vec<PlanRecord>> {
+    async fn current_focus(&self, principal_id: &PrincipalId) -> Result<Option<PlanRecord>> {
         let plans = self.plans.lock().unwrap();
         Ok(plans
             .values()
             .filter(|r| &r.principal_id == principal_id && r.closed.is_none())
             .filter(|r| {
-                r.nodes.iter().any(|n| {
-                    !matches!(
-                        n.status,
-                        PlanNodeStatus::Completed { .. }
-                    )
-                })
+                r.nodes
+                    .iter()
+                    .any(|n| matches!(n.status, PlanNodeStatus::InProgress))
+            })
+            .max_by_key(|r| r.updated_at)
+            .cloned())
+    }
+
+    async fn load_resumable(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
+        let plans = self.plans.lock().unwrap();
+        Ok(plans
+            .values()
+            .filter(|r| &r.principal_id == principal_id && r.closed.is_none())
+            .filter(|r| {
+                r.nodes
+                    .iter()
+                    .any(|n| !matches!(n.status, PlanNodeStatus::Completed { .. }))
             })
             .cloned()
             .collect())
@@ -269,12 +258,7 @@ impl PlanPort for TestPlanPort {
         Ok(rec)
     }
 
-    async fn close(
-        &self,
-        plan_id: &str,
-        principal_id: &PrincipalId,
-        reason: String,
-    ) -> Result<()> {
+    async fn close(&self, plan_id: &str, principal_id: &PrincipalId, reason: String) -> Result<()> {
         let mut plans = self.plans.lock().unwrap();
         let rec = plans.get_mut(plan_id).ok_or(PlanError::NotFound)?;
         if &rec.principal_id != principal_id {

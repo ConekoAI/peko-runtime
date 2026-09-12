@@ -243,7 +243,10 @@ extensions = "sha256:jkl"
 
         let toml = toml::to_string(&layers).unwrap();
         assert!(toml.contains("plugins"));
-        assert!(!toml.contains("extensions"), "legacy field must not be emitted: {toml}");
+        assert!(
+            !toml.contains("extensions"),
+            "legacy field must not be emitted: {toml}"
+        );
 
         let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));

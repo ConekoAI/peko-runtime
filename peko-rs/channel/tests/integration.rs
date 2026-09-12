@@ -18,11 +18,9 @@ use peko_channel::cursors::ChannelCursors;
 use peko_channel::port::{ChannelError, Checkpoint, CreateOpts, PostMsg, Tier};
 use peko_channel::responder::{ChannelResponder, RespondCtx};
 use peko_channel::subscription::SubscriptionConfig;
-use peko_channel::{
-    ChannelCliRouter, ChannelConfig, ChannelId, ChannelPort, ChannelStore,
-};
-use peko_subject::{PrincipalId, Subject};
+use peko_channel::{ChannelCliRouter, ChannelConfig, ChannelId, ChannelPort, ChannelStore};
 use peko_protocol::channel::ChannelEvent;
+use peko_subject::{PrincipalId, Subject};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -95,7 +93,9 @@ async fn two_principals_full_lifecycle() {
     assert!(matches!(err, peko_channel::ChannelError::NotMember));
 
     // Invite bob.
-    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("invite");
+    port.invite(&chan, &alice, &Subject::from(&bob))
+        .await
+        .expect("invite");
 
     // Alice posts a root message.
     let msg1 = port
@@ -105,22 +105,40 @@ async fn two_principals_full_lifecycle() {
 
     // Bob replies to msg1.
     let msg2 = port
-        .post(&chan, &Subject::from(&bob), PostMsg::reply(msg1.clone(), "reply"))
+        .post(
+            &chan,
+            &Subject::from(&bob),
+            PostMsg::reply(msg1.clone(), "reply"),
+        )
         .await
         .expect("post msg2");
     // Use msg2 so the binding isn't unused.
     assert!(!msg2.is_empty(), "msg2 should have a generated TaskId");
 
     // Peek returns the full log: Created + MemberJoined(bob) + Posted(alice) + Posted(bob).
-    let events = port.peek(&chan, &Checkpoint::default()).await.expect("peek");
-    assert_eq!(events.len(), 4, "expected 4 events (created + member_joined + 2 posted), got {events:?}");
+    let events = port
+        .peek(&chan, &Checkpoint::default())
+        .await
+        .expect("peek");
+    assert_eq!(
+        events.len(),
+        4,
+        "expected 4 events (created + member_joined + 2 posted), got {events:?}"
+    );
 
     // Causal order: msg1 before msg2.
-    let pos_msg1 = events.iter().position(|e| matches!(e, ChannelEvent::Posted { text, .. } if text == "hello"))
+    let pos_msg1 = events
+        .iter()
+        .position(|e| matches!(e, ChannelEvent::Posted { text, .. } if text == "hello"))
         .expect("msg1 present");
-    let pos_msg2 = events.iter().position(|e| matches!(e, ChannelEvent::Posted { text, .. } if text == "reply"))
+    let pos_msg2 = events
+        .iter()
+        .position(|e| matches!(e, ChannelEvent::Posted { text, .. } if text == "reply"))
         .expect("msg2 present");
-    assert!(pos_msg1 < pos_msg2, "msg1 ({pos_msg1}) must precede msg2 ({pos_msg2})");
+    assert!(
+        pos_msg1 < pos_msg2,
+        "msg1 ({pos_msg1}) must precede msg2 ({pos_msg2})"
+    );
 
     // msg2.parent == msg1.id (the at-most-one parent convention).
     let parent: Option<String> = events
@@ -145,8 +163,13 @@ async fn two_principals_full_lifecycle() {
     assert_eq!(bob_chans, vec![chan.clone()]);
 
     // Idempotent invite is silent (no error, no duplicate member).
-    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("idempotent invite");
-    let members2 = port.list_members(&chan).await.expect("members after re-invite");
+    port.invite(&chan, &alice, &Subject::from(&bob))
+        .await
+        .expect("idempotent invite");
+    let members2 = port
+        .list_members(&chan)
+        .await
+        .expect("members after re-invite");
     assert_eq!(members2.len(), 2, "re-invite must not duplicate");
 }
 
@@ -181,7 +204,9 @@ async fn subscriber_calls_responder_for_each_new_event() {
 
     // Bob joins so he can also subscribe.
     let bob = PrincipalId::generate();
-    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("invite bob");
+    port.invite(&chan, &alice, &Subject::from(&bob))
+        .await
+        .expect("invite bob");
 
     // Bob subscribes with a counter responder.
     let responder = Arc::new(CountResponder::default());
@@ -274,7 +299,9 @@ async fn spawned_subscriber_wakes_on_append_without_waiting_for_tick() {
     // interval far beyond the test's patience — if the wake-up ever
     // regresses to pure polling, the assertions below time out.
     let bob = PrincipalId::generate();
-    port.invite(&chan, &alice, &Subject::from(&bob)).await.expect("invite bob");
+    port.invite(&chan, &alice, &Subject::from(&bob))
+        .await
+        .expect("invite bob");
 
     let responder = Arc::new(CountResponder::default());
     let counters = responder.clone();
@@ -360,7 +387,10 @@ async fn cli_router_round_trip() {
         .expect("peek");
     // created + member_joined + posted
     assert_eq!(peeked.events.len(), 3, "got {peeked:?}");
-    assert!(peeked.events.iter().any(|e| matches!(e, ChannelEvent::Posted { text, .. } if text == "hi")));
+    assert!(peeked
+        .events
+        .iter()
+        .any(|e| matches!(e, ChannelEvent::Posted { text, .. } if text == "hi")));
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +412,9 @@ async fn fan_out_cap_rejects_ninth_member() {
     let mut members: Vec<PrincipalId> = vec![creator.clone()];
     for _ in 0..7 {
         let p = PrincipalId::generate();
-        port.invite(&chan, &creator, &Subject::from(&p)).await.expect("invite");
+        port.invite(&chan, &creator, &Subject::from(&p))
+            .await
+            .expect("invite");
         members.push(p);
     }
     assert_eq!(port.list_members(&chan).await.unwrap().len(), 8);
@@ -489,7 +521,6 @@ async fn group_channel_end_to_end_via_router() {
 
 // ---------------------------------------------------------------------------
 
-
 /// PR-3d: `pin_to_shared` copies `meta.json` + `members.json` to the
 /// Shared root. Initial state (no posts) means zero `plan_*.jsonl`
 /// files are present, but the directory + both files must exist on
@@ -506,10 +537,7 @@ async fn shared_pin_copies_files_to_shared_root() {
         .await
         .expect("create");
 
-    let shared_path = port
-        .pin_to_shared(&chan)
-        .await
-        .expect("pin_to_shared");
+    let shared_path = port.pin_to_shared(&chan).await.expect("pin_to_shared");
 
     // Path returned matches the expected Shared root layout.
     let expected_root = tmp.path().join("shared").join("channels");
@@ -521,7 +549,11 @@ async fn shared_pin_copies_files_to_shared_root() {
     assert!(shared_path.join("members.json").exists());
 
     // Runtime source dir still exists.
-    let runtime_chan_dir = tmp.path().join("runtime").join("channels").join(chan.as_str());
+    let runtime_chan_dir = tmp
+        .path()
+        .join("runtime")
+        .join("channels")
+        .join(chan.as_str());
     assert!(runtime_chan_dir.exists(), "runtime source must remain");
 }
 
@@ -543,13 +575,14 @@ async fn shared_pin_copies_log_lines_after_post() {
         .await
         .expect("post");
 
-    let shared_path = port
-        .pin_to_shared(&chan)
-        .await
-        .expect("pin_to_shared");
+    let shared_path = port.pin_to_shared(&chan).await.expect("pin_to_shared");
 
     // The runtime side has events.jsonl after the post.
-    let runtime_chan_dir = tmp.path().join("runtime").join("channels").join(chan.as_str());
+    let runtime_chan_dir = tmp
+        .path()
+        .join("runtime")
+        .join("channels")
+        .join(chan.as_str());
     let runtime_log = runtime_chan_dir.join("events.jsonl");
     assert!(
         runtime_log.exists(),
@@ -576,18 +609,18 @@ async fn shared_pin_copies_log_lines_after_post() {
 
     // The posted message must be discoverable via `peek` on the
     // *runtime* side (proves we did not MOVE the source — COPY).
-    let events = port.peek(&chan, &Checkpoint::default()).await.expect("peek");
-    let posted = events
-        .iter()
-        .find_map(|e| match e {
-            peko_protocol::channel::ChannelEvent::Posted { text, .. }
-                if text == "hello" =>
-            {
-                Some(())
-            }
-            _ => None,
-        });
-    assert!(posted.is_some(), "runtime source must still expose the posted message");
+    let events = port
+        .peek(&chan, &Checkpoint::default())
+        .await
+        .expect("peek");
+    let posted = events.iter().find_map(|e| match e {
+        peko_protocol::channel::ChannelEvent::Posted { text, .. } if text == "hello" => Some(()),
+        _ => None,
+    });
+    assert!(
+        posted.is_some(),
+        "runtime source must still expose the posted message"
+    );
 }
 
 /// PR-3d: `create()` with `Tier::Shared` writes the channel dir
@@ -643,8 +676,5 @@ async fn pin_to_shared_fails_when_shared_dir_is_none() {
         .pin_to_shared(&chan)
         .await
         .expect_err("pin_to_shared must fail without shared_dir");
-    assert!(
-        matches!(err, ChannelError::Adapter(_)),
-        "got {err:?}"
-    );
+    assert!(matches!(err, ChannelError::Adapter(_)), "got {err:?}");
 }

@@ -62,9 +62,7 @@ pub mod storage;
 
 pub use error::{PlanError, Result};
 pub use plan_port::PlanPort;
-pub use schema::{
-    ClosedState, NodeEvidence, NodeId, PlanNode, PlanNodeStatus, PlanRecord,
-};
+pub use schema::{ClosedState, NodeEvidence, NodeId, PlanNode, PlanNodeStatus, PlanRecord};
 pub use storage::{PlanStorage, PLAN_LOCK_TIMEOUT_MS};
 
 // `PLAN_SCHEMA_VERSION` re-exported alongside the storage const for

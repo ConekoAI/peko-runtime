@@ -306,7 +306,10 @@ mod tests {
             .create_key("Argon2 Shape".to_string(), vec![ApiKeyScope::Read])
             .await
             .unwrap();
-        let entry = store.verify_key(&full_key).await.expect("fresh key verifies");
+        let entry = store
+            .verify_key(&full_key)
+            .await
+            .expect("fresh key verifies");
         assert!(
             entry.hash.starts_with("$argon2id$"),
             "expected argon2id PHC string, got: {}",

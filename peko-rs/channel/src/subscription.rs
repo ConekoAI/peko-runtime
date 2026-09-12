@@ -32,8 +32,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use peko_subject::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId};
+use peko_subject::PrincipalId;
 
 use crate::cost::ChannelMeter;
 use crate::cursors::ChannelCursors;
@@ -150,7 +150,11 @@ impl ChannelSubscriber {
         let mut delivered: Vec<ChannelEvent> = Vec::with_capacity(items.len());
         for (task_id, ev) in items {
             // Meter.
-            if let Err(e) = self.meter.record_event(&self.channel, &self.principal.to_string(), &ev).await {
+            if let Err(e) = self
+                .meter
+                .record_event(&self.channel, &self.principal.to_string(), &ev)
+                .await
+            {
                 tracing::warn!(?e, "channel meter record_event failed");
             }
 

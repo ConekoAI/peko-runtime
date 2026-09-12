@@ -39,16 +39,12 @@ pub(crate) enum CredentialDeleteOutcome {
     /// detached (`credential_id = null`) before the delete — zero on
     /// a normal delete, non-zero when `force = true` and dependents
     /// existed.
-    Removed {
-        broken_references: u32,
-    },
+    Removed { broken_references: u32 },
     /// Credential is referenced by one or more configured models and
     /// `force` was `false`. The handler emits `ResponsePacket::Error`
     /// with a "credential_in_use" message naming each dependent so the
     /// CLI / desktop can prompt for confirmation.
-    InUse {
-        dependents: Vec<ModelSummary>,
-    },
+    InUse { dependents: Vec<ModelSummary> },
 }
 
 /// Narrow port for the read/write credential variants.
@@ -365,7 +361,10 @@ impl RequestHandler for CredentialHandler {
                          use `peko credential set <new> --replace-on {id}` to swap them first.",
                         dependents.len(),
                     );
-                    let response = ResponsePacket::Error { request_id, message };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message,
+                    };
                     send_response(sink, response).await?;
                 }
                 Err(e) => {
@@ -891,7 +890,10 @@ mod tests {
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(60));
         assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
-        assert_eq!(json.get("broken_references").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(
+            json.get("broken_references").and_then(|v| v.as_u64()),
+            Some(0)
+        );
         assert_eq!(
             *deletes.lock().unwrap(),
             vec![("id-minimax".to_string(), false)]
@@ -1036,10 +1038,7 @@ mod tests {
                 HashMap::new()
             }
         }
-        let handler = CredentialHandler::new(
-            Arc::new(InUseHost),
-            Arc::new(StubBindingHost),
-        );
+        let handler = CredentialHandler::new(Arc::new(InUseHost), Arc::new(StubBindingHost));
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 
@@ -1262,10 +1261,7 @@ mod tests {
                 m
             }
         }
-        let handler = CredentialHandler::new(
-            Arc::new(RefsHost),
-            Arc::new(StubBindingHost),
-        );
+        let handler = CredentialHandler::new(Arc::new(RefsHost), Arc::new(StubBindingHost));
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(buf.clone());
 

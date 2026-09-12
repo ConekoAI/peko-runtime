@@ -26,8 +26,8 @@
 
 use std::sync::Arc;
 
-use peko_subject::{PrincipalId, Subject};
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
+use peko_subject::{PrincipalId, Subject};
 use serde::{Deserialize, Serialize};
 
 use crate::port::{ChannelPort, Checkpoint, CreateOpts, PostMsg, Result};
@@ -162,10 +162,7 @@ impl ChannelCliRouter {
     }
 
     /// `peko channel members <channel>` — list current members.
-    pub async fn handle_members(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<MembersResponse> {
+    pub async fn handle_members(&self, channel: &ChannelId) -> Result<MembersResponse> {
         let members = self.port.list_members(channel).await?;
         // P1.2 attribution: pull per-member runtime provenance from
         // `members.json`. The IPC consumer (desktop) reads the flat
@@ -180,10 +177,7 @@ impl ChannelCliRouter {
     }
 
     /// `peko channel ls` — list channels where `principal` is a member.
-    pub async fn handle_list(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<ListResponse> {
+    pub async fn handle_list(&self, principal: &PrincipalId) -> Result<ListResponse> {
         let channels = self.port.list_for_principal(principal).await?;
         Ok(ListResponse {
             principal: principal.clone(),
@@ -192,10 +186,7 @@ impl ChannelCliRouter {
     }
 
     /// `peko channel show <channel>` — membership snapshot for IPC.
-    pub async fn handle_show(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<ChannelMembership> {
+    pub async fn handle_show(&self, channel: &ChannelId) -> Result<ChannelMembership> {
         self.port.membership(channel).await
     }
 
@@ -207,10 +198,7 @@ impl ChannelCliRouter {
     /// same check via `RuntimeAuthority::write_shared_channels` on
     /// the daemon path. The in-process fallback path is gated the
     /// same way in the CLI dispatch arm.
-    pub async fn handle_pin_to_shared(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<std::path::PathBuf> {
+    pub async fn handle_pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {
         self.port.pin_to_shared(channel).await
     }
 }

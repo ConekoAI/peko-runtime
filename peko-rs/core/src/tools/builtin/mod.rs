@@ -56,14 +56,14 @@ pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
     AgentTool, SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime,
 };
+pub use model_list::{ModelListTool, MODEL_LIST_TOOL_NAME};
 pub use plan::{
-    PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool,
-    PlanMarkStepTool, PlanRecordEvidenceTool,
+    PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool, PlanMarkStepTool,
+    PlanRecordEvidenceTool,
 };
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
 pub use tasks::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, Todo, TodoStatus};
-pub use model_list::{ModelListTool, MODEL_LIST_TOOL_NAME};
 pub use tool_search::{ToolSearchTool, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME};
 
 // Phase F4: thin re-exports of items that stay in the sat so root

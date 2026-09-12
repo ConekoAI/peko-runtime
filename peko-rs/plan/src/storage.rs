@@ -111,10 +111,7 @@ impl PlanStorage {
         // cheapest O(n²) check that's still readable; n is bounded by
         // the LLM's plan, not by the input stream, so the cost is fine.
         for (i, node) in nodes.iter().enumerate() {
-            if nodes[i + 1..]
-                .iter()
-                .any(|n| n.node_id == node.node_id)
-            {
+            if nodes[i + 1..].iter().any(|n| n.node_id == node.node_id) {
                 return Err(PlanError::InvalidNodeId(format!(
                     "plan has duplicate node ids in initial nodes: {}",
                     node.node_id
@@ -243,10 +240,7 @@ impl PlanStorage {
 
     /// All plans for a given principal. Sort order is `created_at`
     /// ascending.
-    pub async fn list_for_principal(
-        &self,
-        principal_id: &PrincipalId,
-    ) -> Result<Vec<PlanRecord>> {
+    pub async fn list_for_principal(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
         let all = self.list().await?;
         Ok(all
             .into_iter()
@@ -257,10 +251,7 @@ impl PlanStorage {
     /// The most-recently-updated open plan with at least one
     /// `InProgress` node. `None` when the principal has no active
     /// in-flight work.
-    pub async fn current_focus(
-        &self,
-        principal_id: &PrincipalId,
-    ) -> Result<Option<PlanRecord>> {
+    pub async fn current_focus(&self, principal_id: &PrincipalId) -> Result<Option<PlanRecord>> {
         let all = self.list_for_principal(principal_id).await?;
         Ok(all
             .into_iter()
@@ -271,12 +262,12 @@ impl PlanStorage {
 
     /// All open plans with at least one unresolved node. This is the
     /// set the runtime re-injects into a fresh session's context.
-    pub async fn load_resumable(
-        &self,
-        principal_id: &PrincipalId,
-    ) -> Result<Vec<PlanRecord>> {
+    pub async fn load_resumable(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
         let all = self.list_for_principal(principal_id).await?;
-        Ok(all.into_iter().filter(|r| r.has_unresolved_nodes()).collect())
+        Ok(all
+            .into_iter()
+            .filter(|r| r.has_unresolved_nodes())
+            .collect())
     }
 
     /// Atomic write under the file lock (acquired here).
@@ -333,20 +324,18 @@ fn check_principal(record: &PlanRecord, expected: &PrincipalId) -> Result<()> {
 /// Decode the first non-empty line of `raw` as a [`PlanRecord`]. Bails
 /// with [`PlanError::CorruptRecord`] on parse failure.
 fn parse_plan(raw: &str, plan_id: &str) -> Result<PlanRecord> {
-    let line = raw
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .ok_or_else(|| PlanError::CorruptRecord {
-            plan_id: plan_id.to_string(),
-            source: serde_json::from_str::<serde_json::Value>("")
-                .unwrap_err(),
-        })?;
-    let record: PlanRecord = serde_json::from_str(line).map_err(|source| {
-        PlanError::CorruptRecord {
+    let line =
+        raw.lines()
+            .find(|l| !l.trim().is_empty())
+            .ok_or_else(|| PlanError::CorruptRecord {
+                plan_id: plan_id.to_string(),
+                source: serde_json::from_str::<serde_json::Value>("").unwrap_err(),
+            })?;
+    let record: PlanRecord =
+        serde_json::from_str(line).map_err(|source| PlanError::CorruptRecord {
             plan_id: plan_id.to_string(),
             source,
-        }
-    })?;
+        })?;
     Ok(record)
 }
 
@@ -461,7 +450,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(matches!(created.nodes[0].status, PlanNodeStatus::InProgress));
+        assert!(matches!(
+            created.nodes[0].status,
+            PlanNodeStatus::InProgress
+        ));
 
         // Second update: closure observes the first mutation.
         created = storage
@@ -492,7 +484,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let storage = storage_in(&dir);
         let p = principal();
-        let created = storage.create(p.clone(), "done".into(), vec![]).await.unwrap();
+        let created = storage
+            .create(p.clone(), "done".into(), vec![])
+            .await
+            .unwrap();
 
         storage
             .close(&created.plan_id, &p, "user-abandoned".into())

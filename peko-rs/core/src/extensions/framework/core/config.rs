@@ -54,7 +54,6 @@ pub struct ExtensionServices {
     // chat-gateway adapter framework deleted in Commit 3. Per-peer
     // standing children (the agent-session paradigm) own principal
     // dispatch directly via `PrincipalManager::receive_streaming`.
-
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
     /// `HubAgentDirectoryClient` is ready. `None` on runtimes that

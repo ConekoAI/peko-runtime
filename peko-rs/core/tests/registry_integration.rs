@@ -444,8 +444,9 @@ async fn test_registry_client_push_and_pull() {
     // B6: `store_manifest` retired — compute the digest directly from
     // the manifest bytes (the same bytes `store_manifest` would have
     // hashed) and use it to seed the `RegistryManifest` JSON below.
-    let manifest_digest = peko_core::registry::agent_registry::agent_manifest_digest(&agent_manifest)
-        .expect("manifest digest");
+    let manifest_digest =
+        peko_core::registry::agent_registry::agent_manifest_digest(&agent_manifest)
+            .expect("manifest digest");
 
     // Also store the RegistryManifest JSON for the client
     let mut reg_manifest = RegistryManifest::new("test-agent", "1.0.0")
@@ -574,8 +575,9 @@ async fn test_registry_client_skips_existing_layers() {
     });
 
     // B6: see test above — `store_manifest` retired.
-    let manifest_digest = peko_core::registry::agent_registry::agent_manifest_digest(&agent_manifest)
-        .expect("manifest digest");
+    let manifest_digest =
+        peko_core::registry::agent_registry::agent_manifest_digest(&agent_manifest)
+            .expect("manifest digest");
 
     // Store RegistryManifest JSON
     let mut reg_manifest = RegistryManifest::new("skip-test", "1.0.0")

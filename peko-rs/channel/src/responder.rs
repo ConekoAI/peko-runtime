@@ -15,8 +15,8 @@
 //! crate must not take.
 
 use async_trait::async_trait;
-use peko_subject::PrincipalId;
 use peko_protocol::channel::{ChannelEvent, ChannelId};
+use peko_subject::PrincipalId;
 
 use crate::port::TaskId;
 use crate::Result;

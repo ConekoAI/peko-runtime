@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-mod tool_call_info;
 pub mod repair;
+mod tool_call_info;
 
 /// Lightweight tool call DTO with optional result (Phase 9b.1 lift).
 ///
@@ -562,9 +562,7 @@ fn estimate_json_tokens(value: &Value) -> usize {
 /// fallback table for URL sources.
 fn image_token_estimate(source: &ImageSource) -> Option<usize> {
     let dimensions = match source {
-        ImageSource::Base64 { dimensions, .. } | ImageSource::Url { dimensions, .. } => {
-            *dimensions
-        }
+        ImageSource::Base64 { dimensions, .. } | ImageSource::Url { dimensions, .. } => *dimensions,
     };
     dimensions.map(|d| d.high_detail_tokens())
 }
@@ -1145,20 +1143,36 @@ mod tests {
     #[test]
     fn test_image_dimensions_high_detail_tokens() {
         assert_eq!(
-            ImageDimensions { width: 512, height: 512 }.high_detail_tokens(),
+            ImageDimensions {
+                width: 512,
+                height: 512
+            }
+            .high_detail_tokens(),
             350
         );
         assert_eq!(
-            ImageDimensions { width: 1024, height: 1024 }.high_detail_tokens(),
+            ImageDimensions {
+                width: 1024,
+                height: 1024
+            }
+            .high_detail_tokens(),
             1399
         );
         assert_eq!(
-            ImageDimensions { width: 2048, height: 2048 }.high_detail_tokens(),
+            ImageDimensions {
+                width: 2048,
+                height: 2048
+            }
+            .high_detail_tokens(),
             5593
         );
         // Edge: 1x1 image still costs 1 token (ceil(1/750))
         assert_eq!(
-            ImageDimensions { width: 1, height: 1 }.high_detail_tokens(),
+            ImageDimensions {
+                width: 1,
+                height: 1
+            }
+            .high_detail_tokens(),
             1
         );
     }
@@ -1171,7 +1185,10 @@ mod tests {
         let img = ContentBlock::Image {
             source: ImageSource::Base64 {
                 data: "ignored".to_string(),
-                dimensions: Some(ImageDimensions { width: 1024, height: 1024 }),
+                dimensions: Some(ImageDimensions {
+                    width: 1024,
+                    height: 1024,
+                }),
             },
             mime_type: "image/png".to_string(),
         };
@@ -1212,7 +1229,10 @@ mod tests {
     fn test_image_source_dimensions_roundtrip() {
         let src = ImageSource::Base64 {
             data: "AAAA".to_string(),
-            dimensions: Some(ImageDimensions { width: 800, height: 600 }),
+            dimensions: Some(ImageDimensions {
+                width: 800,
+                height: 600,
+            }),
         };
         let json = serde_json::to_value(&src).unwrap();
         assert_eq!(json["source_type"], "base64");
@@ -1280,7 +1300,10 @@ mod tests {
         let dims = extract_dimensions_from_base64(&bytes, "image/png").unwrap();
         assert_eq!(dims.width, 1024);
         assert_eq!(dims.height, 1024);
-        assert_eq!(dims.high_detail_tokens(), ((1024 * 1024 + 749) / 750) as usize);
+        assert_eq!(
+            dims.high_detail_tokens(),
+            ((1024 * 1024 + 749) / 750) as usize
+        );
     }
 
     /// Non-PNG mime types fall through to `None` (JPEG extraction is
@@ -1346,12 +1369,10 @@ mod tests {
         assert_eq!(json["tool_call_id"], "tc1");
         assert_eq!(json["name"], "Read");
         assert_eq!(json["is_error"], false);
-        assert!(
-            json["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .starts_with("[truncated by peko_runtime:"),
-        );
+        assert!(json["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("[truncated by peko_runtime:"),);
 
         let parsed: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, original);

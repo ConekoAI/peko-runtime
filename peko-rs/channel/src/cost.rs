@@ -263,10 +263,7 @@ mod tests {
             "channel.member_joined",
             "channel.member_left",
         ] {
-            assert!(
-                types.contains(expected),
-                "missing {expected} in {types:?}"
-            );
+            assert!(types.contains(expected), "missing {expected} in {types:?}");
         }
     }
 }

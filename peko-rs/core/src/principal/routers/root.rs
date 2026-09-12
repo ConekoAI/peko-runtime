@@ -371,7 +371,10 @@ mod tests {
         // helper exists for test fixtures that anchor on the v5 form
         // of a human-readable literal.
         let trunk = trunk_session_id();
-        assert_eq!(trunk, peko_session::SessionId::from("root:self").to_string());
+        assert_eq!(
+            trunk,
+            peko_session::SessionId::from("root:self").to_string()
+        );
         // The trunk is a valid UUID (engine-internal session ids are
         // opaque UUIDs after Sprint 6 — see
         // `peko_session::SessionId`).

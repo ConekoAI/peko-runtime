@@ -286,10 +286,7 @@ impl WorkspaceAgentsPromptHandler {
                 let location = a.file_path.to_string_lossy().replace('\\', "/");
                 format!(
                     "- {} (id: {}): {} (location: {})",
-                    a.manifest.name,
-                    a.manifest.id.0,
-                    a.manifest.description,
-                    location
+                    a.manifest.name, a.manifest.id.0, a.manifest.description, location
                 )
             })
             .collect::<Vec<_>>()

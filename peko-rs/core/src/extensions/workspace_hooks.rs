@@ -277,9 +277,10 @@ fn bind_to_point(bind: &BindSpec, hook_id: &str) -> Result<HookPoint> {
         // catalog; registry aggregation concatenates all handlers for
         // the section.
         "PromptSection" => {
-            let section = bind.section.as_deref().ok_or_else(|| {
-                anyhow!("PromptSection bind requires `section` (hook {hook_id})")
-            })?;
+            let section = bind
+                .section
+                .as_deref()
+                .ok_or_else(|| anyhow!("PromptSection bind requires `section` (hook {hook_id})"))?;
             if section.trim().is_empty() {
                 return Err(anyhow!(
                     "PromptSection bind `section` must not be empty or whitespace-only \

@@ -1264,8 +1264,12 @@ impl AgenticLoop {
             // hit. The tail layout matches codex / kimi-code /
             // deepseek-harness.
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
-                let ctx =
-                    self.build_turn_context(iteration, &tool_defs, &session_id, focus_dir.as_deref());
+                let ctx = self.build_turn_context(
+                    iteration,
+                    &tool_defs,
+                    &session_id,
+                    focus_dir.as_deref(),
+                );
                 let renderer = PromptRenderer::with_mcp_context_provider(
                     Arc::clone(&self.extension_core),
                     Arc::clone(&self.mcp_context_provider),

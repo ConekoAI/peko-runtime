@@ -97,8 +97,7 @@ mod tests {
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PlanClose")
-            .with_principal_id(id.0)
+        ToolContext::for_hook_run("run", "tc", "PlanClose").with_principal_id(id.0)
     }
 
     #[tokio::test]

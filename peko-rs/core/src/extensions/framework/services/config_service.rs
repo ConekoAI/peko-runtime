@@ -33,9 +33,7 @@ impl ExtensionConfigData {
         // (`PathResolver::extensions_root()`), not a raw data dir.
         // Configs are stored per-extension as
         // `<extensions_root>/<extension_id>/config.toml`.
-        extensions_root
-            .join(extension_id)
-            .join("config.toml")
+        extensions_root.join(extension_id).join("config.toml")
     }
 
     fn load(extensions_root: &Path, extension_id: &str) -> anyhow::Result<Self> {

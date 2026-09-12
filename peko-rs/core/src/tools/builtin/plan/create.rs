@@ -136,10 +136,7 @@ fn parse_nodes(arr: &[serde_json::Value]) -> anyhow::Result<Vec<PlanNode>> {
                 .and_then(|v| v.as_array())
                 .map(|a| {
                     a.iter()
-                        .filter_map(|x| {
-                            x.as_str()
-                                .and_then(|s| peko_plan::NodeId::parse(s).ok())
-                        })
+                        .filter_map(|x| x.as_str().and_then(|s| peko_plan::NodeId::parse(s).ok()))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -220,10 +217,7 @@ mod tests {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let tool = PlanCreateTool::new(port);
         let result = tool
-            .execute_with_context(
-                json!({ "title": "x" }),
-                &ctx_with_principal(),
-            )
+            .execute_with_context(json!({ "title": "x" }), &ctx_with_principal())
             .await;
         assert!(result.is_err());
     }
@@ -235,10 +229,7 @@ mod tests {
         // No principal_id in ctx.
         let ctx = ToolContext::for_hook_run("run", "tc", "PlanCreate");
         let result = tool
-            .execute_with_context(
-                json!({ "title": "x", "nodes": [{ "step": "y" }] }),
-                &ctx,
-            )
+            .execute_with_context(json!({ "title": "x", "nodes": [{ "step": "y" }] }), &ctx)
             .await;
         assert!(result.is_err());
     }

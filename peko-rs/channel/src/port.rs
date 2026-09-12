@@ -62,8 +62,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// ADR-049 Phase 1: `sender` is [`Subject`]-typed; membership
     /// itself is the write authorization, so a member user posts as
     /// themselves — no vouching member principal is required.
-    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg)
-        -> Result<TaskId>;
+    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg) -> Result<TaskId>;
 
     /// Phase 11 (agent-session paradigm sprint): like [`Self::post`]
     /// but writes an explicit `author` string onto the event instead
@@ -126,11 +125,11 @@ pub trait ChannelPort: Send + Sync + 'static {
             None => all.len(),
             Some(b) => {
                 let b: u64 = b.parse().map_err(|_| {
-                    ChannelError::Adapter(format!("invalid before cursor {b:?}: not a numeric line offset"))
+                    ChannelError::Adapter(format!(
+                        "invalid before cursor {b:?}: not a numeric line offset"
+                    ))
                 })?;
-                all.partition_point(|(id, _)| {
-                    id.parse::<u64>().map(|n| n < b).unwrap_or(true)
-                })
+                all.partition_point(|(id, _)| id.parse::<u64>().map(|n| n < b).unwrap_or(true))
             }
         };
         let start = end.saturating_sub(limit);
@@ -575,11 +574,7 @@ pub struct SearchPage {
 /// Shared match predicate: `ev` must be a `Posted` event whose `text`
 /// contains `needle` (already lowercased; case-insensitive) and whose
 /// `author` equals `author`. `None` predicates match everything.
-pub(crate) fn query_matches(
-    ev: &ChannelEvent,
-    needle: Option<&str>,
-    author: Option<&str>,
-) -> bool {
+pub(crate) fn query_matches(ev: &ChannelEvent, needle: Option<&str>, author: Option<&str>) -> bool {
     let ChannelEvent::Posted {
         text, author: a, ..
     } = ev
@@ -708,12 +703,7 @@ impl ChannelPort for NoopChannelPort {
         ))
     }
 
-    async fn post(
-        &self,
-        _channel: &ChannelId,
-        _sender: &Subject,
-        _msg: PostMsg,
-    ) -> Result<TaskId> {
+    async fn post(&self, _channel: &ChannelId, _sender: &Subject, _msg: PostMsg) -> Result<TaskId> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))

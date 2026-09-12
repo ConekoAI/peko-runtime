@@ -25,10 +25,7 @@ pub enum PlanError {
     /// `PrincipalId` that does not match the on-disk record's
     /// `principal_id`. This is a corruption signal, not a permission
     /// signal — the storage layer does not authorize reads.
-    PrincipalMismatch {
-        expected: String,
-        got: String,
-    },
+    PrincipalMismatch { expected: String, got: String },
     /// A `*.jsonl` file failed to deserialize as a `PlanRecord`. Unlike
     /// `peko-session::TodoStorage` (which silently drops corrupt lines on
     /// an append-only stream), plan storage refuses the read — a single

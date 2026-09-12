@@ -763,8 +763,7 @@ impl SubagentExecutor {
                 // Absolute address. Attach when it resolves; mint only
                 // single-segment top-level paths (intermediate
                 // segments are not materialized).
-                let caller_id =
-                    peko_session::SessionId::from(caller.current_session_id.as_str());
+                let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
                 match peko_session::path::resolve_reference(&metas, caller_id, path) {
                     Ok(resolved) => {
                         let found = metas
@@ -841,8 +840,7 @@ impl SubagentExecutor {
                     // collision gets the spawn-specific structured
                     // refusal.
                     let found_parent_str = found.parent_session_id.map(|id| id.to_string());
-                    let parent_key =
-                        peko_session::SessionId::from(parent_session_key).to_string();
+                    let parent_key = peko_session::SessionId::from(parent_session_key).to_string();
                     return Err(
                         if found_parent_str.as_deref() == Some(parent_key.as_str()) {
                             peko_session::path::err_slug_conflict(

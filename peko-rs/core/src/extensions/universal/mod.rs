@@ -23,6 +23,4 @@ pub use protocol::{
     DescribeResult, ErrorObject, ExecuteParams, ExecuteResult, ExecutionContext, Manifest, Request,
     Response, ResponseResult, UniversalToolAdapter, UniversalToolBuilder, PROTOCOL_VERSION,
 };
-pub use workspace::{
-    discover_workspace_universal_tools, load_workspace_universal_tools,
-};
+pub use workspace::{discover_workspace_universal_tools, load_workspace_universal_tools};

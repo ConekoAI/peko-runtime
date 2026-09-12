@@ -82,10 +82,7 @@ pub enum SpecGateError {
         "model {model_id} ({provider}) does not accept audio inputs \
          (spec.audio_input == false)"
     )]
-    AudioInputUnsupported {
-        model_id: String,
-        provider: String,
-    },
+    AudioInputUnsupported { model_id: String, provider: String },
 
     /// The request supplies at least one tool definition but the
     /// bound model's spec declares `tool_support == None`.
@@ -94,10 +91,7 @@ pub enum SpecGateError {
          (spec.tool_support == none); pick a function-calling model or \
          disable tool dispatch for this conversation"
     )]
-    ToolsUnsupported {
-        model_id: String,
-        provider: String,
-    },
+    ToolsUnsupported { model_id: String, provider: String },
 
     /// The caller asked for reasoning
     /// (`thinking_effort != ThinkingEffort::None`) but the bound
@@ -107,10 +101,7 @@ pub enum SpecGateError {
          (spec.thinking == disabled); pick a reasoning-capable model \
          or disable the thinking toggle"
     )]
-    ThinkingUnsupported {
-        model_id: String,
-        provider: String,
-    },
+    ThinkingUnsupported { model_id: String, provider: String },
 }
 
 impl SpecGateError {
@@ -207,7 +198,7 @@ fn has_audio_block(_messages: &[LlmMessage]) -> bool {
 mod tests {
     use super::*;
     use peko_message::{ContentBlock, ImageSource, LlmMessage, MessageRole};
-    use peko_provider_api::{ChatOptions, ToolDefinition, ThinkingEffort};
+    use peko_provider_api::{ChatOptions, ThinkingEffort, ToolDefinition};
 
     fn text_message(text: &str) -> LlmMessage {
         LlmMessage {
@@ -256,7 +247,14 @@ mod tests {
             thinking_effort: ThinkingEffort::High,
             ..default_options()
         };
-        let result = check(None, "any-model", "any-provider", &messages, &tools, &options);
+        let result = check(
+            None,
+            "any-model",
+            "any-provider",
+            &messages,
+            &tools,
+            &options,
+        );
         assert!(result.is_ok(), "no spec must be a no-op gate: {result:?}");
     }
 

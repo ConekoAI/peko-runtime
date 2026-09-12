@@ -26,9 +26,7 @@
 use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::types::{
-    ExtensionId, HookId, HookResult, ToolMetadata,
-};
+use crate::extensions::framework::types::{ExtensionId, HookId, HookResult, ToolMetadata};
 use async_trait::async_trait;
 #[cfg(test)]
 use std::sync::Arc;

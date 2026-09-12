@@ -74,8 +74,8 @@ impl HookHandler for ChannelDigestSessionContextHandler {
         let Some(session_id) = session_id else {
             return HookResult::PassThrough;
         };
-        let tool_ctx =
-            ctx.get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
+        let tool_ctx = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
         let (workspace, principal_id) = match tool_ctx {
             Some(rtc) => (rtc.workspace.clone(), rtc.principal_id.clone()),
             None => (None, None),
@@ -201,7 +201,10 @@ async fn render_channel_digest(
         // events", see `ChannelStore::read_events`), while the mark is
         // the last line id the session observed — so the mark's own
         // line is filtered out to get "strictly after".
-        let events = match port.peek_with_ids(&channel, &Checkpoint(mark.clone())).await {
+        let events = match port
+            .peek_with_ids(&channel, &Checkpoint(mark.clone()))
+            .await
+        {
             Ok(evs) => evs
                 .into_iter()
                 .filter(|(id, _)| strictly_after(id, &mark))
@@ -224,10 +227,7 @@ async fn render_channel_digest(
         // Advance BEFORE rendering: the mark is "observed up to", so
         // filtered events are consumed too (see module doc). Skipped
         // only if the advance itself fails.
-        if let Err(e) = port
-            .advance_read_mark(&channel, &session_key, max_id)
-            .await
-        {
+        if let Err(e) = port.advance_read_mark(&channel, &session_key, max_id).await {
             tracing::debug!("channel digest: advance_read_mark({channel}) failed: {e}");
         }
 
@@ -296,7 +296,10 @@ fn strictly_after(id: &str, mark: &str) -> bool {
 /// Render one channel's block: a header line, up to
 /// [`DIGEST_MAX_PREVIEWS_PER_CHANNEL`] preview lines, and an overflow
 /// line when more digest-worthy posts exist than previews.
-fn render_channel_block(channel: &str, worthy: &[&(peko_channel::port::TaskId, ChannelEvent)]) -> String {
+fn render_channel_block(
+    channel: &str,
+    worthy: &[&(peko_channel::port::TaskId, ChannelEvent)],
+) -> String {
     let mut out = format!("- #{channel}: {} new message(s)\n", worthy.len());
     for (_, ev) in worthy.iter().take(DIGEST_MAX_PREVIEWS_PER_CHANNEL) {
         if let ChannelEvent::Posted {
@@ -312,9 +315,7 @@ fn render_channel_block(channel: &str, worthy: &[&(peko_channel::port::TaskId, C
             out.push_str(&format!("  - [{prefix}] \"{}\"\n", truncate_preview(text)));
         }
     }
-    let hidden = worthy
-        .len()
-        .saturating_sub(DIGEST_MAX_PREVIEWS_PER_CHANNEL);
+    let hidden = worthy.len().saturating_sub(DIGEST_MAX_PREVIEWS_PER_CHANNEL);
     if hidden > 0 {
         out.push_str(&format!("  - … +{hidden} more\n"));
     }
@@ -383,8 +384,18 @@ mod tests {
         assert!(!digest_worthy(&posted(me, None, Some(own)), own, me, true));
         assert!(!digest_worthy(&posted(me, None, Some(own)), own, me, false));
         // DM roots: inbound user + other principals excluded; own root included.
-        assert!(!digest_worthy(&posted("user:alice", None, None), own, me, true));
-        assert!(!digest_worthy(&posted("prin_other", None, None), own, me, true));
+        assert!(!digest_worthy(
+            &posted("user:alice", None, None),
+            own,
+            me,
+            true
+        ));
+        assert!(!digest_worthy(
+            &posted("prin_other", None, None),
+            own,
+            me,
+            true
+        ));
         assert!(digest_worthy(&posted(me, None, None), own, me, true));
         // DM same-principal post by ANOTHER agent (via is not our path) included.
         assert!(digest_worthy(
@@ -479,9 +490,14 @@ mod tests {
             .await
             .unwrap();
         // Pre-existing traffic (inbound peer + our own reply).
-        port.post_attributed(&channel, &me_subject, "user:alice", PostMsg::root("hello there"))
-            .await
-            .unwrap();
+        port.post_attributed(
+            &channel,
+            &me_subject,
+            "user:alice",
+            PostMsg::root("hello there"),
+        )
+        .await
+        .unwrap();
         port.post_attributed(&channel, &me_subject, me, PostMsg::root("hi alice"))
             .await
             .unwrap();
@@ -499,7 +515,10 @@ mod tests {
         // First observation: nothing rendered, tip adopted.
         let first = render_channel_digest(&port, &metas, child_id(), me).await;
         assert!(first.is_none(), "first observation must not dump history");
-        let mark = port.read_mark(&channel, &child_id().as_str()).await.unwrap();
+        let mark = port
+            .read_mark(&channel, &child_id().as_str())
+            .await
+            .unwrap();
         assert_eq!(mark.as_deref(), Some("2"), "mark adopted at the tip");
 
         // A new post by another agent of our principal (not our own via).
@@ -520,7 +539,10 @@ mod tests {
         );
         assert!(text.contains("1 new message(s)"), "{text}");
         assert!(text.contains("[via /user-b]"), "{text}");
-        assert!(text.contains("status update from the other agent"), "{text}");
+        assert!(
+            text.contains("status update from the other agent"),
+            "{text}"
+        );
         assert_eq!(
             port.read_mark(&channel, &child_id().as_str())
                 .await
@@ -531,11 +553,9 @@ mod tests {
         );
 
         // Third run: nothing new ⇒ no render (change-detection stays quiet).
-        assert!(
-            render_channel_digest(&port, &metas, child_id(), me)
-                .await
-                .is_none()
-        );
+        assert!(render_channel_digest(&port, &metas, child_id(), me)
+            .await
+            .is_none());
     }
 
     /// Group-bound discovery: a group channel has no `passive_binding`;
@@ -555,7 +575,10 @@ mod tests {
 
         // A plain group channel: no passive binding.
         let group = port
-            .create(&PrincipalId(me.to_string()), CreateOpts::runtime("team-room"))
+            .create(
+                &PrincipalId(me.to_string()),
+                CreateOpts::runtime("team-room"),
+            )
             .await
             .unwrap();
 
@@ -600,9 +623,14 @@ mod tests {
         );
 
         // ...but another principal's root does.
-        port.post_attributed(&group, &me_subject, "prin_other", PostMsg::root("deploy done"))
-            .await
-            .unwrap();
+        port.post_attributed(
+            &group,
+            &me_subject,
+            "prin_other",
+            PostMsg::root("deploy done"),
+        )
+        .await
+        .unwrap();
         let text = render_channel_digest(&port, &metas, child_id(), me)
             .await
             .expect("other-principal group root must digest");

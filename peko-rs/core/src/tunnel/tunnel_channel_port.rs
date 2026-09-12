@@ -43,9 +43,9 @@ use peko_channel::{
     subject_wire_form, ChannelId, ChannelMembership, ChannelPort, Checkpoint, CreateOpts, PostMsg,
     Result,
 };
-use tokio::sync::RwLock;
 use peko_protocol::channel::ChannelEvent;
 use peko_subject::{PrincipalId, Subject};
+use tokio::sync::RwLock;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -244,8 +244,8 @@ impl TunnelChannelPort {
         // the receiver will re-serialize and verify (serde_json
         // emits struct fields in declaration order, so the round-trip
         // is stable).
-        let event_bytes = serde_json::to_vec(ev)
-            .map_err(|e| format!("serialize ChannelEvent: {e}"))?;
+        let event_bytes =
+            serde_json::to_vec(ev).map_err(|e| format!("serialize ChannelEvent: {e}"))?;
 
         let mut failures: Vec<String> = Vec::new();
         let source_wire_id = subject_wire_form(source);
@@ -263,8 +263,7 @@ impl TunnelChannelPort {
                 channel_id: channel.as_str(),
                 event_bytes: &event_bytes,
             };
-            let signature =
-                crate::tunnel::sign_channel_event(&ctx.signing_key, signed);
+            let signature = crate::tunnel::sign_channel_event(&ctx.signing_key, signed);
 
             // Audit on the source runtime side. The receiver's
             // `received_inbound` audit row is emitted by the
@@ -277,9 +276,7 @@ impl TunnelChannelPort {
                 &source_wire_id,
                 channel.as_str(),
                 event_kind,
-                &crate::tunnel::tunnel_channel_audit::preview_event_payload(
-                    &preview_json,
-                ),
+                &crate::tunnel::tunnel_channel_audit::preview_event_payload(&preview_json),
             );
 
             let envelope = crate::tunnel::TunnelMessage::TunnelChannelEvent {
@@ -293,9 +290,7 @@ impl TunnelChannelPort {
             };
 
             if let Err(e) = handle.send(envelope) {
-                failures.push(format!(
-                    "send to {recipient_runtime_id} failed: {e}"
-                ));
+                failures.push(format!("send to {recipient_runtime_id} failed: {e}"));
             }
         }
 
@@ -504,8 +499,7 @@ impl TunnelChannelPort {
                 remote
                     .iter()
                     .filter(|rm| {
-                        !(rm.runtime_id == invitee_runtime_id
-                            && rm.principal_id == invitee_bare)
+                        !(rm.runtime_id == invitee_runtime_id && rm.principal_id == invitee_bare)
                     })
                     .map(|rm| peko_protocol::channel::InitialMember {
                         principal_did: rm.principal_id.clone(),
@@ -520,10 +514,8 @@ impl TunnelChannelPort {
 
         // Serialize the snapshot once so the bytes signed are the
         // bytes the receiver will re-serialize and verify.
-        let initial_members_bytes =
-            serde_json::to_vec(&initial_members).map_err(|e| {
-                format!("serialize initial_members for invite envelope: {e}")
-            })?;
+        let initial_members_bytes = serde_json::to_vec(&initial_members)
+            .map_err(|e| format!("serialize initial_members for invite envelope: {e}"))?;
 
         let request_id = Uuid::new_v4().to_string();
         let signed = crate::tunnel::ChannelInviteSignedFields {
@@ -543,17 +535,14 @@ impl TunnelChannelPort {
         // Audit on the source runtime side. The receiver's
         // `received_inbound` audit row is emitted by the
         // dispatcher's inbound handler.
-        let preview_json =
-            String::from_utf8_lossy(&initial_members_bytes).into_owned();
+        let preview_json = String::from_utf8_lossy(&initial_members_bytes).into_owned();
         crate::tunnel::emit_forwarded_outbound(
             &request_id,
             &ctx.caller_runtime_id,
             &inviter.to_string(),
             channel.as_str(),
             "channel_invite",
-            &crate::tunnel::tunnel_channel_audit::preview_event_payload(
-                &preview_json,
-            ),
+            &crate::tunnel::tunnel_channel_audit::preview_event_payload(&preview_json),
         );
 
         let envelope = crate::tunnel::TunnelMessage::TunnelChannelInvite {
@@ -570,9 +559,9 @@ impl TunnelChannelPort {
             signature,
         };
 
-        handle.send(envelope).map_err(|e| {
-            format!("send TunnelChannelInvite to {invitee_runtime_id} failed: {e}")
-        })?;
+        handle
+            .send(envelope)
+            .map_err(|e| format!("send TunnelChannelInvite to {invitee_runtime_id} failed: {e}"))?;
 
         Ok(())
     }
@@ -626,11 +615,7 @@ impl TunnelChannelPort {
 
 #[async_trait]
 impl ChannelPort for TunnelChannelPort {
-    async fn create(
-        &self,
-        creator: &PrincipalId,
-        opts: CreateOpts,
-    ) -> Result<ChannelId> {
+    async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId> {
         self.local.create(creator, opts).await
     }
 
@@ -682,7 +667,12 @@ impl ChannelPort for TunnelChannelPort {
         // next event or via a follow-up invite.
         if let Subject::Principal(did) = invitee {
             if let Err(e) = self
-                .fanout_dm_invite(channel, inviter, &inviter.to_string(), &PrincipalId::from_did(did))
+                .fanout_dm_invite(
+                    channel,
+                    inviter,
+                    &inviter.to_string(),
+                    &PrincipalId::from_did(did),
+                )
                 .await
             {
                 warn!(
@@ -697,12 +687,7 @@ impl ChannelPort for TunnelChannelPort {
         Ok(())
     }
 
-    async fn post(
-        &self,
-        channel: &ChannelId,
-        sender: &Subject,
-        msg: PostMsg,
-    ) -> Result<TaskId> {
+    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg) -> Result<TaskId> {
         // 1. Local write — same path the bare `ChannelStore` would
         // take. We use `post_with_event` so we get the
         // `ChannelEvent` back for outbound fan-out (no
@@ -759,11 +744,7 @@ impl ChannelPort for TunnelChannelPort {
         Ok(line)
     }
 
-    async fn peek(
-        &self,
-        channel: &ChannelId,
-        since: &Checkpoint,
-    ) -> Result<Vec<ChannelEvent>> {
+    async fn peek(&self, channel: &ChannelId, since: &Checkpoint) -> Result<Vec<ChannelEvent>> {
         self.local.peek(channel, since).await
     }
 
@@ -797,18 +778,11 @@ impl ChannelPort for TunnelChannelPort {
         self.local.search(channel, query).await
     }
 
-    async fn leave(
-        &self,
-        channel: &ChannelId,
-        principal: &PrincipalId,
-    ) -> Result<()> {
+    async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()> {
         self.local.leave(channel, principal).await
     }
 
-    async fn list_members(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<Vec<Subject>> {
+    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<Subject>> {
         // Merge local + remote. The `RemoteMember.principal_id` is a
         // stringified principal id (the on-disk shape matches the
         // legacy bare local member rows), so each remote row wraps as
@@ -820,17 +794,11 @@ impl ChannelPort for TunnelChannelPort {
         Ok(out)
     }
 
-    async fn list_for_principal(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<Vec<ChannelId>> {
+    async fn list_for_principal(&self, principal: &PrincipalId) -> Result<Vec<ChannelId>> {
         self.local.list_for_principal(principal).await
     }
 
-    async fn membership(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<ChannelMembership> {
+    async fn membership(&self, channel: &ChannelId) -> Result<ChannelMembership> {
         self.local.membership(channel).await
     }
 
@@ -864,13 +832,12 @@ impl ChannelPort for TunnelChannelPort {
         session_key: &str,
         mark: peko_channel::port::TaskId,
     ) -> Result<()> {
-        self.local.advance_read_mark(channel, session_key, mark).await
+        self.local
+            .advance_read_mark(channel, session_key, mark)
+            .await
     }
 
-    async fn pin_to_shared(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<std::path::PathBuf> {
+    async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {
         self.local.pin_to_shared(channel).await
     }
 
@@ -914,7 +881,10 @@ mod tests {
         // Create the channel locally so `append_remote_event` has a
         // mirror directory to write into.
         let channel = port
-            .create(&PrincipalId("prin_alice".into()), CreateOpts::runtime("team"))
+            .create(
+                &PrincipalId("prin_alice".into()),
+                CreateOpts::runtime("team"),
+            )
             .await
             .unwrap();
 
@@ -937,15 +907,12 @@ mod tests {
 
         // The local mirror's `peek` returns the remote event — the
         // inbound append path worked end-to-end.
-        let events = port
-            .peek(&channel, &Checkpoint::default())
-            .await
-            .unwrap();
+        let events = port.peek(&channel, &Checkpoint::default()).await.unwrap();
         assert_eq!(events.len(), 2, "Created + Posted = 2");
         assert!(
-            events
-                .iter()
-                .any(|ev| matches!(ev, ChannelEvent::Posted { text, .. } if text == "hello from B")),
+            events.iter().any(
+                |ev| matches!(ev, ChannelEvent::Posted { text, .. } if text == "hello from B")
+            ),
             "remote Posted event must show up in local peek"
         );
     }
@@ -1042,7 +1009,10 @@ mod tests {
         // Create the channel locally so `append_remote_event` has a
         // mirror directory to write into.
         let channel = port
-            .create(&PrincipalId("prin_alice".into()), CreateOpts::runtime("team"))
+            .create(
+                &PrincipalId("prin_alice".into()),
+                CreateOpts::runtime("team"),
+            )
             .await
             .unwrap();
 
@@ -1065,13 +1035,10 @@ mod tests {
 
         // The subscriber must observe the event within a tight
         // timeout — no polling, no lag.
-        let observed = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            rx.recv(),
-        )
-        .await
-        .expect("subscriber must receive the event within 1s")
-        .expect("broadcast must not be closed");
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("subscriber must receive the event within 1s")
+            .expect("broadcast must not be closed");
         match observed {
             ChannelEvent::Posted { text, author, .. } => {
                 assert_eq!(text, "live from B");
@@ -1168,8 +1135,7 @@ mod tests {
         use ed25519_dalek::SigningKey;
         let (tx, rx) = mpsc::channel::<crate::tunnel::TunnelMessage>(16);
         let handle = TunnelHandle::new(tx);
-        let tunnel_slot: Arc<RwLock<Option<TunnelHandle>>> =
-            Arc::new(RwLock::new(Some(handle)));
+        let tunnel_slot: Arc<RwLock<Option<TunnelHandle>>> = Arc::new(RwLock::new(Some(handle)));
         let directory: Arc<dyn crate::tunnel::AgentDirectory> =
             Arc::new(FakeAgentDirectory::default());
         let signing_key = Arc::new(SigningKey::from_bytes(&[7u8; 32]));
@@ -1248,27 +1214,34 @@ mod tests {
             .recv()
             .await
             .expect("outbound TunnelChannelEvent must reach mock tunnel");
-        let (request_id, source_runtime_id, recipient_runtime_id, source_principal_did, channel_id, event, signature) =
-            match env {
-                crate::tunnel::TunnelMessage::TunnelChannelEvent {
-                    request_id,
-                    source_runtime_id,
-                    recipient_runtime_id,
-                    source_principal_did,
-                    channel_id,
-                    event,
-                    signature,
-                } => (
-                    request_id,
-                    source_runtime_id,
-                    recipient_runtime_id,
-                    source_principal_did,
-                    channel_id,
-                    event,
-                    signature,
-                ),
-                other => panic!("expected TunnelChannelEvent, got {other:?}"),
-            };
+        let (
+            request_id,
+            source_runtime_id,
+            recipient_runtime_id,
+            source_principal_did,
+            channel_id,
+            event,
+            signature,
+        ) = match env {
+            crate::tunnel::TunnelMessage::TunnelChannelEvent {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                event,
+                signature,
+            } => (
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                event,
+                signature,
+            ),
+            other => panic!("expected TunnelChannelEvent, got {other:?}"),
+        };
 
         // Identity fields are populated from ctx.
         assert_eq!(source_runtime_id, "did:key:zRuntimeA");
@@ -1350,10 +1323,7 @@ mod tests {
 
         let env = rx.recv().await.expect("exactly one envelope expected");
         assert!(
-            matches!(
-                env,
-                crate::tunnel::TunnelMessage::TunnelChannelEvent { .. }
-            ),
+            matches!(env, crate::tunnel::TunnelMessage::TunnelChannelEvent { .. }),
             "first envelope must be TunnelChannelEvent"
         );
         // No second envelope — the dedupe held.
@@ -1404,8 +1374,7 @@ mod tests {
             let env = rx.recv().await.expect("two envelopes expected");
             let src = match env {
                 crate::tunnel::TunnelMessage::TunnelChannelEvent {
-                    source_runtime_id,
-                    ..
+                    source_runtime_id, ..
                 } => source_runtime_id,
                 other => panic!("expected TunnelChannelEvent, got {other:?}"),
             };
@@ -1478,8 +1447,7 @@ mod tests {
         let directory: Arc<dyn crate::tunnel::AgentDirectory> =
             Arc::new(FakeAgentDirectory::default());
         let signing_key = Arc::new(SigningKey::from_bytes(&[7u8; 32]));
-        let tunnel_slot: Arc<RwLock<Option<TunnelHandle>>> =
-            Arc::new(RwLock::new(None));
+        let tunnel_slot: Arc<RwLock<Option<TunnelHandle>>> = Arc::new(RwLock::new(None));
         let ctx = Arc::new(CrossRuntimeChannelCtx {
             directory,
             signing_key,
@@ -1705,10 +1673,7 @@ mod tests {
             .await
             .expect("post after invite must fan out (remote row recorded)");
         assert!(
-            matches!(
-                env,
-                crate::tunnel::TunnelMessage::TunnelChannelEvent { .. }
-            ),
+            matches!(env, crate::tunnel::TunnelMessage::TunnelChannelEvent { .. }),
             "expected TunnelChannelEvent after the invite, got {env:?}"
         );
     }

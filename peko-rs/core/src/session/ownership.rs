@@ -93,11 +93,7 @@ pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext
     // callers do (`SessionId::from`) so the find below matches stored
     // metadata.
     let canonical = peko_session::SessionId::from(current).to_string();
-    let find = |id: &str| {
-        metas
-            .iter()
-            .find(|m| m.session_id.to_string() == id)
-    };
+    let find = |id: &str| metas.iter().find(|m| m.session_id.to_string() == id);
 
     let current_meta = find(&canonical);
     let dangling = current_meta.is_none();
@@ -563,11 +559,7 @@ mod tests {
         fn naive_descendants(target: &str, metas: &[SessionMetadata]) -> Vec<String> {
             fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
                 let canonical = SessionId::from(id).to_string();
-                let find = |id: &str| {
-                    metas
-                        .iter()
-                        .find(|m| m.session_id.to_string() == id)
-                };
+                let find = |id: &str| metas.iter().find(|m| m.session_id.to_string() == id);
                 let mut chain = Vec::new();
                 let mut seen = std::collections::HashSet::new();
                 let mut cursor = find(&canonical).and_then(|m| m.parent_session_id.clone());
@@ -614,10 +606,7 @@ mod tests {
             naive.sort();
             let mut bfs = descendants_of(target, &metas);
             bfs.sort();
-            assert_eq!(
-                naive, bfs,
-                "target={target}: BFS diverged from naive O(N²)"
-            );
+            assert_eq!(naive, bfs, "target={target}: BFS diverged from naive O(N²)");
         }
 
         // Cycle: x → y → x. Both must be returned when querying x OR y.

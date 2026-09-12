@@ -118,11 +118,17 @@ mod tests {
     fn test_preview_truncates_with_ellipsis() {
         let long = "x".repeat(500);
         let out = preview_event_payload(&long);
-        assert!(out.ends_with('…'), "truncated preview must end with ellipsis");
+        assert!(
+            out.ends_with('…'),
+            "truncated preview must end with ellipsis"
+        );
         // 200 chars + ellipsis.
         assert_eq!(out.chars().count(), PREVIEW_MAX + 1);
         // Truncated body does NOT include the tail.
-        assert!(!out.contains(&"x".repeat(300)), "tail must not appear in preview");
+        assert!(
+            !out.contains(&"x".repeat(300)),
+            "tail must not appear in preview"
+        );
     }
 
     /// The emit functions don't panic on any of the supported

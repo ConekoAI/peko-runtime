@@ -231,8 +231,13 @@ pub(crate) async fn post_peer_dm_inbound(
     author: &str,
     text: &str,
 ) -> Result<()> {
-    port.post_attributed(channel, &Subject::from(principal), author, PostMsg::root(text))
-        .await?;
+    port.post_attributed(
+        channel,
+        &Subject::from(principal),
+        author,
+        PostMsg::root(text),
+    )
+    .await?;
     Ok(())
 }
 

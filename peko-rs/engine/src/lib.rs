@@ -59,9 +59,9 @@
 
 pub mod agent_view;
 pub mod agentic_loop;
-pub mod audit_sink;
 pub mod async_completion;
 pub mod async_inbox;
+pub mod audit_sink;
 pub mod chunker;
 pub mod compaction;
 pub mod compaction_driver;
@@ -123,7 +123,6 @@ pub use peko_session::compaction::{
 pub use prompt::renderer::{
     EmptyMcpPromptContextProvider, McpPromptContextProvider, PromptRenderer, RuntimeContextState,
 };
-pub use spec_gate::{check as check_spec, SpecGateError};
 pub use prompt::{
     builder::{PromptMode, SystemPromptBuilder},
     context::{IterationBudgetState, TurnPromptContext},
@@ -133,6 +132,7 @@ pub use prompt::{
     },
     placeholder::{replace_placeholders, Placeholder},
 };
+pub use spec_gate::{check as check_spec, SpecGateError};
 // Phase 6 — `ProviderView` moved to `peko-providers` (next to `Provider`).
 // The orphan rule forbids `impl ProviderView for Provider` from any
 // crate other than `peko-providers`, so the trait + impl live together

@@ -193,8 +193,7 @@ mod tests {
     /// user with the same id string, and vice versa.
     #[test]
     fn api_key_principal_subject_is_not_equal_to_user_with_same_id() {
-        let principal =
-            Subject::Principal(PrincipalDID("apikey:pkr_abc123".to_string()));
+        let principal = Subject::Principal(PrincipalDID("apikey:pkr_abc123".to_string()));
         let user = Subject::User("apikey:pkr_abc123".to_string());
         assert_ne!(
             principal, user,

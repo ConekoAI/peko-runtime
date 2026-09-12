@@ -64,7 +64,7 @@ by created_at ascending (matches PlanStorage::list_for_principal)."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::plan::{TestPlanPort, PlanCreateTool};
+    use crate::tools::builtin::plan::{PlanCreateTool, TestPlanPort};
     use peko_plan::NodeId;
     use peko_plan::PlanNode;
     use peko_plan::PlanNodeStatus;
@@ -73,8 +73,7 @@ mod tests {
     use serde_json::json;
 
     fn ctx_with_principal(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PlanList")
-            .with_principal_id(id.0)
+        ToolContext::for_hook_run("run", "tc", "PlanList").with_principal_id(id.0)
     }
 
     #[tokio::test]

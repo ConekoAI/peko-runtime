@@ -109,12 +109,7 @@ pub trait PlanPort: Send + Sync + 'static {
 
     /// Idempotent close. The second concurrent close returns
     /// [`PlanError::AlreadyClosed`].
-    async fn close(
-        &self,
-        plan_id: &str,
-        principal_id: &PrincipalId,
-        reason: String,
-    ) -> Result<()>;
+    async fn close(&self, plan_id: &str, principal_id: &PrincipalId, reason: String) -> Result<()>;
 
     // ----- node-level mutations -----
 
@@ -196,12 +191,7 @@ impl PlanPort for PlanStorage {
         PlanStorage::create(self, principal_id, title, nodes).await
     }
 
-    async fn close(
-        &self,
-        plan_id: &str,
-        principal_id: &PrincipalId,
-        reason: String,
-    ) -> Result<()> {
+    async fn close(&self, plan_id: &str, principal_id: &PrincipalId, reason: String) -> Result<()> {
         PlanStorage::close(self, plan_id, principal_id, reason).await
     }
 
@@ -288,11 +278,7 @@ impl PlanPort for PlanStorage {
             // record so the agent can observe the step text didn't
             // change. New `step` text on a colliding id is silently
             // dropped — the existing node wins, by design.
-            if updated
-                .nodes
-                .iter()
-                .any(|n| n.node_id == new_node_id)
-            {
+            if updated.nodes.iter().any(|n| n.node_id == new_node_id) {
                 return Ok(updated);
             }
             let mut appended = updated;
@@ -379,7 +365,10 @@ mod tests {
             .get_for_principal(&created.plan_id, &p2)
             .await
             .expect_err("must reject");
-        assert!(matches!(err, PlanError::PrincipalMismatch { .. }), "got {err:?}");
+        assert!(
+            matches!(err, PlanError::PrincipalMismatch { .. }),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -523,7 +512,10 @@ mod tests {
             .await
             .expect("read back");
         assert_eq!(back.nodes[0].node_id, node.node_id);
-        assert!(matches!(back.nodes[0].status, PlanNodeStatus::Blocked { .. }));
+        assert!(matches!(
+            back.nodes[0].status,
+            PlanNodeStatus::Blocked { .. }
+        ));
         // blocked_reason parallel field is mirrored.
         assert_eq!(
             back.nodes[0].blocked_reason.as_deref(),
@@ -654,10 +646,7 @@ mod tests {
             .iter()
             .find(|n| n.node_id == original.node_id)
             .expect("node must still be present");
-        assert_eq!(
-            kept.step, original.step,
-            "existing step wins on collision"
-        );
+        assert_eq!(kept.step, original.step, "existing step wins on collision");
     }
 
     #[tokio::test]

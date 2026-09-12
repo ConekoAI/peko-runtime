@@ -15,8 +15,8 @@ fn core_tools_harness_compiles() {
     // `peko-rs/core/tests`, but the architecture docs live one
     // level above at the repo root (`docs/architecture/`).
     // Walk up three segments and rejoin from the workspace root.
-    let catalog = std::path::Path::new(manifest_dir)
-        .join("../../docs/architecture/builtin-tools.md");
+    let catalog =
+        std::path::Path::new(manifest_dir).join("../../docs/architecture/builtin-tools.md");
     assert!(catalog.exists(), "built-in tools catalog should exist");
 }
 

@@ -442,7 +442,9 @@ impl Compactor {
                             peko_message::ImageSource::Base64 { .. } => "base64",
                             peko_message::ImageSource::Url { .. } => "url",
                         };
-                        Some(format!("[image: mime={mime_type}, kind={source_kind}, ~{tokens} tokens]"))
+                        Some(format!(
+                            "[image: mime={mime_type}, kind={source_kind}, ~{tokens} tokens]"
+                        ))
                     }
                     _ => None,
                 })
@@ -1231,7 +1233,11 @@ minimax = { "M3" = 4000 }
         let messages = create_test_messages(30);
         let mut compactor = Compactor::new();
         let result = compactor
-            .compact(&messages, &provider, crate::compaction::types::CompactionPhase::PreTurn)
+            .compact(
+                &messages,
+                &provider,
+                crate::compaction::types::CompactionPhase::PreTurn,
+            )
             .await
             .expect("compaction should succeed with mock provider");
 
@@ -1285,7 +1291,11 @@ minimax = { "M3" = 4000 }
         let messages = create_test_messages(30);
         let mut compactor = Compactor::new();
         let result = compactor
-            .compact(&messages, &provider, crate::compaction::types::CompactionPhase::PreTurn)
+            .compact(
+                &messages,
+                &provider,
+                crate::compaction::types::CompactionPhase::PreTurn,
+            )
             .await
             .expect("compaction should succeed");
 
@@ -1348,7 +1358,11 @@ minimax = { "M3" = 4000 }
         let messages = create_test_messages(30);
         let mut compactor = Compactor::with_config(config, None);
         let result = compactor
-            .compact(&messages, &provider, crate::compaction::types::CompactionPhase::PreTurn)
+            .compact(
+                &messages,
+                &provider,
+                crate::compaction::types::CompactionPhase::PreTurn,
+            )
             .await
             .expect("compaction should succeed with mock provider");
 

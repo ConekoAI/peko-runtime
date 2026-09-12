@@ -86,7 +86,10 @@ impl ChannelCursors {
                 Ok(cursors)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
-            Err(e) => Err(ChannelError::Cursor(format!("read {}: {e}", path.display()))),
+            Err(e) => Err(ChannelError::Cursor(format!(
+                "read {}: {e}",
+                path.display()
+            ))),
         }
     }
 
@@ -104,18 +107,22 @@ impl ChannelCursors {
 
         let bytes = serde_json::to_vec_pretty(self)?;
         {
-            let mut f = fs::File::create(&tmp).await.map_err(|e| {
-                ChannelError::Cursor(format!("create {}: {e}", tmp.display()))
-            })?;
-            f.write_all(&bytes).await.map_err(|e| {
-                ChannelError::Cursor(format!("write {}: {e}", tmp.display()))
-            })?;
-            f.sync_all().await.map_err(|e| {
-                ChannelError::Cursor(format!("fsync {}: {e}", tmp.display()))
-            })?;
+            let mut f = fs::File::create(&tmp)
+                .await
+                .map_err(|e| ChannelError::Cursor(format!("create {}: {e}", tmp.display())))?;
+            f.write_all(&bytes)
+                .await
+                .map_err(|e| ChannelError::Cursor(format!("write {}: {e}", tmp.display())))?;
+            f.sync_all()
+                .await
+                .map_err(|e| ChannelError::Cursor(format!("fsync {}: {e}", tmp.display())))?;
         }
         fs::rename(&tmp, &path).await.map_err(|e| {
-            ChannelError::Cursor(format!("rename {} -> {}: {e}", tmp.display(), path.display()))
+            ChannelError::Cursor(format!(
+                "rename {} -> {}: {e}",
+                tmp.display(),
+                path.display()
+            ))
         })?;
         Ok(())
     }

@@ -82,7 +82,8 @@ fn env_passphrase_from_env() -> Option<SecretString> {
 }
 
 /// Key storage manager
-pub struct KeyStorage {    base_path: PathBuf,
+pub struct KeyStorage {
+    base_path: PathBuf,
     /// Optional passphrase for encrypted-file fallback in tests.
     /// When set and the OS keychain is unavailable, this passphrase
     /// is used automatically for EncryptedKeyStorage.

@@ -85,7 +85,6 @@ pub enum HookPoint {
     // inner execute handler already covers the in-place mutation
     // path. Re-introduce only if a future tool needs cross-tool
     // result rewriting.
-
     /// Execute tool asynchronously
     ///
     /// Called during: Tool execution when async mode requested
@@ -245,7 +244,6 @@ pub enum HookPoint {
     /// Handlers return: `HookResult::PassThrough` or
     /// `HookResult::Continue(HookOutput::Unit)`.
     AfterAgent,
-
     // PR-E #4: `AgentIteration` retired. The variant let handlers
     // observe / mutate per-iteration state, but no extension ever
     // registered one in production (F31x moved iteration logging
@@ -320,7 +318,6 @@ impl HookPoint {
             Self::SessionStart => "session.start".to_string(),
 
             // Sprint 9 Commit 5: I/O hook variant names removed.
-
             Self::EventSubscribe { topic_pattern } => {
                 format!("event.subscribe.{topic_pattern}")
             }

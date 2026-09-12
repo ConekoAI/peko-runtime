@@ -293,14 +293,32 @@ mod tests {
     #[test]
     fn prompt_section_visibility_scoping() {
         // System-scope ids are visible to everyone, including `None`.
-        assert!(prompt_section_visible_to("builtin:tool:Bash", Some("alice")));
+        assert!(prompt_section_visible_to(
+            "builtin:tool:Bash",
+            Some("alice")
+        ));
         assert!(prompt_section_visible_to("builtin:tool:Bash", None));
         // Workspace-hook ids are visible only to their principal.
-        assert!(prompt_section_visible_to("principal:alice/hook:weather", Some("alice")));
-        assert!(!prompt_section_visible_to("principal:alice/hook:weather", Some("bob")));
-        assert!(!prompt_section_visible_to("principal:alice/hook:weather", None));
+        assert!(prompt_section_visible_to(
+            "principal:alice/hook:weather",
+            Some("alice")
+        ));
+        assert!(!prompt_section_visible_to(
+            "principal:alice/hook:weather",
+            Some("bob")
+        ));
+        assert!(!prompt_section_visible_to(
+            "principal:alice/hook:weather",
+            None
+        ));
         // The tool-registry `principal:<pid>:<name>` form scopes the same.
-        assert!(prompt_section_visible_to("principal:alice:customskill", Some("alice")));
-        assert!(!prompt_section_visible_to("principal:alice:customskill", Some("bob")));
+        assert!(prompt_section_visible_to(
+            "principal:alice:customskill",
+            Some("alice")
+        ));
+        assert!(!prompt_section_visible_to(
+            "principal:alice:customskill",
+            Some("bob")
+        ));
     }
 }

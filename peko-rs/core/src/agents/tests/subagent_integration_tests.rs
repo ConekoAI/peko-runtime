@@ -2646,10 +2646,22 @@ async fn peer_bound_run_delivers_reply_via_surface() {
 async fn resume_allows_cross_subtree_target() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
-    create_linked_session(&session_manager, &agent_name, "user-a", Some("root-sess"), "spawn")
-        .await;
-    create_linked_session(&session_manager, &agent_name, "user-b", Some("root-sess"), "spawn")
-        .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-b",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
 
     let executor = SubagentExecutor::with_registry(
         registry,
@@ -2683,10 +2695,22 @@ async fn resume_allows_cross_subtree_target() {
 async fn new_with_absolute_path_attaches_or_mints_top_level() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
-    create_linked_session(&session_manager, &agent_name, "user-a", Some("root-sess"), "spawn")
-        .await;
-    create_linked_session(&session_manager, &agent_name, "user-b", Some("root-sess"), "spawn")
-        .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-a",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "user-b",
+        Some("root-sess"),
+        "spawn",
+    )
+    .await;
 
     let executor = SubagentExecutor::with_registry(
         registry.clone(),
@@ -2776,8 +2800,5 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
         )
         .await
         .unwrap_err();
-    assert!(
-        err.to_string().contains("intermediate segments"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("intermediate segments"), "{err}");
 }

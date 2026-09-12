@@ -120,13 +120,8 @@ when the supplied nodeId collides with an existing node."
         // `id` field on the JSON. Surface the supplied id (or the
         // auto-assigned one if the user didn't pass one) — either
         // way the LLM gets back something to key off of.
-        let reported_id = node_id_str_for_error
-            .unwrap_or_else(|| node.node_id.to_string());
-        match self
-            .plan_port
-            .add_node(&plan_id, &principal_id, node)
-            .await
-        {
+        let reported_id = node_id_str_for_error.unwrap_or_else(|| node.node_id.to_string());
+        match self.plan_port.add_node(&plan_id, &principal_id, node).await {
             Ok(rec) => Ok(serde_json::to_value(rec)?),
             Err(peko_plan::PlanError::InvalidNodeId(_)) => Ok(
                 crate::tools::builtin::plan::not_found_error("Node", &reported_id),
@@ -144,8 +139,7 @@ mod tests {
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PlanAddStep")
-            .with_principal_id(id.0)
+        ToolContext::for_hook_run("run", "tc", "PlanAddStep").with_principal_id(id.0)
     }
 
     #[tokio::test]
@@ -163,10 +157,7 @@ mod tests {
         let plan_id = created["planId"].as_str().unwrap().to_string();
         let tool = PlanAddStepTool::new(port);
         let updated = tool
-            .execute_with_context(
-                json!({ "planId": plan_id, "step": "second" }),
-                &ctx_with(p),
-            )
+            .execute_with_context(json!({ "planId": plan_id, "step": "second" }), &ctx_with(p))
             .await
             .unwrap();
         assert_eq!(updated["nodes"].as_array().unwrap().len(), 2);

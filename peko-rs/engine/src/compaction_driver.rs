@@ -326,8 +326,14 @@ impl CompactionDriver {
         // pre-baked messages (ReplaceMessages). Both cases are
         // honoured.
         let effective_tokens = estimate_context_tokens(messages).tokens;
-        self.invoke_pre_hook(messages, session, funnel, effective_tokens, CompactionPhase::MidTurn)
-            .await;
+        self.invoke_pre_hook(
+            messages,
+            session,
+            funnel,
+            effective_tokens,
+            CompactionPhase::MidTurn,
+        )
+        .await;
 
         // Wait for the background worker. `compact_mid_turn` is
         // synchronous from the agentic loop's perspective — the
@@ -836,8 +842,7 @@ fn content_block_token_estimate(content: &[peko_message::ContentBlock]) -> usize
                 // CHARS_PER_TOKEN denominator used by text. Multiply by
                 // CHARS_PER_TOKEN to keep the downstream
                 // `+ 20) / CHARS_PER_TOKEN + 4` arithmetic unit-stable.
-                let image_tokens =
-                    peko_session::estimate_image_tokens(source, mime_type);
+                let image_tokens = peko_session::estimate_image_tokens(source, mime_type);
                 image_tokens.saturating_mul(CHARS_PER_TOKEN)
             }
             _ => 50,
@@ -1381,8 +1386,8 @@ mod tests {
     #[tokio::test]
     async fn persisted_last_total_triggers_compaction_with_empty_messages() {
         let mut f = fixture(false, true); // gate open (would fire if effective_tokens > threshold)
-        // Empty messages — simulates a cold reload where the
-        // estimator has nothing to anchor on.
+                                          // Empty messages — simulates a cold reload where the
+                                          // estimator has nothing to anchor on.
         let mut messages: Vec<LlmMessage> = vec![];
         let on_event = event_sink(&f.events);
 

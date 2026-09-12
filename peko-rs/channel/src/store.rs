@@ -59,11 +59,11 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::broadcast;
 
-use crate::port::{
-    ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts, PostMsg, RemoteMember, Result,
-    SearchPage, TailPage, TaskId, Tier, query_matches,
-};
 use crate::fs::channel_dir_name;
+use crate::port::{
+    query_matches, ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts, PostMsg,
+    RemoteMember, Result, SearchPage, TailPage, TaskId, Tier,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -168,8 +168,7 @@ impl ChannelConfig {
                 .map(|d| d.join(on_disk))
                 .ok_or_else(|| {
                     ChannelError::Adapter(
-                        "ChannelConfig::shared_dir is None; cannot resolve Shared tier"
-                            .into(),
+                        "ChannelConfig::shared_dir is None; cannot resolve Shared tier".into(),
                     )
                 }),
         }
@@ -226,9 +225,8 @@ impl MetaJson {
     async fn load(channel_dir: &Path, channel: &ChannelId) -> Result<Self> {
         let p = Self::path_in(channel_dir);
         match fs::read(&p).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                ChannelError::Adapter(format!("decode {}: {e}", p.display()))
-            }),
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| ChannelError::Adapter(format!("decode {}: {e}", p.display()))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Err(ChannelError::NotFound(channel.clone()))
             }
@@ -296,9 +294,8 @@ impl MembersJson {
     async fn load(channel_dir: &Path) -> Result<Self> {
         let p = Self::path_in(channel_dir);
         match fs::read(&p).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                ChannelError::Adapter(format!("decode {}: {e}", p.display()))
-            }),
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| ChannelError::Adapter(format!("decode {}: {e}", p.display()))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(ChannelError::Adapter(format!("read {}: {e}", p.display()))),
         }
@@ -330,8 +327,7 @@ impl MembersJson {
 /// bare `did:...` forms, whose `did` kind tag is not a `Subject` kind
 /// and therefore also falls through to `Principal`).
 fn member_subject(entry: &str) -> Subject {
-    Subject::from_str(entry)
-        .unwrap_or_else(|_| Subject::Principal(PrincipalDID(entry.to_string())))
+    Subject::from_str(entry).unwrap_or_else(|_| Subject::Principal(PrincipalDID(entry.to_string())))
 }
 
 /// Serialize a [`Subject`] for storage in `members.json` (and for the
@@ -518,9 +514,11 @@ impl ChannelStore {
                 )));
             }
         };
-        while let Some(entry) = rd.next_entry().await.map_err(|e| {
-            ChannelError::Adapter(format!("walk {}: {e}", chan_dir.display()))
-        })? {
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("walk {}: {e}", chan_dir.display())))?
+        {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
             let Some(n) = name
@@ -581,9 +579,9 @@ impl ChannelStore {
                 return Ok((count, len));
             }
         }
-        let bytes = fs::read(path).await.map_err(|e| {
-            ChannelError::Adapter(format!("read {}: {e}", path.display()))
-        })?;
+        let bytes = fs::read(path)
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("read {}: {e}", path.display())))?;
         let count = u64::try_from(bytes.iter().filter(|b| **b == b'\n').count())
             .map_err(|e| ChannelError::Adapter(format!("line count: {e}")))?;
         self.line_counts
@@ -641,7 +639,11 @@ impl ChannelStore {
 
     /// `session_key`'s read position on `channel` (`None` = first
     /// observation). See [`crate::read_marks`].
-    pub async fn read_mark(&self, channel: &ChannelId, session_key: &str) -> Result<Option<TaskId>> {
+    pub async fn read_mark(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+    ) -> Result<Option<TaskId>> {
         let chan_dir = self.channel_dir_for_marks(channel).await?;
         let marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
         Ok(marks.get(session_key).cloned())
@@ -660,7 +662,11 @@ impl ChannelStore {
         let chan_dir = self.channel_dir_for_marks(channel).await?;
         let mut marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
         if let (Some(existing), Ok(new_n)) = (marks.get(session_key), mark.parse::<u64>()) {
-            if existing.parse::<u64>().map(|old_n| old_n >= new_n).unwrap_or(false) {
+            if existing
+                .parse::<u64>()
+                .map(|old_n| old_n >= new_n)
+                .unwrap_or(false)
+            {
                 return Ok(());
             }
         }
@@ -704,9 +710,7 @@ impl ChannelStore {
         let path = self.events_path_for(tier, channel);
         let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
             .await
-            .map_err(|e| {
-                ChannelError::Adapter(format!("lock {}: {e}", path.display()))
-            })?;
+            .map_err(|e| ChannelError::Adapter(format!("lock {}: {e}", path.display())))?;
 
         // Global next line number = lines in rotated pages + lines in
         // the current page. `page_line_count` is cache-aware (rotated
@@ -723,9 +727,8 @@ impl ChannelStore {
         let (current_lines, current_len) = self.page_line_count(&path).await?;
         line_number += current_lines;
 
-        let mut bytes = serde_json::to_vec(ev).map_err(|e| {
-            ChannelError::Adapter(format!("serialize ChannelEvent: {e}"))
-        })?;
+        let mut bytes = serde_json::to_vec(ev)
+            .map_err(|e| ChannelError::Adapter(format!("serialize ChannelEvent: {e}")))?;
         bytes.push(b'\n');
 
         // Rotate BEFORE the append when it would push the current page
@@ -770,17 +773,17 @@ impl ChannelStore {
             cur_lines = 0;
         }
 
-        append_bytes_durable(&path, &bytes).await.map_err(|e| {
-            ChannelError::Adapter(format!("append {}: {e}", path.display()))
-        })?;
+        append_bytes_durable(&path, &bytes)
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("append {}: {e}", path.display())))?;
         // The append is durable; the current page now ends exactly
         // where our write finished, so the cache entry is authoritative
         // for the next append (a concurrent in-process appender holds
         // the same lock before computing its own line number).
-        self.line_counts.lock().expect("line_counts mutex").insert(
-            path.clone(),
-            (cur_lines + 1, cur_len + bytes.len() as u64),
-        );
+        self.line_counts
+            .lock()
+            .expect("line_counts mutex")
+            .insert(path.clone(), (cur_lines + 1, cur_len + bytes.len() as u64));
         // Notify live subscribers only after the durable append
         // succeeds (see the method docs — single chokepoint).
         self.notify_event(channel, ev);
@@ -1098,10 +1101,12 @@ impl ChannelStore {
     async fn lock_members(&self, chan_dir: &Path) -> Result<FileLock> {
         FileLock::acquire(MembersJson::path_in(chan_dir), CHANNEL_LOCK_TIMEOUT_MS)
             .await
-            .map_err(|e| ChannelError::Adapter(format!(
-                "lock {}: {e}",
-                MembersJson::path_in(chan_dir).display()
-            )))
+            .map_err(|e| {
+                ChannelError::Adapter(format!(
+                    "lock {}: {e}",
+                    MembersJson::path_in(chan_dir).display()
+                ))
+            })
     }
 
     /// Walk `<runtime_dir>/channels/` and return every `ChannelId` for
@@ -1111,10 +1116,7 @@ impl ChannelStore {
     /// with `.3A.` via [`crate::fs::channel_dir_name`]). The
     /// reconstruction uses [`crate::fs::channel_dir_name_inverse`] so
     /// the returned ids always carry the wire form.
-    async fn list_channels_for_principal(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<Vec<ChannelId>> {
+    async fn list_channels_for_principal(&self, principal: &PrincipalId) -> Result<Vec<ChannelId>> {
         let root = self.cfg.channels_dir();
         let mut out = Vec::new();
         let mut rd = match fs::read_dir(&root).await {
@@ -1127,11 +1129,15 @@ impl ChannelStore {
                 )));
             }
         };
-        while let Some(entry) = rd.next_entry().await.map_err(|e| {
-            ChannelError::Adapter(format!("walk {}: {e}", root.display()))
-        })? {
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("walk {}: {e}", root.display())))?
+        {
             let name = entry.file_name();
-            let Some(name_str) = name.to_str() else { continue };
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
             // Try the wire form first (bare ids live under their own
             // name on disk; typed ids live under the `.3A.`-encoded
             // form).
@@ -1196,10 +1202,7 @@ impl ChannelStore {
     /// List the `RemoteMember` rows currently registered in this
     /// channel's `members.json`. Returns an empty Vec if the channel
     /// has no remote members, or if `members.json` is absent.
-    pub async fn list_remote_members(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<Vec<RemoteMember>> {
+    pub async fn list_remote_members(&self, channel: &ChannelId) -> Result<Vec<RemoteMember>> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
@@ -1238,10 +1241,15 @@ impl ChannelStore {
                 runtime_id: None,
             })
             .collect();
-        out.extend(members.remote_members.into_iter().map(|rm| MemberProvenance {
-            principal: rm.principal_id,
-            runtime_id: Some(rm.runtime_id),
-        }));
+        out.extend(
+            members
+                .remote_members
+                .into_iter()
+                .map(|rm| MemberProvenance {
+                    principal: rm.principal_id,
+                    runtime_id: Some(rm.runtime_id),
+                }),
+        );
         Ok(out)
     }
 
@@ -1256,9 +1264,10 @@ impl ChannelStore {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
-        Ok(members.remote_members.iter().any(|rm| {
-            rm.runtime_id == runtime_id && rm.principal_id == principal_id
-        }))
+        Ok(members
+            .remote_members
+            .iter()
+            .any(|rm| rm.runtime_id == runtime_id && rm.principal_id == principal_id))
     }
 
     /// Add a [`RemoteMember`] row to this channel's `members.json`,
@@ -1375,9 +1384,9 @@ impl ChannelStore {
             return Ok(());
         }
 
-        fs::create_dir_all(&chan_dir).await.map_err(|e| {
-            ChannelError::Adapter(format!("mkdir {}: {e}", chan_dir.display()))
-        })?;
+        fs::create_dir_all(&chan_dir)
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("mkdir {}: {e}", chan_dir.display())))?;
 
         // Re-partition the source-keyed snapshot to the receiver's
         // view (see the doc comment). The creator is filed as a remote
@@ -1531,11 +1540,7 @@ impl ChannelStore {
 
 #[async_trait]
 impl ChannelPort for ChannelStore {
-    async fn create(
-        &self,
-        creator: &PrincipalId,
-        opts: CreateOpts,
-    ) -> Result<ChannelId> {
+    async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId> {
         // Sprint 4: honor `opts.id` (set by the peer-DM auto-provisioning
         // path) when supplied; otherwise mint a fresh `chan_<8 base36>`
         // as before. Both paths converge through the same
@@ -1601,7 +1606,11 @@ impl ChannelPort for ChannelStore {
         {
             return Err(ChannelError::NotMember);
         }
-        if members.members.iter().any(|m| member_subject(m) == *invitee) {
+        if members
+            .members
+            .iter()
+            .any(|m| member_subject(m) == *invitee)
+        {
             // Idempotent: invitee already a member.
             return Ok(());
         }
@@ -1632,12 +1641,7 @@ impl ChannelPort for ChannelStore {
         Ok(())
     }
 
-    async fn post(
-        &self,
-        channel: &ChannelId,
-        sender: &Subject,
-        msg: PostMsg,
-    ) -> Result<TaskId> {
+    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg) -> Result<TaskId> {
         let (_line, _ev) = self.post_with_event(channel, sender, msg).await?;
         Ok(_line)
     }
@@ -1657,11 +1661,7 @@ impl ChannelPort for ChannelStore {
         Ok(line)
     }
 
-    async fn peek(
-        &self,
-        channel: &ChannelId,
-        since: &Checkpoint,
-    ) -> Result<Vec<ChannelEvent>> {
+    async fn peek(&self, channel: &ChannelId, since: &Checkpoint) -> Result<Vec<ChannelEvent>> {
         let tier = self.resolve_tier(channel).await?;
         let items = self.read_events(tier, channel, since).await?;
         Ok(items.into_iter().map(|(_, ev)| ev).collect())
@@ -1734,8 +1734,8 @@ impl ChannelPort for ChannelStore {
             Ok(meta) => Ok(meta.passive_binding),
             Err(ChannelError::NotFound(_)) => match self.cfg.shared_channels_dir() {
                 Some(shared) => {
-                    let meta = MetaJson::load(&shared.join(channel_dir_name(channel)), channel)
-                        .await?;
+                    let meta =
+                        MetaJson::load(&shared.join(channel_dir_name(channel)), channel).await?;
                     Ok(meta.passive_binding)
                 }
                 None => Err(ChannelError::NotFound(channel.clone())),
@@ -1763,11 +1763,7 @@ impl ChannelPort for ChannelStore {
         ChannelStore::advance_read_mark(self, channel, session_key, mark).await
     }
 
-    async fn leave(
-        &self,
-        channel: &ChannelId,
-        principal: &PrincipalId,
-    ) -> Result<()> {
+    async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let _guard = self.lock_members(&chan_dir).await?;
@@ -1792,31 +1788,18 @@ impl ChannelPort for ChannelStore {
         Ok(())
     }
 
-    async fn list_members(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<Vec<Subject>> {
+    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<Subject>> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
-        Ok(members
-            .members
-            .iter()
-            .map(|m| member_subject(m))
-            .collect())
+        Ok(members.members.iter().map(|m| member_subject(m)).collect())
     }
 
-    async fn list_for_principal(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<Vec<ChannelId>> {
+    async fn list_for_principal(&self, principal: &PrincipalId) -> Result<Vec<ChannelId>> {
         self.list_channels_for_principal(principal).await
     }
 
-    async fn pin_to_shared(
-        &self,
-        channel: &ChannelId,
-    ) -> Result<std::path::PathBuf> {
+    async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {
         // Resolve the Shared destination first so we fail fast if
         // `shared_dir` is unset.
         let shared_chan_dir = self.cfg.channel_dir_for(Tier::Shared, channel)?;
@@ -1835,10 +1818,7 @@ impl ChannelPort for ChannelStore {
         // Locks / tmp files are skipped. The layout is flat — no
         // recursion needed.
         let mut rd = fs::read_dir(&runtime_chan_dir).await.map_err(|e| {
-            ChannelError::Adapter(format!(
-                "read {}: {e}",
-                runtime_chan_dir.display()
-            ))
+            ChannelError::Adapter(format!("read {}: {e}", runtime_chan_dir.display()))
         })?;
         while let Some(entry) = rd.next_entry().await.map_err(|e| {
             ChannelError::Adapter(format!("walk {}: {e}", runtime_chan_dir.display()))
@@ -1865,10 +1845,7 @@ impl ChannelPort for ChannelStore {
         Ok(shared_chan_dir)
     }
 
-    async fn subscribe_events(
-        &self,
-        channel: &ChannelId,
-    ) -> broadcast::Receiver<ChannelEvent> {
+    async fn subscribe_events(&self, channel: &ChannelId) -> broadcast::Receiver<ChannelEvent> {
         self.subscribe_events_broadcast(channel).await
     }
 }
@@ -1944,10 +1921,7 @@ mod tests {
     /// is not a `Subject` kind) fall back to `Subject::Principal`.
     #[test]
     fn member_subject_parses_wire_forms_and_legacy_bare_ids() {
-        assert_eq!(
-            member_subject("user:alice"),
-            Subject::User("alice".into())
-        );
+        assert_eq!(member_subject("user:alice"), Subject::User("alice".into()));
         assert_eq!(
             member_subject("principal:did:peko:principal:abc"),
             Subject::Principal(PrincipalDID("did:peko:principal:abc".into()))
@@ -2067,7 +2041,8 @@ mod tests {
     /// A `user:<id>` sender who is NOT a member is still rejected
     /// with `NotMember` — Subject-typing the check does not widen it.
     #[tokio::test]
-    async fn non_member_user_post_rejected() {        let cfg = tmp_cfg("user-not-member");
+    async fn non_member_user_post_rejected() {
+        let cfg = tmp_cfg("user-not-member");
         let store = ChannelStore::new(cfg);
         let creator = pid("prin_alice");
         let channel = store
@@ -2130,11 +2105,7 @@ mod tests {
         // Users join past the cap — they add no per-post fan-out cost.
         for i in 0..4 {
             store
-                .invite(
-                    &channel,
-                    &creator,
-                    &Subject::User(format!("user_{i}")),
-                )
+                .invite(&channel, &creator, &Subject::User(format!("user_{i}")))
                 .await
                 .expect("user invite past the principal cap must succeed");
         }
@@ -2143,11 +2114,7 @@ mod tests {
         // The 9th principal is still refused, reporting the principal
         // count (8), not the padded member count (12).
         let err = store
-            .invite(
-                &channel,
-                &creator,
-                &Subject::from(&pid("prin_ninth")),
-            )
+            .invite(&channel, &creator, &Subject::from(&pid("prin_ninth")))
             .await;
         assert!(
             matches!(err, Err(ChannelError::FanOutCap { current: 8 })),
@@ -2222,17 +2189,22 @@ mod tests {
 
         let newest = store.peek_tail(&channel, 2, None).await.unwrap();
         assert_eq!(
-            newest.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            newest
+                .events
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
             vec!["2", "3"]
         );
         let cursor = newest.events[0].0.clone();
 
-        let older = store
-            .peek_tail(&channel, 2, Some(&cursor))
-            .await
-            .unwrap();
+        let older = store.peek_tail(&channel, 2, Some(&cursor)).await.unwrap();
         assert_eq!(
-            older.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            older
+                .events
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
             vec!["0", "1"],
             "page before line 2 is lines 0..=1 — no overlap with the newest page"
         );
@@ -2276,7 +2248,11 @@ mod tests {
         std::io::Write::write_all(&mut f, &line).unwrap();
 
         let second = store
-            .post(&channel, &Subject::from(&creator), PostMsg::root("mine again"))
+            .post(
+                &channel,
+                &Subject::from(&creator),
+                PostMsg::root("mine again"),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -2313,10 +2289,7 @@ mod tests {
         let session_key = "sess-abc";
 
         // First observation: no mark yet.
-        assert_eq!(
-            store.read_mark(&channel, session_key).await.unwrap(),
-            None
-        );
+        assert_eq!(store.read_mark(&channel, session_key).await.unwrap(), None);
 
         store
             .advance_read_mark(&channel, session_key, "5".to_string())
@@ -2356,7 +2329,8 @@ mod tests {
     /// invites all land in `members.json` (the FileLock serializes the
     /// load→mutate→save cycle).
     #[tokio::test]
-    async fn concurrent_invites_do_not_lose_members() {        let cfg = tmp_cfg("concurrent-invites");
+    async fn concurrent_invites_do_not_lose_members() {
+        let cfg = tmp_cfg("concurrent-invites");
         let store = ChannelStore::new(cfg);
         let creator = pid("prin_alice");
         let channel = store
@@ -2371,11 +2345,7 @@ mod tests {
             let creator = creator.clone();
             handles.push(tokio::spawn(async move {
                 store
-                    .invite(
-                        &channel,
-                        &creator,
-                        &Subject::User(format!("user_{i}")),
-                    )
+                    .invite(&channel, &creator, &Subject::User(format!("user_{i}")))
                     .await
             }));
         }
@@ -2435,7 +2405,11 @@ mod tests {
         // validates (parent check is a global line count, not a
         // current-page walk).
         let reply = store
-            .post(&channel, &sender, PostMsg::reply("1".to_string(), "reply to msg 0"))
+            .post(
+                &channel,
+                &sender,
+                PostMsg::reply("1".to_string(), "reply to msg 0"),
+            )
             .await
             .expect("parent in a rotated page must validate");
         assert_eq!(reply, "11");
@@ -2474,7 +2448,10 @@ mod tests {
         // the current page.
         let page = store.peek_tail(&channel, 4, None).await.unwrap();
         assert_eq!(
-            page.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            page.events
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
             vec!["7", "8", "9", "10"]
         );
         assert!(page.has_more);
@@ -2485,7 +2462,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            page.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            page.events
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
             vec!["1", "2"]
         );
         assert!(page.has_more, "line 0 (Created) is older still");
@@ -2580,9 +2560,15 @@ mod tests {
 
         // Text match is case-insensitive and spans pages; membership
         // lines never match.
-        let page = store.search(&channel, &q(Some("hello"), None, None, 10)).await.unwrap();
+        let page = store
+            .search(&channel, &q(Some("hello"), None, None, 10))
+            .await
+            .unwrap();
         assert_eq!(
-            page.events.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            page.events
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
             vec!["2", "3"],
             "both 'hello' posts, oldest first, no MemberJoined line"
         );
@@ -2601,7 +2587,10 @@ mod tests {
         }
 
         // Limit caps the page; resume_before continues the scan.
-        let page1 = store.search(&channel, &q(Some("hello"), None, None, 1)).await.unwrap();
+        let page1 = store
+            .search(&channel, &q(Some("hello"), None, None, 1))
+            .await
+            .unwrap();
         assert_eq!(page1.events.len(), 1);
         assert_eq!(page1.events[0].0, "3", "newest match first page");
         assert!(page1.has_more);
@@ -2637,7 +2626,8 @@ mod tests {
 
     /// `pin_to_shared` copies rotated pages alongside the current one.
     #[tokio::test]
-    async fn pin_to_shared_copies_rotated_pages() {        let dir = std::env::temp_dir().join("peko-channel-tests-pin-pages");
+    async fn pin_to_shared_copies_rotated_pages() {
+        let dir = std::env::temp_dir().join("peko-channel-tests-pin-pages");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = ChannelConfig {
@@ -2833,20 +2823,26 @@ mod tests {
         let cfg = tmp_cfg("list-remote");
         let store = ChannelStore::new(cfg.clone());
         let creator = pid("prin_alice");
-        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
 
         // No remote members yet.
-        assert!(store.list_remote_members(&channel).await.unwrap().is_empty());
+        assert!(store
+            .list_remote_members(&channel)
+            .await
+            .unwrap()
+            .is_empty());
 
         // Manually inject a remote member row (the API that adds
         // remote members lives in commit 2 / 3 of PR-B; here we
         // verify the read path).
         let chan_dir = cfg.channel_dir(&channel);
         let mut members = MembersJson::load(&chan_dir).await.unwrap();
-        members.remote_members.push(fake_remote(
-            "did:key:zRuntimeB",
-            "prin_bob",
-        ));
+        members
+            .remote_members
+            .push(fake_remote("did:key:zRuntimeB", "prin_bob"));
         members.save(&chan_dir).await.unwrap();
 
         let listed = store.list_remote_members(&channel).await.unwrap();
@@ -2861,14 +2857,16 @@ mod tests {
         let cfg = tmp_cfg("is-remote");
         let store = ChannelStore::new(cfg);
         let creator = pid("prin_alice");
-        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
 
         let chan_dir = store.config().channel_dir(&channel);
         let mut members = MembersJson::load(&chan_dir).await.unwrap();
-        members.remote_members.push(fake_remote(
-            "did:key:zRuntimeB",
-            "prin_bob",
-        ));
+        members
+            .remote_members
+            .push(fake_remote("did:key:zRuntimeB", "prin_bob"));
         members.save(&chan_dir).await.unwrap();
 
         assert!(store
@@ -2971,7 +2969,10 @@ mod tests {
         let cfg = tmp_cfg("append-remote");
         let store = ChannelStore::new(cfg);
         let creator = pid("prin_alice");
-        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
 
         // Simulate an event relayed from runtime B for a remote principal.
         let remote_event = ChannelEvent::Posted {
@@ -2989,10 +2990,7 @@ mod tests {
 
         // `peek` reads from the same `events.jsonl`, so the remote
         // event should be visible immediately.
-        let events = store
-            .peek(&channel, &Checkpoint::default())
-            .await
-            .unwrap();
+        let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
         let posted: Vec<_> = events
             .iter()
             .filter(|ev| matches!(ev, ChannelEvent::Posted { .. }))
@@ -3015,7 +3013,10 @@ mod tests {
         let cfg = tmp_cfg("skip-membership");
         let store = ChannelStore::new(cfg);
         let creator = pid("prin_alice");
-        let channel = store.create(&creator, CreateOpts::runtime("team")).await.unwrap();
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
 
         // "prin_bob@runtime-B" is NOT in `members.json`.
         assert!(!store
@@ -3172,7 +3173,12 @@ mod tests {
 
         // Line 1 is the first post (line 0 is Created).
         store
-            .post_attributed(&channel, &Subject::from(&creator), "user:alice", PostMsg::root("inbound"))
+            .post_attributed(
+                &channel,
+                &Subject::from(&creator),
+                "user:alice",
+                PostMsg::root("inbound"),
+            )
             .await
             .unwrap();
         let events = store
@@ -3344,7 +3350,10 @@ mod tests {
         // Filesystem layout: meta.json, members.json, events.jsonl.
         let chan_dir = cfg.channel_dir(&channel);
         assert!(chan_dir.join(META_FILE).exists(), "meta.json must exist");
-        assert!(chan_dir.join(MEMBERS_FILE).exists(), "members.json must exist");
+        assert!(
+            chan_dir.join(MEMBERS_FILE).exists(),
+            "members.json must exist"
+        );
         assert!(
             chan_dir.join(EVENTS_FILE).exists(),
             "events.jsonl must exist"
@@ -3375,7 +3384,11 @@ mod tests {
 
         // The receiver's own post passes the membership check.
         store
-            .post(&channel, &Subject::from(&receiver), PostMsg::root("receiver talking"))
+            .post(
+                &channel,
+                &Subject::from(&receiver),
+                PostMsg::root("receiver talking"),
+            )
             .await
             .expect("receiver must be able to post to its own mirror");
 
@@ -3516,7 +3529,9 @@ mod tests {
 
         // The original name + binding survive (the second call did
         // not overwrite meta.json).
-        let meta = MetaJson::load(&cfg.channel_dir(&channel), &channel).await.unwrap();
+        let meta = MetaJson::load(&cfg.channel_dir(&channel), &channel)
+            .await
+            .unwrap();
         assert_eq!(meta.name, "team-chat", "original name must survive");
         assert_eq!(
             meta.passive_binding.as_deref(),
@@ -3543,7 +3558,10 @@ mod tests {
         let opts = CreateOpts::runtime("dm-bob").with_id(explicit.clone());
         let returned = store.create(&creator, opts).await.unwrap();
 
-        assert_eq!(returned, explicit, "create must return the caller-supplied id");
+        assert_eq!(
+            returned, explicit,
+            "create must return the caller-supplied id"
+        );
 
         // On-disk dir uses the .3A. normalizer, NOT the wire form.
         let on_disk = cfg.channel_dir(&explicit);
@@ -3551,15 +3569,13 @@ mod tests {
             on_disk.exists(),
             "expected {} to exist; list: {:?}",
             on_disk.display(),
-            std::fs::read_dir(cfg.channels_dir()).unwrap().map(|e| e.unwrap().path()).collect::<Vec<_>>()
+            std::fs::read_dir(cfg.channels_dir())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect::<Vec<_>>()
         );
         assert!(
-            !on_disk
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .contains(':'),
+            !on_disk.file_name().unwrap().to_str().unwrap().contains(':'),
             "filesystem dir names must not contain colons; got {:?}",
             on_disk.file_name()
         );
@@ -3622,7 +3638,10 @@ mod tests {
 
         // Create one typed + one bare.
         store
-            .create(&creator, CreateOpts::runtime("dm").with_id(principal_id.clone()))
+            .create(
+                &creator,
+                CreateOpts::runtime("dm").with_id(principal_id.clone()),
+            )
             .await
             .unwrap();
         store
@@ -3637,7 +3656,9 @@ mod tests {
             "typed id must appear in wire form, not .3A. form; got {listed:?}"
         );
         assert!(
-            listed.iter().any(|id| id.as_str().starts_with(ChannelId::PREFIX)),
+            listed
+                .iter()
+                .any(|id| id.as_str().starts_with(ChannelId::PREFIX)),
             "bare id must appear; got {listed:?}"
         );
     }
@@ -3655,10 +3676,7 @@ mod tests {
         let result = store.passive_binding(&bogus).await;
         match result {
             Err(ChannelError::NotFound(id)) => {
-                assert_eq!(
-                    id, bogus,
-                    "NotFound must carry the wire-form id; got {id}"
-                );
+                assert_eq!(id, bogus, "NotFound must carry the wire-form id; got {id}");
             }
             other => panic!("expected NotFound; got {other:?}"),
         }

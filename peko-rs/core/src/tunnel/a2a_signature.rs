@@ -87,8 +87,8 @@ fn push_lp(out: &mut Vec<u8>, s: &str) {
 /// arbitrary bytes (invite tokens carry a JSON body that may include
 /// non-UTF-8 sequences after base64-decoding some fields).
 fn push_lp_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    let len = u32::try_from(bytes.len())
-        .expect("signed field exceeds u32::MAX bytes; rejected upstream");
+    let len =
+        u32::try_from(bytes.len()).expect("signed field exceeds u32::MAX bytes; rejected upstream");
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(bytes);
 }
@@ -128,7 +128,9 @@ pub fn verify_pre_image(
         .try_into()
         .map_err(|v: Vec<u8>| anyhow!("signature length is {} bytes; expected 64", v.len()))?;
     let signature = Signature::from_bytes(&sig_arr);
-    verifying_key.verify(pre_image, &signature).map_err(|e| e.into())
+    verifying_key
+        .verify(pre_image, &signature)
+        .map_err(|e| e.into())
 }
 
 #[cfg(test)]
@@ -139,10 +141,7 @@ mod tests {
     fn sample_pre_image() -> Vec<u8> {
         build_pre_image(
             "test:v1",
-            &[
-                ("request_id", b"req-abc-123"),
-                ("message", b"review this"),
-            ],
+            &[("request_id", b"req-abc-123"), ("message", b"review this")],
         )
     }
 

@@ -24,13 +24,7 @@ pub mod runtime;
 pub mod workspace;
 
 // Re-export key types for convenience
-pub use global::{
-    global_mcp_manager, init_global_mcp_manager_with_shared_resources,
-};
-pub use workspace::{
-    discover_workspace_mcp_servers, load_workspace_mcp_servers,
-    render_mcp_prompt_context,
-};
+pub use global::{global_mcp_manager, init_global_mcp_manager_with_shared_resources};
 pub use protocol::{
     client::{ClientError, McpClient},
     config::{ConfigFormat, McpConfig, McpServerConfig, TransportType},
@@ -45,4 +39,7 @@ pub use runtime::{
     injectable_proxy::InjectableMcpToolProxy,
     starter::McpRuntimeStarter,
     tool_proxy::{create_tool_proxies, create_tool_proxy, McpToolProxy},
+};
+pub use workspace::{
+    discover_workspace_mcp_servers, load_workspace_mcp_servers, render_mcp_prompt_context,
 };

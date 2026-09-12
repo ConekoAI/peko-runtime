@@ -76,10 +76,7 @@ pub fn estimate_image_block_tokens(source: &ImageSource, mime_type: &str) -> usi
 /// Hook for callers that want to sum image costs across an entire
 /// `LlmMessage`. Currently unused outside tests but documents the intended
 /// use site (compaction history summarization).
-pub fn message_image_tokens(
-    role: MessageRole,
-    content: &[peko_message::ContentBlock],
-) -> usize {
+pub fn message_image_tokens(role: MessageRole, content: &[peko_message::ContentBlock]) -> usize {
     let _ = role; // reserved — system/user may be prioritised in PR 2/3
     content
         .iter()
@@ -182,10 +179,7 @@ mod tests {
             ..Default::default()
         };
         // 1000 (base64) + 1500 (jpeg floor) = 2500. Text contributes 0.
-        assert_eq!(
-            message_image_tokens(MessageRole::User, &msg.content),
-            2500
-        );
+        assert_eq!(message_image_tokens(MessageRole::User, &msg.content), 2500);
     }
 
     #[test]
@@ -195,7 +189,10 @@ mod tests {
         // budget). Falls through to tier 2 (base64 bytes/0.75).
         let src = ImageSource::Base64 {
             data: "x".repeat(750),
-            dimensions: Some(ImageDimensions { width: 0, height: 0 }),
+            dimensions: Some(ImageDimensions {
+                width: 0,
+                height: 0,
+            }),
         };
         assert_eq!(estimate_image_tokens(&src, "image/png"), 1000);
     }
