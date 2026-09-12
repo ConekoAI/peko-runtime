@@ -2934,8 +2934,6 @@ mod tests {
             .find(|m| m.session_id.to_string() == child_id)
             .expect("child metadata");
         assert_eq!(child.slug.as_deref(), Some("local-user"));
-        assert!(child.standing);
-        assert!(child.privileged, "owner's child must be privileged");
         assert_eq!(
             child.parent_session_id.map(|id| id.to_string()).as_deref(),
             Some(
@@ -2997,10 +2995,10 @@ mod tests {
             "A2A child slug must be /principal-{{fragment}}, got {:?}",
             child.slug
         );
-        assert!(child.standing);
+
         assert!(
-            !child.privileged,
-            "a stranger's child must stay subtree-scoped"
+            child.slug.is_some(),
+            "a stranger's child still gets a provisioned session"
         );
         assert_eq!(child.peer_type.as_deref(), Some("principal"));
         assert_eq!(child.peer_id.as_deref(), Some("did:key:z6MkA2aPeerExample"));

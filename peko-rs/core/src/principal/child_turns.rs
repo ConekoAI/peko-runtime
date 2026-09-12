@@ -154,10 +154,6 @@ pub(crate) struct PeerChildTurns {
     /// no self-turn has run — the subtree check still admits its own
     /// children, exactly where peer children live).
     parent_session_key: String,
-    /// The principal's configured owner subject — decides the
-    /// `privileged` flag in [`ensure_peer_child`] (the owner's child
-    /// `/local-user` gets whole-store reach).
-    owner: Subject,
     /// The root agent's prompt name, stamped as the agent name on
     /// provisioned peer-child sessions.
     agent_name: String,
@@ -307,7 +303,6 @@ impl PeerChildTurns {
             executor,
             session_manager,
             parent_session_key: trunk_session_id(),
-            owner,
             agent_name,
             principal_id: principal.id.clone(),
             channel_port: None,
@@ -378,8 +373,7 @@ impl PeerChildTurns {
     /// debug log (standalone/test contexts). `dm_channel` is `None` in
     /// both cases (callers skip the posts).
     pub(crate) async fn ensure_child_ingress(&self, peer: &Subject) -> Result<PeerChildIngress> {
-        let child_id =
-            ensure_peer_child(&self.agent_name, &self.owner, peer, &self.session_manager).await?;
+        let child_id = ensure_peer_child(&self.agent_name, peer, &self.session_manager).await?;
         let Some(port) = self.channel_port.clone() else {
             tracing::debug!(
                 peer = %peer,
@@ -570,9 +564,6 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
         let meta = metas
             .iter()
             .find(|m| m.session_id.to_string() == session_id)?;
-        if !meta.standing {
-            return None;
-        }
         let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
             (Some("user"), Some(id)) => Subject::User(id.to_string()),
             (Some("principal"), Some(id)) => Subject::Principal(id.to_string().into()),
@@ -656,18 +647,13 @@ fn render_self_position(
         return Some("your position: `/` — root session (the principal's trunk)".to_string());
     }
     let path = peko_session::path::compute_path(metas, session_id);
-    let role = match (
-        meta.standing,
-        meta.peer_type.as_deref(),
-        meta.peer_id.as_deref(),
-    ) {
-        (true, Some("user"), Some(id)) => {
+    let role = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
+        (Some("user"), Some(id)) => {
             format!("standing peer child of the trunk (peer: user:{id})")
         }
-        (true, Some("principal"), Some(id)) => {
+        (Some("principal"), Some(id)) => {
             format!("standing peer child of the trunk (peer: principal:{id})")
         }
-        (true, _, _) => "standing named child".to_string(),
         _ => "spawned child session".to_string(),
     };
     Some(format!("your position: `{path}` — {role}"))
@@ -779,9 +765,6 @@ impl crate::extensions::framework::core::HookHandler for PeersSessionContextHand
 
         let mut lines = String::new();
         for meta in &metas {
-            if !meta.standing {
-                continue;
-            }
             let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
                 (Some("user"), Some(id)) => format!("user:{id}"),
                 (Some("principal"), Some(id)) => format!("principal:{id}"),
@@ -1056,7 +1039,6 @@ mod tests {
             executor,
             session_manager,
             parent_session_key: trunk_session_id(),
-            owner: Subject::User("local".to_string()),
             agent_name: "root".to_string(),
             principal_id,
             channel_port,
@@ -1336,8 +1318,6 @@ mod tests {
             peer_type: None,
             peer_id: None,
             archived: false,
-            standing: false,
-            privileged: false,
             slug: slug.map(String::from),
             compaction_count: 0,
             last_compaction_at: None,
@@ -1363,7 +1343,6 @@ mod tests {
         let task =
             peko_session::id::SessionId::parse("00000000-0000-0000-0000-000000000004").unwrap();
         let mut peer_child = position_meta(local_user, Some(trunk), Some("local-user"));
-        peer_child.standing = true;
         peer_child.peer_type = Some("user".to_string());
         peer_child.peer_id = Some("local".to_string());
         let metas = vec![

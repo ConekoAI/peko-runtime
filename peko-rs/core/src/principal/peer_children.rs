@@ -11,14 +11,12 @@
 //!
 //! [`ensure_peer_child`] find-or-creates the child (metadata + a JSONL
 //! created-event only — NO LLM turn, no run), flagged
-//! `trigger = "spawn"` / `standing = true` / `slug =
-//! peer_child_slug(peer)`, parented at the trunk, titled with the
-//! peer's display string, and stamped with the REAL peer (not the
-//! `standing_*` placeholder [`crate::principal::children`] uses for
-//! declared children). The owner's child is additionally flagged
-//! `privileged = true`, giving its caller whole-store reach in the
-//! ownership guards (`crate::session::ownership`); every other peer
-//! child stays subtree-scoped.
+//! `trigger = "spawn"` / `slug = peer_child_slug(peer)`, parented at
+//! the trunk, titled with the peer's display string, and stamped with
+//! the REAL peer. Peer-child identity keys on that peer stamp — the
+//! `standing` / `privileged` flags were removed with the 2026-09-12
+//! filesystem model (whole-store reach for every caller; hierarchy is
+//! organizational only).
 //!
 //! ## Dangling trunk
 //!
@@ -127,7 +125,6 @@ fn find_trunk_standing_child<'a>(
 ) -> Option<&'a SessionMetadata> {
     metas.iter().find(|m| {
         m.slug.as_deref() == Some(slug)
-            && m.standing
             && m.trigger == "spawn"
             && m.parent_session_id
                 .as_ref()
@@ -162,31 +159,24 @@ fn find_standing_child(
 /// Find-or-create the peer's standing child of the trunk; returns the
 /// child session id. Idempotent: a second call returns the same id.
 ///
-/// `owner` is the principal's configured owner subject
-/// (`principal.toml`); the child is flagged `privileged` iff `peer ==
-/// owner` (the `/local-user` case). `agent_name` is stamped on a
-/// created session's metadata (the root agent's prompt name on the
-/// production path).
+/// `agent_name` is stamped on a created session's metadata (the root
+/// agent's prompt name on the production path).
 ///
 /// Match: a session whose `slug == peer_child_slug(peer)` AND
-/// `standing == true` AND `trigger == "spawn"` whose parent chain
-/// roots at the trunk (`root:self`) AND whose stamped peer IS this
-/// peer. A slug held by a DIFFERENT peer's child (sanitized collision)
+/// `trigger == "spawn"` whose parent chain roots at the trunk
+/// (`root:self`) AND whose stamped peer IS this peer. A slug held by a DIFFERENT peer's child (sanitized collision)
 /// does not match — the peer's child is created with a `-2`, `-3`, …
 /// suffix instead.
 pub async fn ensure_peer_child(
     agent_name: &str,
-    owner: &Subject,
     peer: &Subject,
     session_manager: &Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
     let base_slug = peer_child_slug(peer)?;
-    let privileged = peer == owner;
     ensure_standing_child(
         agent_name,
         peer,
         &base_slug,
-        privileged,
         &peer.to_string(),
         session_manager,
     )
@@ -230,15 +220,7 @@ pub async fn ensure_group_child(
     let base_slug = group_child_base_slug(channel);
     peko_session::path::validate_slug(&base_slug)?;
     let peer = Subject::User(channel.to_string());
-    ensure_standing_child(
-        agent_name,
-        &peer,
-        &base_slug,
-        false,
-        channel,
-        session_manager,
-    )
-    .await
+    ensure_standing_child(agent_name, &peer, &base_slug, channel, session_manager).await
 }
 
 /// The shared find-or-create core for standing children of the trunk.
@@ -249,7 +231,6 @@ async fn ensure_standing_child(
     agent_name: &str,
     peer: &Subject,
     base_slug: &str,
-    privileged: bool,
     title: &str,
     session_manager: &Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
@@ -320,11 +301,9 @@ async fn ensure_standing_child(
              collides under the trunk"
         );
     }
-    mgr.set_standing(&child_id, true).await?;
-    mgr.set_privileged(&child_id, privileged).await?;
     tracing::info!(
         "ensure_standing_child: provisioned peer child '/{slug}' for {peer} as session {child_id} \
-         under {trunk} (privileged={privileged})"
+         under {trunk}"
     );
     Ok(child_id)
 }
@@ -465,9 +444,7 @@ mod tests {
         let (_dir, manager) = fixture().await;
         let owner = Subject::User("local".to_string());
 
-        let child_id = ensure_peer_child("root", &owner, &owner, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &owner, &manager).await.unwrap();
 
         let metas = metas_of(&manager).await;
         let child = metas
@@ -475,8 +452,6 @@ mod tests {
             .find(|m| m.session_id.to_string() == child_id)
             .expect("child metadata exists");
         assert_eq!(child.slug.as_deref(), Some("local-user"));
-        assert!(child.standing, "peer child must be standing");
-        assert!(child.privileged, "owner peer child must be privileged");
         assert_eq!(child.trigger, "spawn");
         assert_eq!(
             child.parent_session_id.map(|id| id.to_string()),
@@ -492,16 +467,13 @@ mod tests {
     #[tokio::test]
     async fn stranger_peer_child_is_not_privileged() {
         let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
         let stranger = Subject::User("mallory".to_string());
         let a2a = principal_peer("did:key:z6MkStranger");
 
-        let stranger_id = ensure_peer_child("root", &owner, &stranger, &manager)
+        let stranger_id = ensure_peer_child("root", &stranger, &manager)
             .await
             .unwrap();
-        let a2a_id = ensure_peer_child("root", &owner, &a2a, &manager)
-            .await
-            .unwrap();
+        let a2a_id = ensure_peer_child("root", &a2a, &manager).await.unwrap();
 
         let metas = metas_of(&manager).await;
         let s = metas
@@ -509,8 +481,6 @@ mod tests {
             .find(|m| m.session_id.to_string() == stranger_id)
             .unwrap();
         assert_eq!(s.slug.as_deref(), Some("user-mallory"));
-        assert!(s.standing);
-        assert!(!s.privileged);
         assert_eq!(s.peer_id.as_deref(), Some("mallory"));
 
         let p = metas
@@ -518,8 +488,6 @@ mod tests {
             .find(|m| m.session_id.to_string() == a2a_id)
             .unwrap();
         assert_eq!(p.slug.as_deref(), Some("principal-didkeyz6mkstrang"));
-        assert!(p.standing);
-        assert!(!p.privileged);
         assert_eq!(p.peer_type.as_deref(), Some("principal"));
         assert_eq!(p.peer_id.as_deref(), Some("did:key:z6MkStranger"));
     }
@@ -527,15 +495,10 @@ mod tests {
     #[tokio::test]
     async fn second_call_is_idempotent() {
         let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
         let peer = Subject::User("alice".to_string());
 
-        let first = ensure_peer_child("root", &owner, &peer, &manager)
-            .await
-            .unwrap();
-        let second = ensure_peer_child("root", &owner, &peer, &manager)
-            .await
-            .unwrap();
+        let first = ensure_peer_child("root", &peer, &manager).await.unwrap();
+        let second = ensure_peer_child("root", &peer, &manager).await.unwrap();
         assert_eq!(first, second);
         assert_eq!(metas_of(&manager).await.len(), 1);
     }
@@ -546,16 +509,11 @@ mod tests {
     #[tokio::test]
     async fn sanitized_collision_gets_suffix_and_stays_idempotent() {
         let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
         let peer_a = Subject::User("foo-bar".to_string());
         let peer_b = Subject::User("foo bar".to_string());
 
-        let a_id = ensure_peer_child("root", &owner, &peer_a, &manager)
-            .await
-            .unwrap();
-        let b_id = ensure_peer_child("root", &owner, &peer_b, &manager)
-            .await
-            .unwrap();
+        let a_id = ensure_peer_child("root", &peer_a, &manager).await.unwrap();
+        let b_id = ensure_peer_child("root", &peer_b, &manager).await.unwrap();
         assert_ne!(a_id, b_id);
 
         let metas = metas_of(&manager).await;
@@ -572,15 +530,11 @@ mod tests {
 
         // Idempotent per peer: each resolves to its own child again.
         assert_eq!(
-            ensure_peer_child("root", &owner, &peer_a, &manager)
-                .await
-                .unwrap(),
+            ensure_peer_child("root", &peer_a, &manager).await.unwrap(),
             a_id
         );
         assert_eq!(
-            ensure_peer_child("root", &owner, &peer_b, &manager)
-                .await
-                .unwrap(),
+            ensure_peer_child("root", &peer_b, &manager).await.unwrap(),
             b_id
         );
         assert_eq!(metas_of(&manager).await.len(), 2);
@@ -592,8 +546,8 @@ mod tests {
     #[tokio::test]
     async fn plain_session_slug_collision_retries_with_suffix() {
         let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
         let peer = Subject::User("alice".to_string());
+        let owner = Subject::User("local".to_string());
 
         // Pre-create a non-standing session under the trunk holding
         // the would-be slug.
@@ -609,16 +563,13 @@ mod tests {
                 .unwrap();
         }
 
-        let child_id = ensure_peer_child("root", &owner, &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
         let metas = metas_of(&manager).await;
         let child = metas
             .iter()
             .find(|m| m.session_id.to_string() == child_id)
             .unwrap();
         assert_eq!(child.slug.as_deref(), Some("user-alice-2"));
-        assert!(child.standing);
         assert_eq!(metas.len(), 2, "the plain session is left untouched");
     }
 
@@ -631,16 +582,13 @@ mod tests {
         let (_dir, manager) = fixture().await;
         let owner = Subject::User("local".to_string());
 
-        let child_id = ensure_peer_child("root", &owner, &owner, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &owner, &manager).await.unwrap();
         let metas = metas_of(&manager).await;
 
         // BEFORE the trunk exists: the child is a spawned caller whose
         // dangling parent stays in its ancestor chain.
         let child_caller = caller_context(&child_id, &metas);
         assert!(!child_caller.is_base);
-        assert!(child_caller.privileged);
         assert!(!child_caller.dangling);
         assert_eq!(child_caller.ancestors, vec![sid("root:self")]);
         assert!(!in_subtree(&child_caller, &sid("root:self"), &metas));
@@ -662,8 +610,7 @@ mod tests {
     #[tokio::test]
     async fn public_peer_is_refused_without_creating() {
         let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
-        let err = ensure_peer_child("root", &owner, &Subject::Public, &manager)
+        let err = ensure_peer_child("root", &Subject::Public, &manager)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not a session peer"), "{err}");
@@ -708,8 +655,6 @@ mod tests {
             .find(|m| m.session_id.to_string() == eng)
             .expect("group child metadata exists");
         assert_eq!(child.slug.as_deref(), Some("group-eng-standup"));
-        assert!(child.standing, "group child must be standing");
-        assert!(!child.privileged, "group child is never privileged");
         assert_eq!(child.trigger, "spawn");
         assert_eq!(
             child.parent_session_id.map(|id| id.to_string()),
@@ -745,15 +690,12 @@ mod tests {
     #[tokio::test]
     async fn group_child_does_not_collide_with_peer_children() {
         let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
         let peer = Subject::User("group:eng".to_string());
 
         let group = ensure_group_child("root", "group:eng", &manager)
             .await
             .unwrap();
-        let user = ensure_peer_child("root", &owner, &peer, &manager)
-            .await
-            .unwrap();
+        let user = ensure_peer_child("root", &peer, &manager).await.unwrap();
         assert_ne!(group, user);
 
         let metas = metas_of(&manager).await;

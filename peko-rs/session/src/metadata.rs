@@ -117,15 +117,9 @@ mod tests {
     fn test_archive_flags_via_alias() {
         let mut meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         assert!(!meta.archived);
-        assert!(!meta.standing);
-        assert!(!meta.privileged);
 
         meta.archived = true;
-        meta.standing = true;
-        meta.privileged = true;
         assert!(meta.archived);
-        assert!(meta.standing);
-        assert!(meta.privileged);
     }
 
     #[test]

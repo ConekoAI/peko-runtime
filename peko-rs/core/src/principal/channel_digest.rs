@@ -505,7 +505,6 @@ mod tests {
         // Synthetic session tree: trunk + the bound child `/user-a`.
         let mut child = SessionMetadata::new(child_id(), "root", "child.jsonl");
         child.parent_session_id = Some(trunk_id());
-        child.standing = true;
         child.slug = Some("user-a".to_string());
         child.peer_type = Some("user".to_string());
         child.peer_id = Some("alice".to_string());
@@ -585,7 +584,6 @@ mod tests {
         // Session bound to the group via the peer stamp.
         let mut child = SessionMetadata::new(child_id(), "root", "child.jsonl");
         child.parent_session_id = Some(trunk_id());
-        child.standing = true;
         child.slug = Some("team-room".to_string());
         child.peer_type = Some("user".to_string());
         child.peer_id = Some(group.as_str().to_string());

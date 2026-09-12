@@ -28,11 +28,10 @@
 //! - **No auto-clean.** Entries in `/trash` persist until explicitly
 //!   removed. A TTL sweeper may be layered on later as a
 //!   config-driven background job without changing this seeding.
-//! - **Standing + spawn flags** mirror declared children: `standing`
-//!   exempts the node from index maintenance pruning, and
-//!   `trigger == "spawn"` keeps the resume guard stack consistent for
-//!   a non-base caller. Neither node carries an AGENT.md — runs
-//!   attach to their CHILDREN, never to the nodes themselves.
+//! - **`trigger == "spawn"`** keeps the resume guard stack consistent
+//!   for a non-base caller (the same flag ingress peer children
+//!   carry). Neither node carries an AGENT.md — runs attach to their
+//!   CHILDREN, never to the nodes themselves.
 //!
 //! ## Dangling trunk
 //!
@@ -100,7 +99,6 @@ pub async fn seed_default_nodes(
         let node_id = handle.session_id().to_string();
         mgr.set_session_slug(&node_id, Some(slug.to_string()))
             .await?;
-        mgr.set_standing(&node_id, true).await?;
         created += 1;
         tracing::info!(
             "seed_default_nodes: created default node '/{slug}' as session {node_id} under {trunk}"
@@ -156,7 +154,6 @@ mod tests {
                 .iter()
                 .find(|m| m.slug.as_deref() == Some(slug))
                 .unwrap_or_else(|| panic!("node '{slug}' exists"));
-            assert!(node.standing, "'{slug}' must be standing");
             assert_eq!(node.trigger, "spawn");
             assert_eq!(
                 node.parent_session_id.map(|id| id.to_string()),
@@ -205,10 +202,9 @@ mod tests {
         assert_eq!(created, 1, "only /trash seeds; /tmp is skipped");
         let metas = metas_of(&manager).await;
         assert_eq!(metas.len(), 2);
-        let trash = metas
+        let _trash = metas
             .iter()
             .find(|m| m.slug.as_deref() == Some(TRASH_SLUG))
             .expect("trash node seeded");
-        assert!(trash.standing);
     }
 }

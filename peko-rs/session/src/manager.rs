@@ -1430,28 +1430,6 @@ impl SessionManager {
             .await
     }
 
-    /// Set the standing flag on a session (passthrough to the
-    /// `MetadataController`). Errors when the session does not exist.
-    pub async fn set_standing(&self, session_id: &str, standing: bool) -> Result<()> {
-        self.metadata_controller
-            .write()
-            .await
-            .set_standing(session_id, standing)
-            .await
-    }
-
-    /// Set the privileged flag on a session (passthrough to the
-    /// `MetadataController`). A privileged session's caller gets
-    /// whole-store reach in the ownership guards (sprint 2 peer-child
-    /// provisioning). Errors when the session does not exist.
-    pub async fn set_privileged(&self, session_id: &str, privileged: bool) -> Result<()> {
-        self.metadata_controller
-            .write()
-            .await
-            .set_privileged(session_id, privileged)
-            .await
-    }
-
     /// Reparent a session: set `parent_session_id` (passthrough to the
     /// `MetadataController`) and append a `System` audit event to the
     /// session's JSONL recording old → new parent. Errors when the

@@ -2034,7 +2034,6 @@ impl crate::tunnel::TunnelHost for AppState {
                 );
                 let child_id = crate::principal::peer_children::ensure_peer_child(
                     &agent_name,
-                    &owner,
                     &peer,
                     &session_manager,
                 )

@@ -4,6 +4,43 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Filesystem model: whole-store reach, no GC, no privilege (2026-09-12)
+
+- **The session hierarchy is now purely organizational** — like paths
+  on a filesystem, it names sessions but grants nothing and denies
+  nothing. Every caller in a principal's store has whole-store reach
+  for `list` / `find` / `history` / `status` / `copy` / `move` /
+  `remove`: `guard_tree` subtree scoping and the `list`/`find`
+  visibility filters are gone. What survives are run-integrity and
+  self-safety guards only: no mutating the session you run in, no
+  deleting/moving your own ancestors, the engine-managed trunk is
+  refused, run-active refusals hold, and move cycles stay impossible.
+- **`privileged` flag removed** — it stamped the owner's
+  `/local-user` peer child with whole-store reach; that reach is now
+  universal, so the flag (and `ensure_peer_child`'s `owner` parameter,
+  which only decided it) is gone. Multi-principal isolation is
+  unchanged — it lives at the store level (each principal has its own
+  sessions dir), not in the guards.
+- **`standing` flag removed** from `SessionMetadata` / `SessionEntry`.
+  Peer-child identity now keys on the stamped `peer_type`/`peer_id`
+  plus `trigger == "spawn"`; the flag had no remaining job after the
+  GC removal. Persisted `sessions.json` files carrying the old keys
+  deserialize fine (unknown fields are ignored).
+- **The session GC is retired.** The daemon's periodic maintenance
+  tick hard-deleted transcripts for idle non-trunk, non-archived,
+  non-standing sessions past 30 days — sessions now persist until
+  explicitly removed. Deleted: `session::maintenance`
+  (`MaintenanceScheduler`), the daemon tick +
+  `DaemonConfig.maintenance_interval`, `SessionIndex::maintenance` /
+  `MetadataController::maintenance`, `MaintenanceConfig` /
+  `MaintenanceReport` / `DEFAULT_PRUNE_AFTER_DAYS` /
+  `DEFAULT_MAX_SESSIONS`. Cleanup is the principal's explicit job
+  (e.g. stage in `/trash`, purge with `session remove recursive:true`,
+  or schedule a cron recycler).
+- **Declared children fully removed** (follow-up to the earlier
+  deprecation shim): nothing reads `[children]` anymore beyond the
+  parse-tolerant capture + load-time warning.
+
 ### Default session nodes `/tmp` and `/trash` (2026-09-12)
 
 - **Every new principal is seeded with two ordinary standing sessions**

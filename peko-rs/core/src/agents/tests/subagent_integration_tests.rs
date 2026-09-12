@@ -1380,7 +1380,6 @@ async fn create_standing_child(
         mgr.set_session_slug(&canonical_id, Some(slug.to_string()))
             .await
             .unwrap();
-        mgr.set_standing(&canonical_id, true).await.unwrap();
     }
     if let Some(declared) = declared_type {
         let dir = session_manager
@@ -1536,7 +1535,6 @@ async fn new_with_fresh_name_spawns_new_session() {
         .find(|m| m.session_id.to_string() == child_id)
         .expect("fresh child metadata exists");
     assert_eq!(fresh.slug.as_deref(), Some("about-user"));
-    assert!(!fresh.standing, "fresh spawns are not standing");
 }
 
 #[tokio::test]

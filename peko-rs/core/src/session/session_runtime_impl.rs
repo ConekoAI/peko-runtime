@@ -10,11 +10,11 @@
 //! trait so the tool side has no `crate::*` dependency.
 //!
 //! Phase 4 adds the guard layer (plan D3/D4/D5):
-//! - **Ownership** ([`crate::session::ownership`]): a caller in a base
-//!   session (the principal's root agent) manages the whole store; a
-//!   caller in a spawned session manages only its own subtree — reads
-//!   (`list`/`search` filtered, `history`/`status` refused) and
-//!   mutations alike.
+//! - **Ownership** ([`crate::session::ownership`]): filesystem model
+//!   (2026-09-12) — every caller has whole-store reach for reads and
+//!   mutations; the hierarchy is organizational only. What remains are
+//!   the self guards (below), the trunk guard, and run-active
+//!   refusals.
 //! - **Self guards**: the session the caller is running in (and its
 //!   ancestors) refuse structural mutation.
 //! - **Run permits** (D3): `delete` and `archive` acquire the
@@ -36,8 +36,8 @@ use serde_json::json;
 
 use crate::session::ownership::{
     caller_context, descendants_of, err_dangling, err_delete_ancestor, err_descendants_exist,
-    err_live_base_managed, err_move_ancestor, err_move_cycle, err_out_of_tree, err_run_active,
-    err_self_mutation, in_subtree, CallerContext,
+    err_live_base_managed, err_move_ancestor, err_move_cycle, err_run_active, err_self_mutation,
+    CallerContext,
 };
 use crate::tools::builtin::session::{
     BranchOutcome, DeleteOutcome, HistoryMessage, QuotaSnapshot, SessionInfo, SessionRuntime,
@@ -120,21 +120,14 @@ impl SessionManagerRuntime {
         Ok(())
     }
 
-    /// Refuse a subtree (spawned) caller acting outside its subtree.
-    /// Dangling callers (own metadata missing) are refused at this
-    /// site — a caller whose subtree cannot be verified gets no
-    /// privilege, even though `is_base` is also false for them.
-    fn guard_tree(
-        &self,
-        caller: &CallerContext,
-        target: &str,
-        metas: &[SessionMetadata],
-    ) -> anyhow::Result<()> {
+    /// Refuse a caller whose own session metadata is missing. The
+    /// filesystem-model successor of `guard_tree`: subtree scoping is
+    /// gone (every caller has whole-store reach), but a caller whose
+    /// identity cannot be verified still gets nothing — no privilege
+    /// grant for a dangling session.
+    fn guard_dangling(&self, caller: &CallerContext) -> anyhow::Result<()> {
         if caller.dangling {
             return Err(self.refuse(err_dangling(&caller.current_session_id)));
-        }
-        if !caller.is_base && !caller.privileged && !in_subtree(caller, target, metas) {
-            return Err(self.refuse(err_out_of_tree(target, &caller.current_session_id)));
         }
         Ok(())
     }
@@ -182,7 +175,7 @@ impl SessionManagerRuntime {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             let session_key = self.resolve_ref(&caller, &metas, session_key)?;
-            self.guard_tree(&caller, &session_key, &metas)?;
+            self.guard_dangling(&caller)?;
             let sessions_dir = manager
                 .sessions_dir()
                 .cloned()
@@ -326,16 +319,14 @@ impl SessionRuntime for SessionManagerRuntime {
         // bleed across principals).
         let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
 
-        // D5: subtree callers see only their own subtree; principal-
+        // Filesystem model: every caller sees the whole store.
         // level callers keep the full view.
-        let caller = caller_context(&self.current_session_key(), &metadatas);
 
         let mut sessions: Vec<SessionInfo> = metadatas
             .iter()
             .filter(|m| {
-                let tree_match = caller.is_base
-                    || caller.privileged
-                    || in_subtree(&caller, &m.session_id.as_str(), &metadatas);
+                // Filesystem model (2026-09-12): whole-store reach
+                // for every caller — no subtree scoping.
                 let archived_match = include_archived || !m.archived;
                 let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
@@ -349,7 +340,7 @@ impl SessionRuntime for SessionManagerRuntime {
                     };
                     have_kind == want_kind.as_str() && have_id == want_id.as_str()
                 });
-                tree_match && archived_match && peer_match && agent_match && active_match
+                archived_match && peer_match && agent_match && active_match
             })
             .take(limit)
             .map(|m| {
@@ -410,7 +401,7 @@ impl SessionRuntime for SessionManagerRuntime {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             let session_key = self.resolve_ref(&caller, &metas, session_key)?;
-            self.guard_tree(&caller, &session_key, &metas)?;
+            self.guard_dangling(&caller)?;
             session_key
         };
         let session_key = session_key.as_str();
@@ -491,7 +482,7 @@ impl SessionRuntime for SessionManagerRuntime {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             let session_id = &self.resolve_ref(&caller, &metas, session_id)?;
-            self.guard_tree(&caller, session_id, &metas)?;
+            self.guard_dangling(&caller)?;
             let metadata = manager.get_session_metadata(session_id).await?;
             let sessions_dir = manager
                 .sessions_dir()
@@ -600,15 +591,13 @@ impl SessionRuntime for SessionManagerRuntime {
     ) -> anyhow::Result<Vec<SessionSearchHit>> {
         let (ids, sessions_dir) = {
             let mut manager = self.session_manager.write().await;
-            let (caller, metas) = self.caller_and_metas(&mut manager).await?;
+            let (_caller, metas) = self.caller_and_metas(&mut manager).await?;
             let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
             let ids: Vec<String> = metas
                 .iter()
                 .filter(|m| {
-                    // D5: subtree callers search only their subtree.
-                    let tree_match = caller.is_base
-                        || caller.privileged
-                        || in_subtree(&caller, &m.session_id.as_str(), &metas);
+                    // Filesystem model (2026-09-12): whole-store
+                    // reach for every caller — no subtree scoping.
                     let visible_match = !m.archived;
                     let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
                         let (have_kind, have_id) =
@@ -618,7 +607,7 @@ impl SessionRuntime for SessionManagerRuntime {
                             };
                         have_kind == want_kind.as_str() && have_id == want_id.as_str()
                     });
-                    tree_match && visible_match && peer_match
+                    visible_match && peer_match
                 })
                 .map(|m| m.session_id.to_string())
                 .collect();
@@ -654,14 +643,13 @@ impl SessionRuntime for SessionManagerRuntime {
         // session is allowed (Phase 1 made the copy lock-safe).
         let (caller, metas) = self.caller_and_metas(&mut manager).await?;
         let session_key = self.resolve_ref(&caller, &metas, session_key)?;
-        self.guard_tree(&caller, &session_key, &metas)?;
+        self.guard_dangling(&caller)?;
 
         // Resolve the destination parent. The tool layer guarantees
         // `target_parent` is a slug path; here we turn it into a session
-        // id (or refuse if it doesn't exist / is out of the caller's
-        // subtree).
+        // id (or refuse if it doesn't exist).
         let target_parent_id = self.resolve_ref(&caller, &metas, &target_parent)?;
-        self.guard_tree(&caller, &target_parent_id, &metas)?;
+        self.guard_dangling(&caller)?;
 
         // Slug uniqueness pre-check against the destination's children
         // (actionable error before we touch state; set_session_slug
@@ -717,7 +705,7 @@ impl SessionRuntime for SessionManagerRuntime {
         let (caller, metas) = self.caller_and_metas(&mut manager).await?;
         let session_key = self.resolve_ref(&caller, &metas, session_key)?;
         self.guard_not_self(&caller, &session_key)?;
-        self.guard_tree(&caller, &session_key, &metas)?;
+        self.guard_dangling(&caller)?;
 
         // Slug format + per-parent uniqueness are enforced inside
         // `set_session_slug` (the controller scans the siblings); its
@@ -747,7 +735,7 @@ impl SessionRuntime for SessionManagerRuntime {
         if caller.ancestors.iter().any(|a| a == session_key) {
             return Err(self.refuse(err_delete_ancestor(session_key)));
         }
-        self.guard_tree(&caller, session_key, &metas)?;
+        self.guard_dangling(&caller)?;
         // The live trunk session (`root:self`) is continuous and
         // engine-managed: deleting it is refused outright. Phase 7
         // narrowed this from the whole `root:*` family — the per-peer
@@ -848,11 +836,8 @@ impl SessionRuntime for SessionManagerRuntime {
         if caller.ancestors.iter().any(|a| a == session_key) {
             return Err(self.refuse(err_move_ancestor(session_key)));
         }
-        // Tree guard on BOTH endpoints: a subtree caller may only move
-        // sessions within its own subtree, and the destination must be
-        // in that subtree too.
-        self.guard_tree(&caller, session_key, &metas)?;
-        self.guard_tree(&caller, new_parent, &metas)?;
+        self.guard_dangling(&caller)?;
+        self.guard_dangling(&caller)?;
         // The live trunk session (`root:self`) is continuous and
         // engine-managed: moving it is refused outright (moving UNDER
         // it is fine). Phase 7 narrowed this from the whole `root:*`
@@ -1417,146 +1402,6 @@ mod tests {
 
     // ─── Subtree (spawned) caller ───────────────────────────────────
 
-    #[tokio::test]
-    async fn subtree_caller_mutation_guards() {
-        let h = tree_harness("spawn1").await;
-
-        // Out-of-tree targets refuse every mutation.
-        let err = h.runtime.delete_session("/c", true).await.unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-        let err = h
-            .runtime
-            .rename_session("/c", Some("x".to_string()), None)
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-        let err = h
-            .runtime
-            .copy_session("/c", "/".into(), "c-copy".into(), None)
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-
-        // Ancestor delete refuses (ancestor guard, not the tree message).
-        let err = h.runtime.delete_session("/", true).await.unwrap_err();
-        assert!(err.to_string().contains("ancestor"), "{err}");
-
-        // Self delete refuses.
-        let err = h.runtime.delete_session("/a", true).await.unwrap_err();
-        assert!(err.to_string().contains("currently running in"), "{err}");
-
-        // In-tree mutations work.
-        let branch = h
-            .runtime
-            .copy_session("/a/b", "/a/b".into(), "b-copy".into(), None)
-            .await
-            .unwrap();
-        h.runtime
-            .rename_session("/a/b", Some("kid".to_string()), None)
-            .await
-            .unwrap();
-        // child1 now has the branch as a descendant: recursive delete
-        // removes both, branch first.
-        let outcome = h.runtime.delete_session("/a/b", true).await.unwrap();
-        assert_eq!(outcome.deleted, vec![branch.new_session_id, sid("child1")]);
-    }
-
-    #[tokio::test]
-    async fn subtree_caller_read_scoping() {
-        let h = tree_harness("spawn1").await;
-        h.add_user_message("child1", "needle in tree").await;
-        h.add_user_message("spawn2", "needle out of tree").await;
-
-        // list: only the subtree is visible.
-        let all = h
-            .runtime
-            .list_sessions(None, None, 50, None, false)
-            .await
-            .unwrap();
-        let ids: Vec<&str> = all.iter().map(|s| s.session_id.as_str()).collect();
-        assert!(ids.contains(&sid("spawn1").as_str()));
-        assert!(ids.contains(&sid("child1").as_str()));
-        assert!(!ids.contains(&sid("spawn2").as_str()));
-        assert!(!ids.contains(&sid("root:user:alice").as_str()));
-
-        // search: hits only from in-tree sessions.
-        let hits = h.runtime.search_sessions("needle", None, 10).await.unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].session_id, sid("child1"));
-
-        // history/status: out-of-tree explicit keys refuse; in-tree works.
-        let err = h.runtime.get_history("/c", 10, false).await.unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-        let err = h.runtime.get_status("/c").await.unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-        let history = h.runtime.get_history("/a/b", 10, false).await.unwrap();
-        assert_eq!(history.len(), 1);
-        h.runtime.get_status("/a/b").await.unwrap();
-    }
-
-    /// A `privileged` spawned caller (sprint 2 peer-child provisioning)
-    /// gets whole-store reach through the same guards that confine a
-    /// plain spawned caller — while the self / ancestor / trunk
-    /// (`root:self`) guards (independent of `is_base`/`privileged`)
-    /// still apply.
-    #[tokio::test]
-    async fn privileged_caller_whole_store_reach() {
-        let h = tree_harness("spawn1").await;
-        h.manager
-            .write()
-            .await
-            .set_privileged(&sid("spawn1"), true)
-            .await
-            .unwrap();
-
-        // Whole-store list view (a plain spawned caller sees only its
-        // subtree — see subtree_caller_read_scoping).
-        let all = h
-            .runtime
-            .list_sessions(None, None, 50, None, false)
-            .await
-            .unwrap();
-        assert_eq!(all.len(), 4);
-
-        // Out-of-subtree mutations pass: rename, move, delete.
-        h.runtime
-            .rename_session("/c", Some("renamed".to_string()), None)
-            .await
-            .unwrap();
-        h.runtime
-            .move_session("/c", "/a".to_string(), None)
-            .await
-            .unwrap();
-        // After the move, spawn2 is under spawn1 (caller). Address it
-        // via the new path /a/c.
-        let outcome = h.runtime.delete_session("/a/c", true).await.unwrap();
-        assert_eq!(outcome.deleted, vec![sid("spawn2")]);
-
-        // Self-mutation is still refused.
-        let err = h.runtime.delete_session("/a", true).await.unwrap_err();
-        assert!(err.to_string().contains("currently running in"), "{err}");
-
-        // The caller's base ancestor is still refused as an ancestor
-        // (delete).
-        let err = h.runtime.delete_session("/", true).await.unwrap_err();
-        assert!(err.to_string().contains("ancestor"), "{err}");
-    }
-
     // ─── Move (reparent) ────────────────────────────────────────────
 
     #[tokio::test]
@@ -1636,46 +1481,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn move_out_of_tree_refused_for_subtree_caller() {
-        let h = tree_harness("spawn1").await;
-
-        // Target outside the caller's subtree.
-        let err = h
-            .runtime
-            .move_session("/c", "/a/b".to_string(), None)
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-
-        // Destination outside the caller's subtree.
-        let err = h
-            .runtime
-            .move_session("/a/b", "/c".to_string(), None)
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-
-        // Fully in-tree move works.
-        h.create("grandchild1", Some(sid("child1").as_str())).await;
-        h.set_slug("grandchild1", "g").await;
-        h.runtime
-            .move_session("/a/b/g", "/a".to_string(), None)
-            .await
-            .unwrap();
-        let status = h.runtime.get_status("/a/g").await.unwrap();
-        assert_eq!(
-            status.parent_session.as_deref(),
-            Some(sid("spawn1").as_str())
-        );
     }
 
     #[tokio::test]
@@ -1891,23 +1696,6 @@ mod tests {
         // delete via path.
         let outcome = h.runtime.delete_session("/c/b2", false).await.unwrap();
         assert_eq!(outcome.deleted, vec![sid("child1")]);
-    }
-
-    #[tokio::test]
-    async fn path_resolution_applies_before_ownership_guards() {
-        // A subtree caller resolving "/" gets its OWN tree root — and
-        // the guards then refuse it (out-of-tree), proving resolution
-        // feeds ids into the unchanged guard layer.
-        let h = slug_tree_harness("spawn1").await;
-        let err = h.runtime.get_status("/").await.unwrap_err();
-        assert!(
-            err.to_string().contains("outside your session subtree"),
-            "{err}"
-        );
-
-        // In-tree path resolves and reads fine for the subtree caller.
-        let status = h.runtime.get_status("/a/b").await.unwrap();
-        assert_eq!(status.session_id, sid("child1"));
     }
 
     #[tokio::test]

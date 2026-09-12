@@ -1007,10 +1007,11 @@ impl SubagentExecutor {
 
     /// Shared attach branch for `new` collision resolution (relative
     /// and absolute addressing): re-attach the call to the existing
-    /// spawn-created session via the resume path. Standing children
-    /// carrying a `[children]` declaration must match the requested
-    /// agent template; unrecoverable declarations skip the check.
-    /// The resume re-runs the full guard stack (cost pre-flight
+    /// spawn-created session via the resume path. Legacy declared
+    /// children (sessions carrying a `standing_child_declared` event
+    /// from the removed `[children]` provisioning) must match the
+    /// requested agent template; unrecoverable declarations skip the
+    /// check. The resume re-runs the full guard stack (cost pre-flight
     /// included). Attaches by session id — `resolve_reference` accepts
     /// the raw UUID form for engine-internal callers.
     async fn attach_existing_spawn(
@@ -1022,28 +1023,26 @@ impl SubagentExecutor {
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         let child_id = found.session_id.to_string();
-        if found.standing {
-            if let Some(ref requested) = config.agent {
-                let sessions_dir = self.session_manager.read().await.sessions_dir().cloned();
-                if let Some(dir) = sessions_dir {
-                    if let Some(declared) =
-                        crate::session::standing::declared_subagent_type(&dir, &child_id).await
-                    {
-                        if declared != *requested {
-                            return Err(crate::session::standing::err_declared_type_mismatch(
-                                found.slug.as_deref().unwrap_or(child_id.as_str()),
-                                &child_id,
-                                &declared,
-                                requested,
-                            ));
-                        }
+        if let Some(ref requested) = config.agent {
+            let sessions_dir = self.session_manager.read().await.sessions_dir().cloned();
+            if let Some(dir) = sessions_dir {
+                if let Some(declared) =
+                    crate::session::standing::declared_subagent_type(&dir, &child_id).await
+                {
+                    if declared != *requested {
+                        return Err(crate::session::standing::err_declared_type_mismatch(
+                            found.slug.as_deref().unwrap_or(child_id.as_str()),
+                            &child_id,
+                            &declared,
+                            requested,
+                        ));
                     }
                 }
             }
         }
         info!(
-            "Attaching to existing spawned session: slug={:?} session={} standing={}",
-            found.slug, child_id, found.standing
+            "Attaching to existing spawned session: slug={:?} session={}",
+            found.slug, child_id
         );
         self.resume_and_execute(task, &child_id, parent_session_key, config, parent_cancel)
             .await

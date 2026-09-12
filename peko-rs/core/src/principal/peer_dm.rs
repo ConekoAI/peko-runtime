@@ -323,9 +323,7 @@ mod tests {
     async fn creates_dm_channel_named_and_bound_to_the_peer_child() {
         let (_dir, manager, store, port, lock) = fixture().await;
         let peer = Subject::User("alice".to_string());
-        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         let provision =
             ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
@@ -351,12 +349,8 @@ mod tests {
         // second gets a `-2` child, and its DM channel must follow.
         let peer_a = Subject::User("foo-bar".to_string());
         let peer_b = Subject::User("foo bar".to_string());
-        let a_id = ensure_peer_child("root", &owner(), &peer_a, &manager)
-            .await
-            .unwrap();
-        let b_id = ensure_peer_child("root", &owner(), &peer_b, &manager)
-            .await
-            .unwrap();
+        let a_id = ensure_peer_child("root", &peer_a, &manager).await.unwrap();
+        let b_id = ensure_peer_child("root", &peer_b, &manager).await.unwrap();
 
         let a = ensure_peer_dm_channel(&port, &principal_id(), &peer_a, &a_id, &manager, &lock)
             .await
@@ -383,9 +377,7 @@ mod tests {
     async fn second_call_is_idempotent() {
         let (_dir, manager, _store, port, lock) = fixture().await;
         let peer = Subject::User("alice".to_string());
-        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         let first =
             ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
@@ -415,9 +407,7 @@ mod tests {
     async fn concurrent_ensures_create_exactly_one_channel() {
         let (_dir, manager, _store, port, _lock) = fixture().await;
         let peer = Subject::User("alice".to_string());
-        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         let shared_lock = Arc::new(Mutex::new(()));
         let mut handles = Vec::new();
@@ -458,9 +448,7 @@ mod tests {
     async fn owner_peer_dm_uses_local_user_slug() {
         let (_dir, manager, store, port, lock) = fixture().await;
         let peer = owner();
-        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         let provision =
             ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
@@ -489,9 +477,7 @@ mod tests {
     async fn find_peer_dm_channel_hit_and_miss() {
         let (_dir, manager, _store, port, lock) = fixture().await;
         let peer = Subject::User("alice".to_string());
-        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         // Miss: nothing provisioned yet.
         assert!(find_peer_dm_channel(&port, &principal_id(), "/user-alice")
@@ -532,9 +518,7 @@ mod tests {
     async fn post_helpers_land_with_expected_authors() {
         let (_dir, manager, store, port, lock) = fixture().await;
         let peer = Subject::User("alice".to_string());
-        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
         let provision =
             ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
                 .await
@@ -579,9 +563,7 @@ mod tests {
     async fn post_peer_dm_reply_skips_empty_text() {
         let (_dir, manager, store, port, lock) = fixture().await;
         let peer = Subject::User("alice".to_string());
-        let child_id = ensure_peer_child("root", &owner(), &peer, &manager)
-            .await
-            .unwrap();
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
         let provision =
             ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
                 .await
