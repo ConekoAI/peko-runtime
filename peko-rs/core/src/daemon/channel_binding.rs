@@ -295,6 +295,16 @@ struct ResponderInner {
     principal: PrincipalId,
     /// The raw binding string from `meta.json` (id or `/path`).
     binding: String,
+    /// `via` attribution stamped on every reply post this responder
+    /// makes: the bound session's slug path, so a later reader can
+    /// tell the session's own output projections apart from other
+    /// agents' posts. DM tier: the binding IS the child's `/slug`
+    /// path (`peer_dm::ensure_peer_dm_channel` writes it verbatim);
+    /// config-authored raw-id bindings carry no path → `None`. Group
+    /// tier: derived from the channel wire id with the same slug rule
+    /// as `ensure_group_child`. Attribution only — never an authority
+    /// claim.
+    via: Option<String>,
     port: Arc<dyn ChannelPort>,
     resolver: Arc<dyn BindingResolver>,
     driver: Arc<dyn BoundTurnDriver>,
@@ -318,11 +328,18 @@ impl PassiveBindingResponder {
         resolver: Arc<dyn BindingResolver>,
         driver: Arc<dyn BoundTurnDriver>,
     ) -> Self {
+        // The peer-DM provisioning writes the child's `/slug` path as
+        // the binding verbatim (`peer_dm::ensure_peer_dm_channel`), so
+        // a `/`-rooted binding IS what `compute_path` renders for the
+        // bound session. Raw-id bindings (config-authored in
+        // `principals.toml`) carry no path — `via` stays unset.
+        let via = binding.starts_with('/').then(|| binding.clone());
         Self {
             inner: Arc::new(ResponderInner {
                 channel,
                 principal,
                 binding,
+                via,
                 port,
                 resolver,
                 driver,
@@ -405,14 +422,13 @@ impl ResponderInner {
                 // event so `response_trigger`'s root-post-only rule
                 // never reacts to it — here (self-author skip already
                 // covers the local echo) and on every remote mirror the
-                // reply fans out to.
+                // reply fans out to. `via` stamps the bound session's
+                // slug path (see the `ResponderInner::via` docs).
+                let mut msg = PostMsg::reply(event_id, reply);
+                msg.via = self.via.clone();
                 if let Err(e) = self
                     .port
-                    .post(
-                        &self.channel,
-                        &Subject::from(&self.principal),
-                        PostMsg::reply(event_id, reply),
-                    )
+                    .post(&self.channel, &Subject::from(&self.principal), msg)
                     .await
                 {
                     warn!(
@@ -527,13 +543,11 @@ impl ResponderInner {
                     if reply.is_empty() {
                         continue;
                     }
+                    let mut msg = PostMsg::root(reply);
+                    msg.via = self.via.clone();
                     if let Err(e) = self
                         .port
-                        .post(
-                            &self.channel,
-                            &Subject::from(&self.principal),
-                            PostMsg::root(reply),
-                        )
+                        .post(&self.channel, &Subject::from(&self.principal), msg)
                         .await
                     {
                         warn!(
@@ -601,11 +615,21 @@ impl GroupWakeResponder {
         resolver: Arc<dyn BindingResolver>,
         driver: Arc<dyn BoundTurnDriver>,
     ) -> Self {
+        // The bound child is `/group-<slug>` under the trunk; derive
+        // the path with the same slug rule `ensure_group_child`
+        // applies, so `via` equals what `compute_path` renders for
+        // that session (modulo a `-N` suffix on the rare sanitized-
+        // slug collision between two channels — attribution only).
+        let via = format!(
+            "/{}",
+            crate::principal::peer_children::group_child_base_slug(channel.as_str())
+        );
         Self {
             inner: Arc::new(ResponderInner {
                 binding: channel.as_str().to_string(),
                 channel,
                 principal,
+                via: Some(via),
                 port,
                 resolver,
                 driver,
@@ -1257,6 +1281,7 @@ mod tests {
             parent: None,
             text: text.to_string(),
             at: "2026-08-15T00:00:00Z".to_string(),
+            via: None,
         }
     }
 
@@ -1267,6 +1292,7 @@ mod tests {
             parent: Some(parent.to_string()),
             text: text.to_string(),
             at: "2026-08-15T00:00:00Z".to_string(),
+            via: None,
         }
     }
 
@@ -1724,6 +1750,7 @@ mod tests {
             parent: None,
             text: "hello from A".to_string(),
             at: "2026-08-19T00:00:00Z".to_string(),
+            via: None,
         };
         let line_b = store_b
             .append_remote_event(&channel_b, &mirrored)

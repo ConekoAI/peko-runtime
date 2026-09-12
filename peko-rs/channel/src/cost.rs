@@ -167,6 +167,7 @@ mod tests {
             parent: None,
             text: "hello".into(),
             at: "2026-08-05T12:00:00Z".into(),
+            via: None,
         }
     }
 

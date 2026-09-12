@@ -900,6 +900,7 @@ mod tests {
             parent: None,
             text: "hello from B".into(),
             at: "2026-08-06T00:00:00Z".into(),
+            via: None,
         };
         let line = port
             .append_remote_event(&channel, &remote_event)
@@ -988,6 +989,7 @@ mod tests {
             parent: None,
             text: "should not land".into(),
             at: "2026-08-06T00:00:00Z".into(),
+            via: None,
         };
         let result = port.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -1031,6 +1033,7 @@ mod tests {
             parent: None,
             text: "live from B".into(),
             at: "2026-08-06T00:00:00Z".into(),
+            via: None,
         };
         port.append_remote_event(&channel, &remote_event)
             .await

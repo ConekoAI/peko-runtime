@@ -1014,6 +1014,17 @@ as channel ROOT posts). New/changed public items:
 | `SubagentExecutor::inbox_registry` | `agents::subagent_executor` | ✅ New | Accessor for the daemon-shared `InboxRegistry` bound via `with_inbox_registry` (the steering push target) |
 | `SubagentExecutor::has_active_run_for_child` | `agents::subagent_executor` | ✅ New | The `resume_preflight` run-active registry check as a probe, keyed by the same canonical child session id (the collision watcher's poll) |
 
+### Channel `via` attribution (2026-09-12)
+
+Same branch. `ChannelEvent::Posted` carries an optional `via` — the
+posting agent's session slug path within the author's principal
+(attribution only; see DATA_MODEL.md §5¾.2½). New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ChannelEvent::Posted::via` | `peko_protocol::channel` | ✅ New | Optional `Option<String>` on the wire enum (`#[serde(default, skip_serializing_if = "Option::is_none")]`) — old lines and mixed-version peers deserialize to `None`; `None` emits nothing on the wire |
+| `PostMsg::via` + `PostMsg::with_via` | `peko_channel::port` | ✅ New | Builder-stamped attribution propagated verbatim onto the persisted `Posted` event (`ChannelStore::post_attributed_with_event`); `root()`/`reply()` default to `None` |
+
 ---
 
 ## Test Coverage Requirements

@@ -350,6 +350,12 @@ pub trait ChannelPort: Send + Sync + 'static {
 pub struct PostMsg {
     pub text: String,
     pub parent: Option<TaskId>,
+    /// Optional agent attribution: the session slug path (e.g.
+    /// `/user-a/reminder`) of the posting agent within the sender's
+    /// principal. Persisted verbatim onto `ChannelEvent::Posted::via`
+    /// — audit metadata only, never an authority claim. `None` for
+    /// human/CLI posts and peer-authored inbound projections.
+    pub via: Option<String>,
 }
 
 impl PostMsg {
@@ -358,6 +364,7 @@ impl PostMsg {
         Self {
             text: text.into(),
             parent: None,
+            via: None,
         }
     }
 
@@ -366,7 +373,16 @@ impl PostMsg {
         Self {
             text: text.into(),
             parent: Some(parent),
+            via: None,
         }
+    }
+
+    /// Stamp the posting agent's session slug path as the `via`
+    /// attribution (see the field docs).
+    #[must_use]
+    pub fn with_via(mut self, via: impl Into<String>) -> Self {
+        self.via = Some(via.into());
+        self
     }
 }
 

@@ -1465,6 +1465,7 @@ impl ChannelStore {
             parent: msg.parent.clone(),
             text: msg.text,
             at: Utc::now().to_rfc3339(),
+            via: msg.via.clone(),
         };
         let line = self.append_event(tier, channel, &ev).await?;
         Ok((line.to_string(), ev))
@@ -2192,6 +2193,7 @@ mod tests {
             parent: None,
             text: "foreign".into(),
             at: "2026-09-03T00:00:00Z".into(),
+            via: None,
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -2853,6 +2855,7 @@ mod tests {
             parent: None,
             text: "hello from B".to_string(),
             at: "2026-08-06T00:00:00Z".to_string(),
+            via: None,
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -2916,6 +2919,7 @@ mod tests {
             parent: None,
             text: "hello from B".to_string(),
             at: "2026-08-06T00:00:00Z".to_string(),
+            via: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -2940,6 +2944,7 @@ mod tests {
             parent: None,
             text: "should not land".to_string(),
             at: "2026-08-06T00:00:00Z".to_string(),
+            via: None,
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -3143,6 +3148,7 @@ mod tests {
             parent: None,
             text: "hello from B".to_string(),
             at: "2026-08-18T00:00:00Z".to_string(),
+            via: None,
         };
         store
             .append_remote_event(&channel, &remote_event)

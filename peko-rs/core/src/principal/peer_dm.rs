@@ -239,6 +239,13 @@ pub(crate) async fn post_peer_dm_inbound(
 /// Phase 11: post the principal's reply back to the DM channel
 /// (plain `post` — author = `principal.id`, e.g. `prin_<uuid>`).
 ///
+/// `via` attribution: the reply projects the bound peer-child
+/// session's own output, and the channel's passive binding IS that
+/// session's `/slug` path (`ensure_peer_dm_channel`), so it is
+/// stamped here. Best-effort: a binding read failure or a
+/// non-`/`-rooted binding leaves the post unattributed — attribution
+/// never blocks the projection.
+///
 /// Warn-only on failure, mirroring the failure posture of the
 /// responder's reply post (`daemon::channel_binding::ResponderInner`):
 /// the reply has already been delivered over the IPC stream; the
@@ -254,7 +261,15 @@ pub(crate) async fn post_peer_dm_reply(
     if text.trim().is_empty() {
         return;
     }
-    if let Err(e) = port.post(channel, &Subject::from(principal), PostMsg::root(text)).await {
+    let via = port
+        .passive_binding(channel)
+        .await
+        .ok()
+        .flatten()
+        .filter(|b| b.starts_with('/'));
+    let mut msg = PostMsg::root(text);
+    msg.via = via;
+    if let Err(e) = port.post(channel, &Subject::from(principal), msg).await {
         warn!(
             channel = %channel,
             "peer DM reply projection failed (reply already delivered): {e}"

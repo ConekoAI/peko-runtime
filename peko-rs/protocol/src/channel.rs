@@ -247,6 +247,15 @@ pub enum ChannelEvent {
         parent: Option<String>,
         text: String,
         at: String,
+        /// Attribution: the session slug path (e.g. `/user-a/reminder`)
+        /// of the posting agent within the author's principal. Written
+        /// verbatim — audit metadata only, NOT an authority claim; it
+        /// never feeds membership checks, responders, or reply
+        /// matching. Absent on lines written before this field existed
+        /// (serde defaults to `None`; `None` emits nothing on the wire,
+        /// keeping old peers byte-compatible).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<String>,
     },
     /// A principal was invited / joined the channel. Append-only — a
     /// subsequent `MemberLeft` carries the inverse.
@@ -439,6 +448,7 @@ mod tests {
             parent: None,
             text: "hello".into(),
             at: "2026-08-05T12:01:00Z".into(),
+            via: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -453,9 +463,36 @@ mod tests {
             parent: Some("node_xyz12345".into()),
             text: "reply".into(),
             at: "2026-08-05T12:02:00Z".into(),
+            via: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_bob","parent":"node_xyz12345","text":"reply","at":"2026-08-05T12:02:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
+    }
+
+    /// `via` attribution: a `Posted` carrying the posting agent's
+    /// session slug path serializes it; an old byte shape without
+    /// `via` (written before the field existed, or by a mixed-version
+    /// peer) deserializes to `via: None`. `None` itself emits nothing —
+    /// the two round-trip pins above are unchanged.
+    #[test]
+    fn channel_event_posted_via_attribution() {
+        let ev = ChannelEvent::Posted {
+            channel: chan(),
+            author: "prin_alice".into(),
+            parent: None,
+            text: "hello".into(),
+            at: "2026-08-05T12:01:00Z".into(),
+            via: Some("/user-a/reminder".into()),
+        };
+        let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z","via":"/user-a/reminder"}"#;
+        assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
+
+        let old_shape = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
+        let back: ChannelEvent = serde_json::from_str(old_shape).unwrap();
+        match back {
+            ChannelEvent::Posted { via, .. } => assert_eq!(via, None),
+            other => panic!("Expected Posted, got: {other:?}"),
+        }
     }
 
     /// Pin `MemberJoined`.
@@ -488,7 +525,7 @@ mod tests {
     fn channel_event_kind_helper() {
         let cases = [
             (ChannelEvent::Created { channel: chan(), creator: "p".into(), name: "n".into(), at: "2026".into() }, "created"),
-            (ChannelEvent::Posted { channel: chan(), author: "p".into(), parent: None, text: "t".into(), at: "2026".into() }, "posted"),
+            (ChannelEvent::Posted { channel: chan(), author: "p".into(), parent: None, text: "t".into(), at: "2026".into(), via: None }, "posted"),
             (ChannelEvent::MemberJoined { channel: chan(), member: "p".into(), at: "2026".into() }, "member_joined"),
             (ChannelEvent::MemberLeft { channel: chan(), member: "p".into(), at: "2026".into() }, "member_left"),
         ];

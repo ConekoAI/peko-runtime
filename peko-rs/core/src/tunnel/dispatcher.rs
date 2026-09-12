@@ -2497,6 +2497,7 @@ mod tests {
             parent: None,
             text: "hello from A".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
+            via: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -2549,6 +2550,7 @@ mod tests {
             parent: None,
             text: "tampered".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
+            via: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp_signer,
@@ -2597,6 +2599,7 @@ mod tests {
             parent: None,
             text: "hello".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
+            via: None,
         };
 
         let result = dispatcher
@@ -2652,6 +2655,7 @@ mod tests {
             parent: None,
             text: "hello from B".into(),
             at: "2026-08-06T12:00:00Z".into(),
+            via: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -2722,6 +2726,7 @@ mod tests {
             parent: None,
             text: "should not land".into(),
             at: "2026-08-06T12:00:00Z".into(),
+            via: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,

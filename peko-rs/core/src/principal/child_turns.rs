@@ -621,8 +621,10 @@ pub(crate) struct PeersSessionContextHandler;
 /// Resolve the principal's sessions directory from the hook context's
 /// workspace path (`<workspace>` → principal name →
 /// `PathResolver::principal_layout`). Shared by the two
-/// `SessionContextBuild` handlers in this module.
-fn sessions_dir_for_workspace(workspace: &str) -> Option<std::path::PathBuf> {
+/// `SessionContextBuild` handlers in this module and by the
+/// `ChannelSend` tool's `via` attribution
+/// (`tools::builtin::channel::channel_send`).
+pub(crate) fn sessions_dir_for_workspace(workspace: &str) -> Option<std::path::PathBuf> {
     let name = std::path::Path::new(workspace)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())?;

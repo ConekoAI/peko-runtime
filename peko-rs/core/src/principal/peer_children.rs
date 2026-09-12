@@ -169,6 +169,20 @@ pub async fn ensure_peer_child(
     .await
 }
 
+/// The base slug [`ensure_group_child`] assigns for `channel` (before
+/// any `-N` collision suffix). Factored out so the group wake
+/// responder's `via` attribution (`daemon::channel_binding`) derives
+/// the same `/group-<slug>` path from the channel wire id.
+pub(crate) fn group_child_base_slug(channel: &str) -> String {
+    let stripped = channel.strip_prefix("group:").unwrap_or(channel);
+    let sanitized = sanitize_slug_segment(stripped);
+    if sanitized.is_empty() {
+        "group".to_string()
+    } else {
+        cap_slug(&format!("group-{sanitized}"))
+    }
+}
+
 /// ADR-049 Phase 3 (D4): find-or-create the principal's standing
 /// child session for a GROUP channel — the per-(principal, channel)
 /// working memory a group wake run resumes. Idempotent per channel,
@@ -189,13 +203,7 @@ pub async fn ensure_group_child(
     channel: &str,
     session_manager: &Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
-    let stripped = channel.strip_prefix("group:").unwrap_or(channel);
-    let sanitized = sanitize_slug_segment(stripped);
-    let base_slug = if sanitized.is_empty() {
-        "group".to_string()
-    } else {
-        cap_slug(&format!("group-{sanitized}"))
-    };
+    let base_slug = group_child_base_slug(channel);
     peko_session::path::validate_slug(&base_slug)?;
     let peer = Subject::User(channel.to_string());
     ensure_standing_child(agent_name, &peer, &base_slug, false, channel, session_manager).await

@@ -1777,6 +1777,27 @@ each side's binding names its OWN child for the other principal, and
 mirror's `meta.json` remains the SOURCE-runtime-local creator id
 (display only).
 
+### 5¾.2½ `posted` event `via` attribution (2026-09-12)
+
+`posted` lines in `events.jsonl` may carry an optional `via` field:
+the session slug path (e.g. `/user-a/reminder`) of the posting agent
+within the author's principal. It is written verbatim and is
+**attribution/audit metadata only** — it never feeds membership
+checks, the channel responders' trigger rules, or reply matching, and
+it is NOT an authority claim (`author` remains the only authorship
+signal).
+
+`via` is absent (not `null`) on lines written before this change, on
+posts without an agent context (CLI `peko channel post`, peer-authored
+inbound projections, `ChannelSend` reply mirrors, messenger notes),
+and whenever the posting side could not resolve the calling session's
+path — attribution is best-effort and never fails a send. Serde
+`default` + `skip_serializing_if` keeps old logs and mixed-version
+cross-runtime peers byte-compatible. Producers: the `ChannelSend`
+tool (the calling session's path), the DM/group channel responders
+(the bound session's path), and `peer_dm::post_peer_dm_reply` (the
+bound peer child's path).
+
 ### 5¾.3 Mirror `members.json` partition (Phase 12a)
 
 `join_remote` re-partitions the invite's source-keyed membership

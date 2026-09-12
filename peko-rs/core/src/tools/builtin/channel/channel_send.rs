@@ -315,6 +315,7 @@ impl ChannelSendTool {
         caller: &Arc<Principal>,
         target_did: &str,
         message: &str,
+        via: Option<String>,
     ) -> Result<serde_json::Value> {
         let Some(target) = ctx.principal_manager.find_by_did(target_did).await else {
             return Ok(self.error_value(
@@ -349,13 +350,15 @@ impl ChannelSendTool {
                  to the principal manager)",
             ));
         };
+        // `via` stamps the calling session's slug path on both root
+        // posts (caller-side projection + target-side post); the
+        // reply mirror below stays unattributed (the remote replier's
+        // agent is unknown).
+        let mut own_msg = PostMsg::root(message);
+        own_msg.via = via.clone();
         let own_line = match ctx
             .channel_port
-            .post(
-                &own_channel,
-                &Subject::from(&caller.id),
-                PostMsg::root(message),
-            )
+            .post(&own_channel, &Subject::from(&caller.id), own_msg)
             .await
         {
             Ok(l) => l,
@@ -406,13 +409,11 @@ impl ChannelSendTool {
             ));
         }
         let mut rx = ctx.channel_port.subscribe_events(&target_channel).await;
+        let mut target_msg = PostMsg::root(message);
+        target_msg.via = via;
         let line = match ctx
             .channel_port
-            .post(
-                &target_channel,
-                &Subject::from(&caller.id),
-                PostMsg::root(message),
-            )
+            .post(&target_channel, &Subject::from(&caller.id), target_msg)
             .await
         {
             Ok(l) => l,
@@ -502,6 +503,7 @@ impl ChannelSendTool {
         target_did: &str,
         message: &str,
         resolution: &AgentResolution,
+        via: Option<String>,
     ) -> Result<serde_json::Value> {
         let await_lock = self.await_lock(target_did);
         let _guard = await_lock.lock().await;
@@ -571,10 +573,13 @@ impl ChannelSendTool {
 
         // 4. Root post, author = the caller's raw id: self-skipped by
         //    the caller's own responder, fires the remote one once the
-        //    fan-out lands on the target's mirror.
+        //    fan-out lands on the target's mirror. `via` stamps the
+        //    calling session's slug path (attribution only).
+        let mut msg = PostMsg::root(message);
+        msg.via = via;
         let line = match ctx
             .channel_port
-            .post(&channel, &Subject::from(&caller.id), PostMsg::root(message))
+            .post(&channel, &Subject::from(&caller.id), msg)
             .await
         {
             Ok(l) => l,
@@ -641,6 +646,29 @@ impl ChannelSendTool {
     }
 }
 
+/// Resolve the calling session's slug path (e.g. `/user-a/reminder`)
+/// for `via` attribution on the posts this call makes. Best-effort:
+/// no session id / workspace on the `ToolContext`, an unresolvable
+/// sessions dir, an unreadable store, or a session absent from it all
+/// yield `None` — attribution is audit metadata and must never fail a
+/// send.
+async fn via_for_ctx(ctx: &peko_tools_core::exec::ToolContext) -> Option<String> {
+    let session_id = peko_session::id::SessionId::parse(ctx.session_id.as_deref()?)?;
+    let workspace = ctx.workspace.as_deref().filter(|w| !w.is_empty())?;
+    let sessions_dir = crate::principal::child_turns::sessions_dir_for_workspace(workspace)?;
+    let metas = peko_session::manager::SessionManager::new()
+        .with_sessions_dir_internal(sessions_dir)
+        .list_all_sessions(false)
+        .await
+        .ok()?;
+    // A session missing from the store would render as `/<raw id>` —
+    // not a slug path — so treat absence as unattributed.
+    metas
+        .iter()
+        .any(|m| m.session_id == session_id)
+        .then(|| peko_session::path::compute_path(&metas, session_id))
+}
+
 /// Await the first channel event strictly after `after_line` that
 /// `matches` accepts, returning its text. Wakes on the channel's
 /// per-channel broadcast (subscription must precede the post that
@@ -700,6 +728,8 @@ Post a message to a peko channel. The `channel` id selects the branch:
 - `principal:<did>` (Principal) — send a message to another Principal and RECEIVE its reply. The conversation lives on the pair's standing DM channel (continuity is automatic — there is no session to name).
 - `user:<id>` (User) — deliver a fire-and-forget NOTE to that user's conversational session. The note appears in their next turn. Users do NOT reply synchronously; do not wait for an answer. You may only message the user who started this conversation.
 - `group:<slug>` (Group) — plain fire-and-forget post to a group channel.
+
+Every post you make carries a `via` attribution with your session path (e.g. `/user-a/reminder`) for audit — it never affects delivery, permissions, or reply matching.
 
 ## When to Use (Principal branch)
 - Delegate a task to another Principal you have access to
@@ -814,16 +844,22 @@ User:         `{ "success": true, "kind": "user", "response": "Delivered as a no
             .clone()
             .ok_or_else(|| anyhow::anyhow!("ChannelSend requires a principal context"))?;
 
+        // `via` attribution: the calling session's slug path, stamped
+        // onto every post this call makes (audit metadata only — never
+        // an authority claim). Best-effort; `None` when unresolvable.
+        let via = via_for_ctx(ctx).await;
+
         // Sprint 4 dispatch: branch on `kind()` to select the right
         // semantic. The wire form IS the policy — the LLM picks by
         // choosing the prefix.
         match channel_id.kind() {
             ProtoChannelKind::Bare | ProtoChannelKind::Group => {
-                self.execute_bare(&channel_id, text, parent, &principal_str)
+                self.execute_bare(&channel_id, text, parent, &principal_str, via)
                     .await
             }
             ProtoChannelKind::Principal => {
-                self.execute_principal_branch(&channel_id, text, ctx).await
+                self.execute_principal_branch(&channel_id, text, ctx, via)
+                    .await
             }
             ProtoChannelKind::User => {
                 self.execute_user_branch(&channel_id, text, label, ctx)
@@ -845,16 +881,18 @@ impl ChannelSendTool {
         text: &str,
         parent: Option<String>,
         principal_str: &str,
+        via: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let kind = match channel_id.kind() {
             ProtoChannelKind::Bare => "bare",
             ProtoChannelKind::Group => "group",
             _ => unreachable!("execute_bare is only called for Bare / Group kinds"),
         };
-        let msg = match parent {
+        let mut msg = match parent {
             Some(p) => PostMsg::reply(p, text.to_string()),
             None => PostMsg::root(text.to_string()),
         };
+        msg.via = via;
         let sender = Subject::from(&PrincipalId(principal_str.to_string()));
         match self.port.post(channel_id, &sender, msg).await {
             Ok(task_id) => Ok(serde_json::to_value(ChannelSendResult {
@@ -900,6 +938,7 @@ impl ChannelSendTool {
         channel_id: &ProtoChannelId,
         text: &str,
         _ctx: &peko_tools_core::exec::ToolContext,
+        via: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let raw = channel_id.as_str();
         let target_principal_did = raw.strip_prefix("principal:").ok_or_else(|| {
@@ -962,7 +1001,7 @@ impl ChannelSendTool {
             ));
         }
         if resolution.runtime_id == cross_runtime.caller_runtime_id {
-            self.execute_local(cross_runtime, &caller, target_principal_did, text)
+            self.execute_local(cross_runtime, &caller, target_principal_did, text, via)
                 .await
         } else {
             self.execute_remote(
@@ -971,6 +1010,7 @@ impl ChannelSendTool {
                 target_principal_did,
                 text,
                 &resolution,
+                via,
             )
             .await
         }
@@ -1087,6 +1127,7 @@ mod tests {
                 parent: msg.parent,
                 text: msg.text,
                 at: "2026-08-06T12:00:00Z".into(),
+                via: msg.via,
             };
             let mut events = self.events.lock().unwrap();
             events.entry(channel.clone()).or_default().push(ev);

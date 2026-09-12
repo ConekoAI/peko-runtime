@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel `via` attribution on posted events (2026-09-12)
+
+- **`ChannelEvent::Posted` gains an optional `via` field** — the
+  session slug path (e.g. `/user-a/reminder`) of the posting agent
+  within the author's principal. Written verbatim; audit/attribution
+  metadata only — it never feeds authority, membership checks,
+  responders, or reply matching. `None` emits nothing on the wire and
+  old lines deserialize to `None`, so pre-change logs and
+  mixed-version cross-runtime peers keep working unchanged.
+- **Stamped at every agent-authored post site** — the `ChannelSend`
+  tool resolves the calling session's slug path from the
+  `ToolContext` (best-effort; any missing piece posts unattributed)
+  and applies it to bare/group posts and to the principal-branch root
+  posts (both sides of a local exchange, and the remote root post);
+  the `PassiveBindingResponder` / `GroupWakeResponder` stamp the bound
+  session's path on their reply posts (the DM binding IS the child's
+  `/slug` path; the group path derives via the same slug rule as
+  `ensure_group_child`); `peer_dm::post_peer_dm_reply` stamps the
+  bound peer child's path read back from the channel's passive
+  binding. Peer-authored inbound projections, reply mirrors, CLI
+  `channel post`, and messenger notes stay unattributed.
+- **New public surface** — `ChannelEvent::Posted::via`,
+  `PostMsg::via` + `PostMsg::with_via` (see API_SURFACE.md).
+
 ### Channel-binding wake collision converts to queued steering (2026-09-12)
 
 - **A channel wake that collides with an active run is no longer

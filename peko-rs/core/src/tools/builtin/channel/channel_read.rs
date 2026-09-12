@@ -453,6 +453,7 @@ mod tests {
                         parent: None,
                         text: "first".into(),
                         at: "2026-08-05T12:00:30Z".into(),
+                        via: None,
                     },
                     ChannelEvent::Posted {
                         channel: channel.clone(),
@@ -460,6 +461,7 @@ mod tests {
                         parent: None,
                         text: "second".into(),
                         at: "2026-08-05T12:01:00Z".into(),
+                        via: None,
                     },
                 ],
             );
@@ -510,6 +512,7 @@ mod tests {
                         parent: None,
                         text: "first".into(),
                         at: "2026-08-05T12:00:30Z".into(),
+                        via: None,
                     },
                     ChannelEvent::Posted {
                         channel: channel.clone(),
@@ -517,6 +520,7 @@ mod tests {
                         parent: None,
                         text: "second".into(),
                         at: "2026-08-05T12:01:00Z".into(),
+                        via: None,
                     },
                 ],
             );
@@ -625,6 +629,7 @@ mod tests {
                         parent: None,
                         text: "deploy the release".into(),
                         at: "2026-08-05T12:00:30Z".into(),
+                        via: None,
                     },
                     ChannelEvent::Posted {
                         channel: channel.clone(),
@@ -632,6 +637,7 @@ mod tests {
                         parent: None,
                         text: "release notes drafted".into(),
                         at: "2026-08-05T12:01:00Z".into(),
+                        via: None,
                     },
                 ],
             );
