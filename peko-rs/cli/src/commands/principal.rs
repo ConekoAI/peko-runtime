@@ -27,17 +27,41 @@ use peko_core::principal::{
 /// Subcommands for `peko principal`.
 #[derive(Subcommand)]
 pub enum PrincipalCommands {
-    /// Create a new Principal
+    /// Create a new Principal and block until it is alive (ADR-054)
+    ///
+    /// One command for the whole genesis pipeline: provisions the
+    /// workspace (P0), seeds the definition (P1 — from `--file` when
+    /// given, defaults otherwise), makes sure the daemon is running
+    /// and knows the principal, schedules the genesis turn (P2), and
+    /// waits for the trunk's first self-turn to complete. Pass
+    /// `--detach` for fire-and-forget (scripts/CI).
+    ///
+    /// Re-defining later = edit the principal's `principal.toml`
+    /// directly (presence = visibility, ADR-050 — the next turn picks
+    /// it up).
     Create {
         /// Principal name
         name: String,
 
         /// Configured model id to pin this principal to (see
-        /// `peko model list`). Required: there is no runtime default
-        /// model, so an unpinned principal fails every send with
-        /// "no model configured".
+        /// `peko model list`). Optional only when the `--file`
+        /// template carries `preferred_model_id`; exactly one of the
+        /// two must provide it. There is no runtime default model, so
+        /// an unpinned principal fails every send.
         #[arg(long, value_name = "MODEL_ID")]
-        model: String,
+        model: Option<String>,
+
+        /// Path to a template `principal.toml` seeding the principal's
+        /// full definition: `[identity]`, `[intent]`, `preferred_model_id`,
+        /// `[capabilities]`, `[[permissions]]`, `exposure`, `quota`, and
+        /// an optional inline `persona` (Markdown body for the root
+        /// agent prompt). Unspecified fields take runtime defaults.
+        /// `id`, `did`, and `boot_state` in the template are ignored —
+        /// a fresh identity is always generated. TOML note: top-level
+        /// keys (`preferred_model_id`, `persona`) must appear BEFORE
+        /// the first `[table]` header.
+        #[arg(short = 'f', long = "file", value_name = "TEMPLATE_TOML")]
+        file: Option<String>,
 
         /// Force a destructive re-create. Without `--force`,
         /// `peko principal create <existing>` refuses with a clear
@@ -49,7 +73,7 @@ pub enum PrincipalCommands {
         /// all wiped before the new principal is written. There is
         /// no undo. Combine with `--yes` to skip the confirmation
         /// prompt in non-interactive shells.
-        #[arg(short, long)]
+        #[arg(long)]
         force: bool,
 
         /// Skip the destructive confirmation prompt (use with
@@ -57,42 +81,22 @@ pub enum PrincipalCommands {
         /// `--force`.
         #[arg(long)]
         yes: bool,
+
+        /// Do not wait for the genesis turn — provision, seed, and
+        /// return. The genesis turn still fires (daemon boot pass or
+        /// the scheduled one-shot job).
+        #[arg(long)]
+        detach: bool,
+
+        /// How long to wait for the genesis turn before giving up
+        /// (seconds). The principal stays seeded either way — it will
+        /// genesis at the next daemon boot.
+        #[arg(long, value_name = "SECS", default_value_t = 300)]
+        wait_timeout: u64,
     },
 
     /// List Principals
     List,
-
-    /// Record the principal's definition (identity, intent) — genesis
-    /// pipeline P1 (ADR-054)
-    ///
-    /// Writes the given fields into `principal.toml` and stamps the
-    /// boot state to `defined`. Any provided field counts; fields left
-    /// out are untouched. The daemon's genesis boot pass picks the
-    /// definition up and schedules the principal's first self-turn.
-    Define {
-        /// Principal name
-        name: String,
-
-        /// Human-readable display name
-        #[arg(long)]
-        display_name: Option<String>,
-
-        /// One-line description of what this principal is for
-        #[arg(long)]
-        description: Option<String>,
-
-        /// A goal (repeatable)
-        #[arg(long = "goal")]
-        goals: Vec<String>,
-
-        /// A value (repeatable)
-        #[arg(long = "value")]
-        values: Vec<String>,
-
-        /// A preference (repeatable)
-        #[arg(long = "preference")]
-        preferences: Vec<String>,
-    },
 
     /// Show Principal configuration and agent prompts
     Show {
@@ -278,29 +282,25 @@ pub async fn handle_principal(
         PrincipalCommands::Create {
             name,
             model,
+            file,
             force,
             yes,
-        } => create_principal(&name, &model, force, yes, paths).await,
-        PrincipalCommands::List => list_principals(paths, json).await,
-        PrincipalCommands::Define {
-            name,
-            display_name,
-            description,
-            goals,
-            values,
-            preferences,
+            detach,
+            wait_timeout,
         } => {
-            define_principal(
+            create_principal(
                 &name,
-                display_name.as_deref(),
-                description.as_deref(),
-                &goals,
-                &values,
-                &preferences,
+                model.as_deref(),
+                file.as_deref(),
+                force,
+                yes,
+                detach,
+                wait_timeout,
                 paths,
             )
             .await
         }
+        PrincipalCommands::List => list_principals(paths, json).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
         PrincipalCommands::Export {
@@ -529,13 +529,87 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
     Ok(())
 }
 
+/// Template keys tolerated in a `--file` template beyond the
+/// `PrincipalConfig` shape. serde ignores unknown keys when
+/// deserializing `PrincipalConfig`, so the file is parsed twice —
+/// once as the config, once for these extras — without loss.
+#[derive(serde::Deserialize)]
+struct TemplateExtras {
+    persona: Option<String>,
+}
+
+/// Parsed `--file` template: the config fields plus the optional
+/// inline `persona` (Markdown body for the root agent prompt).
+struct TemplateBundle {
+    config: PrincipalConfig,
+    persona: Option<String>,
+}
+
+/// Load and parse a `--file` create template. The file IS a
+/// `principal.toml` (plus tolerated extras), so exports round-trip:
+/// `peko principal export` → edit → `peko principal create -f`.
+fn load_template(path: &str) -> Result<TemplateBundle> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("read template {}", path))?;
+    let config: PrincipalConfig = toml::from_str(&content)
+        .with_context(|| format!("parse template {} as principal.toml", path))?;
+    let extras: TemplateExtras =
+        toml::from_str(&content).with_context(|| format!("parse template {} extras", path))?;
+    Ok(TemplateBundle {
+        config,
+        persona: extras.persona,
+    })
+}
+
+/// Compose the root agent prompt from an optional persona body.
+/// Same frontmatter/`{{memory}}` shape as `default_agent_prompt` —
+/// the persona only replaces the body.
+fn persona_agent_prompt(name: &str, description: Option<&str>, persona: &str) -> String {
+    let description = description
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("The {name} Principal"));
+    format!(
+        "---\nname: primary\ndescription: \"{description}\"\n---\n\n\
+         {persona}\n\n\
+         {{{{memory}}}}\n"
+    )
+}
+
+/// `peko principal create` — the full genesis pipeline (ADR-054):
+/// provision (P0) + definition (P1) + boot (P2 seeding, daemon ensure,
+/// blocking genesis wait unless `--detach`).
 async fn create_principal(
     name: &str,
-    model_id: &str,
+    model_id: Option<&str>,
+    template_path: Option<&str>,
+    force: bool,
+    yes: bool,
+    detach: bool,
+    wait_timeout: u64,
+    paths: &GlobalPaths,
+) -> Result<()> {
+    let manager =
+        match provision_principal(name, model_id, template_path, force, yes, paths).await? {
+            Some(m) => m,
+            None => return Ok(()), // cancelled at the --force confirmation
+        };
+    boot_principal(name, &manager, paths, detach, wait_timeout).await
+}
+
+/// Provision half of `create`: overwrite guard, template/defaults
+/// composition, model-pin validation, root agent prompt, and
+/// `PrincipalManager::create`. Returns the CLI-local manager with the
+/// new principal registered. Unit tests stop here — the boot half
+/// (`boot_principal`) touches the daemon.
+async fn provision_principal(
+    name: &str,
+    model_id: Option<&str>,
+    template_path: Option<&str>,
     force: bool,
     yes: bool,
     paths: &GlobalPaths,
-) -> Result<()> {
+) -> Result<Option<PrincipalManager>> {
+    // `None` = the user cancelled at the destructive `--force` prompt.
     use peko_providers::catalog::ModelCatalog;
 
     // Refuse to silently overwrite an existing principal — see Bug 2 in
@@ -571,7 +645,7 @@ async fn create_principal(
             );
             if !confirm_prompt(&prompt)? {
                 println!("Create cancelled.");
-                return Ok(());
+                return Ok(None);
             }
         }
 
@@ -584,15 +658,57 @@ async fn create_principal(
         )?;
     }
 
+    // ── P1 definition: template or defaults ─────────────────────────
+    let (mut config, persona) = match template_path {
+        Some(path) => {
+            let bundle = load_template(path)?;
+            let mut config = bundle.config;
+            // The CLI arg names the principal; a template `name` is
+            // overridden (the arg is what the user typed).
+            config.name = name.to_string();
+            // Fresh identity, always: a template must not transplant
+            // another principal's id, DID, or boot state.
+            config.id = None;
+            config.did = None;
+            config.boot_state = None;
+            // A template without an `[owner]` section deserializes to
+            // the default empty subject — the creating local user owns
+            // the principal, same as a bare create.
+            if matches!(&config.owner, Subject::User(id) if id.is_empty()) {
+                config.owner = Subject::User("local".to_string());
+            }
+            (config, bundle.persona)
+        }
+        None => {
+            // Bare create: empty `[identity]`/`[intent]` is the honest
+            // on-disk state — the genesis turn adopts a working
+            // self-description (the brief tells it to).
+            (default_principal_config(name), None)
+        }
+    };
+
     let manager = build_manager(paths);
 
     // Enforce the model pin at creation: there is no runtime default
     // model, so an unpinned principal would fail every send with
-    // "no model configured". Validate against the catalog now so a
-    // typo'd id fails here instead of at first use.
+    // "no model configured". `--model` overrides the template value;
+    // exactly one of the two must provide it. Validate against the
+    // catalog now so a typo'd id fails here instead of at first use.
+    let model_id = match model_id {
+        Some(m) => {
+            config.preferred_model_id = Some(m.to_string());
+            m.to_string()
+        }
+        None => config.preferred_model_id.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no model pinned — pass --model <MODEL_ID> or set \
+                 `preferred_model_id` in the --file template"
+            )
+        })?,
+    };
     let cat_path = paths.config_dir.join(ModelCatalog::FILENAME);
     let catalog = ModelCatalog::load_or_init(&cat_path).await?;
-    if catalog.get_enabled(model_id).await.is_none() {
+    if catalog.get_enabled(&model_id).await.is_none() {
         anyhow::bail!(
             "model '{model_id}' is not in the catalog (or is disabled).\n\
              Add one with: peko model add --template <anthropic|openai|ollama|...> --model <wire-id> --key \"$YOUR_KEY\"\n\
@@ -600,7 +716,7 @@ async fn create_principal(
         );
     }
 
-    // Prepare the workspace and default agent prompt before registering the
+    // Prepare the workspace and root agent prompt before registering the
     // Principal, because `PrincipalManager::create` loads and validates the
     // agent prompts immediately.
     //
@@ -614,91 +730,157 @@ async fn create_principal(
     let agents_dir = paths.resolver().principal_layout(name).shared.agents_dir;
     tokio::fs::create_dir_all(&agents_dir).await?;
     let prompt_path = agents_dir.join("primary.md");
-    let prompt_body = default_agent_prompt(name);
+    let prompt_body = match &persona {
+        Some(body) => persona_agent_prompt(name, config.identity.description.as_deref(), body),
+        None => default_agent_prompt(name),
+    };
     tokio::fs::write(&prompt_path, prompt_body).await?;
 
-    let mut config = default_principal_config(name);
-    config.preferred_model_id = Some(model_id.to_string());
+    // ── P0 provision ────────────────────────────────────────────────
     let principal = manager.create(config).await?;
-
-    let boot_state = principal.config.read().await.boot_state();
     println!(
         "Created principal '{}' at {} (model: {model_id})",
         name,
         principal.workspace_path.display()
     );
-    println!(
-        "Boot state: {boot_state:?} — define it with `peko principal define {name}` \
-         (identity, intent) so the genesis turn has something to grow from"
-    );
 
-    Ok(())
+    Ok(Some(manager))
 }
 
-/// `peko principal define` — genesis pipeline P1 (ADR-054).
-///
-/// Writes creator-supplied identity/intent fields into
-/// `principal.toml` and stamps `boot_state = defined`. Only provided
-/// fields are written; the rest of the config is untouched. This is
-/// the CLI channel of the Definition phase — the file-edit channel is
-/// the same `principal.toml`, and the desktop onboarding step writes
-/// the same fields over IPC.
-async fn define_principal(
+/// Boot half of `create`: make sure a daemon knows the principal, seed
+/// the genesis + keepalive jobs, and (unless `detach`) block until the
+/// one-shot genesis turn finalizes.
+async fn boot_principal(
     name: &str,
-    display_name: Option<&str>,
-    description: Option<&str>,
-    goals: &[String],
-    values: &[String],
-    preferences: &[String],
+    manager: &PrincipalManager,
     paths: &GlobalPaths,
+    detach: bool,
+    wait_timeout: u64,
 ) -> Result<()> {
-    if display_name.is_none()
-        && description.is_none()
-        && goals.is_empty()
-        && values.is_empty()
-        && preferences.is_empty()
-    {
-        anyhow::bail!(
-            "nothing to define — pass at least one of --display-name, --description, \
-             --goal, --value, --preference"
-        );
+    // ── Make sure the daemon knows this principal ───────────────────
+    // The cron engine enumerates LOADED principals, so a principal
+    // created while a daemon is running must be handed to that
+    // daemon's manager (idempotent IPC reload); with no daemon up, we
+    // spawn one — its boot scan loads the freshly written workspace.
+    let service = peko_core::common::services::DaemonProcessService::new(paths.resolver().clone());
+    if service.is_daemon_running().await.unwrap_or(false) {
+        let client = DaemonClient::connect()
+            .await
+            .context("daemon is running but the IPC socket would not connect")?;
+        match client
+            .request_response(peko_core::ipc::RequestPacket::PrincipalReload {
+                request_id: 0,
+                name: name.to_string(),
+            })
+            .await
+        {
+            Ok(peko_core::ipc::ResponsePacket::PrincipalLoaded { .. }) => {
+                println!("Daemon: principal '{name}' loaded");
+            }
+            Ok(peko_core::ipc::ResponsePacket::Error { message, .. }) => {
+                anyhow::bail!("daemon refused to load principal '{name}': {message}");
+            }
+            Ok(other) => {
+                anyhow::bail!("unexpected daemon response to reload: {other:?}");
+            }
+            Err(e) => {
+                anyhow::bail!("daemon reload failed: {e}");
+            }
+        }
+    } else {
+        println!("Starting daemon (genesis needs it)…");
+        // Same defaults as `peko daemon start` (interval 5s, 50
+        // reconnect attempts — see the Start command).
+        service
+            .spawn_daemon_with(5, 50, false)
+            .await
+            .context("failed to spawn the daemon sidecar")?;
+        // The IPC socket binds only after the boot scan loaded every
+        // principal, so a successful connect implies 'loaded'.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let ready = match DaemonClient::connect().await {
+                Ok(client) => client.ping().await.is_ok(),
+                Err(_) => false,
+            };
+            if ready {
+                println!("Daemon: ready (principal '{name}' loaded at boot)");
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                anyhow::bail!("daemon did not become ready within 30s");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
     }
 
-    let manager = build_manager(paths);
-    // Fail with a clear error when the principal doesn't exist (the
-    // same message shape `load_principal` produces for `show`).
-    let _ = load_principal(name, &manager, paths).await?;
-
-    manager
-        .update_config(name, |config| {
-            if let Some(display_name) = display_name {
-                config.identity.display_name = Some(display_name.to_string());
-            }
-            if let Some(description) = description {
-                config.identity.description = Some(description.to_string());
-            }
-            if !goals.is_empty() {
-                config.intent.goals = goals.to_vec();
-            }
-            if !values.is_empty() {
-                config.intent.values = values.to_vec();
-            }
-            if !preferences.is_empty() {
-                config.intent.preferences = preferences.to_vec();
-            }
-            config.set_boot_state(peko_core::principal::config::BootState::Defined);
-        })
+    // ── P2 seed: genesis + keepalive jobs ───────────────────────────
+    let report = peko_core::principal::genesis::seed_boot_defaults(manager, paths.resolver())
         .await
-        .context("failed to persist the definition")?;
+        .context("failed to seed the genesis pipeline jobs")?;
+    if !report.is_empty() {
+        println!("Genesis: {report}");
+    }
 
     let state = match manager.get_by_name(name).await {
         Some(p) => p.config.read().await.boot_state(),
-        None => peko_core::principal::config::BootState::Defined,
+        None => peko_core::principal::config::BootState::GenesisPending,
     };
-    println!("Defined principal '{name}' (boot state: {state:?}).");
+
+    if detach {
+        println!(
+            "Boot state: {state:?} — detached. The genesis turn fires shortly; \
+             watch it with `peko log {name}`"
+        );
+        return Ok(());
+    }
+
+    // ── P2 wait: block until the genesis turn is done ───────────────
+    println!("Waiting for the genesis turn (the trunk's first self-turn)…");
+    let schedule_path = paths.resolver().cron_schedule(name);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_timeout);
+    loop {
+        let scheduler = peko_cron::CronScheduler::new(&schedule_path)
+            .with_context(|| format!("open cron schedule for '{name}'"))?;
+        let jobs = scheduler
+            .list_jobs(true)
+            .with_context(|| format!("read cron schedule for '{name}'"))?;
+        // Done when the one-shot is gone (fired + self-deleted) or its
+        // run finalized successfully.
+        let genesis = jobs
+            .iter()
+            .find(|j| j.id == peko_core::principal::genesis::GENESIS_JOB_ID);
+        match genesis {
+            None => break,
+            Some(job) if job.run_count >= 1 && job.last_status.as_deref() == Some("success") => {
+                break
+            }
+            Some(job) if job.last_status.as_deref() == Some("error") => {
+                anyhow::bail!(
+                    "genesis turn failed ({}) — inspect the daemon log; \
+                     the principal stays seeded and retries at the next boot",
+                    job.last_status.as_deref().unwrap_or("error")
+                );
+            }
+            Some(_) => {}
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!(
+                "genesis turn did not complete within {wait_timeout}s. The principal is \
+                 fully seeded — it will genesis at the next daemon boot; watch with \
+                 `peko log {name}`"
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    let state = match manager.get_by_name(name).await {
+        Some(p) => p.config.read().await.boot_state(),
+        None => peko_core::principal::config::BootState::GenesisPending,
+    };
     println!(
-        "The next daemon boot schedules its genesis turn — the trunk's first \
-         self-turn, driven by its own definition."
+        "🎉 Principal '{name}' is alive (boot state: {state:?}). \
+         Talk to it: peko send {name} \"…\" — inspect it: peko log {name}"
     );
 
     Ok(())
@@ -1978,13 +2160,11 @@ mod tests {
     }
 
     #[test]
-    fn principal_create_requires_model_flag() {
-        // Model-first: `--model` is required at creation so every
-        // principal is pinned to a configured model from day one —
-        // there is no runtime default to fall back to.
-        let result = Cli::try_parse_from(["peko", "principal", "create", "alice"]);
-        assert!(result.is_err(), "create without --model should fail");
-
+    fn principal_create_model_pin_precedence() {
+        // `--model` is optional only when the `--file` template pins
+        // `preferred_model_id`; the flag overrides the template value.
+        // Parse-level: no model and no file is fine at parse time —
+        // the requirement is enforced in `create_principal`.
         let cli = Cli::try_parse_from([
             "peko",
             "principal",
@@ -2000,11 +2180,39 @@ mod tests {
                 model,
                 force,
                 yes,
+                file,
+                detach,
+                wait_timeout,
             }) => {
                 assert_eq!(name, "alice");
-                assert_eq!(model, "anthropic-haiku");
+                assert_eq!(model.as_deref(), Some("anthropic-haiku"));
                 assert!(!force);
                 assert!(!yes);
+                assert!(file.is_none());
+                assert!(!detach);
+                assert_eq!(wait_timeout, 300);
+            }
+            _other => panic!("expected Principal create command"),
+        }
+    }
+
+    #[test]
+    fn principal_create_parses_file_template() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "create",
+            "scout",
+            "-f",
+            "/tmp/scout.principal.toml",
+            "--detach",
+        ])
+        .expect("should parse principal create with -f template");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Create { name, file, .. }) => {
+                assert_eq!(name, "scout");
+                assert_eq!(file.as_deref(), Some("/tmp/scout.principal.toml"));
             }
             _other => panic!("expected Principal create command"),
         }
@@ -2028,9 +2236,14 @@ mod tests {
         let paths = from_cli(&cli);
 
         // Empty catalog → any model id is rejected at creation, before
-        // the workspace is written.
-        let result = create_principal("alice", "no-such-model", false, false, &paths).await;
-        let err = result.expect_err("unknown model must fail creation");
+        // the workspace is written. `detach` keeps the test off the
+        // daemon-spawn path (the model check fails first anyway).
+        let result =
+            provision_principal("alice", Some("no-such-model"), None, false, false, &paths).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("unknown model must fail creation"),
+        };
         assert!(
             format!("{err:#}").contains("no-such-model"),
             "error should name the offending model id: {err:#}"
@@ -2041,6 +2254,7 @@ mod tests {
     fn principal_create_parses_force_flag() {
         // `--force` is the explicit override for the overwrite guard —
         // see Bug 2 in scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
+        // (Long-form only: `-f` now selects the definition template.)
         let cli = Cli::try_parse_from([
             "peko",
             "principal",
@@ -2058,9 +2272,10 @@ mod tests {
                 model,
                 force,
                 yes,
+                ..
             }) => {
                 assert_eq!(name, "scout");
-                assert_eq!(model, "anthropic-haiku");
+                assert_eq!(model.as_deref(), Some("anthropic-haiku"));
                 assert!(force);
                 assert!(!yes);
             }
@@ -2116,9 +2331,10 @@ updated_at = "2026-01-01T00:00:00Z"
         .unwrap();
 
         // First create: success.
-        create_principal("scout", "demo-model", false, false, &paths)
+        provision_principal("scout", Some("demo-model"), None, false, false, &paths)
             .await
-            .expect("first create should succeed");
+            .expect("first create should succeed")
+            .expect("first create should return a manager");
 
         // Capture a sentinel file inside the workspace that the
         // overwrite (if it happened) would destroy. This proves the
@@ -2129,9 +2345,12 @@ updated_at = "2026-01-01T00:00:00Z"
         assert!(shared.agents_dir.join("sentinel.md").exists());
 
         // Second create without --force: must refuse.
-        let err = create_principal("scout", "demo-model", false, false, &paths)
+        let err = match provision_principal("scout", Some("demo-model"), None, false, false, &paths)
             .await
-            .expect_err("second create without --force must fail");
+        {
+            Err(e) => e,
+            Ok(_) => panic!("second create without --force must fail"),
+        };
         let msg = format!("{err:#}");
         assert!(
             msg.contains("already exists") && msg.contains("remove"),
@@ -2149,9 +2368,10 @@ updated_at = "2026-01-01T00:00:00Z"
         // is written. This is the destructive re-create flow that
         // closes the 2026-08-01 follow-up "Known follow-up: --force
         // does not actually destroy the existing principal".
-        create_principal("scout", "demo-model", true, true, &paths)
+        provision_principal("scout", Some("demo-model"), None, true, true, &paths)
             .await
-            .expect("create with --force --yes should succeed and destroy the prior principal");
+            .expect("create with --force --yes should succeed and destroy the prior principal")
+            .expect("force path returns a manager");
 
         // Sentinel must be gone — the destructive re-create wiped it.
         assert!(

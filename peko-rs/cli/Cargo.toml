@@ -22,6 +22,7 @@ peko_core = { package = "peko", path = "../core" }
 # resolve via the path.
 peko-auth = { path = "../auth" }
 peko-channel = { path = "../channel" }
+peko-cron = { path = "../cron" }
 peko-protocol = { path = "../protocol" }
 peko-extension-api = { path = "../extension-api" }
 peko-providers = { path = "../providers" }

@@ -80,16 +80,39 @@ always edit files to re-define a principal (presence = visibility,
 ADR-050 — picked up on the next turn), but the runtime only advances
 states; it never rewinds them.
 
-### D2: P1 definition — files are the contract, three channels
+### D2: P1 definition — one command, template file, or file edit
 
-`peko principal define <name> [--display-name --description --goal
---value --preference]` writes the provided fields into `principal.toml`
-and stamps `defined` (shipped in this ADR's prototype). The desktop
-onboarding gains a definition step writing the same fields over IPC;
-direct file edits are already first-class (ADR-050). The bare `peko
-principal create` no longer writes a placeholder description — an
-absent definition is the honest on-disk state, and the identity prompt
-section simply renders nothing until there is one.
+`peko principal create` is ONE command covering P0 + P1 + P2. The
+phases are an internal state machine, not a wizard — the CLI must not
+leak them as separate verbs (an earlier iteration of this ADR shipped
+`peko principal define`; it was removed as an implementation leak).
+
+- **Bare `peko principal create <name> --model <id>`** provisions with
+  defaults. Empty `[identity]`/`[intent]` is the honest on-disk state;
+  the genesis turn adopts a working self-description (the brief
+  instructs it to) — the model drafts its own identity, the creator
+  refines files later.
+- **`peko principal create <name> -f <template.toml>`** seeds the full
+  definition from a file that IS a `principal.toml` (so
+  `peko principal export` → edit → `create -f` round-trips):
+  `[identity]`, `[intent]`, `preferred_model_id`, `[capabilities]`,
+  `[[permissions]]`, `exposure`, `quota`, plus one tolerated extra —
+  an inline `persona` (Markdown body for the root agent prompt).
+  Unspecified fields take runtime defaults; `id`/`did`/`boot_state`
+  in the template are ignored (a fresh identity is always generated);
+  the CLI `name` argument wins over a template `name`. No separate
+  interactive wizard: the template file is the interactive surface.
+- **Blocking to alive.** After provisioning, create ensures the daemon
+  knows the principal (spawns the sidecar when none is running; sends
+  the idempotent `PrincipalReload` IPC when one is), seeds the genesis
+  + keepalive jobs immediately (not at next boot), and **blocks until
+  the one-shot genesis run finalizes successfully** — polling the
+  schedule for the job's `run_count >= 1 && last_status == "success"`
+  or its post-run self-deletion. `--detach` opts out (scripts/CI);
+  `--wait-timeout` (default 300s) bounds the wait; a timeout or a
+  failed run exits non-zero with the principal left fully seeded (it
+  will genesis at the next daemon boot). Direct file edits remain
+  first-class for re-definition (ADR-050 — picked up next turn).
 
 ### D3: P2 genesis — the runtime guarantees the first self-turn
 
@@ -156,8 +179,15 @@ surfaces, it gets its own design pass (same rule as ADR-041 §3.2).
   `SeedReport`, `seed_boot_defaults`, tests.
 - `principal/manager.rs` — `create` stamps the initial boot state.
 - `daemon/mod.rs` — boot seeding pass after cron-engine construction.
-- `cli` — `peko principal define`; `create` prints the boot state;
-  default config no longer fabricates an identity.
+- `ipc` — `PrincipalReload` / `PrincipalLoaded` packets: hand a
+  locally-created principal to a running daemon's manager (the cron
+  engine enumerates loaded principals only; without this, jobs for a
+  principal created mid-run would never fire until restart).
+- `cli` — `create` is one blocking command (template via `-f`,
+  `--detach` / `--wait-timeout` escape hatches, daemon ensure + reload,
+  immediate seeding, genesis-completion wait); `peko principal define`
+  was removed (unshipped experiment); the default config no longer
+  fabricates an identity.
 - `scripts/e2e/flows/genesis-pipeline-llm.sh` (new) — live-LLM flow
   (MiniMax) driving all phases end-to-end: P0/P1 stamps, boot seeding,
   the real genesis self-turn, an ingress round-trip, and restart
@@ -198,8 +228,9 @@ surfaces, it gets its own design pass (same rule as ADR-041 §3.2).
 - **P3 induction budgeting**: wire `budget_per_cycle` /
   `cost_per_call_max` as the genesis/induction turn ceiling
   (AGENT_SESSION_PARADIGM §4's standing recommendation).
-- **Desktop onboarding definition step** (same fields over IPC) and an
-  interactive `peko principal create -i`.
+- **Desktop onboarding create step**: same single-command create over
+  IPC (needs the template payload on the wire, or a desktop-written
+  template file).
 - **`boot_state` in `principal show` / list summaries.**
 - **Memory/dream machinery** (see D5).
 

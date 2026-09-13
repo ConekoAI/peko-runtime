@@ -280,8 +280,15 @@ pub struct PrincipalIdentityConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrincipalIntentConfig {
+    // `#[serde(default)]` on every field: the definition surface is
+    // creator-authored TOML (create `-f` templates, hand edits), and a
+    // partial `[intent]` table must parse — `goals`-only is a valid
+    // definition.
+    #[serde(default)]
     pub goals: Vec<String>,
+    #[serde(default)]
     pub values: Vec<String>,
+    #[serde(default)]
     pub preferences: Vec<String>,
 }
 
