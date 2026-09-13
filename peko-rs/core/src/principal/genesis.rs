@@ -144,29 +144,33 @@ this job with the cron tools — you own your rhythm."
 /// [`GENESIS_DELAY_SECS`] after `now` and deletes itself after
 /// running; the turn lands in the trunk (`target: "trunk"`).
 pub fn genesis_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<CronJob> {
-    let at = (now + chrono::Duration::seconds(GENESIS_DELAY_SECS as i64))
-        .to_rfc3339_opts(SecondsFormat::Secs, true);
-    Ok(job_base(
+    let at = now + chrono::Duration::seconds(GENESIS_DELAY_SECS as i64);
+    let at_rfc3339 = at.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let mut job = job_base(
         config,
         now,
         GENESIS_JOB_ID,
         "genesis turn",
-        ScheduleKind::At { at },
-    ))
-    .map(|mut job| {
-        job.delete_after_run = true;
-        job.action = CronJobAction::Send {
-            message: genesis_brief(config),
-            target: Some("trunk".to_string()),
-        };
-        job
-    })
+        ScheduleKind::At {
+            at: at_rfc3339.clone(),
+        },
+    );
+    job.delete_after_run = true;
+    job.action = CronJobAction::Send {
+        message: genesis_brief(config),
+        target: Some("trunk".to_string()),
+    };
+    // The engine fires on `next_run <= now` and does NOT recompute it
+    // from the schedule at add time — leaving the construction default
+    // (`now`) would fire the one-shot immediately instead of at `at`.
+    job.next_run = at;
+    Ok(job)
 }
 
 /// Build the recurring default keepalive cron job (P4 seed). Targets
 /// the trunk; cadence [`DEFAULT_KEEPALIVE_EVERY_MS`].
 pub fn keepalive_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<CronJob> {
-    Ok(job_base(
+    let mut job = job_base(
         config,
         now,
         KEEPALIVE_JOB_ID,
@@ -174,14 +178,15 @@ pub fn keepalive_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<Cro
         ScheduleKind::Every {
             every_ms: DEFAULT_KEEPALIVE_EVERY_MS,
         },
-    ))
-    .map(|mut job| {
-        job.action = CronJobAction::Send {
-            message: keepalive_tick_message(config),
-            target: Some("trunk".to_string()),
-        };
-        job
-    })
+    );
+    job.action = CronJobAction::Send {
+        message: keepalive_tick_message(config),
+        target: Some("trunk".to_string()),
+    };
+    // First tick one full cadence after seeding (same next_run
+    // semantics as `genesis_job` — the engine honors the stored value).
+    job.next_run = now + chrono::Duration::milliseconds(DEFAULT_KEEPALIVE_EVERY_MS as i64);
+    Ok(job)
 }
 
 fn job_base(
@@ -191,14 +196,15 @@ fn job_base(
     name: &str,
     schedule: ScheduleKind,
 ) -> CronJob {
-    // Cron jobs are keyed by the wire identity (the DID); fall back to
-    // the runtime `PrincipalId` for configs that predate identity
-    // generation (the engine's `resolve_principal` tries both).
+    // Cron jobs are keyed the way the cron tools key them: the
+    // principal's stable runtime id (`ctx.principal_id` — this is what
+    // `CronList` filters on and what `CronCreate` stamps). The DID is
+    // the fallback for configs that predate id generation; the engine's
+    // `resolve_principal` tries both on dispatch.
     let principal_id = config
-        .did
+        .id
         .clone()
-        .map(|d| PrincipalId(d.0))
-        .or_else(|| config.id.clone())
+        .or_else(|| config.did.clone().map(|d| PrincipalId(d.0)))
         .unwrap_or_else(|| PrincipalId(config.name.clone()));
     CronJob {
         id: id.to_string(),
@@ -407,6 +413,7 @@ mod tests {
             avatar: None,
         };
         cfg.intent.goals.push("grow".into());
+        cfg.id = Some(PrincipalId("prin_seedling".into()));
         cfg.did = Some(peko_subject::PrincipalDID("did:peko:seedling".into()));
         cfg
     }
@@ -419,7 +426,9 @@ mod tests {
         assert_eq!(job.id, GENESIS_JOB_ID);
         assert!(job.delete_after_run, "genesis turn is one-shot");
         assert!(job.enabled);
-        assert_eq!(job.principal_id.0, "did:peko:seedling");
+        // Jobs key on the runtime PrincipalId (what CronList filters
+        // on), not the DID.
+        assert_eq!(job.principal_id.0, "prin_seedling");
         match &job.action {
             CronJobAction::Send { target, message } => {
                 assert_eq!(target.as_deref(), Some("trunk"));
@@ -436,6 +445,10 @@ mod tests {
             }
             other => panic!("expected At schedule, got {other:?}"),
         }
+        // The engine honors the stored `next_run` verbatim — it must
+        // match the At instant, not the construction time (an
+        // immediate fire defeats the one-shot's delay).
+        assert_eq!(job.next_run, now + chrono::Duration::seconds(60));
     }
 
     #[test]
@@ -461,6 +474,12 @@ mod tests {
             }
             other => panic!("expected Every schedule, got {other:?}"),
         }
+        // First tick one full cadence out, not immediately (the engine
+        // fires on `next_run <= now` with no recompute at add time).
+        assert_eq!(
+            job.next_run,
+            now + chrono::Duration::milliseconds(DEFAULT_KEEPALIVE_EVERY_MS as i64)
+        );
     }
 
     #[test]

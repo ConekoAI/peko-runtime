@@ -101,7 +101,16 @@ loaded principal whose boot state is not `organized`:
    the default carries id `keepalive`, every 10 minutes — well above
    the 60s `TRUNK_MIN_INTERVAL_MS` floor). This closes PEKO §K's "no
    cron firing into the root at all" anti-pattern at the runtime level:
-   a heartbeat is guaranteed to EXIST.
+   a heartbeat is guaranteed to EXIST. Jobs are keyed on the
+   principal's **runtime `PrincipalId`** — the convention the cron
+   tools themselves use (`CronCreate` stamps `ctx.principal_id`,
+   `CronList` filters on it) — so the trunk can SEE its seeded
+   heartbeat; keying on the DID instead makes the jobs invisible to
+   the cron tool surface (found and fixed in live e2e). The engine's
+   `resolve_principal` accepts either on dispatch. The engine fires on
+   the stored `next_run` verbatim with no recompute at add time, so
+   the seeded jobs set it explicitly (`at` for the one-shot; one full
+   cadence out for the keepalive).
 2. Ensure the **one-shot genesis job** exists for principals that have
    not had their genesis turn seeded yet (`provisioned`/`defined`
    states): id `genesis`, `At now + 60s`, `delete_after_run`, message
@@ -149,6 +158,10 @@ surfaces, it gets its own design pass (same rule as ADR-041 §3.2).
 - `daemon/mod.rs` — boot seeding pass after cron-engine construction.
 - `cli` — `peko principal define`; `create` prints the boot state;
   default config no longer fabricates an identity.
+- `scripts/e2e/flows/genesis-pipeline-llm.sh` (new) — live-LLM flow
+  (MiniMax) driving all phases end-to-end: P0/P1 stamps, boot seeding,
+  the real genesis self-turn, an ingress round-trip, and restart
+  idempotence.
 
 ## 4. Consequences
 
