@@ -199,9 +199,24 @@ fn write_principal_with_perm(
     // Scaffold: identity, agents/primary.md, principal.toml — pinned
     // to the seeded `mock-llm` model (model-first: create requires
     // `--model` and validates it against the catalog).
+    //
+    // ADR-054: `principal create` is a BLOCKING command — the bare form
+    // spawns a daemon sidecar and waits for the genesis turn. Use
+    // `--detach` (provisioning is still synchronous), then stop the
+    // sidecar: it was started BEFORE `pekohub.toml` exists, so it can
+    // never announce — and while it holds the IPC socket it would
+    // starve the credentialed daemon this test starts below (the
+    // tunnel connect + `instance_announce` come from daemon start).
     let output = cli
         .cmd()
-        .args(["principal", "create", principal_name, "--model", "mock-llm"])
+        .args([
+            "principal",
+            "create",
+            principal_name,
+            "--model",
+            "mock-llm",
+            "--detach",
+        ])
         .output()
         .expect("run `peko principal create`");
     assert!(
@@ -210,6 +225,11 @@ fn write_principal_with_perm(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    let _ = cli
+        .cmd()
+        .args(["daemon", "stop"])
+        .output()
+        .expect("run `peko daemon stop`");
 
     // Patch `principal.toml` to: pin exposure to Private (so pekohub's
     // `canChat` doesn't 503 on the unexposed default), set the owner
