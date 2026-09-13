@@ -103,15 +103,21 @@ This is your first self-turn — the trunk of a new principal.\n\n",
     brief.push_str(
         "\nYour definition lives in `principal.toml` in your workspace; your agent \
 prompts live in `agents/`. Scratch and removal staging sessions `/tmp` \
-and `/trash` already exist under you.\n\n\
+and `/trash` already exist under you. Your persistent knowledge base \
+lives in `kb/` — `kb/MEMORY.md` (hot memory, rides in every prompt), \
+`kb/index.md` (its map), `kb/people/` and `kb/groups/` (per-person and \
+per-group notes). It is yours: revise in place, keep the index honest, \
+restructure freely.\n\n\
 On this turn:\n\
 1. Read your own definition (`principal.toml`). If `[identity]` or \
 `[intent]` are empty placeholders, adopt a working self-description \
 and write it back — your creator will refine it later.\n\
-2. Survey your workspace (`agents/`, `skills/`, `tools/` if present) \
-so you know what you can do.\n\
-3. Organize: decide what standing structure you need (memory \
-conventions, long-lived children) and set up what you can this turn.\n\
+2. Survey your workspace (`agents/`, `skills/`, `tools/`, `kb/` if present) \
+so you know what you can do and what you already know.\n\
+3. Organize: the `kb/` scaffold is a floor, not a mandate — keep what \
+fits, restructure what does not, and record the conventions you adopt \
+in `kb/index.md`. Set up any standing structure you still need \
+(long-lived children, memory habits) this turn.\n\
 4. The runtime gave you a default keepalive job (`keepalive`, every \
 10 minutes, targeting you). Adjust the cadence with the cron tools if \
 it does not fit — but never leave yourself without a heartbeat.\n\n\
@@ -254,6 +260,9 @@ pub struct SeedReport {
     pub keepalive_seeded: Vec<String>,
     /// Principals whose boot state was stamped `genesis_pending`.
     pub state_flipped: Vec<String>,
+    /// Principals whose legacy workspace-root `MEMORY.md` was moved
+    /// into `kb/` (ADR-055 D4 one-time migration).
+    pub memory_migrated: Vec<String>,
 }
 
 impl SeedReport {
@@ -263,6 +272,7 @@ impl SeedReport {
         self.genesis_seeded.is_empty()
             && self.keepalive_seeded.is_empty()
             && self.state_flipped.is_empty()
+            && self.memory_migrated.is_empty()
     }
 }
 
@@ -270,10 +280,12 @@ impl std::fmt::Display for SeedReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "genesis seeded for [{}], keepalive seeded for [{}], state flipped for [{}]",
+            "genesis seeded for [{}], keepalive seeded for [{}], state flipped for [{}], \
+             memory migrated for [{}]",
             self.genesis_seeded.join(", "),
             self.keepalive_seeded.join(", "),
-            self.state_flipped.join(", ")
+            self.state_flipped.join(", "),
+            self.memory_migrated.join(", ")
         )
     }
 }
@@ -292,6 +304,11 @@ impl std::fmt::Display for SeedReport {
 ///    one-shot already fired simply has neither job re-added).
 /// 3. Stamp `boot_state = genesis_pending` and persist.
 ///
+/// Additionally — and for every principal regardless of boot state —
+/// the one-time ADR-055 memory migration runs: a legacy
+/// workspace-root `MEMORY.md` is moved into `kb/MEMORY.md` so the
+/// contract change never orphans a principal's memory.
+///
 /// Failures are per-principal and non-fatal (warn-and-continue): a
 /// broken schedule file must never block daemon boot — the same
 /// posture as `/tmp` + `/trash` seeding.
@@ -304,6 +321,23 @@ pub async fn seed_boot_defaults(
 
     for principal in manager.list_all().await {
         let name = principal.name().await;
+
+        // ADR-055 D4: one-time legacy memory migration. Runs for EVERY
+        // principal (including `organized` — the runtime never touches
+        // their cron schedule, but this is not a schedule fix), and is
+        // a no-op once performed.
+        let shared_root = path_resolver.principal_layout(&name).shared.root;
+        match crate::principal::kb::migrate_legacy_memory(&shared_root) {
+            Ok(true) => {
+                tracing::info!(
+                    "genesis: migrated legacy MEMORY.md into kb/ for principal '{name}'"
+                );
+                report.memory_migrated.push(name.clone());
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("genesis: memory migration failed for '{name}': {e}"),
+        }
+
         let state = principal.config.read().await.boot_state();
         if state == BootState::Organized {
             continue;
@@ -506,10 +540,12 @@ mod tests {
             genesis_seeded: vec!["a".into()],
             keepalive_seeded: vec!["a".into(), "b".into()],
             state_flipped: vec![],
+            memory_migrated: vec!["c".into()],
         };
         let text = report.to_string();
         assert!(text.contains("genesis seeded for [a]"), "got: {text}");
         assert!(text.contains("keepalive seeded for [a, b]"), "got: {text}");
+        assert!(text.contains("memory migrated for [c]"), "got: {text}");
         assert!(!report.is_empty());
         assert!(SeedReport::default().is_empty());
     }

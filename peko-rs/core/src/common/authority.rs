@@ -289,9 +289,9 @@ impl RuntimeAuthority {
 
     // ---------------------------------------------------------------------
     // Shared tier — per-principal capability-bearing config (principal
-    // identity, agents, MCP configs, memory snapshots). Any authenticated
-    // actor with visibility on the principal can read; writes require
-    // the principal owner.
+    // identity, agents, MCP configs, the kb knowledge base). Any
+    // authenticated actor with visibility on the principal can read;
+    // writes require the principal owner.
     //
     // **Phase B (read path only):** the read gate is permissive — any
     // non-Public actor can ask for Shared paths and we'll hand them out.

@@ -2244,11 +2244,11 @@ mod tests {
         mock.queue_tool_call("tc_1", "echo", serde_json::json!({"msg": "hello"}));
         mock.queue_text("Done.");
 
-        // Bind a principal workspace with a MEMORY.md so the
-        // `{{memory}}` section has content to inject.
+        // Bind a principal workspace with a kb/MEMORY.md (ADR-055) so
+        // the `{{memory}}` section has content to inject.
         let workspace = temp_dir.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("MEMORY.md"), "remember the alamo").unwrap();
+        std::fs::create_dir_all(workspace.join("kb")).unwrap();
+        std::fs::write(workspace.join("kb").join("MEMORY.md"), "remember the alamo").unwrap();
 
         let agent_name = format!("frozen-prompt-agent-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);

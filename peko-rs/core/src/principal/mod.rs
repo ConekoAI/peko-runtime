@@ -27,6 +27,7 @@ pub mod default_nodes;
 pub mod factory;
 pub mod genesis;
 pub mod identity_prompt;
+pub mod kb;
 pub mod manager;
 pub mod memory;
 pub mod messenger;

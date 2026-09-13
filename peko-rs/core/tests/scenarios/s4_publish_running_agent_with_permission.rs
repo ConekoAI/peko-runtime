@@ -199,9 +199,24 @@ fn write_principal_with_perm(
     // Scaffold: identity, agents/primary.md, principal.toml — pinned
     // to the seeded `mock-llm` model (model-first: create requires
     // `--model` and validates it against the catalog).
+    //
+    // ADR-054: `principal create` is a BLOCKING command — the bare form
+    // spawns a daemon sidecar and waits for the genesis turn. Use
+    // `--detach` (provisioning is still synchronous), then stop the
+    // sidecar: it was started BEFORE `pekohub.toml` exists, so it can
+    // never announce — and while it holds the IPC socket it would
+    // starve the credentialed daemon this test starts below (the
+    // tunnel connect + `instance_announce` come from daemon start).
     let output = cli
         .cmd()
-        .args(["principal", "create", principal_name, "--model", "mock-llm"])
+        .args([
+            "principal",
+            "create",
+            principal_name,
+            "--model",
+            "mock-llm",
+            "--detach",
+        ])
         .output()
         .expect("run `peko principal create`");
     assert!(
@@ -210,6 +225,11 @@ fn write_principal_with_perm(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    let _ = cli
+        .cmd()
+        .args(["daemon", "stop"])
+        .output()
+        .expect("run `peko daemon stop`");
 
     // Patch `principal.toml` to: pin exposure to Private (so pekohub's
     // `canChat` doesn't 503 on the unexposed default), set the owner
@@ -343,13 +363,30 @@ async fn wait_for_announced_instance(
     #[allow(unused_assignments)]
     let mut last_body = String::from("<never received>");
     loop {
-        let resp = client
+        // Transport errors (e.g. `hyper::Error(IncompleteMessage)` — the
+        // server closed an idle keep-alive connection while the request
+        // was in flight) are RETRYable: since ADR-054 the blocking
+        // `principal create` ahead of this poll idles the client for
+        // 60s+, making the stale-keep-alive race deterministic. Panicking
+        // on the first hiccup turned a poll into a flake; treat transport
+        // failures like "not yet announced" and keep polling until the
+        // deadline.
+        let resp = match client
             .get(format!("{backend_url}/v1/instances"))
             .bearer_auth(owner_jwt)
             .query(&[("runtime_id", did)])
             .send()
             .await
-            .expect("list instances transport failed");
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    panic!("list instances transport failed (deadline hit): {e}");
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         assert!(
             resp.status().is_success(),
             "list instances non-2xx: status={} body={:?}",

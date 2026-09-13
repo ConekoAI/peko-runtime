@@ -715,7 +715,8 @@ async fn d2_memory_update_notice() {
 
     let cli = PekoCli::new();
     create_mock_principal_with_tools(&cli, principal, &mock_url, &["Bash"]);
-    let memory_path = workspace(&cli, principal).join("MEMORY.md");
+    // ADR-055: memory lives at `kb/MEMORY.md` inside the workspace.
+    let memory_path = workspace(&cli, principal).join("kb").join("MEMORY.md");
     std::fs::write(&memory_path, "memory-v1-marker\n").expect("seed MEMORY.md v1");
 
     let rewrite = format!("printf 'memory-v2-marker\\n' > '{}'", memory_path.display());

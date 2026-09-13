@@ -31,6 +31,12 @@ For the trust-and-audit posture that makes this safe, see
 ~/.peko/principal/<name>/
 ├── principal.toml
 ├── agents/<name>.md
+├── kb/                              # persistent knowledge base (ADR-055)
+│   ├── MEMORY.md                    # hot long-term memory (rendered every turn)
+│   ├── index.md                     # hot map of the tree
+│   ├── people/<who>.md              # per-person notes (hot catalog)
+│   ├── groups/<channel>.md          # per-group notes (hot catalog)
+│   └── …                            # cold: refs/, journal/, imports/, datasets…
 ├── memory/sessions/<session_id>.jsonl
 ├── tools/<tool-id>/tool.toml        # universal tools
 ├── skills/<skill-id>/SKILL.md       # skills
@@ -44,6 +50,7 @@ For the trust-and-audit posture that makes this safe, see
 |----------------------------|---------------------------------------------------------------------------|
 | `principal.toml`           | Owner, permissions, exposure, capabilities, root prompt                    |
 | `agents/<name>.md`         | Agent prompts (per-principal)                                             |
+| `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md`, `index.md`, `people/`, `groups/` catalogs; everything else cold, read on demand |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
 | `tools/<id>/tool.toml`     | Universal tool manifests                                                  |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
@@ -173,6 +180,7 @@ flow.
 - [ADR-027: Unified Packaging](adr/ADR-027-unified-packaging.md) — `plugins/` layer
 - [ADR-039: Principal Model](adr/ADR-039-principal-model.md) — principal-as-actor
 - [ADR-041: Principal-as-Container](adr/ADR-041-principal-as-container.md) — per-principal workspace tier
+- [ADR-055: The Principal Knowledge Base](adr/ADR-055-principal-kb.md) — the `kb/` persistent tree and its hot set
 
 ---
 

@@ -128,7 +128,7 @@ pub use prompt::{
     context::{IterationBudgetState, TurnPromptContext},
     memory::{
         directory_from_tool_params, discover_project_instructions, discover_shared_context,
-        load_principal_memory, PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,
+        load_principal_memory, KB_DIR, PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,
     },
     placeholder::{replace_placeholders, Placeholder},
 };

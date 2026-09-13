@@ -112,8 +112,6 @@ pub struct SharedLayout {
     pub identity_file: PathBuf,
     /// `…/agents/` — agent definitions.
     pub agents_dir: PathBuf,
-    /// `…/memory/snapshots/` — optional portable memory snapshots.
-    pub memory_snapshots_dir: PathBuf,
     /// `…/mcps/` — principal-owned MCP server configs.
     pub mcps_dir: PathBuf,
     /// `…/channels/` — `pin_to_shared`'d channel dirs (PR-3d).
@@ -437,7 +435,6 @@ impl PathResolver {
                 config_file: shared_root.join("principal.toml"),
                 identity_file: shared_root.join("identity.json"),
                 agents_dir: shared_root.join("agents"),
-                memory_snapshots_dir: shared_root.join("memory").join("snapshots"),
                 mcps_dir: shared_root.join("mcps"),
                 channels_dir: shared_root.join("channels"),
             },
@@ -858,7 +855,6 @@ impl PathResolver {
         // Shared tier.
         std::fs::create_dir_all(&layout.shared.root)?;
         std::fs::create_dir_all(&layout.shared.agents_dir)?;
-        std::fs::create_dir_all(&layout.shared.memory_snapshots_dir)?;
         std::fs::create_dir_all(&layout.shared.mcps_dir)?;
         // Local tier.
         std::fs::create_dir_all(&layout.local.root)?;
@@ -1051,9 +1047,6 @@ mod tests {
         assert!(shared
             .identity_file
             .ends_with("principals/alice/identity.json"));
-        assert!(shared
-            .memory_snapshots_dir
-            .ends_with("principals/alice/memory/snapshots"));
         assert!(shared.mcps_dir.ends_with("principals/alice/mcps"));
     }
 

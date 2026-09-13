@@ -49,7 +49,7 @@ pub enum Placeholder {
     ThinkingLevel,
     /// MCP server context section - {{mcp_context}}
     McpContext,
-    /// Principal long-term memory from MEMORY.md - {{memory}}
+    /// Principal long-term memory from kb/MEMORY.md - {{memory}}
     Memory,
     /// Extension bootstrap context from per-turn SessionContextBuild hooks - {{session_context}}
     SessionContext,

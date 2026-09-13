@@ -20,6 +20,9 @@
 #      principal without a restart) and the default-definition path
 #      (empty identity → genesis adopts).
 #   5. Restart idempotence: a daemon reboot re-seeds nothing.
+#   6. ADR-055: the kb scaffold seeds on both create paths, the
+#      genesis brief carries the kb pointer, and a legacy
+#      workspace-root MEMORY.md is migrated into kb/ at daemon boot.
 #
 # Run:  MINIMAX_API_KEY=... scripts/e2e/run-case.sh genesis-pipeline-llm
 #       (set KEEP_TEMPDIR=1 to keep the artifacts for inspection)
@@ -112,6 +115,27 @@ print(" ".join(j["id"] for j in d["jobs"]))
     return 1
   fi
 
+  # ── ADR-055: kb scaffold + genesis-brief kb pointer ──────────────
+  if grep -q 'persistent knowledge base' "$trunk_jsonl"; then
+    echo "✅ genesis brief carries the ADR-055 kb pointer"
+  else
+    echo "❌ genesis brief missing the kb pointer" >&2
+    return 1
+  fi
+
+  local kb_dir="$shared_dir/kb"
+  local kb_missing=""
+  for f in MEMORY.md index.md README.md people/README.md groups/README.md; do
+    [[ -f "$kb_dir/$f" ]] || kb_missing="$kb_missing $f"
+  done
+  if [[ -z "$kb_missing" ]]; then
+    echo "✅ kb scaffold seeded (hot set + convention docs)"
+  else
+    echo "❌ kb scaffold incomplete, missing:$kb_missing" >&2
+    ls -laR "$kb_dir" >&2
+    return 1
+  fi
+
   # ── ingress sanity: real-LLM round-trip via peer child ──────────
   peko_iso_run send "$principal" "Reply with exactly the word: pong"
   peko_iso_assert_rc_zero
@@ -128,6 +152,28 @@ print(" ".join(j["id"] for j in d["jobs"]))
   else
     echo "❌ bare create post-conditions wrong:" >&2
     cat "$bare_toml" >&2
+    return 1
+  fi
+  if [[ -f "$peko_dir/principals/bare-e2e/kb/MEMORY.md" ]]; then
+    echo "✅ kb scaffold seeded for bare-e2e (bare create path)"
+  else
+    echo "❌ kb scaffold missing for bare-e2e" >&2
+    return 1
+  fi
+
+  # ── ADR-055 D4: one-time legacy memory migration at boot ────────
+  # Simulate a pre-ADR-055 principal: put MEMORY.md back at the
+  # workspace root, then reboot the daemon — the boot pass must move
+  # it into kb/ (and not leave a copy behind).
+  mv "$kb_dir/MEMORY.md" "$shared_dir/MEMORY.md"
+  peko_iso_run daemon stop
+  peko_iso_assert_rc_zero
+  peko_iso_start_daemon || return 1
+  if [[ -f "$kb_dir/MEMORY.md" && ! -f "$shared_dir/MEMORY.md" ]]; then
+    echo "✅ legacy MEMORY.md migrated into kb/ at daemon boot"
+  else
+    echo "❌ memory migration did not run at boot" >&2
+    ls -la "$shared_dir" "$kb_dir" >&2
     return 1
   fi
 
