@@ -1699,6 +1699,7 @@ mod tests {
             capabilities: Capabilities::default(),
             exposure,
             status: None,
+            boot_state: None,
             permissions,
             preferred_model_id: None,
             transport_preference: Default::default(),

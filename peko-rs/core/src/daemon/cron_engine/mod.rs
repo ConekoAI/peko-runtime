@@ -1360,6 +1360,7 @@ mod tests {
             capabilities: Capabilities::default(),
             exposure: Exposure::Private,
             status: None,
+            boot_state: None,
             permissions: vec![PermissionGrant {
                 subject: Subject::Public,
                 permission: Permission::Chat,

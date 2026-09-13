@@ -290,6 +290,29 @@ impl Daemon {
                 .clone(),
         ));
 
+        // ADR-054: genesis-pipeline boot seeding. For every principal
+        // not yet `organized`, ensure the default keepalive (and, for
+        // principals that never had a genesis turn, the one-shot
+        // genesis job) exists, then stamp `genesis_pending`. This is
+        // what keeps a fresh principal from being a passive request
+        // handler — PEKO §K's "no cron firing into the root at all"
+        // anti-pattern, closed at the runtime level. Idempotent;
+        // failures are per-principal warn-and-continue (the seed
+        // function itself never returns Err except for systemic
+        // issues, but a failure here must not block boot).
+        match crate::principal::genesis::seed_boot_defaults(
+            app_state.principal_manager(),
+            &app_state.path_resolver,
+        )
+        .await
+        {
+            Ok(report) if !report.is_empty() => {
+                info!("genesis: {}", report);
+            }
+            Ok(_) => debug!("genesis: all principals already seeded or organized"),
+            Err(e) => warn!("genesis: boot seeding failed (continuing boot): {e:#}"),
+        }
+
         // Write our own PID file so stop commands can find us even if the parent is gone
         let pid_file = crate::ipc::default_pid_path();
         if let Some(parent) = pid_file.parent() {

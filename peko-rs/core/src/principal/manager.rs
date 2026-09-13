@@ -346,6 +346,18 @@ impl PrincipalManager {
         // principal identity (peer DM channels are keyed by it).
         config.id = Some(id.clone());
 
+        // ADR-054: stamp the genesis boot state. A config that arrives
+        // with definition content (e.g. a `.principal` package import)
+        // enters at `defined`; a bare create (the CLI writes a default
+        // agent prompt but no identity/intent) enters at `provisioned`.
+        // The daemon's genesis boot pass (`principal::genesis`) picks
+        // the state up and advances it.
+        config.set_boot_state(if config.has_definition() {
+            crate::principal::config::BootState::Defined
+        } else {
+            crate::principal::config::BootState::Provisioned
+        });
+
         // Persist principal.toml under the Shared root.
         self.persist_config(&layout.shared.root, &config).await?;
 
@@ -1635,6 +1647,7 @@ mod tests {
             capabilities: Capabilities::starter_bundle(),
             exposure: peko_auth::Exposure::Private,
             status: None,
+            boot_state: None,
             permissions: vec![PermissionGrant {
                 subject: Subject::Public,
                 permission: Permission::Chat,

@@ -874,6 +874,7 @@ mod tests {
             capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),

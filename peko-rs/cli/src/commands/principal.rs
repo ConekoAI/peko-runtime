@@ -62,6 +62,38 @@ pub enum PrincipalCommands {
     /// List Principals
     List,
 
+    /// Record the principal's definition (identity, intent) — genesis
+    /// pipeline P1 (ADR-054)
+    ///
+    /// Writes the given fields into `principal.toml` and stamps the
+    /// boot state to `defined`. Any provided field counts; fields left
+    /// out are untouched. The daemon's genesis boot pass picks the
+    /// definition up and schedules the principal's first self-turn.
+    Define {
+        /// Principal name
+        name: String,
+
+        /// Human-readable display name
+        #[arg(long)]
+        display_name: Option<String>,
+
+        /// One-line description of what this principal is for
+        #[arg(long)]
+        description: Option<String>,
+
+        /// A goal (repeatable)
+        #[arg(long = "goal")]
+        goals: Vec<String>,
+
+        /// A value (repeatable)
+        #[arg(long = "value")]
+        values: Vec<String>,
+
+        /// A preference (repeatable)
+        #[arg(long = "preference")]
+        preferences: Vec<String>,
+    },
+
     /// Show Principal configuration and agent prompts
     Show {
         /// Principal name
@@ -250,6 +282,25 @@ pub async fn handle_principal(
             yes,
         } => create_principal(&name, &model, force, yes, paths).await,
         PrincipalCommands::List => list_principals(paths, json).await,
+        PrincipalCommands::Define {
+            name,
+            display_name,
+            description,
+            goals,
+            values,
+            preferences,
+        } => {
+            define_principal(
+                &name,
+                display_name.as_deref(),
+                description.as_deref(),
+                &goals,
+                &values,
+                &preferences,
+                paths,
+            )
+            .await
+        }
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
         PrincipalCommands::Export {
@@ -570,10 +621,84 @@ async fn create_principal(
     config.preferred_model_id = Some(model_id.to_string());
     let principal = manager.create(config).await?;
 
+    let boot_state = principal.config.read().await.boot_state();
     println!(
         "Created principal '{}' at {} (model: {model_id})",
         name,
         principal.workspace_path.display()
+    );
+    println!(
+        "Boot state: {boot_state:?} — define it with `peko principal define {name}` \
+         (identity, intent) so the genesis turn has something to grow from"
+    );
+
+    Ok(())
+}
+
+/// `peko principal define` — genesis pipeline P1 (ADR-054).
+///
+/// Writes creator-supplied identity/intent fields into
+/// `principal.toml` and stamps `boot_state = defined`. Only provided
+/// fields are written; the rest of the config is untouched. This is
+/// the CLI channel of the Definition phase — the file-edit channel is
+/// the same `principal.toml`, and the desktop onboarding step writes
+/// the same fields over IPC.
+async fn define_principal(
+    name: &str,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    goals: &[String],
+    values: &[String],
+    preferences: &[String],
+    paths: &GlobalPaths,
+) -> Result<()> {
+    if display_name.is_none()
+        && description.is_none()
+        && goals.is_empty()
+        && values.is_empty()
+        && preferences.is_empty()
+    {
+        anyhow::bail!(
+            "nothing to define — pass at least one of --display-name, --description, \
+             --goal, --value, --preference"
+        );
+    }
+
+    let manager = build_manager(paths);
+    // Fail with a clear error when the principal doesn't exist (the
+    // same message shape `load_principal` produces for `show`).
+    let _ = load_principal(name, &manager, paths).await?;
+
+    manager
+        .update_config(name, |config| {
+            if let Some(display_name) = display_name {
+                config.identity.display_name = Some(display_name.to_string());
+            }
+            if let Some(description) = description {
+                config.identity.description = Some(description.to_string());
+            }
+            if !goals.is_empty() {
+                config.intent.goals = goals.to_vec();
+            }
+            if !values.is_empty() {
+                config.intent.values = values.to_vec();
+            }
+            if !preferences.is_empty() {
+                config.intent.preferences = preferences.to_vec();
+            }
+            config.set_boot_state(peko_core::principal::config::BootState::Defined);
+        })
+        .await
+        .context("failed to persist the definition")?;
+
+    let state = match manager.get_by_name(name).await {
+        Some(p) => p.config.read().await.boot_state(),
+        None => peko_core::principal::config::BootState::Defined,
+    };
+    println!("Defined principal '{name}' (boot state: {state:?}).");
+    println!(
+        "The next daemon boot schedules its genesis turn — the trunk's first \
+         self-turn, driven by its own definition."
     );
 
     Ok(())
@@ -1471,11 +1596,14 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         id: None,
         did: None,
         owner: Subject::User("local".to_string()),
-        identity: PrincipalIdentityConfig {
-            display_name: Some(name.to_string()),
-            description: Some(format!("The {name} Principal")),
-            avatar: None,
-        },
+        // ADR-054: leave `[identity]` empty. A bare `peko principal
+        // create` is P0-only — the boot state stamps `provisioned` and
+        // the Definition phase (P1) fills these in later via
+        // `peko principal define` (or a package import). No
+        // placeholder description: an absent definition is the honest
+        // on-disk state, and the identity prompt section renders
+        // nothing until there is one.
+        identity: PrincipalIdentityConfig::default(),
         intent: PrincipalIntentConfig::default(),
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
@@ -1483,6 +1611,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         capabilities: peko_extension_api::Capabilities::starter_bundle(),
         exposure: peko_auth::Exposure::Private,
         status: None,
+        boot_state: None,
         permissions: Vec::new(),
         // Principals must be created with a configured model. The CLI
         // `peko principal create` path will require `--model` and set
