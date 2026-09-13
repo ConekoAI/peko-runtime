@@ -894,6 +894,22 @@ impl Session {
     // ADR-022: Single-File Session + Derived Context Cache
     // ============================================================
 
+    /// ADR-053 D1: raw events from the newest compaction boundary
+    /// (inclusive) to the end of the stitched log — the session's
+    /// live cache window as **verbatim `SessionEvent`s**.
+    ///
+    /// This is the storage-level counterpart of
+    /// [`Self::load_history_native`]'s LLM-level window: where the
+    /// history loader *converts* the window into `LlmMessage`s, this
+    /// returns the raw events untouched so a caller can re-append them
+    /// into another session byte-for-byte (Agent tool `action =
+    /// "branch"`). A boundary-less session returns every event.
+    pub async fn events_since_last_boundary(&self) -> Result<Vec<SessionEvent>> {
+        let events = self.storage.load_events(&self.id).await?;
+        let start = crate::message_conversion::latest_compaction_boundary(&events).unwrap_or(0);
+        Ok(events[start..].to_vec())
+    }
+
     /// Append a generic event to the source-of-truth JSONL file.
     ///
     /// This is the low-level append operation. All higher-level methods
@@ -2089,6 +2105,87 @@ mod tests {
             .unwrap();
         let footer = session.archived_pages_footer().await.unwrap();
         assert!(footer.contains("- page 1 (compaction #1, ~"), "{footer}");
+    }
+
+    /// ADR-053 D1: `events_since_last_boundary` returns the verbatim
+    /// raw events from the newest compaction boundary (inclusive) —
+    /// the storage-level cache window. Re-appending them into a second
+    /// session must reproduce the same boundary-aware history.
+    #[tokio::test]
+    async fn test_events_since_last_boundary_is_verbatim_window() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-branch-window-src";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_user("pre-boundary question").await.unwrap();
+        session
+            .record_compaction("summary one", 1, 100, 10, 1, None)
+            .await
+            .unwrap();
+        session.add_user("post-boundary question").await.unwrap();
+
+        // Window = [boundary event, post-boundary user message]. The
+        // pre-boundary user message must NOT be in the slice.
+        let window = session.events_since_last_boundary().await.unwrap();
+        assert_eq!(window.len(), 2, "boundary + one post-boundary event");
+        assert!(crate::pages::is_compaction_boundary(&window[0]));
+        match &window[1] {
+            crate::events::SessionEvent::MessageV2(m) => {
+                assert_eq!(m.role(), peko_message::MessageRole::User);
+            }
+            other => panic!("expected MessageV2, got {other:?}"),
+        }
+
+        // Verbatim re-append into a second session yields the same
+        // boundary-aware history (what a branch child sees).
+        let dst_id = "test-branch-window-dst";
+        let mut dst = Session::open_by_id("test-agent", dst_id, temp_dir.path(), Some(&peer))
+            .await
+            .unwrap();
+        for event in &window {
+            dst.append_event(event).await.unwrap();
+        }
+        let dst_history = dst.load_history().await.unwrap();
+        assert_eq!(dst_history.len(), 2, "summary message + copied user turn");
+        let summary_text = first_text(&dst_history[0]);
+        assert!(
+            summary_text.contains("summary one"),
+            "copied boundary must render as the summary: {summary_text}"
+        );
+        assert_eq!(first_text(&dst_history[1]), "post-boundary question");
+    }
+
+    /// ADR-053 D1: a boundary-less session's window is the whole log.
+    #[tokio::test]
+    async fn test_events_since_last_boundary_without_compaction() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::Subject::User("default".to_string());
+        let session_id = "test-branch-window-plain";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+        session.add_user("only turn").await.unwrap();
+
+        let window = session.events_since_last_boundary().await.unwrap();
+        assert!(!window.is_empty());
+        assert!(window
+            .iter()
+            .all(|e| !crate::pages::is_compaction_boundary(e)));
     }
 
     #[tokio::test]

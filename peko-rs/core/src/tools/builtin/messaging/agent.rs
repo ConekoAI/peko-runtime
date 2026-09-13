@@ -41,9 +41,11 @@ use crate::tools::builtin::messaging::subagent_runtime::{
 /// `<workspace>/agents/<agent>/AGENT.md`); the new name matches the
 /// semantic.
 ///
-/// - `action` selects the mode (`new` / `resume` / `compact`).
+/// - `action` selects the mode (`new` / `resume` / `compact` / `branch`).
 ///   2026-09-05: `compact` no longer flags-and-defers — it compacts
 ///   the target now and continues it with `prompt` in one run.
+///   2026-09-13 (ADR-053): `branch` copies a session's live context
+///   into a fresh (or repointed) session and runs `prompt` there.
 /// - `path` is the slug path the target session lives at, or will
 ///   live at on `new`. Required non-empty for `new` (a single
 ///   slug segment — the new session's address) and `resume` /
@@ -63,7 +65,8 @@ use crate::tools::builtin::messaging::subagent_runtime::{
 /// overlapping with the session tool's domain (`cleanup`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentArgs {
-    /// Action to perform: "new" (default), "resume", or "compact".
+    /// Action to perform: "new" (default), "resume", "compact", or
+    /// "branch".
     #[serde(default = "default_action")]
     pub action: String,
     /// Path under which the target session lives (`resume`) or will
@@ -89,6 +92,19 @@ pub struct AgentArgs {
     /// Optional model override for the subagent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// ADR-053 (`branch` only): the session to snapshot. An absolute
+    /// slug path (`/a/b/c`) naming any session in the principal's
+    /// store. Omitted means the calling session itself. Branching is
+    /// read-only w.r.t. the source, so archived sources are allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// ADR-053 (`branch` only): when the target path already holds a
+    /// spawn-created session, `overwrite: true` archives it and
+    /// repoints the address to the newly minted session (history is
+    /// never truncated). Default `false` — the branch refuses when
+    /// the target exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
 }
 
 /// Serde default for [`AgentArgs::action`]: the historical behavior is
@@ -97,7 +113,7 @@ fn default_action() -> String {
     "new".to_string()
 }
 
-/// The Agent tool's three actions (round-7 action surface).
+/// The Agent tool's action surface (round-7 + ADR-053).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentAction {
     /// Spawn a fresh subagent session (default).
@@ -106,6 +122,9 @@ enum AgentAction {
     Resume,
     /// Compact a session now and continue it with `prompt` in one run.
     Compact,
+    /// Copy a session's live context into a fresh (or repointed)
+    /// session and run `prompt` there (ADR-053).
+    Branch,
 }
 
 /// Parse the `action` parameter. Unknown values are a structured
@@ -115,8 +134,9 @@ fn parse_action(raw: &str) -> anyhow::Result<AgentAction> {
         "new" => Ok(AgentAction::New),
         "resume" => Ok(AgentAction::Resume),
         "compact" => Ok(AgentAction::Compact),
+        "branch" => Ok(AgentAction::Branch),
         other => Err(anyhow::anyhow!(
-            "unknown action '{other}' — valid actions: \"new\", \"resume\", \"compact\""
+            "unknown action '{other}' — valid actions: \"new\", \"resume\", \"compact\", \"branch\""
         )),
     }
 }
@@ -125,6 +145,21 @@ fn parse_action(raw: &str) -> anyhow::Result<AgentAction> {
 /// list is intentionally empty — requirements depend on `action`, so
 /// they are validated here instead of in the schema.
 fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result<()> {
+    // ADR-053: `source` / `overwrite` are branch-only parameters — a
+    // stray value on any other action is a hard error so the caller
+    // learns the flag was ignored rather than silently dropped.
+    if action != AgentAction::Branch {
+        if args.source.is_some() {
+            return Err(anyhow::anyhow!(
+                "'source' is only valid with action \"branch\""
+            ));
+        }
+        if args.overwrite.is_some() {
+            return Err(anyhow::anyhow!(
+                "'overwrite' is only valid with action \"branch\""
+            ));
+        }
+    }
     match action {
         AgentAction::New => {
             if args.prompt.is_empty() || args.agent.is_empty() {
@@ -192,6 +227,45 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"compact\" requires 'prompt' and 'agent' — the target compacts \
                      first, then continues with the prompt in the same run"
                 ));
+            }
+        }
+        AgentAction::Branch => {
+            // Target follows the `new` action's addressing rules (ADR-053
+            // D3): a relative slug, or an absolute slug path (attach when
+            // it resolves, mint only single-segment top-level).
+            if args.path.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "action \"branch\" requires 'path' — a slug segment (1-64 chars, no '/') \
+                     for a caller-relative branch, or an absolute path (\"/briefing\") for a \
+                     top-level one"
+                ));
+            }
+            if args.path.starts_with('/') {
+                if let Err(e) = peko_session::path::validate_path(&args.path) {
+                    return Err(anyhow::anyhow!(
+                        "action \"branch\" 'path' is not a valid slug path: {e}"
+                    ));
+                }
+            } else if let Err(e) = peko_session::path::validate_slug(&args.path) {
+                return Err(anyhow::anyhow!(
+                    "action \"branch\" 'path' is not a valid slug: {e}"
+                ));
+            }
+            if args.prompt.is_empty() || args.agent.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "action \"branch\" requires 'prompt' and 'agent' — the branch runs the \
+                     prompt against a snapshot of the source session's live context"
+                ));
+            }
+            // Explicit source must be an absolute slug path (raw UUIDs
+            // and caller-relative slugs are refused at the runtime
+            // layer via resolve_reference; shape is pre-validated here).
+            if let Some(ref source) = args.source {
+                if let Err(e) = peko_session::path::validate_path(source) {
+                    return Err(anyhow::anyhow!(
+                        "action \"branch\" 'source' is not a valid slug path: {e}"
+                    ));
+                }
             }
         }
     }
@@ -565,6 +639,96 @@ impl AgentTool {
             Err(e) => Self::format_error_response(&e),
         }
     }
+
+    /// `action = "branch"` (ADR-053) — copy a session's live context
+    /// into a fresh (or repointed) session and run `prompt` there.
+    /// Composes the branch notice into the task prompt (ADR-053 D2:
+    /// the head carries no session identity, so the notice rides the
+    /// tail and the child's own `<runtime-context>` injection corrects
+    /// the session identity from iteration 1), then delegates to the
+    /// runtime port's `branch_and_execute`.
+    async fn execute_branch(
+        &self,
+        args: &AgentArgs,
+        caller_session_key: Option<String>,
+        ctx: Option<&ToolContext>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let caller = caller_session_key.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Agent tool action \"branch\" needs the caller's session id — run through the \
+                 engine's tool context or configure a session provider"
+            )
+        })?;
+
+        // ADR-053 D2: the branch notice is part of the task prompt.
+        let source_desc = match args.source.as_deref() {
+            Some(path) => format!("the session at `{path}`"),
+            None => "the calling session (the session that issued this branch)".to_string(),
+        };
+        let task = format!(
+            "This session is a branch of {source_desc}; this session's own path is `{}`. \
+             The conversation history above is a point-in-time snapshot taken at branch time.\n\n{}",
+            args.path, args.prompt
+        );
+
+        // Bridge the abort signal into a CancellationToken so a parent
+        // cancel propagates into the branch run's loop (same shape as
+        // the spawn/resume/compact paths).
+        let (parent_cancel, _cancel_guard): (
+            Option<tokio_util::sync::CancellationToken>,
+            peko_tools_core::CancellationTokenBridgeGuard,
+        ) = match ctx {
+            Some(c) => {
+                let (token, guard) =
+                    peko_tools_core::bridge_to_cancellation_token(Some(c.abort_signal()));
+                (Some(token), guard)
+            }
+            None => (None, peko_tools_core::CancellationTokenBridgeGuard::noop()),
+        };
+
+        match self
+            .runtime
+            .branch_and_execute(
+                args.source.as_deref(),
+                &args.path,
+                &task,
+                &args.agent,
+                args.overwrite.unwrap_or(false),
+                &caller,
+                parent_cancel,
+            )
+            .await
+        {
+            Ok(run) => {
+                let status_str = run.status.as_str();
+                let success = matches!(
+                    run.status,
+                    peko_extension_api::AsyncTaskStatus::Completed { .. }
+                );
+
+                let mut result = json!({
+                    "status": status_str,
+                    "run_id": run.run_id,
+                    "child_session_key": run.child_session_key,
+                    "success": success,
+                    "agent": args.agent,
+                });
+
+                // Include output or error if available
+                if let Some(ref subagent_result) = run.result {
+                    if let Some(ref output) = subagent_result.output {
+                        result["output"] = json!(output);
+                    }
+                    if let Some(ref error) = subagent_result.error {
+                        result["error"] = json!(error);
+                    }
+                }
+
+                Ok(result)
+            }
+            Err(e) => Self::format_error_response(&e),
+        }
+    }
 }
 
 // (Sprint 7 Commit 4: `parse_two_u32s` and `parse_one_u32` were
@@ -584,7 +748,7 @@ impl Tool for AgentTool {
     }
 
     fn description(&self) -> String {
-        r#"Run LLM work on sessions: spawn a sub-agent run (action "new", the default), re-attach a run to a previous spawned session (action "resume"), or compact a session now and continue it with a prompt (action "compact").
+        r#"Run LLM work on sessions: spawn a sub-agent run (action "new", the default), re-attach a run to a previous spawned session (action "resume"), compact a session now and continue it with a prompt (action "compact"), or copy a session's live context into a fresh session and run a prompt there (action "branch").
 
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
@@ -592,17 +756,20 @@ Actions:
 - new (default): Spawn a sub-agent run. Requires prompt + agent + path. `path` is a uniform address: a RELATIVE slug segment (no `/`s) mints/attaches a session under YOUR current session (`<you>/<slug>`); an ABSOLUTE path (`/user-bob`) addresses a top-level session from the tree root. Raw UUIDs and caller-relative slugs are REFUSED. Create-or-resume: if the addressed spawn-created session already exists, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session. You may address ANY session in the principal's store (e.g. a peer's `/user-bob`); multi-segment absolute paths can only attach, not mint.
 - resume: Re-attach this run to an existing spawned session. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + agent.
 - compact: Compact the session NOW and continue it with `prompt` in one run — the continuation run summarizes older messages first (phase `standalone_turn`), then processes the prompt against the compacted history. `path` is an absolute slug path (`/a/b/c`). Requires path + prompt + agent. Returns the run's outcome like resume does. Works on any session in your tree (unlike resume, the target need not be a spawned session).
+- branch: Copy a session's live context into a fresh session at `path` and run `prompt` there, WITHOUT touching the source session (ADR-053). `source` names the session to snapshot (absolute slug path; omit for YOUR current session). The branch sees the source's live context — the compaction summary plus everything since — verbatim, as of the last completed turn. Ideal for recurring sideline tasks (e.g. a scheduled briefing) that depend on a main session's context but must not pollute it. With `overwrite: true`, an existing spawn-created session at `path` is archived and the address repoints to the new branch (history is never destroyed). Requires path + prompt + agent. The branch never writes to the source; each run is a pure function of the source's context at fire time.
 
 Parameters:
-- action: "new" | "resume" | "compact" (default: "new")
-- prompt: Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting)
+- action: "new" | "resume" | "compact" | "branch" (default: "new")
+- prompt: Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)
 - agent: Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for all actions)
-- path: Target session (required for all actions) — for `new`: a single slug segment naming the new session; for `resume` and `compact`: an absolute slug path ('/a/b/c') from the session tool's list (`path` field). Raw session ids and caller-relative slugs are refused.
+- path: Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('/a/b/c' from the session tool's list `path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions.
 - model: Optional model override for the subagent (matches Claude Code's Agent schema; ignored for compact — the continuation run keeps the session's model)
+- source: (branch only) Absolute slug path of the session to snapshot. Omit to branch from YOUR current session.
+- overwrite: (branch only) When true and the target path already holds a spawned session, archive it and repoint the address to the new branch. Default false (refuse when the target exists).
 
 Sessions you spawn have `parent_session_id` set to your session; the `session` tool's `list` action surfaces this. Use that field to find them. The session tool manages memory; this tool runs work.
 
-resume refusals (structured errors naming the session): target must exist, be a spawned session (branches/live root sessions refuse), not be the session you are running in or an ancestor, not be archived, and not have an active run. compact refusals: target must exist, not be the session you are running in or an ancestor (the engine compacts those automatically), be inside your subtree, not be archived, and not have an active run.
+resume refusals (structured errors naming the session): target must exist, be a spawned session (branches/live root sessions refuse), not be the session you are running in or an ancestor, not be archived, and not have an active run. compact refusals: target must exist, not be the session you are running in or an ancestor (the engine compacts those automatically), be inside your subtree, not be archived, and not have an active run. branch refusals: an existing non-spawned target always refuses (never displace user-created sessions); overwriting a spawned target additionally refuses while it has an active run, and never targets your own session or an ancestor.
 
 Limits:
 - Spawn depth is capped at 3 levels from the root. Attempting a deeper
@@ -622,7 +789,13 @@ Examples:
 {"action": "resume", "path": "/writer-1", "prompt": "Now update report.txt with the new numbers", "agent": "writer"}
 
 // Compact a long transcript now and continue with a follow-up task in the same run
-{"action": "compact", "path": "/writer-1", "prompt": "Now draft the final report from our work so far", "agent": "writer"}"#
+{"action": "compact", "path": "/writer-1", "prompt": "Now draft the final report from our work so far", "agent": "writer"}
+
+// Branch from THIS session into a sideline briefing (does not touch this session)
+{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above and send it to the user's channel", "agent": "writer"}
+
+// Recurring cron pattern: overwrite the previous briefing branch each fire
+{"action": "branch", "path": "briefing", "prompt": "Write today's briefing", "agent": "writer", "overwrite": true}"#
             .to_string()
     }
 
@@ -632,13 +805,13 @@ Examples:
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["new", "resume", "compact"],
-                    "description": "What to do: 'new' spawns a fresh subagent session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' compacts a session now and continues it with `prompt` in one run",
+                    "enum": ["new", "resume", "compact", "branch"],
+                    "description": "What to do: 'new' spawns a fresh subagent session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' compacts a session now and continues it with `prompt` in one run, 'branch' copies a session's live context into a fresh session and runs `prompt` there without touching the source",
                     "default": "new"
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting)"
+                    "description": "Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)"
                 },
                 "agent": {
                     "type": "string",
@@ -646,11 +819,19 @@ Examples:
                 },
                 "path": {
                     "type": "string",
-                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('/a/b/c' from your tree root) from the session tool's list (`path` field). Raw session ids and caller-relative slugs are refused. Required for all actions."
+                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('/a/b/c') from the session tool's list (`path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions."
                 },
                 "model": {
                     "type": "string",
                     "description": "Optional model override for the subagent (ignored for compact)"
+                },
+                "source": {
+                    "type": "string",
+                    "description": "(branch only) Absolute slug path of the session to snapshot. Omit to branch from your own current session."
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "(branch only) When true and the target path already holds a spawned session, archive it and repoint the address to the new branch. Default false."
                 }
             }
         })
@@ -671,6 +852,9 @@ Examples:
         if action == AgentAction::Compact {
             return self.execute_compact(&args, caller_session_key, None).await;
         }
+        if action == AgentAction::Branch {
+            return self.execute_branch(&args, caller_session_key, None).await;
+        }
 
         // Resolve the agent template to a concrete agent config and apply
         // model override. This pre-validates the spawn's agent-side
@@ -687,7 +871,7 @@ Examples:
         // `SpawnRequest.resume_session`.
         let resume_session = match action {
             AgentAction::Resume => Some(args.path.clone()),
-            AgentAction::New | AgentAction::Compact => None,
+            AgentAction::New | AgentAction::Compact | AgentAction::Branch => None,
         };
 
         self.execute_spawn_blocking(
@@ -730,6 +914,11 @@ Examples:
                 .execute_compact(&args, caller_session_key, Some(ctx))
                 .await;
         }
+        if action == AgentAction::Branch {
+            return self
+                .execute_branch(&args, caller_session_key, Some(ctx))
+                .await;
+        }
 
         let _subagent_config = self
             .resolve_subagent_config(&args.agent, args.model.as_deref())
@@ -737,7 +926,7 @@ Examples:
 
         let resume_session = match action {
             AgentAction::Resume => Some(args.path.clone()),
-            AgentAction::New | AgentAction::Compact => None,
+            AgentAction::New | AgentAction::Compact | AgentAction::Branch => None,
         };
 
         self.execute_spawn_blocking(
@@ -794,6 +983,9 @@ struct TestSubagentState {
     /// Every `compact_and_execute(target, prompt, agent, caller)` call
     /// seen, in order.
     compaction_requests: Vec<(String, String, String, String)>,
+    /// Every `branch_and_execute(...)` call seen, in order —
+    /// `(source, target, prompt, agent, overwrite, caller)`.
+    branch_requests: Vec<(Option<String>, String, String, String, bool, String)>,
     /// Principal id used in audit events.
     principal_id: String,
     /// Principal display name used in audit events.
@@ -826,6 +1018,7 @@ impl TestSubagentRuntime {
                 resume_sessions_seen: Vec::new(),
                 succeed_on_execute: true,
                 compaction_requests: Vec::new(),
+                branch_requests: Vec::new(),
                 principal_id: String::new(),
                 principal_name: None,
                 session_id: None,
@@ -918,6 +1111,17 @@ impl TestSubagentRuntime {
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .compaction_requests
+            .clone()
+    }
+
+    /// Every `branch_and_execute(...)` call seen (cloned) —
+    /// `(source, target, prompt, agent, overwrite, caller)`.
+    #[must_use]
+    pub fn branch_requests(&self) -> Vec<(Option<String>, String, String, String, bool, String)> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .branch_requests
             .clone()
     }
 
@@ -1107,6 +1311,55 @@ impl SubagentRuntime for TestSubagentRuntime {
                     result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
                 },
                 output: Some("compacted and continued".to_string()),
+                error: None,
+                token_usage: None,
+                completed_at: chrono::Utc::now(),
+            }),
+            depth: 1,
+            announce_completion: true,
+        })
+    }
+
+    async fn branch_and_execute(
+        &self,
+        source: Option<&str>,
+        target: &str,
+        prompt: &str,
+        agent: &str,
+        overwrite: bool,
+        caller_session_key: &str,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> anyhow::Result<crate::tools::builtin::messaging::dto::SubagentRunView> {
+        let _ = parent_cancel;
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .branch_requests
+            .push((
+                source.map(str::to_string),
+                target.to_string(),
+                prompt.to_string(),
+                agent.to_string(),
+                overwrite,
+                caller_session_key.to_string(),
+            ));
+        Ok(crate::tools::builtin::messaging::dto::SubagentRunView {
+            run_id: "test-branch-run".into(),
+            child_session_key: target.to_string(),
+            parent_session_key: caller_session_key.to_string(),
+            task: prompt.to_string(),
+            status: peko_extension_api::AsyncTaskStatus::Completed {
+                result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
+            },
+            started_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
+            label: None,
+            result: Some(crate::tools::builtin::messaging::dto::SubagentResult {
+                status: peko_extension_api::AsyncTaskStatus::Completed {
+                    result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
+                },
+                output: Some("branched and ran".to_string()),
                 error: None,
                 token_usage: None,
                 completed_at: chrono::Utc::now(),
@@ -1389,7 +1642,7 @@ mod tests {
         let params = tool.parameters();
         assert_eq!(
             params["properties"]["action"]["enum"],
-            serde_json::json!(["new", "resume", "compact"])
+            serde_json::json!(["new", "resume", "compact", "branch"])
         );
         // Sprint 7: path replaces session_key+name. session_key,
         // name, isolated, cleanup, description, parent_session_key
@@ -1458,7 +1711,10 @@ mod tests {
             .expect_err("unknown action must refuse");
         let msg = err.to_string();
         assert!(msg.contains("purge"), "{msg}");
-        assert!(msg.contains("\"new\", \"resume\", \"compact\""), "{msg}");
+        assert!(
+            msg.contains("\"new\", \"resume\", \"compact\", \"branch\""),
+            "{msg}"
+        );
     }
 
     #[tokio::test]
@@ -1603,6 +1859,154 @@ mod tests {
             runtime.compaction_requests().is_empty(),
             "validation failures must not reach the runtime"
         );
+    }
+
+    /// ADR-053: `branch` routes to `branch_and_execute` with the raw
+    /// source/target/overwrite parameters, and composes the branch
+    /// notice into the task prompt (the child must learn it is a branch
+    /// and where it lives — D2's tail-notice design).
+    #[tokio::test]
+    async fn test_branch_routes_to_branch_and_execute() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "action": "branch",
+                "path": "briefing",
+                "prompt": "Write today's briefing",
+                "agent": "writer",
+                "source": "/main",
+                "overwrite": true,
+            }))
+            .await
+            .expect("branch should succeed against the test runtime");
+
+        assert_eq!(result["status"], "completed");
+        assert_eq!(result["run_id"], "test-branch-run");
+        assert_eq!(result["output"], "branched and ran");
+        let requests = runtime.branch_requests();
+        assert_eq!(requests.len(), 1, "exactly one branch request");
+        let (source, target, prompt, agent, overwrite, caller) = &requests[0];
+        assert_eq!(source.as_deref(), Some("/main"));
+        assert_eq!(target, "briefing");
+        assert_eq!(agent, "writer");
+        assert!(*overwrite);
+        assert_eq!(caller, "caller:sess");
+        // The composed prompt carries the branch notice (source, target,
+        // snapshot framing) ahead of the raw task.
+        assert!(
+            prompt.contains("branch of the session at `/main`"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("this session's own path is `briefing`"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Write today's briefing"), "{prompt}");
+        // No spawn ran, so nothing was audited.
+        assert!(runtime.audits().is_empty());
+    }
+
+    /// ADR-053 D2: an omitted `source` defaults to the caller's own
+    /// session — the notice reflects that, and the port receives
+    /// `None` so the executor resolves the caller itself.
+    #[tokio::test]
+    async fn test_branch_default_source_is_caller() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        tool.execute(serde_json::json!({
+            "action": "branch",
+            "path": "briefing",
+            "prompt": "Write today's briefing",
+            "agent": "writer",
+        }))
+        .await
+        .expect("branch without source should default to the caller");
+
+        let requests = runtime.branch_requests();
+        assert_eq!(requests.len(), 1);
+        let (source, _target, prompt, _agent, overwrite, _caller) = &requests[0];
+        assert!(source.is_none(), "omitted source must forward as None");
+        assert!(!overwrite);
+        assert!(
+            prompt.contains("branch of the calling session"),
+            "notice must name the calling session: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_branch_requires_path() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+        let err = tool
+            .execute(serde_json::json!({ "action": "branch", "prompt": "x", "agent": "writer" }))
+            .await
+            .expect_err("branch without path must refuse");
+        assert!(err.to_string().contains("path"), "{err}");
+        assert!(runtime.branch_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_branch_requires_prompt_and_agent() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        let err = tool
+            .execute(serde_json::json!({ "action": "branch", "path": "briefing", "agent": "w" }))
+            .await
+            .expect_err("branch without prompt must refuse");
+        assert!(err.to_string().contains("prompt"), "{err}");
+
+        let err = tool
+            .execute(serde_json::json!({ "action": "branch", "path": "briefing", "prompt": "x" }))
+            .await
+            .expect_err("branch without agent must refuse");
+        assert!(err.to_string().contains("agent"), "{err}");
+
+        assert!(runtime.branch_requests().is_empty());
+    }
+
+    /// ADR-053: `source` / `overwrite` are branch-only — a stray value
+    /// on any other action is a hard error so the caller learns the
+    /// flag was ignored rather than silently dropped.
+    #[tokio::test]
+    async fn test_branch_only_params_rejected_on_other_actions() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+
+        for action in ["new", "resume", "compact"] {
+            let err = tool
+                .execute(serde_json::json!({
+                    "action": action,
+                    "path": "/target",
+                    "prompt": "x",
+                    "agent": "writer",
+                    "source": "/main",
+                }))
+                .await
+                .expect_err("source on non-branch action must refuse");
+            assert!(err.to_string().contains("'source'"), "{err}");
+
+            let err = tool
+                .execute(serde_json::json!({
+                    "action": action,
+                    "path": "/target",
+                    "prompt": "x",
+                    "agent": "writer",
+                    "overwrite": true,
+                }))
+                .await
+                .expect_err("overwrite on non-branch action must refuse");
+            assert!(err.to_string().contains("'overwrite'"), "{err}");
+        }
+        assert!(runtime.branch_requests().is_empty());
     }
 
     #[tokio::test]

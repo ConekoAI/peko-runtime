@@ -2800,3 +2800,240 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
         .unwrap_err();
     assert!(err.to_string().contains("intermediate segments"), "{err}");
 }
+
+// ─── ADR-053: Agent tool `branch` action ───────────────────────────
+
+/// Seed the routed caller session with one user turn so a branch has
+/// context to copy. Returns `(session_id, caller_session_key)` — the
+/// production caller key IS the session id (what the engine's
+/// `ToolContext::session_id` carries), not the overlay-style key.
+async fn seed_source_session(
+    session_manager: &Arc<RwLock<SessionManager>>,
+    peer: &Subject,
+) -> (String, String) {
+    let mut manager = session_manager.write().await;
+    let resolved = manager
+        .route(peer, peko_session::types::ChannelType::Cli, "default", None)
+        .await
+        .unwrap();
+    let session_id = resolved.context.session_id.clone();
+    let handle = manager.open_session(&session_id).await.unwrap().unwrap();
+    let base = handle.base().clone();
+    drop(handle);
+    base.write()
+        .await
+        .add_user("main agent working context")
+        .await
+        .unwrap();
+    let _ = resolved;
+    (session_id.clone(), session_id)
+}
+
+/// ADR-053 D1/D3 (happy path): `branch_and_execute` mints a spawn child
+/// at the target slug, copies the source's live context verbatim into
+/// it, runs the task, and leaves the source untouched.
+#[tokio::test]
+async fn test_e2e_branch_copies_source_context() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    let peer = Subject::User("alice".to_string());
+    let (source_id, source_key) = seed_source_session(&session_manager, &peer).await;
+
+    let executor = Arc::new(SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    ));
+
+    let view = executor
+        .branch_and_execute(
+            None,
+            "briefing",
+            "Write today's briefing",
+            &source_key,
+            false,
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        view.status.is_terminal() && matches!(view.status, AsyncTaskStatus::Completed { .. }),
+        "branch run should complete without a provider: {:?}",
+        view.status
+    );
+
+    // The child exists as a spawn session at the target slug, parented
+    // by the source.
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let child = metas
+        .iter()
+        .find(|m| m.slug.as_deref() == Some("briefing"))
+        .expect("branch child must exist at the target slug");
+    assert_eq!(
+        child.trigger, "spawn",
+        "the branch child is a spawn session"
+    );
+    assert_eq!(
+        child.parent_session_id.map(|id| id.to_string()),
+        Some(source_id.clone()),
+        "branch child parents to the source session"
+    );
+
+    // The child's history carries the source's context (D1: verbatim
+    // copy surfaced through the boundary-aware loader).
+    let child_id = child.session_id.to_string();
+    {
+        let mut manager = session_manager.write().await;
+        let handle = manager.open_session(&child_id).await.unwrap().unwrap();
+        let history = handle.base().read().await.load_history().await.unwrap();
+        let text = history
+            .iter()
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|c| match c {
+                        peko_message::ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("main agent working context"),
+            "child must inherit the source's live context: {text}"
+        );
+    }
+
+    // The source is untouched: no branch traffic landed in it (D1:
+    // read-only w.r.t. the source).
+    {
+        let mut manager = session_manager.write().await;
+        let handle = manager.open_session(&source_id).await.unwrap().unwrap();
+        let history = handle.base().read().await.load_history().await.unwrap();
+        assert_eq!(
+            history.len(),
+            1,
+            "source history must be unchanged by the branch"
+        );
+    }
+}
+
+/// ADR-053 D3: an existing spawn-created target refuses without
+/// `overwrite`; with `overwrite: true` the old session is archived,
+/// loses its slug, and the address repoints to the fresh branch.
+#[tokio::test]
+async fn test_branch_overwrite_repoints_the_address() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    let peer = Subject::User("alice".to_string());
+    let (_source_id, source_key) = seed_source_session(&session_manager, &peer).await;
+
+    let executor = Arc::new(SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        5,
+        peko_subject::PrincipalId::generate(),
+    ));
+
+    // Fire #1: an ordinary spawn occupies the target slug (the recurring
+    // cron-collision shape).
+    executor
+        .spawn_and_execute(
+            "first occupant",
+            &source_key,
+            ExecutionConfig {
+                slug: Some("briefing".to_string()),
+                max_depth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let old = metas
+        .iter()
+        .find(|m| m.slug.as_deref() == Some("briefing"))
+        .expect("occupant must exist")
+        .clone();
+    let old_id = old.session_id.to_string();
+
+    // Fire #2 without overwrite: refused (the address is taken).
+    let err = executor
+        .branch_and_execute(
+            None,
+            "briefing",
+            "Write today's briefing",
+            &source_key,
+            false,
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("briefing"),
+        "refusal must name the conflicting target: {err}"
+    );
+
+    // Fire #2 with overwrite: succeeds; the old session is archived and
+    // loses its slug; the new branch holds the address.
+    executor
+        .branch_and_execute(
+            None,
+            "briefing",
+            "Write today's briefing",
+            &source_key,
+            true,
+            ExecutionConfig::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let retired = metas
+        .iter()
+        .find(|m| m.session_id.to_string() == old_id)
+        .expect("the displaced session must remain inspectable");
+    assert!(
+        retired.archived,
+        "the displaced session must be archived, never destroyed"
+    );
+    assert!(
+        retired.slug.is_none(),
+        "the displaced session must lose its slug (address repointed)"
+    );
+    let fresh = metas
+        .iter()
+        .filter(|m| m.slug.as_deref() == Some("briefing"))
+        .count();
+    assert_eq!(fresh, 1, "exactly one session holds the address");
+    let fresh_meta = metas
+        .iter()
+        .find(|m| m.slug.as_deref() == Some("briefing"))
+        .unwrap();
+    assert_ne!(
+        fresh_meta.session_id.to_string(),
+        old_id,
+        "the address must resolve to a NEW session id"
+    );
+}

@@ -302,6 +302,39 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         Ok(project_run_view(view))
     }
 
+    /// `Agent` tool `action = "branch"` (ADR-053): copy a session's
+    /// live context into a fresh (or repointed) session and run the
+    /// prompt there. Returns the run's view like `execute_and_wait`.
+    async fn branch_and_execute(
+        &self,
+        source: Option<&str>,
+        target: &str,
+        prompt: &str,
+        agent: &str,
+        overwrite: bool,
+        caller_session_key: &str,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> anyhow::Result<SubagentRunView> {
+        let _ = agent; // validated tool-side; the run uses the resolved role prompt
+        let root_config = crate::agents::subagent_executor::ExecutionConfig {
+            max_depth: self.max_depth(),
+            ..Default::default()
+        };
+        let view = self
+            .executor
+            .branch_and_execute(
+                source,
+                target,
+                prompt,
+                caller_session_key,
+                overwrite,
+                root_config,
+                parent_cancel,
+            )
+            .await?;
+        Ok(project_run_view(view))
+    }
+
     fn principal_id(&self) -> String {
         self.executor.principal_id().0.clone()
     }
