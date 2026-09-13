@@ -343,13 +343,30 @@ async fn wait_for_announced_instance(
     #[allow(unused_assignments)]
     let mut last_body = String::from("<never received>");
     loop {
-        let resp = client
+        // Transport errors (e.g. `hyper::Error(IncompleteMessage)` — the
+        // server closed an idle keep-alive connection while the request
+        // was in flight) are RETRYable: since ADR-054 the blocking
+        // `principal create` ahead of this poll idles the client for
+        // 60s+, making the stale-keep-alive race deterministic. Panicking
+        // on the first hiccup turned a poll into a flake; treat transport
+        // failures like "not yet announced" and keep polling until the
+        // deadline.
+        let resp = match client
             .get(format!("{backend_url}/v1/instances"))
             .bearer_auth(owner_jwt)
             .query(&[("runtime_id", did)])
             .send()
             .await
-            .expect("list instances transport failed");
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    panic!("list instances transport failed (deadline hit): {e}");
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         assert!(
             resp.status().is_success(),
             "list instances non-2xx: status={} body={:?}",
