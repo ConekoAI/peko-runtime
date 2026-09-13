@@ -85,6 +85,7 @@ async fn create_test_principal(
         capabilities: Default::default(),
         exposure: Exposure::Public,
         status: None,
+        boot_state: None,
         permissions: Vec::new(),
         preferred_model_id: Some("mock".to_string()),
         transport_preference,

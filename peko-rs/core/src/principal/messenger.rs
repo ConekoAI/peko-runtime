@@ -533,6 +533,7 @@ mod tests {
                 capabilities: Default::default(),
                 exposure: crate::principal::config::Exposure::Public,
                 status: None,
+                boot_state: None,
                 permissions: Vec::new(),
                 preferred_model_id: Some("mock".to_string()),
                 transport_preference: Default::default(),

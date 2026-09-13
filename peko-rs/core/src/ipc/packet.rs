@@ -131,6 +131,16 @@ pub enum RequestPacket {
         model_id: String,
     },
 
+    /// Load (or no-op when already loaded) a principal that exists on
+    /// disk into the daemon's in-memory manager. Used by
+    /// `peko principal create` when the daemon is already running:
+    /// the CLI materializes the workspace locally, then asks the
+    /// daemon to pick it up so the cron engine (which enumerates
+    /// loaded principals) can drive its genesis jobs without waiting
+    /// for a restart. Idempotent.
+    #[serde(rename = "principal_reload")]
+    PrincipalReload { request_id: u64, name: String },
+
     /// Update an existing Principal's mutable config. All fields
     /// except `name` are optional; omitted fields keep their current
     /// values. Requires `ManageSettings` permission on the principal.
@@ -888,6 +898,7 @@ impl RequestPacket {
             | Self::PrincipalList { request_id }
             | Self::PrincipalGet { request_id, .. }
             | Self::PrincipalCreate { request_id, .. }
+            | Self::PrincipalReload { request_id, .. }
             | Self::PrincipalUpdate { request_id, .. }
             | Self::PrincipalRemove { request_id, .. }
             | Self::ModelList { request_id }
@@ -1331,6 +1342,16 @@ pub enum ResponsePacket {
         request_id: u64,
         name: String,
         removed: bool,
+    },
+
+    /// Result of `PrincipalReload`. `loaded` is `true` when the
+    /// principal was newly loaded from disk; `false` when it was
+    /// already in the daemon's manager (idempotent no-op).
+    #[serde(rename = "principal_loaded")]
+    PrincipalLoaded {
+        request_id: u64,
+        name: String,
+        loaded: bool,
     },
 
     /// Result of `CredentialList`. One row per provider id that the
@@ -2372,6 +2393,7 @@ impl ResponsePacket {
             | Self::PrincipalCreated { request_id, .. }
             | Self::PrincipalUpdated { request_id, .. }
             | Self::PrincipalRemoved { request_id, .. }
+            | Self::PrincipalLoaded { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ModelList { request_id, .. }
@@ -2451,6 +2473,7 @@ impl ResponsePacket {
             Self::PrincipalCreated { .. } => "PrincipalCreated",
             Self::PrincipalUpdated { .. } => "PrincipalUpdated",
             Self::PrincipalRemoved { .. } => "PrincipalRemoved",
+            Self::PrincipalLoaded { .. } => "PrincipalLoaded",
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ModelList { .. } => "ModelList",

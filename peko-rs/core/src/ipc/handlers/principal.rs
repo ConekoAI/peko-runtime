@@ -32,12 +32,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::Context;
-use async_trait::async_trait;
-use chrono::Utc;
-use tokio::sync::RwLock;
-use tracing::warn;
-
 use crate::agents::subagent_executor::StreamingResumeOutcome;
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
@@ -56,6 +50,9 @@ use crate::principal::router::{ChannelContext, ChannelKind};
 use crate::principal::Principal;
 use crate::registry::packaging::TrustStore;
 use crate::tunnel::TunnelDispatcher;
+use anyhow::Context;
+use async_trait::async_trait;
+use chrono::Utc;
 use peko_auth::caller::CallerContext;
 use peko_auth::ownership::{
     check_permission, principal_resource, Permission, PermissionGrant, Resource,
@@ -66,6 +63,8 @@ use peko_engine::AgenticEvent;
 use peko_protocol::channel::ChannelEvent;
 use peko_protocol::ipc::HEARTBEAT_INTERVAL_SECS;
 use std::time::Duration;
+use tokio::sync::RwLock;
+use tracing::warn;
 
 use peko_extension_api::SteeringMessage;
 
@@ -301,6 +300,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalMintInvite { .. }
                 | RequestPacket::PrincipalRevokeInvite { .. }
                 | RequestPacket::PrincipalCreate { .. }
+                | RequestPacket::PrincipalReload { .. }
                 | RequestPacket::PrincipalUpdate { .. }
                 | RequestPacket::PrincipalRemove { .. }
         )
@@ -1493,6 +1493,7 @@ impl RequestHandler for PrincipalHandler {
                     capabilities: capabilities.clone(),
                     exposure: Exposure::Private,
                     status: None,
+                    boot_state: None,
                     permissions: Vec::new(),
                     preferred_model_id: Some(model_id),
                     transport_preference: Default::default(),
@@ -1684,6 +1685,97 @@ impl RequestHandler for PrincipalHandler {
                 }
             }
 
+            RequestPacket::PrincipalReload { request_id, name } => {
+                // Load (or confirm already loaded) a principal that
+                // exists on disk into the daemon's manager. Used by
+                // `peko principal create` against a running daemon:
+                // the CLI materializes the workspace locally, then the
+                // daemon must know the principal for the cron engine
+                // (`all_schedulers` walks the loaded set) to drive its
+                // genesis jobs.
+                use crate::common::identifiers::validate_agent_name;
+                if let Err(e) = validate_agent_name(&name) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                let config_path = host
+                    .path_resolver()
+                    .principal_layout(&name)
+                    .shared
+                    .config_file;
+                if !config_path.exists() {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("Principal '{}' not found", name),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                // Owner gate from the on-disk config — the principal
+                // may not be loaded yet, so `load_principal` is not
+                // usable here. Same ManageSettings bar as Remove.
+                let config_str = match tokio::fs::read_to_string(&config_path).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("read principal.toml: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                let parsed: crate::principal::PrincipalConfig = match toml::from_str(&config_str) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("parse principal.toml: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+                let resource = principal_resource(&parsed);
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ManageSettings,
+                    &caller.subject().clone(),
+                ) {
+                    warn!("PrincipalReload denied: {}", denied);
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: denied.to_string(),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+
+                // Idempotent: `load` returns the existing principal
+                // when the name is already registered.
+                match host.principal_manager().load(&config_path).await {
+                    Ok(_) => {
+                        tracing::info!("PrincipalReload: '{}' available to the daemon", name);
+                        let response = ResponsePacket::PrincipalLoaded {
+                            request_id,
+                            name,
+                            loaded: true,
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("load principal '{}': {e}", name),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                }
+            }
             RequestPacket::PrincipalRemove { request_id, name } => {
                 // Validate name before `load_principal` and `manager.remove`.
                 // `remove` joins `name` into `config_dir/principals/<name>/`
@@ -3905,6 +3997,7 @@ mod tests {
                 capabilities: peko_extension_api::Capabilities::starter_bundle(),
                 exposure: peko_auth::Exposure::Private,
                 status: None,
+                boot_state: None,
                 permissions: vec![],
                 preferred_model_id: Some("mock".to_string()),
                 transport_preference: Default::default(),

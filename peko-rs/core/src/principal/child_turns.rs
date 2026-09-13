@@ -827,6 +827,7 @@ mod tests {
             capabilities: peko_extension_api::Capabilities::starter_bundle(),
             exposure: peko_auth::Exposure::Private,
             status: None,
+            boot_state: None,
             permissions: vec![],
             preferred_model_id: Some("mock".to_string()),
             transport_preference: Default::default(),

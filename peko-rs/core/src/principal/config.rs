@@ -40,6 +40,29 @@ pub enum TransportPreference {
     Direct,
 }
 
+/// Genesis-pipeline boot state for a Principal (ADR-054).
+///
+/// Tracks how far a principal has progressed through the
+/// creation/booting pipeline so `PrincipalManager::create`, `load`,
+/// and the daemon's boot-time seeding share one state machine:
+///
+/// - `provisioned` — P0 done (workspace tiers, DID, config persisted);
+///   no creator definition has been recorded yet.
+/// - `defined` — P1 done: `[identity]` / `[intent]` content (or a
+///   custom root prompt) is present.
+/// - `genesis_pending` — P2 seeding done: the daemon has scheduled the
+///   one-shot genesis turn and the default keepalive job.
+/// - `organized` — P3/P4: the trunk owns its own cadence; the runtime
+///   no longer touches its cron schedule at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootState {
+    Provisioned,
+    Defined,
+    GenesisPending,
+    Organized,
+}
+
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalConfig {
@@ -110,6 +133,14 @@ pub struct PrincipalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<Status>,
 
+    /// Genesis-pipeline boot state (ADR-054). `None` on legacy configs
+    /// (pre-ADR-054 `principal.toml` files) — [`Self::boot_state`]
+    /// infers the effective state for them. The field is written once
+    /// the runtime itself advances the state (create stamp, define,
+    /// boot seeding) and round-trips from then on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_state: Option<BootState>,
+
     /// Explicit permission grants on this Principal.
     ///
     /// **Authoritative ACL for this runtime (R4).** These
@@ -172,6 +203,47 @@ pub struct PrincipalConfig {
 }
 
 impl PrincipalConfig {
+    /// Effective genesis-pipeline boot state (ADR-054).
+    ///
+    /// Legacy configs (the field absent on disk) infer their state:
+    /// a P1 definition present ⇒ [`BootState::Defined`], otherwise
+    /// [`BootState::Provisioned`]. Explicitly stamped configs
+    /// round-trip their state verbatim.
+    #[must_use]
+    pub fn boot_state(&self) -> BootState {
+        self.boot_state.unwrap_or_else(|| {
+            if self.has_definition() {
+                BootState::Defined
+            } else {
+                BootState::Provisioned
+            }
+        })
+    }
+
+    /// Stamp the boot state so it persists on the next config write.
+    pub fn set_boot_state(&mut self, state: BootState) {
+        self.boot_state = Some(state);
+    }
+
+    /// P1 definition present (ADR-054): any `[identity]` or
+    /// `[intent]` content, or a custom root prompt. A config with none
+    /// of these has not been through the Definition phase — the
+    /// runtime treats it as provisioned-only.
+    #[must_use]
+    pub fn has_definition(&self) -> bool {
+        let non_empty = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.trim().is_empty());
+        if non_empty(&self.identity.display_name) || non_empty(&self.identity.description) {
+            return true;
+        }
+        if self.intent.goals.iter().any(|g| !g.trim().is_empty())
+            || self.intent.values.iter().any(|v| !v.trim().is_empty())
+            || self.intent.preferences.iter().any(|p| !p.trim().is_empty())
+        {
+            return true;
+        }
+        self.routing.root_prompt.is_some()
+    }
+
     /// Log a warning for every entry in the deprecated `[children]`
     /// table so operators learn their declarations are ignored.
     pub fn warn_deprecated_children(&self, principal: &str) {
@@ -208,8 +280,15 @@ pub struct PrincipalIdentityConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrincipalIntentConfig {
+    // `#[serde(default)]` on every field: the definition surface is
+    // creator-authored TOML (create `-f` templates, hand edits), and a
+    // partial `[intent]` table must parse — `goals`-only is a valid
+    // definition.
+    #[serde(default)]
     pub goals: Vec<String>,
+    #[serde(default)]
     pub values: Vec<String>,
+    #[serde(default)]
     pub preferences: Vec<String>,
 }
 
@@ -432,6 +511,7 @@ mod tests {
             capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: super::TransportPreference::Tunnel,
@@ -514,6 +594,7 @@ mod tests {
             capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: Some("ollama-llama3.1".into()),
             transport_preference: super::TransportPreference::Direct,
@@ -556,6 +637,7 @@ mod tests {
             capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
@@ -585,6 +667,7 @@ mod tests {
             capabilities: Capabilities::with_grants(["tool:Bash", "agent:researcher"]),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
@@ -638,6 +721,7 @@ mod tests {
             capabilities: Capabilities::with_grants(["tool:*", "agent:agency-agents/*"]),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
@@ -690,6 +774,7 @@ mod tests {
             capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
@@ -746,6 +831,7 @@ mod tests {
             capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
+            boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
             transport_preference: Default::default(),
@@ -848,6 +934,75 @@ mod tests {
             back.children["memory"].description.as_deref(),
             Some("curator")
         );
+    }
+
+    // ─── boot_state (ADR-054 genesis pipeline) ──────────────────────
+
+    /// A legacy config without `boot_state` infers its effective
+    /// state from the definition: empty identity/intent ⇒
+    /// `provisioned`.
+    #[test]
+    fn boot_state_absent_infers_provisioned() {
+        let cfg: PrincipalConfig =
+            toml::from_str("name = \"legacy\"\nexposure = \"private\"").unwrap();
+        assert_eq!(cfg.boot_state, None);
+        assert_eq!(cfg.boot_state(), BootState::Provisioned);
+        assert!(!cfg.has_definition());
+    }
+
+    /// A legacy config WITH definition content infers `defined`.
+    #[test]
+    fn boot_state_absent_infers_defined_when_definition_present() {
+        let cfg: PrincipalConfig = toml::from_str(
+            "name = \"legacy\"\nexposure = \"private\"\n\n[identity]\ndisplay_name = \"Legacy\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.boot_state, None);
+        assert_eq!(cfg.boot_state(), BootState::Defined);
+        assert!(cfg.has_definition());
+    }
+
+    /// An explicitly stamped state round-trips losslessly and wins
+    /// over inference.
+    #[test]
+    fn boot_state_roundtrip() {
+        let mut cfg = make_test_config("rt", peko_auth::Subject::User("user:a".into()));
+        cfg.set_boot_state(BootState::GenesisPending);
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            serialized.contains("boot_state = \"genesis_pending\""),
+            "got: {serialized}"
+        );
+        let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(back.boot_state(), BootState::GenesisPending);
+    }
+
+    /// Every definition source counts: identity display name, intent
+    /// lists, and a custom root prompt.
+    #[test]
+    fn has_definition_sources() {
+        let mut cfg = make_test_config("d", peko_auth::Subject::User("user:a".into()));
+        assert!(!cfg.has_definition());
+
+        cfg.identity.display_name = Some("  ".into());
+        assert!(!cfg.has_definition(), "whitespace-only is not a definition");
+
+        cfg.intent.goals.push("ship".into());
+        assert!(cfg.has_definition());
+
+        let mut cfg = make_test_config("d2", peko_auth::Subject::User("user:a".into()));
+        cfg.routing.root_prompt = Some("/tmp/prompt.md".into());
+        assert!(cfg.has_definition());
+    }
+
+    /// Blank-string identity fields do not count as a definition (the
+    /// prompt section renderer trims them away too — identity_prompt.rs).
+    #[test]
+    fn boot_state_blank_identity_is_not_a_definition() {
+        let cfg: PrincipalConfig =
+            toml::from_str("name = \"blank\"\n\n[identity]\ndescription = \"   \"\n").unwrap();
+        assert!(!cfg.has_definition());
+        assert_eq!(cfg.boot_state(), BootState::Provisioned);
     }
 
     // PR-E #1: 5 tests deleted alongside the `Authority` envelope and

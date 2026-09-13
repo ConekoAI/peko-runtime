@@ -25,6 +25,7 @@ pub mod config;
 pub mod context;
 pub mod default_nodes;
 pub mod factory;
+pub mod genesis;
 pub mod identity_prompt;
 pub mod manager;
 pub mod memory;
@@ -46,9 +47,10 @@ pub use agent_runner::build_agent_config;
 pub use capability_evaluator::CapabilityEvaluator;
 pub use catalog::{capability_kind_for_extension_type, CatalogEntry, PrincipalCatalog};
 pub use config::{
-    ArtifactKind, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalConfig,
-    PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-    PrincipalMemoryConfig, PrincipalRoutingConfig, Status, TransportPreference, TtlPolicy,
+    ArtifactKind, AuditLevel, BootState, ChildDeclaration, ConsolidationConfig, DelegationGrant,
+    MemoryTier, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, Status,
+    TransportPreference, TtlPolicy,
 };
 pub use factory::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalMemoryFactory,

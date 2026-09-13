@@ -2394,6 +2394,7 @@ dependencies = [
  "peko",
  "peko-auth",
  "peko-channel",
+ "peko-cron",
  "peko-extension-api",
  "peko-identity",
  "peko-observability",
