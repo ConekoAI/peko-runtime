@@ -143,6 +143,31 @@ pub trait SubagentRuntime: Send + Sync {
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<SubagentRunView>;
 
+    /// Copy a session's live context into a fresh (or repointed)
+    /// session and run `prompt` there (the `Agent` tool's
+    /// `action = "branch"`; ADR-053).
+    ///
+    /// `source` is the session to snapshot: `None` means the caller's
+    /// own session; `Some(path)` is an absolute slug path naming any
+    /// session in the principal's store (branching is read-only w.r.t.
+    /// the source, so archived sources are allowed). `target` follows
+    /// the `new` action's addressing rules; when it resolves to an
+    /// existing spawn-created session, `overwrite` must be `true` and
+    /// the old session is archived and loses its slug (the address
+    /// repoints to the newly minted session — history is never
+    /// truncated). Blocks until the run reaches a terminal state (or
+    /// the framework's auto-detach fires) and returns the run's view.
+    async fn branch_and_execute(
+        &self,
+        source: Option<&str>,
+        target: &str,
+        prompt: &str,
+        agent: &str,
+        overwrite: bool,
+        caller_session_key: &str,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> anyhow::Result<SubagentRunView>;
+
     /// The spawning principal's runtime id (DID). Used for the audit
     /// event's `principal_id` field.
     ///

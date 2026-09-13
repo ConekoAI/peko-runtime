@@ -1408,6 +1408,373 @@ impl SubagentExecutor {
         self.wait_for_run(&run_id, wait_secs).await
     }
 
+    /// Agent tool `action = "branch"` (ADR-053): copy a session's live
+    /// context into a fresh (or repointed) session and run `task` there.
+    ///
+    /// The source defaults to the caller's own session; an explicit
+    /// `source` (absolute slug path) may name any session in the
+    /// principal's store — branching is read-only w.r.t. the source, so
+    /// archived sources are allowed and no active-run guard applies
+    /// (D1: page-consistent read, "context as of the last completed
+    /// turn"). The snapshot is the source's cache window as **verbatim
+    /// raw events** (newest compaction boundary inclusive), appended in
+    /// order into the freshly minted child — no re-serialization, no
+    /// re-framing (D1: keeps tool-call ids and the persisted
+    /// `<runtime-context>` tails; the child's boundary-aware history
+    /// loader then surfaces exactly the LLM-facing window the source
+    /// would put on the wire).
+    ///
+    /// Target addressing mirrors the `new` action (D3): a relative slug
+    /// mints a child of the caller; a single-segment absolute path mints
+    /// at the tree root; an absolute path that resolves to an existing
+    /// session requires it to be spawn-created — refuse unless
+    /// `overwrite`, in which case the old session is archived and loses
+    /// its slug (the address repoints to the new session; the old
+    /// history stays inspectable, never truncated). A non-spawn
+    /// collision (user-triggered / peer-bound session) is refused
+    /// outright.
+    ///
+    /// Guards mirror the spawn stack: cost pre-flight, depth cap
+    /// (`1 + depth(effective_parent)`), concurrency cap, and — on the
+    /// overwrite path only — the caller/ancestor refusal and an
+    /// active-run check on the displaced target. The run registers
+    /// through the single [`Self::register_subagent_run`] gate, so
+    /// announcements, async status, and quota attribution behave like a
+    /// spawn.
+    pub async fn branch_and_execute(
+        &self,
+        source: Option<&str>,
+        target: &str,
+        task: &str,
+        parent_session_key: &str,
+        overwrite: bool,
+        config: ExecutionConfig,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<SubagentRunView> {
+        use crate::session::ownership::{caller_context, descendants_of, subagent_depth_of};
+
+        if target.is_empty() {
+            anyhow::bail!("branch target path must not be empty");
+        }
+
+        // Same spawn-time cost pre-flight — a branch is still LLM
+        // traffic against the principal's meter (and the first call
+        // carries the copied window's input tokens, D2).
+        if let Some(err) =
+            pre_flight_cost_ceiling(self.quota_meter.as_deref(), self.provider.as_ref())
+        {
+            return Err(anyhow::anyhow!(err));
+        }
+
+        let (caller, metas) = {
+            let mut manager = self.session_manager.write().await;
+            let metas = manager.list_all_sessions(false).await?;
+            (caller_context(parent_session_key, &metas), metas)
+        };
+
+        // Resolve the source: the caller's own session by default, or an
+        // explicit absolute slug path. Archived sources are allowed —
+        // branching is read-only w.r.t. the source (D4).
+        let source_id: String = match source {
+            None => caller.current_session_id.clone(),
+            Some(path) => {
+                let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
+                peko_session::path::resolve_reference(&metas, caller_id, path)?.to_string()
+            }
+        };
+
+        // Page-consistent snapshot of the source's cache window (D1):
+        // verbatim raw events from the newest compaction boundary
+        // (inclusive) to the end of the stitched log. A source turn in
+        // flight at branch time is not in the snapshot — that is the
+        // defined cut.
+        let snapshot: Vec<peko_session::events::SessionEvent> = {
+            let mut manager = self.session_manager.write().await;
+            let handle = manager
+                .open_session(&source_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("branch source session '{source_id}' not found"))?;
+            let base = handle.base().clone();
+            drop(handle);
+            let events = base.read().await.events_since_last_boundary().await?;
+            events
+        };
+
+        // Target resolution (D3). `effective_parent_key` / `effective_slug`
+        // feed the fresh mint below; `overwrite_target` is `Some` when an
+        // existing spawn-created session must be displaced first.
+        let mut effective_parent_key = caller.current_session_id.clone();
+        // Deferred init: every branch below assigns before any read.
+        let effective_slug: Option<String>;
+        let mut overwrite_target: Option<peko_session::SessionMetadata> = None;
+
+        if target.starts_with('/') {
+            peko_session::path::validate_path(target)?;
+            let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
+            match peko_session::path::resolve_reference(&metas, caller_id, target) {
+                Ok(resolved) => {
+                    let found = metas
+                        .iter()
+                        .find(|m| m.session_id == resolved)
+                        .cloned()
+                        .expect("resolve_reference returned an id present in metas");
+                    let found_id = found.session_id.to_string();
+                    // Guard (D4): never displace the caller's own
+                    // session or an ancestor.
+                    if found_id == caller.current_session_id
+                        || caller.ancestors.iter().any(|a| a.as_str() == found_id)
+                    {
+                        return Err(crate::session::ownership::err_compact_ancestor(&found_id));
+                    }
+                    if found.trigger != "spawn" {
+                        return Err(crate::session::standing::err_name_not_spawned(
+                            target,
+                            &found.session_id.to_string(),
+                        ));
+                    }
+                    if !overwrite {
+                        return Err(peko_session::path::err_slug_conflict(
+                            target,
+                            found.session_id,
+                            None,
+                        ));
+                    }
+                    overwrite_target = Some(found.clone());
+                    effective_parent_key = found
+                        .parent_session_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| caller.current_session_id.clone());
+                    effective_slug = found.slug.clone();
+                }
+                Err(_) => {
+                    // Not found: mint only single-segment top-level
+                    // paths (intermediate segments are not materialized)
+                    // — same rule as `new`.
+                    let segment = target.trim_start_matches('/');
+                    if segment.is_empty() || segment.contains('/') {
+                        anyhow::bail!(
+                            "branch with absolute path '{target}': no session exists there and \
+                             intermediate segments are not materialized — only single-segment \
+                             top-level paths (e.g. \"/briefing\") can be created"
+                        );
+                    }
+                    peko_session::path::validate_slug(segment)?;
+                    effective_parent_key = caller
+                        .ancestors
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| caller.current_session_id.clone());
+                    effective_slug = Some(segment.to_string());
+                }
+            }
+        } else {
+            // Relative slug: caller-relative collision search in the
+            // caller's subtree — same shape as `new`.
+            peko_session::path::validate_slug(target)?;
+            let subtree: std::collections::HashSet<String> =
+                descendants_of(&caller.current_session_id, &metas)
+                    .into_iter()
+                    .chain(std::iter::once(caller.current_session_id.clone()))
+                    .collect();
+            let found = metas.iter().find(|m| {
+                m.slug.as_deref() == Some(target) && subtree.contains(&m.session_id.to_string())
+            });
+            if let Some(found) = found {
+                if found.trigger != "spawn" {
+                    return Err(crate::session::standing::err_name_not_spawned(
+                        target,
+                        &found.session_id.to_string(),
+                    ));
+                }
+                if !overwrite {
+                    return Err(peko_session::path::err_slug_conflict(
+                        target,
+                        found.session_id,
+                        Some(peko_session::SessionId::from(
+                            caller.current_session_id.as_str(),
+                        )),
+                    ));
+                }
+                overwrite_target = Some(found.clone());
+                effective_parent_key = found
+                    .parent_session_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| caller.current_session_id.clone());
+                effective_slug = found.slug.clone();
+            } else {
+                effective_slug = Some(target.to_string());
+            }
+        }
+
+        // Overwrite guards (D3/D4): the displaced session must not have
+        // a run in flight. The caller/ancestor refusal above already
+        // covers self-lineage displacement.
+        if let Some(ref found) = overwrite_target {
+            let registry = self.registry().read().await;
+            if registry.has_active_subagent_run_for_child(&found.session_id.to_string()) {
+                return Err(crate::session::ownership::err_run_active(
+                    &found.session_id.to_string(),
+                ));
+            }
+        }
+
+        // Depth: identical computation to the spawn path — the branch
+        // child is a fresh spawn under `effective_parent_key` (D4).
+        let child_depth = {
+            let metas = self
+                .session_manager
+                .write()
+                .await
+                .list_all_sessions(false)
+                .await?;
+            1 + subagent_depth_of(&effective_parent_key, &metas)
+        };
+        if config.max_depth > 0 && child_depth > config.max_depth {
+            return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
+                current: child_depth,
+                max: config.max_depth,
+            }));
+        }
+
+        // Concurrency cap — identical to the spawn path.
+        let active_count = self.count_active_runs().await;
+        if active_count >= self.max_concurrent {
+            return Err(anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
+                current: active_count,
+                max: self.max_concurrent,
+            }));
+        }
+
+        // Slug uniqueness pre-flight (same as the spawn path). Skipped
+        // on the overwrite path: the displaced session still holds the
+        // slug at this point (it is cleared below, before the child
+        // stamps), and the child's own `set_session_slug` re-enforces
+        // uniqueness after the displacement.
+        if let Some(ref slug) = effective_slug {
+            if overwrite_target.is_none() {
+                let mut manager = self.session_manager.write().await;
+                let metas = manager.list_all_sessions(false).await?;
+                if metas
+                    .iter()
+                    .any(|m| m.session_id.to_string() == effective_parent_key)
+                {
+                    let parent_id = peko_session::SessionId::from(effective_parent_key.as_str());
+                    if let Some(conflict) = peko_session::path::slug_conflict(
+                        &metas,
+                        Some(parent_id),
+                        slug,
+                        peko_session::SessionId::new(),
+                    ) {
+                        return Err(peko_session::path::err_slug_conflict(
+                            slug,
+                            conflict,
+                            Some(parent_id),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Displace the overwritten target: archive it and release its
+        // slug BEFORE minting the replacement (D3 — the address
+        // repoints; the old session id stays fully inspectable).
+        if let Some(ref found) = overwrite_target {
+            let old_id = found.session_id.to_string();
+            let manager = self.session_manager.read().await;
+            manager.set_session_slug(&old_id, None).await?;
+            manager.set_session_archived(&old_id, true).await?;
+        }
+
+        let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
+
+        // Mint the child as an ISOLATED spawn overlay (D1: the shared-
+        // context copy path would flatten tool results away — the
+        // verbatim snapshot below is the fidelity path). The task is
+        // carried by the run registration, not seeded into the session.
+        let peer = Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
+        let (child_session_key, child_session_id, child_base) = {
+            let mut manager = self.session_manager.write().await;
+            let handle = manager
+                .create_spawn_overlay_with_config(
+                    &self.agent_name,
+                    &peer,
+                    task,
+                    true, // isolated: skip the lossy shared-context copy
+                    &effective_parent_key,
+                    Some(config.timeout_seconds),
+                    peko_session::types::SpawnCleanupPolicy::Keep,
+                    0,
+                )
+                .await
+                .context("Failed to create branch session")?;
+            let session_id = handle.session_id().to_string();
+            let full_key = handle.full_session_key().await;
+            let base = handle.base().clone();
+            (full_key, session_id, base)
+        };
+
+        // Stamp the target slug onto the child.
+        if let Some(ref slug) = effective_slug {
+            self.session_manager
+                .read()
+                .await
+                .set_session_slug(&child_session_id, Some(slug.clone()))
+                .await?;
+        }
+
+        // Carry the source's compaction counters (D1): the copied
+        // transcript contains the source's boundary events, so the
+        // child's next boundary must not renumber from 1.
+        self.session_manager
+            .read()
+            .await
+            .carry_compaction_state(&source_id, &child_session_id)
+            .await?;
+
+        // Seed the child's JSONL with the verbatim snapshot, in order.
+        {
+            let mut child = child_base.write().await;
+            for event in &snapshot {
+                child
+                    .append_event(event)
+                    .await
+                    .context("Failed to seed branch session with source events")?;
+            }
+        }
+
+        info!(
+            "Branched session: run_id={} source={} target={} depth={} events={}",
+            run_id,
+            source_id,
+            target,
+            child_depth,
+            snapshot.len()
+        );
+
+        let run_id = self
+            .register_subagent_run(SubagentRunSpec {
+                run_id,
+                task: task.to_string(),
+                parent_session_key: parent_session_key.to_string(),
+                child_session_key,
+                child_session_id,
+                child_base,
+                child_depth,
+                config: config.clone(),
+                parent_cancel,
+                stream_events: None,
+            })
+            .await?;
+
+        // Same unlimited-run mapping as the compact path.
+        let wait_secs = if config.timeout_seconds == 0 {
+            u64::MAX / 2
+        } else {
+            config.timeout_seconds
+        };
+        self.wait_for_run(&run_id, wait_secs).await
+    }
+
     /// Validate an explicitly-provided `parent_session_key` (spawn
     /// context seeding) against the caller's ownership tree. The
     /// caller's own session (the auto-detected default) always passes;

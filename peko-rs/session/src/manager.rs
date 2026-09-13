@@ -1430,6 +1430,50 @@ impl SessionManager {
             .await
     }
 
+    /// Set the archived flag on a session's metadata (ADR-053 D3).
+    ///
+    /// Used by the Agent tool's `branch` overwrite path to retire the
+    /// displaced session: it loses its slug (cleared separately by the
+    /// caller) and can no longer attach/compact, but its JSONL history
+    /// stays fully inspectable — `overwrite` repurposes the address,
+    /// it never destroys history. Errors when the session does not
+    /// exist.
+    pub async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        let mut metadata = controller
+            .get_metadata(session_id, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        metadata.archived = archived;
+        controller.update_metadata(metadata).await
+    }
+
+    /// Carry the source session's compaction counters onto the target
+    /// session (ADR-053 D1). The branch child's transcript contains the
+    /// source's compaction boundary events, so the per-session
+    /// `compaction_number` sequence and the per-session gates (count /
+    /// cooldown / consecutive limits) must continue from the source's
+    /// values — resetting them would renumber the child's next boundary
+    /// from 1 and collide with the copied history (the same rule
+    /// `branch_session_by_id` applies). Errors when either session does
+    /// not exist.
+    pub async fn carry_compaction_state(&self, from_session: &str, to_session: &str) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        let from = controller
+            .get_metadata(from_session, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {from_session} not found"))?;
+        let mut to = controller
+            .get_metadata(to_session, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {to_session} not found"))?;
+        to.compaction_count = from.compaction_count;
+        to.last_compaction_at = from.last_compaction_at;
+        to.consecutive_auto_compactions = from.consecutive_auto_compactions;
+        to.consecutive_compaction_failures = from.consecutive_compaction_failures;
+        controller.update_metadata(to).await
+    }
+
     /// Reparent a session: set `parent_session_id` (passthrough to the
     /// `MetadataController`) and append a `System` audit event to the
     /// session's JSONL recording old → new parent. Errors when the
