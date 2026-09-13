@@ -54,9 +54,8 @@ pub struct PrincipalRegistryDescriptor {
 /// Sessions live under the Local tier (`local/sessions/`) and the
 /// memory index (`local/memory_index.json`) is intentionally not
 /// part of the portable bundle (it's runtime state, not principal
-/// capability). Memory snapshots, when implemented, will live at
-/// `SharedLayout::memory_snapshots_dir`; that layer is deferred to
-/// Phase A.5.
+/// capability). The principal's persistent knowledge base
+/// (`<workspace>/kb/`, ADR-055) IS part of the portable Shared tier.
 ///
 /// **Phase 5 (ADR-047 §2.1):** the `with_extensions_from_store` /
 /// `with_embedded_extensions` / `with_extension_refs` setters are

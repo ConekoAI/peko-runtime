@@ -132,8 +132,10 @@ open(path, "w").write(s)
 PY
 
   # ── T0 memory + T2 project + D6 standup hook ─────────────────────
+  # ADR-055: memory lives at kb/MEMORY.md inside the workspace.
+  mkdir -p "$ws/kb"
   printf 'Long-term memory: the explore principal likes green builds. MEMORY_MARKER_EXPL74.\n' \
-    > "$ws/MEMORY.md"
+    > "$ws/kb/MEMORY.md"
 
   mkdir -p "$project_dir"
   cat > "$project_dir/AGENTS.md" <<'EOF'

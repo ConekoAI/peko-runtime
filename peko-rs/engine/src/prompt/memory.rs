@@ -1,9 +1,11 @@
-//! Per-principal long-term memory (`MEMORY.md`) and shared
+//! Per-principal long-term memory (`kb/MEMORY.md`) and shared
 //! directory-scoped context (`AGENTS.md`).
 //!
 //! Two complementary surfaces:
 //!
-//! - **MEMORY.md** lives at `<principal_workspace>/MEMORY.md`. It is
+//! - **MEMORY.md** lives at `<principal_workspace>/kb/MEMORY.md` —
+//!   inside the principal's persistent knowledge base (ADR-055), as
+//!   the hot, always-rendered member of the pinned hot set. It is
 //!   loaded at session start and injected into the system prompt at
 //!   the `{{memory}}` placeholder when the template opts in. The
 //!   principal owns this file and may update it via `Write`.
@@ -19,7 +21,13 @@
 
 use std::path::{Path, PathBuf};
 
-/// Filename peko uses for per-principal long-term memory.
+/// Directory (relative to the principal workspace) holding the
+/// principal's persistent knowledge base (ADR-055). The pinned hot
+/// set (`MEMORY.md`, `index.md`, `people/`, `groups/`) lives here.
+pub const KB_DIR: &str = "kb";
+
+/// Filename peko uses for per-principal long-term memory. Resolved
+/// under [`KB_DIR`] — `<principal_workspace>/kb/MEMORY.md`.
 pub const PRINCIPAL_MEMORY_FILE: &str = "MEMORY.md";
 
 /// Filename peko uses for directory-scoped shared notes.
@@ -38,14 +46,15 @@ pub const SHARED_CONTEXT_MAX_BYTES: u64 = 64 * 1024; // 64 KiB
 /// applies to its whole instruction hierarchy.
 pub const PROJECT_INSTRUCTIONS_MAX_BYTES: u64 = 32 * 1024; // 32 KiB
 
-/// Load the principal's long-term memory from `<workspace>/MEMORY.md`.
+/// Load the principal's long-term memory from
+/// `<workspace>/kb/MEMORY.md` (ADR-055: memory lives inside the kb).
 ///
 /// Returns `None` if the file does not exist, is empty, or cannot be
 /// read. Truncates to `PRINCIPAL_MEMORY_MAX_BYTES` with a notice when
 /// oversized.
 #[must_use]
 pub fn load_principal_memory(workspace: &Path) -> Option<String> {
-    let path = workspace.join(PRINCIPAL_MEMORY_FILE);
+    let path = workspace.join(KB_DIR).join(PRINCIPAL_MEMORY_FILE);
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => return None,
@@ -224,7 +233,8 @@ mod tests {
     #[test]
     fn load_principal_memory_returns_contents_when_present() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("MEMORY.md"), "I prefer tabs.").unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
+        std::fs::write(tmp.path().join("kb").join("MEMORY.md"), "I prefer tabs.").unwrap();
         let s = load_principal_memory(tmp.path()).unwrap();
         assert_eq!(s, "I prefer tabs.");
     }

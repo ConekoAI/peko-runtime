@@ -266,8 +266,8 @@ impl PrincipalUnpackager {
 
         self.import_agents(&files, &name, &options, &authority)
             .await?;
-        // Phase A: the legacy `import_memory` is gone. Memory
-        // snapshots are not part of the portable bundle; sessions
+        // Phase A: the legacy `import_memory` is gone. Session-derived
+        // memory artifacts are not part of the portable bundle; sessions
         // are the only Local-tier artifact that flows in.
         // (see [`Self::import_sessions`].)
 
