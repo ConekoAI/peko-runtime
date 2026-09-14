@@ -9,7 +9,7 @@ use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::path_safety::safe_join;
-use crate::registry::packaging::principal_manifest::PrincipalManifest;
+use crate::registry::packaging::principal_manifest::{ExportMode, PrincipalManifest};
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
 use peko_auth::Subject;
@@ -31,6 +31,11 @@ pub struct PrincipalImportOptions {
     pub rotate_keys: bool,
     /// Import session history
     pub import_sessions: bool,
+    /// Import the identity-bearing Local-tier state from a
+    /// full-snapshot package (cron schedule with principal-id
+    /// rebinding, plan DAGs). Sessions are governed by
+    /// `import_sessions` independently (ADR-056).
+    pub import_local_state: bool,
     /// Allow importing an unsigned package
     pub allow_unsigned: bool,
     /// Force overwrite an existing Principal
@@ -63,6 +68,7 @@ impl Default for PrincipalImportOptions {
             new_name: None,
             rotate_keys: false,
             import_sessions: true,
+            import_local_state: true,
             allow_unsigned: false,
             force: false,
             trust_store: None,
@@ -89,6 +95,11 @@ pub struct PrincipalImportResult {
     pub validation: ValidationResult,
     /// IDs of embedded extensions that were installed during import.
     pub installed_extensions: Vec<String>,
+    /// The package's export mode (ADR-056): what the import actually
+    /// restored. `FullSnapshot` imports land with their boot state
+    /// verbatim (an `organized` principal keeps its schedule and is
+    /// not re-genesis'd); `Definition` imports infer their boot state.
+    pub import_mode: ExportMode,
 }
 
 /// Unpackager for importing `.principal` packages.
@@ -264,15 +275,50 @@ impl PrincipalUnpackager {
             config.owner = Subject::User("local".to_string());
         }
 
+        // ADR-056 boot-state entry rules (extends ADR-054 D1):
+        //
+        // - `full_snapshot`: the package is a verbatim snapshot of a
+        //   live principal, boot state included — carry it through.
+        //   An `organized` principal therefore imports as `organized`
+        //   WITH its authored cron schedule intact, and the daemon's
+        //   boot seeding pass abstains (D4: the trunk owns its
+        //   rhythm). A `defined` snapshot re-genesis's on next boot,
+        //   which is exactly what the source was.
+        // - `definition`: the package carries no live state, so the
+        //   source's boot state is meaningless on this host — reset
+        //   it and let ADR-054's inference apply (`has_definition()`
+        //   ⇒ `defined`). This also fixes the pre-ADR-056 bug where
+        //   a definition-only export of an `organized` principal
+        //   imported as `organized` with no schedule at all.
+        if manifest.export_mode == ExportMode::Definition {
+            config.boot_state = None;
+        }
+
         self.import_agents(&files, &name, &options, &authority)
             .await?;
-        // Phase A: the legacy `import_memory` is gone. Session-derived
-        // memory artifacts are not part of the portable bundle; sessions
-        // are the only Local-tier artifact that flows in.
-        // (see [`Self::import_sessions`].)
+        // Phase A: the legacy `import_memory` is gone. The memory
+        // index (`local/memory_index.json`) is derived state — never
+        // packaged, rebuilt by the runtime (ADR-056).
+        // Sessions flow in under `import_sessions`; cron + plans and
+        // the workspace tooling flow in below when the package
+        // carries them (ADR-056).
 
         if options.import_sessions {
             self.import_sessions(&files, &name).await?;
+        }
+
+        if manifest.export_mode == ExportMode::FullSnapshot {
+            self.import_workspace_tooling(&files, &name).await?;
+            if options.import_local_state {
+                let effective_principal_id = config
+                    .id
+                    .clone()
+                    .map(|pid| pid.0)
+                    .or_else(|| config.did.clone().map(|d| d.0))
+                    .unwrap_or_else(|| name.clone());
+                self.import_local_authored(&files, &name, &effective_principal_id)
+                    .await?;
+            }
         }
 
         let config_path = self.save_config(&config, &name).await?;
@@ -284,6 +330,7 @@ impl PrincipalUnpackager {
             keys_rotated: options.rotate_keys,
             validation,
             installed_extensions: Vec::new(),
+            import_mode: manifest.export_mode,
         })
     }
 
@@ -455,6 +502,91 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
+    /// ADR-056: restore the workspace tooling directories
+    /// (`tools/`, `skills/`, `mcp/`, `hooks/`, `kb/`) into the
+    /// principal's Shared-tier workspace root. Presence in the
+    /// workspace = visibility (ADR-050), so a snapshot import that
+    /// skipped this would hand the principal a silently gutted
+    /// tool catalog on its next turn.
+    ///
+    /// Prototype note: no per-directory capability gate yet. The
+    /// ADR-046 audit canary still covers `tools/`, `hooks/`, and
+    /// `mcp/` baseline drift on the next daemon boot, and the
+    /// production pass should gate this alongside `principal:write_agents`.
+    async fn import_workspace_tooling(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        principal_name: &str,
+    ) -> anyhow::Result<()> {
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let workspace_root = resolver.principal_layout(principal_name).shared.root;
+
+        const TOOLING_PREFIXES: [&str; 5] = ["tools", "skills", "mcp", "hooks", "kb"];
+        for (path, content) in files {
+            let Some((prefix, rest)) = split_layer_path(path, &TOOLING_PREFIXES) else {
+                continue;
+            };
+            let dest_dir = workspace_root.join(prefix);
+            let dest_path = safe_join(&dest_dir, rest)?;
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(dest_path, content).await?;
+        }
+        Ok(())
+    }
+
+    /// ADR-056: restore the identity-bearing Local-tier state —
+    /// `cron/` (authored schedule + run history) and `plans/` (Plan
+    /// DAG storage) — into the principal's Local tier.
+    ///
+    /// Cron jobs are keyed on the source principal's runtime
+    /// `PrincipalId` (ADR-054 D3); the importer rebinds every job's
+    /// `principal_id` to the imported principal's effective id
+    /// (`config.id` → DID → name, the same resolution the cron tools
+    /// use) so the trunk can see its restored heartbeat via
+    /// `CronList` immediately.
+    async fn import_local_authored(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        principal_name: &str,
+        new_principal_id: &str,
+    ) -> anyhow::Result<()> {
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let layout = resolver.principal_layout(principal_name);
+
+        const LOCAL_PREFIXES: [&str; 2] = ["cron", "plans"];
+        for (path, content) in files {
+            let Some((prefix, rest)) = split_layer_path(path, &LOCAL_PREFIXES) else {
+                continue;
+            };
+            let dest_dir = match prefix {
+                "cron" => layout.local.cron_dir.clone(),
+                "plans" => layout.local.plans_dir.clone(),
+                _ => continue,
+            };
+            let dest_path = safe_join(&dest_dir, rest)?;
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            if prefix == "cron" && rest == "schedule.toml" {
+                let remapped = remap_cron_principal_ids(content, new_principal_id);
+                tokio::fs::write(dest_path, remapped).await?;
+            } else {
+                tokio::fs::write(dest_path, content).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Extract the embedded `plugins/` (or legacy `extensions/`) layer and
     /// route each bundle through `store`. Returns the IDs of installed
     /// plugins.
@@ -606,6 +738,62 @@ impl PrincipalUnpackager {
 pub(crate) enum SignatureStatus {
     Verified,
     AllowedUnsigned,
+}
+
+/// Split a package path into `(layer_prefix, rest)` if it starts with
+/// one of the given layer prefixes (e.g. `cron/schedule.toml` →
+/// `("cron", "schedule.toml")`).
+fn split_layer_path<'a>(path: &'a str, prefixes: &[&'a str]) -> Option<(&'a str, &'a str)> {
+    for prefix in prefixes {
+        let with_slash = format!("{prefix}/");
+        if let Some(rest) = path.strip_prefix(with_slash.as_str()) {
+            if !rest.is_empty() {
+                return Some((prefix, rest));
+            }
+        }
+    }
+    None
+}
+
+/// Rebind every cron job's `principal_id` in a `schedule.toml` to the
+/// imported principal's effective runtime id (ADR-056).
+///
+/// Jobs in a per-principal schedule file are all owned by that
+/// principal, so an unconditional rewrite is correct and idempotent.
+/// A malformed file is passed through unchanged with a warning — the
+/// cron engine will surface it on next load rather than the import
+/// hard-failing on a snapshot's side artifact.
+fn remap_cron_principal_ids(schedule_bytes: &[u8], new_principal_id: &str) -> Vec<u8> {
+    let parse_result: anyhow::Result<toml::Value> = std::str::from_utf8(schedule_bytes)
+        .map_err(|e| anyhow::anyhow!("schedule.toml is not utf-8: {e}"))
+        .and_then(|s| toml::from_str(s).map_err(|e| anyhow::anyhow!("{e}")));
+
+    let mut value = match parse_result {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                "cron schedule.toml could not be parsed for principal-id rebinding \
+                 ({e}); writing it through unchanged"
+            );
+            return schedule_bytes.to_vec();
+        }
+    };
+
+    if let Some(jobs) = value.get_mut("jobs").and_then(|j| j.as_array_mut()) {
+        for job in jobs {
+            job["principal_id"] = toml::Value::String(new_principal_id.to_string());
+        }
+    }
+
+    match toml::to_string_pretty(&value) {
+        Ok(s) => s.into_bytes(),
+        Err(e) => {
+            tracing::warn!(
+                "cron schedule.toml re-serialization failed ({e}); writing the original bytes"
+            );
+            schedule_bytes.to_vec()
+        }
+    }
 }
 
 pub(crate) fn verify_principal_signature(
@@ -828,7 +1016,7 @@ fn validate_package_for_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::PrincipalConfig;
+    use crate::principal::config::{BootState, PrincipalConfig};
     use crate::registry::packaging::principal_packager::{
         PrincipalExportOptions, PrincipalPackager,
     };
@@ -969,6 +1157,239 @@ mod tests {
             .join("renamed")
             .join("principal.toml")
             .exists());
+    }
+
+    /// ADR-056: a full-snapshot round-trip restores the principal's
+    /// live existence — sessions, the authored cron schedule (with
+    /// principal-id rebinding), plans, and the installed workspace
+    /// tooling land in the right tier directories, and the boot state
+    /// carries through verbatim (an `organized` principal imports as
+    /// `organized` and is not re-genesis'd).
+    #[tokio::test]
+    async fn full_snapshot_roundtrip_restores_live_state() {
+        use crate::registry::packaging::principal_packager::PrincipalExportOptions;
+
+        let identity = Identity::new("live", DIDScope::Local).await.unwrap();
+        let original_did = identity.did.clone();
+        let mut config = sample_config("live", &original_did);
+        config.set_boot_state(BootState::Organized);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let shared_root = tmp.path().join("shared").join("live");
+        let local_root = tmp.path().join("data").join("live").join("local");
+
+        std::fs::create_dir_all(shared_root.join("agents")).unwrap();
+        std::fs::write(shared_root.join("agents").join("root.md"), b"# root").unwrap();
+        std::fs::create_dir_all(shared_root.join("tools").join("my-tool")).unwrap();
+        std::fs::write(
+            shared_root
+                .join("tools")
+                .join("my-tool")
+                .join("manifest.yaml"),
+            b"id: my-tool\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(shared_root.join("kb")).unwrap();
+        std::fs::write(shared_root.join("kb").join("MEMORY.md"), b"hot").unwrap();
+
+        std::fs::create_dir_all(local_root.join("sessions")).unwrap();
+        std::fs::write(local_root.join("sessions").join("s1.jsonl"), b"{}\n").unwrap();
+        std::fs::create_dir_all(local_root.join("cron")).unwrap();
+        std::fs::write(
+            local_root.join("cron").join("schedule.toml"),
+            "version = 2\n[[jobs]]\nid = \"keepalive\"\nname = \"keepalive\"\nprincipal_id = \"prin_old\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(local_root.join("plans")).unwrap();
+        std::fs::write(local_root.join("plans").join("p1.jsonl"), b"{}\n").unwrap();
+
+        let out = tmp.path().join("live.principal");
+        let packager = PrincipalPackager::new(config, identity)
+            .with_agents_dir(shared_root.join("agents"))
+            .with_sessions_dir(local_root.join("sessions"))
+            .with_workspace_dir(&shared_root)
+            .with_local_root(&local_root);
+        packager
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                mode: crate::registry::packaging::principal_manifest::ExportMode::FullSnapshot,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let config_dir = tmp.path().join("cfg");
+        let data_dir = tmp.path().join("new-data");
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir.clone());
+        let result = unpackager
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.import_mode,
+            crate::registry::packaging::principal_manifest::ExportMode::FullSnapshot
+        );
+
+        // Workspace tooling restored to the Shared tier root.
+        assert!(
+            config_dir
+                .join("principals")
+                .join("live")
+                .join("tools")
+                .join("my-tool")
+                .join("manifest.yaml")
+                .exists(),
+            "tooling restored to workspace root"
+        );
+        assert!(
+            config_dir
+                .join("principals")
+                .join("live")
+                .join("kb")
+                .join("MEMORY.md")
+                .exists(),
+            "kb restored to workspace root"
+        );
+
+        // Local authored state restored to the Local tier.
+        assert!(
+            data_dir
+                .join("principals")
+                .join("live")
+                .join("local")
+                .join("sessions")
+                .join("s1.jsonl")
+                .exists(),
+            "sessions restored"
+        );
+        assert!(
+            data_dir
+                .join("principals")
+                .join("live")
+                .join("local")
+                .join("plans")
+                .join("p1.jsonl")
+                .exists(),
+            "plans restored"
+        );
+
+        // Cron schedule restored AND rebound to the imported
+        // principal's effective runtime id. `config.id` is unset in
+        // this fixture, so the effective id resolves to the imported
+        // DID (id → DID → name, the cron tools' resolution order).
+        let schedule_path = data_dir
+            .join("principals")
+            .join("live")
+            .join("local")
+            .join("cron")
+            .join("schedule.toml");
+        let schedule = std::fs::read_to_string(&schedule_path).unwrap();
+        assert!(
+            schedule.contains(&format!("principal_id = \"{original_did}\"")),
+            "principal ids rebound to the effective runtime id: {schedule}"
+        );
+        assert!(
+            !schedule.contains("prin_old"),
+            "stale source ids must not survive: {schedule}"
+        );
+
+        // Boot state carried verbatim: no genesis re-seed.
+        let imported = std::fs::read_to_string(
+            config_dir
+                .join("principals")
+                .join("live")
+                .join("principal.toml"),
+        )
+        .unwrap();
+        assert!(
+            imported.contains("boot_state = \"organized\""),
+            "organized state survives the snapshot round-trip: {imported}"
+        );
+    }
+
+    /// ADR-056: a definition-only import resets the boot state so
+    /// ADR-054's inference applies. Exporting a definition from an
+    /// `organized` source must not land the import as `organized`
+    /// with no schedule to show for it.
+    #[tokio::test]
+    async fn definition_import_does_not_inherit_organized_state() {
+        use crate::registry::packaging::principal_packager::PrincipalExportOptions;
+
+        let identity = Identity::new("org", DIDScope::Local).await.unwrap();
+        let mut config = sample_config("org", &identity.did);
+        config.set_boot_state(BootState::Organized);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("org.principal");
+        let packager = PrincipalPackager::new(config, identity);
+        packager
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let config_dir = tmp.path().join("cfg");
+        let data_dir = tmp.path().join("data");
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir);
+        let result = unpackager
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.import_mode,
+            crate::registry::packaging::principal_manifest::ExportMode::Definition
+        );
+        let imported = std::fs::read_to_string(
+            config_dir
+                .join("principals")
+                .join("org")
+                .join("principal.toml"),
+        )
+        .unwrap();
+        assert!(
+            !imported.contains("boot_state"),
+            "definition import must infer its boot state, not inherit it: {imported}"
+        );
+    }
+
+    /// ADR-056: `remap_cron_principal_ids` rewrites every job's
+    /// `principal_id`, is idempotent, and passes malformed files
+    /// through unchanged.
+    #[test]
+    fn remap_cron_principal_ids_rewrites_all_jobs() {
+        let schedule = r#"
+version = 2
+
+[[jobs]]
+id = "keepalive"
+name = "keepalive"
+principal_id = "prin_old"
+
+[[jobs]]
+id = "genesis"
+name = "genesis"
+principal_id = "prin_old"
+"#;
+        let remapped =
+            String::from_utf8(remap_cron_principal_ids(schedule.as_bytes(), "prin_new")).unwrap();
+        assert_eq!(remapped.matches("prin_new").count(), 2);
+        assert!(!remapped.contains("prin_old"));
+
+        // Idempotent.
+        let again =
+            String::from_utf8(remap_cron_principal_ids(remapped.as_bytes(), "prin_new")).unwrap();
+        assert_eq!(again.matches("prin_new").count(), 2);
+
+        // Malformed input passes through unchanged.
+        let garbage = b"\xff\xfe not toml";
+        assert_eq!(
+            remap_cron_principal_ids(garbage, "prin_new"),
+            garbage.to_vec()
+        );
     }
 
     /// Build a minimal `.ext` archive in memory containing an

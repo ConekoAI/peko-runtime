@@ -483,9 +483,17 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 output,
                 include_sessions,
+                full_snapshot,
                 with_extensions: _, // Phase 5: ignored; extensions live in the workspace tar.
             } => {
-                match export_principal_package(host, &name, output.clone(), include_sessions).await
+                match export_principal_package(
+                    host,
+                    &name,
+                    output.clone(),
+                    include_sessions,
+                    full_snapshot,
+                )
+                .await
                 {
                     Ok(output_path) => {
                         let response = ResponsePacket::PrincipalExported {
@@ -2992,6 +3000,10 @@ async fn build_principal_packager(
     // exported from `local.sessions_dir` directly, and the principal's
     // memory index (`local.memory_index`) is not part of the
     // portable bundle.
+    // ADR-056: the Shared-tier workspace root and the Local-tier
+    // root are threaded in so full-snapshot exports can collect the
+    // workspace tooling (tools/skills/mcp/hooks/kb) and the
+    // identity-bearing local state (cron/plans).
     let resolver = host.path_resolver();
     let layout = resolver.principal_layout(name);
     let identity = load_principal_identity(&resolver, name, &did).await?;
@@ -2999,7 +3011,9 @@ async fn build_principal_packager(
     Ok(
         crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
             .with_agents_dir(&layout.shared.agents_dir)
-            .with_sessions_dir(&layout.local.sessions_dir),
+            .with_sessions_dir(&layout.local.sessions_dir)
+            .with_workspace_dir(&layout.shared.root)
+            .with_local_root(&layout.local.root),
     )
 }
 
@@ -3009,13 +3023,20 @@ async fn export_principal_package(
     name: &str,
     output: Option<String>,
     include_sessions: bool,
+    full_snapshot: bool,
 ) -> anyhow::Result<std::path::PathBuf> {
     let packager = build_principal_packager(host, name).await?;
 
+    let mode = if full_snapshot {
+        crate::registry::packaging::principal_manifest::ExportMode::FullSnapshot
+    } else {
+        crate::registry::packaging::principal_manifest::ExportMode::Definition
+    };
     let opts = crate::registry::packaging::PrincipalExportOptions {
         output_path: output,
         include_sessions,
         description: None,
+        mode,
     };
     packager.export(opts).await
 }

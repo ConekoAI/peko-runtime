@@ -3,7 +3,9 @@
 //! Exports Principals to `.principal` files (tar.gz archives with manifest).
 
 use crate::principal::config::PrincipalConfig;
-use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
+use crate::registry::packaging::principal_manifest::{
+    ExportMode, PrincipalLayers, PrincipalManifest,
+};
 use crate::registry::packaging::types::{compute_digest, Layer, LayerType};
 use anyhow::Context;
 use peko_identity::Identity;
@@ -19,6 +21,11 @@ pub struct PrincipalExportOptions {
     pub include_sessions: bool,
     /// Optional description
     pub description: Option<String>,
+    /// What the package carries (ADR-056). `Definition` (the default)
+    /// preserves the historical behavior; `FullSnapshot` additionally
+    /// packs the identity-bearing Local-tier artifacts (sessions, cron,
+    /// plans) and the workspace tooling (tools/skills/mcp/hooks/kb).
+    pub mode: ExportMode,
 }
 
 impl Default for PrincipalExportOptions {
@@ -27,6 +34,7 @@ impl Default for PrincipalExportOptions {
             output_path: None,
             include_sessions: false,
             description: None,
+            mode: ExportMode::default(),
         }
     }
 }
@@ -53,24 +61,36 @@ pub struct PrincipalRegistryDescriptor {
 /// there is no separate memory directory in the typed layout.
 /// Sessions live under the Local tier (`local/sessions/`) and the
 /// memory index (`local/memory_index.json`) is intentionally not
-/// part of the portable bundle (it's runtime state, not principal
-/// capability). The principal's persistent knowledge base
-/// (`<workspace>/kb/`, ADR-055) IS part of the portable Shared tier.
+/// part of the portable bundle (it's derived runtime state, rebuilt
+/// on import — ADR-056). The principal's persistent knowledge base
+/// (`<workspace>/kb/`, ADR-055) IS part of the portable bundle under
+/// [`ExportMode::FullSnapshot`].
 ///
 /// **Phase 5 (ADR-047 §2.1):** the `with_extensions_from_store` /
 /// `with_embedded_extensions` / `with_extension_refs` setters are
-/// deleted. Workspace-resident plugins (tools/hooks/skills/MCP) are
-/// not part of the portable bundle.
+/// deleted. Workspace-resident plugins (tools/hooks/skills/MCP) live
+/// in the principal's workspace.
 ///
 /// **Phase 7 (ADR-047 §5):** the package format gains a `plugins/`
 /// layer convention. New exports emit `plugins/` and omit the legacy
 /// `extensions/` layer entirely; the unpackager still accepts the
 /// legacy `extensions/` prefix and routes it to the same handler.
+///
+/// **ADR-056 (full-existence snapshot):** [`ExportMode::FullSnapshot`]
+/// additionally packs the identity-bearing Local-tier artifacts
+/// (`sessions/`, `cron/`, `plans/`) and the workspace tooling
+/// (`tools/`, `skills/`, `mcp/`, `hooks/`, `kb/`) so an
+/// export → import round-trip restores the principal's live
+/// existence — working context, self-authored cadence, and installed
+/// tooling — not just its definition. Derived Local state (`cache/`,
+/// `locks/`, `memory_index.json`) is excluded and rebuilt at import.
 pub struct PrincipalPackager {
     config: PrincipalConfig,
     identity: Identity,
     agents_dir: Option<PathBuf>,
     sessions_dir: Option<PathBuf>,
+    workspace_dir: Option<PathBuf>,
+    local_root: Option<PathBuf>,
 }
 
 impl PrincipalPackager {
@@ -81,6 +101,8 @@ impl PrincipalPackager {
             identity,
             agents_dir: None,
             sessions_dir: None,
+            workspace_dir: None,
+            local_root: None,
         }
     }
 
@@ -93,6 +115,22 @@ impl PrincipalPackager {
     /// Set the sessions directory.
     pub fn with_sessions_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.sessions_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set the principal workspace root (Shared tier) — scanned for
+    /// tooling directories (`tools/`, `skills/`, `mcp/`, `hooks/`,
+    /// `kb/`) in [`ExportMode::FullSnapshot`].
+    pub fn with_workspace_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.workspace_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set the Local tier root — scanned for the identity-bearing
+    /// state directories (`cron/`, `plans/`) in
+    /// [`ExportMode::FullSnapshot`].
+    pub fn with_local_root(mut self, dir: impl AsRef<Path>) -> Self {
+        self.local_root = Some(dir.as_ref().to_path_buf());
         self
     }
 
@@ -124,6 +162,13 @@ impl PrincipalPackager {
             ("agents", LayerType::Workspace),
             ("memory", LayerType::Sessions),
             ("sessions", LayerType::Sessions),
+            ("cron", LayerType::Cron),
+            ("plans", LayerType::Plans),
+            ("tools", LayerType::Tools),
+            ("skills", LayerType::Skills),
+            ("mcp", LayerType::Mcp),
+            ("hooks", LayerType::Hooks),
+            ("kb", LayerType::Kb),
             ("plugins", LayerType::Plugins),
         ];
 
@@ -187,24 +232,45 @@ impl PrincipalPackager {
         // `manifest.extensions` is left at its default empty Vec.
         //
         // Phase 7 (ADR-047 §5): new exports emit a `plugins/` layer
-        // (currently always empty — workspace tooling lives on disk
-        // in the principal's workspace, not in the portable bundle).
-        // The legacy `extensions/` prefix is dropped entirely from
-        // packager output.
+        // (currently always empty — plugin bundles are not embedded
+        // by any caller today). The legacy `extensions/` prefix is
+        // dropped entirely from packager output.
+        //
+        // ADR-056: full-snapshot mode packs the workspace tooling
+        // directories directly (`export_workspace_tooling` below).
 
         self.export_agents(&mut files, &mut manifest)
             .await
             .context("Failed to export agents")?;
-        // Phase A: the legacy `export_memory` is gone. Sessions
-        // are the only Local-tier artifact in the portable bundle,
-        // and they live directly under `<local_root>/sessions/`.
+        // Phase A: the legacy `export_memory` is gone. The memory
+        // index (`local/memory_index.json`) is derived state — never
+        // packaged, rebuilt on import (ADR-056). Sessions are the
+        // baseline Local-tier artifact; ADR-056 adds cron + plans and
+        // the workspace tooling in full-snapshot mode.
 
-        if options.include_sessions {
+        let full_snapshot = options.mode == ExportMode::FullSnapshot;
+        if options.include_sessions || full_snapshot {
             self.export_sessions(&mut files, &mut manifest)
                 .await
                 .context("Failed to export sessions")?;
         }
 
+        if full_snapshot {
+            // Identity-bearing Local-tier state: the trunk's
+            // self-authored cadence (`cron/`) and plan DAGs
+            // (`plans/`). `cache/` and `locks/` are deliberately NOT
+            // scanned — they are ephemeral, never identity-bearing.
+            self.export_local_authored(&mut files, &mut manifest)
+                .await
+                .context("Failed to export local authored state")?;
+            // Workspace tooling: whatever the principal installed
+            // (presence = visibility, ADR-050) travels with it.
+            self.export_workspace_tooling(&mut files, &mut manifest)
+                .await
+                .context("Failed to export workspace tooling")?;
+        }
+
+        manifest.export_mode = options.mode;
         manifest.layers = Some(Self::compute_layers(&files)?);
         self.sign_manifest(&mut manifest)
             .context("Failed to sign manifest")?;
@@ -221,8 +287,12 @@ impl PrincipalPackager {
         // Phase 7 (ADR-047 §5): the canonical plugin layer is `plugins/`;
         // the legacy `extensions/` prefix is no longer emitted by the
         // packager. The unpackager still accepts it on import.
+        // ADR-056: full-snapshot layers (`cron`, `plans`, `tools`,
+        // `skills`, `mcp`, `hooks`, `kb`) are computed from whatever
+        // the collector packed.
         let layer_prefixes = [
-            "config", "identity", "agents", "memory", "sessions", "plugins",
+            "config", "identity", "agents", "memory", "sessions", "cron", "plans", "tools",
+            "skills", "mcp", "hooks", "kb", "plugins",
         ];
 
         for prefix in layer_prefixes {
@@ -242,6 +312,13 @@ impl PrincipalPackager {
                     "agents" => layers.agents = Some(digest),
                     "memory" => layers.memory = Some(digest),
                     "sessions" => layers.sessions = Some(digest),
+                    "cron" => layers.cron = Some(digest),
+                    "plans" => layers.plans = Some(digest),
+                    "tools" => layers.tools = Some(digest),
+                    "skills" => layers.skills = Some(digest),
+                    "mcp" => layers.mcp = Some(digest),
+                    "hooks" => layers.hooks = Some(digest),
+                    "kb" => layers.kb = Some(digest),
                     "plugins" => layers.plugins = Some(digest),
                     _ => {}
                 }
@@ -338,6 +415,52 @@ impl PrincipalPackager {
             if dir.exists() {
                 self.export_dir_recursive(dir, "sessions", files, manifest)
                     .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// ADR-056: pack the identity-bearing Local-tier directories —
+    /// `cron/` (authored schedule + run history) and `plans/` (Plan
+    /// DAG storage). Ephemeral local state (`cache/`, `locks/`,
+    /// `memory_index.json`) is intentionally skipped.
+    async fn export_local_authored(
+        &self,
+        files: &mut HashMap<String, Vec<u8>>,
+        manifest: &mut PrincipalManifest,
+    ) -> anyhow::Result<()> {
+        if let Some(local_root) = &self.local_root {
+            let cron_dir = local_root.join("cron");
+            if cron_dir.exists() {
+                self.export_dir_recursive(&cron_dir, "cron", files, manifest)
+                    .await?;
+            }
+            let plans_dir = local_root.join("plans");
+            if plans_dir.exists() {
+                self.export_dir_recursive(&plans_dir, "plans", files, manifest)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// ADR-056: pack the workspace tooling directories (Shared tier
+    /// root) — `tools/`, `skills/`, `mcp/`, `hooks/`, `kb/`. Presence
+    /// in the workspace = visibility (ADR-050), so a snapshot that
+    /// drops them would import a principal that silently lost its
+    /// tooling.
+    async fn export_workspace_tooling(
+        &self,
+        files: &mut HashMap<String, Vec<u8>>,
+        manifest: &mut PrincipalManifest,
+    ) -> anyhow::Result<()> {
+        if let Some(workspace_dir) = &self.workspace_dir {
+            for dir_name in ["tools", "skills", "mcp", "hooks", "kb"] {
+                let dir = workspace_dir.join(dir_name);
+                if dir.exists() {
+                    self.export_dir_recursive(&dir, dir_name, files, manifest)
+                        .await?;
+                }
             }
         }
         Ok(())
@@ -472,6 +595,7 @@ mod tests {
         assert!(opts.output_path.is_none());
         assert!(!opts.include_sessions);
         assert!(opts.description.is_none());
+        assert_eq!(opts.mode, ExportMode::Definition);
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
@@ -548,6 +672,133 @@ mod tests {
         assert!(layers.identity.is_some(), "identity layer present");
         assert!(layers.agents.is_some(), "agents layer present");
         assert!(!manifest.signatures.manifest.is_empty(), "manifest signed");
+    }
+
+    /// Build a realistic tier layout for snapshot tests: agents in the
+    /// shared root, tooling dirs under the workspace root, sessions +
+    /// cron + plans under the local root.
+    fn seed_layout(tmp: &tempfile::TempDir, name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let shared_root = tmp.path().join("shared").join(name);
+        let local_root = tmp.path().join("data").join(name).join("local");
+
+        std::fs::create_dir_all(shared_root.join("agents")).unwrap();
+        std::fs::write(shared_root.join("agents").join("root.md"), b"# root").unwrap();
+
+        let tooling = [
+            (
+                "tools",
+                "my-tool/manifest.yaml",
+                b"id: my-tool\n".as_slice(),
+            ),
+            ("skills", "docker/SKILL.md", b"---\nname: docker\n---\nbody"),
+            ("mcp", "weather/server.json", b"{\"command\":\"uvx\"}"),
+            ("hooks", "notify/hook.toml", b"binds = [\"Stop\"]"),
+            ("kb", "MEMORY.md", b"hot memory"),
+        ];
+        for (dir, file, content) in tooling {
+            let path = shared_root.join(dir).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+
+        std::fs::create_dir_all(local_root.join("sessions")).unwrap();
+        std::fs::write(local_root.join("sessions").join("s1.jsonl"), b"{}\n").unwrap();
+        std::fs::create_dir_all(local_root.join("cron")).unwrap();
+        std::fs::write(
+            local_root.join("cron").join("schedule.toml"),
+            "version = 2\n[[jobs]]\nid = \"keepalive\"\nprincipal_id = \"prin_old\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(local_root.join("plans")).unwrap();
+        std::fs::write(local_root.join("plans").join("p1.jsonl"), b"{}\n").unwrap();
+        // Ephemeral local state — must never be packaged (ADR-056).
+        std::fs::write(local_root.join("memory_index.json"), b"{}").unwrap();
+        std::fs::create_dir_all(local_root.join("cache")).unwrap();
+        std::fs::write(local_root.join("cache").join("scratch"), b"x").unwrap();
+        std::fs::create_dir_all(local_root.join("locks")).unwrap();
+        std::fs::write(local_root.join("locks").join("l.lock"), b"x").unwrap();
+
+        (shared_root, local_root, tmp.path().to_path_buf())
+    }
+
+    #[tokio::test]
+    async fn full_snapshot_collects_local_and_tooling_layers() {
+        let identity = Identity::new("snapshot", DIDScope::Local).await.unwrap();
+        let config = sample_config("snapshot", &identity.did);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (shared_root, local_root, _tmp_path) = seed_layout(&tmp, "snapshot");
+
+        let packager = PrincipalPackager::new(config, identity)
+            .with_agents_dir(shared_root.join("agents"))
+            .with_sessions_dir(local_root.join("sessions"))
+            .with_workspace_dir(&shared_root)
+            .with_local_root(&local_root);
+
+        let (files, manifest) = packager
+            .collect_files(PrincipalExportOptions {
+                mode: ExportMode::FullSnapshot,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(manifest.export_mode, ExportMode::FullSnapshot);
+        assert!(files.contains_key("sessions/s1.jsonl"), "sessions packed");
+        assert!(files.contains_key("cron/schedule.toml"), "cron packed");
+        assert!(files.contains_key("plans/p1.jsonl"), "plans packed");
+        assert!(files.contains_key("tools/my-tool/manifest.yaml"));
+        assert!(files.contains_key("skills/docker/SKILL.md"));
+        assert!(files.contains_key("mcp/weather/server.json"));
+        assert!(files.contains_key("hooks/notify/hook.toml"));
+        assert!(files.contains_key("kb/MEMORY.md"));
+
+        assert!(
+            !files.keys().any(|p| p.starts_with("cache/")),
+            "cache must not be packaged"
+        );
+        assert!(
+            !files.keys().any(|p| p.starts_with("locks/")),
+            "locks must not be packaged"
+        );
+        assert!(
+            !files.contains_key("memory_index.json"),
+            "memory index is derived state — not packaged"
+        );
+
+        let layers = manifest.layers.expect("layers computed");
+        assert!(layers.cron.is_some(), "cron layer digest");
+        assert!(layers.plans.is_some(), "plans layer digest");
+        assert!(layers.tools.is_some(), "tools layer digest");
+        assert!(layers.kb.is_some(), "kb layer digest");
+        assert!(layers.sessions.is_some(), "sessions layer digest");
+    }
+
+    #[tokio::test]
+    async fn definition_mode_excludes_snapshot_layers() {
+        let identity = Identity::new("definition", DIDScope::Local).await.unwrap();
+        let config = sample_config("definition", &identity.did);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (shared_root, local_root, _tmp_path) = seed_layout(&tmp, "definition");
+
+        let packager = PrincipalPackager::new(config, identity)
+            .with_agents_dir(shared_root.join("agents"))
+            .with_sessions_dir(local_root.join("sessions"))
+            .with_workspace_dir(&shared_root)
+            .with_local_root(&local_root);
+
+        let (files, manifest) = packager
+            .collect_files(PrincipalExportOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(manifest.export_mode, ExportMode::Definition);
+        assert!(!files.keys().any(|p| p.starts_with("sessions/")));
+        assert!(!files.keys().any(|p| p.starts_with("cron/")));
+        assert!(!files.keys().any(|p| p.starts_with("plans/")));
+        assert!(!files.keys().any(|p| p.starts_with("tools/")));
+        assert!(!files.keys().any(|p| p.starts_with("kb/")));
     }
 
     #[tokio::test]

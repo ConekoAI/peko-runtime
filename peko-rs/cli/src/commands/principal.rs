@@ -126,6 +126,14 @@ pub enum PrincipalCommands {
         /// Include session history in the package
         #[arg(long)]
         include_sessions: bool,
+
+        /// Export a full-existence snapshot (ADR-056): sessions, the
+        /// authored cron schedule, plans, and the installed workspace
+        /// tooling travel alongside the definition, so an import
+        /// restores the principal's live state — an `organized`
+        /// principal keeps its rhythm and is not re-genesis'd.
+        #[arg(long)]
+        full_snapshot: bool,
     },
 
     /// Import a Principal from a `.principal` package
@@ -307,7 +315,8 @@ pub async fn handle_principal(
             name,
             output,
             include_sessions,
-        } => export_principal(&name, output, include_sessions).await,
+            full_snapshot,
+        } => export_principal(&name, output, include_sessions, full_snapshot).await,
         PrincipalCommands::Import {
             file_path,
             name,
@@ -1140,10 +1149,11 @@ async fn export_principal(
     name: &str,
     output: Option<String>,
     include_sessions: bool,
+    full_snapshot: bool,
 ) -> Result<()> {
     let client = DaemonClient::connect().await?;
     let response = client
-        .principal_export(name, output, include_sessions)
+        .principal_export(name, output, include_sessions, full_snapshot)
         .await?;
 
     match response {

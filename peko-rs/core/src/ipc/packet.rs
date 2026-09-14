@@ -598,6 +598,11 @@ pub enum RequestPacket {
         name: String,
         output: Option<String>,
         include_sessions: bool,
+        /// ADR-056: export a full-existence snapshot (definition +
+        /// identity-bearing local state + workspace tooling) instead
+        /// of the shared-tier definition only.
+        #[serde(default)]
+        full_snapshot: bool,
         /// Always `false` since Phase 5 (ADR-047): extensions are
         /// workspace-resident and ride along in the bundle. Retained
         /// for backward compat with old CLIs that still emit the
@@ -4343,6 +4348,7 @@ mod tests {
             name: "helper".to_string(),
             output: Some("/tmp/helper.principal".to_string()),
             include_sessions: true,
+            full_snapshot: true,
             with_extensions: false,
         };
         let bytes = req.to_bytes().unwrap();
@@ -4353,12 +4359,14 @@ mod tests {
                 name,
                 output,
                 include_sessions,
+                full_snapshot,
                 with_extensions,
             } => {
                 assert_eq!(request_id, 5001);
                 assert_eq!(name, "helper");
                 assert_eq!(output, Some("/tmp/helper.principal".to_string()));
                 assert!(include_sessions);
+                assert!(full_snapshot);
                 assert!(!with_extensions);
             }
             _ => panic!("Wrong variant"),

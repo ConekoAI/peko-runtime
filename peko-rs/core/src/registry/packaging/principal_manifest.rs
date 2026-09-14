@@ -10,6 +10,44 @@ use crate::registry::packaging::manifest::{IdentityConfig, PackagingMetadata, Si
 use crate::registry::packaging::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
 
+/// What a `.principal` package carries (ADR-056).
+///
+/// The two modes implement the packaging/portability axis, which is
+/// deliberately decoupled from the Local/Shared storage-tier axis
+/// (access semantics — `common::paths`):
+///
+/// - [`ExportMode::Definition`] — Shared-tier capability-bearing
+///   config only (`config/`, `identity/`, `agents/`). This is the
+///   historical behavior and the right shape for sharing a principal
+///   as a template or pushing it to a registry: sessions, cron, and
+///   plans do NOT travel. Sessions can still be requested explicitly
+///   via `PrincipalExportOptions::include_sessions`.
+/// - [`ExportMode::FullSnapshot`] — everything that constitutes the
+///   principal's live existence: the Definition layers plus the
+///   identity-bearing Local-tier artifacts (`sessions/`, `cron/`,
+///   `plans/`) and the workspace tooling the principal installed
+///   (`tools/`, `skills/`, `mcp/`, `hooks/`, `kb/`). Derived Local
+///   state (`cache/`, `locks/`, `memory_index.json`) is never
+///   packaged — it is rebuilt by the runtime on import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportMode {
+    /// Shared-tier definition only (historical default).
+    #[default]
+    Definition,
+    /// Full live snapshot: definition + identity-bearing local state
+    /// + workspace tooling (ADR-056).
+    FullSnapshot,
+}
+
+/// `skip_serializing_if` helper: the default mode is omitted from the
+/// manifest TOML so legacy packages (which predate the field) and new
+/// definition-mode packages serialize identically.
+#[must_use]
+pub fn export_mode_is_default(mode: &ExportMode) -> bool {
+    matches!(mode, ExportMode::Definition)
+}
+
 /// Content-addressable layer digests for `.principal` packages.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PrincipalLayers {
@@ -28,6 +66,31 @@ pub struct PrincipalLayers {
     /// Session history layer digest (`sessions/`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<String>,
+    /// Cron layer digest (`cron/`) — the principal's authored schedule
+    /// (`local/cron/schedule.toml` + run history), ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    /// Plans layer digest (`plans/`) — the principal's authored Plan
+    /// DAG storage (`local/plans/`), ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plans: Option<String>,
+    /// Universal tools layer digest (`tools/<id>/`) — ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<String>,
+    /// Skills layer digest (`skills/<id>/`) — ADR-056 (workspace
+    /// tooling; reuses the legacy agent-package layer name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<String>,
+    /// MCP layer digest (`mcp/<id>/`) — ADR-056 (workspace tooling;
+    /// reuses the legacy agent-package layer name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<String>,
+    /// Hooks layer digest (`hooks/<id>/`) — ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<String>,
+    /// Knowledge base layer digest (`kb/`) — ADR-056 (ADR-055 tree).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kb: Option<String>,
     /// Plugins layer digest (`plugins/<plugin-id>/`) — ADR-047 §2.1.
     ///
     /// Replaces the legacy `extensions` layer. New exports emit this
@@ -54,6 +117,11 @@ pub struct PrincipalManifest {
     /// Content-addressable layer digests
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layers: Option<PrincipalLayers>,
+    /// What the package carries (ADR-056). Defaults to
+    /// [`ExportMode::Definition`]; omitted from the TOML when default
+    /// so legacy packages parse unchanged.
+    #[serde(default, skip_serializing_if = "export_mode_is_default")]
+    pub export_mode: ExportMode,
     /// Extension dependencies required by this Principal
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extensions: Vec<ExtensionRef>,
@@ -109,6 +177,7 @@ impl PrincipalManifest {
                 kdf_params: None,
             },
             layers: None,
+            export_mode: ExportMode::default(),
             extensions: Vec::new(),
             packaging: PackagingMetadata {
                 files: Vec::new(),
@@ -192,6 +261,13 @@ mod tests {
             agents: Some("sha256:ghi".to_string()),
             memory: None,
             sessions: None,
+            cron: None,
+            plans: None,
+            tools: None,
+            skills: None,
+            mcp: None,
+            hooks: None,
+            kb: None,
             plugins: Some("sha256:pqr".to_string()),
             extensions: Some("sha256:jkl".to_string()),
         };
@@ -237,6 +313,13 @@ extensions = "sha256:jkl"
             agents: Some("sha256:ghi".to_string()),
             memory: None,
             sessions: None,
+            cron: None,
+            plans: None,
+            tools: None,
+            skills: None,
+            mcp: None,
+            hooks: None,
+            kb: None,
             plugins: Some("sha256:pqr".to_string()),
             extensions: None,
         };
@@ -251,5 +334,31 @@ extensions = "sha256:jkl"
         let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));
         assert!(parsed.extensions.is_none());
+    }
+
+    /// ADR-056: the default export mode is omitted from the manifest
+    /// TOML, so pre-ADR-056 packages (no `export_mode` field) parse
+    /// unchanged and read as [`ExportMode::Definition`].
+    #[test]
+    fn test_manifest_without_export_mode_parses_as_definition() {
+        let manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
+        let toml = manifest.to_toml().unwrap();
+        assert!(
+            !toml.contains("export_mode"),
+            "default mode must be omitted: {toml}"
+        );
+        let parsed = PrincipalManifest::from_toml(&toml).unwrap();
+        assert_eq!(parsed.export_mode, ExportMode::Definition);
+    }
+
+    /// ADR-056: a full-snapshot manifest round-trips its mode verbatim.
+    #[test]
+    fn test_manifest_full_snapshot_mode_roundtrips() {
+        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
+        manifest.export_mode = ExportMode::FullSnapshot;
+        let toml = manifest.to_toml().unwrap();
+        assert!(toml.contains("export_mode = \"full_snapshot\""), "{toml}");
+        let parsed = PrincipalManifest::from_toml(&toml).unwrap();
+        assert_eq!(parsed.export_mode, ExportMode::FullSnapshot);
     }
 }

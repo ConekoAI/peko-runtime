@@ -117,23 +117,37 @@ pub enum LayerType {
     Config,
     /// Identity layer (DID document, keys)
     Identity,
-    /// Skills layer (deprecated — retained for reading legacy packages).
+    /// Skills layer (deprecated for agent packages — retained for
+    /// reading legacy packages).
     ///
     /// Under ADR-037, skills are managed as `skill` extensions and are
-    /// recorded in `AgentManifest.extensions`. New exports no longer emit
-    /// this layer, but legacy packages containing `skills/` can still be
-    /// imported.
+    /// recorded in `AgentManifest.extensions`. New agent exports no
+    /// longer emit this layer. Principal packages reuse it for
+    /// workspace tooling under ADR-056 (`skills/<id>/`).
     Skills,
     /// Workspace layer
     Workspace,
     /// Sessions layer
     Sessions,
-    /// MCP layer (deprecated — retained for reading legacy packages).
+    /// Cron layer — the principal's authored schedule
+    /// (`local/cron/schedule.toml` + run history), ADR-056.
+    Cron,
+    /// Plans layer — the principal's authored Plan DAG storage
+    /// (`local/plans/`), ADR-056.
+    Plans,
+    /// Tools layer — universal tools (`tools/<id>/`), ADR-056.
+    Tools,
+    /// Hooks layer — workspace hooks (`hooks/<id>/`), ADR-056.
+    Hooks,
+    /// Knowledge-base layer — the ADR-055 `kb/` tree, ADR-056.
+    Kb,
+    /// MCP layer (deprecated for agent packages — retained for
+    /// reading legacy packages).
     ///
-    /// Under ADR-037, MCP servers are managed as `mcp` extensions and are
-    /// recorded in `AgentManifest.extensions`. New exports no longer emit
-    /// this layer, but legacy packages containing `mcp/` can still be
-    /// imported.
+    /// Under ADR-037, MCP servers are managed as `mcp` extensions and
+    /// are recorded in `AgentManifest.extensions`. New agent exports
+    /// no longer emit this layer. Principal packages reuse it for
+    /// workspace tooling under ADR-056 (`mcp/<id>/`).
     Mcp,
     /// Plugins layer — opaque workspace plugins shipped inside the package
     /// (ADR-047 §2.1). Maps to `<workspace>/plugins/<plugin-id>/` on
@@ -159,6 +173,11 @@ impl LayerType {
             LayerType::Skills => "skills",
             LayerType::Workspace => "workspace",
             LayerType::Sessions => "sessions",
+            LayerType::Cron => "cron",
+            LayerType::Plans => "plans",
+            LayerType::Tools => "tools",
+            LayerType::Hooks => "hooks",
+            LayerType::Kb => "kb",
             LayerType::Mcp => "mcp",
             LayerType::Plugins => "plugins",
             LayerType::Extensions => "extensions",
@@ -174,6 +193,11 @@ impl LayerType {
             LayerType::Skills => "application/vnd.peko.layer.skills.v1.tar+gzip",
             LayerType::Workspace => "application/vnd.peko.layer.workspace.v1.tar+gzip",
             LayerType::Sessions => "application/vnd.peko.layer.sessions.v1.tar+gzip",
+            LayerType::Cron => "application/vnd.peko.layer.cron.v1.tar+gzip",
+            LayerType::Plans => "application/vnd.peko.layer.plans.v1.tar+gzip",
+            LayerType::Tools => "application/vnd.peko.layer.tools.v1.tar+gzip",
+            LayerType::Hooks => "application/vnd.peko.layer.hooks.v1.tar+gzip",
+            LayerType::Kb => "application/vnd.peko.layer.kb.v1.tar+gzip",
             LayerType::Mcp => "application/vnd.peko.layer.mcp.v1.tar+gzip",
             LayerType::Plugins => "application/vnd.peko.layer.plugins.v1.tar+gzip",
             LayerType::Extensions => "application/vnd.peko.layer.extensions.v1.tar+gzip",
@@ -188,6 +212,11 @@ impl LayerType {
             "application/vnd.peko.layer.skills.v1.tar+gzip" => LayerType::Skills,
             "application/vnd.peko.layer.workspace.v1.tar+gzip" => LayerType::Workspace,
             "application/vnd.peko.layer.sessions.v1.tar+gzip" => LayerType::Sessions,
+            "application/vnd.peko.layer.cron.v1.tar+gzip" => LayerType::Cron,
+            "application/vnd.peko.layer.plans.v1.tar+gzip" => LayerType::Plans,
+            "application/vnd.peko.layer.tools.v1.tar+gzip" => LayerType::Tools,
+            "application/vnd.peko.layer.hooks.v1.tar+gzip" => LayerType::Hooks,
+            "application/vnd.peko.layer.kb.v1.tar+gzip" => LayerType::Kb,
             "application/vnd.peko.layer.mcp.v1.tar+gzip" => LayerType::Mcp,
             "application/vnd.peko.layer.plugins.v1.tar+gzip" => LayerType::Plugins,
             "application/vnd.peko.layer.extensions.v1.tar+gzip" => LayerType::Extensions,
@@ -334,6 +363,11 @@ mod tests {
         assert_eq!(LayerType::Skills.dir_name(), "skills");
         assert_eq!(LayerType::Workspace.dir_name(), "workspace");
         assert_eq!(LayerType::Sessions.dir_name(), "sessions");
+        assert_eq!(LayerType::Cron.dir_name(), "cron");
+        assert_eq!(LayerType::Plans.dir_name(), "plans");
+        assert_eq!(LayerType::Tools.dir_name(), "tools");
+        assert_eq!(LayerType::Hooks.dir_name(), "hooks");
+        assert_eq!(LayerType::Kb.dir_name(), "kb");
         assert_eq!(LayerType::Mcp.dir_name(), "mcp");
         assert_eq!(LayerType::Plugins.dir_name(), "plugins");
         assert_eq!(LayerType::Extensions.dir_name(), "extensions");

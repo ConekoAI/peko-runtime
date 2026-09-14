@@ -444,11 +444,17 @@ impl DaemonClient {
     }
 
     /// Export a Principal to a package.
+    ///
+    /// `full_snapshot` (ADR-056) exports the principal's full live
+    /// existence — sessions, authored cron schedule, plans, and the
+    /// installed workspace tooling — in addition to the definition
+    /// layers.
     pub async fn principal_export(
         &self,
         name: impl Into<String>,
         output: Option<String>,
         include_sessions: bool,
+        full_snapshot: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalExport {
@@ -456,6 +462,7 @@ impl DaemonClient {
             name: name.into(),
             output,
             include_sessions,
+            full_snapshot,
             with_extensions: false,
         };
         self.request_response(packet).await
