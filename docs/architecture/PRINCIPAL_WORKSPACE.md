@@ -33,9 +33,12 @@ For the trust-and-audit posture that makes this safe, see
 ├── agents/<name>.md
 ├── kb/                              # persistent knowledge base (ADR-055)
 │   ├── MEMORY.md                    # hot long-term memory (rendered every turn)
-│   ├── index.md                     # hot map of the tree
-│   ├── people/<who>.md              # per-person notes (hot catalog)
-│   ├── groups/<channel>.md          # per-group notes (hot catalog)
+│   ├── index.md                     # hot map of the tree (rendered every turn)
+│   ├── people/<who>.md              # cold — per-person notes, looked up via index
+│   ├── groups/<channel>.md          # cold — per-group notes; the file matching a
+│   │                                #   run's channel binding is injected (D8)
+│   ├── agents/<name>.md             # cold — per-agent notes; a named agent's
+│   │                                #   note rides with that agent (D8)
 │   └── …                            # cold: refs/, journal/, imports/, datasets…
 ├── memory/sessions/<session_id>.jsonl
 ├── tools/<tool-id>/tool.toml        # universal tools
@@ -50,7 +53,7 @@ For the trust-and-audit posture that makes this safe, see
 |----------------------------|---------------------------------------------------------------------------|
 | `principal.toml`           | Owner, permissions, exposure, capabilities, root prompt                    |
 | `agents/<name>.md`         | Agent prompts (per-principal)                                             |
-| `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md`, `index.md`, `people/`, `groups/` catalogs; everything else cold, read on demand |
+| `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `agents/<name>.md` for the named agent |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
 | `tools/<id>/tool.toml`     | Universal tool manifests                                                  |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |

@@ -105,8 +105,11 @@ This is your first self-turn — the trunk of a new principal.\n\n",
 prompts live in `agents/`. Scratch and removal staging sessions `/tmp` \
 and `/trash` already exist under you. Your persistent knowledge base \
 lives in `kb/` — `kb/MEMORY.md` (hot memory, rides in every prompt), \
-`kb/index.md` (its map), `kb/people/` and `kb/groups/` (per-person and \
-per-group notes). It is yours: revise in place, keep the index honest, \
+`kb/index.md` (its map, also hot), `kb/people/`, `kb/groups/` and \
+`kb/agents/` (per-person, per-group and per-agent notes — cold, looked \
+up through the index, except that a group note matching a channel \
+binding and a named agent's note are injected into that context's \
+prompts). It is yours: revise in place, keep the index honest, \
 restructure freely.\n\n\
 On this turn:\n\
 1. Read your own definition (`principal.toml`). If `[identity]` or \

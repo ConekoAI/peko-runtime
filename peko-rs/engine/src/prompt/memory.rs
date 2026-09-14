@@ -8,7 +8,11 @@
 //!   the hot, always-rendered member of the pinned hot set. It is
 //!   loaded at session start and injected into the system prompt at
 //!   the `{{memory}}` placeholder when the template opts in. The
-//!   principal owns this file and may update it via `Write`.
+//!   principal owns this file and may update it via `Write`. The
+//!   second hot file, `kb/index.md` (the kb map), and the targeted
+//!   scope notes (`kb/groups/<channel>.md`, `kb/agents/<name>.md` —
+//!   ADR-055 D8) render as `<runtime-context>` tail sections via
+//!   [`load_kb_index`] / [`load_binding_note`] / [`load_agent_note`].
 //!
 //! - **AGENTS.md** lives at arbitrary directories the principal
 //!   touches during a session. The framework no longer auto-injects
@@ -23,12 +27,27 @@ use std::path::{Path, PathBuf};
 
 /// Directory (relative to the principal workspace) holding the
 /// principal's persistent knowledge base (ADR-055). The pinned hot
-/// set (`MEMORY.md`, `index.md`, `people/`, `groups/`) lives here.
+/// set (`MEMORY.md`, `index.md`) lives here, as do the cold
+/// conventions (`people/`, `groups/`, `agents/`) that feed the
+/// targeted scope injections (`load_binding_note`, `load_agent_note`).
 pub const KB_DIR: &str = "kb";
 
 /// Filename peko uses for per-principal long-term memory. Resolved
 /// under [`KB_DIR`] — `<principal_workspace>/kb/MEMORY.md`.
 pub const PRINCIPAL_MEMORY_FILE: &str = "MEMORY.md";
+
+/// Filename peko uses for the kb map (ADR-055 D2: the second hot
+/// file). Resolved under [`KB_DIR`] —
+/// `<principal_workspace>/kb/index.md`.
+pub const KB_INDEX_FILE: &str = "index.md";
+
+/// Subdirectory (under [`KB_DIR`]) of per-group notes keyed by
+/// channel/group id (ADR-055 D8 binding-note injection).
+pub const KB_GROUPS_DIR: &str = "groups";
+
+/// Subdirectory (under [`KB_DIR`]) of per-agent notes keyed by agent
+/// name (ADR-055 D8 agent-note injection).
+pub const KB_AGENTS_DIR: &str = "agents";
 
 /// Filename peko uses for directory-scoped shared notes.
 pub const SHARED_CONTEXT_FILE: &str = "AGENTS.md";
@@ -37,6 +56,14 @@ pub const SHARED_CONTEXT_FILE: &str = "AGENTS.md";
 /// truncated with a notice so a runaway memory file can't blow the
 /// context window.
 pub const PRINCIPAL_MEMORY_MAX_BYTES: u64 = 256 * 1024; // 256 KiB
+
+/// Maximum total bytes of the kb index (`kb/index.md`) to load
+/// (ADR-055 D2 per-section cap — a runaway map cannot starve memory).
+pub const KB_INDEX_MAX_BYTES: u64 = 8 * 1024; // 8 KiB
+
+/// Maximum total bytes of a targeted scope note (`kb/groups/<channel>.md`
+/// or `kb/agents/<name>.md`, ADR-055 D8).
+pub const KB_NOTE_MAX_BYTES: u64 = 8 * 1024; // 8 KiB
 
 /// Maximum total bytes of AGENTS.md to load per directory.
 pub const SHARED_CONTEXT_MAX_BYTES: u64 = 64 * 1024; // 64 KiB
@@ -60,6 +87,71 @@ pub fn load_principal_memory(workspace: &Path) -> Option<String> {
         Err(_) => return None,
     };
     Some(truncate_with_notice(raw, path, PRINCIPAL_MEMORY_MAX_BYTES))
+}
+
+/// Validate a single path segment for the kb scope-note loaders:
+/// non-empty, not a dot-segment, no separators. Prevents a channel id
+/// or agent name from escaping the kb tree.
+fn is_safe_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment != "." && segment != ".." && !segment.contains(['/', '\\'])
+}
+
+/// Load the kb map from `<workspace>/kb/index.md` (ADR-055 D2: the
+/// second hot file). Returns `None` if the file does not exist, is
+/// empty, or cannot be read. Truncates to [`KB_INDEX_MAX_BYTES`] with
+/// a notice when oversized.
+#[must_use]
+pub fn load_kb_index(workspace: &Path) -> Option<String> {
+    let path = workspace.join(KB_DIR).join(KB_INDEX_FILE);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    Some(truncate_with_notice(raw, path, KB_INDEX_MAX_BYTES))
+}
+
+/// Load the binding note for a run's triggering channel:
+/// `<workspace>/kb/groups/<channel>.md` (ADR-055 D8). Channel-bound
+/// agents see their room's conventions at turn start; agents with no
+/// matching file render nothing. Truncates to [`KB_NOTE_MAX_BYTES`]
+/// with a notice when oversized. Returns `None` for unsafe segments
+/// or missing/empty/unreadable files.
+#[must_use]
+pub fn load_binding_note(workspace: &Path, channel: &str) -> Option<String> {
+    if !is_safe_segment(channel) {
+        return None;
+    }
+    let path = workspace
+        .join(KB_DIR)
+        .join(KB_GROUPS_DIR)
+        .join(format!("{channel}.md"));
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    Some(truncate_with_notice(raw, path, KB_NOTE_MAX_BYTES))
+}
+
+/// Load the per-agent note for a named agent:
+/// `<workspace>/kb/agents/<name>.md` (ADR-055 D8 — the durable
+/// per-agent layer ADR-052's T1/T2 lacked). Ephemeral, unnamed spawns
+/// get no note. Truncates to [`KB_NOTE_MAX_BYTES`] with a notice when
+/// oversized. Returns `None` for unsafe segments or
+/// missing/empty/unreadable files.
+#[must_use]
+pub fn load_agent_note(workspace: &Path, agent_name: &str) -> Option<String> {
+    if !is_safe_segment(agent_name) {
+        return None;
+    }
+    let path = workspace
+        .join(KB_DIR)
+        .join(KB_AGENTS_DIR)
+        .join(format!("{agent_name}.md"));
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    Some(truncate_with_notice(raw, path, KB_NOTE_MAX_BYTES))
 }
 
 /// Walk up from `start` looking for `AGENTS.md`. Stops at
@@ -237,6 +329,103 @@ mod tests {
         std::fs::write(tmp.path().join("kb").join("MEMORY.md"), "I prefer tabs.").unwrap();
         let s = load_principal_memory(tmp.path()).unwrap();
         assert_eq!(s, "I prefer tabs.");
+    }
+
+    #[test]
+    fn load_kb_index_returns_contents_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
+        std::fs::write(
+            tmp.path().join("kb").join("index.md"),
+            "- people/ — who I know\n- projects/ — what I build\n",
+        )
+        .unwrap();
+        let s = load_kb_index(tmp.path()).unwrap();
+        assert!(s.contains("who I know"));
+    }
+
+    #[test]
+    fn load_kb_index_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load_kb_index(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn load_kb_index_truncates_oversized_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
+        let big = "x".repeat((KB_INDEX_MAX_BYTES as usize) * 2);
+        std::fs::write(tmp.path().join("kb").join("index.md"), big).unwrap();
+        let s = load_kb_index(tmp.path()).unwrap();
+        assert!(s.len() < KB_INDEX_MAX_BYTES as usize * 2);
+        assert!(s.contains("truncated:"));
+    }
+
+    #[test]
+    fn load_binding_note_reads_matching_channel_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("groups")).unwrap();
+        std::fs::write(
+            tmp.path().join("kb").join("groups").join("chan_abc.md"),
+            "The room's language is German.",
+        )
+        .unwrap();
+        let s = load_binding_note(tmp.path(), "chan_abc").unwrap();
+        assert!(s.contains("German"));
+    }
+
+    #[test]
+    fn load_binding_note_returns_none_when_no_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("groups")).unwrap();
+        assert!(load_binding_note(tmp.path(), "chan_absent").is_none());
+    }
+
+    #[test]
+    fn load_binding_note_rejects_unsafe_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("groups")).unwrap();
+        std::fs::write(tmp.path().join("kb").join("MEMORY.md"), "mem").unwrap();
+        for bad in ["", ".", "..", "a/b", "a\\b", "../MEMORY"] {
+            assert!(
+                load_binding_note(tmp.path(), bad).is_none(),
+                "segment: {bad}"
+            );
+            assert!(load_agent_note(tmp.path(), bad).is_none(), "segment: {bad}");
+        }
+        // Nothing escaped: no stray file was read or written.
+        assert!(!tmp.path().join("groups").exists());
+    }
+
+    #[test]
+    fn load_agent_note_reads_matching_agent_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("agents")).unwrap();
+        std::fs::write(
+            tmp.path().join("kb").join("agents").join("channel-comm.md"),
+            "You greet new members.",
+        )
+        .unwrap();
+        let s = load_agent_note(tmp.path(), "channel-comm").unwrap();
+        assert!(s.contains("greet new members"));
+    }
+
+    #[test]
+    fn load_agent_note_returns_none_when_no_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("agents")).unwrap();
+        assert!(load_agent_note(tmp.path(), "unnamed").is_none());
+    }
+
+    #[test]
+    fn load_agent_note_truncates_oversized_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("agents")).unwrap();
+        let big = "y".repeat((KB_NOTE_MAX_BYTES as usize) * 2);
+        std::fs::write(tmp.path().join("kb").join("agents").join("big.md"), big).unwrap();
+        let s = load_agent_note(tmp.path(), "big").unwrap();
+        assert!(s.len() < KB_NOTE_MAX_BYTES as usize * 2);
+        assert!(s.contains("truncated:"));
     }
 
     #[test]

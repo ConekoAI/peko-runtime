@@ -331,6 +331,25 @@ impl PromptRenderer {
         if let Some(section) = state.take_changed(SectionSlot::Memory, format_memory_section(ctx)) {
             sections.push(section);
         }
+        // ADR-055 D2/D8: the kb map plus the two targeted scope notes
+        // (binding note for the run's triggering channel, agent note
+        // for the named agent). On-change tail sections like memory;
+        // absence renders empty, which the tracker retracts.
+        if let Some(section) =
+            state.take_changed(SectionSlot::KbIndex, format_kb_index_section(ctx))
+        {
+            sections.push(section);
+        }
+        if let Some(section) =
+            state.take_changed(SectionSlot::BindingNote, format_binding_note_section(ctx))
+        {
+            sections.push(section);
+        }
+        if let Some(section) =
+            state.take_changed(SectionSlot::AgentNote, format_agent_note_section(ctx))
+        {
+            sections.push(section);
+        }
         if let Some(section) = state.take_changed(
             SectionSlot::ProjectContext,
             format_project_context_section(ctx),
@@ -516,6 +535,9 @@ enum SectionSlot {
     Identity,
     CurrentTime,
     Memory,
+    KbIndex,
+    BindingNote,
+    AgentNote,
     ProjectContext,
     SessionContext,
     Agents,
@@ -537,6 +559,9 @@ impl SectionSlot {
             SectionSlot::Identity => "principal identity",
             SectionSlot::CurrentTime => "current time",
             SectionSlot::Memory => "memory",
+            SectionSlot::KbIndex => "kb index",
+            SectionSlot::BindingNote => "binding note",
+            SectionSlot::AgentNote => "agent note",
             SectionSlot::ProjectContext => "project instructions",
             SectionSlot::SessionContext => "session context",
             SectionSlot::Agents => "agents",
@@ -574,6 +599,9 @@ pub struct RuntimeContextState {
     identity: Option<String>,
     current_time: Option<String>,
     memory: Option<String>,
+    kb_index: Option<String>,
+    binding_note: Option<String>,
+    agent_note: Option<String>,
     project_context: Option<String>,
     session_context: Option<String>,
     agents: Option<String>,
@@ -608,6 +636,9 @@ impl RuntimeContextState {
             SectionSlot::Identity => &mut self.identity,
             SectionSlot::CurrentTime => &mut self.current_time,
             SectionSlot::Memory => &mut self.memory,
+            SectionSlot::KbIndex => &mut self.kb_index,
+            SectionSlot::BindingNote => &mut self.binding_note,
+            SectionSlot::AgentNote => &mut self.agent_note,
             SectionSlot::ProjectContext => &mut self.project_context,
             SectionSlot::SessionContext => &mut self.session_context,
             SectionSlot::Agents => &mut self.agents,
@@ -968,6 +999,66 @@ fn format_memory_section(ctx: &TurnPromptContext) -> String {
         return String::new();
     }
     format!("## Your long-term memory (MEMORY.md)\n\n{trimmed}\n")
+}
+
+/// ADR-055 D2: the second hot file — the map of the principal's `kb/`
+/// tree, pointing the agent at the cold areas (people/, groups/,
+/// refs/, …) it should look up via Read/Glob instead of having them
+/// cataloged into every prompt.
+fn format_kb_index_section(ctx: &TurnPromptContext) -> String {
+    let Some(index) = crate::prompt::memory::load_kb_index(&ctx.workspace) else {
+        return String::new();
+    };
+    let trimmed = index.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    format!(
+        "## Knowledge base index (kb/index.md)\n\n\
+         The map of your persistent knowledge base (`kb/`) — look areas \
+         up via Read/Glob rather than expecting them in the prompt.\n\n\
+         {trimmed}\n"
+    )
+}
+
+/// ADR-055 D8 (binding note): the run's triggering channel matched a
+/// `kb/groups/<channel>.md` file, so the channel-bound agent sees its
+/// room's conventions at turn start. No match renders empty (the
+/// content stays reachable cold through the kb index).
+fn format_binding_note_section(ctx: &TurnPromptContext) -> String {
+    let Some(note) = crate::prompt::memory::load_binding_note(&ctx.workspace, &ctx.channel) else {
+        return String::new();
+    };
+    let trimmed = note.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    format!(
+        "## Group conventions ({})\n\n\
+         Standing notes for the group/channel this run is bound to.\n\n\
+         {trimmed}\n",
+        ctx.channel
+    )
+}
+
+/// ADR-055 D8 (agent note): the named agent has a durable per-agent
+/// memory file (`kb/agents/<name>.md`) — the persistent layer
+/// ADR-052's T1/T2 lacked. Unnamed/ephemeral spawns render empty.
+fn format_agent_note_section(ctx: &TurnPromptContext) -> String {
+    let Some(note) = crate::prompt::memory::load_agent_note(&ctx.workspace, &ctx.agent_name) else {
+        return String::new();
+    };
+    let trimmed = note.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    format!(
+        "## Your standing notes ({})\n\n\
+         Durable per-agent memory from the principal's knowledge base \
+         (`kb/agents/{}.md`) — yours to keep current.\n\n\
+         {trimmed}\n",
+        ctx.agent_name, ctx.agent_name
+    )
 }
 
 /// ADR-052 D5 (T2): the nearest `AGENTS.md` above the run's focus
@@ -2182,6 +2273,109 @@ mod tests {
         assert_eq!(
             state.take_changed_custom("other", "x".to_string()),
             Some("x".to_string())
+        );
+    }
+
+    // ---------- ADR-055 D2/D8: kb index + targeted scope notes ----------
+
+    #[test]
+    fn kb_index_section_renders_map_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("kb")).unwrap();
+        std::fs::write(
+            dir.path().join("kb").join("index.md"),
+            "- people/ — who I know\n",
+        )
+        .unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = dir.path().to_path_buf();
+        let rendered = format_kb_index_section(&ctx);
+        assert!(rendered.starts_with("## Knowledge base index (kb/index.md)"));
+        assert!(rendered.contains("people/ — who I know"));
+    }
+
+    #[test]
+    fn kb_index_section_empty_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = dir.path().to_path_buf();
+        assert_eq!(format_kb_index_section(&ctx), String::new());
+    }
+
+    #[test]
+    fn binding_note_section_renders_matching_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("kb").join("groups")).unwrap();
+        std::fs::write(
+            dir.path().join("kb").join("groups").join("discord.md"),
+            "The room's language is German.",
+        )
+        .unwrap();
+        let mut ctx = empty_ctx(); // channel: "discord"
+        ctx.workspace = dir.path().to_path_buf();
+        let rendered = format_binding_note_section(&ctx);
+        assert!(rendered.starts_with("## Group conventions (discord)"));
+        assert!(rendered.contains("German"));
+    }
+
+    #[test]
+    fn binding_note_section_empty_when_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = dir.path().to_path_buf();
+        ctx.channel = "no-such-channel".to_string();
+        assert_eq!(format_binding_note_section(&ctx), String::new());
+    }
+
+    #[test]
+    fn agent_note_section_renders_named_agent_note() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("kb").join("agents")).unwrap();
+        std::fs::write(
+            dir.path().join("kb").join("agents").join("test-agent.md"),
+            "You own the release checklist.",
+        )
+        .unwrap();
+        let mut ctx = empty_ctx(); // agent_name: "test-agent"
+        ctx.workspace = dir.path().to_path_buf();
+        let rendered = format_agent_note_section(&ctx);
+        assert!(rendered.starts_with("## Your standing notes (test-agent)"));
+        assert!(rendered.contains("release checklist"));
+    }
+
+    #[test]
+    fn agent_note_section_empty_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = dir.path().to_path_buf();
+        assert_eq!(format_agent_note_section(&ctx), String::new());
+    }
+
+    #[test]
+    fn kb_sections_track_independently_in_change_state() {
+        let mut state = RuntimeContextState::default();
+        assert!(state
+            .take_changed(SectionSlot::KbIndex, "map v1".to_string())
+            .is_some());
+        // The binding note disappearing after injection retracts once.
+        assert!(state
+            .take_changed(SectionSlot::BindingNote, "room rules".to_string())
+            .is_some());
+        let retraction = state
+            .take_changed(SectionSlot::BindingNote, String::new())
+            .expect("retraction fires");
+        assert_eq!(
+            retraction, "_The \"binding note\" section no longer applies._",
+            "got: {retraction}"
+        );
+        // Agent note slot is independent of both.
+        assert!(state
+            .take_changed(SectionSlot::AgentNote, "agent note".to_string())
+            .is_some());
+        // Unchanged kb index dedupes.
+        assert_eq!(
+            state.take_changed(SectionSlot::KbIndex, "map v1".to_string()),
+            None
         );
     }
 }
