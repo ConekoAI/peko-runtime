@@ -141,14 +141,20 @@ The unpackager imports the layers the package actually carries:
 
 Cron jobs are keyed on the owning principal's runtime `PrincipalId`
 (ADR-054 D3 — the convention the cron tools stamp and `CronList`
-filters on). At import, every job's `principal_id` in
-`cron/schedule.toml` is rebound to the imported principal's effective
-id (`config.id` → DID → name — the same resolution order the cron
-tools and `genesis.rs` use). Per-principal schedule files contain only
-jobs owned by that principal, so the rewrite is unconditional,
-correct, and idempotent. A malformed schedule passes through unchanged
-with a warning; the cron engine surfaces it on next load rather than
-the import hard-failing on a side artifact.
+filters on). At import, every job's `principal_id` in the cron
+database is rebound to the imported principal's effective id
+(`config.id` → DID → name — the same resolution order the cron tools
+and `genesis.rs` use). Per-principal schedule files contain only jobs
+owned by that principal, so the rewrite is unconditional, correct, and
+idempotent. A malformed file passes through unchanged with a warning;
+the cron engine surfaces it on next load rather than the import
+hard-failing on a side artifact.
+
+Format note: `local/cron/schedule.toml` carries a legacy `.toml` name
+but is serialized as **JSON** (`CronDatabase`, `serde_json`) — the
+rebinding tries JSON first and keeps a TOML fallback in case the file
+name ever becomes truthful. The live e2e verifies the JSON path
+against a real daemon-written schedule.
 
 ### D4: Boot-state entry rules (extends ADR-054 D1)
 
@@ -196,8 +202,17 @@ policy decided by export mode; derived Local state is never packaged.
   assertions), definition-mode exclusion, full-snapshot import
   round-trip asserting every layer lands in its tier directory and
   `organized` survives verbatim, definition-import boot-state reset,
-  cron remap (rewrite/idempotence/malformed pass-through), manifest
-  mode round-trip.
+  cron remap (JSON — the real on-disk format — plus TOML fallback,
+  rewrite/idempotence/malformed pass-through), manifest mode
+  round-trip.
+- e2e: `scripts/e2e/flows/snapshot-roundtrip-llm.sh` (real LLM,
+  MiniMax) — genesis turn via `create -f`, trunk-authored state
+  (CronCreate attempt with a schema-safe clone fallback, skill, kb
+  note, plan, hand-stamped `organized`), both export modes inspected
+  as tars, remove → import → per-tier restore assertions with stale-id
+  rebinding, organized reboot abstaining from re-seed, a real `peko
+  send` round-trip on the imported principal, and the
+  definition-import contrast. Verified green end-to-end.
 
 **Round-trip property now pinned by tests:** create → self-organize
 (authored cron job, plan, installed tool, kb notes) → export
@@ -258,8 +273,10 @@ packager this fails at every step except config.
 - **Genesis-job hygiene on import:** a snapshot taken mid-genesis
   carries the one-shot `genesis` job; verify idempotence against
   `seed_boot_defaults` for non-organized imports.
-- **e2e flow:** extend `scripts/e2e/flows/genesis-pipeline-llm.sh`
-  with the full export→remove→import→assert-schedule round-trip.
+- **CronCreate-authored job in e2e:** the flow's trunk-authored cron
+  job currently falls back to a schema-safe schedule clone when the
+  model skips the tool call; keep an eye on MiniMax tool-call
+  reliability before tightening the flow to the real path only.
 
 ## 6. References
 

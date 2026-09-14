@@ -755,45 +755,79 @@ fn split_layer_path<'a>(path: &'a str, prefixes: &[&'a str]) -> Option<(&'a str,
     None
 }
 
-/// Rebind every cron job's `principal_id` in a `schedule.toml` to the
-/// imported principal's effective runtime id (ADR-056).
+/// Rebind every cron job's `principal_id` in a cron database file to
+/// the imported principal's effective runtime id (ADR-056).
 ///
 /// Jobs in a per-principal schedule file are all owned by that
 /// principal, so an unconditional rewrite is correct and idempotent.
-/// A malformed file is passed through unchanged with a warning — the
-/// cron engine will surface it on next load rather than the import
-/// hard-failing on a snapshot's side artifact.
+/// NOTE: `local/cron/schedule.toml` carries a legacy `.toml` name but
+/// is serialized as JSON (`CronDatabase`, `serde_json`), so JSON is
+/// tried first; the TOML path is kept defensively in case the file
+/// name ever becomes truthful again. A malformed file is passed
+/// through unchanged with a warning — the cron engine will surface it
+/// on next load rather than the import hard-failing on a snapshot's
+/// side artifact.
 fn remap_cron_principal_ids(schedule_bytes: &[u8], new_principal_id: &str) -> Vec<u8> {
-    let parse_result: anyhow::Result<toml::Value> = std::str::from_utf8(schedule_bytes)
-        .map_err(|e| anyhow::anyhow!("schedule.toml is not utf-8: {e}"))
-        .and_then(|s| toml::from_str(s).map_err(|e| anyhow::anyhow!("{e}")));
-
-    let mut value = match parse_result {
-        Ok(v) => v,
+    let text = match std::str::from_utf8(schedule_bytes) {
+        Ok(t) => t,
         Err(e) => {
             tracing::warn!(
-                "cron schedule.toml could not be parsed for principal-id rebinding \
-                 ({e}); writing it through unchanged"
+                "cron schedule file is not utf-8 ({e}); skipping principal-id rebinding"
             );
             return schedule_bytes.to_vec();
         }
     };
 
-    if let Some(jobs) = value.get_mut("jobs").and_then(|j| j.as_array_mut()) {
-        for job in jobs {
-            job["principal_id"] = toml::Value::String(new_principal_id.to_string());
-        }
-    }
+    let parse_error = |json_err: serde_json::Error, toml_err: toml::de::Error| {
+        tracing::warn!(
+            "cron schedule file could not be parsed for principal-id rebinding \
+             (json: {json_err}; toml: {toml_err}); writing it through unchanged"
+        );
+    };
 
-    match toml::to_string_pretty(&value) {
-        Ok(s) => s.into_bytes(),
-        Err(e) => {
-            tracing::warn!(
-                "cron schedule.toml re-serialization failed ({e}); writing the original bytes"
-            );
-            schedule_bytes.to_vec()
+    // Primary: the real on-disk format (JSON). Fallback: TOML.
+    let rewritten = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(mut value) => {
+            if let Some(jobs) = value.get_mut("jobs").and_then(|j| j.as_array_mut()) {
+                for job in jobs {
+                    job["principal_id"] = serde_json::Value::String(new_principal_id.to_string());
+                }
+            }
+            serde_json::to_string_pretty(&value)
+                .map_err(|e| {
+                    tracing::warn!(
+                        "cron schedule re-serialization failed ({e}); writing the original bytes"
+                    );
+                    e
+                })
+                .ok()
+                .map(String::into_bytes)
         }
-    }
+        Err(json_err) => match toml::from_str::<toml::Value>(text) {
+            Ok(mut value) => {
+                if let Some(jobs) = value.get_mut("jobs").and_then(|j| j.as_array_mut()) {
+                    for job in jobs {
+                        job["principal_id"] = toml::Value::String(new_principal_id.to_string());
+                    }
+                }
+                toml::to_string_pretty(&value)
+                    .map_err(|e| {
+                        tracing::warn!(
+                        "cron schedule re-serialization failed ({e}); writing the original bytes"
+                    );
+                        e
+                    })
+                    .ok()
+                    .map(String::into_bytes)
+            }
+            Err(toml_err) => {
+                parse_error(json_err, toml_err);
+                None
+            }
+        },
+    };
+
+    rewritten.unwrap_or_else(|| schedule_bytes.to_vec())
 }
 
 pub(crate) fn verify_principal_signature(
@@ -1390,6 +1424,49 @@ principal_id = "prin_old"
             remap_cron_principal_ids(garbage, "prin_new"),
             garbage.to_vec()
         );
+    }
+
+    /// ADR-056: the real on-disk cron database format is JSON despite
+    /// the legacy `schedule.toml` file name (`CronDatabase`,
+    /// `serde_json::to_string_pretty`). The rebinding must handle it.
+    #[test]
+    fn remap_cron_principal_ids_handles_real_json_format() {
+        let schedule = serde_json::json!({
+            "version": 2,
+            "jobs": [
+                {
+                    "id": "keepalive",
+                    "name": "keepalive",
+                    "principal_id": "prin_old",
+                    "schedule": { "every": { "every_ms": 600000 } },
+                    "action": { "send": { "message": "", "target": "trunk" } },
+                    "delete_after_run": false,
+                    "enabled": true
+                },
+                {
+                    "id": "trunk-authored",
+                    "name": "morning-brief",
+                    "principal_id": "prin_old",
+                    "schedule": { "at": { "at": "2026-09-15T01:00:00Z" } },
+                    "action": { "send": { "message": "morning", "target": "trunk" } },
+                    "delete_after_run": false,
+                    "enabled": true
+                }
+            ],
+            "runs": []
+        })
+        .to_string();
+
+        let remapped =
+            String::from_utf8(remap_cron_principal_ids(schedule.as_bytes(), "prin_new")).unwrap();
+        assert_eq!(remapped.matches("prin_new").count(), 2, "{remapped}");
+        assert!(!remapped.contains("prin_old"), "{remapped}");
+
+        // The rest of the document survives the rewrite.
+        let parsed: serde_json::Value = serde_json::from_str(&remapped).unwrap();
+        assert_eq!(parsed["jobs"][0]["id"], "keepalive");
+        assert_eq!(parsed["jobs"][1]["name"], "morning-brief");
+        assert_eq!(parsed["version"], 2);
     }
 
     /// Build a minimal `.ext` archive in memory containing an
