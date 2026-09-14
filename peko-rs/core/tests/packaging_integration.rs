@@ -1,7 +1,7 @@
-//! Full packaging integration test (Phase 7 — PKG-I1, Principal-era).
+//! Full packaging integration test (Principal-era, ADR-056).
 //!
 //! End-to-end pipeline:
-//!   export .peko → push → pull → import
+//!   export .peko snapshot → push (template TOML) → pull → ground via create -f
 //!
 //! This test is marked `#[ignore]` because it requires:
 //!   - Node.js 22+ with tsx installed  (local mode)
@@ -48,8 +48,7 @@
 
 use peko_core::principal::config::PrincipalConfig;
 use peko_core::registry::packaging::{
-    PrincipalExportOptions, PrincipalImportOptions, PrincipalManifest, PrincipalPackager,
-    PrincipalUnpackager,
+    PrincipalExportOptions, PrincipalManifest, PrincipalPackager,
 };
 use peko_core::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
 use peko_identity::{did::DIDScope, Identity};
@@ -199,7 +198,7 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     let base_dir = temp_dir.path();
 
     // ═════════════════════════════════════════════════════════════════
-    // 1. EXPORT .principal from directory (canonical PrincipalPackager path)
+    // 1. EXPORT .peko snapshot from directory (canonical PrincipalPackager path)
     // ═════════════════════════════════════════════════════════════════
     let principal_dir = base_dir.join("integration-principal");
     create_test_principal_dir(&principal_dir).await.unwrap();
@@ -232,14 +231,13 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     );
 
     // ═════════════════════════════════════════════════════════════════
-    // 2. PUSH to registry
+    // 2. PUSH to registry (template TOML — ADR-056)
     // ═════════════════════════════════════════════════════════════════
-    // The Principal push path goes through `PrincipalPackager::export_for_registry`,
-    // which produces a `PrincipalRegistryDescriptor` carrying the
-    // signed manifest + per-prefix layer blobs (config, identity,
-    // agents, …). The RegistryClient's `push_principal` stores those
-    // layers locally, builds a `RegistryManifest` with
-    // `kind = "principal"`, and pushes via the underlying OCI client.
+    // `PrincipalPackager::export_for_registry` produces a template
+    // descriptor: the OCI config blob is a stripped `principal.toml`
+    // (no DID, no keys, no lived state) with zero content layers.
+    // `push_principal` stores the blob and pushes a `RegistryManifest`
+    // with `kind = "principal"` via the underlying OCI client.
     let build_registry_dir = base_dir.join("build_registry");
     let build_registry = AgentRegistry::new(&build_registry_dir);
     build_registry.init().await.unwrap();
@@ -296,7 +294,7 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     let pull_config = test_registry_config(&backend.url);
     let pull_client = RegistryClient::new(pull_config, pull_registry.clone());
 
-    let pull_output = base_dir.join("pulled.peko");
+    let pull_output = base_dir.join("pulled.template.toml");
     let mut pull_events = Vec::new();
     let pull_result = pull_client
         .pull_principal(&registry_ref_str, &pull_output, |event| {
@@ -312,50 +310,32 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
 
     assert!(
         pull_output.exists(),
-        "pulled .peko archive should exist at {}",
+        "pulled template artifact should exist at {}",
         pull_output.display()
     );
 
     // ═════════════════════════════════════════════════════════════════
-    // 4. IMPORT .peko package
+    // 4. PULLED ARTIFACT: a template TOML (ADR-056)
     // ═════════════════════════════════════════════════════════════════
-    let import_config_dir = base_dir.join("imported_principals_config");
-    let import_data_dir = base_dir.join("imported_principals_data");
-    tokio::fs::create_dir_all(&import_config_dir).await.unwrap();
-    tokio::fs::create_dir_all(&import_data_dir).await.unwrap();
-
-    let unpackager = PrincipalUnpackager::new(
-        &pull_output,
-        import_config_dir.clone(),
-        import_data_dir.clone(),
-    );
-
-    let import_options = PrincipalImportOptions {
-        new_name: Some("imported-principal".to_string()),
-        rotate_keys: false,
-        import_sessions: false,
-        // Issue #14: signature verification is now enforced on import.
-        // The integration pipeline produces packages via the canonical
-        // PrincipalPackager, which signs the manifest, so verification
-        // passes without an opt-in.
-        allow_unsigned: false,
-        force: false,
-        ..Default::default()
-    };
-
-    let import_result = unpackager.import(import_options).await.unwrap();
-    assert_eq!(import_result.name, "imported-principal");
-    assert!(import_result.config_path.exists());
-
-    // Sanity: the imported principal.toml on disk is a valid
-    // PrincipalConfig and carries the original name.
-    let imported_config_toml = tokio::fs::read_to_string(&import_result.config_path)
-        .await
-        .unwrap();
-    let imported_config: PrincipalConfig = toml::from_str(&imported_config_toml).unwrap();
+    // The registry distributes DNA, not creatures: the pushed config
+    // blob is a template TOML (a stripped `principal.toml`), and pull
+    // writes it verbatim. It is ground via
+    // `peko principal create <name> -f <file>` — fresh identity,
+    // inferred boot state — never by re-importing the source identity.
+    let pulled_toml = tokio::fs::read_to_string(&pull_output).await?;
+    let template: PrincipalConfig = toml::from_str(&pulled_toml)?;
     assert_eq!(
-        imported_config.name, "imported-principal",
-        "imported principal.toml should carry the renamed principal name"
+        template.name, "integration-principal",
+        "template carries the principal's name (DNA)"
+    );
+    assert!(
+        template.id.is_none(),
+        "template must not carry a runtime id"
+    );
+    assert!(template.did.is_none(), "template must not carry a DID");
+    assert!(
+        template.boot_state.is_none(),
+        "template must not carry a boot state"
     );
 
     Ok(())
