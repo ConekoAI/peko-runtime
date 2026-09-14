@@ -4,25 +4,24 @@
 # ADR-056 full-existence snapshot, END-TO-END with a REAL LLM (MiniMax).
 # Requires MINIMAX_API_KEY in the environment.
 #
-# Verifies that `peko principal export --full-snapshot` →
-# `peko principal remove` → `peko principal import` preserves a LIVE
-# principal's existence, not just its definition:
+# Verifies that `peko principal export` → `peko principal remove` →
+# `peko principal import` is cryogenic TRANSPORT of a LIVE principal —
+# not cloning (there is exactly one export shape; cloning is
+# `principal create -f` with a fresh DID):
 #   1. `principal create -f` runs the real genesis turn (ADR-054);
 #   2. authored state is accumulated the way the trunk would:
-#      a daemon-backed cron job (`peko cron add`), a workspace skill,
+#      a cron job via the CronCreate tool surface, a workspace skill,
 #      a kb note, a plan file — plus a hand-stamp to `organized`
 #      (files are the contract, ADR-050/054);
-#   3. the definition-only export carries NONE of it; the
-#      full-snapshot export carries ALL of it (tar inspection);
+#   3. the snapshot archive carries sessions, cron, plans, tooling,
+#      and kb — and no derived state (cache/locks/memory_index);
 #   4. after remove + import: sessions, the cron schedule (with
 #      principal-id rebinding — the package's jobs carry a STALE id),
 #      plans, skill, and kb land in their tier directories;
 #      boot_state = organized survives verbatim;
 #   5. daemon reboot: no genesis re-seed (job set unchanged, no
 #      `genesis` job) and the imported principal round-trips a real
-#      `peko send` through the model;
-#   6. contrast: the definition-only package imports with boot_state
-#      reset (inferred) and NO local state — the D4 bug fix.
+#      `peko send` through the model.
 #
 # Run:  MINIMAX_API_KEY=... scripts/e2e/run-case.sh snapshot-roundtrip-llm
 #       (set KEEP_TEMPDIR=1 to keep the artifacts for inspection)
@@ -193,33 +192,23 @@ print(len(d["jobs"]))
     return 1
   fi
 
-  # ── export BOTH modes and inspect the archives ───────────────────
-  local def_pkg="$tempdir/def-only.principal"
+  # ── export the snapshot and inspect the archive ──────────────────
   local full_pkg="$tempdir/snap-full.principal"
 
-  peko_iso_run principal export "$principal" -o "$def_pkg"
-  peko_iso_assert_rc_zero
-  peko_iso_run principal export "$principal" --full-snapshot -o "$full_pkg"
+  peko_iso_run principal export "$principal" -o "$full_pkg"
   peko_iso_assert_rc_zero
 
-  # Definition-only: no sessions, no cron, no plans, no tooling, no kb.
-  if tar -tzf "$def_pkg" | grep -Eq '^(sessions/|cron/|plans/|tools/|skills/|mcp/|hooks/|kb/)'; then
-    echo "❌ definition-only export must not carry snapshot layers:" >&2
-    tar -tzf "$def_pkg" | grep -E '^(sessions/|cron/|plans/|tools/|skills/|mcp/|hooks/|kb/)' >&2
-    return 1
-  fi
-  echo "✅ definition-only export carries no snapshot layers"
-
-  # Full snapshot: all of it, plus the declared mode.
+  # Full snapshot: all of it, and no declared export mode on the
+  # manifest (there is exactly one shape).
   for layer in 'sessions/' 'cron/schedule.toml' 'plans/' 'skills/e2e-skill/' 'kb/MEMORY.md'; do
     if ! tar -tzf "$full_pkg" | grep -q "^$layer"; then
-      echo "❌ full-snapshot export missing layer: $layer" >&2
+      echo "❌ snapshot export missing layer: $layer" >&2
       tar -tzf "$full_pkg" >&2
       return 1
     fi
   done
-  tar -xzOf "$full_pkg" manifest.toml | grep -q 'export_mode = "full_snapshot"' || {
-    echo "❌ manifest does not declare export_mode = full_snapshot" >&2
+  tar -xzOf "$full_pkg" manifest.toml | grep -q 'export_mode' && {
+    echo "❌ manifest must not declare an export mode (single shape)" >&2
     tar -xzOf "$full_pkg" manifest.toml >&2
     return 1
   }
@@ -229,7 +218,7 @@ print(len(d["jobs"]))
     tar -tzf "$full_pkg" | grep -E '^(cache/|locks/|.*memory_index\.json)' >&2
     return 1
   fi
-  echo "✅ full-snapshot export carries sessions+cron+plans+tooling+kb, no derived state"
+  echo "✅ snapshot export carries sessions+cron+plans+tooling+kb, no derived state"
 
   # ── remove the principal entirely ────────────────────────────────
   peko_iso_run principal remove "$principal" --yes
@@ -240,10 +229,10 @@ print(len(d["jobs"]))
   fi
   echo "✅ principal removed (all data gone)"
 
-  # ── import the full snapshot ─────────────────────────────────────
+  # ── import the snapshot ──────────────────────────────────────────
   peko_iso_run principal import "$full_pkg" --yes
   peko_iso_assert_rc_zero
-  echo "✅ full-snapshot import accepted"
+  echo "✅ snapshot import accepted"
 
   # ── file-level post-conditions (daemon not yet restarted) ────────
   local imp_toml="$shared_dir/principal.toml"
@@ -335,24 +324,6 @@ print(len(d["jobs"]))
   peko_iso_run send "$principal" "Reply with exactly the word: reimported-ok"
   peko_iso_assert_rc_zero
   echo "✅ imported principal round-trips a real send"
-
-  # ── contrast: the definition-only package resets boot state ──────
-  peko_iso_run principal import "$def_pkg" --name def-only --yes
-  peko_iso_assert_rc_zero
-  local def_toml="$peko_dir/principals/def-only/principal.toml"
-  if [[ -f "$def_toml" ]] && ! grep -q 'boot_state' "$def_toml"; then
-    echo "✅ definition import infers its boot state (organized NOT inherited)"
-  else
-    echo "❌ definition import must not inherit boot_state:" >&2
-    cat "$def_toml" 2>/dev/null >&2
-    return 1
-  fi
-  if [[ ! -f "$peko_dir/data/principals/def-only/local/cron/schedule.toml" ]]; then
-    echo "✅ definition import restores no local state"
-  else
-    echo "❌ definition import must not restore a cron schedule" >&2
-    return 1
-  fi
 
   peko_iso_run daemon stop
   peko_iso_assert_rc_zero

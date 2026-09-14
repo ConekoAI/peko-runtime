@@ -3,9 +3,7 @@
 //! Exports Principals to `.principal` files (tar.gz archives with manifest).
 
 use crate::principal::config::PrincipalConfig;
-use crate::registry::packaging::principal_manifest::{
-    ExportMode, PrincipalLayers, PrincipalManifest,
-};
+use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
 use crate::registry::packaging::types::{compute_digest, Layer, LayerType};
 use anyhow::Context;
 use peko_identity::Identity;
@@ -13,28 +11,29 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Export options for a Principal package.
+///
+/// ADR-056: there is exactly ONE export shape — the full-existence
+/// snapshot (definition + identity-bearing local state + workspace
+/// tooling). The pre-ADR-056 "definition only" mode and its
+/// `include_sessions` hybrid flag are removed: cloning is
+/// `principal create -f <template.toml>` (fresh DID, fresh genesis),
+/// and transporting a live principal is export → import of a
+/// snapshot (same DID, state verbatim). Registry distribution uses
+/// [`PrincipalPackager::export_for_registry`], which emits a
+/// DID-free, key-free template payload — never a snapshot.
 #[derive(Debug, Clone)]
 pub struct PrincipalExportOptions {
     /// Output path (defaults to `<name>.principal`)
     pub output_path: Option<String>,
-    /// Include session history (can be large)
-    pub include_sessions: bool,
     /// Optional description
     pub description: Option<String>,
-    /// What the package carries (ADR-056). `Definition` (the default)
-    /// preserves the historical behavior; `FullSnapshot` additionally
-    /// packs the identity-bearing Local-tier artifacts (sessions, cron,
-    /// plans) and the workspace tooling (tools/skills/mcp/hooks/kb).
-    pub mode: ExportMode,
 }
 
 impl Default for PrincipalExportOptions {
     fn default() -> Self {
         Self {
             output_path: None,
-            include_sessions: false,
             description: None,
-            mode: ExportMode::default(),
         }
     }
 }
@@ -57,33 +56,36 @@ pub struct PrincipalRegistryDescriptor {
 
 /// Packager for creating `.principal` packages.
 ///
-/// **Phase A.** The legacy `with_memory_dir` knob is removed —
-/// there is no separate memory directory in the typed layout.
-/// Sessions live under the Local tier (`local/sessions/`) and the
-/// memory index (`local/memory_index.json`) is intentionally not
-/// part of the portable bundle (it's derived runtime state, rebuilt
-/// on import — ADR-056). The principal's persistent knowledge base
-/// (`<workspace>/kb/`, ADR-055) IS part of the portable bundle under
-/// [`ExportMode::FullSnapshot`].
+/// **ADR-056 (full-existence snapshot):** an export is the
+/// principal's live existence — `config/`, `identity/` (DID doc +
+/// keys), `agents/`, plus the identity-bearing Local-tier artifacts
+/// (`sessions/`, `cron/`, `plans/`) and the workspace tooling the
+/// principal installed (`tools/`, `skills/`, `mcp/`, `hooks/`, `kb/`).
+/// An export → import round-trip restores working context,
+/// self-authored cadence, and tooling — not just the definition.
+/// Derived Local state (`cache/`, `locks/`, `memory_index.json`) is
+/// excluded and rebuilt at import.
 ///
-/// **Phase 5 (ADR-047 §2.1):** the `with_extensions_from_store` /
-/// `with_embedded_extensions` / `with_extension_refs` setters are
-/// deleted. Workspace-resident plugins (tools/hooks/skills/MCP) live
-/// in the principal's workspace.
+/// **Grounding semantics (ADR-056):** there are exactly two ways to
+/// ground a principal at a runtime. `principal create -f` grows one
+/// from a template (fresh DID, genesis runs); importing a snapshot
+/// wakes a transported one (same DID, boot state and schedule
+/// verbatim, no genesis re-seed). A DID is therefore never forked
+/// across live runtimes — cloning goes through a template with a
+/// fresh identity.
 ///
-/// **Phase 7 (ADR-047 §5):** the package format gains a `plugins/`
-/// layer convention. New exports emit `plugins/` and omit the legacy
-/// `extensions/` layer entirely; the unpackager still accepts the
-/// legacy `extensions/` prefix and routes it to the same handler.
+/// **Registry artifact:** [`PrincipalPackager::export_for_registry`]
+/// emits a *template* payload — config with `id`/`did`/`boot_state`
+/// stripped, agent prompts, and workspace tooling, signed by the
+/// source DID as endorsement. No keys, no sessions, no local state
+/// ever leaves the host through the registry; a pulled template
+/// clones via a freshly minted identity.
 ///
-/// **ADR-056 (full-existence snapshot):** [`ExportMode::FullSnapshot`]
-/// additionally packs the identity-bearing Local-tier artifacts
-/// (`sessions/`, `cron/`, `plans/`) and the workspace tooling
-/// (`tools/`, `skills/`, `mcp/`, `hooks/`, `kb/`) so an
-/// export → import round-trip restores the principal's live
-/// existence — working context, self-authored cadence, and installed
-/// tooling — not just its definition. Derived Local state (`cache/`,
-/// `locks/`, `memory_index.json`) is excluded and rebuilt at import.
+/// **Phase A/5/7 history:** the legacy `with_memory_dir` knob and the
+/// embedded-extension paths are gone; workspace tooling lives in the
+/// principal's workspace; the `plugins/` layer convention (always
+/// empty today) supersedes the legacy `extensions/` layer, which the
+/// unpackager still accepts on import.
 pub struct PrincipalPackager {
     config: PrincipalConfig,
     identity: Identity,
@@ -120,32 +122,41 @@ impl PrincipalPackager {
 
     /// Set the principal workspace root (Shared tier) — scanned for
     /// tooling directories (`tools/`, `skills/`, `mcp/`, `hooks/`,
-    /// `kb/`) in [`ExportMode::FullSnapshot`].
+    /// `kb/`).
     pub fn with_workspace_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.workspace_dir = Some(dir.as_ref().to_path_buf());
         self
     }
 
     /// Set the Local tier root — scanned for the identity-bearing
-    /// state directories (`cron/`, `plans/`) in
-    /// [`ExportMode::FullSnapshot`].
+    /// state directories (`cron/`, `plans/`).
     pub fn with_local_root(mut self, dir: impl AsRef<Path>) -> Self {
         self.local_root = Some(dir.as_ref().to_path_buf());
         self
     }
 
-    /// Export the Principal to a `.principal` package.
+    /// Export the Principal to a `.principal` package — a
+    /// full-existence snapshot (ADR-056).
     pub async fn export(&self, options: PrincipalExportOptions) -> anyhow::Result<PathBuf> {
         let (files, _manifest) = self.collect_files(options.clone()).await?;
         self.create_archive(&files, &options).await
     }
 
-    /// Export and produce the descriptors needed for registry push.
+    /// Export the template payload for registry push (ADR-056).
+    ///
+    /// The registry distributes DNA, not creatures: the payload is the
+    /// config with `id`/`did`/`boot_state` stripped, agent prompts,
+    /// and the workspace tooling — plus the public DID document, over
+    /// which the source principal signs the manifest as *endorsement*
+    /// ("this DNA came from me"). No `keys.enc`, no sessions, no
+    /// cron/plans ever leave the host through the registry. A pulled
+    /// template clones via a freshly minted identity (`principal
+    /// create`-style genesis), never by reusing the source DID.
     pub async fn export_for_registry(
         self,
         options: PrincipalExportOptions,
     ) -> anyhow::Result<PrincipalRegistryDescriptor> {
-        let (files, manifest) = self.collect_files(options.clone()).await?;
+        let (files, manifest) = self.collect_template_files(&options).await?;
         let package_path = self.create_archive(&files, &options).await?;
 
         let manifest_toml = manifest.to_toml()?.into_bytes();
@@ -160,10 +171,6 @@ impl PrincipalPackager {
             ("config", LayerType::Config),
             ("identity", LayerType::Identity),
             ("agents", LayerType::Workspace),
-            ("memory", LayerType::Sessions),
-            ("sessions", LayerType::Sessions),
-            ("cron", LayerType::Cron),
-            ("plans", LayerType::Plans),
             ("tools", LayerType::Tools),
             ("skills", LayerType::Skills),
             ("mcp", LayerType::Mcp),
@@ -197,7 +204,8 @@ impl PrincipalPackager {
         })
     }
 
-    /// Collect all files for the package without creating the archive.
+    /// Collect all files for a full-existence snapshot package without
+    /// creating the archive (ADR-056).
     pub async fn collect_files(
         &self,
         options: PrincipalExportOptions,
@@ -225,52 +233,94 @@ impl PrincipalPackager {
         self.export_config(&mut files, &mut manifest)
             .context("Failed to export config")?;
 
-        // Phase 5 (ADR-047 §2.1): the legacy "embed extensions
-        // from the global ExtensionStore" path is gone. Workspace-
-        // resident plugins (tools/hooks/skills/MCP) live in the
-        // principal's workspace and are scoped to that workspace.
-        // `manifest.extensions` is left at its default empty Vec.
-        //
-        // Phase 7 (ADR-047 §5): new exports emit a `plugins/` layer
-        // (currently always empty — plugin bundles are not embedded
-        // by any caller today). The legacy `extensions/` prefix is
-        // dropped entirely from packager output.
-        //
-        // ADR-056: full-snapshot mode packs the workspace tooling
-        // directories directly (`export_workspace_tooling` below).
+        // Phase 5/7 (ADR-047): no embedded-extension paths; the
+        // `plugins/` layer convention is emitted (always empty today)
+        // and the legacy `extensions/` prefix is dropped entirely
+        // from packager output.
 
         self.export_agents(&mut files, &mut manifest)
             .await
             .context("Failed to export agents")?;
-        // Phase A: the legacy `export_memory` is gone. The memory
-        // index (`local/memory_index.json`) is derived state — never
-        // packaged, rebuilt on import (ADR-056). Sessions are the
-        // baseline Local-tier artifact; ADR-056 adds cron + plans and
-        // the workspace tooling in full-snapshot mode.
 
-        let full_snapshot = options.mode == ExportMode::FullSnapshot;
-        if options.include_sessions || full_snapshot {
-            self.export_sessions(&mut files, &mut manifest)
-                .await
-                .context("Failed to export sessions")?;
+        // Identity-bearing Local-tier state (ADR-056): the experiential
+        // record (`sessions/`), the trunk's self-authored cadence
+        // (`cron/`) and plan DAGs (`plans/`). `cache/` and `locks/`
+        // are deliberately NOT scanned — they are ephemeral, never
+        // identity-bearing.
+        self.export_sessions(&mut files, &mut manifest)
+            .await
+            .context("Failed to export sessions")?;
+        self.export_local_authored(&mut files, &mut manifest)
+            .await
+            .context("Failed to export local authored state")?;
+        self.export_workspace_tooling(&mut files, &mut manifest)
+            .await
+            .context("Failed to export workspace tooling")?;
+
+        manifest.layers = Some(Self::compute_layers(&files)?);
+        self.sign_manifest(&mut manifest)
+            .context("Failed to sign manifest")?;
+
+        let manifest_toml = manifest.to_toml().context("Failed to serialize manifest")?;
+        files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
+
+        Ok((files, manifest))
+    }
+
+    /// Collect the DID-free, key-free template payload for registry
+    /// distribution (ADR-056): config with `id`/`did`/`boot_state`
+    /// stripped, agent prompts, workspace tooling, and the public DID
+    /// document. The manifest is signed by the source key as
+    /// endorsement; nothing that could resurrect the source identity
+    /// or leak lived state is included.
+    async fn collect_template_files(
+        &self,
+        options: &PrincipalExportOptions,
+    ) -> anyhow::Result<(HashMap<String, Vec<u8>>, PrincipalManifest)> {
+        let did = self
+            .config
+            .did
+            .as_ref()
+            .map(|d| d.0.clone())
+            .unwrap_or_else(|| self.identity.did.clone());
+
+        let mut manifest = PrincipalManifest::new(&self.config.name, "1.0.0", &did);
+
+        if let Some(ref desc) = options.description {
+            manifest.principal.description = Some(desc.clone());
+        } else if let Some(ref desc) = self.config.identity.description {
+            manifest.principal.description = Some(desc.clone());
         }
 
-        if full_snapshot {
-            // Identity-bearing Local-tier state: the trunk's
-            // self-authored cadence (`cron/`) and plan DAGs
-            // (`plans/`). `cache/` and `locks/` are deliberately NOT
-            // scanned — they are ephemeral, never identity-bearing.
-            self.export_local_authored(&mut files, &mut manifest)
-                .await
-                .context("Failed to export local authored state")?;
-            // Workspace tooling: whatever the principal installed
-            // (presence = visibility, ADR-050) travels with it.
-            self.export_workspace_tooling(&mut files, &mut manifest)
-                .await
-                .context("Failed to export workspace tooling")?;
-        }
+        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
 
-        manifest.export_mode = options.mode;
+        // Public DID document only — endorsement, not identity
+        // transport. `identity/keys.enc` is deliberately NOT included.
+        let did_doc = serde_json::to_vec_pretty(&self.identity.to_did_document()?)?;
+        files.insert("identity/did.json".to_string(), did_doc);
+        manifest.add_file("identity/did.json", &files["identity/did.json"]);
+
+        // Strip the runtime identity: a template carries the DNA, and
+        // `principal create -f` (or a template pull) always mints a
+        // fresh DID/`id` and infers its boot state.
+        let mut template_config = self.config.clone();
+        template_config.id = None;
+        template_config.did = None;
+        template_config.boot_state = None;
+        let config_toml = toml::to_string_pretty(&template_config)?;
+        files.insert(
+            "config/principal.toml".to_string(),
+            config_toml.into_bytes(),
+        );
+        manifest.add_file("config/principal.toml", &files["config/principal.toml"]);
+
+        self.export_agents(&mut files, &mut manifest)
+            .await
+            .context("Failed to export agents")?;
+        self.export_workspace_tooling(&mut files, &mut manifest)
+            .await
+            .context("Failed to export workspace tooling")?;
+
         manifest.layers = Some(Self::compute_layers(&files)?);
         self.sign_manifest(&mut manifest)
             .context("Failed to sign manifest")?;
@@ -593,9 +643,7 @@ mod tests {
     fn test_export_options_default() {
         let opts = PrincipalExportOptions::default();
         assert!(opts.output_path.is_none());
-        assert!(!opts.include_sessions);
         assert!(opts.description.is_none());
-        assert_eq!(opts.mode, ExportMode::Definition);
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
@@ -722,7 +770,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_snapshot_collects_local_and_tooling_layers() {
+    async fn snapshot_collects_local_and_tooling_layers() {
         let identity = Identity::new("snapshot", DIDScope::Local).await.unwrap();
         let config = sample_config("snapshot", &identity.did);
 
@@ -736,14 +784,10 @@ mod tests {
             .with_local_root(&local_root);
 
         let (files, manifest) = packager
-            .collect_files(PrincipalExportOptions {
-                mode: ExportMode::FullSnapshot,
-                ..Default::default()
-            })
+            .collect_files(PrincipalExportOptions::default())
             .await
             .unwrap();
 
-        assert_eq!(manifest.export_mode, ExportMode::FullSnapshot);
         assert!(files.contains_key("sessions/s1.jsonl"), "sessions packed");
         assert!(files.contains_key("cron/schedule.toml"), "cron packed");
         assert!(files.contains_key("plans/p1.jsonl"), "plans packed");
@@ -774,13 +818,21 @@ mod tests {
         assert!(layers.sessions.is_some(), "sessions layer digest");
     }
 
+    /// ADR-056: the registry artifact is a template — DID-free
+    /// config, agents, tooling, and the public DID document. No keys,
+    /// no sessions, no cron/plans ever leave the host through the
+    /// registry.
     #[tokio::test]
-    async fn definition_mode_excludes_snapshot_layers() {
-        let identity = Identity::new("definition", DIDScope::Local).await.unwrap();
-        let config = sample_config("definition", &identity.did);
+    async fn registry_template_is_did_free_and_key_free() {
+        use crate::principal::config::BootState;
+
+        let identity = Identity::new("template", DIDScope::Local).await.unwrap();
+        let mut config = sample_config("template", &identity.did);
+        config.id = Some(peko_subject::PrincipalId("prin_template_src".into()));
+        config.set_boot_state(BootState::Organized);
 
         let tmp = tempfile::tempdir().unwrap();
-        let (shared_root, local_root, _tmp_path) = seed_layout(&tmp, "definition");
+        let (shared_root, local_root, _tmp_path) = seed_layout(&tmp, "template");
 
         let packager = PrincipalPackager::new(config, identity)
             .with_agents_dir(shared_root.join("agents"))
@@ -789,16 +841,40 @@ mod tests {
             .with_local_root(&local_root);
 
         let (files, manifest) = packager
-            .collect_files(PrincipalExportOptions::default())
+            .collect_template_files(&PrincipalExportOptions::default())
             .await
             .unwrap();
 
-        assert_eq!(manifest.export_mode, ExportMode::Definition);
+        // No identity transport, no lived state.
+        assert!(
+            !files.contains_key("identity/keys.enc"),
+            "keys must not travel"
+        );
+        assert!(
+            files.contains_key("identity/did.json"),
+            "public DID doc travels"
+        );
         assert!(!files.keys().any(|p| p.starts_with("sessions/")));
         assert!(!files.keys().any(|p| p.starts_with("cron/")));
         assert!(!files.keys().any(|p| p.starts_with("plans/")));
-        assert!(!files.keys().any(|p| p.starts_with("tools/")));
-        assert!(!files.keys().any(|p| p.starts_with("kb/")));
+
+        // The config is stripped of the source identity.
+        let config_str = std::str::from_utf8(&files["config/principal.toml"]).unwrap();
+        assert!(!config_str.contains("prin_template_src"), "{config_str}");
+        assert!(
+            !config_str.contains(&manifest.principal.did),
+            "{config_str}"
+        );
+        assert!(!config_str.contains("boot_state"), "{config_str}");
+
+        // DNA travels: agents + tooling.
+        assert!(files.contains_key("agents/root.md"));
+        assert!(files.contains_key("skills/docker/SKILL.md"));
+        assert!(files.contains_key("kb/MEMORY.md"));
+
+        // Endorsement: signed by the source DID, which is named in
+        // the manifest but absent from the payload config.
+        assert!(!manifest.signatures.manifest.is_empty());
     }
 
     #[tokio::test]

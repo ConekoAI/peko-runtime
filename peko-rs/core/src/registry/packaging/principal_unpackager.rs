@@ -9,7 +9,7 @@ use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::path_safety::safe_join;
-use crate::registry::packaging::principal_manifest::{ExportMode, PrincipalManifest};
+use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
 use peko_auth::Subject;
@@ -95,11 +95,13 @@ pub struct PrincipalImportResult {
     pub validation: ValidationResult,
     /// IDs of embedded extensions that were installed during import.
     pub installed_extensions: Vec<String>,
-    /// The package's export mode (ADR-056): what the import actually
-    /// restored. `FullSnapshot` imports land with their boot state
-    /// verbatim (an `organized` principal keeps its schedule and is
-    /// not re-genesis'd); `Definition` imports infer their boot state.
-    pub import_mode: ExportMode,
+    /// Whether the package carried identity-bearing Local-tier state
+    /// (`sessions/`, `cron/`, `plans/`). ADR-056: `true` ⇒ the import
+    /// is a *wake* — boot state carried verbatim (an `organized`
+    /// principal keeps its schedule and is not re-genesis'd);
+    /// `false` ⇒ the import is a *template/clone* — the boot state is
+    /// inferred and genesis runs on next boot.
+    pub carried_local_state: bool,
 }
 
 /// Unpackager for importing `.principal` packages.
@@ -193,7 +195,12 @@ impl PrincipalUnpackager {
             .as_ref()
             .unwrap_or(&manifest.principal.name)
             .clone();
-        if signature_status == SignatureStatus::Verified {
+        // ADR-056: template packages (keyless — registry-distributed
+        // DNA) carry no identity to pin; the freshly minted DID has no
+        // history. Pinning applies to identity transport (snapshots),
+        // which always ship `identity/keys.enc`.
+        let is_template = !files.contains_key("identity/keys.enc");
+        if signature_status == SignatureStatus::Verified && !is_template {
             let resolver = PathResolver::with_dirs(
                 self.config_dir.clone(),
                 self.data_dir.clone(),
@@ -275,22 +282,29 @@ impl PrincipalUnpackager {
             config.owner = Subject::User("local".to_string());
         }
 
-        // ADR-056 boot-state entry rules (extends ADR-054 D1):
+        // ADR-056 grounding semantics: what the import *is* follows
+        // from what the package *carries*, not from a mode flag.
         //
-        // - `full_snapshot`: the package is a verbatim snapshot of a
-        //   live principal, boot state included — carry it through.
-        //   An `organized` principal therefore imports as `organized`
+        // - Carries Local-tier state (`sessions/`, `cron/`, `plans/`)
+        //   ⇒ a *wake*: the package is a verbatim snapshot of a live
+        //   principal, boot state included — carry it through. An
+        //   `organized` principal therefore imports as `organized`
         //   WITH its authored cron schedule intact, and the daemon's
-        //   boot seeding pass abstains (D4: the trunk owns its
-        //   rhythm). A `defined` snapshot re-genesis's on next boot,
-        //   which is exactly what the source was.
-        // - `definition`: the package carries no live state, so the
-        //   source's boot state is meaningless on this host — reset
-        //   it and let ADR-054's inference apply (`has_definition()`
-        //   ⇒ `defined`). This also fixes the pre-ADR-056 bug where
-        //   a definition-only export of an `organized` principal
+        //   boot seeding pass abstains (D4 of ADR-054: the trunk owns
+        //   its rhythm, and the snapshot just delivered that rhythm
+        //   across hosts). A `defined` snapshot re-genesis's on next
+        //   boot, which is exactly what the source was.
+        // - Carries no Local state (template package, or a legacy
+        //   definition-shaped one) ⇒ a *clone*: the source's boot
+        //   state is meaningless on this host — reset it and let
+        //   ADR-054's inference apply (`has_definition()` ⇒
+        //   `defined`). This also keeps the pre-ADR-056 bug closed
+        //   where a definition-only export of an `organized` principal
         //   imported as `organized` with no schedule at all.
-        if manifest.export_mode == ExportMode::Definition {
+        let carried_local_state = files.keys().any(|p| {
+            p.starts_with("sessions/") || p.starts_with("cron/") || p.starts_with("plans/")
+        });
+        if !carried_local_state {
             config.boot_state = None;
         }
 
@@ -307,18 +321,16 @@ impl PrincipalUnpackager {
             self.import_sessions(&files, &name).await?;
         }
 
-        if manifest.export_mode == ExportMode::FullSnapshot {
-            self.import_workspace_tooling(&files, &name).await?;
-            if options.import_local_state {
-                let effective_principal_id = config
-                    .id
-                    .clone()
-                    .map(|pid| pid.0)
-                    .or_else(|| config.did.clone().map(|d| d.0))
-                    .unwrap_or_else(|| name.clone());
-                self.import_local_authored(&files, &name, &effective_principal_id)
-                    .await?;
-            }
+        self.import_workspace_tooling(&files, &name).await?;
+        if carried_local_state && options.import_local_state {
+            let effective_principal_id = config
+                .id
+                .clone()
+                .map(|pid| pid.0)
+                .or_else(|| config.did.clone().map(|d| d.0))
+                .unwrap_or_else(|| name.clone());
+            self.import_local_authored(&files, &name, &effective_principal_id)
+                .await?;
         }
 
         let config_path = self.save_config(&config, &name).await?;
@@ -330,7 +342,7 @@ impl PrincipalUnpackager {
             keys_rotated: options.rotate_keys,
             validation,
             installed_extensions: Vec::new(),
-            import_mode: manifest.export_mode,
+            carried_local_state,
         })
     }
 
@@ -399,9 +411,26 @@ impl PrincipalUnpackager {
             return Ok(new_identity);
         }
 
-        let encrypted_keys = files
-            .get("identity/keys.enc")
-            .ok_or_else(|| anyhow::anyhow!("Missing identity/keys.enc"))?;
+        // ADR-056: template packages (keyless — registry-distributed
+        // DNA) mint a fresh identity on import. Cloning never reuses
+        // the source DID: the template's `identity/did.json` names the
+        // *publisher* (for signature endorsement), not the new
+        // principal's identity.
+        let Some(encrypted_keys) = files.get("identity/keys.enc") else {
+            let new_identity = Identity::new(
+                &manifest.principal.name,
+                peko_identity::did::DIDScope::Local,
+            )
+            .await?;
+            let key_storage = KeyStorage::with_path(identity_dir)?;
+            key_storage.store_identity(&new_identity).await?;
+            tracing::info!(
+                "template package '{}' imported with a freshly minted identity {}",
+                manifest.principal.name,
+                new_identity.did
+            );
+            return Ok(new_identity);
+        };
         let key_data = if manifest.identity.encrypted {
             anyhow::bail!("Encrypted principal packages are not yet supported")
         } else {
@@ -1246,7 +1275,6 @@ mod tests {
         packager
             .export(PrincipalExportOptions {
                 output_path: Some(out.display().to_string()),
-                mode: crate::registry::packaging::principal_manifest::ExportMode::FullSnapshot,
                 ..Default::default()
             })
             .await
@@ -1260,9 +1288,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result.import_mode,
-            crate::registry::packaging::principal_manifest::ExportMode::FullSnapshot
+        assert!(
+            result.carried_local_state,
+            "snapshot packages carry Local-tier state"
         );
 
         // Workspace tooling restored to the Shared tier root.
@@ -1342,12 +1370,12 @@ mod tests {
         );
     }
 
-    /// ADR-056: a definition-only import resets the boot state so
-    /// ADR-054's inference applies. Exporting a definition from an
-    /// `organized` source must not land the import as `organized`
-    /// with no schedule to show for it.
+    /// ADR-056: a package that carries NO Local-tier state (legacy
+    /// definition-shaped, or a keyless template) resets the boot state
+    /// so ADR-054's inference applies. An `organized` source must not
+    /// land the import as `organized` with no schedule to show for it.
     #[tokio::test]
-    async fn definition_import_does_not_inherit_organized_state() {
+    async fn import_without_local_state_does_not_inherit_organized_state() {
         use crate::registry::packaging::principal_packager::PrincipalExportOptions;
 
         let identity = Identity::new("org", DIDScope::Local).await.unwrap();
@@ -1356,6 +1384,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("org.principal");
+        // No sessions/cron/plans dirs wired in — the package carries
+        // no Local state, so it clones rather than wakes.
         let packager = PrincipalPackager::new(config, identity);
         packager
             .export(PrincipalExportOptions {
@@ -1373,10 +1403,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result.import_mode,
-            crate::registry::packaging::principal_manifest::ExportMode::Definition
-        );
+        assert!(!result.carried_local_state, "no local state in the package");
         let imported = std::fs::read_to_string(
             config_dir
                 .join("principals")
@@ -1386,7 +1413,98 @@ mod tests {
         .unwrap();
         assert!(
             !imported.contains("boot_state"),
-            "definition import must infer its boot state, not inherit it: {imported}"
+            "an import without local state must infer its boot state, not inherit it: {imported}"
+        );
+    }
+
+    /// ADR-056: a registry template package (keyless — no
+    /// `identity/keys.enc`) clones with a freshly minted identity. The
+    /// source DID is publisher endorsement only and never travels into
+    /// the new principal; the boot state is inferred (a template is a
+    /// seed, not a wake).
+    #[tokio::test]
+    async fn template_import_mints_fresh_identity() {
+        use crate::registry::packaging::principal_packager::PrincipalExportOptions;
+
+        let identity = Identity::new("tmpl-src", DIDScope::Local).await.unwrap();
+        let source_did = identity.did.clone();
+        let mut config = sample_config("tmpl-src", &source_did);
+        config.id = Some(peko_subject::PrincipalId("prin_tmpl_source".into()));
+        config.set_boot_state(BootState::Organized);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let shared_root = tmp.path().join("shared").join("tmpl-src");
+        std::fs::create_dir_all(shared_root.join("agents")).unwrap();
+        std::fs::write(shared_root.join("agents").join("root.md"), b"# root").unwrap();
+        std::fs::create_dir_all(shared_root.join("skills").join("s1")).unwrap();
+        std::fs::write(shared_root.join("skills").join("s1").join("SKILL.md"), b"x").unwrap();
+
+        let out = tmp.path().join("tmpl-src.principal");
+        let packager = PrincipalPackager::new(config, identity)
+            .with_agents_dir(shared_root.join("agents"))
+            .with_workspace_dir(&shared_root);
+        // export_for_registry IS the template export (ADR-056).
+        packager
+            .export_for_registry(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let config_dir = tmp.path().join("cfg");
+        let data_dir = tmp.path().join("data");
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir);
+        let result = unpackager
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+
+        assert!(
+            !result.carried_local_state,
+            "templates carry no local state"
+        );
+        assert_ne!(
+            result.did, source_did,
+            "a template clone must mint a fresh DID, never reuse the publisher's"
+        );
+
+        // DNA landed: agents + tooling.
+        assert!(
+            config_dir
+                .join("principals")
+                .join("tmpl-src")
+                .join("agents")
+                .join("root.md")
+                .exists(),
+            "agents restored"
+        );
+        assert!(
+            config_dir
+                .join("principals")
+                .join("tmpl-src")
+                .join("skills")
+                .join("s1")
+                .join("SKILL.md")
+                .exists(),
+            "tooling restored"
+        );
+
+        // Boot state inferred, not inherited.
+        let imported = std::fs::read_to_string(
+            config_dir
+                .join("principals")
+                .join("tmpl-src")
+                .join("principal.toml"),
+        )
+        .unwrap();
+        assert!(
+            !imported.contains("boot_state"),
+            "template import must infer its boot state: {imported}"
+        );
+        assert!(
+            !imported.contains("prin_tmpl_source"),
+            "source runtime id must not travel: {imported}"
         );
     }
 
@@ -1438,7 +1556,7 @@ principal_id = "prin_old"
                     "id": "keepalive",
                     "name": "keepalive",
                     "principal_id": "prin_old",
-                    "schedule": { "every": { "every_ms": 600000 } },
+                    "schedule": { "every": { "every_ms": 600_000 } },
                     "action": { "send": { "message": "", "target": "trunk" } },
                     "delete_after_run": false,
                     "enabled": true

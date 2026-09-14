@@ -482,36 +482,27 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 name,
                 output,
-                include_sessions,
-                full_snapshot,
-                with_extensions: _, // Phase 5: ignored; extensions live in the workspace tar.
-            } => {
-                match export_principal_package(
-                    host,
-                    &name,
-                    output.clone(),
-                    include_sessions,
-                    full_snapshot,
-                )
-                .await
-                {
-                    Ok(output_path) => {
-                        let response = ResponsePacket::PrincipalExported {
-                            request_id,
-                            name,
-                            output_path: output_path.display().to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal export failed: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
+                // ADR-056: exports are always full-existence snapshots;
+                // legacy `include_sessions` / `full_snapshot` /
+                // `with_extensions` fields from older CLIs are ignored.
+                ..
+            } => match export_principal_package(host, &name, output.clone()).await {
+                Ok(output_path) => {
+                    let response = ResponsePacket::PrincipalExported {
+                        request_id,
+                        name,
+                        output_path: output_path.display().to_string(),
+                    };
+                    send_response(sink, response).await?;
                 }
-            }
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("Principal export failed: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                }
+            },
 
             RequestPacket::PrincipalImportPreview {
                 request_id,
@@ -3017,26 +3008,18 @@ async fn build_principal_packager(
     )
 }
 
-/// Export a Principal to a `.principal` package on disk.
+/// Export a Principal to a `.principal` package on disk — a
+/// full-existence snapshot (ADR-056).
 async fn export_principal_package(
     host: &dyn PrincipalHost,
     name: &str,
     output: Option<String>,
-    include_sessions: bool,
-    full_snapshot: bool,
 ) -> anyhow::Result<std::path::PathBuf> {
     let packager = build_principal_packager(host, name).await?;
 
-    let mode = if full_snapshot {
-        crate::registry::packaging::principal_manifest::ExportMode::FullSnapshot
-    } else {
-        crate::registry::packaging::principal_manifest::ExportMode::Definition
-    };
     let opts = crate::registry::packaging::PrincipalExportOptions {
         output_path: output,
-        include_sessions,
         description: None,
-        mode,
     };
     packager.export(opts).await
 }

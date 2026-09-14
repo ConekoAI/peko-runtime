@@ -57,11 +57,11 @@ use peko_session::safe_filename_component;
 // cron, plans, locks, cache).
 //
 // Packaging policy (ADR-056) is a separate axis, decided per
-// category: authored, identity-bearing data is packaged under
-// `ExportMode::FullSnapshot` regardless of tier (Shared config and
-// tooling; Local sessions, cron, plans); derived Local state
-// (`cache/`, `locks/`, `memory_index.json`) is never packaged — it is
-// rebuilt by the runtime on import.
+// category: a `.principal` export is a full-existence snapshot —
+// authored, identity-bearing data travels regardless of tier (Shared
+// config and tooling; Local sessions, cron, plans), while derived
+// Local state (`cache/`, `locks/`, `memory_index.json`) is never
+// packaged — it is rebuilt by the runtime on import.
 // Runtime tier contents are installed once for the runtime; principals
 // access them via capability grants recorded as LINKs in the bundle.
 // =========================================================================

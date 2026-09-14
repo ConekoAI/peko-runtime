@@ -597,18 +597,10 @@ pub enum RequestPacket {
         request_id: u64,
         name: String,
         output: Option<String>,
-        include_sessions: bool,
-        /// ADR-056: export a full-existence snapshot (definition +
-        /// identity-bearing local state + workspace tooling) instead
-        /// of the shared-tier definition only.
-        #[serde(default)]
-        full_snapshot: bool,
-        /// Always `false` since Phase 5 (ADR-047): extensions are
-        /// workspace-resident and ride along in the bundle. Retained
-        /// for backward compat with old CLIs that still emit the
-        /// field; the daemon ignores it.
-        #[serde(default)]
-        with_extensions: bool,
+        // ADR-056: exports are always full-existence snapshots. The
+        // legacy `include_sessions` / `full_snapshot` /
+        // `with_extensions` wire fields are gone; unknown fields from
+        // older CLIs are ignored by serde.
     },
 
     #[serde(rename = "principal_import")]
@@ -4347,9 +4339,6 @@ mod tests {
             request_id: 5001,
             name: "helper".to_string(),
             output: Some("/tmp/helper.principal".to_string()),
-            include_sessions: true,
-            full_snapshot: true,
-            with_extensions: false,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4358,16 +4347,10 @@ mod tests {
                 request_id,
                 name,
                 output,
-                include_sessions,
-                full_snapshot,
-                with_extensions,
             } => {
                 assert_eq!(request_id, 5001);
                 assert_eq!(name, "helper");
                 assert_eq!(output, Some("/tmp/helper.principal".to_string()));
-                assert!(include_sessions);
-                assert!(full_snapshot);
-                assert!(!with_extensions);
             }
             _ => panic!("Wrong variant"),
         }

@@ -114,7 +114,9 @@ pub enum PrincipalCommands {
         yes: bool,
     },
 
-    /// Export a Principal to a `.principal` package
+    /// Export a Principal to a `.principal` package (a full-existence
+    /// snapshot — sessions, authored cron schedule, plans, and
+    /// installed workspace tooling travel with it; ADR-056)
     Export {
         /// Principal name
         name: String,
@@ -122,18 +124,6 @@ pub enum PrincipalCommands {
         /// Output file path (defaults to `<name>.principal`)
         #[arg(short, long)]
         output: Option<String>,
-
-        /// Include session history in the package
-        #[arg(long)]
-        include_sessions: bool,
-
-        /// Export a full-existence snapshot (ADR-056): sessions, the
-        /// authored cron schedule, plans, and the installed workspace
-        /// tooling travel alongside the definition, so an import
-        /// restores the principal's live state — an `organized`
-        /// principal keeps its rhythm and is not re-genesis'd.
-        #[arg(long)]
-        full_snapshot: bool,
     },
 
     /// Import a Principal from a `.principal` package
@@ -311,12 +301,7 @@ pub async fn handle_principal(
         PrincipalCommands::List => list_principals(paths, json).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
-        PrincipalCommands::Export {
-            name,
-            output,
-            include_sessions,
-            full_snapshot,
-        } => export_principal(&name, output, include_sessions, full_snapshot).await,
+        PrincipalCommands::Export { name, output } => export_principal(&name, output).await,
         PrincipalCommands::Import {
             file_path,
             name,
@@ -1145,16 +1130,9 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool
     Ok(())
 }
 
-async fn export_principal(
-    name: &str,
-    output: Option<String>,
-    include_sessions: bool,
-    full_snapshot: bool,
-) -> Result<()> {
+async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
     let client = DaemonClient::connect().await?;
-    let response = client
-        .principal_export(name, output, include_sessions, full_snapshot)
-        .await?;
+    let response = client.principal_export(name, output).await?;
 
     match response {
         ResponsePacket::PrincipalExported {
