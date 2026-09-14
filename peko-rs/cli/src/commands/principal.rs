@@ -114,7 +114,9 @@ pub enum PrincipalCommands {
         yes: bool,
     },
 
-    /// Export a Principal to a `.principal` package
+    /// Export a Principal to a `.peko` package (a full-existence
+    /// snapshot — sessions, authored cron schedule, plans, and
+    /// installed workspace tooling travel with it; ADR-056)
     Export {
         /// Principal name
         name: String,
@@ -122,15 +124,11 @@ pub enum PrincipalCommands {
         /// Output file path (defaults to `<name>.principal`)
         #[arg(short, long)]
         output: Option<String>,
-
-        /// Include session history in the package
-        #[arg(long)]
-        include_sessions: bool,
     },
 
-    /// Import a Principal from a `.principal` package
+    /// Import a Principal from a `.peko` package
     Import {
-        /// Path to the `.principal` package
+        /// Path to the `.peko` package
         file_path: String,
 
         /// Rename the imported Principal
@@ -303,11 +301,7 @@ pub async fn handle_principal(
         PrincipalCommands::List => list_principals(paths, json).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
-        PrincipalCommands::Export {
-            name,
-            output,
-            include_sessions,
-        } => export_principal(&name, output, include_sessions).await,
+        PrincipalCommands::Export { name, output } => export_principal(&name, output).await,
         PrincipalCommands::Import {
             file_path,
             name,
@@ -1136,15 +1130,9 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool
     Ok(())
 }
 
-async fn export_principal(
-    name: &str,
-    output: Option<String>,
-    include_sessions: bool,
-) -> Result<()> {
+async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
     let client = DaemonClient::connect().await?;
-    let response = client
-        .principal_export(name, output, include_sessions)
-        .await?;
+    let response = client.principal_export(name, output).await?;
 
     match response {
         ResponsePacket::PrincipalExported {
@@ -1912,7 +1900,7 @@ mod tests {
             "peko",
             "principal",
             "import",
-            "/tmp/pkg.principal",
+            "/tmp/pkg.peko",
             "--name",
             "renamed",
             "--allow-unsigned",
@@ -1929,7 +1917,7 @@ mod tests {
                 force,
                 yes,
             }) => {
-                assert_eq!(file_path, "/tmp/pkg.principal");
+                assert_eq!(file_path, "/tmp/pkg.peko");
                 assert_eq!(name, Some("renamed".to_string()));
                 assert!(allow_unsigned);
                 assert!(force);
@@ -1941,7 +1929,7 @@ mod tests {
 
     #[test]
     fn principal_import_without_yes_defaults() {
-        let cli = Cli::try_parse_from(["peko", "principal", "import", "/tmp/pkg.principal"])
+        let cli = Cli::try_parse_from(["peko", "principal", "import", "/tmp/pkg.peko"])
             .expect("should parse principal import without --yes");
 
         match cli.command {

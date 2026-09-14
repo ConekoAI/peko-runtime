@@ -9,7 +9,7 @@
 //! `PrincipalRevokePermission`, `PrincipalPermissions`,
 //! `PrincipalSetStatus`, `PrincipalSetExposure`. This is the largest
 //! F6 domain — it owns the root-agent streaming machinery, the
-//! `.principal` package import/export, and the principal-scoped
+//! `.peko` package import/export, and the principal-scoped
 //! permission system (ADR-033).
 //!
 //! The handler holds a narrow [`PrincipalHost`] port; the daemon-side
@@ -70,7 +70,7 @@ use peko_extension_api::SteeringMessage;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
 
-/// Preview summary for a `.principal` package, produced server-side
+/// Preview summary for a `.peko` package, produced server-side
 /// before the destructive import step.
 #[derive(Debug)]
 pub struct PrincipalImportPreview {
@@ -482,28 +482,27 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 name,
                 output,
-                include_sessions,
-                with_extensions: _, // Phase 5: ignored; extensions live in the workspace tar.
-            } => {
-                match export_principal_package(host, &name, output.clone(), include_sessions).await
-                {
-                    Ok(output_path) => {
-                        let response = ResponsePacket::PrincipalExported {
-                            request_id,
-                            name,
-                            output_path: output_path.display().to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal export failed: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
+                // ADR-056: exports are always full-existence snapshots;
+                // legacy `include_sessions` / `full_snapshot` /
+                // `with_extensions` fields from older CLIs are ignored.
+                ..
+            } => match export_principal_package(host, &name, output.clone()).await {
+                Ok(output_path) => {
+                    let response = ResponsePacket::PrincipalExported {
+                        request_id,
+                        name,
+                        output_path: output_path.display().to_string(),
+                    };
+                    send_response(sink, response).await?;
                 }
-            }
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("Principal export failed: {e}"),
+                    };
+                    send_response(sink, response).await?;
+                }
+            },
 
             RequestPacket::PrincipalImportPreview {
                 request_id,
@@ -2992,6 +2991,10 @@ async fn build_principal_packager(
     // exported from `local.sessions_dir` directly, and the principal's
     // memory index (`local.memory_index`) is not part of the
     // portable bundle.
+    // ADR-056: the Shared-tier workspace root and the Local-tier
+    // root are threaded in so full-snapshot exports can collect the
+    // workspace tooling (tools/skills/mcp/hooks/kb) and the
+    // identity-bearing local state (cron/plans).
     let resolver = host.path_resolver();
     let layout = resolver.principal_layout(name);
     let identity = load_principal_identity(&resolver, name, &did).await?;
@@ -2999,22 +3002,23 @@ async fn build_principal_packager(
     Ok(
         crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
             .with_agents_dir(&layout.shared.agents_dir)
-            .with_sessions_dir(&layout.local.sessions_dir),
+            .with_sessions_dir(&layout.local.sessions_dir)
+            .with_workspace_dir(&layout.shared.root)
+            .with_local_root(&layout.local.root),
     )
 }
 
-/// Export a Principal to a `.principal` package on disk.
+/// Export a Principal to a `.peko` package on disk — a
+/// full-existence snapshot (ADR-056).
 async fn export_principal_package(
     host: &dyn PrincipalHost,
     name: &str,
     output: Option<String>,
-    include_sessions: bool,
 ) -> anyhow::Result<std::path::PathBuf> {
     let packager = build_principal_packager(host, name).await?;
 
     let opts = crate::registry::packaging::PrincipalExportOptions {
         output_path: output,
-        include_sessions,
         description: None,
     };
     packager.export(opts).await
@@ -3068,7 +3072,7 @@ fn extract_agent_names_from_package(
     names
 }
 
-/// Preview shape extracted from a `.principal` package before import.
+/// Preview shape extracted from a `.peko` package before import.
 async fn preview_principal_import(
     host: &dyn PrincipalHost,
     file_path: &std::path::Path,
@@ -3113,7 +3117,7 @@ async fn preview_principal_import(
     })
 }
 
-/// Import a `.principal` package and register it with the manager.
+/// Import a `.peko` package and register it with the manager.
 async fn import_principal_package(
     host: &dyn PrincipalHost,
     caller: &peko_auth::caller::CallerContext,
@@ -3256,16 +3260,65 @@ async fn preview_principal_pull(
     let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
 
     let temp_path = host.cache_dir().join(format!(
-        "peko-pull-principal-preview-{}.principal",
+        "peko-pull-principal-preview-{}",
         std::process::id()
     ));
     let _manifest = client
         .pull_principal(registry_ref, &temp_path, |_| {})
         .await?;
 
+    // ADR-056: a pulled template is a plain TOML file, ground via
+    // `principal create -f` — not an importable package.
+    if is_template_artifact(&temp_path) {
+        let kept = keep_template_artifact(host, &temp_path)?;
+        anyhow::bail!(
+            "This registry artifact is a template (plain TOML), not a snapshot. \
+             Ground it with: peko principal create <name> -f {}",
+            kept.display()
+        );
+    }
+
     let preview = preview_principal_import(host, &temp_path, new_name).await;
     let _ = std::fs::remove_file(&temp_path);
     preview
+}
+
+/// ADR-056: a pulled template artifact is a plain TOML file (a
+/// stripped `principal.toml`) rather than a `.peko` snapshot package.
+/// Distinguish by shape: a snapshot's config blob is a
+/// `PrincipalManifest` (with a `principal` metadata section); a
+/// template is a bare `PrincipalConfig`.
+fn is_template_artifact(path: &std::path::Path) -> bool {
+    use crate::principal::config::PrincipalConfig;
+    use crate::registry::packaging::principal_manifest::PrincipalManifest;
+
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    if PrincipalManifest::from_toml(text).is_ok() {
+        return false;
+    }
+    toml::from_str::<PrincipalConfig>(text).is_ok()
+}
+
+/// Move a pulled template artifact out of the transient preview path
+/// into a stable cache location the user can ground from.
+fn keep_template_artifact(
+    host: &dyn PrincipalHost,
+    temp_path: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    let kept = host.cache_dir().join(format!(
+        "pulled-template-{}.toml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default()
+    ));
+    std::fs::rename(temp_path, &kept)?;
+    Ok(kept)
 }
 
 /// Pull a Principal from a registry and import it.
@@ -3306,13 +3359,23 @@ async fn pull_principal_package(
 
     let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
 
-    let temp_path = host.cache_dir().join(format!(
-        "peko-pull-principal-{}.principal",
-        std::process::id()
-    ));
+    let temp_path = host
+        .cache_dir()
+        .join(format!("peko-pull-principal-{}", std::process::id()));
     let manifest = client
         .pull_principal(registry_ref, &temp_path, |_| {})
         .await?;
+
+    // ADR-056: a pulled template is a plain TOML file, ground via
+    // `principal create -f` — not an importable package.
+    if is_template_artifact(&temp_path) {
+        let kept = keep_template_artifact(host, &temp_path)?;
+        anyhow::bail!(
+            "This registry artifact is a template (plain TOML), not a snapshot. \
+             Ground it with: peko principal create <name> -f {}",
+            kept.display()
+        );
+    }
 
     let import_result = import_principal_package(
         host,

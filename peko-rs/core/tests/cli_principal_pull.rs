@@ -168,7 +168,7 @@ async fn push_unsigned_descriptor(
     );
 
     // Sanity-check that the generic push produced a pullable manifest.
-    let pull_check = tempfile::tempdir()?.path().join("check.principal");
+    let pull_check = tempfile::tempdir()?.path().join("check.peko");
     let check_config = test_registry_config(host);
     let check_registry = AgentRegistry::new(tempfile::tempdir()?.path().join("check_registry"));
     check_registry.init().await?;

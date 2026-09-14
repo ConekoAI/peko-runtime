@@ -72,7 +72,7 @@ async fn import_yes_selects_no_required_capabilities() {
 // Phase 2 PR 1 (ADR-047 §2.4): the interactive prompt for required
 // capabilities was driven by `with_skill(...)` building a skill
 // extension through `ExtensionStore`, which required the
-// `SkillAdapter`. Phase 7 deletes the entire `.principal`
+// `SkillAdapter`. Phase 7 deletes the entire `.peko`
 // extensions-layer packaging path (workspace tools are packaged as a
 // literal tar of `<workspace>/`, not as a separate extensions
 // layer). The interactive capability-selection UX is redesigned

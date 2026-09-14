@@ -1,6 +1,6 @@
-//! Shared fixture builder for `.principal` integration tests.
+//! Shared fixture builder for `.peko` integration tests.
 //!
-//! Builds signed (or unsigned) `.principal` packages with embedded skill
+//! Builds signed (or unsigned) `.peko` packages with embedded skill
 //! extensions that declare `requires`/`provides` capabilities. Reuses the
 //! canonical `PrincipalPackager`/`PrincipalUnpackager` paths so the fixture
 //! shape matches production packages.
@@ -26,7 +26,7 @@ pub struct SkillFixture {
     pub provides: Vec<String>,
 }
 
-/// Builder for a test `.principal` package.
+/// Builder for a test `.peko` package.
 pub struct PrincipalPackageBuilder {
     name: String,
     skills: Vec<SkillFixture>,
@@ -67,7 +67,7 @@ impl PrincipalPackageBuilder {
         self
     }
 
-    /// Build the `.principal` archive and return its path.
+    /// Build the `.peko` archive and return its path.
     pub async fn build(self) -> anyhow::Result<PathBuf> {
         let descriptor = self.export().await?;
         if !self.unsigned {
@@ -188,7 +188,7 @@ grants = [{grants_toml}]
         .await?;
 
         // ── Packager ─────────────────────────────────────────────────────
-        let package_path = base.join(format!("{}.principal", self.name));
+        let package_path = base.join(format!("{}.peko", self.name));
         let packager =
             PrincipalPackager::new(config.clone(), identity).with_agents_dir(&agents_dir);
         // Phase 5 (ADR-047 §2.1): `with_extensions_from_store` was
@@ -266,7 +266,7 @@ fn strip_signature(path: &Path) -> anyhow::Result<PathBuf> {
     manifest.signatures.manifest = String::new();
     *manifest_bytes = manifest.to_toml()?.into_bytes();
 
-    let out_path = path.with_extension("unsigned.principal");
+    let out_path = path.with_extension("unsigned.peko");
     let out_file = std::fs::File::create(&out_path)?;
     let enc = flate2::write::GzEncoder::new(out_file, flate2::Compression::default());
     let mut builder = tar::Builder::new(enc);

@@ -1,4 +1,4 @@
-//! Principal manifest for portable `.principal` packages
+//! Principal manifest for portable `.peko` packages
 //!
 //! Mirrors the shape of the agent manifest but names the top-level metadata
 //! section `principal` and uses principal-specific layer names
@@ -10,7 +10,7 @@ use crate::registry::packaging::manifest::{IdentityConfig, PackagingMetadata, Si
 use crate::registry::packaging::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
 
-/// Content-addressable layer digests for `.principal` packages.
+/// Content-addressable layer digests for `.peko` packages.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PrincipalLayers {
     /// Config layer digest (`config/principal.toml`)
@@ -28,6 +28,31 @@ pub struct PrincipalLayers {
     /// Session history layer digest (`sessions/`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<String>,
+    /// Cron layer digest (`cron/`) — the principal's authored schedule
+    /// (`local/cron/schedule.toml` + run history), ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    /// Plans layer digest (`plans/`) — the principal's authored Plan
+    /// DAG storage (`local/plans/`), ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plans: Option<String>,
+    /// Universal tools layer digest (`tools/<id>/`) — ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<String>,
+    /// Skills layer digest (`skills/<id>/`) — ADR-056 (workspace
+    /// tooling; reuses the legacy agent-package layer name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<String>,
+    /// MCP layer digest (`mcp/<id>/`) — ADR-056 (workspace tooling;
+    /// reuses the legacy agent-package layer name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<String>,
+    /// Hooks layer digest (`hooks/<id>/`) — ADR-056.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<String>,
+    /// Knowledge base layer digest (`kb/`) — ADR-056 (ADR-055 tree).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kb: Option<String>,
     /// Plugins layer digest (`plugins/<plugin-id>/`) — ADR-047 §2.1.
     ///
     /// Replaces the legacy `extensions` layer. New exports emit this
@@ -192,6 +217,13 @@ mod tests {
             agents: Some("sha256:ghi".to_string()),
             memory: None,
             sessions: None,
+            cron: None,
+            plans: None,
+            tools: None,
+            skills: None,
+            mcp: None,
+            hooks: None,
+            kb: None,
             plugins: Some("sha256:pqr".to_string()),
             extensions: Some("sha256:jkl".to_string()),
         };
@@ -207,7 +239,7 @@ mod tests {
         assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
     }
 
-    /// Phase 7 (ADR-047 §5): legacy `.principal` packages that declare
+    /// Phase 7 (ADR-047 §5): legacy `.peko` packages that declare
     /// `extensions = "sha256:..."` but not `plugins` continue to
     /// deserialize cleanly. The new field defaults to `None`.
     #[test]
@@ -237,6 +269,13 @@ extensions = "sha256:jkl"
             agents: Some("sha256:ghi".to_string()),
             memory: None,
             sessions: None,
+            cron: None,
+            plans: None,
+            tools: None,
+            skills: None,
+            mcp: None,
+            hooks: None,
+            kb: None,
             plugins: Some("sha256:pqr".to_string()),
             extensions: None,
         };
@@ -251,5 +290,24 @@ extensions = "sha256:jkl"
         let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));
         assert!(parsed.extensions.is_none());
+    }
+
+    /// ADR-056: `.peko` packages are full-existence snapshots —
+    /// there is no export-mode field on the manifest. Legacy manifests
+    /// (with or without the removed `export_mode` field) parse
+    /// unchanged.
+    #[test]
+    fn test_manifest_legacy_export_mode_field_tolerated() {
+        let manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
+        let toml = manifest.to_toml().unwrap();
+        assert!(
+            !toml.contains("export_mode"),
+            "manifests no longer emit an export mode: {toml}"
+        );
+        // A pre-collapse manifest that still carries the field parses
+        // cleanly (unknown fields are ignored).
+        let legacy = toml + "export_mode = \"definition\"\n";
+        let parsed = PrincipalManifest::from_toml(&legacy).unwrap();
+        assert_eq!(parsed.principal.name, "test");
     }
 }

@@ -1,6 +1,6 @@
 //! Unpackager for importing portable Principal packages
 //!
-//! Extracts `.principal` files into the local peko runtime.
+//! Extracts `.peko` files into the local peko runtime.
 #![allow(dead_code)]
 
 use crate::common::authority::{RuntimeAuthority, TierPath};
@@ -31,6 +31,11 @@ pub struct PrincipalImportOptions {
     pub rotate_keys: bool,
     /// Import session history
     pub import_sessions: bool,
+    /// Import the identity-bearing Local-tier state from a
+    /// full-snapshot package (cron schedule with principal-id
+    /// rebinding, plan DAGs). Sessions are governed by
+    /// `import_sessions` independently (ADR-056).
+    pub import_local_state: bool,
     /// Allow importing an unsigned package
     pub allow_unsigned: bool,
     /// Force overwrite an existing Principal
@@ -63,6 +68,7 @@ impl Default for PrincipalImportOptions {
             new_name: None,
             rotate_keys: false,
             import_sessions: true,
+            import_local_state: true,
             allow_unsigned: false,
             force: false,
             trust_store: None,
@@ -89,9 +95,16 @@ pub struct PrincipalImportResult {
     pub validation: ValidationResult,
     /// IDs of embedded extensions that were installed during import.
     pub installed_extensions: Vec<String>,
+    /// Whether the package carried identity-bearing Local-tier state
+    /// (`sessions/`, `cron/`, `plans/`). ADR-056: `true` ⇒ the import
+    /// is a *wake* — boot state carried verbatim (an `organized`
+    /// principal keeps its schedule and is not re-genesis'd);
+    /// `false` ⇒ the import is a *template/clone* — the boot state is
+    /// inferred and genesis runs on next boot.
+    pub carried_local_state: bool,
 }
 
-/// Unpackager for importing `.principal` packages.
+/// Unpackager for importing `.peko` packages.
 pub struct PrincipalUnpackager {
     package_path: PathBuf,
     config_dir: PathBuf,
@@ -149,6 +162,17 @@ impl PrincipalUnpackager {
             .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml"))?
             .clone();
         let manifest = self.parse_manifest(&files)?;
+
+        // ADR-056: templates are plain TOML files ground via
+        // `principal create -f` — keyless packages are no longer a
+        // supported artifact shape. Fail fast, before any crypto work.
+        if !files.contains_key("identity/keys.enc") {
+            anyhow::bail!(
+                "This package carries no keys — it looks like a template artifact. \
+                 Templates are plain TOML files: ground one with \
+                 `peko principal create <name> -f <template.toml>`."
+            );
+        }
 
         // Signature verification
         let did_doc_bytes = files
@@ -264,15 +288,55 @@ impl PrincipalUnpackager {
             config.owner = Subject::User("local".to_string());
         }
 
+        // ADR-056 grounding semantics: what the import *is* follows
+        // from what the package *carries*, not from a mode flag.
+        //
+        // - Carries Local-tier state (`sessions/`, `cron/`, `plans/`)
+        //   ⇒ a *wake*: the package is a verbatim snapshot of a live
+        //   principal, boot state included — carry it through. An
+        //   `organized` principal therefore imports as `organized`
+        //   WITH its authored cron schedule intact, and the daemon's
+        //   boot seeding pass abstains (D4 of ADR-054: the trunk owns
+        //   its rhythm, and the snapshot just delivered that rhythm
+        //   across hosts). A `defined` snapshot re-genesis's on next
+        //   boot, which is exactly what the source was.
+        // - Carries no Local state (template package, or a legacy
+        //   definition-shaped one) ⇒ a *clone*: the source's boot
+        //   state is meaningless on this host — reset it and let
+        //   ADR-054's inference apply (`has_definition()` ⇒
+        //   `defined`). This also keeps the pre-ADR-056 bug closed
+        //   where a definition-only export of an `organized` principal
+        //   imported as `organized` with no schedule at all.
+        let carried_local_state = files.keys().any(|p| {
+            p.starts_with("sessions/") || p.starts_with("cron/") || p.starts_with("plans/")
+        });
+        if !carried_local_state {
+            config.boot_state = None;
+        }
+
         self.import_agents(&files, &name, &options, &authority)
             .await?;
-        // Phase A: the legacy `import_memory` is gone. Session-derived
-        // memory artifacts are not part of the portable bundle; sessions
-        // are the only Local-tier artifact that flows in.
-        // (see [`Self::import_sessions`].)
+        // Phase A: the legacy `import_memory` is gone. The memory
+        // index (`local/memory_index.json`) is derived state — never
+        // packaged, rebuilt by the runtime (ADR-056).
+        // Sessions flow in under `import_sessions`; cron + plans and
+        // the workspace tooling flow in below when the package
+        // carries them (ADR-056).
 
         if options.import_sessions {
             self.import_sessions(&files, &name).await?;
+        }
+
+        self.import_workspace_tooling(&files, &name).await?;
+        if carried_local_state && options.import_local_state {
+            let effective_principal_id = config
+                .id
+                .clone()
+                .map(|pid| pid.0)
+                .or_else(|| config.did.clone().map(|d| d.0))
+                .unwrap_or_else(|| name.clone());
+            self.import_local_authored(&files, &name, &effective_principal_id)
+                .await?;
         }
 
         let config_path = self.save_config(&config, &name).await?;
@@ -284,6 +348,7 @@ impl PrincipalUnpackager {
             keys_rotated: options.rotate_keys,
             validation,
             installed_extensions: Vec::new(),
+            carried_local_state,
         })
     }
 
@@ -352,13 +417,10 @@ impl PrincipalUnpackager {
             return Ok(new_identity);
         }
 
-        let encrypted_keys = files
-            .get("identity/keys.enc")
-            .ok_or_else(|| anyhow::anyhow!("Missing identity/keys.enc"))?;
         let key_data = if manifest.identity.encrypted {
             anyhow::bail!("Encrypted principal packages are not yet supported")
         } else {
-            encrypted_keys.clone()
+            files["identity/keys.enc"].clone()
         };
 
         let key_export: KeyPairExport = serde_json::from_slice(&key_data)?;
@@ -455,13 +517,98 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
+    /// ADR-056: restore the workspace tooling directories
+    /// (`tools/`, `skills/`, `mcp/`, `hooks/`, `kb/`) into the
+    /// principal's Shared-tier workspace root. Presence in the
+    /// workspace = visibility (ADR-050), so a snapshot import that
+    /// skipped this would hand the principal a silently gutted
+    /// tool catalog on its next turn.
+    ///
+    /// Prototype note: no per-directory capability gate yet. The
+    /// ADR-046 audit canary still covers `tools/`, `hooks/`, and
+    /// `mcp/` baseline drift on the next daemon boot, and the
+    /// production pass should gate this alongside `principal:write_agents`.
+    async fn import_workspace_tooling(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        principal_name: &str,
+    ) -> anyhow::Result<()> {
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let workspace_root = resolver.principal_layout(principal_name).shared.root;
+
+        const TOOLING_PREFIXES: [&str; 5] = ["tools", "skills", "mcp", "hooks", "kb"];
+        for (path, content) in files {
+            let Some((prefix, rest)) = split_layer_path(path, &TOOLING_PREFIXES) else {
+                continue;
+            };
+            let dest_dir = workspace_root.join(prefix);
+            let dest_path = safe_join(&dest_dir, rest)?;
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(dest_path, content).await?;
+        }
+        Ok(())
+    }
+
+    /// ADR-056: restore the identity-bearing Local-tier state —
+    /// `cron/` (authored schedule + run history) and `plans/` (Plan
+    /// DAG storage) — into the principal's Local tier.
+    ///
+    /// Cron jobs are keyed on the source principal's runtime
+    /// `PrincipalId` (ADR-054 D3); the importer rebinds every job's
+    /// `principal_id` to the imported principal's effective id
+    /// (`config.id` → DID → name, the same resolution the cron tools
+    /// use) so the trunk can see its restored heartbeat via
+    /// `CronList` immediately.
+    async fn import_local_authored(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        principal_name: &str,
+        new_principal_id: &str,
+    ) -> anyhow::Result<()> {
+        let resolver = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        );
+        let layout = resolver.principal_layout(principal_name);
+
+        const LOCAL_PREFIXES: [&str; 2] = ["cron", "plans"];
+        for (path, content) in files {
+            let Some((prefix, rest)) = split_layer_path(path, &LOCAL_PREFIXES) else {
+                continue;
+            };
+            let dest_dir = match prefix {
+                "cron" => layout.local.cron_dir.clone(),
+                "plans" => layout.local.plans_dir.clone(),
+                _ => continue,
+            };
+            let dest_path = safe_join(&dest_dir, rest)?;
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            if prefix == "cron" && rest == "schedule.toml" {
+                let remapped = remap_cron_principal_ids(content, new_principal_id);
+                tokio::fs::write(dest_path, remapped).await?;
+            } else {
+                tokio::fs::write(dest_path, content).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Extract the embedded `plugins/` (or legacy `extensions/`) layer and
     /// route each bundle through `store`. Returns the IDs of installed
     /// plugins.
     ///
     /// **Phase 5 (ADR-047 §2.1):** workspace-resident tooling
     /// (tools/hooks/skills/MCP) lives in the principal's workspace and
-    /// is not embedded in `.principal` packages (the `--with-extensions`
+    /// is not embedded in `.peko` packages (the `--with-extensions`
     /// flag was dropped in Phase 5c).
     ///
     /// **Phase 7 (ADR-047 §5):** new packages emit a `plugins/` layer
@@ -487,7 +634,7 @@ impl PrincipalUnpackager {
     }
 
     /// Extract the union of capabilities declared by the embedded plugins
-    /// (or legacy embedded extensions) in a `.principal` package.
+    /// (or legacy embedded extensions) in a `.peko` package.
     ///
     /// Returns `(required_capabilities, warnings)`. The required set is the
     /// union of each embedded plugin manifest's `requires` list.
@@ -606,6 +753,96 @@ impl PrincipalUnpackager {
 pub(crate) enum SignatureStatus {
     Verified,
     AllowedUnsigned,
+}
+
+/// Split a package path into `(layer_prefix, rest)` if it starts with
+/// one of the given layer prefixes (e.g. `cron/schedule.toml` →
+/// `("cron", "schedule.toml")`).
+fn split_layer_path<'a>(path: &'a str, prefixes: &[&'a str]) -> Option<(&'a str, &'a str)> {
+    for prefix in prefixes {
+        let with_slash = format!("{prefix}/");
+        if let Some(rest) = path.strip_prefix(with_slash.as_str()) {
+            if !rest.is_empty() {
+                return Some((prefix, rest));
+            }
+        }
+    }
+    None
+}
+
+/// Rebind every cron job's `principal_id` in a cron database file to
+/// the imported principal's effective runtime id (ADR-056).
+///
+/// Jobs in a per-principal schedule file are all owned by that
+/// principal, so an unconditional rewrite is correct and idempotent.
+/// NOTE: `local/cron/schedule.toml` carries a legacy `.toml` name but
+/// is serialized as JSON (`CronDatabase`, `serde_json`), so JSON is
+/// tried first; the TOML path is kept defensively in case the file
+/// name ever becomes truthful again. A malformed file is passed
+/// through unchanged with a warning — the cron engine will surface it
+/// on next load rather than the import hard-failing on a snapshot's
+/// side artifact.
+fn remap_cron_principal_ids(schedule_bytes: &[u8], new_principal_id: &str) -> Vec<u8> {
+    let text = match std::str::from_utf8(schedule_bytes) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(
+                "cron schedule file is not utf-8 ({e}); skipping principal-id rebinding"
+            );
+            return schedule_bytes.to_vec();
+        }
+    };
+
+    let parse_error = |json_err: serde_json::Error, toml_err: toml::de::Error| {
+        tracing::warn!(
+            "cron schedule file could not be parsed for principal-id rebinding \
+             (json: {json_err}; toml: {toml_err}); writing it through unchanged"
+        );
+    };
+
+    // Primary: the real on-disk format (JSON). Fallback: TOML.
+    let rewritten = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(mut value) => {
+            if let Some(jobs) = value.get_mut("jobs").and_then(|j| j.as_array_mut()) {
+                for job in jobs {
+                    job["principal_id"] = serde_json::Value::String(new_principal_id.to_string());
+                }
+            }
+            serde_json::to_string_pretty(&value)
+                .map_err(|e| {
+                    tracing::warn!(
+                        "cron schedule re-serialization failed ({e}); writing the original bytes"
+                    );
+                    e
+                })
+                .ok()
+                .map(String::into_bytes)
+        }
+        Err(json_err) => match toml::from_str::<toml::Value>(text) {
+            Ok(mut value) => {
+                if let Some(jobs) = value.get_mut("jobs").and_then(|j| j.as_array_mut()) {
+                    for job in jobs {
+                        job["principal_id"] = toml::Value::String(new_principal_id.to_string());
+                    }
+                }
+                toml::to_string_pretty(&value)
+                    .map_err(|e| {
+                        tracing::warn!(
+                        "cron schedule re-serialization failed ({e}); writing the original bytes"
+                    );
+                        e
+                    })
+                    .ok()
+                    .map(String::into_bytes)
+            }
+            Err(toml_err) => {
+                parse_error(json_err, toml_err);
+                None
+            }
+        },
+    };
+
+    rewritten.unwrap_or_else(|| schedule_bytes.to_vec())
 }
 
 pub(crate) fn verify_principal_signature(
@@ -778,7 +1015,7 @@ fn validate_package_for_principal(
 
     let mut result = ValidationResult::success();
 
-    // Required files for a `.principal` package.
+    // Required files for a `.peko` package.
     let required_files = [
         "manifest.toml",
         "identity/did.json",
@@ -828,7 +1065,7 @@ fn validate_package_for_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::PrincipalConfig;
+    use crate::principal::config::{BootState, PrincipalConfig};
     use crate::registry::packaging::principal_packager::{
         PrincipalExportOptions, PrincipalPackager,
     };
@@ -894,7 +1131,7 @@ mod tests {
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(agents_dir.join("planner.md"), b"# Planner").unwrap();
 
-        let out = tmp.path().join("importme.principal");
+        let out = tmp.path().join("importme.peko");
         let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
         packager
             .export(PrincipalExportOptions {
@@ -942,7 +1179,7 @@ mod tests {
         let config = sample_config("orig", &identity.did);
 
         let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("orig.principal");
+        let out = tmp.path().join("orig.peko");
         let packager = PrincipalPackager::new(config, identity);
         packager
             .export(PrincipalExportOptions {
@@ -969,6 +1206,345 @@ mod tests {
             .join("renamed")
             .join("principal.toml")
             .exists());
+    }
+
+    /// ADR-056: a full-snapshot round-trip restores the principal's
+    /// live existence — sessions, the authored cron schedule (with
+    /// principal-id rebinding), plans, and the installed workspace
+    /// tooling land in the right tier directories, and the boot state
+    /// carries through verbatim (an `organized` principal imports as
+    /// `organized` and is not re-genesis'd).
+    #[tokio::test]
+    async fn full_snapshot_roundtrip_restores_live_state() {
+        use crate::registry::packaging::principal_packager::PrincipalExportOptions;
+
+        let identity = Identity::new("live", DIDScope::Local).await.unwrap();
+        let original_did = identity.did.clone();
+        let mut config = sample_config("live", &original_did);
+        config.set_boot_state(BootState::Organized);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let shared_root = tmp.path().join("shared").join("live");
+        let local_root = tmp.path().join("data").join("live").join("local");
+
+        std::fs::create_dir_all(shared_root.join("agents")).unwrap();
+        std::fs::write(shared_root.join("agents").join("root.md"), b"# root").unwrap();
+        std::fs::create_dir_all(shared_root.join("tools").join("my-tool")).unwrap();
+        std::fs::write(
+            shared_root
+                .join("tools")
+                .join("my-tool")
+                .join("manifest.yaml"),
+            b"id: my-tool\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(shared_root.join("kb")).unwrap();
+        std::fs::write(shared_root.join("kb").join("MEMORY.md"), b"hot").unwrap();
+
+        std::fs::create_dir_all(local_root.join("sessions")).unwrap();
+        std::fs::write(local_root.join("sessions").join("s1.jsonl"), b"{}\n").unwrap();
+        std::fs::create_dir_all(local_root.join("cron")).unwrap();
+        std::fs::write(
+            local_root.join("cron").join("schedule.toml"),
+            "version = 2\n[[jobs]]\nid = \"keepalive\"\nname = \"keepalive\"\nprincipal_id = \"prin_old\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(local_root.join("plans")).unwrap();
+        std::fs::write(local_root.join("plans").join("p1.jsonl"), b"{}\n").unwrap();
+
+        let out = tmp.path().join("live.peko");
+        let packager = PrincipalPackager::new(config, identity)
+            .with_agents_dir(shared_root.join("agents"))
+            .with_sessions_dir(local_root.join("sessions"))
+            .with_workspace_dir(&shared_root)
+            .with_local_root(&local_root);
+        packager
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let config_dir = tmp.path().join("cfg");
+        let data_dir = tmp.path().join("new-data");
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir.clone());
+        let result = unpackager
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+
+        assert!(
+            result.carried_local_state,
+            "snapshot packages carry Local-tier state"
+        );
+
+        // Workspace tooling restored to the Shared tier root.
+        assert!(
+            config_dir
+                .join("principals")
+                .join("live")
+                .join("tools")
+                .join("my-tool")
+                .join("manifest.yaml")
+                .exists(),
+            "tooling restored to workspace root"
+        );
+        assert!(
+            config_dir
+                .join("principals")
+                .join("live")
+                .join("kb")
+                .join("MEMORY.md")
+                .exists(),
+            "kb restored to workspace root"
+        );
+
+        // Local authored state restored to the Local tier.
+        assert!(
+            data_dir
+                .join("principals")
+                .join("live")
+                .join("local")
+                .join("sessions")
+                .join("s1.jsonl")
+                .exists(),
+            "sessions restored"
+        );
+        assert!(
+            data_dir
+                .join("principals")
+                .join("live")
+                .join("local")
+                .join("plans")
+                .join("p1.jsonl")
+                .exists(),
+            "plans restored"
+        );
+
+        // Cron schedule restored AND rebound to the imported
+        // principal's effective runtime id. `config.id` is unset in
+        // this fixture, so the effective id resolves to the imported
+        // DID (id → DID → name, the cron tools' resolution order).
+        let schedule_path = data_dir
+            .join("principals")
+            .join("live")
+            .join("local")
+            .join("cron")
+            .join("schedule.toml");
+        let schedule = std::fs::read_to_string(&schedule_path).unwrap();
+        assert!(
+            schedule.contains(&format!("principal_id = \"{original_did}\"")),
+            "principal ids rebound to the effective runtime id: {schedule}"
+        );
+        assert!(
+            !schedule.contains("prin_old"),
+            "stale source ids must not survive: {schedule}"
+        );
+
+        // Boot state carried verbatim: no genesis re-seed.
+        let imported = std::fs::read_to_string(
+            config_dir
+                .join("principals")
+                .join("live")
+                .join("principal.toml"),
+        )
+        .unwrap();
+        assert!(
+            imported.contains("boot_state = \"organized\""),
+            "organized state survives the snapshot round-trip: {imported}"
+        );
+    }
+
+    /// ADR-056: a package that carries NO Local-tier state (legacy
+    /// definition-shaped, or a keyless template) resets the boot state
+    /// so ADR-054's inference applies. An `organized` source must not
+    /// land the import as `organized` with no schedule to show for it.
+    #[tokio::test]
+    async fn import_without_local_state_does_not_inherit_organized_state() {
+        use crate::registry::packaging::principal_packager::PrincipalExportOptions;
+
+        let identity = Identity::new("org", DIDScope::Local).await.unwrap();
+        let mut config = sample_config("org", &identity.did);
+        config.set_boot_state(BootState::Organized);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("org.peko");
+        // No sessions/cron/plans dirs wired in — the package carries
+        // no Local state, so it clones rather than wakes.
+        let packager = PrincipalPackager::new(config, identity);
+        packager
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let config_dir = tmp.path().join("cfg");
+        let data_dir = tmp.path().join("data");
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir);
+        let result = unpackager
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+
+        assert!(!result.carried_local_state, "no local state in the package");
+        let imported = std::fs::read_to_string(
+            config_dir
+                .join("principals")
+                .join("org")
+                .join("principal.toml"),
+        )
+        .unwrap();
+        assert!(
+            !imported.contains("boot_state"),
+            "an import without local state must infer its boot state, not inherit it: {imported}"
+        );
+    }
+
+    /// ADR-056: the registry artifact is a plain TOML template —
+    /// `export_for_registry` emits a stripped `principal.toml`, not a
+    /// package. Templates are ground via `principal create -f`, so a
+    /// keyless *package* is rejected with actionable guidance rather
+    /// than silently cloned.
+    #[tokio::test]
+    async fn registry_artifact_is_a_template_toml() {
+        use crate::registry::packaging::principal_packager::PrincipalExportOptions;
+
+        let identity = Identity::new("tmpl-src", DIDScope::Local).await.unwrap();
+        let source_did = identity.did.clone();
+        let mut config = sample_config("tmpl-src", &source_did);
+        config.id = Some(peko_subject::PrincipalId("prin_tmpl_source".into()));
+        config.set_boot_state(BootState::Organized);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("tmpl-src.template.toml");
+        let packager = PrincipalPackager::new(config, identity);
+        let descriptor = packager
+            .export_for_registry(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // The artifact on disk is the template TOML, not an archive.
+        let artifact = std::fs::read_to_string(&out).unwrap();
+        assert!(!artifact.contains("prin_tmpl_source"), "{artifact}");
+        assert!(!artifact.contains(&source_did), "{artifact}");
+        assert!(!artifact.contains("boot_state"), "{artifact}");
+        assert!(
+            !out.display().to_string().ends_with(".peko"),
+            "templates are TOML files, not packages"
+        );
+
+        // The OCI config blob IS the template TOML; no content layers.
+        assert!(descriptor.layers.is_empty());
+        let blob = std::str::from_utf8(&descriptor.manifest_toml).unwrap();
+        assert_eq!(blob, &artifact);
+
+        // A keyless *package* (wrong shape) is rejected with guidance.
+        let files: HashMap<String, Vec<u8>> = HashMap::from([
+            (
+                "manifest.toml".to_string(),
+                PrincipalManifest::new("tmpl-src", "1.0.0", &source_did)
+                    .to_toml()
+                    .unwrap()
+                    .into_bytes(),
+            ),
+            ("identity/did.json".to_string(), b"{}".to_vec()),
+        ]);
+        let unpackager =
+            PrincipalUnpackager::new(&out, tmp.path().join("cfg"), tmp.path().join("data"));
+        let err = unpackager
+            .import_from_files(files, PrincipalImportOptions::default())
+            .await
+            .expect_err("keyless packages are not a supported artifact shape");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("principal create") && msg.contains("-f"),
+            "expected create -f guidance, got: {msg}"
+        );
+    }
+
+    /// ADR-056: `remap_cron_principal_ids` rewrites every job's
+    /// `principal_id`, is idempotent, and passes malformed files
+    /// through unchanged.
+    #[test]
+    fn remap_cron_principal_ids_rewrites_all_jobs() {
+        let schedule = r#"
+version = 2
+
+[[jobs]]
+id = "keepalive"
+name = "keepalive"
+principal_id = "prin_old"
+
+[[jobs]]
+id = "genesis"
+name = "genesis"
+principal_id = "prin_old"
+"#;
+        let remapped =
+            String::from_utf8(remap_cron_principal_ids(schedule.as_bytes(), "prin_new")).unwrap();
+        assert_eq!(remapped.matches("prin_new").count(), 2);
+        assert!(!remapped.contains("prin_old"));
+
+        // Idempotent.
+        let again =
+            String::from_utf8(remap_cron_principal_ids(remapped.as_bytes(), "prin_new")).unwrap();
+        assert_eq!(again.matches("prin_new").count(), 2);
+
+        // Malformed input passes through unchanged.
+        let garbage = b"\xff\xfe not toml";
+        assert_eq!(
+            remap_cron_principal_ids(garbage, "prin_new"),
+            garbage.to_vec()
+        );
+    }
+
+    /// ADR-056: the real on-disk cron database format is JSON despite
+    /// the legacy `schedule.toml` file name (`CronDatabase`,
+    /// `serde_json::to_string_pretty`). The rebinding must handle it.
+    #[test]
+    fn remap_cron_principal_ids_handles_real_json_format() {
+        let schedule = serde_json::json!({
+            "version": 2,
+            "jobs": [
+                {
+                    "id": "keepalive",
+                    "name": "keepalive",
+                    "principal_id": "prin_old",
+                    "schedule": { "every": { "every_ms": 600_000 } },
+                    "action": { "send": { "message": "", "target": "trunk" } },
+                    "delete_after_run": false,
+                    "enabled": true
+                },
+                {
+                    "id": "trunk-authored",
+                    "name": "morning-brief",
+                    "principal_id": "prin_old",
+                    "schedule": { "at": { "at": "2026-09-15T01:00:00Z" } },
+                    "action": { "send": { "message": "morning", "target": "trunk" } },
+                    "delete_after_run": false,
+                    "enabled": true
+                }
+            ],
+            "runs": []
+        })
+        .to_string();
+
+        let remapped =
+            String::from_utf8(remap_cron_principal_ids(schedule.as_bytes(), "prin_new")).unwrap();
+        assert_eq!(remapped.matches("prin_new").count(), 2, "{remapped}");
+        assert!(!remapped.contains("prin_old"), "{remapped}");
+
+        // The rest of the document survives the rewrite.
+        let parsed: serde_json::Value = serde_json::from_str(&remapped).unwrap();
+        assert_eq!(parsed["jobs"][0]["id"], "keepalive");
+        assert_eq!(parsed["jobs"][1]["name"], "morning-brief");
+        assert_eq!(parsed["version"], 2);
     }
 
     /// Build a minimal `.ext` archive in memory containing an
@@ -1136,7 +1712,7 @@ mod tests {
     }
 
     /// PR 2: Phase C gate. A caller without `principal:write_agents`
-    /// cannot import a `.principal` package — the gate fires inside
+    /// cannot import a `.peko` package — the gate fires inside
     /// `import_agents` before any agent prompt reaches disk.
     /// `import_identity` runs first and also requires
     /// `principal:write_identity`; either gate is acceptable here
@@ -1155,7 +1731,7 @@ mod tests {
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(agents_dir.join("planner.md"), b"# Planner").unwrap();
 
-        let out = tmp.path().join("denied.principal");
+        let out = tmp.path().join("denied.peko");
         let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
         packager
             .export(PrincipalExportOptions {

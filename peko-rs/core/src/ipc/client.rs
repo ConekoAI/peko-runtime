@@ -443,25 +443,24 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
-    /// Export a Principal to a package.
+    /// Export a Principal to a package — a full-existence snapshot
+    /// (ADR-056): sessions, authored cron schedule, plans, and the
+    /// installed workspace tooling alongside the definition.
     pub async fn principal_export(
         &self,
         name: impl Into<String>,
         output: Option<String>,
-        include_sessions: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalExport {
             request_id,
             name: name.into(),
             output,
-            include_sessions,
-            with_extensions: false,
         };
         self.request_response(packet).await
     }
 
-    /// Preview a `.principal` package before importing it.
+    /// Preview a `.peko` package before importing it.
     pub async fn principal_import_preview(
         &self,
         file_path: impl Into<String>,

@@ -1,8 +1,8 @@
 //! Portable principal package system
 //!
-//! Provides export/import functionality for Principals as `.principal`
+//! Provides export/import functionality for Principals as `.peko`
 //! packages. After the principal-as-single-actor migration (Phases 1-5),
-//! `.principal` is the canonical archive format; `.agent` and `.team`
+//! `.peko` is the canonical archive format; `.agent` and `.team`
 //! archives were retired alongside the standalone agent CRUD surface.
 //!
 //! Similar to Docker containers, a Principal can be packaged with its
@@ -11,7 +11,7 @@
 //!
 //! ## Package Format
 //!
-//! `.principal` files are gzip-compressed tar archives containing:
+//! `.peko` files are gzip-compressed tar archives containing:
 //! - `manifest.toml` - Package metadata and file checksums
 //! - `identity/did.json` - DID document
 //! - `identity/keys.enc` - Encrypted private keys (AES-256-GCM)
@@ -34,7 +34,7 @@
 //!
 //! // Import a principal
 //! let unpackager = PrincipalUnpackager::new(target_dir);
-//! let result = unpackager.import("./my-principal.principal", options).await?;
+//! let result = unpackager.import("./my-principal.peko", options).await?;
 //! ```
 
 #![allow(dead_code)]

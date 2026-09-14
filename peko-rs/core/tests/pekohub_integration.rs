@@ -110,6 +110,13 @@ fn create_test_manifest(name: &str) -> (PrincipalManifest, Vec<Layer>) {
         agents: Some(agents_digest),
         memory: None,
         sessions: None,
+        cron: None,
+        plans: None,
+        tools: None,
+        skills: None,
+        mcp: None,
+        hooks: None,
+        kb: None,
         plugins: None,
         extensions: None,
     });

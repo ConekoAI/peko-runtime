@@ -50,8 +50,18 @@ use peko_session::safe_filename_component;
 // | Shared  | Principal| {config_dir}/principals/{name}/           |
 // | Runtime | Runtime  | {data_dir}/runtime/                       |
 //
-// Local tier contents are runtime-only state — never packaged.
-// Shared tier contents are per-principal capability-bearing config — packaged.
+// The tier boundary is an ACCESS boundary, not a packaging boundary:
+// Shared tier contents are explicit storage the principal touches
+// directly (config, prompts, tooling); Local tier contents are
+// implicit storage managed by the runtime and tool calls (sessions,
+// cron, plans, locks, cache).
+//
+// Packaging policy (ADR-056) is a separate axis, decided per
+// category: a `.peko` export is a full-existence snapshot —
+// authored, identity-bearing data travels regardless of tier (Shared
+// config and tooling; Local sessions, cron, plans), while derived
+// Local state (`cache/`, `locks/`, `memory_index.json`) is never
+// packaged — it is rebuilt by the runtime on import.
 // Runtime tier contents are installed once for the runtime; principals
 // access them via capability grants recorded as LINKs in the bundle.
 // =========================================================================

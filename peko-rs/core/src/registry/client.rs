@@ -454,12 +454,18 @@ impl RegistryClient {
         Ok(manifest)
     }
 
-    /// Push a `.principal` package to a registry.
+    /// Push a template artifact to a registry (ADR-056).
     ///
-    /// Stores the descriptor's layer blobs and the OCI config blob (the
-    /// signed `PrincipalManifest` TOML) in the local content-addressable
-    /// registry, builds and persists a `RegistryManifest` with kind
-    /// `"principal"`, then pushes it to the remote via [`Self::push`].
+    /// The registry distributes DNA, not creatures: the descriptor's
+    /// config blob is the **template TOML** (a stripped
+    /// `principal.toml` — no DID, no keys, no lived state) and there
+    /// are no content layers. The publisher is established by the
+    /// registry credential at push time; content integrity is carried
+    /// by the OCI digests. (Detached cryptographic endorsement of the
+    /// template bytes by the source DID is a tracked follow-up.)
+    ///
+    /// Full-existence snapshots are never pushed — they travel
+    /// peer-to-peer as cryogenic transport, not through the registry.
     pub async fn push_principal<F>(
         &self,
         descriptor: &crate::registry::packaging::PrincipalRegistryDescriptor,
@@ -472,20 +478,6 @@ impl RegistryClient {
         F: FnMut(ProgressEvent),
     {
         use crate::registry::packaging::types::compute_digest;
-
-        // Pre-validate the manifest signature before uploading anything.
-        // Signature verification otherwise happens only on the pull/import
-        // side, so without this an unsigned or tampered principal package
-        // could be pushed to a registry. We require a valid signature here
-        // (allow_unsigned = false); the binding check inside ensures the
-        // DID, public key, and signature all agree.
-        crate::registry::packaging::principal_unpackager::verify_principal_signature(
-            &descriptor.manifest_toml,
-            &descriptor.did_doc,
-            false,
-            name,
-        )
-        .map_err(|e| anyhow::anyhow!("refusing to push '{name}': {e}"))?;
 
         // Store every layer blob (including the config blob) locally.
         for (digest, data) in &descriptor.layer_data {
@@ -522,13 +514,18 @@ impl RegistryClient {
         self.push(&digest, remote_ref, progress).await
     }
 
-    /// Pull a `.principal` package and reconstruct the archive at
-    /// `output_path`.
+    /// Pull a principal artifact and reconstruct it at `output_path`.
     ///
-    /// Pulls the manifest and all layers via [`Self::pull`], reads the OCI
-    /// config blob (the `PrincipalManifest` TOML) to recover the per-prefix
-    /// layer digests, then rebuilds the `.principal` tar.gz from the local
-    /// layer blobs so it can be imported with `PrincipalUnpackager`.
+    /// Two artifact shapes are recognized by the OCI config blob:
+    ///
+    /// - **Template TOML** (ADR-056 — the only shape new pushes
+    ///   produce): the config blob is a stripped `principal.toml`. It
+    ///   is written verbatim to `output_path` and ground via
+    ///   `peko principal create <name> -f <file>` (fresh identity,
+    ///   genesis).
+    /// - **Legacy package**: the config blob is a signed
+    ///   `PrincipalManifest`; the layer blobs are re-assembled into a
+    ///   `.peko` tar.gz for `PrincipalUnpackager` import.
     pub async fn pull_principal<F>(
         &self,
         registry_ref: &str,
@@ -542,10 +539,21 @@ impl RegistryClient {
 
         let manifest = self.pull(registry_ref, progress).await?;
 
-        // The config blob is the signed PrincipalManifest TOML.
+        // The config blob is either a template TOML or a signed
+        // PrincipalManifest.
         let config_bytes = self.registry.get_layer(&manifest.config.digest).await?;
         let config_str = std::str::from_utf8(&config_bytes)
             .map_err(|e| anyhow::anyhow!("principal config blob is not utf-8: {e}"))?;
+
+        if PrincipalManifest::from_toml(config_str).is_err() {
+            // Template artifact: write the TOML verbatim.
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(output_path, config_bytes)?;
+            return Ok(manifest);
+        }
+
         let principal_manifest = PrincipalManifest::from_toml(config_str)?;
 
         let layers = principal_manifest
@@ -598,7 +606,7 @@ impl RegistryClient {
         Ok(())
     }
 
-    /// Write the reconstructed `.principal` archive to disk.
+    /// Write the reconstructed `.peko` archive to disk.
     fn write_principal_archive(
         files: &std::collections::HashMap<String, Vec<u8>>,
         output_path: &std::path::Path,
