@@ -1,6 +1,6 @@
 //! Unpackager for importing portable Principal packages
 //!
-//! Extracts `.principal` files into the local peko runtime.
+//! Extracts `.peko` files into the local peko runtime.
 #![allow(dead_code)]
 
 use crate::common::authority::{RuntimeAuthority, TierPath};
@@ -104,7 +104,7 @@ pub struct PrincipalImportResult {
     pub carried_local_state: bool,
 }
 
-/// Unpackager for importing `.principal` packages.
+/// Unpackager for importing `.peko` packages.
 pub struct PrincipalUnpackager {
     package_path: PathBuf,
     config_dir: PathBuf,
@@ -163,6 +163,17 @@ impl PrincipalUnpackager {
             .clone();
         let manifest = self.parse_manifest(&files)?;
 
+        // ADR-056: templates are plain TOML files ground via
+        // `principal create -f` — keyless packages are no longer a
+        // supported artifact shape. Fail fast, before any crypto work.
+        if !files.contains_key("identity/keys.enc") {
+            anyhow::bail!(
+                "This package carries no keys — it looks like a template artifact. \
+                 Templates are plain TOML files: ground one with \
+                 `peko principal create <name> -f <template.toml>`."
+            );
+        }
+
         // Signature verification
         let did_doc_bytes = files
             .get("identity/did.json")
@@ -195,12 +206,7 @@ impl PrincipalUnpackager {
             .as_ref()
             .unwrap_or(&manifest.principal.name)
             .clone();
-        // ADR-056: template packages (keyless — registry-distributed
-        // DNA) carry no identity to pin; the freshly minted DID has no
-        // history. Pinning applies to identity transport (snapshots),
-        // which always ship `identity/keys.enc`.
-        let is_template = !files.contains_key("identity/keys.enc");
-        if signature_status == SignatureStatus::Verified && !is_template {
+        if signature_status == SignatureStatus::Verified {
             let resolver = PathResolver::with_dirs(
                 self.config_dir.clone(),
                 self.data_dir.clone(),
@@ -411,30 +417,10 @@ impl PrincipalUnpackager {
             return Ok(new_identity);
         }
 
-        // ADR-056: template packages (keyless — registry-distributed
-        // DNA) mint a fresh identity on import. Cloning never reuses
-        // the source DID: the template's `identity/did.json` names the
-        // *publisher* (for signature endorsement), not the new
-        // principal's identity.
-        let Some(encrypted_keys) = files.get("identity/keys.enc") else {
-            let new_identity = Identity::new(
-                &manifest.principal.name,
-                peko_identity::did::DIDScope::Local,
-            )
-            .await?;
-            let key_storage = KeyStorage::with_path(identity_dir)?;
-            key_storage.store_identity(&new_identity).await?;
-            tracing::info!(
-                "template package '{}' imported with a freshly minted identity {}",
-                manifest.principal.name,
-                new_identity.did
-            );
-            return Ok(new_identity);
-        };
         let key_data = if manifest.identity.encrypted {
             anyhow::bail!("Encrypted principal packages are not yet supported")
         } else {
-            encrypted_keys.clone()
+            files["identity/keys.enc"].clone()
         };
 
         let key_export: KeyPairExport = serde_json::from_slice(&key_data)?;
@@ -622,7 +608,7 @@ impl PrincipalUnpackager {
     ///
     /// **Phase 5 (ADR-047 §2.1):** workspace-resident tooling
     /// (tools/hooks/skills/MCP) lives in the principal's workspace and
-    /// is not embedded in `.principal` packages (the `--with-extensions`
+    /// is not embedded in `.peko` packages (the `--with-extensions`
     /// flag was dropped in Phase 5c).
     ///
     /// **Phase 7 (ADR-047 §5):** new packages emit a `plugins/` layer
@@ -648,7 +634,7 @@ impl PrincipalUnpackager {
     }
 
     /// Extract the union of capabilities declared by the embedded plugins
-    /// (or legacy embedded extensions) in a `.principal` package.
+    /// (or legacy embedded extensions) in a `.peko` package.
     ///
     /// Returns `(required_capabilities, warnings)`. The required set is the
     /// union of each embedded plugin manifest's `requires` list.
@@ -1029,7 +1015,7 @@ fn validate_package_for_principal(
 
     let mut result = ValidationResult::success();
 
-    // Required files for a `.principal` package.
+    // Required files for a `.peko` package.
     let required_files = [
         "manifest.toml",
         "identity/did.json",
@@ -1145,7 +1131,7 @@ mod tests {
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(agents_dir.join("planner.md"), b"# Planner").unwrap();
 
-        let out = tmp.path().join("importme.principal");
+        let out = tmp.path().join("importme.peko");
         let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
         packager
             .export(PrincipalExportOptions {
@@ -1193,7 +1179,7 @@ mod tests {
         let config = sample_config("orig", &identity.did);
 
         let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("orig.principal");
+        let out = tmp.path().join("orig.peko");
         let packager = PrincipalPackager::new(config, identity);
         packager
             .export(PrincipalExportOptions {
@@ -1266,7 +1252,7 @@ mod tests {
         std::fs::create_dir_all(local_root.join("plans")).unwrap();
         std::fs::write(local_root.join("plans").join("p1.jsonl"), b"{}\n").unwrap();
 
-        let out = tmp.path().join("live.principal");
+        let out = tmp.path().join("live.peko");
         let packager = PrincipalPackager::new(config, identity)
             .with_agents_dir(shared_root.join("agents"))
             .with_sessions_dir(local_root.join("sessions"))
@@ -1383,7 +1369,7 @@ mod tests {
         config.set_boot_state(BootState::Organized);
 
         let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("org.principal");
+        let out = tmp.path().join("org.peko");
         // No sessions/cron/plans dirs wired in — the package carries
         // no Local state, so it clones rather than wakes.
         let packager = PrincipalPackager::new(config, identity);
@@ -1417,13 +1403,13 @@ mod tests {
         );
     }
 
-    /// ADR-056: a registry template package (keyless — no
-    /// `identity/keys.enc`) clones with a freshly minted identity. The
-    /// source DID is publisher endorsement only and never travels into
-    /// the new principal; the boot state is inferred (a template is a
-    /// seed, not a wake).
+    /// ADR-056: the registry artifact is a plain TOML template —
+    /// `export_for_registry` emits a stripped `principal.toml`, not a
+    /// package. Templates are ground via `principal create -f`, so a
+    /// keyless *package* is rejected with actionable guidance rather
+    /// than silently cloned.
     #[tokio::test]
-    async fn template_import_mints_fresh_identity() {
+    async fn registry_artifact_is_a_template_toml() {
         use crate::registry::packaging::principal_packager::PrincipalExportOptions;
 
         let identity = Identity::new("tmpl-src", DIDScope::Local).await.unwrap();
@@ -1433,18 +1419,9 @@ mod tests {
         config.set_boot_state(BootState::Organized);
 
         let tmp = tempfile::tempdir().unwrap();
-        let shared_root = tmp.path().join("shared").join("tmpl-src");
-        std::fs::create_dir_all(shared_root.join("agents")).unwrap();
-        std::fs::write(shared_root.join("agents").join("root.md"), b"# root").unwrap();
-        std::fs::create_dir_all(shared_root.join("skills").join("s1")).unwrap();
-        std::fs::write(shared_root.join("skills").join("s1").join("SKILL.md"), b"x").unwrap();
-
-        let out = tmp.path().join("tmpl-src.principal");
-        let packager = PrincipalPackager::new(config, identity)
-            .with_agents_dir(shared_root.join("agents"))
-            .with_workspace_dir(&shared_root);
-        // export_for_registry IS the template export (ADR-056).
-        packager
+        let out = tmp.path().join("tmpl-src.template.toml");
+        let packager = PrincipalPackager::new(config, identity);
+        let descriptor = packager
             .export_for_registry(PrincipalExportOptions {
                 output_path: Some(out.display().to_string()),
                 ..Default::default()
@@ -1452,59 +1429,42 @@ mod tests {
             .await
             .unwrap();
 
-        let config_dir = tmp.path().join("cfg");
-        let data_dir = tmp.path().join("data");
-        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir);
-        let result = unpackager
-            .import(PrincipalImportOptions::default())
+        // The artifact on disk is the template TOML, not an archive.
+        let artifact = std::fs::read_to_string(&out).unwrap();
+        assert!(!artifact.contains("prin_tmpl_source"), "{artifact}");
+        assert!(!artifact.contains(&source_did), "{artifact}");
+        assert!(!artifact.contains("boot_state"), "{artifact}");
+        assert!(
+            !out.display().to_string().ends_with(".peko"),
+            "templates are TOML files, not packages"
+        );
+
+        // The OCI config blob IS the template TOML; no content layers.
+        assert!(descriptor.layers.is_empty());
+        let blob = std::str::from_utf8(&descriptor.manifest_toml).unwrap();
+        assert_eq!(blob, &artifact);
+
+        // A keyless *package* (wrong shape) is rejected with guidance.
+        let files: HashMap<String, Vec<u8>> = HashMap::from([
+            (
+                "manifest.toml".to_string(),
+                PrincipalManifest::new("tmpl-src", "1.0.0", &source_did)
+                    .to_toml()
+                    .unwrap()
+                    .into_bytes(),
+            ),
+            ("identity/did.json".to_string(), b"{}".to_vec()),
+        ]);
+        let unpackager =
+            PrincipalUnpackager::new(&out, tmp.path().join("cfg"), tmp.path().join("data"));
+        let err = unpackager
+            .import_from_files(files, PrincipalImportOptions::default())
             .await
-            .unwrap();
-
+            .expect_err("keyless packages are not a supported artifact shape");
+        let msg = format!("{err:#}");
         assert!(
-            !result.carried_local_state,
-            "templates carry no local state"
-        );
-        assert_ne!(
-            result.did, source_did,
-            "a template clone must mint a fresh DID, never reuse the publisher's"
-        );
-
-        // DNA landed: agents + tooling.
-        assert!(
-            config_dir
-                .join("principals")
-                .join("tmpl-src")
-                .join("agents")
-                .join("root.md")
-                .exists(),
-            "agents restored"
-        );
-        assert!(
-            config_dir
-                .join("principals")
-                .join("tmpl-src")
-                .join("skills")
-                .join("s1")
-                .join("SKILL.md")
-                .exists(),
-            "tooling restored"
-        );
-
-        // Boot state inferred, not inherited.
-        let imported = std::fs::read_to_string(
-            config_dir
-                .join("principals")
-                .join("tmpl-src")
-                .join("principal.toml"),
-        )
-        .unwrap();
-        assert!(
-            !imported.contains("boot_state"),
-            "template import must infer its boot state: {imported}"
-        );
-        assert!(
-            !imported.contains("prin_tmpl_source"),
-            "source runtime id must not travel: {imported}"
+            msg.contains("principal create") && msg.contains("-f"),
+            "expected create -f guidance, got: {msg}"
         );
     }
 
@@ -1752,7 +1712,7 @@ principal_id = "prin_old"
     }
 
     /// PR 2: Phase C gate. A caller without `principal:write_agents`
-    /// cannot import a `.principal` package — the gate fires inside
+    /// cannot import a `.peko` package — the gate fires inside
     /// `import_agents` before any agent prompt reaches disk.
     /// `import_identity` runs first and also requires
     /// `principal:write_identity`; either gate is acceptable here
@@ -1771,7 +1731,7 @@ principal_id = "prin_old"
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(agents_dir.join("planner.md"), b"# Planner").unwrap();
 
-        let out = tmp.path().join("denied.principal");
+        let out = tmp.path().join("denied.peko");
         let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
         packager
             .export(PrincipalExportOptions {

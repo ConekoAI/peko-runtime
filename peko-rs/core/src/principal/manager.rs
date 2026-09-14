@@ -347,7 +347,7 @@ impl PrincipalManager {
         config.id = Some(id.clone());
 
         // ADR-054: stamp the genesis boot state. A config that arrives
-        // with definition content (e.g. a `.principal` package import)
+        // with definition content (e.g. a `.peko` package import)
         // enters at `defined`; a bare create (the CLI writes a default
         // agent prompt but no identity/intent) enters at `provisioned`.
         // The daemon's genesis boot pass (`principal::genesis`) picks

@@ -1,10 +1,10 @@
 //! Packager for creating portable Principal packages
 //!
-//! Exports Principals to `.principal` files (tar.gz archives with manifest).
+//! Exports Principals to `.peko` files (tar.gz archives with manifest).
 
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
-use crate::registry::packaging::types::{compute_digest, Layer, LayerType};
+use crate::registry::packaging::types::{compute_digest, Layer};
 use anyhow::Context;
 use peko_identity::Identity;
 use std::collections::{BTreeMap, HashMap};
@@ -54,7 +54,7 @@ pub struct PrincipalRegistryDescriptor {
     pub did_doc: Vec<u8>,
 }
 
-/// Packager for creating `.principal` packages.
+/// Packager for creating `.peko` packages.
 ///
 /// **ADR-056 (full-existence snapshot):** an export is the
 /// principal's live existence — `config/`, `identity/` (DID doc +
@@ -135,73 +135,73 @@ impl PrincipalPackager {
         self
     }
 
-    /// Export the Principal to a `.principal` package — a
+    /// Export the Principal to a `.peko` package — a
     /// full-existence snapshot (ADR-056).
     pub async fn export(&self, options: PrincipalExportOptions) -> anyhow::Result<PathBuf> {
         let (files, _manifest) = self.collect_files(options.clone()).await?;
         self.create_archive(&files, &options).await
     }
 
-    /// Export the template payload for registry push (ADR-056).
+    /// Emit the template payload for registry distribution (ADR-056).
     ///
-    /// The registry distributes DNA, not creatures: the payload is the
-    /// config with `id`/`did`/`boot_state` stripped, agent prompts,
-    /// and the workspace tooling — plus the public DID document, over
-    /// which the source principal signs the manifest as *endorsement*
-    /// ("this DNA came from me"). No `keys.enc`, no sessions, no
-    /// cron/plans ever leave the host through the registry. A pulled
-    /// template clones via a freshly minted identity (`principal
-    /// create`-style genesis), never by reusing the source DID.
+    /// The registry distributes DNA, not creatures — and DNA is a
+    /// **plain TOML file** (a `principal.toml` with `id`, `did`, and
+    /// `boot_state` stripped), exactly the shape `principal create -f`
+    /// consumes. No package wrapper, no keys, no sessions, no
+    /// cron/plans ever leave the host through the registry: the TOML
+    /// is inspectable with `cat`, diffable, and groundable via a
+    /// freshly minted identity and genesis. The source principal's
+    /// public DID document rides along in the OCI descriptor as
+    /// publisher provenance; cryptographic endorsement of the file
+    /// bytes is a follow-up (registry credentials establish the
+    /// publisher for now).
     pub async fn export_for_registry(
         self,
         options: PrincipalExportOptions,
     ) -> anyhow::Result<PrincipalRegistryDescriptor> {
-        let (files, manifest) = self.collect_template_files(&options).await?;
-        let package_path = self.create_archive(&files, &options).await?;
+        let template_toml = self.template_toml()?;
+        let template_bytes = template_toml.into_bytes();
 
-        let manifest_toml = manifest.to_toml()?.into_bytes();
-        let mut layer_data: HashMap<String, Vec<u8>> = HashMap::new();
-        let mut layers = Vec::new();
-
-        // OCI config blob is the signed principal manifest.
-        let config_digest = compute_digest(&manifest_toml);
-        layer_data.insert(config_digest.clone(), manifest_toml.clone());
-
-        let prefix_layers = [
-            ("config", LayerType::Config),
-            ("identity", LayerType::Identity),
-            ("agents", LayerType::Workspace),
-            ("tools", LayerType::Tools),
-            ("skills", LayerType::Skills),
-            ("mcp", LayerType::Mcp),
-            ("hooks", LayerType::Hooks),
-            ("kb", LayerType::Kb),
-            ("plugins", LayerType::Plugins),
-        ];
-
-        for (prefix, layer_type) in prefix_layers {
-            let mut layer_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-            for (path, content) in &files {
-                if let Some(rest) = path.strip_prefix(&format!("{prefix}/")) {
-                    layer_files.insert(rest.to_string(), content.clone());
-                }
-            }
-
-            if !layer_files.is_empty() {
-                let (digest, bytes) = Self::build_layer_digest_and_bytes(&layer_files)?;
-                let size = bytes.len() as u64;
-                layer_data.insert(digest.clone(), bytes);
-                layers.push(Layer::new(digest, layer_type, size));
-            }
+        // Write the TOML artifact to disk (the caller treats it as the
+        // pushed artifact and may clean it up).
+        let artifact_path = match &options.output_path {
+            Some(p) => PathBuf::from(p),
+            None => PathBuf::from(format!("{}.template.toml", self.config.name)),
+        };
+        if let Some(parent) = artifact_path.parent() {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!("Failed to create output directory: {}", parent.display())
+            })?;
         }
+        tokio::fs::write(&artifact_path, &template_bytes).await?;
+
+        // OCI transport: the template TOML IS the config blob; there
+        // are no content layers.
+        let mut layer_data: HashMap<String, Vec<u8>> = HashMap::new();
+        let config_digest = compute_digest(&template_bytes);
+        layer_data.insert(config_digest.clone(), template_bytes.clone());
+
+        let did_doc = serde_json::to_vec_pretty(&self.identity.to_did_document()?)?;
 
         Ok(PrincipalRegistryDescriptor {
-            package_path,
-            manifest_toml,
-            layers,
+            package_path: artifact_path,
+            manifest_toml: template_bytes,
+            layers: Vec::new(),
             layer_data,
-            did_doc: files.get("identity/did.json").cloned().unwrap_or_default(),
+            did_doc,
         })
+    }
+
+    /// The stripped template TOML (ADR-056): a `principal.toml` whose
+    /// `id`, `did`, and `boot_state` are removed, so `principal create
+    /// -f` mints a fresh identity and infers the boot state.
+    pub fn template_toml(&self) -> anyhow::Result<String> {
+        let mut template_config = self.config.clone();
+        template_config.id = None;
+        template_config.did = None;
+        template_config.boot_state = None;
+        toml::to_string_pretty(&template_config)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize template config: {e}"))
     }
 
     /// Collect all files for a full-existence snapshot package without
@@ -253,70 +253,6 @@ impl PrincipalPackager {
         self.export_local_authored(&mut files, &mut manifest)
             .await
             .context("Failed to export local authored state")?;
-        self.export_workspace_tooling(&mut files, &mut manifest)
-            .await
-            .context("Failed to export workspace tooling")?;
-
-        manifest.layers = Some(Self::compute_layers(&files)?);
-        self.sign_manifest(&mut manifest)
-            .context("Failed to sign manifest")?;
-
-        let manifest_toml = manifest.to_toml().context("Failed to serialize manifest")?;
-        files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
-
-        Ok((files, manifest))
-    }
-
-    /// Collect the DID-free, key-free template payload for registry
-    /// distribution (ADR-056): config with `id`/`did`/`boot_state`
-    /// stripped, agent prompts, workspace tooling, and the public DID
-    /// document. The manifest is signed by the source key as
-    /// endorsement; nothing that could resurrect the source identity
-    /// or leak lived state is included.
-    async fn collect_template_files(
-        &self,
-        options: &PrincipalExportOptions,
-    ) -> anyhow::Result<(HashMap<String, Vec<u8>>, PrincipalManifest)> {
-        let did = self
-            .config
-            .did
-            .as_ref()
-            .map(|d| d.0.clone())
-            .unwrap_or_else(|| self.identity.did.clone());
-
-        let mut manifest = PrincipalManifest::new(&self.config.name, "1.0.0", &did);
-
-        if let Some(ref desc) = options.description {
-            manifest.principal.description = Some(desc.clone());
-        } else if let Some(ref desc) = self.config.identity.description {
-            manifest.principal.description = Some(desc.clone());
-        }
-
-        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
-
-        // Public DID document only — endorsement, not identity
-        // transport. `identity/keys.enc` is deliberately NOT included.
-        let did_doc = serde_json::to_vec_pretty(&self.identity.to_did_document()?)?;
-        files.insert("identity/did.json".to_string(), did_doc);
-        manifest.add_file("identity/did.json", &files["identity/did.json"]);
-
-        // Strip the runtime identity: a template carries the DNA, and
-        // `principal create -f` (or a template pull) always mints a
-        // fresh DID/`id` and infers its boot state.
-        let mut template_config = self.config.clone();
-        template_config.id = None;
-        template_config.did = None;
-        template_config.boot_state = None;
-        let config_toml = toml::to_string_pretty(&template_config)?;
-        files.insert(
-            "config/principal.toml".to_string(),
-            config_toml.into_bytes(),
-        );
-        manifest.add_file("config/principal.toml", &files["config/principal.toml"]);
-
-        self.export_agents(&mut files, &mut manifest)
-            .await
-            .context("Failed to export agents")?;
         self.export_workspace_tooling(&mut files, &mut manifest)
             .await
             .context("Failed to export workspace tooling")?;
@@ -592,7 +528,7 @@ impl PrincipalPackager {
         let output_path = if let Some(path) = &options.output_path {
             PathBuf::from(path)
         } else {
-            PathBuf::from(format!("{}.principal", self.config.name))
+            PathBuf::from(format!("{}.peko", self.config.name))
         };
 
         if let Some(parent) = output_path.parent() {
@@ -683,7 +619,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = tmp.path().join("roundtrip.principal");
+        let out = tmp.path().join("roundtrip.peko");
         let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
         let path = packager
             .export(PrincipalExportOptions {
@@ -818,12 +754,13 @@ mod tests {
         assert!(layers.sessions.is_some(), "sessions layer digest");
     }
 
-    /// ADR-056: the registry artifact is a template — DID-free
-    /// config, agents, tooling, and the public DID document. No keys,
-    /// no sessions, no cron/plans ever leave the host through the
-    /// registry.
+    /// ADR-056: the registry artifact is a plain TOML template — a
+    /// `principal.toml` stripped of `id`/`did`/`boot_state`. It is
+    /// not a package at all: inspectable with `cat`, groundable via
+    /// `principal create -f`, and incapable of carrying keys or lived
+    /// state.
     #[tokio::test]
-    async fn registry_template_is_did_free_and_key_free() {
+    async fn registry_template_is_a_plain_toml() {
         use crate::principal::config::BootState;
 
         let identity = Identity::new("template", DIDScope::Local).await.unwrap();
@@ -832,49 +769,28 @@ mod tests {
         config.set_boot_state(BootState::Organized);
 
         let tmp = tempfile::tempdir().unwrap();
-        let (shared_root, local_root, _tmp_path) = seed_layout(&tmp, "template");
+        let out = tmp.path().join("template.template.toml");
 
-        let packager = PrincipalPackager::new(config, identity)
-            .with_agents_dir(shared_root.join("agents"))
-            .with_sessions_dir(local_root.join("sessions"))
-            .with_workspace_dir(&shared_root)
-            .with_local_root(&local_root);
-
-        let (files, manifest) = packager
-            .collect_template_files(&PrincipalExportOptions::default())
+        let packager = PrincipalPackager::new(config, identity);
+        let descriptor = packager
+            .export_for_registry(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
             .await
             .unwrap();
 
-        // No identity transport, no lived state.
-        assert!(
-            !files.contains_key("identity/keys.enc"),
-            "keys must not travel"
-        );
-        assert!(
-            files.contains_key("identity/did.json"),
-            "public DID doc travels"
-        );
-        assert!(!files.keys().any(|p| p.starts_with("sessions/")));
-        assert!(!files.keys().any(|p| p.starts_with("cron/")));
-        assert!(!files.keys().any(|p| p.starts_with("plans/")));
+        // The artifact on disk is the TOML itself — no keys, no
+        // source identity, no boot state.
+        let artifact = std::fs::read_to_string(&out).unwrap();
+        assert!(!artifact.contains("prin_template_src"), "{artifact}");
+        assert!(!artifact.contains("boot_state"), "{artifact}");
+        assert!(!artifact.contains("keys"), "{artifact}");
 
-        // The config is stripped of the source identity.
-        let config_str = std::str::from_utf8(&files["config/principal.toml"]).unwrap();
-        assert!(!config_str.contains("prin_template_src"), "{config_str}");
-        assert!(
-            !config_str.contains(&manifest.principal.did),
-            "{config_str}"
-        );
-        assert!(!config_str.contains("boot_state"), "{config_str}");
-
-        // DNA travels: agents + tooling.
-        assert!(files.contains_key("agents/root.md"));
-        assert!(files.contains_key("skills/docker/SKILL.md"));
-        assert!(files.contains_key("kb/MEMORY.md"));
-
-        // Endorsement: signed by the source DID, which is named in
-        // the manifest but absent from the payload config.
-        assert!(!manifest.signatures.manifest.is_empty());
+        // OCI transport: the TOML is the config blob; zero layers.
+        assert!(descriptor.layers.is_empty());
+        assert_eq!(descriptor.manifest_toml, artifact.as_bytes());
+        assert_eq!(descriptor.layer_data.len(), 1);
     }
 
     #[tokio::test]
@@ -883,7 +799,7 @@ mod tests {
         let config = sample_config("registry", &identity.did);
 
         let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("registry.principal");
+        let out = tmp.path().join("registry.peko");
         let packager = PrincipalPackager::new(config, identity);
         let descriptor = packager
             .export_for_registry(PrincipalExportOptions {

@@ -57,7 +57,7 @@ use peko_session::safe_filename_component;
 // cron, plans, locks, cache).
 //
 // Packaging policy (ADR-056) is a separate axis, decided per
-// category: a `.principal` export is a full-existence snapshot —
+// category: a `.peko` export is a full-existence snapshot —
 // authored, identity-bearing data travels regardless of tier (Shared
 // config and tooling; Local sessions, cron, plans), while derived
 // Local state (`cache/`, `locks/`, `memory_index.json`) is never

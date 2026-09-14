@@ -123,7 +123,7 @@ The import path decides *wake vs. seed* from what the package
 templates and mint a fresh identity; packages with keys and local
 state are transports.
 
-### D1: One export shape — the full-existence snapshot
+### D1: One export shape — the full-existence snapshot (`.peko`)
 
 `peko principal export` (no flags beyond `-o`) packages:
 
@@ -142,6 +142,11 @@ derived state, rebuilt at import. `PrincipalLayers` carries digests for
 the first draft is removed — one shape needs no declaration — and the
 removed wire fields (`include_sessions`, `full_snapshot`,
 `with_extensions`) are simply ignored if an old CLI sends them.
+
+**Extension rename:** the snapshot artifact is now **`.peko`**, not
+`.principal` — short, product-named, and no longer confusable with the
+principal *type*. Pre-ADR-056 ADRs that say `.principal` describe the
+same artifact under the old name.
 
 ### D2: Import restores what the package carries
 
@@ -187,23 +192,36 @@ pinned comment states the real rule: the tier boundary is an access
 boundary; packaging is a per-category policy; derived Local state is
 never packaged.
 
-### D6: The registry distributes DNA, not creatures
+### D6: The registry distributes DNA — as a plain TOML file
 
-`export_for_registry` emits a **template payload**: the config with
-`id`/`did`/`boot_state` stripped, agent prompts, and workspace tooling,
-plus the public DID document. The manifest is signed by the source key
-as **endorsement** ("this DNA came from me"). `identity/keys.enc`,
-`sessions/`, `cron/`, and `plans/` never leave the host through the
-registry — the pre-ADR-056 push path shipped the principal's private
-key to the registry, which is incoherent under transport semantics and
-is now structurally impossible.
+The template is **not a package at all**. `export_for_registry` emits a
+single **`.template.toml`** file: the principal's `principal.toml` with
+`id`, `did`, and `boot_state` stripped — byte-for-byte the shape
+`principal create -f` already consumes. No package wrapper, no manifest,
+no layers, no keys, no sessions, no cron/plans ever leave the host
+through the registry. The pre-ADR-056 push path shipped the principal's
+private key inside a package; that is now structurally impossible.
 
-A pulled template imports as a **clone**: no `keys.enc` ⇒ the
-unpackager mints a fresh identity (never reusing the publisher's DID),
-the boot state is inferred, and genesis runs. Trust pinning (TOFU)
-applies only to identity transport — keyless packages pin nothing, and
-the source DID in a template's manifest is publisher provenance, not an
-importable identity.
+Why a bare TOML file rather than a package:
+
+- **Inspectability** — `cat`, `diff`, and edit a template directly;
+  no tar extraction, no manifest to decode.
+- **Distribution** — one small text file; paste it into a gist, a
+  repo, or a chat message. The OCI wrapper that carries it to the
+  registry is transport plumbing (the TOML is the config blob, zero
+  content layers), invisible to users.
+- **Honesty about what DNA is** — agent prompts and installed tooling
+  are *workspace content* the trunk acquires as it grows (presence =
+  visibility, ADR-050); they are not heritable config. A template that
+  claimed to carry them would be a snapshot pretending to be a seed.
+
+The source principal's public DID document rides along in the OCI
+descriptor as publisher provenance, established at push time by the
+registry credential. A pulled template is ground with
+`peko principal create <name> -f <file>` — fresh identity, genesis —
+never by importing the publisher's identity. Keyless *packages* are
+rejected with that guidance; TOFU pinning applies only to identity
+transport (snapshots), where the DID genuinely travels.
 
 ### D7: Transport, not copy — one DID, one public principal
 
@@ -228,24 +246,28 @@ Rotation (`--rotate-keys`) remains an operator escape hatch that
   (reused for principal workspace tooling).
 - `registry/packaging/principal_packager.rs` — snapshot-only
   `collect_files` (always sessions + cron + plans + tooling, ephemeral
-  excluded); `collect_template_files` + reworked `export_for_registry`
-  (D6: stripped config, public DID doc, endorsement signature, no
-  keys/lived state).
+  excluded); `template_toml()` + reworked `export_for_registry`
+  (D6: a bare stripped-`principal.toml` file as the registry
+  artifact — no package, no keys, no layers).
 - `registry/packaging/principal_unpackager.rs` — layer-driven import;
   `carried_local_state` on the result; wake/seed boot-state rule (D4);
-  keyless-mint identity path for template imports (D6); TOFU pinning
-  skipped for keyless packages; `remap_cron_principal_ids` (JSON-first
-  per D3's format note).
+  keyless packages rejected with `create -f` guidance (D6);
+  `remap_cron_principal_ids` (JSON-first per D3's format note).
+- `registry/client.rs` — `push_principal` pushes the template TOML
+  (no package-signature pre-check; publisher = registry credential);
+  `pull_principal` writes template artifacts as TOML files.
 - `ipc` — `PrincipalExport` wire packet slimmed to `{name, output}`;
-  handler threads the workspace/local roots into the packager.
+  handler threads the workspace/local roots into the packager; pull
+  preview/import recognize template artifacts and direct the user to
+  `create -f`.
 - `cli` — `peko principal export` carries no mode flags.
 - `common/paths.rs` — tier-contract comment rewritten (D5).
 - Tests: snapshot collection (incl. ephemeral-exclusion), registry
-  template is DID-free/key-free, snapshot round-trip (every layer in
-  its tier, `organized` verbatim, stale-id rebinding), seed-rule boot
-  reset, template import mints fresh identity, cron remap (JSON shape
-  + TOML fallback + idempotence + malformed pass-through), manifest
-  legacy-field tolerance.
+  artifact is a plain TOML template (+ keyless-package rejection with
+  `create -f` guidance), snapshot round-trip (every layer in its tier,
+  `organized` verbatim, stale-id rebinding), seed-rule boot reset,
+  cron remap (JSON shape + TOML fallback + idempotence + malformed
+  pass-through), manifest legacy-field tolerance.
 - e2e: `scripts/e2e/flows/snapshot-roundtrip-llm.sh` (real LLM,
   MiniMax) — genesis turn via `create -f`, trunk-authored state
   (CronCreate attempt with a schema-safe clone fallback, skill, kb
@@ -303,9 +325,13 @@ re-seed.
   uniqueness at the exposure layer; a retirement convention for the
   source runtime on transport (e.g. export records the intent; `remove`
   completes it).
-- **Template pull UX:** wire `principal pull` of a template package to
-  a `create`-shaped flow (mint + genesis brief), rather than silent
-  import; surface the publisher endorsement in the preview.
+- **Template pull UX:** complete the pull flow for template artifacts
+  (currently the preview/import steps direct the user to
+  `peko principal create <name> -f <file>` with the artifact kept in
+  the cache dir); surface the publisher provenance in the CLI output.
+- **Detached endorsement signatures:** sign template TOML bytes with
+  the source DID (sidecar `.sig` or registry-recorded attestation) so
+  provenance is cryptographic, not just the push credential.
 - **Import preview surfaces restored layers:** extend
   `PrincipalImportPreview` with the layer inventory (sessions count,
   cron job names, hook ids) so `peko principal import` shows what a

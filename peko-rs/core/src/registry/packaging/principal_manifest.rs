@@ -1,4 +1,4 @@
-//! Principal manifest for portable `.principal` packages
+//! Principal manifest for portable `.peko` packages
 //!
 //! Mirrors the shape of the agent manifest but names the top-level metadata
 //! section `principal` and uses principal-specific layer names
@@ -10,7 +10,7 @@ use crate::registry::packaging::manifest::{IdentityConfig, PackagingMetadata, Si
 use crate::registry::packaging::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
 
-/// Content-addressable layer digests for `.principal` packages.
+/// Content-addressable layer digests for `.peko` packages.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PrincipalLayers {
     /// Config layer digest (`config/principal.toml`)
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
     }
 
-    /// Phase 7 (ADR-047 §5): legacy `.principal` packages that declare
+    /// Phase 7 (ADR-047 §5): legacy `.peko` packages that declare
     /// `extensions = "sha256:..."` but not `plugins` continue to
     /// deserialize cleanly. The new field defaults to `None`.
     #[test]
@@ -292,7 +292,7 @@ extensions = "sha256:jkl"
         assert!(parsed.extensions.is_none());
     }
 
-    /// ADR-056: `.principal` packages are full-existence snapshots —
+    /// ADR-056: `.peko` packages are full-existence snapshots —
     /// there is no export-mode field on the manifest. Legacy manifests
     /// (with or without the removed `export_mode` field) parse
     /// unchanged.

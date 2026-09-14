@@ -57,7 +57,7 @@ For the trust-and-audit posture that makes this safe, see
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
 | `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
 | `plugins/<id>/`            | Opaque plugin — any shape, runtime does not parse                         |
-| `peers.json`               | Trusted peer DIDs                                                          |
+| `peers.json`               | Peer→session routing index (lives in `local/sessions/`; ADR-056: travels with the sessions layer in snapshots) |
 
 Tooling lives directly in the workspace: there is no `extensions/`
 directory and no `peko ext install` flow. Workspace-resident tooling is
@@ -90,26 +90,43 @@ The legacy `peko ext *` command tree was retired in Phase 5.
 
 ---
 
-## Plugin packaging
+## Packaging (ADR-056)
 
-Plugins are optional, opaque artifacts that travel inside `.principal`
-packages. Per ADR-047 §5 the package format uses a `plugins/` layer:
+There are exactly two grounding paths, with two artifact shapes:
+
+- **Grow** — `peko principal create [-f <template.toml>]`: a template
+  is a **plain TOML file** (a `principal.toml` with `id`/`did`/
+  `boot_state` stripped). This is also the registry artifact
+  (`peko principal push` distributes DNA, not creatures; a pulled
+  template is ground with `create -f` and a freshly minted identity).
+- **Wake** — `peko principal import <name>.peko`: a full-existence
+  **snapshot** (`tar.gz`) of a live principal — config, identity
+  (DID doc + keys), agent prompts, sessions (with the
+  `sessions.json`/`peers.json` routing index), authored cron schedule,
+  plans, and installed workspace tooling. Import restores everything
+  to its tier; an `organized` principal keeps its rhythm (no genesis
+  re-seed). Derived state (`cache/`, `locks/`, `memory_index.json`)
+  is never packaged.
 
 ```
-my-principal.principal (tar.gz)
+my-principal.peko (tar.gz)          # cryogenic transport
 ├── manifest.toml
-├── identity/
+├── identity/                       # did.json + keys.enc
 ├── config/
 ├── agents/
-├── sessions/
-└── plugins/<plugin-id>/      # ADR-047 §5 — replaces legacy `extensions/`
+├── sessions/                       # incl. peers.json
+├── cron/
+├── plans/
+├── tools/ skills/ mcp/ hooks/ kb/
+└── plugins/
 ```
 
 Legacy packages that still ship an `extensions/<id>.ext` layer are
-accepted on import; new exports emit `plugins/` only.
+accepted on import; new exports omit it.
 
-See [ADR-047 §5](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md)
-and [ADR-027 §3](adr/ADR-027-unified-packaging.md) for the layer rename
+See [ADR-056](adr/ADR-056-full-existence-principal-snapshot.md),
+[ADR-047 §5](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md)
+and [ADR-027 §3](adr/ADR-027-unified-packaging.md) for the format
 history.
 
 ---

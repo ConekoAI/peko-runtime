@@ -145,7 +145,7 @@ pub struct RegistryManifest {
     // `dev.pekohub.principalName` is a separate channel because
     // PekoHub's existing read path treats the `dev.pekohub.*`
     // namespace as authoritative for bundle-side metadata.
-    /// Principal name (== `manifest.principal.name` for `.principal`).
+    /// Principal name (== `manifest.principal.name` for `.peko`).
     #[serde(skip)]
     pub principal_name: Option<String>,
 

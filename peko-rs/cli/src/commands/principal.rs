@@ -114,7 +114,7 @@ pub enum PrincipalCommands {
         yes: bool,
     },
 
-    /// Export a Principal to a `.principal` package (a full-existence
+    /// Export a Principal to a `.peko` package (a full-existence
     /// snapshot — sessions, authored cron schedule, plans, and
     /// installed workspace tooling travel with it; ADR-056)
     Export {
@@ -126,9 +126,9 @@ pub enum PrincipalCommands {
         output: Option<String>,
     },
 
-    /// Import a Principal from a `.principal` package
+    /// Import a Principal from a `.peko` package
     Import {
-        /// Path to the `.principal` package
+        /// Path to the `.peko` package
         file_path: String,
 
         /// Rename the imported Principal
@@ -1900,7 +1900,7 @@ mod tests {
             "peko",
             "principal",
             "import",
-            "/tmp/pkg.principal",
+            "/tmp/pkg.peko",
             "--name",
             "renamed",
             "--allow-unsigned",
@@ -1917,7 +1917,7 @@ mod tests {
                 force,
                 yes,
             }) => {
-                assert_eq!(file_path, "/tmp/pkg.principal");
+                assert_eq!(file_path, "/tmp/pkg.peko");
                 assert_eq!(name, Some("renamed".to_string()));
                 assert!(allow_unsigned);
                 assert!(force);
@@ -1929,7 +1929,7 @@ mod tests {
 
     #[test]
     fn principal_import_without_yes_defaults() {
-        let cli = Cli::try_parse_from(["peko", "principal", "import", "/tmp/pkg.principal"])
+        let cli = Cli::try_parse_from(["peko", "principal", "import", "/tmp/pkg.peko"])
             .expect("should parse principal import without --yes");
 
         match cli.command {

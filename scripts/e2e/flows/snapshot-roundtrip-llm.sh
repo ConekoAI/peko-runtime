@@ -193,7 +193,7 @@ print(len(d["jobs"]))
   fi
 
   # ── export the snapshot and inspect the archive ──────────────────
-  local full_pkg="$tempdir/snap-full.principal"
+  local full_pkg="$tempdir/snap-full.peko"
 
   peko_iso_run principal export "$principal" -o "$full_pkg"
   peko_iso_assert_rc_zero

@@ -1,7 +1,7 @@
 //! Full packaging integration test (Phase 7 — PKG-I1, Principal-era).
 //!
 //! End-to-end pipeline:
-//!   export .principal → push → pull → import
+//!   export .peko → push → pull → import
 //!
 //! This test is marked `#[ignore]` because it requires:
 //!   - Node.js 22+ with tsx installed  (local mode)
@@ -14,7 +14,7 @@
 //! ## Principal-era translation
 //!
 //! After the "Principal as the single actor" migration, the `.agent`
-//! packaging surface was replaced with `.principal` packaging:
+//! packaging surface was replaced with `.peko` packaging:
 //!
 //! - `peko_core::registry::packaging::Packager` / `AgentManifest` /
 //!   `ExportOptions` / `Unpackager` → `PrincipalPackager` /
@@ -31,11 +31,11 @@
 //! Principal push from a legacy `.agent` push.
 //!
 //! The legacy test exercised `export .agent → push → pull → import`.
-//! This file keeps the full `.principal` packaging pipeline.
+//! This file keeps the full `.peko` packaging pipeline.
 //!
 //! ## Principal package shape
 //!
-//! A `.principal` package carries:
+//! A `.peko` package carries:
 //!   - `manifest.toml` (signed, ed25519) — points at `config/`,
 //!     `identity/`, `agents/`, and optional `memory/` / `sessions/`
 //!     layers.
@@ -113,7 +113,7 @@ grants = []
     Ok(())
 }
 
-/// Build a `.principal` package from a test directory using the
+/// Build a `.peko` package from a test directory using the
 /// canonical PrincipalPackager.
 async fn build_principal_package_from_dir(
     principal_dir: &Path,
@@ -204,12 +204,12 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     let principal_dir = base_dir.join("integration-principal");
     create_test_principal_dir(&principal_dir).await.unwrap();
 
-    let package_path = base_dir.join("integration-principal.principal");
+    let package_path = base_dir.join("integration-principal.peko");
     let manifest = build_principal_package_from_dir(&principal_dir, &package_path)
         .await
         .unwrap();
 
-    assert!(package_path.exists(), ".principal package should exist");
+    assert!(package_path.exists(), ".peko package should exist");
     // The Principal packager should have emitted at least the
     // `config/` and `identity/` layers (the `agents/` layer is
     // populated when the principal carries agent prompts, which
@@ -296,7 +296,7 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     let pull_config = test_registry_config(&backend.url);
     let pull_client = RegistryClient::new(pull_config, pull_registry.clone());
 
-    let pull_output = base_dir.join("pulled.principal");
+    let pull_output = base_dir.join("pulled.peko");
     let mut pull_events = Vec::new();
     let pull_result = pull_client
         .pull_principal(&registry_ref_str, &pull_output, |event| {
@@ -312,12 +312,12 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
 
     assert!(
         pull_output.exists(),
-        "pulled .principal archive should exist at {}",
+        "pulled .peko archive should exist at {}",
         pull_output.display()
     );
 
     // ═════════════════════════════════════════════════════════════════
-    // 4. IMPORT .principal package
+    // 4. IMPORT .peko package
     // ═════════════════════════════════════════════════════════════════
     let import_config_dir = base_dir.join("imported_principals_config");
     let import_data_dir = base_dir.join("imported_principals_data");

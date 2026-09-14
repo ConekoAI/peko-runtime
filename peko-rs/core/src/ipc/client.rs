@@ -460,7 +460,7 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
-    /// Preview a `.principal` package before importing it.
+    /// Preview a `.peko` package before importing it.
     pub async fn principal_import_preview(
         &self,
         file_path: impl Into<String>,

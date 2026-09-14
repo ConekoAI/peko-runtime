@@ -28,7 +28,7 @@ pub mod client;
 pub mod config;
 pub mod manifest;
 
-/// Local packaging for Principal archives (`.principal`).
+/// Local packaging for Principal archives (`.peko`).
 ///
 /// Relocated from `src/portable/` in issue #31f as part of the
 /// 9-domain reorganization. Owns the manifest format, layer model,

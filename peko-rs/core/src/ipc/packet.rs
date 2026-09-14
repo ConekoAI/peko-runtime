@@ -619,7 +619,7 @@ pub enum RequestPacket {
         selected_capabilities: Vec<String>,
     },
 
-    /// Preview a `.principal` package before importing it.
+    /// Preview a `.peko` package before importing it.
     #[serde(rename = "principal_import_preview")]
     PrincipalImportPreview {
         request_id: u64,
@@ -1747,7 +1747,7 @@ pub enum ResponsePacket {
         config_path: String,
     },
 
-    /// Result of previewing a `.principal` package before import.
+    /// Result of previewing a `.peko` package before import.
     #[serde(rename = "principal_import_previewed")]
     PrincipalImportPreviewed {
         request_id: u64,
@@ -3741,7 +3741,7 @@ mod tests {
     fn test_principal_import_preview_request_roundtrip() {
         let req = RequestPacket::PrincipalImportPreview {
             request_id: 303,
-            file_path: "/tmp/test.principal".to_string(),
+            file_path: "/tmp/test.peko".to_string(),
             name: Some("renamed".to_string()),
             allow_unsigned: true,
             force: false,
@@ -3762,7 +3762,7 @@ mod tests {
                 force,
             } => {
                 assert_eq!(request_id, 303);
-                assert_eq!(file_path, "/tmp/test.principal");
+                assert_eq!(file_path, "/tmp/test.peko");
                 assert_eq!(name, Some("renamed".to_string()));
                 assert!(allow_unsigned);
                 assert!(!force);
@@ -3776,7 +3776,7 @@ mod tests {
         // Bare deserialization of the legacy wire shape (no `confirmed`
         // field) must default to `false` so old CLI / daemon pairs don't
         // accidentally bypass the confirmation gate.
-        let json = r#"{"type":"principal_import","request_id":304,"file_path":"/tmp/x.principal"}"#;
+        let json = r#"{"type":"principal_import","request_id":304,"file_path":"/tmp/x.peko"}"#;
         let decoded: RequestPacket = serde_json::from_str(json).unwrap();
         match decoded {
             RequestPacket::PrincipalImport { confirmed, .. } => {
@@ -4338,7 +4338,7 @@ mod tests {
         let req = RequestPacket::PrincipalExport {
             request_id: 5001,
             name: "helper".to_string(),
-            output: Some("/tmp/helper.principal".to_string()),
+            output: Some("/tmp/helper.peko".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4350,7 +4350,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 5001);
                 assert_eq!(name, "helper");
-                assert_eq!(output, Some("/tmp/helper.principal".to_string()));
+                assert_eq!(output, Some("/tmp/helper.peko".to_string()));
             }
             _ => panic!("Wrong variant"),
         }

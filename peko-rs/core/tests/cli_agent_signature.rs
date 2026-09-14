@@ -1,6 +1,6 @@
 //! Issue #14 — manifest signature verification on import (Principal-era).
 //!
-//! Builds a real `.principal` package, then exercises the unpackager's
+//! Builds a real `.peko` package, then exercises the unpackager's
 //! signature gate with eight scenarios:
 //!
 //!   1. green: signed manifest imports successfully
@@ -25,7 +25,7 @@
 //! After the "Principal as the single actor" migration, the standalone
 //! `.agent` packager/unpackager (`peko_core::registry::packaging::Packager` /
 //! `Unpackager` / `AgentManifest`) was replaced with the equivalent
-//! `.principal` surface:
+//! `.peko` surface:
 //!
 //! - [`peko_core::registry::packaging::PrincipalPackager`] (analog of `Packager`)
 //! - [`peko_core::registry::packaging::PrincipalUnpackager`] (analog of `Unpackager`)
@@ -38,7 +38,7 @@
 //!
 //! (Original Issue #14 referenced the legacy `.agent` push→pull→export
 //! flow's CI failure surface; the same byte-canonicalization contract
-//! carries over to the `.principal` push→pull→export flow exercised
+//! carries over to the `.peko` push→pull→export flow exercised
 //! by `packaging_integration::test_full_packaging_pipeline`.)
 //!
 //! See: <https://github.com/ConekoAI/peko-runtime/issues/14>
@@ -218,10 +218,10 @@ async fn run_import(
     // Write the files map to a tar.gz, point the PrincipalUnpackager at
     // it, and import. (The PrincipalUnpackager's
     // `import_from_files` is private; we exercise the public
-    // `import` path which writes a temp `.principal` file and
+    // `import` path which writes a temp `.peko` file and
     // delegates to it.)
     let temp = TempDir::new().expect("tempdir");
-    let package_path = temp.path().join("test.principal");
+    let package_path = temp.path().join("test.peko");
     write_tar_gz(&package_path, files).expect("write package");
 
     let base_dir = TempDir::new().expect("tempdir for base");
