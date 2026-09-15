@@ -382,11 +382,12 @@ impl DaemonClient {
     /// Send a message to a Principal and stream the response.
     ///
     /// The server returns a `PrincipalSent` response followed by `Done`.
+    /// ADR-057: the sender identity is derived server-side from the
+    /// connection — there is no `user` parameter.
     pub async fn principal_send(
         &self,
         name: impl Into<String>,
         message: impl Into<String>,
-        user: impl Into<String>,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -394,7 +395,6 @@ impl DaemonClient {
             request_id,
             name: name.into(),
             message: message.into(),
-            user: user.into(),
             override_model,
         };
         self.send_request(packet).await
@@ -407,7 +407,6 @@ impl DaemonClient {
         &self,
         name: impl Into<String>,
         message: impl Into<String>,
-        user: impl Into<String>,
         override_model: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -415,7 +414,6 @@ impl DaemonClient {
             request_id,
             name: name.into(),
             message: message.into(),
-            user: user.into(),
             override_model,
         };
         self.send_request(packet).await

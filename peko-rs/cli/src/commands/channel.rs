@@ -80,9 +80,11 @@ pub enum ChannelCommands {
     Post {
         /// Channel id.
         channel: String,
-        /// Sender principal name (must be a member), or a `user:<id>`
-        /// Subject wire form (ADR-049 Phase 2 — a member user posts as
-        /// themselves).
+        /// Sender principal name (must be a member), or `me` to post
+        /// as your own identity (ADR-057: derived from the
+        /// connection — hub user when logged into pekohub, else
+        /// `user:local`). A `user:<id>` sender is refused: user
+        /// identities are never specified on the wire.
         sender: String,
         /// Message text.
         text: String,
@@ -291,10 +293,29 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             parent,
             ..
         } => {
+            // ADR-057: `me` posts as the caller's own derived identity
+            // (`sender_name: None`); anything else must be a principal
+            // name. A `user:<id>` sender is refused client-side —
+            // user identities are derived from the connection, never
+            // specified.
+            let sender_name: Option<String> = if sender == "me" {
+                None
+            } else {
+                if let Ok(s) = Subject::from_str(&sender) {
+                    if matches!(s, Subject::User(_)) {
+                        anyhow::bail!(
+                            "user identities cannot be specified — the daemon derives yours \
+                             from the connection. Use `me` to post as yourself, or a \
+                             principal name to post as a runtime-hosted actor."
+                        );
+                    }
+                }
+                Some(sender.clone())
+            };
             let packet = RequestPacket::ChannelPost {
                 request_id: 0,
                 channel: channel.clone(),
-                sender_name: sender.clone(),
+                sender_name,
                 text: text.clone(),
                 parent: parent.clone(),
             };
@@ -303,20 +324,19 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                     Box::pin(async move {
                         let router = ChannelCliRouter::new(port);
                         let ch = parse_channel_id(&channel)?;
-                        // ADR-049 Phase 2: a `user:<id>` sender is taken
-                        // verbatim (the daemon path does the same);
-                        // anything else resolves as a principal name.
-                        let sender_subject = match Subject::from_str(&sender) {
-                            Ok(s @ Subject::User(_)) => s,
-                            _ => {
-                                let id = paths
-                                    .resolver()
-                                    .lookup_principal_id_by_name(&sender)
-                                    .with_context(|| {
-                                        format!("Sender principal '{sender}' not found on disk")
-                                    })?;
-                                Subject::from(&id)
-                            }
+                        // In-process fallback (no daemon): `me`
+                        // speaks as the CLI's derived identity; the
+                        // daemon path resolves it server-side.
+                        let sender_subject = if sender == "me" {
+                            Subject::User(paths.user().to_string())
+                        } else {
+                            let id = paths
+                                .resolver()
+                                .lookup_principal_id_by_name(&sender)
+                                .with_context(|| {
+                                    format!("Sender principal '{sender}' not found on disk")
+                                })?;
+                            Subject::from(&id)
                         };
                         let resp = router
                             .handle_post(&ch, &sender_subject, &text, parent)
@@ -337,9 +357,9 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 request_id: 0,
                 channel: channel.clone(),
                 since: since.clone(),
-                // ADR-049 Phase 2 (D6): reads are membership-gated;
-                // the CLI always identifies itself as the `-U` user.
-                requester: Some(format!("user:{}", paths.user())),
+                // ADR-057: the reader's identity is derived
+                // server-side from the connection; no requester on
+                // the wire.
                 tail: None,
                 before: None,
                 query: None,

@@ -1,13 +1,14 @@
 //! CLI integration tests for `peko log`.
 //!
 //! Verifies the post-F30 chat-log wire contract end-to-end through the
-//! daemon's IPC path. Authorization rules (ADR-042) are unchanged:
+//! daemon's IPC path. ADR-057: every caller has exactly one
+//! server-derived identity (`user:local` for the CLI unless the
+//! runtime is logged into pekohub), so the pre-ADR-057 `-U`
+//! multi-peer scenarios are gone — peer-level privacy rules are now
+//! pinned at the handler layer (`ipc/handlers/principal.rs` unit
+//! tests, JWT bridge tests) instead of via CLI identity flags.
 //!
 //! - Owner default view (no `--peer`) returns the owner's thread.
-//! - Owner can read any peer's thread with `--peer <X>`.
-//! - A peer can read only their own thread with `--peer <self>`.
-//! - A peer without a Chat grant on the principal is rejected.
-//! - A peer trying to read another peer's thread is rejected.
 //! - `--json` round-trips the normalized chat-message array
 //!   (`messages`, `nextCursor`, `hasMore`) with no session/tool/
 //!   system records leaked from the underlying session JSONL.
@@ -80,56 +81,6 @@ fn send(cli: &PekoCli, principal: &str, msg: &str) -> (String, String, std::proc
     (stdout, stderr, out.status)
 }
 
-/// `peko send` with a non-default `-U` caller. Used to drive a
-/// conversation as a non-owner peer so we can read back a populated
-/// thread under a non-default sender.
-fn send_with_user(
-    cli: &PekoCli,
-    principal: &str,
-    msg: &str,
-    user: &str,
-) -> (String, String, std::process::ExitStatus) {
-    let (out, _, _) = run_with_timeout(
-        || {
-            let mut c = cli.cmd();
-            c.args(["-U", user, "send", principal, msg])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            c
-        },
-        &[],
-        Duration::from_secs(30),
-    )
-    .expect("run peko send");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    (stdout, stderr, out.status)
-}
-
-/// Grant a permission on a Principal via the daemon. Used to give a
-/// non-owner peer (`user:bob`) Chat access.
-fn grant(cli: &PekoCli, principal: &str, subject: &str, permission: &str) {
-    let (out, _, _) = run_with_timeout(
-        || {
-            let mut c = cli.cmd();
-            c.args(["principal", "permit", principal, subject, permission])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            c
-        },
-        &[],
-        Duration::from_secs(20),
-    )
-    .expect("run peko principal permit");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(
-        out.status.success(),
-        "peko principal permit failed (status={:?})\nstdout: {stdout}\nstderr: {stderr}",
-        out.status.code(),
-    );
-}
-
 fn assert_log_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     assert_eq!(
         status.code(),
@@ -196,53 +147,6 @@ fn log_owner_default_view_returns_empty_before_send() {
     assert!(
         messages.is_empty(),
         "default owner view should be empty before any send\nstdout: {stdout}"
-    );
-}
-
-/// Stranger (no Chat grant) is forbidden from the default view.
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn log_stranger_forbidden_on_default_view() {
-    let Some(_mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, "log-principal-2", &_mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Caller is user:eve (no grant, not the owner).
-    let (stdout, stderr, status) = log(&cli, &["-U", "eve", "log", "log-principal-2"]);
-    assert_log_err(&stdout, &stderr, &status);
-    let combined = format!("{stdout}{stderr}");
-    assert!(
-        combined.contains("forbidden") || combined.contains("permission"),
-        "expected forbidden/permission denial in output\nstdout: {stdout}\nstderr: {stderr}"
-    );
-}
-
-/// Peer without --peer (default view = owner) is forbidden — the privacy
-/// gate rejects non-owner callers from reading the owner-root view.
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn log_granted_peer_forbidden_on_owner_default_view() {
-    let Some(_mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, "log-principal-3", &_mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Even with a Chat grant, bob can't read the owner's default view.
-    grant(&cli, "log-principal-3", "user:bob", "chat");
-
-    let (stdout, stderr, status) = log(&cli, &["-U", "bob", "log", "log-principal-3"]);
-    assert_log_err(&stdout, &stderr, &status);
-    let combined = format!("{stdout}{stderr}");
-    assert!(
-        combined.contains("forbidden") || combined.contains("permission"),
-        "expected forbidden/permission denial\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
 
@@ -362,105 +266,6 @@ fn log_json_returns_messages_after_send() {
     assert_eq!(
         parsed.get("principal").and_then(|v| v.as_str()),
         Some("log-principal-4"),
-    );
-}
-
-/// Owner can read a granted peer's thread via `--peer user:<peer>`.
-/// The peer's messages appear, and the principal's replies appear
-/// addressed back to that peer.
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn log_owner_reads_granted_peer_thread() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, "log-principal-5", &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Grant bob Chat so he can drive the principal; bob sends once.
-    grant(&cli, "log-principal-5", "user:bob", "chat");
-    let (sout, serr, sstatus) = send_with_user(&cli, "log-principal-5", "hi from bob", "bob");
-    assert_eq!(
-        sstatus.code(),
-        Some(0),
-        "bob's peko send failed: status={sstatus:?}\nstdout: {sout}\nstderr: {serr}"
-    );
-
-    // Owner reads bob's thread.
-    let (stdout, stderr, status) = log(
-        &cli,
-        &["log", "log-principal-5", "--peer", "user:bob", "--json"],
-    );
-    assert_log_ok(&stdout, &stderr, &status);
-    let parsed = parse_log_envelope(&stdout);
-    let messages = envelope_messages(&parsed);
-    assert!(
-        !messages.is_empty(),
-        "expected messages in bob's thread after his send\nstdout: {stdout}"
-    );
-    assert_eq!(
-        parsed.get("peer").and_then(|v| v.as_str()),
-        Some("user:bob"),
-        "envelope must echo the resolved peer\nstdout: {stdout}"
-    );
-}
-
-/// A granted peer can read their own thread but not another peer's.
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn log_peer_self_read_only() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, "log-principal-6", &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Grant bob Chat and let him send once.
-    grant(&cli, "log-principal-6", "user:bob", "chat");
-    let (sout, serr, sstatus) = send_with_user(&cli, "log-principal-6", "hi from bob", "bob");
-    assert_eq!(
-        sstatus.code(),
-        Some(0),
-        "bob's peko send failed: status={sstatus:?}\nstdout: {sout}\nstderr: {serr}"
-    );
-
-    // Bob can read his own thread.
-    let (stdout, stderr, status) = log(
-        &cli,
-        &[
-            "-U",
-            "bob",
-            "log",
-            "log-principal-6",
-            "--peer",
-            "user:bob",
-            "--json",
-        ],
-    );
-    assert_log_ok(&stdout, &stderr, &status);
-
-    // Bob cannot read another peer's thread (user:default is the owner).
-    let (stdout2, stderr2, status2) = log(
-        &cli,
-        &[
-            "-U",
-            "bob",
-            "log",
-            "log-principal-6",
-            "--peer",
-            "user:default",
-            "--json",
-        ],
-    );
-    assert_log_err(&stdout2, &stderr2, &status2);
-    let combined = format!("{stdout2}{stderr2}");
-    assert!(
-        combined.contains("forbidden") || combined.contains("permission"),
-        "expected forbidden denial on cross-peer read\nstdout: {stdout2}\nstderr: {stderr2}"
     );
 }
 

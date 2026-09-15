@@ -769,7 +769,10 @@ impl IpcServer {
                 if !is_local_connection {
                     return Err(AuthError::InvalidCredential);
                 }
-                Ok(CallerContext::local())
+                // ADR-057: local callers carry the runtime's pekohub
+                // owner id (when logged in) so their attribution
+                // identity derives hub-side; `None` = not logged in.
+                Ok(CallerContext::local_with_hub_owner(state.hub_owner()))
             }
             AuthCredential::Jwt(token) => {
                 if !auth_config.enable_pekohub_jwt() {

@@ -71,6 +71,13 @@ pub(crate) struct AppState {
     /// Daemon configuration
     pub config: DaemonConfigSnapshot,
 
+    /// ADR-057: the pekohub owner id bound to this runtime (the hub
+    /// user that owns the runtime registration), when the runtime is
+    /// logged into pekohub. Resolved from the pekohub credential at
+    /// build time; the auth layer uses it to derive the local
+    /// terminal's attribution identity.
+    pub hub_owner: Option<String>,
+
     /// Registry configuration for push/pull operations
     registry_config: Arc<RwLock<RegistryConfig>>,
 
@@ -896,6 +903,21 @@ impl AppState {
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
+        // ADR-057: resolve the pekohub owner id (the hub user that
+        // owns this runtime's registration) when the runtime is
+        // logged into pekohub. A missing or unreadable credential is
+        // non-fatal — the local terminal then attributes as
+        // `user:local` (not logged in).
+        let hub_owner = (|| {
+            let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
+            if !cred_path.exists() {
+                return None;
+            }
+            crate::tunnel::PekoHubCredential::from_file(&cred_path)
+                .ok()
+                .and_then(|cred| cred.owner_id)
+        })();
+
         // Phase 4 (agent-session paradigm sprint): the channel
         // passive-binding supervisor. Owns subscriber spawning (boot +
         // post-boot hooks) and per-principal bound-session turn
@@ -937,6 +959,7 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
+            hub_owner,
             // Phase A: carry the typed resolver forward so starters
             // and IPC handlers can reach `extensions_root()`,
             // `principal_layout(name).local.root`, etc. without
@@ -1295,6 +1318,14 @@ impl AppState {
     #[must_use]
     pub fn rate_limiter(&self) -> Option<peko_auth::rate_limit::RateLimiter> {
         self.rate_limiter.clone()
+    }
+
+    /// ADR-057: the pekohub owner id bound to this runtime, when the
+    /// runtime is logged into pekohub. The auth layer folds this into
+    /// local callers' attribution identity.
+    #[must_use]
+    pub fn hub_owner(&self) -> Option<String> {
+        self.hub_owner.clone()
     }
 
     /// Build a `StarterContext` for use by runtime starters.

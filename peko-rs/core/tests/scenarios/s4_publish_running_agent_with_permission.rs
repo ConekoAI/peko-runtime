@@ -305,6 +305,7 @@ fn write_pekohub_credential(
     let cred = peko_core::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
+        owner_id: None,
         tls: None,
     };
     let path = cli.peko_dir().join("runtime").join("pekohub.toml");

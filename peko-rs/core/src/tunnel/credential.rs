@@ -42,6 +42,13 @@ pub struct PekoHubCredential {
     pub url: String,
     /// Runtime DID (did:key format)
     pub runtime_id: String,
+    /// ADR-057: the pekohub user id that owns this runtime's
+    /// registration (captured from the register endpoint's response
+    /// during `peko tunnel setup`). Drives the local terminal's
+    /// attribution identity while logged in. Absent on credentials
+    /// written before ADR-057.
+    #[serde(default)]
+    pub owner_id: Option<String>,
     /// Optional TLS configuration for the tunnel connection.
     #[serde(default)]
     pub tls: Option<TunnelTlsConfig>,
@@ -169,6 +176,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: None,
         };
 
@@ -202,6 +210,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: Some(TunnelTlsConfig {
                 ca_path: Some(std::path::PathBuf::from("/etc/peko/ca.pem")),
                 cert_path: Some(std::path::PathBuf::from("/etc/peko/client.crt")),
@@ -238,6 +247,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: None,
         };
 
