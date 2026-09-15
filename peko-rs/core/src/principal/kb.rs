@@ -9,10 +9,11 @@
 //! This module owns two create-once primitives:
 //!
 //! - [`seed_kb_scaffold`] — the P0 floor: `kb/` plus its pinned hot
-//!   set (`MEMORY.md`, `index.md`) and the two catalog conventions
-//!   (`people/`, `groups/`), each seeded as a small README/convention
-//!   doc. Create-if-missing ONLY — an existing file is never touched;
-//!   the principal owns its kb from the moment it exists.
+//!   set (`MEMORY.md`, `index.md`) and the three cold conventions
+//!   (`people/`, `groups/`, `agents/`), each seeded as a small
+//!   README/convention doc. Create-if-missing ONLY — an existing file
+//!   is never touched; the principal owns its kb from the moment it
+//!   exists.
 //! - [`migrate_legacy_memory`] — the one-time ADR-054-boot-pass move:
 //!   a pre-ADR-055 `<workspace>/MEMORY.md` is MOVED to
 //!   `<workspace>/kb/MEMORY.md` so the contract change never orphans a
@@ -23,10 +24,12 @@
 //! - It never re-seeds a deliberately removed file. Absence renders
 //!   absent (ADR-050 presence = visibility); deleting `kb/index.md`
 //!   removes the hot map section, and that is a valid state.
-//! - It never reads cold kb content. Only the pinned hot set
-//!   (`kb/MEMORY.md`, `kb/index.md`) and the `kb/people/` +
-//!   `kb/groups/` catalogs reach the prompt (ADR-055 D2); everything
-//!   else is read-on-demand via tools.
+//! - It never reads cold kb content wholesale. Only the pinned hot
+//!   set (`kb/MEMORY.md`, `kb/index.md`) and the two targeted scope
+//!   notes reach the prompt (ADR-055 D2/D8: `kb/groups/<channel>.md`
+//!   for the run's triggering channel, `kb/agents/<name>.md` for the
+//!   named agent); everything else is read-on-demand via tools,
+//!   discovered through the hot index.
 //! - It never seeds framework manuals into `kb/` (ADR-055 D6 —
 //!   runtime truth stays with the runtime; pointer, not copy).
 
@@ -46,6 +49,7 @@ pub const INDEX_MD: &str = "index.md";
 pub const KB_README_MD: &str = "README.md";
 pub const PEOPLE_README_MD: &str = "people/README.md";
 pub const GROUPS_README_MD: &str = "groups/README.md";
+pub const AGENTS_README_MD: &str = "agents/README.md";
 
 const MEMORY_BODY: &str = r#"# Long-term memory
 
@@ -91,9 +95,11 @@ raw history (Local tier, never packaged); this tree is what you chose
 to keep.
 
 Layout at creation: `MEMORY.md` (hot memory), `index.md` (the map),
-`people/`, `groups/`. Everything beyond that is yours to shape —
-`refs/`, `journal/`, `projects/`, `imports/`, datasets, whatever your
-work needs.
+`people/`, `groups/`, `agents/`. Everything beyond that is yours to
+shape — `refs/`, `journal/`, `projects/`, `imports/`, datasets,
+whatever your work needs. Only the two hot files ride in every
+prompt; the rest is looked up through the index, except the
+targeted scope notes (ADR-055 D8).
 "#;
 
 const PEOPLE_README_BODY: &str = r#"# people/
@@ -102,9 +108,11 @@ One file per person you relate to: `<handle>.md` or `<did>.md`.
 Notes, preferences, standing context — anything you'd want to know
 at the start of a conversation with them. Revise in place.
 
-Each file appears in your hot people catalog (one line per file),
-so the name of the file is what your future self sees first — make
-it the person's recognizable name.
+This directory is COLD (ADR-055 D2): nothing here is injected
+automatically. Your `index.md` — which rides in every prompt — is
+what tells your future self this directory exists; look files up
+with Read/Glob when a conversation calls for them. Name files after
+the person's recognizable handle so lookups are obvious.
 "#;
 
 const GROUPS_README_BODY: &str = r#"# groups/
@@ -113,16 +121,34 @@ One file per group you participate in: `<channel-or-group-id>.md`.
 Conventions of the room, who's in it, what it's about, what you
 committed to there. Revise in place.
 
-Each file appears in your hot groups catalog (one line per file),
-so name files after the group as its members know it.
+Mostly cold (ADR-055 D2): files here are NOT cataloged into every
+prompt. One targeted exception (D8): when a run's triggering channel
+matches a file name here, that file is injected into the bound
+agent's prompt for that run. Name files after the channel/group id
+as the runtime knows it, so the match happens.
+"#;
+
+const AGENTS_README_BODY: &str = r#"# agents/
+
+One file per NAMED agent that deserves durable memory of its own:
+`<agent-name>.md`. Standing context for that agent — its remit,
+what it has learned across runs, commitments it holds. Revise in
+place.
+
+Cold for everyone else, hot for its owner (ADR-055 D8): when a run
+starts for agent `<name>` and this directory holds `<name>.md`,
+that file is injected into that agent's prompt. Ephemeral, unnamed
+spawns get no note — their learnings flow back into the principal's
+kb through the spawn result.
 "#;
 
 /// Seed the ADR-055 kb scaffold under `workspace`.
 ///
-/// Creates `kb/`, `kb/people/`, `kb/groups/` and writes the five
-/// convention files — each ONLY when the file does not already exist
-/// (an existing file is never overwritten; create-once semantics,
-/// matching `/tmp` + `/trash` seeding). Safe to call repeatedly.
+/// Creates `kb/`, `kb/people/`, `kb/groups/`, `kb/agents/` and writes
+/// the six convention files — each ONLY when the file does not
+/// already exist (an existing file is never overwritten; create-once
+/// semantics, matching `/tmp` + `/trash` seeding). Safe to call
+/// repeatedly.
 ///
 /// Returns the relative paths (from `workspace`) of files actually
 /// created, sorted — empty when the scaffold already existed.
@@ -130,6 +156,7 @@ pub fn seed_kb_scaffold(workspace: &Path) -> Result<Vec<String>> {
     let kb = workspace.join(KB_DIR);
     std::fs::create_dir_all(kb.join("people"))?;
     std::fs::create_dir_all(kb.join("groups"))?;
+    std::fs::create_dir_all(kb.join("agents"))?;
 
     let mut created = Vec::new();
     for (relative, body) in [
@@ -138,6 +165,7 @@ pub fn seed_kb_scaffold(workspace: &Path) -> Result<Vec<String>> {
         (KB_README_MD, KB_README_BODY),
         (PEOPLE_README_MD, PEOPLE_README_BODY),
         (GROUPS_README_MD, GROUPS_README_BODY),
+        (AGENTS_README_MD, AGENTS_README_BODY),
     ] {
         let path = kb.join(relative);
         if path.exists() {
@@ -181,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn seeds_all_five_files_and_directories() {
+    fn seeds_all_six_files_and_directories() {
         let ws = temp_workspace();
         let created = seed_kb_scaffold(ws.path()).unwrap();
         assert_eq!(
@@ -189,6 +217,7 @@ mod tests {
             vec![
                 "kb/MEMORY.md",
                 "kb/README.md",
+                "kb/agents/README.md",
                 "kb/groups/README.md",
                 "kb/index.md",
                 "kb/people/README.md",
@@ -198,11 +227,13 @@ mod tests {
             "kb",
             "kb/people",
             "kb/groups",
+            "kb/agents",
             "kb/MEMORY.md",
             "kb/index.md",
             "kb/README.md",
             "kb/people/README.md",
             "kb/groups/README.md",
+            "kb/agents/README.md",
         ] {
             assert!(ws.path().join(relative).exists(), "{relative} must exist");
         }
@@ -225,7 +256,7 @@ mod tests {
         std::fs::write(ws.path().join("kb").join("MEMORY.md"), "curated").unwrap();
 
         let created = seed_kb_scaffold(ws.path()).unwrap();
-        assert_eq!(created.len(), 4, "only the four missing files seed");
+        assert_eq!(created.len(), 5, "only the five missing files seed");
         assert!(!created.contains(&"kb/MEMORY.md".to_string()));
         assert_eq!(
             std::fs::read_to_string(ws.path().join("kb").join("MEMORY.md")).unwrap(),
