@@ -371,7 +371,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .as_str()
         .expect("No user id (expected UUID string)")
         .to_string();
-    let chat_user_id = user_id.to_string();
+    let chat_user_id = user_id.clone();
 
     // 3. Create temporary workspace with Principal config
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -452,9 +452,13 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .await
         .unwrap();
 
+    // ADR-057: the credential carries the hub owner id, so the local
+    // terminal attributes as `user:<hub user>` and the runtime builds
+    // its bridge-token validator against this hub's JWKS.
     let cred = PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
+        owner_id: Some(user_id.clone()),
         tls: None,
     };
     cred.save_to_file(&cred_path)

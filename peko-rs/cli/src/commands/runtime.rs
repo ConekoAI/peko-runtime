@@ -1,9 +1,14 @@
-//! Runtime management commands (ADR-032)
+//! Runtime identity commands (ADR-032).
+//!
+//! The legacy `KnownRuntimes` trust registry commands (`list`,
+//! `register`, `trust`, `remove`) were removed in the ADR-057
+//! cleanup: `TrustLevel` was never consulted by any access decision,
+//! and the direct-transport fields the registry carried were dead.
 
 use crate::commands::GlobalPaths;
 use clap::Subcommand;
 
-/// Runtime management subcommands
+/// Runtime identity subcommands
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum RuntimeCommands {
@@ -11,26 +16,6 @@ pub enum RuntimeCommands {
     Id,
     /// Show runtime metadata
     Info,
-    /// List known runtimes
-    List,
-    /// Register a runtime
-    Register {
-        /// Runtime DID
-        runtime_id: String,
-        /// Display name
-        #[arg(short, long)]
-        name: String,
-    },
-    /// Authorize a runtime
-    Trust {
-        /// Runtime DID
-        runtime_id: String,
-    },
-    /// Remove a runtime from registry
-    Remove {
-        /// Runtime DID
-        runtime_id: String,
-    },
 }
 
 /// Handle runtime commands
@@ -79,110 +64,6 @@ pub async fn handle_runtime(
                         println!("Hostname: {}", metadata.host_info.hostname);
                     }
                     Ok(())
-                }
-                peko_core::ipc::ResponsePacket::Error { message, .. } => {
-                    anyhow::bail!("{}", message)
-                }
-                _ => anyhow::bail!("Unexpected response"),
-            }
-        }
-        RuntimeCommands::List => {
-            let client = peko_core::ipc::DaemonClient::connect().await?;
-            let packet = peko_core::ipc::RequestPacket::RuntimeList { request_id: 1 };
-            let response = client.request_response(packet).await?;
-            match response {
-                peko_core::ipc::ResponsePacket::RuntimeList { runtimes, .. } => {
-                    if json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(
-                                &serde_json::json!({"runtimes": runtimes})
-                            )?
-                        );
-                    } else if runtimes.is_empty() {
-                        println!("No known runtimes.");
-                    } else {
-                        println!("Known runtimes ({}):", runtimes.len());
-                        for rt in runtimes {
-                            let icon = match rt.trust_level.as_str() {
-                                "selfruntime" => "⭐",
-                                "authorized" => "✅",
-                                _ => "❓",
-                            };
-                            println!(
-                                "{} {} — {} (trust: {})",
-                                icon, rt.runtime_id, rt.display_name, rt.trust_level
-                            );
-                        }
-                    }
-                    Ok(())
-                }
-                peko_core::ipc::ResponsePacket::Error { message, .. } => {
-                    anyhow::bail!("{}", message)
-                }
-                _ => anyhow::bail!("Unexpected response"),
-            }
-        }
-        RuntimeCommands::Register { runtime_id, name } => {
-            let client = peko_core::ipc::DaemonClient::connect().await?;
-            let packet = peko_core::ipc::RequestPacket::RuntimeRegister {
-                request_id: 1,
-                runtime_id: runtime_id.clone(),
-                display_name: name,
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                peko_core::ipc::ResponsePacket::Done { success, error, .. } => {
-                    if success {
-                        println!("✅ Registered runtime {}", runtime_id);
-                        Ok(())
-                    } else {
-                        anyhow::bail!("{}", error.unwrap_or_else(|| "Unknown error".to_string()))
-                    }
-                }
-                peko_core::ipc::ResponsePacket::Error { message, .. } => {
-                    anyhow::bail!("{}", message)
-                }
-                _ => anyhow::bail!("Unexpected response"),
-            }
-        }
-        RuntimeCommands::Trust { runtime_id } => {
-            let client = peko_core::ipc::DaemonClient::connect().await?;
-            let packet = peko_core::ipc::RequestPacket::RuntimeTrust {
-                request_id: 1,
-                runtime_id: runtime_id.clone(),
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                peko_core::ipc::ResponsePacket::Done { success, error, .. } => {
-                    if success {
-                        println!("✅ Trusted runtime {}", runtime_id);
-                        Ok(())
-                    } else {
-                        anyhow::bail!("{}", error.unwrap_or_else(|| "Unknown error".to_string()))
-                    }
-                }
-                peko_core::ipc::ResponsePacket::Error { message, .. } => {
-                    anyhow::bail!("{}", message)
-                }
-                _ => anyhow::bail!("Unexpected response"),
-            }
-        }
-        RuntimeCommands::Remove { runtime_id } => {
-            let client = peko_core::ipc::DaemonClient::connect().await?;
-            let packet = peko_core::ipc::RequestPacket::RuntimeRemove {
-                request_id: 1,
-                runtime_id: runtime_id.clone(),
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                peko_core::ipc::ResponsePacket::Done { success, error, .. } => {
-                    if success {
-                        println!("✅ Removed runtime {}", runtime_id);
-                        Ok(())
-                    } else {
-                        anyhow::bail!("{}", error.unwrap_or_else(|| "Unknown error".to_string()))
-                    }
                 }
                 peko_core::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)

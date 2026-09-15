@@ -132,7 +132,7 @@ impl Default for AuthConfigFile {
         Self {
             version: "1".to_string(),
             enable_local_trust: true,
-            enable_pekohub_jwt: false,
+            enable_pekohub_jwt: true,
             enable_api_key: false,
             trusted_issuers: vec!["pekohub".to_string()],
             rate_limit: RateLimitConfigFile::default(),

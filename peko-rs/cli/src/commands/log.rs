@@ -109,7 +109,7 @@ pub struct LogCommand {
 /// opts into the multi-page drain (bounded so a runaway caller can't
 /// pin the daemon forever); `--cursor` pages older messages manually.
 /// `--watch` streams: replay newer than `--cursor`, then live rows.
-pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Result<()> {
+pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Result<()> {
     let LogCommand {
         principal,
         peer,
@@ -135,10 +135,11 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
 
     let use_json = cmd_json || json;
 
-    // Group recipients (`group:<slug>`) read the channel's log
+    // Group recipients (`group:<slug>`): read the channel's log
     // directly — no principal, no thread privacy check. Reads are
-    // membership-gated (ADR-049 D6): the daemon refuses unless the
-    // caller's `-U` user identity is a channel member.
+    // membership-gated (ADR-049 D6, amended by ADR-057): the daemon
+    // derives the reader's identity from the connection and refuses
+    // unless it is a channel member.
     if let Recipient::Group(slug) = parse_recipient(&principal) {
         if peer_subject.is_some() {
             anyhow::bail!("--peer applies to principal threads, not group channels");
@@ -146,10 +147,8 @@ pub async fn handle_log(cmd: LogCommand, paths: &GlobalPaths, json: bool) -> Res
         let client = DaemonClient::connect()
             .await
             .context("Daemon is not running. Start it with: peko daemon start")?;
-        let requester = format!("user:{}", paths.user());
         return handle_group_log(
-            &client, &slug, &requester, limit, since_secs, search, author, cursor, all, watch,
-            use_json,
+            &client, &slug, limit, since_secs, search, author, cursor, all, watch, use_json,
         )
         .await;
     }
@@ -291,9 +290,9 @@ async fn watch_principal_log(
 }
 
 /// `peko log group:<slug>`: read the group channel's log directly via
-/// the `ChannelPeek` IPC. `requester` is the caller's `-U` user
-/// identity in Subject wire form — the daemon membership-gates the
-/// read against it (ADR-049 D6).
+/// the `ChannelPeek` IPC. ADR-057: the reader's identity is derived
+/// server-side from the connection — the daemon membership-gates the
+/// read against it (ADR-049 D6, amended).
 ///
 /// Flag mapping onto what ChannelPeek actually supports:
 /// - `--limit N` → server-side tail read: the newest N rows
@@ -313,7 +312,6 @@ async fn watch_principal_log(
 async fn handle_group_log(
     client: &DaemonClient,
     slug: &str,
-    requester: &str,
     limit: Option<usize>,
     since_secs: Option<u64>,
     search: Option<String>,
@@ -333,7 +331,7 @@ async fn handle_group_log(
         if search.is_some() || author.is_some() {
             eprintln!("[peko] group --watch ignores --search/--author");
         }
-        return watch_group_log(client, &channel, requester, cursor, use_json).await;
+        return watch_group_log(client, &channel, cursor, use_json).await;
     }
 
     let cap = limit.unwrap_or(50).clamp(1, 1000);
@@ -341,7 +339,6 @@ async fn handle_group_log(
     let (rows, _last_id, has_more, resume_before) = peek_group_posted_rows(
         client,
         &channel,
-        requester,
         None,
         Some(cap),
         cursor.filter(|c| !c.is_empty()),
@@ -409,7 +406,6 @@ async fn handle_group_log(
 async fn watch_group_log(
     client: &DaemonClient,
     channel: &str,
-    requester: &str,
     cursor: Option<String>,
     use_json: bool,
 ) -> Result<()> {
@@ -418,17 +414,8 @@ async fn watch_group_log(
     // and skip the count of rows already printed.
     let mut legacy_printed: Option<usize> = None;
     loop {
-        let (rows, last_raw_id, _, _) = peek_group_posted_rows(
-            client,
-            channel,
-            requester,
-            since.clone(),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await?;
+        let (rows, last_raw_id, _, _) =
+            peek_group_posted_rows(client, channel, since.clone(), None, None, None, None).await?;
         match legacy_printed {
             Some(printed) => {
                 for (id, at, author, text) in rows.iter().skip(printed) {
@@ -485,7 +472,6 @@ fn print_group_row(id: &str, at: &str, author: &str, text: &str, use_json: bool)
 async fn peek_group_posted_rows(
     client: &DaemonClient,
     channel: &str,
-    requester: &str,
     since: Option<String>,
     tail: Option<usize>,
     before: Option<String>,
@@ -501,7 +487,6 @@ async fn peek_group_posted_rows(
         request_id: 0,
         channel: channel.to_string(),
         since,
-        requester: Some(requester.to_string()),
         tail,
         before,
         query,

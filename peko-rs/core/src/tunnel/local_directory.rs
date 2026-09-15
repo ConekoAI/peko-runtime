@@ -42,7 +42,6 @@ impl AgentDirectory for LocalFirstAgentDirectory {
         if let Some(principal) = self.principal_manager.find_by_did(did).await {
             let config = principal.config.read().await;
             let exposure = config.exposure.clone();
-            let preference = config.transport_preference;
             let owner = config.owner.clone();
             drop(config);
             return Ok(AgentResolution {
@@ -51,8 +50,6 @@ impl AgentDirectory for LocalFirstAgentDirectory {
                 agent_did: did.to_string(),
                 owner_principal: owner,
                 exposure: map_instance_exposure(exposure),
-                transport_preference: preference.into(),
-                direct_endpoint: None,
             });
         }
         self.inner.resolve_by_did(did).await

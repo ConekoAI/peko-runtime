@@ -417,18 +417,6 @@ pub enum RequestPacket {
     RuntimeId { request_id: u64 },
     #[serde(rename = "runtime_info")]
     RuntimeInfo { request_id: u64 },
-    #[serde(rename = "runtime_list")]
-    RuntimeList { request_id: u64 },
-    #[serde(rename = "runtime_register")]
-    RuntimeRegister {
-        request_id: u64,
-        runtime_id: String,
-        display_name: String,
-    },
-    #[serde(rename = "runtime_trust")]
-    RuntimeTrust { request_id: u64, runtime_id: String },
-    #[serde(rename = "runtime_remove")]
-    RuntimeRemove { request_id: u64, runtime_id: String },
 
     // ── Tunnel (ADR-035) ──
     #[serde(rename = "tunnel_stop")]
@@ -477,12 +465,15 @@ pub enum RequestPacket {
     // ── Principal operations ─────────────────────────────────────────
     /// Non-streaming principal send. Returns a single `PrincipalSent`
     /// response with the root agent's final answer.
+    ///
+    /// ADR-057: the sender's identity is derived server-side from the
+    /// connection (`CallerContext::attribution_subject`) — no `user`
+    /// field on the wire.
     #[serde(rename = "principal_send")]
     PrincipalSend {
         request_id: u64,
         name: String,
         message: String,
-        user: String,
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
@@ -500,7 +491,6 @@ pub enum RequestPacket {
         request_id: u64,
         name: String,
         message: String,
-        user: String,
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
@@ -778,35 +768,34 @@ pub enum RequestPacket {
     /// Post a message to `channel` from `sender_name`. `parent` is
     /// the optional task_id of the message being replied to.
     ///
-    /// `sender_name` is a principal name, or (ADR-049 Phase 2) a
-    /// `user:<id>` Subject wire form — the handler takes user senders
-    /// verbatim and lets store-level Subject membership authorize
-    /// the write.
+    /// ADR-057: user identities are never carried on the wire. The
+    /// caller's own attribution identity is derived server-side from
+    /// the connection (`CallerContext::attribution_subject`).
+    /// `sender_name` is `None` ("speak as my own identity") or a
+    /// principal name — a runtime-hosted actor operated by the
+    /// caller. A `user:<id>` sender is refused with `[forbidden]`.
     #[serde(rename = "channel_post")]
     ChannelPost {
         request_id: u64,
         channel: String,
-        sender_name: String,
+        #[serde(default)]
+        sender_name: Option<String>,
         text: String,
         parent: Option<String>,
     },
 
     /// List events for `channel` since `since` (None = from start).
     ///
-    /// `requester` (ADR-049 Phase 2, D6) is the optional Subject wire
-    /// form (`user:<id>` / `principal:<did>`) of the reader. When
-    /// present, the handler refuses the read unless the requester is a
-    /// channel member; a pekohub JWT caller must name themselves (and
-    /// is gated even when the field is absent — Phase 4). Serde-
-    /// defaulted so pre-Phase-2 clients decode as `None` (ungated for
-    /// Local-trust callers — the desktop carries no identity yet).
+    /// ADR-057: the reader's identity is derived server-side from the
+    /// connection (`CallerContext::attribution_subject`) — local and
+    /// pekohub JWT callers are always membership-gated as themselves;
+    /// API-key callers carry no user identity and stay ungated
+    /// (matching their previous no-requester posture).
     #[serde(rename = "channel_peek")]
     ChannelPeek {
         request_id: u64,
         channel: String,
         since: Option<String>,
-        #[serde(default)]
-        requester: Option<String>,
         /// Tail-read mode: return the newest `tail` events at or before
         /// `before` instead of the full forward walk from `since`.
         /// Maps to `ChannelPort::peek_tail`. When absent the legacy
@@ -843,15 +832,14 @@ pub enum RequestPacket {
     /// desktop Tauri backend can reuse the existing stream-forwarding
     /// path that already emits `peko-stream` events for the chat.
     ///
-    /// `requester` (ADR-049 Phase 2, D6): same optional membership
-    /// gate as `ChannelPeek` — see that variant's doc.
+    /// ADR-057: the reader's identity is derived server-side from the
+    /// connection — same caller-derived membership gate as
+    /// `ChannelPeek`.
     #[serde(rename = "channel_events_watch")]
     ChannelEventsWatch {
         request_id: u64,
         channel: String,
         since: Option<String>,
-        #[serde(default)]
-        requester: Option<String>,
     },
 
     /// List members of `channel`.
@@ -921,10 +909,6 @@ impl RequestPacket {
             | Self::SystemClean { request_id, .. }
             | Self::RuntimeId { request_id }
             | Self::RuntimeInfo { request_id }
-            | Self::RuntimeList { request_id }
-            | Self::RuntimeRegister { request_id, .. }
-            | Self::RuntimeTrust { request_id, .. }
-            | Self::RuntimeRemove { request_id, .. }
             | Self::AuthApiKeyCreate { request_id, .. }
             | Self::AuthApiKeyList { request_id }
             | Self::AuthApiKeyRevoke { request_id, .. }
@@ -1558,11 +1542,6 @@ pub enum ResponsePacket {
     RuntimeInfo {
         request_id: u64,
         metadata: RuntimeMetadataResponse,
-    },
-    #[serde(rename = "runtime_list")]
-    RuntimeList {
-        request_id: u64,
-        runtimes: Vec<KnownRuntimeResponse>,
     },
 
     // ── Tunnel (ADR-035) ──
@@ -2299,16 +2278,6 @@ pub struct HostInfoResponse {
     pub hostname: String,
 }
 
-/// Known runtime response for IPC (ADR-032)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnownRuntimeResponse {
-    pub runtime_id: String,
-    pub display_name: String,
-    pub last_seen: Option<String>,
-    pub connection_endpoint: Option<String>,
-    pub trust_level: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorCheck {
     pub name: String,
@@ -2412,7 +2381,6 @@ impl ResponsePacket {
             | Self::SystemCleaned { request_id, .. }
             | Self::RuntimeId { request_id, .. }
             | Self::RuntimeInfo { request_id, .. }
-            | Self::RuntimeList { request_id, .. }
             | Self::AuthApiKeyCreated { request_id, .. }
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
@@ -2492,7 +2460,6 @@ impl ResponsePacket {
             Self::SystemCleaned { .. } => "SystemCleaned",
             Self::RuntimeId { .. } => "RuntimeId",
             Self::RuntimeInfo { .. } => "RuntimeInfo",
-            Self::RuntimeList { .. } => "RuntimeList",
             Self::AuthApiKeyCreated { .. } => "AuthApiKeyCreated",
             Self::AuthApiKeyList { .. } => "AuthApiKeyList",
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
@@ -2571,7 +2538,6 @@ mod tests {
             request_id: 42,
             name: "helper".to_string(),
             message: "Hello".to_string(),
-            user: "alice".to_string(),
             override_model: Some("gpt-4o".to_string()),
         };
 
@@ -2583,13 +2549,11 @@ mod tests {
                 request_id,
                 name,
                 message,
-                user,
                 override_model,
             } => {
                 assert_eq!(request_id, 42);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "Hello");
-                assert_eq!(user, "alice");
                 assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4201,7 +4165,6 @@ mod tests {
             request_id: 5000,
             name: "helper".to_string(),
             message: "hello".to_string(),
-            user: "alice".to_string(),
             override_model: Some("gpt-4o".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
@@ -4211,13 +4174,11 @@ mod tests {
                 request_id,
                 name,
                 message,
-                user,
                 override_model,
             } => {
                 assert_eq!(request_id, 5000);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "hello");
-                assert_eq!(user, "alice");
                 assert_eq!(override_model, Some("gpt-4o".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4233,7 +4194,6 @@ mod tests {
             request_id: 5100,
             name: "helper".to_string(),
             message: "stream please".to_string(),
-            user: "alice".to_string(),
             override_model: Some("claude-haiku-4-5".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
@@ -4243,13 +4203,11 @@ mod tests {
                 request_id,
                 name,
                 message,
-                user,
                 override_model,
             } => {
                 assert_eq!(request_id, 5100);
                 assert_eq!(name, "helper");
                 assert_eq!(message, "stream please");
-                assert_eq!(user, "alice");
                 assert_eq!(override_model, Some("claude-haiku-4-5".to_string()));
             }
             _ => panic!("Wrong variant"),
@@ -4715,7 +4673,6 @@ mod tests {
             request_id: 1,
             name: "p".to_string(),
             message: "m".to_string(),
-            user: "u".to_string(),
             override_model: None,
         };
         assert_eq!(req_send.request_id(), 1);

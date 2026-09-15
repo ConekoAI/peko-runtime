@@ -599,7 +599,6 @@ mod tests {
             boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         }

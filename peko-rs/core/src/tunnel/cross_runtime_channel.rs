@@ -30,7 +30,6 @@ use tokio::sync::RwLock;
 use ed25519_dalek::SigningKey;
 
 use crate::tunnel::hub_directory::AgentDirectory;
-use crate::tunnel::known_runtimes::KnownRuntimes;
 use crate::tunnel::TunnelHandle;
 
 /// Cross-runtime channel dispatch context. Holds the dependencies
@@ -75,14 +74,6 @@ pub struct CrossRuntimeChannelCtx {
     /// `TunnelHandle` so reconnects are visible without rebuilding
     /// the ctx.
     pub tunnel: Arc<RwLock<Option<TunnelHandle>>>,
-
-    /// Local known-runtimes registry. Used to decide whether to
-    /// use the PekoHub tunnel or a direct connection for a given
-    /// peer runtime. (Direct-LAN support is deferred per the
-    /// cross-runtime plan; the field is present now so PR-B's
-    /// `TunnelChannelPort` does not need to re-plumb the registry
-    /// when direct-LAN lands.)
-    pub known_runtimes: Arc<RwLock<KnownRuntimes>>,
 }
 
 impl std::fmt::Debug for CrossRuntimeChannelCtx {
@@ -92,7 +83,6 @@ impl std::fmt::Debug for CrossRuntimeChannelCtx {
             .field("signing_key", &"<redacted: ed25519 SigningKey>")
             .field("caller_runtime_id", &self.caller_runtime_id)
             .field("tunnel", &self.tunnel)
-            .field("known_runtimes", &self.known_runtimes)
             .finish()
     }
 }

@@ -857,6 +857,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: None,
         };
         let client = TunnelClient::new(cred);
@@ -872,6 +873,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: None,
         };
         let client = TunnelClient::new(cred);
@@ -918,6 +920,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: None,
         };
         let client = TunnelClient::new(cred);
@@ -954,6 +957,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "ws://127.0.0.1:1/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: None,
         };
         let mut client = TunnelClient::new_with(cred, 2);
@@ -1001,6 +1005,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            owner_id: None,
             tls: None,
         };
         let client = TunnelClient::new_with(cred, 7);

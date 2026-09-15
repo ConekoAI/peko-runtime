@@ -119,6 +119,11 @@ async fn handle_tunnel_setup(
     // requires a row in the `runtimes` table or it will close the
     // WebSocket with 1008. Registration is idempotent (`upsert`) so
     // re-running setup is safe.
+    //
+    // ADR-057: the register response carries the owning hub user's id
+    // (`ownerId`); it is persisted into the credential so the daemon
+    // can derive the local terminal's attribution identity from it
+    // while logged in.
     let register_url = format!("{}/v1/runtimes/register", http_url);
     let register_resp = client
         .post(&register_url)
@@ -129,9 +134,22 @@ async fn handle_tunnel_setup(
         }))
         .send()
         .await;
+    let mut hub_owner_id: Option<String> = None;
     match register_resp {
         Ok(r) if r.status().is_success() => {
-            println!("   Runtime registered with PekoHub allowlist.");
+            hub_owner_id = r.json::<serde_json::Value>().await.ok().and_then(|row| {
+                row.get("ownerId")
+                    .and_then(|v| v.as_str().map(str::to_string))
+            });
+            match &hub_owner_id {
+                Some(owner) => {
+                    println!("   Runtime registered with PekoHub allowlist (owner {owner}).")
+                }
+                None => eprintln!(
+                    "   ⚠️  Runtime registered, but the hub owner id was not in the response. \
+                     Local messages will attribute as user:local until re-setup."
+                ),
+            }
         }
         Ok(r) => {
             // 4xx is fatal — PekoHub explicitly rejected the registration
@@ -170,6 +188,7 @@ async fn handle_tunnel_setup(
     let credential = peko_core::tunnel::PekoHubCredential {
         url: hub_url.clone(),
         runtime_id: runtime_did.clone(),
+        owner_id: hub_owner_id,
         tls: None,
     };
 

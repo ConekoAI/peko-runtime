@@ -87,57 +87,29 @@ pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
     jwt_validator: Option<&peko_auth::jwt::JwtValidator>,
 ) -> Result<String, BridgeCallerError> {
-    // 1. Try the signed JWT first.
-    if let Some(jwt) = extract_bearer_jwt(bridge_payload) {
-        if let Some(validator) = jwt_validator {
-            match validator.validate(&jwt).await {
-                Ok(validated) => {
-                    // Cross-check the JWT sub against the hub-asserted header
-                    // so a tampered hub that emits `Authorization: ...subA...
-                    // x-pekohub-user-id: subB` is surfaced, not silently trusted.
-                    if let Some(hub_user) = header_user(bridge_payload) {
-                        if hub_user != validated.sub {
-                            warn!(
-                                "JWT sub ({}) does not match x-pekohub-user-id ({}); \
-                                 possible tamper — trusting the JWT",
-                                validated.sub, hub_user
-                            );
-                        }
-                    }
-                    return Ok(validated.sub);
-                }
-                Err(e) => {
-                    warn!("JWT validation failed ({}); rejecting request", e);
-                    return Err(BridgeCallerError::InvalidJwt);
-                }
-            }
-        }
+    // ADR-057: the caller identity is ALWAYS a signed EdDSA bridge
+    // token minted by PekoHub (sub = pekohub user id or a
+    // `principal:<did>` wire form, aud = this runtime's DID). The old
+    // unverified `x-pekohub-user-id` header fallback is gone — a
+    // runtime with a tunnel configured rejects every bridge request
+    // that does not carry a token its validator accepts.
+    let Some(jwt) = extract_bearer_jwt(bridge_payload) else {
+        return Err(BridgeCallerError::NoCaller);
+    };
+    let Some(validator) = jwt_validator else {
         warn!(
             "Authorization: Bearer <jwt> present but no JWT validator configured; \
              rejecting request"
         );
         return Err(BridgeCallerError::InvalidJwt);
+    };
+    match validator.validate(&jwt).await {
+        Ok(validated) => Ok(validated.sub),
+        Err(e) => {
+            warn!("JWT validation failed ({}); rejecting request", e);
+            Err(BridgeCallerError::InvalidJwt)
+        }
     }
-
-    // 2. No JWT was present. When JWT validation is enabled, reject
-    //    the request — the unverified header is not a substitute for a
-    //    signed token. The header-only fallback is preserved only for
-    //    test/disabled mode (jwt_validator.is_none()).
-    match jwt_validator {
-        Some(_) => Err(BridgeCallerError::NoCaller),
-        None => header_user(bridge_payload).ok_or(BridgeCallerError::NoCaller),
-    }
-}
-
-/// Pull the unverified `x-pekohub-user-id` header out of the bridge payload.
-fn header_user(bridge_payload: &serde_json::Value) -> Option<String> {
-    bridge_payload
-        .get("headers")
-        .and_then(|h| h.get("x-pekohub-user-id"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
 }
 
 /// Extract the `Authorization: Bearer <jwt>` value from the bridge payload.
@@ -197,6 +169,33 @@ pub struct TunnelDispatcherState {
     pub instance_state: std::collections::HashMap<String, InstanceState>,
     /// Current tunnel handle for sending messages
     pub tunnel_handle: Option<TunnelHandle>,
+    /// ADR-057 transport audit: request_ids of already-processed
+    /// inbound signed channel envelopes (events + invites). The
+    /// envelope signature covers `request_id` but nothing
+    /// time-ordered, so a captured envelope re-injected through the
+    /// hub would otherwise re-verify and re-append forever. Bounded
+    /// FIFO: once full, the oldest id is evicted (replay protection
+    /// window ≈ the last [`REPLAY_CACHE_CAPACITY`] envelopes).
+    pub seen_envelope_ids: std::collections::VecDeque<String>,
+}
+
+/// Capacity of the inbound envelope replay cache (see
+/// [`TunnelDispatcherState::seen_envelope_ids`]).
+pub const REPLAY_CACHE_CAPACITY: usize = 4096;
+
+impl TunnelDispatcherState {
+    /// Record an envelope id as seen. Returns `true` the first time
+    /// (proceed), `false` on a replay (drop).
+    pub fn mark_envelope_seen(&mut self, request_id: &str) -> bool {
+        if self.seen_envelope_ids.contains(&request_id.to_string()) {
+            return false;
+        }
+        if self.seen_envelope_ids.len() >= REPLAY_CACHE_CAPACITY {
+            self.seen_envelope_ids.pop_front();
+        }
+        self.seen_envelope_ids.push_back(request_id.to_string());
+        true
+    }
 }
 
 /// Dispatches tunnel messages to daemon services.
@@ -372,12 +371,9 @@ impl TunnelDispatcher {
             let name = principal.name().await;
             let did = principal.did().await;
             let exposure: InstanceExposure = principal.exposure().await.into();
-            let (allowed_principals, transport_preference) = {
+            let allowed_principals = {
                 let config = principal.config.read().await;
-                (
-                    Self::compute_allowed_principals(&config),
-                    config.transport_preference.into(),
-                )
+                Self::compute_allowed_principals(&config)
             };
             let instance_id = self.instance_id(&name);
             let payload = InstanceAnnouncePayload {
@@ -393,7 +389,6 @@ impl TunnelDispatcher {
                 allowed_principals: allowed_principals.clone(),
                 capabilities: None,
                 metadata: None,
-                transport_preference: Some(transport_preference),
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             };
 
@@ -453,12 +448,9 @@ impl TunnelDispatcher {
         let name = principal.name().await;
         let did = principal.did().await;
         let exposure: InstanceExposure = principal.exposure().await.into();
-        let (allowed_principals, transport_preference) = {
+        let allowed_principals = {
             let config = principal.config.read().await;
-            (
-                Self::compute_allowed_principals(&config),
-                config.transport_preference.into(),
-            )
+            Self::compute_allowed_principals(&config)
         };
         let instance_id = self.instance_id(&name);
         let payload = InstanceAnnouncePayload {
@@ -474,7 +466,6 @@ impl TunnelDispatcher {
             allowed_principals: allowed_principals.clone(),
             capabilities: None,
             metadata: None,
-            transport_preference: Some(transport_preference),
             // B5: `runtime_direct_endpoint` field dropped from payload.
         };
 
@@ -664,32 +655,14 @@ impl TunnelDispatcher {
             }
         };
 
-        // Defense-in-depth: enforce local ACL even though PekoHub already checked
-        if let Err(e) = self
-            .check_request_allowed(&principal_name, &bridge_payload)
-            .await
-        {
-            warn!("Tunnel ACL denied request for {}: {}", principal_name, e);
-            return self
-                .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
-                .await;
-        }
-
-        // Extract message from the bridge payload
-        let message = bridge_payload
-            .get("body")
-            .and_then(|b| b.get("message"))
-            .and_then(|m| m.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if message.is_empty() {
-            return self
-                .send_error_response(&handle, &request_id, "Empty message")
-                .await;
-        }
-
-        // Resolve the calling user from the PekoHub-proxied headers/JWT.
+        // ADR-057 transport audit: resolve the caller FIRST, then run
+        // the exposure ACL against the *resolved* identity. The old
+        // order keyed the Private-instance allowlist on the raw
+        // `x-pekohub-user-id` header — an unverified hub-asserted
+        // claim. With a JWT validator configured the resolved value is
+        // the validated `sub`; without one it remains the header (the
+        // documented runtime-trusts-hub mode), but the ACL is at least
+        // consistent with the identity every later stage uses.
         let caller_user = match resolve_bridge_caller(
             &bridge_payload,
             self.host.jwt_validator().as_ref(),
@@ -728,6 +701,32 @@ impl TunnelDispatcher {
             )
             .await
             .ok();
+
+        // Defense-in-depth: enforce the local exposure ACL against the
+        // resolved caller identity (see the reorder note above).
+        if let Err(e) = self
+            .check_request_allowed(&principal_name, &bridge_payload, &caller_user)
+            .await
+        {
+            warn!("Tunnel ACL denied request for {}: {}", principal_name, e);
+            return self
+                .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
+                .await;
+        }
+
+        // Extract message from the bridge payload
+        let message = bridge_payload
+            .get("body")
+            .and_then(|b| b.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if message.is_empty() {
+            return self
+                .send_error_response(&handle, &request_id, "Empty message")
+                .await;
+        }
 
         let principal_manager = self.host.principal_manager();
         let principal = match principal_manager.get_by_name(&principal_name).await {
@@ -1123,8 +1122,6 @@ impl TunnelDispatcher {
                 if instance_id == payload.instance_id {
                     let did = principal.did().await;
                     let status = self.get_instance_status(&name).await;
-                    let transport_preference =
-                        principal.config.read().await.transport_preference.into();
                     let announce_payload = InstanceAnnouncePayload {
                         id: instance_id,
                         instance_type: InstanceType::Principal,
@@ -1138,7 +1135,6 @@ impl TunnelDispatcher {
                         allowed_principals: payload.allowed_principals.clone(),
                         capabilities: None,
                         metadata: None,
-                        transport_preference: Some(transport_preference),
                         // B5: `runtime_direct_endpoint` field dropped from payload.
                     };
                     if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce {
@@ -1228,6 +1224,34 @@ impl TunnelDispatcher {
         event: peko_protocol::channel::ChannelEvent,
         signature: String,
     ) -> anyhow::Result<()> {
+        // 0. ADR-057 transport audit: reject envelopes not addressed to
+        // us. `recipient_runtime_id` is signature-covered, so a
+        // mis-routing (or compromised) hub cannot silently redirect
+        // another runtime's envelope here — but nothing verified the
+        // binding receiver-side before, and a valid-for-runtime-B
+        // envelope must not append into this runtime's mirrors.
+        let own_did = self.host.runtime_did();
+        if recipient_runtime_id != own_did {
+            warn!(
+                "inbound TunnelChannelEvent: dropping envelope addressed to {recipient_runtime_id} (we are {own_did}, request_id={request_id})"
+            );
+            return Ok(());
+        }
+
+        // 0b. Replay protection: the signed pre-image carries no
+        // timestamp/nonce, so a captured envelope re-injected through
+        // the hub re-verifies forever. Dedupe on the signature-covered
+        // `request_id` (bounded FIFO — see `mark_envelope_seen`).
+        {
+            let mut state = self.state.write().await;
+            if !state.mark_envelope_seen(&request_id) {
+                warn!(
+                    "inbound TunnelChannelEvent: dropping replayed envelope (request_id={request_id}, source={source_runtime_id})"
+                );
+                return Ok(());
+            }
+        }
+
         // 1. Derive the verifying key.
         let verifying_key = match did_key_to_verifying_key(&source_runtime_id) {
             Ok(k) => k,
@@ -1280,6 +1304,18 @@ impl TunnelDispatcher {
             event_kind,
             &super::tunnel_channel_audit::preview_event_payload(&preview_json),
         );
+
+        // 3b. ADR-057 transport audit: the inner event's channel must
+        // match the envelope's signed `channel_id` — the pre-image
+        // covers the envelope field, so a mismatched inner value is a
+        // mangled/malicious envelope even though the signature holds.
+        let inner_channel = event.channel();
+        if inner_channel.0 != channel_id {
+            warn!(
+                "inbound TunnelChannelEvent: dropping envelope whose inner event channel does not match the signed channel_id (request_id={request_id})"
+            );
+            return Ok(());
+        }
 
         // 4. Local-mirror append. The dispatcher is the single source
         // of truth for signature validity (steps 1-3); the
@@ -1361,6 +1397,25 @@ impl TunnelDispatcher {
         initial_members: Vec<peko_protocol::channel::InitialMember>,
         signature: String,
     ) -> anyhow::Result<()> {
+        // 0. ADR-057 transport audit: recipient binding + replay
+        // dedupe, mirroring the channel-event handler.
+        let own_did = self.host.runtime_did();
+        if recipient_runtime_id != own_did {
+            warn!(
+                "inbound TunnelChannelInvite: dropping envelope addressed to {recipient_runtime_id} (we are {own_did}, request_id={request_id})"
+            );
+            return Ok(());
+        }
+        {
+            let mut state = self.state.write().await;
+            if !state.mark_envelope_seen(&request_id) {
+                warn!(
+                    "inbound TunnelChannelInvite: dropping replayed envelope (request_id={request_id}, source={source_runtime_id})"
+                );
+                return Ok(());
+            }
+        }
+
         // 1. Derive the verifying key from the claimed
         // `source_runtime_id`. Same defense-in-depth layer as the
         // channel-event handler.
@@ -1466,6 +1521,7 @@ impl TunnelDispatcher {
         &self,
         agent_name: &str,
         bridge_payload: &serde_json::Value,
+        caller_user: &str,
     ) -> anyhow::Result<()> {
         let instance_id = self.instance_id(agent_name);
 
@@ -1546,17 +1602,16 @@ impl TunnelDispatcher {
                 anyhow::bail!("Agent is not exposed")
             }
             InstanceExposure::Private => {
-                // Extract user ID from bridge payload (set by PekoHub)
-                let user_id = bridge_payload
-                    .get("headers")
-                    .and_then(|h| h.get("x-pekohub-user-id"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                // The caller id was resolved before this ACL ran (see
+                // `handle_proxied_request`) — the validated JWT sub
+                // when a validator is configured, the bridge header in
+                // the documented runtime-trusts-hub fallback mode.
+                let user_id = caller_user.trim();
 
                 if user_id.is_empty() {
                     warn!(
                         agent_name,
-                        "Private instance request denied: missing x-pekohub-user-id in bridge payload"
+                        "Private instance request denied: no resolved caller identity"
                     );
                     anyhow::bail!("Authentication required")
                 }
@@ -1702,7 +1757,6 @@ mod tests {
             boot_state: None,
             permissions,
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         }
@@ -1737,64 +1791,33 @@ mod tests {
 
     // ─── Phase 2: Principal tunnel exposure ───────────────────────────────
 
-    /// PekoHub sets `x-pekohub-user-id` on every proxied request. When
-    /// no JWT validator is configured (the back-compat case), the
-    /// dispatcher uses that value as the `PrincipalMessageRequest::user` so
-    /// downstream attribution (audit log, tool hooks) sees the real
-    /// pekohub user, not the literal `"web"` placeholder.
+    /// ADR-057: no bridge request carries identity anymore — a request
+    /// without a signed bridge token is rejected with `NoCaller`,
+    /// whether or not a validator happens to be configured.
     #[tokio::test]
-    async fn resolve_bridge_caller_extracts_user_from_headers() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": "user-42"},
-        });
-        assert_eq!(
-            resolve_bridge_caller(&payload, None).await.unwrap(),
-            "user-42"
-        );
-    }
-
-    /// Missing header → rejected (no anonymous callers).
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_missing() {
+    async fn resolve_bridge_caller_rejects_requests_without_token() {
         let payload = serde_json::json!({"body": {"message": "hi"}});
         assert_eq!(
             resolve_bridge_caller(&payload, None).await,
             Err(BridgeCallerError::NoCaller)
         );
-    }
 
-    /// Empty string header → rejected.
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_empty() {
+        let (validator, _signing_key) = ed25519_validator();
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            Err(BridgeCallerError::NoCaller)
+        );
+
+        // The retired `x-pekohub-user-id` header confers nothing.
         let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": ""},
+            "headers": {"x-pekohub-user-id": "user-42"},
         });
         assert_eq!(
             resolve_bridge_caller(&payload, None).await,
             Err(BridgeCallerError::NoCaller)
         );
-    }
-
-    /// Whitespace-only header → rejected.
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_whitespace() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": "   "},
-        });
         assert_eq!(
-            resolve_bridge_caller(&payload, None).await,
-            Err(BridgeCallerError::NoCaller)
-        );
-    }
-
-    /// Non-string header (e.g. number) → rejected.
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_not_string() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": 12345},
-        });
-        assert_eq!(
-            resolve_bridge_caller(&payload, None).await,
+            resolve_bridge_caller(&payload, Some(&validator)).await,
             Err(BridgeCallerError::NoCaller)
         );
     }
@@ -1862,11 +1885,7 @@ mod tests {
         let jwt = mint_jwt(&signing_key, "user-jwt");
 
         let payload = serde_json::json!({
-            "headers": {
-                "Authorization": format!("Bearer {jwt}"),
-                // Header disagrees with the JWT — but the JWT wins.
-                "x-pekohub-user-id": "user-hub",
-            },
+            "headers": {"Authorization": format!("Bearer {jwt}")},
         });
         assert_eq!(
             resolve_bridge_caller(&payload, Some(&validator))
@@ -1888,10 +1907,7 @@ mod tests {
         let wrong_jwt = mint_jwt(&wrong_key, "user-tampered");
 
         let payload = serde_json::json!({
-            "headers": {
-                "Authorization": format!("Bearer {wrong_jwt}"),
-                "x-pekohub-user-id": "user-hub-fallback",
-            },
+            "headers": {"Authorization": format!("Bearer {wrong_jwt}")},
         });
         assert_eq!(
             resolve_bridge_caller(&payload, Some(&validator)).await,
@@ -1935,22 +1951,7 @@ mod tests {
         );
     }
 
-    /// Header-only (no JWT) → uses the hub header (unverified) only in
-    /// the back-compat path where no `JwtValidator` is configured. This
-    /// keeps local tests / disabled mode working without weakening the
-    /// production path.
-    #[tokio::test]
-    async fn resolve_bridge_caller_uses_header_when_no_validator_and_no_jwt() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": "user-hub"},
-        });
-        assert_eq!(
-            resolve_bridge_caller(&payload, None).await.unwrap(),
-            "user-hub"
-        );
-    }
-
-    /// No JWT and no header → rejected (no anonymous callers).
+    /// No JWT → rejected (no anonymous callers).
     #[tokio::test]
     async fn resolve_bridge_caller_rejects_anonymous() {
         let (validator, _signing_key) = ed25519_validator();
@@ -2167,7 +2168,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "any-user"}});
         let result = dispatcher
-            .check_request_allowed("public-agent", &bridge_payload)
+            .check_request_allowed("public-agent", &bridge_payload, "any-user")
             .await;
         assert!(result.is_ok());
     }
@@ -2192,7 +2193,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
         let result = dispatcher
-            .check_request_allowed("unexposed-agent", &bridge_payload)
+            .check_request_allowed("unexposed-agent", &bridge_payload, "user-123")
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2219,7 +2220,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload)
+            .check_request_allowed("private-agent", &bridge_payload, "user-123")
             .await;
         assert!(result.is_ok());
     }
@@ -2244,7 +2245,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload)
+            .check_request_allowed("private-agent", &bridge_payload, "")
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2271,7 +2272,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-999"}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload)
+            .check_request_allowed("private-agent", &bridge_payload, "user-999")
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2285,7 +2286,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
         let result = dispatcher
-            .check_request_allowed("unknown-agent", &bridge_payload)
+            .check_request_allowed("unknown-agent", &bridge_payload, "user-123")
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2317,7 +2318,7 @@ mod tests {
         // public chat reaching the runtime through the hub.
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("unlisted-agent", &bridge_payload)
+            .check_request_allowed("unlisted-agent", &bridge_payload, "")
             .await;
         assert!(result.is_ok());
     }

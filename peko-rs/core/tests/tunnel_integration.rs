@@ -22,7 +22,6 @@ use rand::RngCore;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use peko_core::tunnel::known_runtimes::TransportPreference;
 use peko_core::tunnel::protocol::{
     InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
     InstanceType, TunnelMessage,
@@ -357,7 +356,6 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             allowed_principals: None,
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
-            transport_preference: None,
             // B5: `runtime_direct_endpoint` field dropped from payload.
         },
     };
@@ -556,7 +554,7 @@ async fn test_tunnel_streaming_chunks_survive() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
-async fn test_instance_announce_publishes_transport_fields() {
+async fn test_instance_announce_registers_directory_entry() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
     seed_runtime_for_test(&backend.url, &did).await;
@@ -585,7 +583,6 @@ async fn test_instance_announce_publishes_transport_fields() {
             allowed_principals: None,
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
-            transport_preference: Some(TransportPreference::Direct),
             // B5: `runtime_direct_endpoint` field dropped from payload.
         },
     };
@@ -618,17 +615,23 @@ async fn test_instance_announce_publishes_transport_fields() {
         "public principal directory lookup should succeed"
     );
     let body: serde_json::Value = dir_resp.json().await.unwrap();
-    assert_eq!(body["transportPreference"], "direct");
-    // B5 cleanup: `runtime_direct_endpoint` was dropped from the
-    // announce payload (transport gone — all cross-runtime traffic
-    // flows through the tunnel relay). Pekohub only updates
-    // `directEndpoint` when the runtime includes it in the announce,
-    // so the directory now returns `null` (or omits) for this field.
-    // The wire-shape decoder still accepts it as an optional
-    // backward-compat field (see `hub_directory.rs::test_agent_resolution_*`).
+    // ADR-057: the retired direct-transport fields are gone from both
+    // sides — the announce no longer carries them and Pekohub no longer
+    // persists or returns them (hub migration 0013).
     assert!(
-        body["directEndpoint"].is_null(),
-        "directEndpoint should be null after B5 (runtime no longer sends runtime_direct_endpoint), got: {}",
-        body["directEndpoint"]
+        body.get("transportPreference").is_none(),
+        "transportPreference must not be published, got: {}",
+        body
+    );
+    assert!(
+        body.get("directEndpoint").is_none(),
+        "directEndpoint must not be published, got: {}",
+        body
+    );
+    // The resolver itself still works: the DID key from the announce is
+    // what the by-did endpoint indexes on.
+    assert_eq!(
+        body["principalDid"], principal_did,
+        "directory response must echo the announced principal DID"
     );
 }

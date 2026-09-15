@@ -1797,7 +1797,6 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         // `peko principal create` path will require `--model` and set
         // this field; a default of `None` is only used by legacy tests.
         preferred_model_id: None,
-        transport_preference: Default::default(),
         quota: None,
         children: Default::default(),
     }

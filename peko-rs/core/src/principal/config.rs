@@ -22,24 +22,6 @@ pub enum Status {
     Error,
 }
 
-/// Transport preference for cross-runtime principal_send.
-///
-/// Principal-owned mirror of `tunnel::known_runtimes::TransportPreference`;
-/// converted at the tunnel edge, so the persisted config does not depend on
-/// tunnel types.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TransportPreference {
-    /// Prefer direct if a direct endpoint is configured and trusted,
-    /// otherwise fall back to the PekoHub tunnel.
-    #[default]
-    Auto,
-    /// Always use the PekoHub tunnel.
-    Tunnel,
-    /// Always use the direct endpoint; fail if one is not configured.
-    Direct,
-}
-
 /// Genesis-pipeline boot state for a Principal (ADR-054).
 ///
 /// Tracks how far a principal has progressed through the
@@ -169,12 +151,6 @@ pub struct PrincipalConfig {
     /// configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_model_id: Option<String>,
-
-    /// Transport preference for cross-runtime principal_send.
-    /// The principal owns the connection method; callers learn it from
-    /// the directory and respect it.
-    #[serde(default)]
-    pub transport_preference: TransportPreference,
 
     /// Optional per-principal token quota (F18). When present,
     /// every LLM call routed through this Principal — root agent,
@@ -493,42 +469,6 @@ mod tests {
         let cfg: PrincipalConfig = toml::from_str(toml).expect("legacy TOML must parse");
         assert_eq!(cfg.name, "legacy");
         assert_eq!(cfg.preferred_model_id, None);
-        assert_eq!(cfg.transport_preference, super::TransportPreference::Auto);
-    }
-
-    #[test]
-    fn principal_config_transport_preference_roundtrip() {
-        let cfg = PrincipalConfig {
-            name: "alice".into(),
-            id: None,
-            did: None,
-            owner: Default::default(),
-            identity: Default::default(),
-            intent: Default::default(),
-            governance: Default::default(),
-            memory: Default::default(),
-            routing: Default::default(),
-            capabilities: Default::default(),
-            exposure: Default::default(),
-            status: None,
-            boot_state: None,
-            permissions: Vec::new(),
-            preferred_model_id: None,
-            transport_preference: super::TransportPreference::Tunnel,
-            quota: None,
-            children: Default::default(),
-        };
-        let serialized = toml::to_string(&cfg).expect("serialize");
-        assert!(
-            serialized.contains("transport_preference = \"tunnel\""),
-            "got: {serialized}"
-        );
-
-        let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(
-            back.transport_preference,
-            super::TransportPreference::Tunnel
-        );
     }
 
     /// The stable principal id must round-trip losslessly through serde
@@ -597,7 +537,6 @@ mod tests {
             boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: Some("ollama-llama3.1".into()),
-            transport_preference: super::TransportPreference::Direct,
             quota: None,
             children: Default::default(),
         };
@@ -606,17 +545,8 @@ mod tests {
             serialized.contains("preferred_model_id = \"ollama-llama3.1\""),
             "got: {serialized}"
         );
-        assert!(
-            serialized.contains("transport_preference = \"direct\""),
-            "got: {serialized}"
-        );
-
         let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(back.preferred_model_id.as_deref(), Some("ollama-llama3.1"));
-        assert_eq!(
-            back.transport_preference,
-            super::TransportPreference::Direct
-        );
     }
 
     /// Serializing a config with no provider hint must NOT emit the keys —
@@ -640,7 +570,6 @@ mod tests {
             boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         };
@@ -670,7 +599,6 @@ mod tests {
             boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         };
@@ -724,7 +652,6 @@ mod tests {
             boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         };
@@ -777,7 +704,6 @@ mod tests {
             boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         };
@@ -834,7 +760,6 @@ mod tests {
             boot_state: None,
             permissions: Vec::new(),
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         }

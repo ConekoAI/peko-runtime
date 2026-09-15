@@ -50,8 +50,7 @@ pub use catalog::{capability_kind_for_extension_type, CatalogEntry, PrincipalCat
 pub use config::{
     ArtifactKind, AuditLevel, BootState, ChildDeclaration, ConsolidationConfig, DelegationGrant,
     MemoryTier, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, Status,
-    TransportPreference, TtlPolicy,
+    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, Status, TtlPolicy,
 };
 pub use factory::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalMemoryFactory,

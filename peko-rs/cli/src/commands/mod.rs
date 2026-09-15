@@ -79,10 +79,6 @@ pub struct Cli {
     #[arg(long, global = true, env = "PEKO_DEBUG")]
     pub debug: bool,
 
-    /// User identifier for session isolation
-    #[arg(short = 'U', long, global = true)]
-    pub user: Option<String>,
-
     /// Default registry URL for push/pull commands
     #[arg(long, global = true, env = "PEKO_REGISTRY")]
     pub registry: Option<String>,
@@ -287,6 +283,22 @@ pub(crate) fn parse_recipient(s: &str) -> Recipient {
     }
 }
 
+/// ADR-057: the CLI's identity is derived, not specified — the hub
+/// owner id from the pekohub credential when the runtime is logged
+/// into pekohub, else `local`. Mirrors the daemon's
+/// `AppState::hub_owner` resolution so the daemon-less in-process
+/// fallback paths attribute identically to the IPC path.
+fn identity_for_config_dir(config_dir: &std::path::Path) -> String {
+    let cred_path = peko_core::tunnel::PekoHubCredential::path_for_config_dir(config_dir);
+    if !cred_path.exists() {
+        return "local".to_string();
+    }
+    peko_core::tunnel::PekoHubCredential::from_file(&cred_path)
+        .ok()
+        .and_then(|cred| cred.owner_id)
+        .unwrap_or_else(|| "local".to_string())
+}
+
 /// Build a [`GlobalPaths`] from a parsed [`Cli`] argument struct.
 ///
 /// Lives in the CLI crate (here in `commands/mod.rs`, then in
@@ -296,11 +308,13 @@ pub(crate) fn parse_recipient(s: &str) -> Recipient {
 #[must_use]
 pub fn from_cli(cli: &Cli) -> GlobalPaths {
     use peko_core::common::paths::{default_cache_dir, default_config_dir, default_data_dir};
+    let config_dir = cli.config_dir.clone().unwrap_or_else(default_config_dir);
+    let user = identity_for_config_dir(&config_dir);
     GlobalPaths::new(
-        cli.config_dir.clone().unwrap_or_else(default_config_dir),
+        config_dir,
         cli.data_dir.clone().unwrap_or_else(default_data_dir),
         cli.cache_dir.clone().unwrap_or_else(default_cache_dir),
-        cli.user.clone().unwrap_or_else(|| "local".to_string()),
+        user,
     )
 }
 

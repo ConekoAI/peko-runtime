@@ -296,7 +296,11 @@ mod tests {
         let paths = MockPaths::new(tmp.path());
         let config = AuthConfig::load(&paths).unwrap();
         assert!(config.enable_local_trust());
-        assert!(!config.enable_pekohub_jwt());
+        // ADR-057: pekohub JWT validation is ON by default — bridge
+        // callers must present a signed token, and a runtime with no
+        // tunnel (hence no validator) rejects bridge traffic rather
+        // than trusting an unverified header. API keys stay opt-in.
+        assert!(config.enable_pekohub_jwt());
         assert!(!config.enable_api_key());
     }
 }

@@ -372,14 +372,13 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 name,
                 message,
-                user,
                 override_model,
             } => {
                 run_principal_send(
                     request_id,
-                    name,
+                    caller,
+                    &name,
                     message,
-                    user,
                     override_model,
                     host,
                     sink,
@@ -392,14 +391,13 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 name,
                 message,
-                user,
                 override_model,
             } => {
                 run_principal_send(
                     request_id,
-                    name,
+                    caller,
+                    &name,
                     message,
-                    user,
                     override_model,
                     host,
                     sink,
@@ -1495,7 +1493,6 @@ impl RequestHandler for PrincipalHandler {
                     boot_state: None,
                     permissions: Vec::new(),
                     preferred_model_id: Some(model_id),
-                    transport_preference: Default::default(),
                     quota: None,
                     children: Default::default(),
                 };
@@ -2046,17 +2043,25 @@ async fn handle_principal_stop(
 /// variant the caller chose. The only difference at the wire level is
 /// the success packet — `PrincipalSent` for `OneShot` and
 /// `PrincipalSentDone` for `Streaming` — selected by `response_kind`.
-#[allow(clippy::too_many_arguments)]
+///
+/// ADR-057: the peer (attribution identity) and the permission
+/// authority both derive from the `CallerContext` — the wire carries
+/// no user identity. `peer = caller.attribution_subject()` (the
+/// conversation key: hub user when the runtime is logged into
+/// pekohub, else `user:local`; the JWT sub for bridge callers; the
+/// typed apikey actor for API-key callers) and
+/// `authority = caller.subject()` (the grant-matching projection).
 async fn run_principal_send(
     request_id: u64,
-    name: String,
+    caller: &CallerContext,
+    name: &str,
     message: String,
-    user: String,
     override_model: Option<String>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
     response_kind: PrincipalSendResponseKind,
 ) -> anyhow::Result<()> {
+    let name = name.to_string();
     // Look up the principal first — short-circuit with a clean Error
     // packet and Done so the client doesn't hang waiting on a
     // never-arriving response.
@@ -2078,7 +2083,7 @@ async fn run_principal_send(
         }
     };
 
-    let peer = Subject::User(user);
+    let peer = caller.attribution_subject();
     let channel = ChannelContext {
         kind: ChannelKind::Cli,
         // The channel flag is informational — both variants are
@@ -2097,9 +2102,10 @@ async fn run_principal_send(
     // in the peer's standing child (below), not through the router.
     if let Err(e) = host
         .principal_manager()
-        .build_router_context(
+        .build_router_context_as(
             &principal,
             peer.clone(),
+            caller.subject(),
             message.clone(),
             channel,
             override_model.clone(),
@@ -2604,6 +2610,7 @@ async fn run_principal_send(
                     Arc::clone(&turns),
                     &session_id,
                     peer.clone(),
+                    caller.subject(),
                     msg,
                     override_model.clone(),
                     channel_port.clone(),
@@ -2733,6 +2740,7 @@ async fn run_steering_successor(
     turns: Arc<crate::principal::child_turns::PeerChildTurns>,
     child_id: &str,
     peer: Subject,
+    authority: Subject,
     steering: SteeringMessage,
     override_model: Option<String>,
     channel_port: Option<Arc<dyn ChannelPort>>,
@@ -2771,12 +2779,15 @@ async fn run_steering_successor(
 
     // Permission-check parity with the predecessor: the shared builder
     // is the single gate. The assembled context is otherwise unused —
-    // the turn runs in the peer child via `PeerChildTurns`.
+    // the turn runs in the peer child via `PeerChildTurns`. ADR-057:
+    // the authority (grant-matching subject) may differ from the
+    // attribution peer for local callers on pekohub-logged-in runtimes.
     if let Err(e) = host
         .principal_manager()
-        .build_router_context(
+        .build_router_context_as(
             principal,
             peer.clone(),
+            authority,
             steering.content.clone(),
             channel,
             override_model.clone(),
@@ -4063,7 +4074,6 @@ mod tests {
                 boot_state: None,
                 permissions: vec![],
                 preferred_model_id: Some("mock".to_string()),
-                transport_preference: Default::default(),
                 quota: None,
                 children: Default::default(),
             }

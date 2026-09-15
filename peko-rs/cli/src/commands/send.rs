@@ -29,7 +29,6 @@ use peko_core::ipc::packet::RequestPacket;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_protocol::channel::ChannelId;
 use std::io::Write;
-use std::str::FromStr;
 use std::sync::Arc;
 use tracing::info;
 
@@ -57,11 +56,6 @@ pub struct SendArgs {
     #[arg(long)]
     pub wait: bool,
 
-    /// Send as this peer instead of the global `-U/--user` identity.
-    /// Accepts the wire format `user:<id>`.
-    #[arg(long, value_name = "SUBJECT")]
-    pub peer: Option<String>,
-
     /// Override the configured model for this message only
     #[arg(long, value_name = "MODEL_ID")]
     pub model: Option<String>,
@@ -88,29 +82,19 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
         );
     }
 
-    // The sender's user identity: `--peer user:<id>` overrides the
-    // global `-U/--user` derivation. The daemon wraps the packet's
-    // `user` string as `Subject::User(user)`, so only the user form is
-    // supported here. Derived before the group branch so both the
-    // principal and group paths share the same identity rule.
-    let user = match args.peer.as_deref() {
-        Some(raw) => match peko_auth::Subject::from_str(raw) {
-            Ok(peko_auth::Subject::User(id)) => id,
-            Ok(other) => {
-                anyhow::bail!("--peer must be a user subject (`user:<id>`), got '{other}'")
-            }
-            Err(e) => anyhow::bail!("invalid --peer value '{raw}': {e}"),
-        },
-        None => paths.user().to_string(),
-    };
-    let peer = peko_auth::Subject::User(user.clone());
+    // ADR-057: the sender identity is derived server-side from the
+    // connection (`CallerContext::attribution_subject`) — the CLI
+    // neither specifies nor knows it. The daemon attributes the
+    // message to the hub user when the runtime is logged into
+    // pekohub, else `user:local`.
 
     // Group recipients (`group:<slug>`): post to the group channel as
-    // the caller's user identity (ADR-049 Phase 2, D7). Membership is
-    // the write authorization — a non-member user is refused by the
-    // store with `NotMember`. `--wait` / `--model` stay refused: a
-    // group post fans out to one run per member principal, so there
-    // is no single run to await or steer.
+    // the caller's own derived identity (ADR-049 Phase 2, D7, amended
+    // by ADR-057 — `sender_name: None` = "speak as my own identity").
+    // Membership is the write authorization — a non-member user is
+    // refused by the store with `NotMember`. `--wait` / `--model` stay
+    // refused: a group post fans out to one run per member principal,
+    // so there is no single run to await or steer.
     if let Recipient::Group(slug) = parse_recipient(&args.principal) {
         if args.wait {
             anyhow::bail!("groups have no bound agent run; nothing to wait on");
@@ -119,7 +103,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
             anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
         }
         let channel = format!("group:{slug}");
-        return post_to_group(paths, &channel, &message, &user).await;
+        return post_to_group(paths, &channel, &message).await;
     }
 
     info!("Sending message to principal '{}'", args.principal);
@@ -138,9 +122,14 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // apart from older thread history.
     let sent_at = chrono::Utc::now();
     let stream = client
-        .principal_send_stream(&args.principal, message, user, args.model.clone())
+        .principal_send_stream(&args.principal, message, args.model.clone())
         .await?;
 
+    // The CLI's own subject — derived from the same rule the daemon
+    // uses (ADR-057): hub owner when logged into pekohub, else
+    // `local`. Used only as the thread selector for `--wait` /
+    // ctrl-c stop, never sent as an identity claim.
+    let peer = peko_auth::Subject::User(paths.user().to_string());
     process_response_stream(stream, &client, &args, &peer, sent_at).await
 }
 
@@ -151,16 +140,19 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
 /// in-process `ChannelStore` when the daemon is unreachable, mirroring
 /// the `peko channel` dual-path so manual smoke tests work without a
 /// live daemon.
-async fn post_to_group(
-    paths: &GlobalPaths,
-    channel: &str,
-    message: &str,
-    user: &str,
-) -> Result<()> {
+/// `peko send group:<slug>` (ADR-049 Phase 2, D7, amended by
+/// ADR-057): post `message` to the group channel as the caller's own
+/// derived identity (`sender_name: None` — the daemon attributes it).
+/// Daemon-first via `ChannelPost`; falls back to an in-process
+/// `ChannelStore` when the daemon is unreachable, mirroring the
+/// `peko channel` dual-path so manual smoke tests work without a
+/// live daemon. The fallback path speaks as the CLI's derived
+/// identity (hub owner when logged in, else `user:local`).
+async fn post_to_group(paths: &GlobalPaths, channel: &str, message: &str) -> Result<()> {
     let packet = RequestPacket::ChannelPost {
         request_id: 0,
         channel: channel.to_string(),
-        sender_name: format!("user:{user}"),
+        sender_name: None,
         text: message.to_string(),
         parent: None,
     };
@@ -192,7 +184,7 @@ async fn post_to_group(
     let resp = router
         .handle_post(
             &ch,
-            &peko_auth::Subject::User(user.to_string()),
+            &peko_auth::Subject::User(paths.user().to_string()),
             message,
             None,
         )
@@ -568,7 +560,6 @@ mod tests {
                 assert_eq!(args.principal, "myprincipal");
                 assert_eq!(args.message, Some("hello".to_string()));
                 assert!(!args.wait);
-                assert!(args.peer.is_none());
             }
             _other => panic!("expected Send command"),
         }
@@ -611,25 +602,19 @@ mod tests {
         }
     }
 
+    /// ADR-057: the `--peer` flag was removed — identities are derived
+    /// server-side from the connection, never specified.
     #[test]
-    fn send_parses_peer_flag() {
-        let cli = Cli::try_parse_from([
+    fn send_rejects_peer_flag() {
+        let parsed = Cli::try_parse_from([
             "peko",
             "send",
             "myprincipal",
             "hello",
             "--peer",
             "user:alice",
-        ])
-        .expect("should parse send command with --peer");
-
-        match cli.command {
-            Commands::Send(args) => {
-                assert_eq!(args.peer.as_deref(), Some("user:alice"));
-                assert_eq!(args.principal, "myprincipal");
-            }
-            _other => panic!("expected Send command"),
-        }
+        ]);
+        assert!(parsed.is_err(), "--peer must no longer parse");
     }
 
     // -----------------------------------------------------------------
@@ -647,7 +632,6 @@ mod tests {
             file: None,
             stdin: false,
             wait: false,
-            peer: None,
             model: None,
         }
     }
@@ -724,39 +708,6 @@ mod tests {
         assert_eq!(posted.len(), 1, "expected exactly one post; got {posted:?}");
         assert_eq!(posted[0].0, "user:local");
         assert_eq!(posted[0].1, "hi all");
-    }
-
-    #[tokio::test]
-    async fn send_group_honors_peer_override() {
-        // `--peer user:<id>` overrides the `-U` identity, mirroring
-        // the principal path's derivation.
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let paths = test_paths(&tmp);
-        let store = seed_group(&paths, "eng", &["alice"]).await;
-
-        let mut args = group_send_args("group:eng", "hello from alice");
-        args.peer = Some("user:alice".to_string());
-        super::handle_send(args, &paths)
-            .await
-            .expect("group send as --peer user must succeed");
-
-        let events = store
-            .peek(
-                &peko_protocol::channel::ChannelId::for_group("eng"),
-                &peko_channel::Checkpoint::default(),
-            )
-            .await
-            .expect("peek");
-        let authors: Vec<&str> = events
-            .iter()
-            .filter_map(|ev| match ev {
-                peko_protocol::channel::ChannelEvent::Posted { author, .. } => {
-                    Some(author.as_str())
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(authors, vec!["user:alice"]);
     }
 
     #[tokio::test]

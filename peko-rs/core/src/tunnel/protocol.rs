@@ -107,16 +107,11 @@ pub struct InstanceAnnouncePayload {
     pub capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Callee transport preference for cross-runtime `principal_send`.
-    /// Set by the runtime on `instance_announce` so the hub can return
-    /// it from directory resolution.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transport_preference: Option<crate::tunnel::known_runtimes::TransportPreference>,
-    // B5 cleanup: `runtime_direct_endpoint` was retired — direct
-    // cross-runtime transport was removed (all cross-runtime traffic
-    // flows through the tunnel relay, not a direct endpoint). Field
-    // dropped from the struct, host accessor dropped, and announce
-    // sites stopped reading it.
+    // B5 cleanup: `runtime_direct_endpoint` and `transport_preference`
+    // were retired — direct cross-runtime transport was removed (all
+    // cross-runtime traffic flows through the tunnel relay, not a
+    // direct endpoint). Fields dropped from the struct, host accessor
+    // dropped, and announce sites stopped reading them.
 }
 
 /// Payload for `instance_heartbeat` messages.
@@ -583,10 +578,8 @@ mod tests {
                 allowed_principals: Some(vec![peko_auth::Subject::User("u1".to_string())]),
                 capabilities: Some(vec!["c1".to_string()]),
                 metadata: Some(metadata),
-                transport_preference: Some(
-                    crate::tunnel::known_runtimes::TransportPreference::Direct,
-                ),
-                // B5: `runtime_direct_endpoint` field dropped from payload.
+                // B5: `runtime_direct_endpoint` and `transport_preference`
+                // fields dropped from payload.
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -607,8 +600,8 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"transportPreference\":\"direct\""),
-            "Expected transportPreference in wire form, got: {}",
+            !json.contains("transportPreference"),
+            "retired transportPreference must not be emitted, got: {}",
             json
         );
 
@@ -617,10 +610,6 @@ mod tests {
             TunnelMessage::InstanceAnnounce { payload } => {
                 assert_eq!(payload.id, "inst-1");
                 assert_eq!(payload.runtime_display_name, Some("Test".to_string()));
-                assert_eq!(
-                    payload.transport_preference,
-                    Some(crate::tunnel::known_runtimes::TransportPreference::Direct)
-                );
             }
             _ => panic!("Expected InstanceAnnounce"),
         }
@@ -642,7 +631,6 @@ mod tests {
                 allowed_principals: None,
                 capabilities: None,
                 metadata: None,
-                transport_preference: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
@@ -651,13 +639,12 @@ mod tests {
         assert!(!json.contains("bundleRef"), "None fields should be skipped");
         assert!(
             !json.contains("transportPreference"),
-            "None transport_preference should be skipped"
+            "retired transport_preference must not be emitted"
         );
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
             TunnelMessage::InstanceAnnounce { payload } => {
                 assert_eq!(payload.bundle_ref, None);
-                assert_eq!(payload.transport_preference, None);
             }
             _ => panic!("Expected InstanceAnnounce"),
         }
@@ -683,7 +670,6 @@ mod tests {
                 allowed_principals: None,
                 capabilities: None,
                 metadata: None,
-                transport_preference: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
@@ -725,7 +711,6 @@ mod tests {
                 allowed_principals: None,
                 capabilities: None,
                 metadata: None,
-                transport_preference: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };

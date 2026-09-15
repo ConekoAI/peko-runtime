@@ -964,6 +964,34 @@ impl PrincipalManager {
         // `None` preserves the principal's pinned model.
         override_model: Option<String>,
     ) -> Result<RouterContext, PrincipalManagerError> {
+        self.build_router_context_as(
+            principal,
+            peer.clone(),
+            peer,
+            message,
+            channel,
+            override_model,
+        )
+        .await
+    }
+
+    /// ADR-057: authority-split variant of
+    /// [`PrincipalManager::build_router_context`]. `peer` is the
+    /// attribution identity (conversation key: session child, DM
+    /// channel, author rows); `authority` is the grant-matching
+    /// subject the `Permission::Chat` check runs against. They differ
+    /// only for local callers on pekohub-logged-in runtimes (local
+    /// trust keeps owner authority while attribution follows the hub
+    /// user); all other surfaces pass the same subject for both.
+    pub async fn build_router_context_as(
+        &self,
+        principal: &Arc<Principal>,
+        peer: Subject,
+        authority: Subject,
+        message: String,
+        channel: ChannelContext,
+        override_model: Option<String>,
+    ) -> Result<RouterContext, PrincipalManagerError> {
         // Enforce Principal-level permissions before any routing or session work.
         let resource = {
             let config = principal.config.read().await;
@@ -974,7 +1002,7 @@ impl PrincipalManager {
                 exposure: config.exposure.clone(),
             }
         };
-        if let Err(denied) = check_permission(&resource, Permission::Chat, &peer) {
+        if let Err(denied) = check_permission(&resource, Permission::Chat, &authority) {
             return Err(PrincipalManagerError::PermissionDenied(denied.to_string()));
         }
 
@@ -1655,7 +1683,6 @@ mod tests {
                 granted_by: Subject::User("test-owner".to_string()),
             }],
             preferred_model_id: Some("mock".to_string()),
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         }

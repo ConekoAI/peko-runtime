@@ -111,79 +111,29 @@ impl ChannelHandler {
         })
     }
 
-    /// ADR-049 Phase 2 + 4 (D6): membership gate for channel reads
-    /// (`ChannelPeek`, `ChannelEventsWatch`). The caller's identity
-    /// binds which requester the read may claim (see [`caller_binding`]):
+    /// ADR-049 Phase 2 + 4 (D6), amended by ADR-057: membership gate
+    /// for channel reads (`ChannelPeek`, `ChannelEventsWatch`). The
+    /// caller's identity binds which reader the read runs as (see
+    /// [`caller_binding`]) — the wire carries no requester, and the
+    /// membership gate ALWAYS applies:
     ///
-    /// - A pekohub JWT user may only read as themselves — the declared
-    ///   `requester` must equal `user:<sub>` (absent counts as
-    ///   themselves) and the membership gate ALWAYS applies (no
-    ///   escape).
-    /// - An API-key caller may not claim a `user:*` requester at all
-    ///   (it is not a user; that would be impersonation). Otherwise
-    ///   the gate applies when a requester is present.
-    /// - A Local caller (unix socket / localhost UDP — the OS is the
-    ///   trust boundary) keeps the pre-Phase-2 posture: requester
-    ///   optional (peko-desktop's calls carry no identity yet), gate
-    ///   enforced when present.
+    /// - A pekohub JWT user always reads as themselves — `user:<sub>`.
+    /// - A derived caller (local terminal or its scoped API key)
+    ///   always reads as the ADR-057 attribution identity
+    ///   (`user:local`, or the hub owner id when logged into
+    ///   pekohub).
     ///
     /// On failure the error response is sent here and `Ok(false)`
     /// tells the caller to stop.
     async fn gate_channel_read(
         &self,
         channel: &ChannelId,
-        requester: Option<&str>,
         caller: &CallerContext,
         request_id: u64,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<bool> {
-        let parsed = match requester {
-            Some(raw) => match Subject::from_str(raw) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("invalid requester subject '{raw}': {e}"),
-                    };
-                    send_response(sink, response).await?;
-                    return Ok(false);
-                }
-            },
-            None => None,
-        };
-        let effective = match caller_binding(caller) {
-            CallerBinding::Trusted => parsed,
-            CallerBinding::ApiKey => {
-                if matches!(parsed, Some(Subject::User(_))) {
-                    return self
-                        .send_forbidden(
-                            request_id,
-                            "API-key callers cannot read a channel as a user identity",
-                            sink,
-                        )
-                        .await;
-                }
-                parsed
-            }
-            CallerBinding::User(u) => {
-                if let Some(p) = &parsed {
-                    if *p != u {
-                        return self
-                            .send_forbidden(
-                                request_id,
-                                &format!(
-                                    "caller may only read channels as their own identity ('{u}')"
-                                ),
-                                sink,
-                            )
-                            .await;
-                    }
-                }
-                Some(u)
-            }
-        };
-        let Some(requester) = effective else {
-            return Ok(true);
+        let requester = match caller_binding(caller) {
+            CallerBinding::Derived(own) | CallerBinding::User(own) => own,
         };
         match self.host.channel_port().list_members(channel).await {
             Ok(members) if members.contains(&requester) => Ok(true),
@@ -206,36 +156,51 @@ impl ChannelHandler {
         }
     }
 
-    /// Emit a `[forbidden]` error response (the convention other IPC
-    /// handlers use for authz refusals — see `principal.rs`) and tell
-    /// the caller to stop.
-    async fn send_forbidden(
+    /// ADR-057: operating a runtime-hosted principal by name —
+    /// creating a channel as one (`ChannelCreate`), speaking as one
+    /// (`ChannelPost` sender), managing membership through one
+    /// (`ChannelInvite` inviter, `ChannelLeave`) — is a Derived-caller
+    /// capability: the local terminal or its scoped API key. A
+    /// pekohub JWT user is never a principal operator (matching the
+    /// post rule), which closes the "remote caller acts as any loaded
+    /// principal" path. Sends the `[forbidden]` error itself and
+    /// returns `Ok(false)` when the caller must stop.
+    async fn gate_principal_operator(
         &self,
+        caller: &CallerContext,
         request_id: u64,
-        message: &str,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<bool> {
-        let response = ResponsePacket::Error {
-            request_id,
-            message: format!("[forbidden] {message}"),
-        };
-        send_response(sink, response).await?;
-        Ok(false)
+        if matches!(caller_binding(caller), CallerBinding::User(_)) {
+            let response = ResponsePacket::Error {
+                request_id,
+                message: "[forbidden] pekohub users cannot operate principals — channels are \
+                          managed by the runtime's own callers"
+                    .to_string(),
+            };
+            send_response(sink, response).await?;
+            return Ok(false);
+        }
+        Ok(true)
     }
 }
 
-/// ADR-049 Phase 4 (D6): what a caller is allowed to declare as their
-/// requester/sender on the channel surface.
+/// ADR-049 Phase 4 (D6), amended by ADR-057: what a caller is
+/// allowed to declare as their sender on the channel surface.
+///
+/// ADR-057: user identities are never carried on the wire. Every
+/// binding carries the identity the caller is *allowed to speak as*,
+/// derived server-side from the connection
+/// (`CallerContext::attribution_subject`) — there is no `Trusted`
+/// passthrough anymore.
 enum CallerBinding {
-    /// Local trust — the declared identity is accepted as-is (the
-    /// CLI's `-U`, peko-desktop, scripts; today's posture).
-    Trusted,
+    /// A derived owner identity: the local terminal (`user:local`, or
+    /// the hub owner id when the runtime is logged into pekohub) or
+    /// its scoped API key — a key is a credential of the owner, not a
+    /// separate identity class.
+    Derived(Subject),
     /// A pekohub JWT user — may only act as this exact user subject.
     User(Subject),
-    /// An API key — not a user; `user:*` declarations are refused as
-    /// impersonation. (No channel membership is keyed on API keys
-    /// today; the store's own gates still apply.)
-    ApiKey,
 }
 
 /// Map a [`CallerContext`] to its [`CallerBinding`].
@@ -248,15 +213,18 @@ enum CallerBinding {
 /// ADR-049). Mirroring `Subject::from_bridge_user`'s normalization
 /// (strip one redundant `user:` prefix), the channel-side identity of
 /// a JWT caller with sub `39` is `Subject::User("39")` — exactly what
-/// an invite of `user:39` records.
+/// an invite of `user:39` records. The Derived projection is the
+/// ADR-057 attribution subject (hub owner when logged in, else
+/// `user:local`; API keys attribute as the owner they belong to).
 fn caller_binding(caller: &CallerContext) -> CallerBinding {
     use peko_auth::caller::Identity;
     match &caller.identity {
-        Identity::Local => CallerBinding::Trusted,
+        Identity::Local | Identity::ApiKey(_) => {
+            CallerBinding::Derived(caller.attribution_subject())
+        }
         Identity::User(sub) => CallerBinding::User(Subject::User(
             sub.strip_prefix("user:").unwrap_or(sub).to_string(),
         )),
-        Identity::ApiKey(_) => CallerBinding::ApiKey,
     }
 }
 
@@ -296,6 +264,12 @@ impl RequestHandler for ChannelHandler {
                 passive_binding,
                 id,
             } => {
+                if !self
+                    .gate_principal_operator(caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 let Some(creator) = self.resolve_principal(&creator_name) else {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -356,6 +330,12 @@ impl RequestHandler for ChannelHandler {
                 inviter_name,
                 invitee_name,
             } => {
+                if !self
+                    .gate_principal_operator(caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 let inviter = match self.resolve_principal(&inviter_name) {
                     Some(p) => p,
                     None => {
@@ -439,57 +419,54 @@ impl RequestHandler for ChannelHandler {
                 text,
                 parent,
             } => {
-                // ADR-049 Phase 4 (D6): anti-impersonation. A pekohub
-                // JWT caller may only post as their own `user:<sub>`
-                // identity (checked BEFORE any principal resolution —
-                // a JWT user is never a principal sender); an API-key
-                // caller may not post as a user at all. Local callers
-                // keep the local-trust posture (any declared sender).
-                match caller_binding(caller) {
-                    CallerBinding::User(u) => {
-                        let declared = Subject::from_str(&sender_name).ok();
-                        if declared.as_ref() != Some(&u) {
+                // ADR-057: user identities are never declared on the
+                // wire. The sender is either the caller's own derived
+                // identity (`sender_name: None`) or a principal name
+                // (a runtime-hosted actor the caller operates). A
+                // `user:<id>` sender is refused as impersonation —
+                // for every caller class. API keys bind as their
+                // owner (a key is a scoped credential, not a class).
+                let own = match caller_binding(caller) {
+                    CallerBinding::Derived(own) | CallerBinding::User(own) => own,
+                };
+                let sender = match &sender_name {
+                    None => own,
+                    Some(raw) => match Subject::from_str(raw) {
+                        Ok(s @ Subject::User(_)) if s == own => own,
+                        Ok(_s @ Subject::User(_)) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!(
-                                    "[forbidden] caller may only post as their own identity ('{u}')"
+                                    "[forbidden] caller may only post as their own identity ('{own}')"
                                 ),
                             };
                             send_response(sink, response).await?;
                             return Ok(());
                         }
-                    }
-                    CallerBinding::ApiKey => {
-                        if matches!(Subject::from_str(&sender_name), Ok(Subject::User(_))) {
+                        // ADR-049 Phase 2 (JWT): a JWT user is never a
+                        // principal sender — the declared name must be
+                        // their own user subject.
+                        _ if matches!(caller_binding(caller), CallerBinding::User(_)) => {
                             let response = ResponsePacket::Error {
                                 request_id,
-                                message:
-                                    "[forbidden] API-key callers cannot post as a user identity"
-                                        .to_string(),
+                                message: format!(
+                                    "[forbidden] caller may only post as their own identity ('{own}')"
+                                ),
                             };
                             send_response(sink, response).await?;
                             return Ok(());
                         }
-                    }
-                    CallerBinding::Trusted => {}
-                }
-                // ADR-049 Phase 2: a `user:<id>` sender is accepted
-                // verbatim (wire-form validated only); store-level
-                // Subject membership is the write authorization.
-                // Anything else is resolved as a principal name, as
-                // before.
-                let sender = match Subject::from_str(&sender_name) {
-                    Ok(s @ Subject::User(_)) => s,
-                    _ => match self.resolve_principal(&sender_name) {
-                        Some(p) => Subject::from(&p),
-                        None => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!("Sender principal '{sender_name}' is not loaded"),
-                            };
-                            send_response(sink, response).await?;
-                            return Ok(());
-                        }
+                        _ => match self.resolve_principal(raw) {
+                            Some(p) => Subject::from(&p),
+                            None => {
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Sender principal '{raw}' is not loaded"),
+                                };
+                                send_response(sink, response).await?;
+                                return Ok(());
+                            }
+                        },
                     },
                 };
                 let ch = match ChannelId::parse(&channel) {
@@ -526,7 +503,6 @@ impl RequestHandler for ChannelHandler {
                 request_id,
                 channel,
                 since,
-                requester,
                 tail,
                 before,
                 query,
@@ -543,9 +519,11 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
-                // ADR-049 Phase 2 (D6): membership-gated read.
+                // ADR-049 Phase 2 (D6), amended by ADR-057: the read
+                // runs as the caller's derived identity —
+                // membership-gated for Local and JWT callers.
                 if !self
-                    .gate_channel_read(&ch, requester.as_deref(), caller, request_id, sink)
+                    .gate_channel_read(&ch, caller, request_id, sink)
                     .await?
                 {
                     return Ok(());
@@ -683,6 +661,12 @@ impl RequestHandler for ChannelHandler {
                 channel,
                 principal_name,
             } => {
+                if !self
+                    .gate_principal_operator(caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 let principal = match self.resolve_principal(&principal_name) {
                     Some(p) => p,
                     None => {
@@ -771,7 +755,6 @@ impl RequestHandler for ChannelHandler {
                 request_id,
                 channel,
                 since,
-                requester,
             } => {
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -784,11 +767,11 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
-                // ADR-049 Phase 2 (D6): same membership gate as
-                // `ChannelPeek` (the replay half of this stream reads
-                // the same log).
+                // ADR-049 Phase 2 (D6), amended by ADR-057: same
+                // caller-derived membership gate as `ChannelPeek` (the
+                // replay half of this stream reads the same log).
                 if !self
-                    .gate_channel_read(&ch, requester.as_deref(), caller, request_id, sink)
+                    .gate_channel_read(&ch, caller, request_id, sink)
                     .await?
                 {
                     return Ok(());
@@ -1024,6 +1007,12 @@ mod tests {
     /// Create a channel + post a message via a fresh adapter rooted
     /// in the host's runtime_dir. Returns the channel id; the seeded
     /// event is visible to the host's port (same on-disk layout).
+    ///
+    /// ADR-057: `user:local` (the local caller's derived identity) is
+    /// invited as a member — production group channels are
+    /// membership-gated for reads, so a local-caller peek test needs
+    /// the member row. Event lines: Created=0, MemberJoined=1,
+    /// Posted=2.
     async fn seed_channel(host: &TestChannelHost) -> ChannelId {
         let runtime_dir = host.path_resolver.runtime_dir();
         let adapter = ChannelStore::new(ChannelConfig {
@@ -1035,6 +1024,10 @@ mod tests {
             .create(&creator, CreateOpts::runtime("seed"))
             .await
             .expect("create");
+        adapter
+            .invite(&ch, &creator, &Subject::User("local".to_string()))
+            .await
+            .expect("invite local user");
         adapter
             .post(&ch, &Subject::from(&creator), PostMsg::root("hi"))
             .await
@@ -1146,7 +1139,6 @@ mod tests {
             request_id: 1,
             channel: "chan_x".into(),
             since: None,
-            requester: None,
             tail: None,
             before: None,
             query: None,
@@ -1214,7 +1206,6 @@ mod tests {
             request_id: 1,
             channel: ch.to_string(),
             since: None,
-            requester: None,
             tail: None,
             before: None,
             query: None,
@@ -1239,14 +1230,17 @@ mod tests {
             } => {
                 assert_eq!(
                     events.len(),
-                    2,
-                    "expected 2 events (created + posted), got {events:?}"
+                    3,
+                    "expected 3 events (created + member joined + posted), got {events:?}"
                 );
                 assert!(matches!(events[0], ChannelEvent::Created { .. }));
-                assert!(matches!(events[1], ChannelEvent::Posted { .. }));
+                assert!(matches!(events[2], ChannelEvent::Posted { .. }));
                 // Parallel line-number ids ride along so watch-style
                 // consumers can advance a `since` cursor precisely.
-                assert_eq!(event_ids, &vec!["0".to_string(), "1".to_string()]);
+                assert_eq!(
+                    event_ids,
+                    &vec!["0".to_string(), "1".to_string(), "2".to_string()]
+                );
             }
             other => panic!("expected ChannelPeekResult, got {other:?}"),
         }
@@ -1265,7 +1259,6 @@ mod tests {
             request_id: 1,
             channel: ch.to_string(),
             since: None,
-            requester: None,
             tail: Some(1),
             before: None,
             query: None,
@@ -1291,8 +1284,8 @@ mod tests {
             } => {
                 assert_eq!(events.len(), 1);
                 assert!(matches!(events[0], ChannelEvent::Posted { .. }));
-                assert_eq!(event_ids, &vec!["1".to_string()]);
-                assert!(has_more, "the Created event at line 0 is older");
+                assert_eq!(event_ids, &vec!["2".to_string()]);
+                assert!(has_more, "the two older seeded events exist");
             }
             other => panic!("expected ChannelPeekResult, got {other:?}"),
         };
@@ -1302,7 +1295,6 @@ mod tests {
             request_id: 2,
             channel: ch.to_string(),
             since: None,
-            requester: None,
             tail: Some(1),
             before: Some("1".to_string()),
             query: None,
@@ -1359,7 +1351,6 @@ mod tests {
             request_id: 1,
             channel: ch.to_string(),
             since: None,
-            requester: None,
             tail: None,
             before: None,
             query: Some("HI".to_string()), // case-insensitive
@@ -1386,7 +1377,7 @@ mod tests {
             } => {
                 assert_eq!(events.len(), 1, "only the 'hi' post matches");
                 assert!(matches!(&events[0], ChannelEvent::Posted { text, .. } if text == "hi"));
-                assert_eq!(event_ids, &vec!["1".to_string()]);
+                assert_eq!(event_ids, &vec!["2".to_string()]);
                 // The whole log was scanned (Created isn't Posted), so
                 // there's nothing older to resume into.
                 assert!(!has_more);
@@ -1400,9 +1391,10 @@ mod tests {
     // ADR-049 Phase 2: user senders + membership-gated reads
     // -----------------------------------------------------------------
 
-    /// Seed a channel with a principal creator and `user:alice` as an
-    /// invited member. Returns the adapter (for log assertions) and
-    /// the channel id.
+    /// Seed a channel with a principal creator plus `user:alice` and
+    /// `user:local` (the local caller's ADR-057 identity) as invited
+    /// members. Returns the adapter (for log assertions) and the
+    /// channel id.
     async fn seed_channel_with_user_member(host: &TestChannelHost) -> (ChannelStore, ChannelId) {
         let runtime_dir = host.path_resolver.runtime_dir();
         let adapter = ChannelStore::new(ChannelConfig {
@@ -1418,6 +1410,10 @@ mod tests {
             .invite(&ch, &creator, &Subject::User("alice".to_string()))
             .await
             .expect("invite user");
+        adapter
+            .invite(&ch, &creator, &Subject::User("local".to_string()))
+            .await
+            .expect("invite local user");
         (adapter, ch)
     }
 
@@ -1426,20 +1422,24 @@ mod tests {
         (captured.clone(), CaptureSink(captured))
     }
 
-    /// Phase 2: a `user:<id>` sender skips `PrincipalManager`
-    /// resolution and posts as themselves — the store's Subject
-    /// membership is the write authorization.
+    /// Phase 2, amended by ADR-057: a member user posts as their own
+    /// derived identity (`sender_name: None`) — the store's Subject
+    /// membership is the write authorization. A `user:<id>` sender is
+    /// refused for every caller class, including Local (impersonation
+    /// is closed; the identity comes from the connection).
     #[tokio::test]
     async fn handler_post_accepts_member_user_sender() {
         let (tmp, host) = test_host();
         let _ = tmp;
         let handler = ChannelHandler::new(host.clone());
         let (adapter, ch) = seed_channel_with_user_member(&host).await;
+        let addr = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
 
+        // JWT alice (a member) posts as her own derived identity.
         let req = RequestPacket::ChannelPost {
             request_id: 5,
             channel: ch.to_string(),
-            sender_name: "user:alice".into(),
+            sender_name: None,
             text: "hello from alice".into(),
             parent: None,
         };
@@ -1447,9 +1447,9 @@ mod tests {
         handler
             .handle(
                 req,
-                &peko_auth::caller::CallerContext::local(),
+                &CallerContext::from_jwt("alice".to_string()),
                 &sink,
-                &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
+                &addr,
             )
             .await
             .expect("handle");
@@ -1461,7 +1461,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*request_id, 5);
-                assert_eq!(task_id, "2", "Created=0, MemberJoined=1, Posted=2");
+                assert_eq!(task_id, "3", "Created=0, Join=1, Join=2, Posted=3");
             }
             other => panic!("expected ChannelPosted, got {other:?}"),
         };
@@ -1479,10 +1479,54 @@ mod tests {
             })
             .collect();
         assert_eq!(authors, vec!["user:alice"]);
+
+        // A local caller declaring a user sender is refused — even a
+        // member one. Identities are derived, never declared.
+        let req = RequestPacket::ChannelPost {
+            request_id: 6,
+            channel: ch.to_string(),
+            sender_name: Some("user:alice".into()),
+            text: "impersonation".into(),
+            parent: None,
+        };
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(req, &test_caller(), &sink, &addr)
+            .await
+            .expect("handle");
+        match captured.lock().unwrap().as_slice() {
+            [ResponsePacket::Error { message, .. }] => {
+                assert!(message.contains("[forbidden]"), "got {message}");
+            }
+            other => panic!("expected [forbidden] for declared user sender; got {other:?}"),
+        }
+
+        // The local caller posts as its own derived identity instead.
+        let req = RequestPacket::ChannelPost {
+            request_id: 7,
+            channel: ch.to_string(),
+            sender_name: None,
+            text: "hello from local".into(),
+            parent: None,
+        };
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(req, &test_caller(), &sink, &addr)
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPosted { .. }]
+            ),
+            "local member must post as user:local; got {:?}",
+            captured.lock().unwrap()
+        );
     }
 
-    /// Phase 2: a `user:<id>` sender who is NOT a member is refused
-    /// with the store's `NotMember` error.
+    /// Phase 2, amended by ADR-057: a user who is NOT a member is
+    /// refused with the store's `NotMember` error — the caller's
+    /// derived identity, not a declared one, is what gets gated.
     #[tokio::test]
     async fn handler_post_rejects_non_member_user_sender() {
         let (tmp, host) = test_host();
@@ -1493,7 +1537,7 @@ mod tests {
         let req = RequestPacket::ChannelPost {
             request_id: 6,
             channel: ch.to_string(),
-            sender_name: "user:mallory".into(),
+            sender_name: None,
             text: "must not land".into(),
             parent: None,
         };
@@ -1501,7 +1545,7 @@ mod tests {
         handler
             .handle(
                 req,
-                &peko_auth::caller::CallerContext::local(),
+                &CallerContext::from_jwt("mallory".to_string()),
                 &sink,
                 &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
             )
@@ -1521,22 +1565,22 @@ mod tests {
         }
     }
 
-    /// Phase 2 (D6): `ChannelPeek` is membership-gated when the
-    /// caller supplies a `requester`; a member reads, a non-member
-    /// and a malformed subject are refused, and an absent requester
-    /// keeps the pre-Phase-2 ungated behavior (the Phase 4 escape).
+    /// Phase 2 (D6), amended by ADR-057: `ChannelPeek` is
+    /// membership-gated on the caller's DERIVED identity (there is no
+    /// wire `requester` anymore). A member reads; a non-member is
+    /// refused; an API-key caller has no user identity and stays
+    /// ungated.
     #[tokio::test]
-    async fn handler_peek_gates_on_requester_membership() {
+    async fn handler_peek_gates_on_caller_identity() {
         let (tmp, host) = test_host();
         let _ = tmp;
         let handler = ChannelHandler::new(host.clone());
         let (_adapter, ch) = seed_channel_with_user_member(&host).await;
 
-        let peek = |requester: Option<&str>| RequestPacket::ChannelPeek {
+        let peek = || RequestPacket::ChannelPeek {
             request_id: 1,
             channel: ch.to_string(),
             since: None,
-            requester: requester.map(str::to_string),
             tail: None,
             before: None,
             query: None,
@@ -1544,10 +1588,10 @@ mod tests {
         };
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
 
-        // Member requester → events.
+        // Local caller (user:local is a seeded member) → events.
         let (captured, sink) = capture_sink();
         handler
-            .handle(peek(Some("user:alice")), &test_caller(), &sink, &peer)
+            .handle(peek(), &test_caller(), &sink, &peer)
             .await
             .expect("handle");
         assert!(
@@ -1555,59 +1599,54 @@ mod tests {
                 captured.lock().unwrap().as_slice(),
                 [ResponsePacket::ChannelPeekResult { .. }]
             ),
-            "member requester must read; got {:?}",
+            "member local caller must read; got {:?}",
             captured.lock().unwrap()
         );
 
-        // Non-member requester → permission error.
+        // JWT member reads as themselves.
         let (captured, sink) = capture_sink();
         handler
-            .handle(peek(Some("user:mallory")), &test_caller(), &sink, &peer)
+            .handle(
+                peek(),
+                &CallerContext::from_jwt("alice".to_string()),
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPeekResult { .. }]
+            ),
+            "JWT member must read; got {:?}",
+            captured.lock().unwrap()
+        );
+
+        // JWT non-member → permission error.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                peek(),
+                &CallerContext::from_jwt("mallory".to_string()),
+                &sink,
+                &peer,
+            )
             .await
             .expect("handle");
         match captured.lock().unwrap().as_slice() {
             [ResponsePacket::Error { message, .. }] => {
                 assert!(message.contains("not a member"), "got {message}");
             }
-            other => panic!("expected Error for non-member requester; got {other:?}"),
+            other => panic!("expected Error for non-member caller; got {other:?}"),
         };
-
-        // Malformed requester subject → validation error.
-        let (captured, sink) = capture_sink();
-        handler
-            .handle(peek(Some("not-a-subject")), &test_caller(), &sink, &peer)
-            .await
-            .expect("handle");
-        match captured.lock().unwrap().as_slice() {
-            [ResponsePacket::Error { message, .. }] => {
-                assert!(
-                    message.contains("invalid requester subject"),
-                    "got {message}"
-                );
-            }
-            other => panic!("expected Error for malformed requester; got {other:?}"),
-        };
-
-        // Absent requester → ungated (Phase 4 escape hatch).
-        let (captured, sink) = capture_sink();
-        handler
-            .handle(peek(None), &test_caller(), &sink, &peer)
-            .await
-            .expect("handle");
-        assert!(
-            matches!(
-                captured.lock().unwrap().as_slice(),
-                [ResponsePacket::ChannelPeekResult { .. }]
-            ),
-            "absent requester must keep the ungated behavior; got {:?}",
-            captured.lock().unwrap()
-        );
     }
 
-    /// Phase 2 (D6): the same gate applies to `ChannelEventsWatch`
-    /// (its replay half reads the same log).
+    /// Phase 2 (D6), amended by ADR-057: the same caller-derived gate
+    /// applies to `ChannelEventsWatch` (its replay half reads the
+    /// same log).
     #[tokio::test]
-    async fn handler_events_watch_gates_on_requester_membership() {
+    async fn handler_events_watch_gates_on_caller_identity() {
         let (tmp, host) = test_host();
         let _ = tmp;
         let handler = ChannelHandler::new(host.clone());
@@ -1617,13 +1656,12 @@ mod tests {
             request_id: 9,
             channel: ch.to_string(),
             since: None,
-            requester: Some("user:mallory".into()),
         };
         let (captured, sink) = capture_sink();
         handler
             .handle(
                 req,
-                &test_caller(),
+                &CallerContext::from_jwt("mallory".to_string()),
                 &sink,
                 &PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr")),
             )
@@ -1637,7 +1675,7 @@ mod tests {
                 assert_eq!(*request_id, 9);
                 assert!(message.contains("not a member"), "got {message}");
             }
-            other => panic!("expected Error for non-member watch requester; got {other:?}"),
+            other => panic!("expected Error for non-member watch caller; got {other:?}"),
         };
     }
 
@@ -1645,10 +1683,9 @@ mod tests {
     // ADR-049 Phase 4 (D6): CallerContext-based authorization
     // -----------------------------------------------------------------
 
-    /// A pekohub JWT caller may only read as their own `user:<sub>`
-    /// identity — the declared requester must match (absent counts as
-    /// themselves), and the membership gate always applies. The
-    /// absent-requester escape is closed for JWT callers.
+    /// A pekohub JWT caller always reads as their own `user:<sub>`
+    /// identity (ADR-057: there is no declared requester at all), and
+    /// the membership gate always applies.
     #[tokio::test]
     async fn handler_peek_jwt_user_read_as_self_only() {
         let (tmp, host) = test_host();
@@ -1657,11 +1694,10 @@ mod tests {
         let (_adapter, ch) = seed_channel_with_user_member(&host).await;
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
 
-        let peek = |requester: Option<&str>| RequestPacket::ChannelPeek {
+        let peek = || RequestPacket::ChannelPeek {
             request_id: 1,
             channel: ch.to_string(),
             since: None,
-            requester: requester.map(str::to_string),
             tail: None,
             before: None,
             query: None,
@@ -1669,11 +1705,11 @@ mod tests {
         };
         let jwt_alice = CallerContext::from_jwt("alice".to_string());
 
-        // Member + no declared requester → reads as themselves (gated
-        // on membership, which user:alice satisfies).
+        // Member → reads as themselves (gated on membership, which
+        // user:alice satisfies).
         let (captured, sink) = capture_sink();
         handler
-            .handle(peek(None), &jwt_alice, &sink, &peer)
+            .handle(peek(), &jwt_alice, &sink, &peer)
             .await
             .expect("handle");
         assert!(
@@ -1681,44 +1717,16 @@ mod tests {
                 captured.lock().unwrap().as_slice(),
                 [ResponsePacket::ChannelPeekResult { .. }]
             ),
-            "JWT member with no requester must read as themselves; got {:?}",
+            "JWT member must read as themselves; got {:?}",
             captured.lock().unwrap()
         );
-
-        // Member + matching declared requester → reads.
-        let (captured, sink) = capture_sink();
-        handler
-            .handle(peek(Some("user:alice")), &jwt_alice, &sink, &peer)
-            .await
-            .expect("handle");
-        assert!(
-            matches!(
-                captured.lock().unwrap().as_slice(),
-                [ResponsePacket::ChannelPeekResult { .. }]
-            ),
-            "JWT member naming themselves must read; got {:?}",
-            captured.lock().unwrap()
-        );
-
-        // Impersonation: declaring ANOTHER user is forbidden.
-        let (captured, sink) = capture_sink();
-        handler
-            .handle(peek(Some("user:bob")), &jwt_alice, &sink, &peer)
-            .await
-            .expect("handle");
-        match captured.lock().unwrap().as_slice() {
-            [ResponsePacket::Error { message, .. }] => {
-                assert!(message.contains("[forbidden]"), "got {message}");
-            }
-            other => panic!("expected [forbidden] for impersonation; got {other:?}"),
-        };
 
         // A JWT caller who is NOT a member has no escape: gated on
         // their own identity and refused.
         let jwt_mallory = CallerContext::from_jwt("mallory".to_string());
         let (captured, sink) = capture_sink();
         handler
-            .handle(peek(None), &jwt_mallory, &sink, &peer)
+            .handle(peek(), &jwt_mallory, &sink, &peer)
             .await
             .expect("handle");
         match captured.lock().unwrap().as_slice() {
@@ -1733,7 +1741,7 @@ mod tests {
         let jwt_prefixed = CallerContext::from_jwt("user:alice".to_string());
         let (captured, sink) = capture_sink();
         handler
-            .handle(peek(Some("user:alice")), &jwt_prefixed, &sink, &peer)
+            .handle(peek(), &jwt_prefixed, &sink, &peer)
             .await
             .expect("handle");
         assert!(
@@ -1758,18 +1766,18 @@ mod tests {
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
         let jwt_alice = CallerContext::from_jwt("alice".to_string());
 
-        let post = |sender: &str| RequestPacket::ChannelPost {
+        let post = |sender: Option<&str>| RequestPacket::ChannelPost {
             request_id: 3,
             channel: ch.to_string(),
-            sender_name: sender.to_string(),
+            sender_name: sender.map(str::to_string),
             text: "hi".into(),
             parent: None,
         };
 
-        // Member user posts as themselves.
+        // Member user posts as themselves (derived identity).
         let (captured, sink) = capture_sink();
         handler
-            .handle(post("user:alice"), &jwt_alice, &sink, &peer)
+            .handle(post(None), &jwt_alice, &sink, &peer)
             .await
             .expect("handle");
         assert!(
@@ -1781,10 +1789,10 @@ mod tests {
             captured.lock().unwrap()
         );
 
-        // As another user → forbidden.
+        // Declaring another user → forbidden (impersonation).
         let (captured, sink) = capture_sink();
         handler
-            .handle(post("user:bob"), &jwt_alice, &sink, &peer)
+            .handle(post(Some("user:bob")), &jwt_alice, &sink, &peer)
             .await
             .expect("handle");
         match captured.lock().unwrap().as_slice() {
@@ -1794,12 +1802,12 @@ mod tests {
             other => panic!("expected [forbidden] for user impersonation; got {other:?}"),
         };
 
-        // As a principal → forbidden (a JWT user is never a principal
-        // sender; checked before resolution, so the missing
+        // Declaring a principal → forbidden (a JWT user is never a
+        // principal sender; checked before resolution, so the missing
         // PrincipalManager in the test host is irrelevant).
         let (captured, sink) = capture_sink();
         handler
-            .handle(post("some-principal"), &jwt_alice, &sink, &peer)
+            .handle(post(Some("some-principal")), &jwt_alice, &sink, &peer)
             .await
             .expect("handle");
         match captured.lock().unwrap().as_slice() {
@@ -1810,11 +1818,13 @@ mod tests {
         };
     }
 
-    /// An API-key caller is not a user: `user:*` requester/sender
-    /// declarations are refused as impersonation; other identities
-    /// keep the normal (requester-present) gates.
+    /// ADR-057: an API key is a scoped credential of the runtime
+    /// owner, not an identity class. It reads and posts as the
+    /// owner's derived identity (`user:local`), gated by membership
+    /// like any other caller; declaring a *different* user is still
+    /// refused as impersonation.
     #[tokio::test]
-    async fn handler_apikey_cannot_claim_user_identity() {
+    async fn handler_apikey_speaks_as_owner_identity() {
         let (tmp, host) = test_host();
         let _ = tmp;
         let handler = ChannelHandler::new(host.clone());
@@ -1822,7 +1832,8 @@ mod tests {
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
         let apikey = CallerContext::from_api_key("pkr_test".to_string(), vec![]);
 
-        // user:* requester on a read → forbidden.
+        // Read as an API key → gated as the owner (user:local is a
+        // seeded member) → reads.
         let (captured, sink) = capture_sink();
         handler
             .handle(
@@ -1830,7 +1841,6 @@ mod tests {
                     request_id: 4,
                     channel: ch.to_string(),
                     since: None,
-                    requester: Some("user:alice".into()),
                     tail: None,
                     before: None,
                     query: None,
@@ -1842,21 +1852,23 @@ mod tests {
             )
             .await
             .expect("handle");
-        match captured.lock().unwrap().as_slice() {
-            [ResponsePacket::Error { message, .. }] => {
-                assert!(message.contains("[forbidden]"), "got {message}");
-            }
-            other => panic!("expected [forbidden] for api-key user requester; got {other:?}"),
-        };
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPeekResult { .. }]
+            ),
+            "api-key read must run as the owner identity; got {:?}",
+            captured.lock().unwrap()
+        );
 
-        // user:* sender on a post → forbidden.
+        // Declaring another user on a post → forbidden.
         let (captured, sink) = capture_sink();
         handler
             .handle(
                 RequestPacket::ChannelPost {
                     request_id: 5,
                     channel: ch.to_string(),
-                    sender_name: "user:alice".into(),
+                    sender_name: Some("user:alice".into()),
                     text: "hi".into(),
                     parent: None,
                 },
@@ -1872,6 +1884,32 @@ mod tests {
             }
             other => panic!("expected [forbidden] for api-key user sender; got {other:?}"),
         };
+
+        // Posting as the owner's derived identity → allowed.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                RequestPacket::ChannelPost {
+                    request_id: 6,
+                    channel: ch.to_string(),
+                    sender_name: None,
+                    text: "hi from the key".into(),
+                    parent: None,
+                },
+                &apikey,
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPosted { .. }]
+            ),
+            "api-key must post as the owner identity; got {:?}",
+            captured.lock().unwrap()
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2059,7 +2097,6 @@ mod tests {
             request_id: 31,
             channel: "chan_abcdefgh".into(),
             since: None,
-            requester: None,
         };
         let json = serde_json::to_string(&req).expect("encode");
         assert!(json.contains("\"channel_events_watch\""), "got {json}");
@@ -2119,7 +2156,6 @@ mod tests {
             request_id: 1,
             channel: "chan_x".into(),
             since: None,
-            requester: None,
         }));
     }
 

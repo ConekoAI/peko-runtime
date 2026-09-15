@@ -286,6 +286,19 @@ impl ChannelEvent {
             Self::MemberLeft { .. } => "member_left",
         }
     }
+
+    /// The channel this event belongs to (every variant carries one).
+    /// Used by the tunnel dispatcher to bind the inner event to the
+    /// envelope's signature-covered `channel_id` (ADR-057 transport
+    /// audit).
+    pub fn channel(&self) -> &ChannelId {
+        match self {
+            Self::Created { channel, .. }
+            | Self::Posted { channel, .. }
+            | Self::MemberJoined { channel, .. }
+            | Self::MemberLeft { channel, .. } => channel,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

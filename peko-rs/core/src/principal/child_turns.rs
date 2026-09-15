@@ -830,7 +830,6 @@ mod tests {
             boot_state: None,
             permissions: vec![],
             preferred_model_id: Some("mock".to_string()),
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         }

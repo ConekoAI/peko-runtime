@@ -71,6 +71,13 @@ pub(crate) struct AppState {
     /// Daemon configuration
     pub config: DaemonConfigSnapshot,
 
+    /// ADR-057: the pekohub owner id bound to this runtime (the hub
+    /// user that owns the runtime registration), when the runtime is
+    /// logged into pekohub. Resolved from the pekohub credential at
+    /// build time; the auth layer uses it to derive the local
+    /// terminal's attribution identity.
+    pub hub_owner: Option<String>,
+
     /// Registry configuration for push/pull operations
     registry_config: Arc<RwLock<RegistryConfig>>,
 
@@ -173,7 +180,7 @@ pub(crate) struct AppState {
     pub runtime_identity: peko_identity::runtime::RuntimeIdentity,
 
     /// Runtime signing key derived from the vault. Shared by the tunnel
-    /// client, direct connection manager, and direct server.
+    /// client.
     pub runtime_signing_key: Arc<ed25519_dalek::SigningKey>,
 
     /// In-memory revocation set for invite tokens (PR #11). The
@@ -199,10 +206,6 @@ pub(crate) struct AppState {
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
 
-    /// Known runtimes registry (ADR-032)
-    pub known_runtimes:
-        std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>>,
-
     /// Trust store for principal package publisher pinning (issue #91).
     pub trust_store: std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
 
@@ -215,8 +218,15 @@ pub(crate) struct AppState {
     /// API key verifier (ADR-034)
     api_key_verifier: Option<peko_auth::api_key::ApiKeyVerifier>,
 
-    /// JWT validator (ADR-034)
-    jwt_validator: Option<peko_auth::jwt::JwtValidator>,
+    /// JWT validator (ADR-034) for PekoHub bridge tokens (ADR-057).
+    ///
+    /// Interior-mutable because the credential it derives from may not
+    /// exist when the daemon boots: `peko tunnel setup` can run later,
+    /// and the tunnel start path refreshes this from the credential it
+    /// just loaded. Without the refresh, a daemon that booted before
+    /// login would reject every bridge request as an invalid JWT until
+    /// a restart.
+    jwt_validator: std::sync::Arc<std::sync::RwLock<Option<peko_auth::jwt::JwtValidator>>>,
 
     /// Rate limiter (ADR-034)
     rate_limiter: Option<peko_auth::rate_limit::RateLimiter>,
@@ -323,10 +333,6 @@ impl std::fmt::Debug for AppState {
             .field("extension_services", &"<ExtensionServices>")
             .field("runtime_identity", &self.runtime_identity.runtime_did)
             .field("runtime_metadata", &self.runtime_metadata.display_name)
-            .field(
-                "known_runtimes",
-                &format!("{} runtimes", self.runtime_identity.runtime_did),
-            )
             .field("auth", &"<AuthConfig>")
             .finish()
     }
@@ -515,19 +521,10 @@ impl AppState {
             crate::identity_compat::runtime_paths_arc(&path_resolver).as_ref(),
             &runtime_identity.runtime_did,
         )?;
-        let mut known_runtimes =
-            crate::tunnel::known_runtimes::KnownRuntimes::load_or_create(&path_resolver)?;
-        known_runtimes.register(
-            &runtime_identity.runtime_did,
-            &runtime_metadata.display_name,
-            None,
-            crate::tunnel::known_runtimes::TrustLevel::SelfRuntime,
-        );
-        let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
 
         // Load the runtime's private signing key from the vault and the
         // on-disk `peko.toml` configuration. These are needed by the
-        // tunnel client, direct connection manager, and direct server.
+        // tunnel client.
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
         let peko_config = load_peko_config(&config_dir);
         let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
@@ -873,15 +870,14 @@ impl AppState {
         let api_key_verifier = api_key_store
             .as_ref()
             .map(|s| peko_auth::api_key::ApiKeyVerifier::new(s.clone()));
-        let jwt_validator = if auth_config.enable_pekohub_jwt() {
-            Some(peko_auth::jwt::JwtValidator::new(
-                auth_config.trusted_issuers().to_vec(),
-                runtime_identity.runtime_did.clone(),
-                None,
-            ))
-        } else {
-            None
-        };
+        // ADR-057: the bridge-token validator is derived from the
+        // pekohub credential when the runtime is logged in — the
+        // trusted issuer is the hub origin (from the tunnel URL) and
+        // the JWKS endpoint lives on that origin. No credential = no
+        // tunnel = no bridge traffic, so no validator.
+        let jwt_validator = std::sync::Arc::new(std::sync::RwLock::new(
+            Self::bridge_validator_from_credential_file(&config_dir, &auth_config),
+        ));
         let rate_limiter = if auth_config.has_any_remote_auth_method() {
             Some(peko_auth::rate_limit::RateLimiter::new(
                 auth_config.rate_limit().jwt_requests_per_minute,
@@ -895,6 +891,21 @@ impl AppState {
 
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
+
+        // ADR-057: resolve the pekohub owner id (the hub user that
+        // owns this runtime's registration) when the runtime is
+        // logged into pekohub. A missing or unreadable credential is
+        // non-fatal — the local terminal then attributes as
+        // `user:local` (not logged in).
+        let hub_owner = (|| {
+            let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
+            if !cred_path.exists() {
+                return None;
+            }
+            crate::tunnel::PekoHubCredential::from_file(&cred_path)
+                .ok()
+                .and_then(|cred| cred.owner_id)
+        })();
 
         // Phase 4 (agent-session paradigm sprint): the channel
         // passive-binding supervisor. Owns subscriber spawning (boot +
@@ -937,6 +948,7 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
+            hub_owner,
             // Phase A: carry the typed resolver forward so starters
             // and IPC handlers can reach `extensions_root()`,
             // `principal_layout(name).local.root`, etc. without
@@ -985,7 +997,6 @@ impl AppState {
             idle_detector: None,
             cron_engine: None,
             runtime_metadata,
-            known_runtimes,
             trust_store,
             auth_config,
             api_key_store,
@@ -1288,13 +1299,80 @@ impl AppState {
     /// Get the JWT validator (ADR-034)
     #[must_use]
     pub fn jwt_validator(&self) -> Option<peko_auth::jwt::JwtValidator> {
-        self.jwt_validator.clone()
+        self.jwt_validator
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Build the bridge-token validator for a loaded credential.
+    ///
+    /// ADR-057: the trusted issuer is the hub origin (derived from the
+    /// tunnel URL) and the JWKS endpoint lives on that origin, so the
+    /// runtime validates tokens minted by the hub it is actually
+    /// connected to.
+    ///
+    /// The expected audience is the credential's **tunnel** DID, not the
+    /// workspace runtime identity: `peko tunnel setup` mints a separate
+    /// tunnel keypair, so the hub knows this runtime by the tunnel DID
+    /// (`conn.runtimeId`, and therefore `instance.runtimeId` — the value
+    /// it puts in `aud`). The tunnel DID is transport identity; the
+    /// token's `sub` still carries the actor.
+    fn bridge_validator_for(
+        cred: &crate::tunnel::PekoHubCredential,
+    ) -> Option<peko_auth::jwt::JwtValidator> {
+        let (issuer, audience) = Self::bridge_token_target(cred)?;
+        let jwks_url = format!("{issuer}/v1/jwks.json");
+        Some(peko_auth::jwt::JwtValidator::new(
+            vec![issuer],
+            audience,
+            Some(jwks_url),
+        ))
+    }
+
+    /// The `(issuer, audience)` a bridge token must carry for this
+    /// credential: the hub origin, and the credential's **tunnel** DID.
+    ///
+    /// The audience is the tunnel DID because that is what PekoHub knows
+    /// this runtime as — `peko tunnel setup` mints a dedicated tunnel
+    /// keypair, the hub records `conn.runtimeId` from the handshake, and
+    /// every proxied request's `instance.runtimeId` (hence the token's
+    /// `aud`) is that value. Using the workspace runtime identity here
+    /// wrongly rejects every bridge request with `Invalid JWT audience`.
+    fn bridge_token_target(cred: &crate::tunnel::PekoHubCredential) -> Option<(String, String)> {
+        let issuer = crate::tunnel::hub_origin(&cred.url)?;
+        if cred.runtime_id.is_empty() {
+            return None;
+        }
+        Some((issuer, cred.runtime_id.clone()))
+    }
+
+    /// Boot-time attempt: read the credential file (usually present on
+    /// a runtime that has already run `peko tunnel setup`).
+    fn bridge_validator_from_credential_file(
+        config_dir: &std::path::Path,
+        auth_config: &peko_auth::config::AuthConfig,
+    ) -> Option<peko_auth::jwt::JwtValidator> {
+        if !auth_config.enable_pekohub_jwt() {
+            return None;
+        }
+        let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(config_dir);
+        let cred = crate::tunnel::PekoHubCredential::from_file(&cred_path).ok()?;
+        Self::bridge_validator_for(&cred)
     }
 
     /// Get the rate limiter (ADR-034)
     #[must_use]
     pub fn rate_limiter(&self) -> Option<peko_auth::rate_limit::RateLimiter> {
         self.rate_limiter.clone()
+    }
+
+    /// ADR-057: the pekohub owner id bound to this runtime, when the
+    /// runtime is logged into pekohub. The auth layer folds this into
+    /// local callers' attribution identity.
+    #[must_use]
+    pub fn hub_owner(&self) -> Option<String> {
+        self.hub_owner.clone()
     }
 
     /// Build a `StarterContext` for use by runtime starters.
@@ -1324,14 +1402,6 @@ impl AppState {
     #[must_use]
     pub fn runtime_metadata(&self) -> &peko_identity::runtime_metadata::RuntimeMetadata {
         &self.runtime_metadata
-    }
-
-    /// Get the known runtimes registry (ADR-032)
-    #[must_use]
-    pub fn known_runtimes(
-        &self,
-    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
-        &self.known_runtimes
     }
 
     /// Get the trust store for principal package import (issue #91).
@@ -1379,6 +1449,16 @@ impl AppState {
             Some(c) => c,
             None => return Ok(false),
         };
+
+        // ADR-057: (re)build the bridge-token validator now that the
+        // credential is in hand. The boot-time attempt in
+        // `with_data_dir` misses the common ordering where the daemon
+        // starts before `peko tunnel setup` writes this file — without
+        // this refresh such a daemon rejects every bridge request as an
+        // invalid JWT until it restarts.
+        if let Ok(mut guard) = self.jwt_validator.write() {
+            *guard = Self::bridge_validator_for(&cred);
+        }
 
         let cancel = tokio_util::sync::CancellationToken::new();
         {
@@ -1700,7 +1780,6 @@ impl AppState {
             signing_key,
             caller_runtime_id,
             tunnel: self.tunnel_handle_slot(),
-            known_runtimes: self.known_runtimes.clone(),
         });
 
         // Push into the existing `TunnelChannelPort`'s ctx slot. The
@@ -1944,7 +2023,7 @@ impl crate::tunnel::TunnelHost for AppState {
     // impl are deleted.
 
     fn jwt_validator(&self) -> Option<peko_auth::jwt::JwtValidator> {
-        self.jwt_validator.clone()
+        AppState::jwt_validator(self)
     }
 
     fn observability(&self) -> Arc<Observability> {
@@ -2251,24 +2330,6 @@ impl crate::ipc::handlers::runtime::RuntimeHost for AppState {
 
     fn runtime_metadata(&self) -> &peko_identity::runtime_metadata::RuntimeMetadata {
         AppState::runtime_metadata(self)
-    }
-
-    fn known_runtimes(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
-        AppState::known_runtimes(self)
-    }
-
-    fn config_dir(&self) -> std::path::PathBuf {
-        self.config_dir.clone()
-    }
-
-    fn data_dir(&self) -> std::path::PathBuf {
-        self.data_dir.clone()
-    }
-
-    fn cache_dir(&self) -> std::path::PathBuf {
-        self.cache_dir.clone()
     }
 }
 
@@ -3069,6 +3130,39 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// ADR-057 regression: the bridge validator's audience must be the
+    /// credential's tunnel DID — that is what PekoHub records as the
+    /// connection's runtime id and therefore what it puts in the token's
+    /// `aud`. Using the workspace runtime identity here rejected every
+    /// bridge request with `Invalid JWT audience` (caught by the docker
+    /// e2e, not by unit tests).
+    #[test]
+    fn bridge_token_target_uses_the_tunnel_did_and_hub_origin() {
+        let cred = crate::tunnel::PekoHubCredential {
+            url: "wss://pekohub.example/v1/tunnel".to_string(),
+            runtime_id: "did:key:zTunnelIdentity".to_string(),
+            owner_id: Some("hub-user-1".to_string()),
+            tls: None,
+        };
+        let (issuer, audience) =
+            AppState::bridge_token_target(&cred).expect("a well-formed credential yields a target");
+        assert_eq!(issuer, "https://pekohub.example");
+        assert_eq!(audience, "did:key:zTunnelIdentity");
+
+        // A non-WebSocket URL cannot yield a hub origin, and an empty
+        // runtime id cannot yield an audience.
+        let bad_url = crate::tunnel::PekoHubCredential {
+            url: "https://pekohub.example/v1/tunnel".to_string(),
+            ..cred.clone()
+        };
+        assert!(AppState::bridge_token_target(&bad_url).is_none());
+        let empty_did = crate::tunnel::PekoHubCredential {
+            runtime_id: String::new(),
+            ..cred
+        };
+        assert!(AppState::bridge_token_target(&empty_did).is_none());
+    }
 
     async fn create_test_state() -> AppState {
         let temp_dir = TempDir::new().unwrap();

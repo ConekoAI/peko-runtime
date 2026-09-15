@@ -64,12 +64,13 @@ enable_async_tools = true
 ///     actual framework: it writes the workspace, `agents/root/AGENT.md`
 ///     prompt, identity, and `principal.toml`.
 ///
-/// No owner rewrite is needed: `peko principal create` defaults the owner to
-/// `user:default`, which is exactly the caller `peko send` presents
-/// (`GlobalPaths::user()` defaults to `"default"`), so the `Permission::Chat`
-/// owner-check in `PrincipalManager::receive` passes. (This differs from the
-/// `s6` IPC scenario, where the caller is the local-socket `user:local` and
-/// the owner must be patched to match.)
+/// No owner rewrite is needed: `peko principal create` stamps the
+/// owner from the real caller (`caller.subject()` — ADR-057), which
+/// for the local CLI is `user:local`, and the caller `peko send`
+/// presents is the same derived identity (`user:local`, or the hub
+/// owner when the runtime is logged into pekohub), so the
+/// `Permission::Chat` owner-check in `PrincipalManager::receive`
+/// passes.
 ///
 /// Must be called BEFORE `DaemonGuard::spawn` (like `write_v3_mock_agent`):
 /// `peko principal create` writes files directly and needs no daemon.

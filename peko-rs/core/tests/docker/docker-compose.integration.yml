@@ -15,6 +15,14 @@ services:
       - ALLOW_DEV_AUTH_BYPASS=true
       - GC_ENABLED=false
       - RATE_LIMIT_MAX=1000
+      # ADR-057: the bridge token's `iss` and the host runtimes fetch
+      # JWKS from. It MUST equal the origin runtimes derive from their
+      # tunnel URL — in CI that is the compose service name
+      # (PEKOHUB_URL=http://pekohub-test:3000); locally it is
+      # localhost:3000. Leaving it unset would default to
+      # https://pekohub.org and every bridge request would be rejected
+      # as an untrusted issuer.
+      - PUBLIC_ORIGIN=${PEKOHUB_URL:-http://localhost:3000}
     healthcheck:
       test:
         [
