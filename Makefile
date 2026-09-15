@@ -54,6 +54,11 @@ INTEGRATION_LIB_TESTS := daemon::e2e_tests::tunnel_e2e
 # being deprecated by Docker Desktop.
 PEKOHUB_URL  ?= http://localhost:3000
 MOCK_LLM_URL ?= http://localhost:8080
+# Export so `docker compose` can interpolate them — the test stack forwards
+# PEKOHUB_URL as the hub's PUBLIC_ORIGIN (ADR-057: the bridge token issuer,
+# which must match the origin runtimes derive from their tunnel URL).
+export PEKOHUB_URL
+export MOCK_LLM_URL
 
 help:
 	@echo "Peko Test Targets (see docs/integration/TESTING.md)"
