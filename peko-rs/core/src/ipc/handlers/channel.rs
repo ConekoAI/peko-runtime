@@ -114,16 +114,14 @@ impl ChannelHandler {
     /// ADR-049 Phase 2 + 4 (D6), amended by ADR-057: membership gate
     /// for channel reads (`ChannelPeek`, `ChannelEventsWatch`). The
     /// caller's identity binds which reader the read runs as (see
-    /// [`caller_binding`]) — the wire carries no requester:
+    /// [`caller_binding`]) — the wire carries no requester, and the
+    /// membership gate ALWAYS applies:
     ///
-    /// - A pekohub JWT user always reads as themselves — `user:<sub>`
-    ///   — and the membership gate ALWAYS applies (no escape).
-    /// - A Local caller always reads as its ADR-057 attribution
-    ///   identity (`user:local`, or the hub owner id when logged
-    ///   into pekohub) and is gated the same way.
-    /// - An API-key caller is not a user: it has no channel
-    ///   membership identity, so the read stays ungated (matching
-    ///   its previous no-requester posture).
+    /// - A pekohub JWT user always reads as themselves — `user:<sub>`.
+    /// - A derived caller (local terminal or its scoped API key)
+    ///   always reads as the ADR-057 attribution identity
+    ///   (`user:local`, or the hub owner id when logged into
+    ///   pekohub).
     ///
     /// On failure the error response is sent here and `Ok(false)`
     /// tells the caller to stop.
@@ -134,12 +132,8 @@ impl ChannelHandler {
         request_id: u64,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<bool> {
-        let effective = match caller_binding(caller) {
-            CallerBinding::Local(own) | CallerBinding::User(own) => Some(own),
-            CallerBinding::ApiKey => None,
-        };
-        let Some(requester) = effective else {
-            return Ok(true);
+        let requester = match caller_binding(caller) {
+            CallerBinding::Derived(own) | CallerBinding::User(own) => own,
         };
         match self.host.channel_port().list_members(channel).await {
             Ok(members) if members.contains(&requester) => Ok(true),
@@ -172,15 +166,13 @@ impl ChannelHandler {
 /// (`CallerContext::attribution_subject`) — there is no `Trusted`
 /// passthrough anymore.
 enum CallerBinding {
-    /// Local trust — one derived identity: `user:local`, or the hub
-    /// owner id when the runtime is logged into pekohub.
-    Local(Subject),
+    /// A derived owner identity: the local terminal (`user:local`, or
+    /// the hub owner id when the runtime is logged into pekohub) or
+    /// its scoped API key — a key is a credential of the owner, not a
+    /// separate identity class.
+    Derived(Subject),
     /// A pekohub JWT user — may only act as this exact user subject.
     User(Subject),
-    /// An API key — not a user; `user:*` declarations are refused as
-    /// impersonation. (No channel membership is keyed on API keys
-    /// today; the store's own gates still apply.)
-    ApiKey,
 }
 
 /// Map a [`CallerContext`] to its [`CallerBinding`].
@@ -193,17 +185,18 @@ enum CallerBinding {
 /// ADR-049). Mirroring `Subject::from_bridge_user`'s normalization
 /// (strip one redundant `user:` prefix), the channel-side identity of
 /// a JWT caller with sub `39` is `Subject::User("39")` — exactly what
-/// an invite of `user:39` records. The Local projection is the
+/// an invite of `user:39` records. The Derived projection is the
 /// ADR-057 attribution subject (hub owner when logged in, else
-/// `user:local`).
+/// `user:local`; API keys attribute as the owner they belong to).
 fn caller_binding(caller: &CallerContext) -> CallerBinding {
     use peko_auth::caller::Identity;
     match &caller.identity {
-        Identity::Local => CallerBinding::Local(caller.attribution_subject()),
+        Identity::Local | Identity::ApiKey(_) => {
+            CallerBinding::Derived(caller.attribution_subject())
+        }
         Identity::User(sub) => CallerBinding::User(Subject::User(
             sub.strip_prefix("user:").unwrap_or(sub).to_string(),
         )),
-        Identity::ApiKey(_) => CallerBinding::ApiKey,
     }
 }
 
@@ -391,15 +384,14 @@ impl RequestHandler for ChannelHandler {
                 // identity (`sender_name: None`) or a principal name
                 // (a runtime-hosted actor the caller operates). A
                 // `user:<id>` sender is refused as impersonation —
-                // for every caller class, including Local.
+                // for every caller class. API keys bind as their
+                // owner (a key is a scoped credential, not a class).
                 let own = match caller_binding(caller) {
-                    CallerBinding::Local(own) | CallerBinding::User(own) => Some(own),
-                    CallerBinding::ApiKey => None,
+                    CallerBinding::Derived(own) | CallerBinding::User(own) => own,
                 };
-                let sender = match (&sender_name, own) {
-                    // Own identity (Local / JWT).
-                    (None, Some(own)) => own,
-                    (Some(raw), Some(own)) => match Subject::from_str(raw) {
+                let sender = match &sender_name {
+                    None => own,
+                    Some(raw) => match Subject::from_str(raw) {
                         Ok(s @ Subject::User(_)) if s == own => own,
                         Ok(_s @ Subject::User(_)) => {
                             let response = ResponsePacket::Error {
@@ -436,34 +428,6 @@ impl RequestHandler for ChannelHandler {
                             }
                         },
                     },
-                    // API key: a `user:<id>` sender is refused; a
-                    // principal name is allowed (runtime-hosted
-                    // actor); `None` posts as the apikey actor itself
-                    // (the store's membership gate still applies).
-                    (Some(raw), None) => {
-                        if matches!(Subject::from_str(raw), Ok(Subject::User(_))) {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message:
-                                    "[forbidden] API-key callers cannot post as a user identity"
-                                        .to_string(),
-                            };
-                            send_response(sink, response).await?;
-                            return Ok(());
-                        }
-                        match self.resolve_principal(raw) {
-                            Some(p) => Subject::from(&p),
-                            None => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Sender principal '{raw}' is not loaded"),
-                                };
-                                send_response(sink, response).await?;
-                                return Ok(());
-                            }
-                        }
-                    }
-                    (None, None) => caller.attribution_subject(),
                 };
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -1808,12 +1772,13 @@ mod tests {
         };
     }
 
-    /// An API-key caller is not a user: a `user:*` sender declaration
-    /// is refused as impersonation, and its reads carry no user
-    /// identity (so no membership gate — matching its previous
-    /// no-requester posture).
+    /// ADR-057: an API key is a scoped credential of the runtime
+    /// owner, not an identity class. It reads and posts as the
+    /// owner's derived identity (`user:local`), gated by membership
+    /// like any other caller; declaring a *different* user is still
+    /// refused as impersonation.
     #[tokio::test]
-    async fn handler_apikey_cannot_claim_user_identity() {
+    async fn handler_apikey_speaks_as_owner_identity() {
         let (tmp, host) = test_host();
         let _ = tmp;
         let handler = ChannelHandler::new(host.clone());
@@ -1821,7 +1786,8 @@ mod tests {
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
         let apikey = CallerContext::from_api_key("pkr_test".to_string(), vec![]);
 
-        // Read as an API key → ungated (no user identity to gate on).
+        // Read as an API key → gated as the owner (user:local is a
+        // seeded member) → reads.
         let (captured, sink) = capture_sink();
         handler
             .handle(
@@ -1845,11 +1811,11 @@ mod tests {
                 captured.lock().unwrap().as_slice(),
                 [ResponsePacket::ChannelPeekResult { .. }]
             ),
-            "api-key read must stay ungated; got {:?}",
+            "api-key read must run as the owner identity; got {:?}",
             captured.lock().unwrap()
         );
 
-        // user:* sender on a post → forbidden.
+        // Declaring another user on a post → forbidden.
         let (captured, sink) = capture_sink();
         handler
             .handle(
@@ -1872,6 +1838,32 @@ mod tests {
             }
             other => panic!("expected [forbidden] for api-key user sender; got {other:?}"),
         };
+
+        // Posting as the owner's derived identity → allowed.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                RequestPacket::ChannelPost {
+                    request_id: 6,
+                    channel: ch.to_string(),
+                    sender_name: None,
+                    text: "hi from the key".into(),
+                    parent: None,
+                },
+                &apikey,
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPosted { .. }]
+            ),
+            "api-key must post as the owner identity; got {:?}",
+            captured.lock().unwrap()
+        );
     }
 
     // -----------------------------------------------------------------------

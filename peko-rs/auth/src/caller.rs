@@ -169,25 +169,34 @@ impl CallerContext {
     /// ADR-057: the single attribution identity this caller speaks
     /// as — derived from the caller, never from the request packet.
     ///
-    /// - Local → `Subject::User(<hub owner id>)` when the runtime is
-    ///   logged into pekohub, else `Subject::User("local")`.
-    /// - Pekohub JWT user → `Subject::User(<bare sub>)` (the ADR-049
-    ///   wire form; the prefixed `user:<sub>` grant-matching
-    ///   projection stays in [`CallerContext::subject`]).
-    /// - API key → its typed principal projection (an API key is an
-    ///   actor class of its own, not a user).
+    /// There are exactly three identity classes (ADR-057):
+    ///
+    /// - **user** — a pekohub-verified human: a local terminal whose
+    ///   runtime is logged into pekohub (`Subject::User(<hub owner
+    ///   id>)`) or a remote pekohub JWT caller
+    ///   (`Subject::User(<bare sub>)`; the prefixed `user:<sub>`
+    ///   grant-matching projection stays in
+    ///   [`CallerContext::subject`]).
+    /// - **local** — the unverified local terminal
+    ///   (`Subject::User("local")`).
+    /// - **principal** — a cross-runtime actor, signature-verified
+    ///   per event (not projected here; tunnel peers carry their own
+    ///   DID).
+    ///
+    /// An API key is *not* a fourth class: it is a scoped credential
+    /// of the runtime owner, so it attributes exactly as the owner
+    /// would (hub user when logged in, else `local`). Its scopes —
+    /// not its identity — are the least-privilege mechanism, and the
+    /// audit trail records the credential id separately.
     #[must_use]
     pub fn attribution_subject(&self) -> Subject {
         match &self.identity {
-            Identity::Local => Subject::User(
+            Identity::Local | Identity::ApiKey(_) => Subject::User(
                 self.hub_owner
                     .clone()
                     .unwrap_or_else(|| "local".to_string()),
             ),
             Identity::User(sub) => Subject::User(sub.clone()),
-            Identity::ApiKey(key_id) => {
-                Subject::Principal(PrincipalDID(format!("apikey:{key_id}")))
-            }
         }
     }
 
@@ -241,13 +250,17 @@ mod tests {
         assert_eq!(c.subject(), Subject::User("user:39".to_string()));
     }
 
-    /// ADR-057: API-key callers attribute as their typed principal
-    /// actor — same projection as their authority subject.
+    /// ADR-057: API-key callers attribute as the runtime owner (a key
+    /// is a scoped credential of the owner, not an identity class) —
+    /// while its grant-matching authority subject stays the typed
+    /// `apikey:{id}` principal so owner grants don't silently apply.
     #[test]
-    fn api_key_attribution_is_typed_principal() {
+    fn api_key_attribution_is_owner_identity() {
         let c = CallerContext::from_api_key("pkr_abc".to_string(), vec![]);
+        assert_eq!(c.attribution_subject(), Subject::User("local".to_string()));
+        // Authority stays key-typed (least privilege).
         assert_eq!(
-            c.attribution_subject(),
+            c.subject(),
             Subject::Principal(PrincipalDID("apikey:pkr_abc".to_string()))
         );
     }

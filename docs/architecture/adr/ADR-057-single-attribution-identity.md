@@ -55,27 +55,42 @@ Two distinct concepts were being conflated, and must now be explicit:
 
 ## 2. Decision
 
-### D1 — One attribution identity per caller, derived server-side
+### D1 — Three identity classes; one attribution identity per caller, derived server-side
 
-The daemon derives the attribution identity from the `CallerContext`
-(`CallerContext::attribution_subject()`); no request packet carries a
-user identity:
+There are exactly **three identity classes** in the system. What the
+table below lists per row is the verification path — the *class* is
+the `Subject` kind:
 
-| Caller surface                          | Attribution identity            |
-|-----------------------------------------|---------------------------------|
-| Local IPC, not logged into pekohub      | `Subject::User("local")`        |
-| Local IPC, logged into pekohub          | `Subject::User(<hub owner id>)` |
-| Pekohub JWT bridge                      | `Subject::User(<jwt sub>)`      |
-| API key                                 | `Subject::Principal(apikey:{id})` |
-| Tunnel runtime peer (runtime-to-runtime)| `Subject::Principal(<runtime DID>)` (unchanged; signature-verified per event) |
+| Class | Verification path | Attribution identity |
+|-------|-------------------|----------------------|
+| **user** | Local terminal whose runtime is logged into pekohub (credential + register binding) | `Subject::User(<hub owner id>)` |
+| **user** | Remote pekohub client through the tunnel bridge (validated JWT sub; unverified headers rejected whenever a validator is configured) | `Subject::User(<jwt sub>)` |
+| **local** | Local IPC without a pekohub login (OS socket boundary — anonymous) | `Subject::User("local")` |
+| **principal** | Runtime-to-runtime tunnel / p2p (did:key signature verified per event) | `Subject::Principal(<principal DID>)` |
+
+Every user-class identity shares one id space (pekohub user ids);
+`local` is the unverified fallback, not a member of that id space.
+The runtime DID (`did:key:…`, ADR-032) is reserved for runtime
+identification and tunnel peer authentication — it is never a
+conversational attribution identity for the local terminal, and the
+remote *principal* (not the hosting runtime) is what cross-runtime
+messages attribute to.
+
+**API keys are not a fourth class.** An API key is a *scoped
+credential of the runtime owner*: it attributes exactly as the owner
+would (`Subject::User(<hub owner id>)` when logged in, else
+`Subject::User("local")`), and channel writes/reads gate on that
+identity. Least privilege comes from the key's scopes
+(`ApiKeyScope`), which stay the authorization mechanism — the key's
+grant-matching authority subject remains the typed
+`Subject::Principal("apikey:{id}")` projection so owner grants do not
+silently apply to key traffic — and the audit trail records the
+credential id alongside the attribution identity.
 
 Hub login status is the presence of
 `{config_dir}/runtime/pekohub.toml` with a stored `owner_id` (the
 pekohub user that owns the runtime registration; captured at
-`peko tunnel setup` from the register endpoint's response). The
-runtime DID (`did:key:…`, ADR-032) is reserved for runtime
-identification and tunnel peer authentication — it is never a
-conversational attribution identity for the local terminal.
+`peko tunnel setup` from the register endpoint's response).
 
 ### D2 — Permission checks use the authority, not the attribution
 
@@ -106,8 +121,9 @@ unchanged: their authority and attribution are the same subject.
   this runtime, the caller's authority is checked, and the audit
   trail records the real caller (`audit_with_caller`).
 - `ChannelPeek.requester` is removed; the read gate binds to the
-  caller's derived identity (Local/JWT) or no requester (API key,
-  matching its previous ungated posture).
+  caller's derived identity — the membership gate now applies to
+  every caller class, including API keys (which read as the owner
+  they belong to).
 - CLI: the global `-U/--user` flag and `peko send --peer` are
   removed. `peko log --peer` / `peko stop --peer` keep their
   owner-gated thread-selector role (they select *which* thread to
@@ -115,10 +131,9 @@ unchanged: their authority and attribution are the same subject.
   privacy rule `caller == peer || caller == owner` still gates
   them); the user-form value is now only ever meaningful for the
   owner reading a remote user's thread, never for *becoming* one.
-- `CallerBinding::Trusted` is replaced by
-  `CallerBinding::Local(Subject)` carrying the derived identity; the
-  declared-equals-own rule now applies uniformly to Local and JWT
-  callers.
+- `CallerBinding::Trusted` is replaced by `CallerBinding::Derived`
+  (local terminal or its scoped key) and `CallerBinding::User`
+  (pekohub JWT); the declared-equals-own rule applies uniformly.
 
 ### D4 — Pekohub hub side
 
