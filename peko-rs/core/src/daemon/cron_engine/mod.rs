@@ -1368,7 +1368,6 @@ mod tests {
                 granted_by: Subject::User("test-owner".to_string()),
             }],
             preferred_model_id: Some("mock".to_string()),
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         }

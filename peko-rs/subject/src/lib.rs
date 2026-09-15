@@ -228,6 +228,10 @@ impl Subject {
     pub fn from_bridge_user(sub: &str) -> Subject {
         if sub == "anonymous" {
             Self::Public
+        } else if let Some(did) = sub.strip_prefix("principal:") {
+            // ADR-057: pekohub principal-kind bridge callers attribute
+            // as their DID actor, never as a user.
+            Self::Principal(PrincipalDID(did.to_string()))
         } else {
             let bare = sub.strip_prefix("user:").unwrap_or(sub);
             Self::User(bare.to_string())

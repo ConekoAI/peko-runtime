@@ -234,20 +234,33 @@ and surfaced the following, fixed in the same change set:
    `tls.cert_path`/`tls.key_path` silently disabled client auth; now
    a hard config error.
 
+### Residuals resolved (2026-09-15, third pass)
+
+- **Bridge caller trust — CLOSED.** The hub now mints a short-lived
+  (60 s) **EdDSA bridge token** when proxying each chat:
+  `sub` = pekohub user id / `principal:<did>` / visitor id,
+  `aud` = the target runtime DID, `iss` = the hub public origin
+  (`PUBLIC_ORIGIN`). The signing key is an ed25519 keypair derived
+  via HKDF-SHA256 from `JWT_SECRET`; the public key is published at
+  `/v1/jwks.json`. The runtime builds its `JwtValidator` from its
+  pekohub credential (issuer = tunnel-URL origin, audience = own
+  DID, JWKS = `{origin}/v1/jwks.json`) and
+  `resolve_bridge_caller` now **rejects every request without a
+  valid token** — the unverified `x-pekohub-user-id` header fallback
+  and the header itself are deleted from both sides.
+  `enable_pekohub_jwt` defaults to true.
+- **Direct p2p transport — fully removed.** The retired transport's
+  dead config (`TransportPreference`, `direct_endpoint`,
+  `direct_tls`, `directEndpoint`/`transportPreference` hub columns),
+  the `build_server_config` TLS builder, and the
+  `KnownRuntimes`-registry plumbing that carried them are deleted
+  from both repos (hub migration `0013_drop_transport_fields`).
+- **TrustLevel registry — removed.** No access decision ever
+  consulted it; `KnownRuntimes`, the `runtime list/register/trust/
+  remove` IPC variants, and the CLI commands are gone.
+
 ### Accepted residuals (documented, not fixed)
 
-- **Bridge caller trust**: with no JWT validator configured, the
-  runtime trusts the hub-asserted `x-pekohub-user-id`. This is the
-  de-facto deployment mode because the hub signs JWTs with a static
-  HS256 secret while the runtime validator supports RS256/EdDSA only
-  — real end-to-end verification requires the hub to issue
-  asymmetric JWTs with a JWKS endpoint. Tracked as hub-side work.
-- **Direct p2p transport is retired** (sprint 3 Phase 12b): no
-  direct manager/server exists, so there is no direct-connection
-  spoofing surface; `direct_endpoint`/`TransportPreference::Direct`
-  are parsed-but-dead config. `TrustLevel::Untrusted` is
-  informational only (no access decision consults it) — flagged for
-  a future enforcement decision.
 - **Hub-side** (fixed in the pekohub repo,
   `fix/tunnel-instance-ownership-scope`): instance
   heartbeat/status/deregister tunnel messages are now scoped to the
@@ -255,4 +268,6 @@ and surfaced the following, fixed in the same change set:
   any connected runtime could delete or flip another user's
   instances. Residual hub notes: visitor-cookie identity on public
   chat is forgeable (low impact), dev-bypass hinges on `NODE_ENV`
-  defaulting to `development`.
+  defaulting to `development`, and the replay cache is a bounded
+  4096-entry FIFO (full closure needs a signed timestamp in the
+  envelope pre-image — a wire change).

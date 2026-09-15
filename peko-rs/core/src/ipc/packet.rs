@@ -417,18 +417,6 @@ pub enum RequestPacket {
     RuntimeId { request_id: u64 },
     #[serde(rename = "runtime_info")]
     RuntimeInfo { request_id: u64 },
-    #[serde(rename = "runtime_list")]
-    RuntimeList { request_id: u64 },
-    #[serde(rename = "runtime_register")]
-    RuntimeRegister {
-        request_id: u64,
-        runtime_id: String,
-        display_name: String,
-    },
-    #[serde(rename = "runtime_trust")]
-    RuntimeTrust { request_id: u64, runtime_id: String },
-    #[serde(rename = "runtime_remove")]
-    RuntimeRemove { request_id: u64, runtime_id: String },
 
     // ── Tunnel (ADR-035) ──
     #[serde(rename = "tunnel_stop")]
@@ -921,10 +909,6 @@ impl RequestPacket {
             | Self::SystemClean { request_id, .. }
             | Self::RuntimeId { request_id }
             | Self::RuntimeInfo { request_id }
-            | Self::RuntimeList { request_id }
-            | Self::RuntimeRegister { request_id, .. }
-            | Self::RuntimeTrust { request_id, .. }
-            | Self::RuntimeRemove { request_id, .. }
             | Self::AuthApiKeyCreate { request_id, .. }
             | Self::AuthApiKeyList { request_id }
             | Self::AuthApiKeyRevoke { request_id, .. }
@@ -1558,11 +1542,6 @@ pub enum ResponsePacket {
     RuntimeInfo {
         request_id: u64,
         metadata: RuntimeMetadataResponse,
-    },
-    #[serde(rename = "runtime_list")]
-    RuntimeList {
-        request_id: u64,
-        runtimes: Vec<KnownRuntimeResponse>,
     },
 
     // ── Tunnel (ADR-035) ──
@@ -2299,16 +2278,6 @@ pub struct HostInfoResponse {
     pub hostname: String,
 }
 
-/// Known runtime response for IPC (ADR-032)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnownRuntimeResponse {
-    pub runtime_id: String,
-    pub display_name: String,
-    pub last_seen: Option<String>,
-    pub connection_endpoint: Option<String>,
-    pub trust_level: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorCheck {
     pub name: String,
@@ -2412,7 +2381,6 @@ impl ResponsePacket {
             | Self::SystemCleaned { request_id, .. }
             | Self::RuntimeId { request_id, .. }
             | Self::RuntimeInfo { request_id, .. }
-            | Self::RuntimeList { request_id, .. }
             | Self::AuthApiKeyCreated { request_id, .. }
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
@@ -2492,7 +2460,6 @@ impl ResponsePacket {
             Self::SystemCleaned { .. } => "SystemCleaned",
             Self::RuntimeId { .. } => "RuntimeId",
             Self::RuntimeInfo { .. } => "RuntimeInfo",
-            Self::RuntimeList { .. } => "RuntimeList",
             Self::AuthApiKeyCreated { .. } => "AuthApiKeyCreated",
             Self::AuthApiKeyList { .. } => "AuthApiKeyList",
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",

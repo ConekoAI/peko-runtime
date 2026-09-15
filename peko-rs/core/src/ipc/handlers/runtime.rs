@@ -1,10 +1,11 @@
 //! `runtime` domain request handler (F6 step 9).
 //!
-//! Owns the runtime registry / identity IPC variants: `RuntimeId`,
-//! `RuntimeInfo`, `RuntimeList`, `RuntimeRegister`, `RuntimeTrust`,
-//! `RuntimeRemove`. These surface the daemon's own identity (ADR-032)
-//! and the persistent `KnownRuntimes` registry the tunnel uses to
-//! trust peer runtimes.
+//! Owns the runtime identity IPC variants: `RuntimeId` and
+//! `RuntimeInfo`, which surface the daemon's own identity and
+//! metadata (ADR-032). The legacy `KnownRuntimes` trust registry
+//! (List/Register/Trust/Remove) was removed in the ADR-057 cleanup:
+//! `TrustLevel` was never consulted by any access decision, and the
+//! direct-transport fields it carried were dead.
 //!
 //! The handler holds a narrow [`RuntimeHost`] port; the daemon-side
 //! implementation (`AppState`) is reached only through the trait, so
@@ -23,12 +24,11 @@ use async_trait::async_trait;
 
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
-    HostInfoResponse, KnownRuntimeResponse, RequestPacket, ResponsePacket, RuntimeMetadataResponse,
+    HostInfoResponse, RequestPacket, ResponsePacket, RuntimeMetadataResponse,
 };
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
-use crate::tunnel::known_runtimes::{KnownRuntimes, TrustLevel};
 use peko_auth::caller::CallerContext;
 use peko_identity::runtime::RuntimeIdentity;
 use peko_identity::runtime_metadata::RuntimeMetadata;
@@ -37,8 +37,7 @@ use peko_identity::runtime_metadata::RuntimeMetadata;
 ///
 /// `AppState` is the sole implementor. All methods are sync (cheap
 /// references / owned values) so the trait is object-safe without
-/// `async_trait`. The actual per-request awaits against the
-/// `KnownRuntimes` lock happen inside the handler.
+/// `async_trait`.
 pub(crate) trait RuntimeHost: Send + Sync {
     /// This runtime's identity (ADR-032). Powers `RuntimeId`.
     fn runtime_identity(&self) -> &RuntimeIdentity;
@@ -46,22 +45,6 @@ pub(crate) trait RuntimeHost: Send + Sync {
     /// This runtime's metadata (display name, version, host info,
     /// capabilities). Powers `RuntimeInfo`.
     fn runtime_metadata(&self) -> &RuntimeMetadata;
-
-    /// Persistent registry of peer runtimes the tunnel has seen
-    /// (ADR-032). Read/write both go through the inner `tokio::RwLock`.
-    fn known_runtimes(&self) -> &Arc<tokio::sync::RwLock<KnownRuntimes>>;
-
-    /// Daemon config dir, used to build a `PathResolver` for
-    /// `KnownRuntimes::save`.
-    fn config_dir(&self) -> std::path::PathBuf;
-
-    /// Daemon data dir, used to build a `PathResolver` for
-    /// `KnownRuntimes::save`.
-    fn data_dir(&self) -> std::path::PathBuf;
-
-    /// Daemon cache dir, used to build a `PathResolver` for
-    /// `KnownRuntimes::save`.
-    fn cache_dir(&self) -> std::path::PathBuf;
 }
 
 /// `runtime` domain request handler. Constructed with an
@@ -86,12 +69,7 @@ impl RequestHandler for RuntimeHandler {
     fn matches(&self, request: &RequestPacket) -> bool {
         matches!(
             request,
-            RequestPacket::RuntimeId { .. }
-                | RequestPacket::RuntimeInfo { .. }
-                | RequestPacket::RuntimeList { .. }
-                | RequestPacket::RuntimeRegister { .. }
-                | RequestPacket::RuntimeTrust { .. }
-                | RequestPacket::RuntimeRemove { .. }
+            RequestPacket::RuntimeId { .. } | RequestPacket::RuntimeInfo { .. }
         )
     }
 
@@ -128,117 +106,6 @@ impl RequestHandler for RuntimeHandler {
                     },
                 };
                 send_response(sink, response).await?;
-            }
-
-            RequestPacket::RuntimeList { request_id } => {
-                let registry = self.host.known_runtimes().read().await;
-                let runtimes: Vec<KnownRuntimeResponse> = registry
-                    .list()
-                    .iter()
-                    .map(|r| KnownRuntimeResponse {
-                        runtime_id: r.runtime_id.clone(),
-                        display_name: r.display_name.clone(),
-                        last_seen: Some(r.last_seen.to_rfc3339()),
-                        connection_endpoint: r.connection_endpoint.clone(),
-                        trust_level: format!("{:?}", r.trust_level).to_lowercase(),
-                    })
-                    .collect();
-                let response = ResponsePacket::RuntimeList {
-                    request_id,
-                    runtimes,
-                };
-                send_response(sink, response).await?;
-            }
-
-            RequestPacket::RuntimeRegister {
-                request_id,
-                runtime_id,
-                display_name,
-            } => {
-                let mut registry = self.host.known_runtimes().write().await;
-                registry.register(&runtime_id, &display_name, None, TrustLevel::Untrusted);
-                let resolver = crate::common::paths::PathResolver::with_dirs(
-                    self.host.config_dir(),
-                    self.host.data_dir(),
-                    self.host.cache_dir(),
-                );
-                match registry.save(&resolver) {
-                    Ok(()) => {
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::RuntimeTrust {
-                request_id,
-                runtime_id,
-            } => {
-                let mut registry = self.host.known_runtimes().write().await;
-                match registry.trust(&runtime_id, TrustLevel::Authorized) {
-                    Ok(()) => {
-                        let resolver = crate::common::paths::PathResolver::with_dirs(
-                            self.host.config_dir(),
-                            self.host.data_dir(),
-                            self.host.cache_dir(),
-                        );
-                        let _ = registry.save(&resolver);
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::RuntimeRemove {
-                request_id,
-                runtime_id,
-            } => {
-                let mut registry = self.host.known_runtimes().write().await;
-                match registry.remove(&runtime_id) {
-                    Ok(()) => {
-                        let resolver = crate::common::paths::PathResolver::with_dirs(
-                            self.host.config_dir(),
-                            self.host.data_dir(),
-                            self.host.cache_dir(),
-                        );
-                        let _ = registry.save(&resolver);
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
             }
 
             // `matches()` returned true, so the exhaustive list above

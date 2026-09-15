@@ -87,57 +87,29 @@ pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
     jwt_validator: Option<&peko_auth::jwt::JwtValidator>,
 ) -> Result<String, BridgeCallerError> {
-    // 1. Try the signed JWT first.
-    if let Some(jwt) = extract_bearer_jwt(bridge_payload) {
-        if let Some(validator) = jwt_validator {
-            match validator.validate(&jwt).await {
-                Ok(validated) => {
-                    // Cross-check the JWT sub against the hub-asserted header
-                    // so a tampered hub that emits `Authorization: ...subA...
-                    // x-pekohub-user-id: subB` is surfaced, not silently trusted.
-                    if let Some(hub_user) = header_user(bridge_payload) {
-                        if hub_user != validated.sub {
-                            warn!(
-                                "JWT sub ({}) does not match x-pekohub-user-id ({}); \
-                                 possible tamper — trusting the JWT",
-                                validated.sub, hub_user
-                            );
-                        }
-                    }
-                    return Ok(validated.sub);
-                }
-                Err(e) => {
-                    warn!("JWT validation failed ({}); rejecting request", e);
-                    return Err(BridgeCallerError::InvalidJwt);
-                }
-            }
-        }
+    // ADR-057: the caller identity is ALWAYS a signed EdDSA bridge
+    // token minted by PekoHub (sub = pekohub user id or a
+    // `principal:<did>` wire form, aud = this runtime's DID). The old
+    // unverified `x-pekohub-user-id` header fallback is gone — a
+    // runtime with a tunnel configured rejects every bridge request
+    // that does not carry a token its validator accepts.
+    let Some(jwt) = extract_bearer_jwt(bridge_payload) else {
+        return Err(BridgeCallerError::NoCaller);
+    };
+    let Some(validator) = jwt_validator else {
         warn!(
             "Authorization: Bearer <jwt> present but no JWT validator configured; \
              rejecting request"
         );
         return Err(BridgeCallerError::InvalidJwt);
+    };
+    match validator.validate(&jwt).await {
+        Ok(validated) => Ok(validated.sub),
+        Err(e) => {
+            warn!("JWT validation failed ({}); rejecting request", e);
+            Err(BridgeCallerError::InvalidJwt)
+        }
     }
-
-    // 2. No JWT was present. When JWT validation is enabled, reject
-    //    the request — the unverified header is not a substitute for a
-    //    signed token. The header-only fallback is preserved only for
-    //    test/disabled mode (jwt_validator.is_none()).
-    match jwt_validator {
-        Some(_) => Err(BridgeCallerError::NoCaller),
-        None => header_user(bridge_payload).ok_or(BridgeCallerError::NoCaller),
-    }
-}
-
-/// Pull the unverified `x-pekohub-user-id` header out of the bridge payload.
-fn header_user(bridge_payload: &serde_json::Value) -> Option<String> {
-    bridge_payload
-        .get("headers")
-        .and_then(|h| h.get("x-pekohub-user-id"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
 }
 
 /// Extract the `Authorization: Bearer <jwt>` value from the bridge payload.
@@ -399,12 +371,9 @@ impl TunnelDispatcher {
             let name = principal.name().await;
             let did = principal.did().await;
             let exposure: InstanceExposure = principal.exposure().await.into();
-            let (allowed_principals, transport_preference) = {
+            let allowed_principals = {
                 let config = principal.config.read().await;
-                (
-                    Self::compute_allowed_principals(&config),
-                    config.transport_preference.into(),
-                )
+                Self::compute_allowed_principals(&config)
             };
             let instance_id = self.instance_id(&name);
             let payload = InstanceAnnouncePayload {
@@ -420,7 +389,6 @@ impl TunnelDispatcher {
                 allowed_principals: allowed_principals.clone(),
                 capabilities: None,
                 metadata: None,
-                transport_preference: Some(transport_preference),
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             };
 
@@ -480,12 +448,9 @@ impl TunnelDispatcher {
         let name = principal.name().await;
         let did = principal.did().await;
         let exposure: InstanceExposure = principal.exposure().await.into();
-        let (allowed_principals, transport_preference) = {
+        let allowed_principals = {
             let config = principal.config.read().await;
-            (
-                Self::compute_allowed_principals(&config),
-                config.transport_preference.into(),
-            )
+            Self::compute_allowed_principals(&config)
         };
         let instance_id = self.instance_id(&name);
         let payload = InstanceAnnouncePayload {
@@ -501,7 +466,6 @@ impl TunnelDispatcher {
             allowed_principals: allowed_principals.clone(),
             capabilities: None,
             metadata: None,
-            transport_preference: Some(transport_preference),
             // B5: `runtime_direct_endpoint` field dropped from payload.
         };
 
@@ -1158,8 +1122,6 @@ impl TunnelDispatcher {
                 if instance_id == payload.instance_id {
                     let did = principal.did().await;
                     let status = self.get_instance_status(&name).await;
-                    let transport_preference =
-                        principal.config.read().await.transport_preference.into();
                     let announce_payload = InstanceAnnouncePayload {
                         id: instance_id,
                         instance_type: InstanceType::Principal,
@@ -1173,7 +1135,6 @@ impl TunnelDispatcher {
                         allowed_principals: payload.allowed_principals.clone(),
                         capabilities: None,
                         metadata: None,
-                        transport_preference: Some(transport_preference),
                         // B5: `runtime_direct_endpoint` field dropped from payload.
                     };
                     if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce {
@@ -1796,7 +1757,6 @@ mod tests {
             boot_state: None,
             permissions,
             preferred_model_id: None,
-            transport_preference: Default::default(),
             quota: None,
             children: Default::default(),
         }
@@ -1831,64 +1791,33 @@ mod tests {
 
     // ─── Phase 2: Principal tunnel exposure ───────────────────────────────
 
-    /// PekoHub sets `x-pekohub-user-id` on every proxied request. When
-    /// no JWT validator is configured (the back-compat case), the
-    /// dispatcher uses that value as the `PrincipalMessageRequest::user` so
-    /// downstream attribution (audit log, tool hooks) sees the real
-    /// pekohub user, not the literal `"web"` placeholder.
+    /// ADR-057: no bridge request carries identity anymore — a request
+    /// without a signed bridge token is rejected with `NoCaller`,
+    /// whether or not a validator happens to be configured.
     #[tokio::test]
-    async fn resolve_bridge_caller_extracts_user_from_headers() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": "user-42"},
-        });
-        assert_eq!(
-            resolve_bridge_caller(&payload, None).await.unwrap(),
-            "user-42"
-        );
-    }
-
-    /// Missing header → rejected (no anonymous callers).
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_missing() {
+    async fn resolve_bridge_caller_rejects_requests_without_token() {
         let payload = serde_json::json!({"body": {"message": "hi"}});
         assert_eq!(
             resolve_bridge_caller(&payload, None).await,
             Err(BridgeCallerError::NoCaller)
         );
-    }
 
-    /// Empty string header → rejected.
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_empty() {
+        let (validator, _signing_key) = ed25519_validator();
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            Err(BridgeCallerError::NoCaller)
+        );
+
+        // The retired `x-pekohub-user-id` header confers nothing.
         let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": ""},
+            "headers": {"x-pekohub-user-id": "user-42"},
         });
         assert_eq!(
             resolve_bridge_caller(&payload, None).await,
             Err(BridgeCallerError::NoCaller)
         );
-    }
-
-    /// Whitespace-only header → rejected.
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_whitespace() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": "   "},
-        });
         assert_eq!(
-            resolve_bridge_caller(&payload, None).await,
-            Err(BridgeCallerError::NoCaller)
-        );
-    }
-
-    /// Non-string header (e.g. number) → rejected.
-    #[tokio::test]
-    async fn resolve_bridge_caller_rejects_anonymous_when_header_not_string() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": 12345},
-        });
-        assert_eq!(
-            resolve_bridge_caller(&payload, None).await,
+            resolve_bridge_caller(&payload, Some(&validator)).await,
             Err(BridgeCallerError::NoCaller)
         );
     }
@@ -1956,11 +1885,7 @@ mod tests {
         let jwt = mint_jwt(&signing_key, "user-jwt");
 
         let payload = serde_json::json!({
-            "headers": {
-                "Authorization": format!("Bearer {jwt}"),
-                // Header disagrees with the JWT — but the JWT wins.
-                "x-pekohub-user-id": "user-hub",
-            },
+            "headers": {"Authorization": format!("Bearer {jwt}")},
         });
         assert_eq!(
             resolve_bridge_caller(&payload, Some(&validator))
@@ -1982,10 +1907,7 @@ mod tests {
         let wrong_jwt = mint_jwt(&wrong_key, "user-tampered");
 
         let payload = serde_json::json!({
-            "headers": {
-                "Authorization": format!("Bearer {wrong_jwt}"),
-                "x-pekohub-user-id": "user-hub-fallback",
-            },
+            "headers": {"Authorization": format!("Bearer {wrong_jwt}")},
         });
         assert_eq!(
             resolve_bridge_caller(&payload, Some(&validator)).await,
@@ -2029,22 +1951,7 @@ mod tests {
         );
     }
 
-    /// Header-only (no JWT) → uses the hub header (unverified) only in
-    /// the back-compat path where no `JwtValidator` is configured. This
-    /// keeps local tests / disabled mode working without weakening the
-    /// production path.
-    #[tokio::test]
-    async fn resolve_bridge_caller_uses_header_when_no_validator_and_no_jwt() {
-        let payload = serde_json::json!({
-            "headers": {"x-pekohub-user-id": "user-hub"},
-        });
-        assert_eq!(
-            resolve_bridge_caller(&payload, None).await.unwrap(),
-            "user-hub"
-        );
-    }
-
-    /// No JWT and no header → rejected (no anonymous callers).
+    /// No JWT → rejected (no anonymous callers).
     #[tokio::test]
     async fn resolve_bridge_caller_rejects_anonymous() {
         let (validator, _signing_key) = ed25519_validator();

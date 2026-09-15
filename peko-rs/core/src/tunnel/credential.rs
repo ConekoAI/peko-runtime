@@ -141,6 +141,25 @@ impl PekoHubCredential {
     }
 }
 
+/// Derive the hub HTTP origin from a tunnel WebSocket URL
+/// (`wss://host/v1/tunnel` → `https://host`). Used to locate the
+/// hub's JWKS endpoint and as the expected bridge-token issuer.
+#[must_use]
+pub fn hub_origin(tunnel_url: &str) -> Option<String> {
+    let (rest, scheme) = if let Some(rest) = tunnel_url.strip_prefix("wss://") {
+        (rest, "https://")
+    } else if let Some(rest) = tunnel_url.strip_prefix("ws://") {
+        (rest, "http://")
+    } else {
+        return None;
+    };
+    let authority = rest.split('/').next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}{authority}"))
+}
+
 /// Load PekoHub credential from the default location or a custom path.
 ///
 /// Returns `None` if no credential file exists.
@@ -167,6 +186,20 @@ pub fn has_pekohub_credential() -> bool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn hub_origin_derives_http_origins_from_tunnel_urls() {
+        assert_eq!(
+            hub_origin("wss://pekohub.org/v1/tunnel").as_deref(),
+            Some("https://pekohub.org")
+        );
+        assert_eq!(
+            hub_origin("ws://localhost:4000/v1/tunnel").as_deref(),
+            Some("http://localhost:4000")
+        );
+        assert_eq!(hub_origin("https://not-a-ws-url"), None);
+        assert_eq!(hub_origin("wss://"), None);
+    }
 
     #[test]
     fn test_credential_roundtrip() {

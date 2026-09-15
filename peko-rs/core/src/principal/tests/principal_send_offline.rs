@@ -61,7 +61,6 @@ async fn create_test_principal(
     workspace: &std::path::Path,
     name: &str,
     owner: Subject,
-    transport_preference: TransportPreference,
 ) -> Arc<crate::principal::Principal> {
     let agents_dir = workspace.join(name).join("agents");
     tokio::fs::create_dir_all(&agents_dir).await.unwrap();

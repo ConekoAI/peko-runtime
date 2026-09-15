@@ -134,55 +134,6 @@ pub fn build_client_config(
     Ok(Arc::new(config))
 }
 
-/// Build a rustls server config from a certificate chain and private key.
-///
-/// If `client_ca_path` is provided, client certificates are required and
-/// validated against that CA (mTLS).
-pub fn build_server_config(
-    cert_path: &Path,
-    key_path: &Path,
-    client_ca_path: Option<&Path>,
-) -> Result<Arc<rustls::ServerConfig>, TlsError> {
-    let cert_chain = load_cert_chain(cert_path)?;
-    let key = load_private_key(key_path)?;
-
-    let mut config = if let Some(client_ca_path) = client_ca_path {
-        let client_ca_pem = std::fs::read(client_ca_path).map_err(|e| TlsError::Read {
-            path: client_ca_path.display().to_string(),
-            source: e,
-        })?;
-        let client_certs = rustls_pemfile::certs(&mut client_ca_pem.as_slice())
-            .map_err(|e| TlsError::CertParse(e.to_string()))?;
-        let mut client_roots = rustls::RootCertStore::empty();
-        if client_certs.is_empty() {
-            return Err(TlsError::EmptyCert(client_ca_path.display().to_string()));
-        }
-        for cert in client_certs {
-            client_roots
-                .add(cert.into())
-                .map_err(|e| TlsError::AddCa(e.to_string()))?;
-        }
-
-        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(client_roots))
-            .build()
-            .map_err(|e| TlsError::VerifierBuild(e.to_string()))?;
-
-        rustls::ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(cert_chain, key)
-            .map_err(|e| TlsError::InvalidClientAuth(e.to_string()))?
-    } else {
-        rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
-            .map_err(|e| TlsError::InvalidClientAuth(e.to_string()))?
-    };
-
-    config.alpn_protocols = vec![b"peko-direct/1".to_vec()];
-
-    Ok(Arc::new(config))
-}
-
 /// Load a PEM-encoded certificate chain from disk.
 pub fn load_cert_chain(
     path: &Path,
@@ -306,49 +257,7 @@ impl rustls::client::danger::ServerCertVerifier for PinningServerCertVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
-
-    fn generate_test_cert(temp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
-        let cert_path = temp.path().join("test.crt");
-        let key_path = temp.path().join("test.key");
-
-        // Generate a self-signed cert with openssl for tests if available,
-        // otherwise skip. This keeps the unit test deterministic when openssl
-        // is present and avoids false failures on minimal CI images.
-        let output = std::process::Command::new("openssl")
-            .args([
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                key_path.to_str().unwrap(),
-                "-out",
-                cert_path.to_str().unwrap(),
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                "/CN=test.peko.local",
-            ])
-            .output();
-
-        if output.is_err() || !output.as_ref().unwrap().status.success() {
-            // Provide a minimal synthetic PEM so the test compiles; load
-            // will fail, which we handle gracefully.
-            let mut cert_file = std::fs::File::create(&cert_path).unwrap();
-            cert_file
-                .write_all(b"-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKHBfpE\n-----END CERTIFICATE-----\n")
-                .unwrap();
-            let mut key_file = std::fs::File::create(&key_path).unwrap();
-            key_file
-                .write_all(b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg\n-----END PRIVATE KEY-----\n")
-                .unwrap();
-        }
-
-        (cert_path, key_path)
-    }
 
     #[test]
     fn test_build_client_config_with_webpki_defaults() {
@@ -366,18 +275,6 @@ mod tests {
     fn test_build_client_config_with_invalid_pin() {
         let result = build_client_config(None, None, None, Some("not-base64!!!"));
         assert!(matches!(result, Err(TlsError::InvalidPin(_))));
-    }
-
-    #[test]
-    fn test_build_server_config_roundtrip() {
-        let temp = TempDir::new().unwrap();
-        let (cert_path, key_path) = generate_test_cert(&temp);
-
-        // The synthetic cert generated above may fail to parse; only assert
-        // success when openssl produced a real certificate.
-        if let Ok(config) = build_server_config(&cert_path, &key_path, None) {
-            assert_eq!(config.alpn_protocols, vec![b"peko-direct/1".to_vec()]);
-        }
     }
 
     #[test]

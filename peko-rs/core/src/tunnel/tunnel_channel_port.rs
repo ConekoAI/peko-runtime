@@ -857,7 +857,6 @@ impl ChannelPort for TunnelChannelPort {
 mod tests {
     use super::*;
     use crate::tunnel::hub_directory::fake::FakeAgentDirectory;
-    use crate::tunnel::known_runtimes::KnownRuntimes;
     use crate::tunnel::TunnelHandle;
     use peko_channel::{ChannelConfig, ChannelError};
     use peko_subject::PrincipalId;
@@ -1139,13 +1138,11 @@ mod tests {
         let directory: Arc<dyn crate::tunnel::AgentDirectory> =
             Arc::new(FakeAgentDirectory::default());
         let signing_key = Arc::new(SigningKey::from_bytes(&[7u8; 32]));
-        let known_runtimes = Arc::new(RwLock::new(KnownRuntimes::new()));
         let ctx = Arc::new(CrossRuntimeChannelCtx {
             directory,
             signing_key,
             caller_runtime_id: caller_runtime_id.to_string(),
             tunnel: tunnel_slot,
-            known_runtimes,
         });
         (ctx, rx)
     }
@@ -1453,7 +1450,6 @@ mod tests {
             signing_key,
             caller_runtime_id: "did:key:zRuntimeA".into(),
             tunnel: tunnel_slot,
-            known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
         });
         port.set_ctx(ctx).await;
 

@@ -73,15 +73,6 @@ pub struct AgentResolution {
     /// before issuing the outbound a2a (an unexposed agent shouldn't
     /// be addressable even if the directory leaks it).
     pub exposure: ResolvedExposure,
-    /// Callee transport preference for cross-runtime `principal_send`.
-    /// The principal owns the connection-method preference; the caller
-    /// learns it from the directory and respects it.
-    pub transport_preference: crate::tunnel::known_runtimes::TransportPreference,
-    /// Runtime-level advertised direct endpoint for inbound direct
-    /// cross-runtime connections. Present only when the hosting runtime
-    /// has configured and advertised one.
-    #[serde(default)]
-    pub direct_endpoint: Option<String>,
 }
 
 /// Mirror of pekohub's `instance.exposure` enum.
@@ -410,8 +401,6 @@ mod tests {
             agent_did: "did:peko:agent:target-keyhash".to_string(),
             owner_principal: Subject::User("alice".to_string()),
             exposure: ResolvedExposure::Public,
-            transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
-            direct_endpoint: Some("wss://203.0.113.4:11436".to_string()),
         }
     }
 
@@ -436,10 +425,10 @@ mod tests {
         assert_eq!(decoded, sample_resolution());
     }
 
-    /// `directEndpoint` is optional on the wire; older hub responses
-    /// that omit it decode to `None`.
+    /// Hub bodies that still carry the retired `transportPreference` /
+    /// `directEndpoint` keys decode cleanly — the fields are ignored.
     #[test]
-    fn test_agent_resolution_default_direct_endpoint() {
+    fn test_agent_resolution_ignores_retired_transport_keys() {
         let body = r#"{
             "runtimeId": "did:key:zRuntime",
             "instanceId": "inst-x",
@@ -449,11 +438,8 @@ mod tests {
             "transportPreference": "tunnel"
         }"#;
         let decoded: AgentResolution = serde_json::from_str(body).unwrap();
-        assert_eq!(
-            decoded.transport_preference,
-            crate::tunnel::known_runtimes::TransportPreference::Tunnel
-        );
-        assert_eq!(decoded.direct_endpoint, None);
+        assert_eq!(decoded.instance_id, "inst-x");
+        assert_eq!(decoded.exposure, ResolvedExposure::Public);
     }
 
     /// `Subject::Principal` and `Subject::Public` also decode — the

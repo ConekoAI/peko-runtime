@@ -686,14 +686,6 @@ impl PathResolver {
         self.runtime_dir().join("runtime.toml")
     }
 
-    /// Get the known runtimes file path
-    ///
-    /// Path: `{config_dir}/runtime/known_runtimes.toml`
-    #[must_use]
-    pub fn known_runtimes(&self) -> PathBuf {
-        self.runtime_dir().join("known_runtimes.toml")
-    }
-
     /// Get the auth config file path
     ///
     /// Path: `{config_dir}/runtime/auth_config.toml`
@@ -1310,12 +1302,6 @@ impl GlobalPaths {
     #[must_use]
     pub fn runtime_metadata(&self) -> PathBuf {
         self.resolver.runtime_metadata()
-    }
-
-    /// Get the known runtimes file path.
-    #[must_use]
-    pub fn known_runtimes(&self) -> PathBuf {
-        self.resolver.known_runtimes()
     }
 
     // ========================================================================

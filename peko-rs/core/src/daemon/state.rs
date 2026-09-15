@@ -180,7 +180,7 @@ pub(crate) struct AppState {
     pub runtime_identity: peko_identity::runtime::RuntimeIdentity,
 
     /// Runtime signing key derived from the vault. Shared by the tunnel
-    /// client, direct connection manager, and direct server.
+    /// client.
     pub runtime_signing_key: Arc<ed25519_dalek::SigningKey>,
 
     /// In-memory revocation set for invite tokens (PR #11). The
@@ -205,10 +205,6 @@ pub(crate) struct AppState {
 
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
-
-    /// Known runtimes registry (ADR-032)
-    pub known_runtimes:
-        std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>>,
 
     /// Trust store for principal package publisher pinning (issue #91).
     pub trust_store: std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
@@ -330,10 +326,6 @@ impl std::fmt::Debug for AppState {
             .field("extension_services", &"<ExtensionServices>")
             .field("runtime_identity", &self.runtime_identity.runtime_did)
             .field("runtime_metadata", &self.runtime_metadata.display_name)
-            .field(
-                "known_runtimes",
-                &format!("{} runtimes", self.runtime_identity.runtime_did),
-            )
             .field("auth", &"<AuthConfig>")
             .finish()
     }
@@ -522,19 +514,10 @@ impl AppState {
             crate::identity_compat::runtime_paths_arc(&path_resolver).as_ref(),
             &runtime_identity.runtime_did,
         )?;
-        let mut known_runtimes =
-            crate::tunnel::known_runtimes::KnownRuntimes::load_or_create(&path_resolver)?;
-        known_runtimes.register(
-            &runtime_identity.runtime_did,
-            &runtime_metadata.display_name,
-            None,
-            crate::tunnel::known_runtimes::TrustLevel::SelfRuntime,
-        );
-        let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
 
         // Load the runtime's private signing key from the vault and the
         // on-disk `peko.toml` configuration. These are needed by the
-        // tunnel client, direct connection manager, and direct server.
+        // tunnel client.
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
         let peko_config = load_peko_config(&config_dir);
         let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
@@ -880,15 +863,25 @@ impl AppState {
         let api_key_verifier = api_key_store
             .as_ref()
             .map(|s| peko_auth::api_key::ApiKeyVerifier::new(s.clone()));
-        let jwt_validator = if auth_config.enable_pekohub_jwt() {
+        // ADR-057: the bridge-token validator is derived from the
+        // pekohub credential when the runtime is logged in — the
+        // trusted issuer is the hub origin (from the tunnel URL) and
+        // the JWKS endpoint lives on that origin. No credential = no
+        // tunnel = no bridge traffic, so no validator.
+        let jwt_validator = (|| {
+            if !auth_config.enable_pekohub_jwt() {
+                return None;
+            }
+            let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
+            let cred = crate::tunnel::PekoHubCredential::from_file(&cred_path).ok()?;
+            let issuer = crate::tunnel::hub_origin(&cred.url)?;
+            let jwks_url = format!("{issuer}/v1/jwks.json");
             Some(peko_auth::jwt::JwtValidator::new(
-                auth_config.trusted_issuers().to_vec(),
+                vec![issuer],
                 runtime_identity.runtime_did.clone(),
-                None,
+                Some(jwks_url),
             ))
-        } else {
-            None
-        };
+        })();
         let rate_limiter = if auth_config.has_any_remote_auth_method() {
             Some(peko_auth::rate_limit::RateLimiter::new(
                 auth_config.rate_limit().jwt_requests_per_minute,
@@ -1008,7 +1001,6 @@ impl AppState {
             idle_detector: None,
             cron_engine: None,
             runtime_metadata,
-            known_runtimes,
             trust_store,
             auth_config,
             api_key_store,
@@ -1355,14 +1347,6 @@ impl AppState {
     #[must_use]
     pub fn runtime_metadata(&self) -> &peko_identity::runtime_metadata::RuntimeMetadata {
         &self.runtime_metadata
-    }
-
-    /// Get the known runtimes registry (ADR-032)
-    #[must_use]
-    pub fn known_runtimes(
-        &self,
-    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
-        &self.known_runtimes
     }
 
     /// Get the trust store for principal package import (issue #91).
@@ -1731,7 +1715,6 @@ impl AppState {
             signing_key,
             caller_runtime_id,
             tunnel: self.tunnel_handle_slot(),
-            known_runtimes: self.known_runtimes.clone(),
         });
 
         // Push into the existing `TunnelChannelPort`'s ctx slot. The
@@ -2282,24 +2265,6 @@ impl crate::ipc::handlers::runtime::RuntimeHost for AppState {
 
     fn runtime_metadata(&self) -> &peko_identity::runtime_metadata::RuntimeMetadata {
         AppState::runtime_metadata(self)
-    }
-
-    fn known_runtimes(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
-        AppState::known_runtimes(self)
-    }
-
-    fn config_dir(&self) -> std::path::PathBuf {
-        self.config_dir.clone()
-    }
-
-    fn data_dir(&self) -> std::path::PathBuf {
-        self.data_dir.clone()
-    }
-
-    fn cache_dir(&self) -> std::path::PathBuf {
-        self.cache_dir.clone()
     }
 }
 

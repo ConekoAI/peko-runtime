@@ -22,7 +22,6 @@ use rand::RngCore;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use peko_core::tunnel::known_runtimes::TransportPreference;
 use peko_core::tunnel::protocol::{
     InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
     InstanceType, TunnelMessage,
@@ -357,7 +356,6 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             allowed_principals: None,
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
-            transport_preference: None,
             // B5: `runtime_direct_endpoint` field dropped from payload.
         },
     };
@@ -585,7 +583,6 @@ async fn test_instance_announce_publishes_transport_fields() {
             allowed_principals: None,
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
-            transport_preference: Some(TransportPreference::Direct),
             // B5: `runtime_direct_endpoint` field dropped from payload.
         },
     };
