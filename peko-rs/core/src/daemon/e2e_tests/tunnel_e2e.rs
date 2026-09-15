@@ -371,7 +371,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .as_str()
         .expect("No user id (expected UUID string)")
         .to_string();
-    let chat_user_id = user_id.to_string();
+    let chat_user_id = user_id.clone();
 
     // 3. Create temporary workspace with Principal config
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
