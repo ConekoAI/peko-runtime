@@ -222,7 +222,46 @@ pub fn verify_token(
 pub struct InviteRevocationSet {
     /// `jti -> exp`. The expiry is stored so the janitor can drop
     /// expired entries without re-reading the original claims.
-    revoked: Arc<Mutex<HashSet<Uuid>>>,
+    revoked: Arc<Mutex<RevocationSet>>,
+}
+
+/// Bounded revocation store: a set plus FIFO insertion order.
+///
+/// ADR-057 transport audit: the old implementation `clear()`ed the
+/// whole set at the [`MAX_REVOKED_JTIS`] cap, so a 1024-revocation
+/// flood (fresh UUIDs) un-revoked every previously revoked token at
+/// once. FIFO eviction degrades gracefully instead — the oldest
+/// revocation is dropped only after 1024 newer ones, never all at
+/// once.
+#[derive(Debug, Default)]
+struct RevocationSet {
+    set: HashSet<Uuid>,
+    order: std::collections::VecDeque<Uuid>,
+}
+
+impl RevocationSet {
+    fn insert(&mut self, jti: Uuid) {
+        if self.set.len() >= MAX_REVOKED_JTIS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.set.remove(&oldest);
+            }
+        }
+        if self.set.insert(jti) {
+            self.order.push_back(jti);
+        }
+    }
+
+    fn contains(&self, jti: &Uuid) -> bool {
+        self.set.contains(jti)
+    }
+
+    fn len(&self) -> usize {
+        self.set.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
 }
 
 impl Default for InviteRevocationSet {
@@ -235,28 +274,24 @@ impl InviteRevocationSet {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            revoked: Arc::new(Mutex::new(HashSet::new())),
+            revoked: Arc::new(Mutex::new(RevocationSet::default())),
         }
     }
 
     /// Mark a token's `jti` as revoked.
     pub async fn revoke(&self, jti: Uuid) {
-        let mut set = self.revoked.lock().await;
-        // Soft cap: if we'd exceed `MAX_REVOKED_JTIS`, drop the
-        // oldest by `exp` (which we don't track, so we just drop
-        // any). In v1 the only way to reach the cap is a malicious
-        // flood — a future PR can track per-entry `exp` so the
-        // janitor can do better.
-        if set.len() >= MAX_REVOKED_JTIS {
-            set.clear();
-        }
-        set.insert(jti);
+        let mut store = self.revoked.lock().await;
+        // Soft cap: if we'd exceed `MAX_REVOKED_JTIS`, evict the
+        // oldest revocation (FIFO). In v1 the only way to reach the
+        // cap is a malicious flood — a future PR can track per-entry
+        // `exp` so the janitor can do better.
+        store.insert(jti);
     }
 
     /// Check whether a `jti` is in the revocation set.
     pub async fn is_revoked(&self, jti: &Uuid) -> bool {
-        let set = self.revoked.lock().await;
-        set.contains(jti)
+        let store = self.revoked.lock().await;
+        store.contains(jti)
     }
 
     /// Number of revoked JTIs currently held (used by tests).
@@ -275,11 +310,10 @@ impl InviteRevocationSet {
     /// The sweep exists to keep the set small when the daemon is
     /// long-running and many tokens have been revoked.
     pub async fn sweep_expired(&self, _now: DateTime<Utc>) -> usize {
-        // We don't currently track per-entry `exp` in the set
-        // (HashSet<Uuid>). The simplest bounded behavior is to
-        // periodically `clear()` once the cap is hit — see
-        // [`Self::revoke`]. A future PR can record the exp alongside
-        // the jti and do a proper sweep.
+        // We don't currently track per-entry `exp` in the set. The
+        // FIFO-eviction behavior in [`Self::revoke`] keeps the set
+        // bounded without mass un-revocation; a future PR can record
+        // the exp alongside the jti and do a proper sweep.
         0
     }
 

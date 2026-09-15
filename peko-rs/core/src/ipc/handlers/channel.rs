@@ -155,6 +155,34 @@ impl ChannelHandler {
             }
         }
     }
+
+    /// ADR-057: operating a runtime-hosted principal by name —
+    /// creating a channel as one (`ChannelCreate`), speaking as one
+    /// (`ChannelPost` sender), managing membership through one
+    /// (`ChannelInvite` inviter, `ChannelLeave`) — is a Derived-caller
+    /// capability: the local terminal or its scoped API key. A
+    /// pekohub JWT user is never a principal operator (matching the
+    /// post rule), which closes the "remote caller acts as any loaded
+    /// principal" path. Sends the `[forbidden]` error itself and
+    /// returns `Ok(false)` when the caller must stop.
+    async fn gate_principal_operator(
+        &self,
+        caller: &CallerContext,
+        request_id: u64,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<bool> {
+        if matches!(caller_binding(caller), CallerBinding::User(_)) {
+            let response = ResponsePacket::Error {
+                request_id,
+                message: "[forbidden] pekohub users cannot operate principals — channels are \
+                          managed by the runtime's own callers"
+                    .to_string(),
+            };
+            send_response(sink, response).await?;
+            return Ok(false);
+        }
+        Ok(true)
+    }
 }
 
 /// ADR-049 Phase 4 (D6), amended by ADR-057: what a caller is
@@ -236,6 +264,12 @@ impl RequestHandler for ChannelHandler {
                 passive_binding,
                 id,
             } => {
+                if !self
+                    .gate_principal_operator(caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 let Some(creator) = self.resolve_principal(&creator_name) else {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -296,6 +330,12 @@ impl RequestHandler for ChannelHandler {
                 inviter_name,
                 invitee_name,
             } => {
+                if !self
+                    .gate_principal_operator(caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 let inviter = match self.resolve_principal(&inviter_name) {
                     Some(p) => p,
                     None => {
@@ -621,6 +661,12 @@ impl RequestHandler for ChannelHandler {
                 channel,
                 principal_name,
             } => {
+                if !self
+                    .gate_principal_operator(caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 let principal = match self.resolve_principal(&principal_name) {
                     Some(p) => p,
                     None => {

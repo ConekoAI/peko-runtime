@@ -2103,9 +2103,10 @@ async fn run_principal_send(
     // in the peer's standing child (below), not through the router.
     if let Err(e) = host
         .principal_manager()
-        .build_router_context(
+        .build_router_context_as(
             &principal,
             peer.clone(),
+            caller.subject(),
             message.clone(),
             channel,
             override_model.clone(),

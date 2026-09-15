@@ -189,3 +189,70 @@ response it already receives.
 - `peko-rs/core/src/tunnel/credential.rs` — `owner_id` field.
 - `peko-rs/cli/src/commands/{mod,send,channel,tunnel}.rs` — flag
   removals, derived senders, owner capture at setup.
+
+---
+
+## 5. Post-implementation security audit (2026-09-15, second pass)
+
+A full re-audit of the identity model and the transport layer
+(three parallel sweeps: IPC identity-field census, runtime transport,
+hub-side verification) confirmed the core invariant — **no
+caller-declared user identity reaches attribution on any surface** —
+and surfaced the following, fixed in the same change set:
+
+1. **Authority split was missing on the initial send path.**
+   `run_principal_send` still called `build_router_context`
+   (authority = attribution peer), so API-key callers passed the
+   owner-equality check via their owner attribution. Now uses
+   `build_router_context_as(caller.subject())` like the successor
+   path (D2 restored everywhere).
+2. **Channel surface could act as any loaded principal.**
+   `ChannelCreate`/`ChannelInvite`/`ChannelLeave` resolved arbitrary
+   principal names with no caller check — a remote JWT caller could
+   create a channel as any principal, invite any `user:<id>`, and
+   leave. New `gate_principal_operator`: operating a runtime-hosted
+   principal by name is a Derived-caller capability (local terminal /
+   its scoped key); pekohub users are refused, consistent with the
+   post rule.
+3. **Bridge ACL keyed on the unverified header.**
+   `handle_proxied_request` now resolves the caller (JWT `sub` when a
+   validator is configured) *before* `check_request_allowed`, and the
+   Private-instance allowlist matches the resolved identity instead
+   of the raw `x-pekohub-user-id` header.
+4. **Cross-runtime envelope hardening (receiver-side).** Inbound
+   signed channel events/invites now (a) verify
+   `recipient_runtime_id == own DID` (was signed but unchecked), (b)
+   dedupe on the signature-covered `request_id` via a bounded FIFO
+   replay cache (`REPLAY_CACHE_CAPACITY = 4096`) — the signed
+   pre-image carries no timestamp/nonce, so captured envelopes used
+   to re-verify forever — and (c) require the inner event's channel
+   to match the envelope's signed `channel_id`.
+5. **Invite revocation overflow.** `InviteRevocationSet::revoke`
+   cleared the entire set at the 1024 cap — a fresh-UUID flood
+   un-revoked everything at once. Now FIFO-evicts the oldest entry.
+6. **Half-configured mTLS failed open silently.** Setting only one of
+   `tls.cert_path`/`tls.key_path` silently disabled client auth; now
+   a hard config error.
+
+### Accepted residuals (documented, not fixed)
+
+- **Bridge caller trust**: with no JWT validator configured, the
+  runtime trusts the hub-asserted `x-pekohub-user-id`. This is the
+  de-facto deployment mode because the hub signs JWTs with a static
+  HS256 secret while the runtime validator supports RS256/EdDSA only
+  — real end-to-end verification requires the hub to issue
+  asymmetric JWTs with a JWKS endpoint. Tracked as hub-side work.
+- **Direct p2p transport is retired** (sprint 3 Phase 12b): no
+  direct manager/server exists, so there is no direct-connection
+  spoofing surface; `direct_endpoint`/`TransportPreference::Direct`
+  are parsed-but-dead config. `TrustLevel::Untrusted` is
+  informational only (no access decision consults it) — flagged for
+  a future enforcement decision.
+- **Hub-side** (fixed in the pekohub repo,
+  `fix/tunnel-instance-ownership-scope`): instance
+  heartbeat/status/deregister tunnel messages are now scoped to the
+  owning runtime (`instance.runtimeId === conn.runtimeId`); previously
+  any connected runtime could delete or flip another user's
+  instances. Residual hub notes: visitor-cookie identity on public
+  chat is forgeable (low impact), dev-bypass hinges on `NODE_ENV`
+  defaulting to `development`.

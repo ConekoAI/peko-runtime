@@ -90,14 +90,33 @@ pub fn build_client_config(
 
     let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
 
-    let mut config = if let (Some(cert_path), Some(key_path)) = (cert_path, key_path) {
-        let cert_chain = load_cert_chain(cert_path)?;
-        let key = load_private_key(key_path)?;
-        builder
-            .with_client_auth_cert(cert_chain, key)
-            .map_err(|e| TlsError::InvalidClientAuth(e.to_string()))?
-    } else {
-        builder.with_no_client_auth()
+    // ADR-057 transport audit: a half-configured mTLS (one of
+    // cert/key set, the other missing) used to silently fall back to
+    // no client auth — an operator believing mTLS was on while it was
+    // off. Hard-error instead.
+    let mut config = match (cert_path, key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            let cert_chain = load_cert_chain(cert_path)?;
+            let key = load_private_key(key_path)?;
+            builder
+                .with_client_auth_cert(cert_chain, key)
+                .map_err(|e| TlsError::InvalidClientAuth(e.to_string()))?
+        }
+        (None, None) => builder.with_no_client_auth(),
+        (Some(_), None) => {
+            return Err(TlsError::InvalidClientAuth(
+                "tls.cert_path set without tls.key_path — mTLS is half-configured; \
+                 set both or neither"
+                    .to_string(),
+            ))
+        }
+        (None, Some(_)) => {
+            return Err(TlsError::InvalidClientAuth(
+                "tls.key_path set without tls.cert_path — mTLS is half-configured; \
+                 set both or neither"
+                    .to_string(),
+            ))
+        }
     };
 
     if let Some(pinned_sha256) = pinned_cert_sha256 {
