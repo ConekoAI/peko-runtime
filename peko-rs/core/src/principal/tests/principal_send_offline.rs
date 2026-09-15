@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::core::init_global_core;
-use crate::principal::config::{Exposure, TransportPreference};
+use crate::principal::config::Exposure;
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
@@ -87,7 +87,6 @@ async fn create_test_principal(
         boot_state: None,
         permissions: Vec::new(),
         preferred_model_id: Some("mock".to_string()),
-        transport_preference,
         quota: None,
         children: Default::default(),
     };
@@ -177,7 +176,6 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
         &workspace_ref,
         "offline-caller",
         Subject::Public,
-        TransportPreference::Auto,
     )
     .await;
 
@@ -192,7 +190,6 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
         &workspace_ref,
         "offline-target",
         Subject::Principal(PrincipalDID(caller_did.clone())),
-        TransportPreference::Direct,
     )
     .await;
 
