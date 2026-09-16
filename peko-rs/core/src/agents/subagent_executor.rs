@@ -759,12 +759,13 @@ impl SubagentExecutor {
                 let metas = manager.list_all_sessions(false).await?;
                 (caller_context(parent_session_key, &metas), metas)
             };
+            let path = peko_session::path::strip_scheme_prefix(path).to_string();
             if path.starts_with('/') {
                 // Absolute address. Attach when it resolves; mint only
                 // single-segment top-level paths (intermediate
                 // segments are not materialized).
                 let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
-                match peko_session::path::resolve_reference(&metas, caller_id, path) {
+                match peko_session::path::resolve_reference(&metas, caller_id, &path) {
                     Ok(resolved) => {
                         let found = metas
                             .iter()
@@ -783,7 +784,7 @@ impl SubagentExecutor {
                                 .await;
                         }
                         return Err(crate::session::standing::err_name_not_spawned(
-                            path,
+                            &path,
                             &found.session_id.as_str(),
                         ));
                     }
@@ -793,7 +794,7 @@ impl SubagentExecutor {
                             return Err(anyhow::anyhow!(
                                 "action \"new\" with absolute path '{path}': no session exists \
                                  there and intermediate segments are not materialized — only \
-                                 single-segment top-level paths (e.g. \"/user-bob\") can be \
+                                 single-segment top-level paths (e.g. \"sess:/user-bob\") can be \
                                  created"
                             ));
                         }
@@ -844,13 +845,13 @@ impl SubagentExecutor {
                     return Err(
                         if found_parent_str.as_deref() == Some(parent_key.as_str()) {
                             peko_session::path::err_slug_conflict(
-                                path,
+                                &path,
                                 found.session_id,
                                 Some(peko_session::SessionId::from(parent_key.as_str())),
                             )
                         } else {
                             crate::session::standing::err_name_not_spawned(
-                                path,
+                                &path,
                                 &found.session_id.as_str(),
                             )
                         },
@@ -1508,10 +1509,11 @@ impl SubagentExecutor {
         let effective_slug: Option<String>;
         let mut overwrite_target: Option<peko_session::SessionMetadata> = None;
 
+        let target = peko_session::path::strip_scheme_prefix(target).to_string();
         if target.starts_with('/') {
-            peko_session::path::validate_path(target)?;
+            peko_session::path::validate_path(&target)?;
             let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
-            match peko_session::path::resolve_reference(&metas, caller_id, target) {
+            match peko_session::path::resolve_reference(&metas, caller_id, &target) {
                 Ok(resolved) => {
                     let found = metas
                         .iter()
@@ -1528,13 +1530,13 @@ impl SubagentExecutor {
                     }
                     if found.trigger != "spawn" {
                         return Err(crate::session::standing::err_name_not_spawned(
-                            target,
+                            &target,
                             &found.session_id.to_string(),
                         ));
                     }
                     if !overwrite {
                         return Err(peko_session::path::err_slug_conflict(
-                            target,
+                            &target,
                             found.session_id,
                             None,
                         ));
@@ -1555,7 +1557,7 @@ impl SubagentExecutor {
                         anyhow::bail!(
                             "branch with absolute path '{target}': no session exists there and \
                              intermediate segments are not materialized — only single-segment \
-                             top-level paths (e.g. \"/briefing\") can be created"
+                             top-level paths (e.g. \"sess:/briefing\") can be created"
                         );
                     }
                     peko_session::path::validate_slug(segment)?;
@@ -1570,25 +1572,25 @@ impl SubagentExecutor {
         } else {
             // Relative slug: caller-relative collision search in the
             // caller's subtree — same shape as `new`.
-            peko_session::path::validate_slug(target)?;
+            peko_session::path::validate_slug(&target)?;
             let subtree: std::collections::HashSet<String> =
                 descendants_of(&caller.current_session_id, &metas)
                     .into_iter()
                     .chain(std::iter::once(caller.current_session_id.clone()))
                     .collect();
             let found = metas.iter().find(|m| {
-                m.slug.as_deref() == Some(target) && subtree.contains(&m.session_id.to_string())
+                m.slug.as_deref() == Some(&target) && subtree.contains(&m.session_id.to_string())
             });
             if let Some(found) = found {
                 if found.trigger != "spawn" {
                     return Err(crate::session::standing::err_name_not_spawned(
-                        target,
+                        &target,
                         &found.session_id.to_string(),
                     ));
                 }
                 if !overwrite {
                     return Err(peko_session::path::err_slug_conflict(
-                        target,
+                        &target,
                         found.session_id,
                         Some(peko_session::SessionId::from(
                             caller.current_session_id.as_str(),
@@ -1602,7 +1604,7 @@ impl SubagentExecutor {
                     .unwrap_or_else(|| caller.current_session_id.clone());
                 effective_slug = found.slug.clone();
             } else {
-                effective_slug = Some(target.to_string());
+                effective_slug = Some(target.clone());
             }
         }
 

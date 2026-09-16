@@ -330,10 +330,14 @@ impl PassiveBindingResponder {
     ) -> Self {
         // The peer-DM provisioning writes the child's `/slug` path as
         // the binding verbatim (`peer_dm::ensure_peer_dm_channel`), so
-        // a `/`-rooted binding IS what `compute_path` renders for the
-        // bound session. Raw-id bindings (config-authored in
+        // a `/`-rooted binding IS the bound session's address as
+        // `compute_path` renders it (modulo the display-side `sess:`
+        // scheme prefix, added here so `via` matches `compute_path`
+        // output). Raw-id bindings (config-authored in
         // `principals.toml`) carry no path — `via` stays unset.
-        let via = binding.starts_with('/').then(|| binding.clone());
+        let via = binding
+            .starts_with('/')
+            .then(|| format!("{}{}", peko_session::path::SCHEME_PREFIX, binding));
         Self {
             inner: Arc::new(ResponderInner {
                 channel,
@@ -617,11 +621,13 @@ impl GroupWakeResponder {
     ) -> Self {
         // The bound child is `/group-<slug>` under the trunk; derive
         // the path with the same slug rule `ensure_group_child`
-        // applies, so `via` equals what `compute_path` renders for
-        // that session (modulo a `-N` suffix on the rare sanitized-
-        // slug collision between two channels — attribution only).
+        // applies, then add the display-side `sess:` scheme prefix so
+        // `via` equals what `compute_path` renders for that session
+        // (modulo a `-N` suffix on the rare sanitized-slug collision
+        // between two channels — attribution only).
         let via = format!(
-            "/{}",
+            "{}/{}",
+            peko_session::path::SCHEME_PREFIX,
             crate::principal::peer_children::group_child_base_slug(channel.as_str())
         );
         Self {

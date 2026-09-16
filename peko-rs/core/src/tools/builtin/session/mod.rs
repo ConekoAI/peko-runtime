@@ -86,9 +86,10 @@ pub struct SessionInfo {
     /// `None` for sessions that were never given a slug.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
-    /// Absolute display path (`/a/b` — slug segments, slugless
-    /// ancestors skipped, slugless target falling back to its raw id
-    /// as the last segment). Computed view only; ids stay canonical.
+    /// Absolute display path (`sess:/a/b` — `sess:` scheme prefix +
+    /// slug segments, slugless ancestors skipped, slugless target
+    /// falling back to its raw id as the last segment). Computed view
+    /// only; ids stay canonical.
     #[serde(default)]
     pub path: String,
 }
@@ -565,14 +566,14 @@ mod tests {
             archived: false,
             run_active: false,
             slug: Some("task-b".into()),
-            path: "/memory/task-b".into(),
+            path: "sess:/memory/task-b".into(),
         };
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["slug"], "task-b");
-        assert_eq!(json["path"], "/memory/task-b");
+        assert_eq!(json["path"], "sess:/memory/task-b");
         let back: SessionInfo = serde_json::from_value(json).unwrap();
         assert_eq!(back.slug.as_deref(), Some("task-b"));
-        assert_eq!(back.path, "/memory/task-b");
+        assert_eq!(back.path, "sess:/memory/task-b");
     }
 
     #[test]

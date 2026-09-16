@@ -241,7 +241,10 @@ callers (non-privileged callers who ask get ownership-clamped to
 their subtree with a structured warning); `path: "/other/sub"`
 scopes further to any subtree the caller has ownership access to.
 `session list` shows `slug` + computed `path` (`compute_path`
-skips slugless ancestors, display-only).
+skips slugless ancestors, display-only). Display paths carry the
+`sess:` scheme prefix (`sess:/a/b/c`) so a session address can never
+be mistaken for a filesystem path; resolvers accept both the
+prefixed and the legacy bare `/a/b/c` form.
 
 ## 3. Channels: the external interface
 

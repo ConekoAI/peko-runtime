@@ -646,7 +646,7 @@ fn render_self_position(
 ) -> Option<String> {
     let meta = metas.iter().find(|m| m.session_id == session_id)?;
     if meta.parent_session_id.is_none() {
-        return Some("your position: `/` — root session (the principal's trunk)".to_string());
+        return Some("your position: `sess:/` — root session (the principal's trunk)".to_string());
     }
     let path = peko_session::path::compute_path(metas, session_id);
     let role = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
@@ -1361,7 +1361,7 @@ mod tests {
         let (trunk, _, _, metas) = position_tree();
         let rendered = render_self_position(&metas, trunk).expect("trunk has a position");
         assert_eq!(
-            rendered, "your position: `/` — root session (the principal's trunk)",
+            rendered, "your position: `sess:/` — root session (the principal's trunk)",
             "got: {rendered}"
         );
     }
@@ -1372,7 +1372,7 @@ mod tests {
         let rendered = render_self_position(&metas, local_user).expect("peer child has a position");
         assert_eq!(
             rendered,
-            "your position: `/local-user` — standing peer child of the trunk (peer: user:local)",
+            "your position: `sess:/local-user` — standing peer child of the trunk (peer: user:local)",
             "got: {rendered}"
         );
     }
@@ -1382,7 +1382,7 @@ mod tests {
         let (_, _, task, metas) = position_tree();
         let rendered = render_self_position(&metas, task).expect("spawned child has a position");
         assert_eq!(
-            rendered, "your position: `/memory/task-b` — spawned child session",
+            rendered, "your position: `sess:/memory/task-b` — spawned child session",
             "got: {rendered}"
         );
     }

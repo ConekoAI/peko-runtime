@@ -16,7 +16,10 @@
 //! - display name: `dm-<peer_child_slug>` for all peer kinds (display
 //!   convention, not routing — kept for `peko log` continuity and the
 //!   `dm-…` prefix tests pin);
-//! - `passive_binding`: the peer child's `/`-path (`/<slug>`) — the
+//! - `passive_binding`: the peer child's `/`-path (`/<slug>`, legacy
+//!   bare form — the `sess:` scheme prefix is a display-side concern
+//!   added by `compute_path` and the attribution stamps, never stored
+//!   here, so existing channels keep matching across upgrades) — the
 //!   shape the `PassiveBindingResponder` fixtures
 //!   (`daemon::channel_binding`) and `SessionStoreBindingResolver`'s
 //!   `/`-path resolution both speak. Raw session ids would also pass
@@ -247,9 +250,10 @@ pub(crate) async fn post_peer_dm_inbound(
 /// `via` attribution: the reply projects the bound peer-child
 /// session's own output, and the channel's passive binding IS that
 /// session's `/slug` path (`ensure_peer_dm_channel`), so it is
-/// stamped here. Best-effort: a binding read failure or a
-/// non-`/`-rooted binding leaves the post unattributed — attribution
-/// never blocks the projection.
+/// stamped here with the display-side `sess:` scheme prefix added
+/// (matching `compute_path` output). Best-effort: a binding read
+/// failure or a non-`/`-rooted binding leaves the post unattributed —
+/// attribution never blocks the projection.
 ///
 /// Warn-only on failure, mirroring the failure posture of the
 /// responder's reply post (`daemon::channel_binding::ResponderInner`):
@@ -271,7 +275,8 @@ pub(crate) async fn post_peer_dm_reply(
         .await
         .ok()
         .flatten()
-        .filter(|b| b.starts_with('/'));
+        .filter(|b| b.starts_with('/'))
+        .map(|b| format!("{}{}", peko_session::path::SCHEME_PREFIX, b));
     let mut msg = PostMsg::root(text);
     msg.via = via;
     if let Err(e) = port.post(channel, &Subject::from(principal), msg).await {
