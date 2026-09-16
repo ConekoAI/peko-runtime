@@ -2115,6 +2115,20 @@ impl crate::tunnel::TunnelHost for AppState {
         Arc::clone(&self.invite_revocation_set)
     }
 
+    /// ADR-058 D4: built on demand from the same vault + principal
+    /// manager the D2 cross-runtime ctx uses (announces are rare, so a
+    /// shared cached instance is unnecessary; the per-DID key cache
+    /// lives inside each instance).
+    fn principal_signing_keys(
+        &self,
+    ) -> Arc<dyn crate::tunnel::cross_runtime_channel::PrincipalSigningKeys> {
+        Arc::new(VaultPrincipalSigningKeys {
+            vault: Arc::clone(&self.vault),
+            principal_manager: Arc::clone(&self.principal_manager),
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
     /// peko-channel cross-runtime PR-B commit 2: typed accessor for
     /// the concrete `TunnelChannelPort`. The dispatcher's
     /// `handle_inbound_tunnel_channel_event` calls

@@ -38,7 +38,7 @@ pub enum ConfigCommands {
 
     /// Get a configuration value
     Get {
-        /// Key path (e.g., "daemon.bind_address" or "defaults.provider")
+        /// Key path (e.g., "daemon.log_level" or "defaults.provider")
         key: String,
         /// Config file to read from
         #[arg(short, long)]
@@ -216,7 +216,6 @@ pub async fn handle_config(
 fn minimal_config_template() -> toml::Value {
     toml::toml! {
         [daemon]
-        bind_address = "127.0.0.1:11435"
         log_level = "info"
 
         [defaults]
@@ -231,7 +230,6 @@ fn minimal_config_template() -> toml::Value {
 fn full_config_template() -> toml::Value {
     toml::toml! {
         [daemon]
-        bind_address = "127.0.0.1:11435"
         log_level = "info"
 
         [defaults]
@@ -313,15 +311,15 @@ mod tests {
         assert!(!config_file.exists());
 
         let cmd = ConfigCommands::Set {
-            key: "daemon.bind_address".to_string(),
-            value: "0.0.0.0:8080".to_string(),
+            key: "daemon.log_level".to_string(),
+            value: "debug".to_string(),
             file: None,
         };
         handle_config(cmd, &paths, false).await.unwrap();
 
         assert!(config_file.exists());
         let contents = std::fs::read_to_string(&config_file).unwrap();
-        assert!(contents.contains("0.0.0.0:8080"));
+        assert!(contents.contains("debug"));
     }
 
     #[tokio::test]

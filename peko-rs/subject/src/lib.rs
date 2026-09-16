@@ -7,7 +7,7 @@
 //! A `Subject` is any actor that can initiate an action or appear in an
 //! ownership/grant record: a user, an AI principal, or the public.
 //!
-//! Display format: `"user:{id}" | "principal:{id}" | "public"`.
+//! Display format: `"user:{id}" | "principal:{id}" | "visitor:{id}" | "public"`.
 //! FromStr is the inverse. Round-trips are byte-stable.
 
 use std::fmt;
@@ -93,13 +93,13 @@ impl fmt::Display for PrincipalDID {
     }
 }
 
-/// A runtime actor: a user, a principal, or the public.
+/// A runtime actor: a user, a principal, a visitor, or the public.
 ///
-/// `User` and `Principal` are valid session peers (they have an id you can
-/// key a session on). `Public` is not — it has no identity.
+/// `User`, `Principal`, and `Visitor` are valid session peers (they have
+/// an id you can key a session on). `Public` is not — it has no identity.
 /// See `Subject::is_session_peer`.
 ///
-/// Wire format: `{ "kind": "user" | "principal" | "public", "id": "..." }`
+/// Wire format: `{ "kind": "user" | "principal" | "visitor" | "public", "id": "..." }`
 /// via `#[serde(tag = "kind", content = "id")]`.
 ///
 /// **Audit H6:** `Principal` carries a typed [`PrincipalDID`] newtype
@@ -117,6 +117,14 @@ pub enum Subject {
     /// [`PrincipalDID`] so the principal id surface can carry validation
     /// in one place.
     Principal(PrincipalDID),
+    /// An anonymous visitor authenticated only by a hub-minted id
+    /// (ADR-058 D5). Visitors are ordinary non-owner peers: they can
+    /// chat with exposed principals (their conversations land in
+    /// `/visitor-<id>` peer children) but carry no user-principal
+    /// authority assumptions and can never alias the `user:`,
+    /// `principal:`, or reserved `local` namespaces — the type-level
+    /// separation is what makes that guarantee enforceable.
+    Visitor(String),
     /// Unauthenticated public access.
     Public,
 }
@@ -154,6 +162,7 @@ impl From<PrincipalId> for Subject {
 pub enum SubjectKind {
     User,
     Principal,
+    Visitor,
     Public,
 }
 
@@ -162,6 +171,7 @@ impl fmt::Display for SubjectKind {
         match self {
             Self::User => f.write_str("user"),
             Self::Principal => f.write_str("principal"),
+            Self::Visitor => f.write_str("visitor"),
             Self::Public => f.write_str("public"),
         }
     }
@@ -174,6 +184,7 @@ impl Subject {
         match self {
             Self::User(_) => SubjectKind::User,
             Self::Principal(_) => SubjectKind::Principal,
+            Self::Visitor(_) => SubjectKind::Visitor,
             Self::Public => SubjectKind::Public,
         }
     }
@@ -186,55 +197,68 @@ impl Subject {
         match self {
             Self::User(id) => id,
             Self::Principal(id) => id.as_str(),
+            Self::Visitor(id) => id,
             Self::Public => "public",
         }
     }
 
     /// True if this subject can be used as a session peer.
     ///
-    /// Only `User` and `Principal` carry a per-session identity. `Public`
-    /// is not a peer identity.
+    /// `User`, `Principal`, and `Visitor` carry a per-session identity.
+    /// `Public` is not a peer identity.
     #[must_use]
     pub fn is_session_peer(&self) -> bool {
-        matches!(self, Self::User(_) | Self::Principal(_))
+        matches!(self, Self::User(_) | Self::Principal(_) | Self::Visitor(_))
     }
 
-    /// Project a tunnel-bridge user string (the value returned by
-    /// `resolve_bridge_caller`) into a `Subject` (issue #26).
+    /// ADR-058 D5: map a validated bridge token's typed claims into a
+    /// `Subject`. The bridge JWT (minted by PekoHub for proxied chat)
+    /// carries a `kind` claim alongside `sub`; only two kinds exist:
     ///
-    /// The bridge is the PekoHub-proxied request path. Its caller is
-    /// always a pekohub *user* — but the `"anonymous"` fallback is
-    /// semantically unauthenticated, not a user named "anonymous", so
-    /// it maps to `Subject::Public`.
+    /// - `kind == "user"` → `sub` is a hub account id → [`Subject::User`]
+    /// - `kind == "visitor"` → `sub` is a hub-minted anonymous id →
+    ///   [`Subject::Visitor`]
     ///
-    /// **Prefix normalization (issue #68):** PekoHub sends the caller
-    /// id as a bare numeric string (`"39"`) but its own wire format
-    /// for `Subject` includes the `user:` tag. The on-disk grant
-    /// (parsed via `subject_from_string_with_default_user`) strips
-    /// `user:` to store `Subject::User("39")` — the bare form. Without
-    /// normalization here, the inbound bridge path would produce
-    /// `Subject::User("user:39")` and the permission check would never
-    /// match the stored grant. We strip any leading `user:` so
-    /// `from_bridge_user("39")` and `from_bridge_user("user:39")` both
-    /// collapse to the same `Subject::User("39")` the grant stores.
-    /// (A second leading `user:` is not stripped — `strip_prefix`
-    /// removes only one occurrence, which is sufficient for the
-    /// PekoHub wire formats we observe in practice.)
+    /// Any other `kind` is an error (fail-closed — a token without a
+    /// recognized `kind` claim is rejected by the caller). The `sub`
+    /// is additionally constrained so a hub-minted id can never alias
+    /// another identity namespace:
     ///
-    /// Centralized here so the prefix-strip and the anonymous
-    /// special-case live next to the type's other constructors
-    /// instead of being inlined at every call site.
-    #[must_use]
-    pub fn from_bridge_user(sub: &str) -> Subject {
-        if sub == "anonymous" {
-            Self::Public
-        } else if let Some(did) = sub.strip_prefix("principal:") {
-            // ADR-057: pekohub principal-kind bridge callers attribute
-            // as their DID actor, never as a user.
-            Self::Principal(PrincipalDID(did.to_string()))
-        } else {
-            let bare = sub.strip_prefix("user:").unwrap_or(sub);
-            Self::User(bare.to_string())
+    /// - empty subs are rejected for both kinds;
+    /// - subs containing `:` are rejected for both kinds (a `:` would
+    ///   let a single string smuggle a `principal:`/`user:`/`visitor:`
+    ///   wire prefix into the wrong namespace);
+    /// - a visitor sub of `"local"` is rejected (it would collide with
+    ///   the reserved local-owner id).
+    ///
+    /// This replaces the retired `from_bridge_user` string coercion
+    /// (whose `principal:`-prefix mapping let a hub-minted visitor id
+    /// forge a principal subject — the D5 bug).
+    pub fn from_bridge_claim(kind: &str, sub: &str) -> Result<Subject, SubjectParseError> {
+        if sub.is_empty() {
+            return Err(SubjectParseError(format!(
+                "bridge claim kind '{kind}' carries an empty sub"
+            )));
+        }
+        if sub.contains(':') {
+            return Err(SubjectParseError(format!(
+                "bridge claim sub must not contain ':' (namespace aliasing); got '{sub}'"
+            )));
+        }
+        match kind {
+            "user" => Ok(Self::User(sub.to_string())),
+            "visitor" => {
+                if sub == "local" {
+                    Err(SubjectParseError(
+                        "visitor sub 'local' is reserved for the local owner".to_string(),
+                    ))
+                } else {
+                    Ok(Self::Visitor(sub.to_string()))
+                }
+            }
+            other => Err(SubjectParseError(format!(
+                "unknown bridge claim kind '{other}' (expected 'user' or 'visitor')"
+            ))),
         }
     }
 
@@ -264,6 +288,7 @@ impl fmt::Display for Subject {
         match self {
             Self::User(id) => write!(f, "user:{id}"),
             Self::Principal(id) => write!(f, "principal:{id}"),
+            Self::Visitor(id) => write!(f, "visitor:{id}"),
             Self::Public => f.write_str("public"),
         }
     }
@@ -300,6 +325,7 @@ impl FromStr for Subject {
         match kind {
             "user" => Ok(Self::User(id.to_string())),
             "principal" => Ok(Self::Principal(PrincipalDID::from(id))),
+            "visitor" => Ok(Self::Visitor(id.to_string())),
             other => Err(SubjectParseError(format!("unknown kind '{other}'"))),
         }
     }
@@ -369,6 +395,7 @@ mod tests {
         for p in [
             Subject::User("alice".into()),
             Subject::Principal("helper".into()),
+            Subject::Visitor("vis_abc123".into()),
             Subject::Public,
         ] {
             let s = p.to_string();
@@ -384,6 +411,10 @@ mod tests {
             Subject::Principal("helper".into()).to_string(),
             "principal:helper"
         );
+        assert_eq!(
+            Subject::Visitor("vis_abc123".into()).to_string(),
+            "visitor:vis_abc123"
+        );
         assert_eq!(Subject::Public.to_string(), "public");
     }
 
@@ -396,6 +427,10 @@ mod tests {
         assert_eq!(
             Subject::from_str("principal:helper").unwrap(),
             Subject::Principal("helper".into())
+        );
+        assert_eq!(
+            Subject::from_str("visitor:vis_abc123").unwrap(),
+            Subject::Visitor("vis_abc123".into())
         );
         assert_eq!(Subject::from_str("public").unwrap(), Subject::Public);
     }
@@ -416,6 +451,7 @@ mod tests {
             Subject::Principal("a".into()).kind(),
             SubjectKind::Principal
         );
+        assert_eq!(Subject::Visitor("a".into()).kind(), SubjectKind::Visitor);
         assert_eq!(Subject::Public.kind(), SubjectKind::Public);
     }
 
@@ -423,18 +459,21 @@ mod tests {
     fn test_subject_id_and_equality() {
         assert_eq!(Subject::User("alice".into()).subject_id(), "alice");
         assert_eq!(Subject::Principal("alice".into()).subject_id(), "alice");
+        assert_eq!(Subject::Visitor("alice".into()).subject_id(), "alice");
         assert_eq!(Subject::Public.subject_id(), "public");
 
         // Same kind + same id -> equal
         assert_eq!(Subject::User("a".into()), Subject::User("a".into()));
         // Different kind, same id -> not equal (cross-kind guard)
         assert_ne!(Subject::User("a".into()), Subject::Principal("a".into()));
+        assert_ne!(Subject::User("a".into()), Subject::Visitor("a".into()));
     }
 
     #[test]
     fn test_is_session_peer() {
         assert!(Subject::User("a".into()).is_session_peer());
         assert!(Subject::Principal("a".into()).is_session_peer());
+        assert!(Subject::Visitor("a".into()).is_session_peer());
         assert!(!Subject::Public.is_session_peer());
     }
 
@@ -449,64 +488,62 @@ mod tests {
             Subject::Principal("helper".into()).kind().to_string(),
             "principal"
         );
+        assert_eq!(
+            Subject::Visitor("vis_abc123".into()).kind().to_string(),
+            "visitor"
+        );
         assert_eq!(Subject::Public.kind().to_string(), "public");
     }
 
-    /// Issue #26 + #68: the tunnel dispatcher stamps audit events with
-    /// a `Subject` projection of the bridge caller string. The
-    /// `"anonymous"` fallback is semantically unauthenticated ->
-    /// `Subject::Public`; everything else is a pekohub user.
-    ///
-    /// **Prefix normalization (issue #68):** PekoHub sends the caller
-    /// id as a bare numeric string (`"39"`) but its own wire format
-    /// for `Subject` includes the `user:` tag. The on-disk grant
-    /// (parsed via `subject_from_string_with_default_user`) strips
-    /// `user:` to store `Subject::User("39")` — the bare form. We
-    /// collapse any leading `user:` here so the bridge and CLI paths
-    /// produce the same `Subject::User("39")` that the permission
-    /// check matches against.
+    /// ADR-058 D5: the bridge token's typed `kind` claim maps to a
+    /// typed `Subject`; the retired `from_bridge_user` string coercion
+    /// (which let a hub-minted visitor id forge `principal:<did>` or
+    /// `user:local`) is gone.
     #[test]
-    fn test_from_bridge_user() {
-        // Bare numeric user id from PekoHub — no prefix to strip.
+    fn test_from_bridge_claim_happy_paths() {
         assert_eq!(
-            Subject::from_bridge_user("39"),
+            Subject::from_bridge_claim("user", "39").unwrap(),
             Subject::User("39".to_string())
         );
-
-        // PekoHub's own wire format (`user:39`) collapses to the same
-        // bare form. This is the asymmetry fix for #68.
         assert_eq!(
-            Subject::from_bridge_user("user:39"),
-            Subject::User("39".to_string())
-        );
-
-        // Double-prefix collapses one layer — `strip_prefix` only
-        // removes a single leading occurrence, so the result still
-        // carries one `user:` tag. PekoHub never sends a double-
-        // prefixed value in practice; this just pins the literal
-        // behavior so a future change to a recursive stripper is
-        // caught.
-        assert_eq!(
-            Subject::from_bridge_user("user:user:39"),
-            Subject::User("user:39".to_string())
-        );
-
-        // JWT-validated path returns a pekohub sub like `user-42`;
-        // no `user:` prefix to strip, but the kind tag is not added
-        // here — callers that need a wire-tagged Subject use
-        // `Subject::from_str`.
-        assert_eq!(
-            Subject::from_bridge_user("user-42"),
+            Subject::from_bridge_claim("user", "user-42").unwrap(),
             Subject::User("user-42".to_string())
         );
+        assert_eq!(
+            Subject::from_bridge_claim("visitor", "vis_abc123").unwrap(),
+            Subject::Visitor("vis_abc123".to_string())
+        );
+    }
 
-        // "anonymous" fallback -> unauthenticated, not a user.
-        assert_eq!(Subject::from_bridge_user("anonymous"), Subject::Public);
+    #[test]
+    fn test_from_bridge_claim_rejects_unknown_kind() {
+        // A bridge token can never again produce a principal subject.
+        assert!(Subject::from_bridge_claim("principal", "did:key:z6MkX").is_err());
+        assert!(Subject::from_bridge_claim("", "39").is_err());
+        assert!(Subject::from_bridge_claim("admin", "39").is_err());
+    }
 
-        // Empty string projects to `Subject::User("")`, distinguishable
-        // from `Subject::Public`. Caller-side validation is responsible
-        // for not passing empty strings.
-        assert_eq!(Subject::from_bridge_user(""), Subject::User(String::new()));
+    #[test]
+    fn test_from_bridge_claim_rejects_empty_sub() {
+        assert!(Subject::from_bridge_claim("user", "").is_err());
+        assert!(Subject::from_bridge_claim("visitor", "").is_err());
+    }
+
+    #[test]
+    fn test_from_bridge_claim_rejects_namespace_aliasing_subs() {
+        // A ':' in the sub would smuggle a wire prefix into the wrong
+        // namespace — the exact D5 forgery shapes.
+        assert!(Subject::from_bridge_claim("visitor", "principal:did:key:z6MkX").is_err());
+        assert!(Subject::from_bridge_claim("visitor", "user:39").is_err());
+        assert!(Subject::from_bridge_claim("user", "principal:did:key:z6MkX").is_err());
+        assert!(Subject::from_bridge_claim("user", "user:39").is_err());
+    }
+
+    #[test]
+    fn test_from_bridge_claim_rejects_local_visitor() {
+        // `local` is the reserved local-owner id; a visitor must never
+        // claim it (it would land in the `/local-user` peer child).
+        assert!(Subject::from_bridge_claim("visitor", "local").is_err());
     }
 
     #[test]

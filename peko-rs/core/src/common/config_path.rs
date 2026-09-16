@@ -409,10 +409,10 @@ mod tests {
     fn test_get_toml_nested() {
         let config = toml::Value::Table(toml::toml! {
             [daemon]
-            bind_address = "127.0.0.1:11435"
+            log_level = "info"
         });
-        let value = get_toml_value(&config, "daemon.bind_address").unwrap();
-        assert_eq!(value, toml::Value::String("127.0.0.1:11435".to_string()));
+        let value = get_toml_value(&config, "daemon.log_level").unwrap();
+        assert_eq!(value, toml::Value::String("info".to_string()));
     }
 
     #[test]
@@ -453,12 +453,12 @@ mod tests {
     fn test_set_toml_nested_value() {
         let config = toml::Value::Table(toml::toml! {
             [daemon]
-            bind_address = "127.0.0.1:11435"
+            log_level = "info"
         });
-        let updated = set_toml_value(config, "daemon.bind_address", "0.0.0.0:8080").unwrap();
+        let updated = set_toml_value(config, "daemon.log_level", "debug").unwrap();
         assert_eq!(
-            updated.get("daemon").unwrap().get("bind_address").unwrap(),
-            &toml::Value::String("0.0.0.0:8080".to_string())
+            updated.get("daemon").unwrap().get("log_level").unwrap(),
+            &toml::Value::String("debug".to_string())
         );
     }
 

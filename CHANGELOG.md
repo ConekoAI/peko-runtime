@@ -42,6 +42,54 @@ Breaking wire change (pre-launch, no compat shim — see
   compromised runtime can no longer speak for principals it does not
   host.
 
+### ADR-058 D4/D5/D6/D7 — PoP registration, typed bridge claims, transport hardening (2026-09-16)
+
+- **D4 — directory writes carry proof of possession.** `peko tunnel
+  setup` now fetches `POST /v1/runtimes/register-challenge` and
+  includes `pop: {nonce, jws}` in the register body — a compact EdDSA
+  JWS over `{"nonce","runtimeDid","owner","iat","exp"}` signed with the
+  runtime identity key (hubs predating D4 get the legacy body without
+  `pop`). `InstanceAnnouncePayload` gains `principalPop`: for
+  `did:key` principals, a compact JWS over
+  `{"runtimeId","principalDid","iat","exp"}` (exp = iat + 300) signed
+  with the principal's own vault-backed key (D1). Legacy non-`did:key`
+  principals announce without it (hub policy treats them as
+  unverified).
+- **D5 — bridge token claims are typed; `Subject::Visitor` added.**
+  The bridge JWT must now carry `kind: "user" | "visitor"`;
+  `resolve_bridge_caller` maps `(kind, sub)` via the new
+  `Subject::from_bridge_claim` and rejects (fail-closed) missing or
+  unknown kinds, empty subs, subs containing `:`, and visitor sub
+  `local`. The stringly-typed `from_bridge_user` coercion (whose
+  `principal:`-prefix mapping let a hub-minted visitor id forge a
+  principal subject or `user:local`) is deleted — a bridge token can
+  never again produce a principal subject. `Subject::Visitor(<id>)` is
+  a distinct `SubjectKind` (`visitor:<id>` display/wire form): session
+  peers with their own `/visitor-<id>` peer children, kind-aware
+  Private-exposure ACL matching, no Local-tier authority, no owner
+  equality (grant matching is `Subject` equality throughout).
+- **D6 — local transport hardening.** `$PEKO_HOME/run` is created and
+  maintained at mode `0700`; `daemon.sock` is chmod `0600` after bind.
+  On Linux the Unix-datagram IPC socket enables `SO_PASSCRED` and the
+  receive loop rejects any datagram whose `SCM_CREDENTIALS` uid differs
+  from the daemon's (via `nix` 0.26.4, already vendored — no new
+  crate; macOS has no per-message credential passing for
+  AF_UNIX/SOCK_DGRAM, so the mode bits are the mechanism there —
+  documented residual). The inert `daemon.bind_address` /
+  `network.bind_address` knobs are deleted (the bind is a loopback
+  constant); the UDP loopback fallback is documented as
+  unauthenticatable same-host trust.
+- **D7 — channel read gates + event provenance.** IPC `ChannelMembers`
+  is membership-gated like `ChannelPeek`/`ChannelEventsWatch`;
+  `ChannelList` is operator-gated (Derived callers only). New
+  `events.jsonl` lines are written as a provenance envelope
+  `{"origin": "local" | "verified-remote", "event": {...}}` —
+  `append_remote_event` (dispatcher-verified mirrors) writes
+  `verified-remote`, everything else `local`; readers tolerate legacy
+  bare `ChannelEvent` lines (treated as `local`). The
+  `ChannelEvent` wire type is unchanged and `peko log` output is
+  unchanged.
+
 ### Filesystem model: whole-store reach, no GC, no privilege (2026-09-12)
 
 - **The session hierarchy is now purely organizational** — like paths

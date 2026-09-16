@@ -4,9 +4,13 @@
 //! Each request is dispatched to the appropriate service, and responses
 //! are streamed back to the CLI.
 //!
-//! Transports (ADR-021, ADR-038):
+//! Transports (ADR-021, ADR-038, ADR-058 D6):
 //!   - **Unix**: Unix domain datagram socket at `~/.peko/run/daemon.sock`
-//!     (file mode 0600 — kernel-enforced peer identity).
+//!     (run dir mode 0700, socket file mode 0600). On Linux the server
+//!     additionally enables `SO_PASSCRED` and rejects any datagram whose
+//!     `SCM_CREDENTIALS` uid differs from the daemon's; macOS has no
+//!     per-message credential passing for AF_UNIX/SOCK_DGRAM, so the
+//!     mode bits are the trust mechanism there.
 //!   - **Windows**: Named pipe at `\\.\pipe\peko-{username}` (ADR-038) with
 //!     a DACL that grants the current user Generic All — kernel-enforced
 //!     peer identity analogous to Unix 0600.
@@ -189,6 +193,77 @@ pub fn bump_recv_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
     }
 }
 
+/// ADR-058 D6 (Linux): enable `SO_PASSCRED` so every received datagram
+/// carries the sender's `SCM_CREDENTIALS` (uid/gid/pid). Combined with
+/// the `0700` run dir + `0600` socket mode, this lets the recv loop
+/// reject peers whose uid differs from the daemon's — the Docker /
+/// systemd local-socket posture.
+#[cfg(target_os = "linux")]
+fn enable_passcred<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
+    nix::sys::socket::setsockopt(
+        socket.as_raw_fd(),
+        nix::sys::socket::sockopt::PassCred,
+        &true,
+    )
+    .map_err(std::io::Error::other)
+}
+
+/// ADR-058 D6 (Linux): receive one datagram together with its
+/// `SCM_CREDENTIALS` and enforce same-uid peers. Datagrams from a
+/// different uid — or with no credentials at all (fail-closed) — are
+/// logged and dropped, and the loop continues with the next datagram.
+#[cfg(target_os = "linux")]
+async fn recv_from_same_uid(
+    socket: &UnixDatagram,
+    buf: &mut [u8],
+) -> std::io::Result<(usize, PeerAddr)> {
+    use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags, UnixAddr};
+    loop {
+        let (len, path, sender_uid) = socket
+            .async_io(tokio::io::Interest::READABLE, || {
+                let mut iov = [std::io::IoSliceMut::new(&mut *buf)];
+                let mut cmsg = nix::cmsg_space!(libc::ucred);
+                let msg = recvmsg::<UnixAddr>(
+                    socket.as_raw_fd(),
+                    &mut iov,
+                    Some(&mut cmsg),
+                    MsgFlags::empty(),
+                )
+                .map_err(std::io::Error::from)?;
+                let uid = msg.cmsgs().find_map(|c| match c {
+                    ControlMessageOwned::ScmCredentials(cred) => Some(cred.uid()),
+                    _ => None,
+                });
+                let path = msg
+                    .address
+                    .as_ref()
+                    .and_then(|a| a.path().map(|p| p.to_path_buf()));
+                Ok((msg.bytes, path, uid))
+            })
+            .await?;
+
+        let Some(uid) = sender_uid else {
+            warn!("IPC unix socket: dropping datagram with no SCM_CREDENTIALS (fail-closed)");
+            continue;
+        };
+        // SAFETY: `getuid` takes no arguments and cannot fail.
+        let own_uid = unsafe { libc::getuid() };
+        if uid != own_uid {
+            warn!(
+                sender_uid = uid,
+                own_uid, "IPC unix socket: rejecting datagram from a different-uid peer"
+            );
+            continue;
+        }
+        let Some(path) = path else {
+            return Err(std::io::Error::other(
+                "Unix peer without a filesystem path (anonymous socket?)",
+            ));
+        };
+        return Ok((len, PeerAddr::Unix(path)));
+    }
+}
+
 impl ServerSocket {
     /// Receive a packet from the socket
     ///
@@ -205,14 +280,28 @@ impl ServerSocket {
         match self {
             #[cfg(unix)]
             Self::Unix { socket, .. } => {
-                let (len, addr) = socket.recv_from(buf).await?;
-                let path = addr.as_pathname().map(|p| p.to_path_buf()).ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Unix peer without a filesystem path (anonymous socket?)",
-                    )
-                })?;
-                Ok((len, PeerAddr::Unix(path)))
+                // ADR-058 D6: on Linux, every datagram is received with
+                // its SCM_CREDENTIALS and different-uid peers are
+                // rejected (SO_PASSCRED was enabled at bind). macOS has
+                // no per-message credential passing for
+                // AF_UNIX/SOCK_DGRAM — the 0700 run-dir / 0600 socket
+                // modes are the trust mechanism there (documented
+                // residual).
+                #[cfg(target_os = "linux")]
+                {
+                    recv_from_same_uid(socket, buf).await
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let (len, addr) = socket.recv_from(buf).await?;
+                    let path = addr.as_pathname().map(|p| p.to_path_buf()).ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "Unix peer without a filesystem path (anonymous socket?)",
+                        )
+                    })?;
+                    Ok((len, PeerAddr::Unix(path)))
+                }
             }
             Self::Udp { socket } => {
                 let (len, addr) = socket.recv_from(buf).await?;
@@ -258,6 +347,37 @@ impl IpcServer {
 
             match UnixDatagram::bind(&sock_path) {
                 Ok(socket) => {
+                    // ADR-058 D6: restrict the socket to the daemon's
+                    // own uid. The comment below used to claim
+                    // "filesystem mode bits" were the trust boundary,
+                    // but nothing ever set them — bind() creates the
+                    // socket with the process umask, typically
+                    // world-accessible. `0600` matches the vault /
+                    // identity-key hygiene.
+                    if let Err(e) = std::fs::set_permissions(
+                        &sock_path,
+                        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(
+                            0o600,
+                        ),
+                    ) {
+                        warn!(
+                            "Failed to chmod 0600 the IPC socket {} ({}); \
+                             continuing with umask-derived permissions",
+                            sock_path.display(),
+                            e
+                        );
+                    }
+                    // ADR-058 D6 (Linux): enable per-message
+                    // SCM_CREDENTIALS so `recv_from` can reject
+                    // different-uid peers (see `recv_from_same_uid`).
+                    #[cfg(target_os = "linux")]
+                    if let Err(e) = enable_passcred(&socket) {
+                        warn!(
+                            "Failed to set SO_PASSCRED on the IPC socket ({}); \
+                             same-uid enforcement falls back to the 0700/0600 mode bits",
+                            e
+                        );
+                    }
                     // macOS's default `SO_SNDBUF` for `AF_UNIX/SOCK_DGRAM`
                     // is 2048 bytes, which is *smaller* than the
                     // `provider_list` response once the catalog has more
@@ -315,7 +435,18 @@ impl IpcServer {
             }
         }
 
-        // 3. Fall back to UDP — the universal last-resort safety net
+        // 3. Fall back to UDP — the universal last-resort safety net.
+        //
+        // ADR-058 D6 (documented residual): this transport is
+        // UNAUTHENTICATABLE same-host trust. UDP datagrams carry no
+        // peer credentials, so any process able to send to the loopback
+        // address can reach the daemon over this transport; the
+        // `Identity::Local` it produces means only "a process on this
+        // host claiming nothing," which is why the Unix socket (0700
+        // dir / 0600 file / Linux SCM_CREDENTIALS check) and the
+        // Windows named pipe (DACL) are the preferred transports. The
+        // bind address is a loopback constant — the retired
+        // `daemon.bind_address` knob was never read (ADR-058 D6).
         let addr_str = format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT);
         let socket = UdpSocket::bind(&addr_str)
             .await
@@ -338,7 +469,11 @@ impl IpcServer {
 
         // ADR-034: Enforce auth for public binds. Only fires for the
         // UDP transport — Unix sockets and named pipes have their own
-        // transport-layer trust boundaries.
+        // transport-layer trust boundaries. ADR-058 D6: with the inert
+        // `daemon.bind_address` knob deleted, the bind is a loopback
+        // constant, so this check can never trip today; it stays as a
+        // guard in case a future change makes the bind configurable
+        // again (then it MUST come back with mandatory auth).
         #[cfg(not(windows))]
         {
             let auth_config = app_state.auth_config();
@@ -1027,5 +1162,47 @@ mod buffer_tests {
     #[allow(dead_code)]
     fn _ensure_request_packet_in_scope() -> RequestPacket {
         RequestPacket::Ping { request_id: 1 }
+    }
+}
+
+/// ADR-058 D6 (Linux-only): the SO_PASSCRED / SCM_CREDENTIALS
+/// same-uid enforcement on the Unix datagram transport. Compiles and
+/// runs only on Linux — macOS has no per-message credential passing
+/// for AF_UNIX/SOCK_DGRAM (documented residual).
+#[cfg(all(test, target_os = "linux"))]
+mod peercred_tests {
+    use super::{enable_passcred, recv_from_same_uid, PeerAddr};
+    use tokio::net::UnixDatagram;
+
+    #[tokio::test]
+    async fn passcred_round_trip_accepts_same_uid_peer() {
+        let server_path =
+            std::env::temp_dir().join(format!("peko_ipc_cred_server_{}.sock", std::process::id()));
+        let client_path =
+            std::env::temp_dir().join(format!("peko_ipc_cred_client_{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&server_path);
+        let _ = std::fs::remove_file(&client_path);
+
+        let server = UnixDatagram::bind(&server_path).expect("server bind");
+        enable_passcred(&server).expect("SO_PASSCRED must be settable on a unix datagram");
+        let client = UnixDatagram::bind(&client_path).expect("client bind");
+
+        client
+            .send_to(b"hello", &server_path)
+            .await
+            .expect("client send");
+
+        let mut buf = [0u8; 64];
+        let (len, peer) = recv_from_same_uid(&server, &mut buf)
+            .await
+            .expect("same-uid datagram must be accepted");
+        assert_eq!(&buf[..len], b"hello");
+        match peer {
+            PeerAddr::Unix(path) => assert_eq!(path, client_path),
+            other => panic!("expected a Unix peer address; got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(&server_path);
+        let _ = std::fs::remove_file(&client_path);
     }
 }

@@ -71,8 +71,10 @@ impl Default for StorageConfig {
 /// Network configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
-    /// Bind address
-    pub bind_address: String,
+    // ADR-058 D6: the `bind_address` field was deleted — it was never
+    // read (the daemon's HTTP/IPC bind is a loopback constant), so the
+    // knob silently did nothing. Reintroduce only with mandatory
+    // credential auth when remote daemon access is a designed feature.
     /// Port for HTTP API
     pub port: u16,
     /// Enable TLS
@@ -95,7 +97,6 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            bind_address: "127.0.0.1".to_string(),
             port: 8080,
             tls_enabled: false,
             tls_cert_path: None,
@@ -334,7 +335,6 @@ mod tests {
     #[test]
     fn test_network_config_direct_toml_parsing() {
         let toml = r#"
-            bind_address = "127.0.0.1"
             port = 8080
             tls_enabled = false
             cors_origins = ["*"]
@@ -429,7 +429,6 @@ mod tests {
                 keys_path = "/tmp/keys"
                 memory_path = "/tmp/memory.db"
                 [network]
-                bind_address = "127.0.0.1"
                 port = 8080
                 tls_enabled = false
                 cors_origins = ["*"]

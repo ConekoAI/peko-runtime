@@ -96,7 +96,63 @@ const MEMBERS_FILE: &str = "members.json";
 
 /// Per-channel append-only event log. One [`ChannelEvent`] per line,
 /// JSON-serialized with a trailing `\n`.
+///
+/// ADR-058 D7: NEW lines are written as an [`EventLine`] envelope
+/// (`{"origin": ..., "event": {...}}`) carrying per-event provenance.
+/// Legacy lines are bare `ChannelEvent` JSON; readers tolerate both
+/// (see [`parse_event_line`]) and treat bare lines as
+/// [`EventOrigin::Local`].
 const EVENTS_FILE: &str = "events.jsonl";
+
+/// ADR-058 D7: provenance of a persisted event line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EventOrigin {
+    /// Written by this runtime (local `post` / `invite` / `leave` /
+    /// synthetic `Created`).
+    Local,
+    /// A cross-runtime mirror append whose envelope signature the
+    /// inbound dispatcher verified (D2 author signature + runtime
+    /// counter-signature) before [`ChannelStore::append_remote_event`].
+    VerifiedRemote,
+}
+
+/// The persisted per-line envelope for NEW `events.jsonl` lines
+/// (ADR-058 D7). The `peko_protocol::channel::ChannelEvent` wire type
+/// itself is unchanged — provenance lives only in this storage-layer
+/// wrapper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EventLine {
+    origin: EventOrigin,
+    event: ChannelEvent,
+}
+
+/// Parse one `events.jsonl` line. New lines are [`EventLine`]
+/// envelopes; legacy lines are bare `ChannelEvent` JSON and are
+/// treated as [`EventOrigin::Local`] (they predate provenance, and
+/// every pre-D7 writer was local or dispatcher-verified-remote — the
+/// distinction did not exist then, so `Local` is the documented
+/// rollout posture).
+///
+/// A bare `ChannelEvent` can never be mistaken for an envelope: the
+/// envelope requires an `origin` field carrying one of the two
+/// kebab-case tags, and no `ChannelEvent` variant has one.
+fn parse_event_line(content: &[u8]) -> std::result::Result<(EventOrigin, ChannelEvent), String> {
+    #[derive(Deserialize)]
+    struct OriginProbe {
+        origin: Option<EventOrigin>,
+    }
+    if let Ok(probe) = serde_json::from_slice::<OriginProbe>(content) {
+        if let Some(origin) = probe.origin {
+            let line: EventLine = serde_json::from_slice(content)
+                .map_err(|e| format!("decode event-line envelope: {e}"))?;
+            return Ok((origin, line.event));
+        }
+    }
+    let ev: ChannelEvent =
+        serde_json::from_slice(content).map_err(|e| format!("decode bare event line: {e}"))?;
+    Ok((EventOrigin::Local, ev))
+}
 
 /// Per-shard lock timeout for `events.jsonl` writes. Ten seconds —
 /// the same budget the retired chat-log store used; appends are
@@ -683,6 +739,10 @@ impl ChannelStore {
     /// crash safety. Returns the GLOBAL line number (0-indexed across
     /// all pages) the event was assigned.
     ///
+    /// ADR-058 D7: the line is written as an [`EventLine`] envelope
+    /// carrying `origin` (`Local` for every local append,
+    /// `VerifiedRemote` from [`ChannelStore::append_remote_event`]).
+    ///
     /// When the append would push the current page past
     /// `rotate_bytes`, the current page is first renamed aside to
     /// `events.<n>.jsonl` (n = max existing page + 1) and the event
@@ -704,6 +764,7 @@ impl ChannelStore {
         tier: Tier,
         channel: &ChannelId,
         ev: &ChannelEvent,
+        origin: EventOrigin,
     ) -> Result<u64> {
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         fs::create_dir_all(&chan_dir).await?;
@@ -727,8 +788,11 @@ impl ChannelStore {
         let (current_lines, current_len) = self.page_line_count(&path).await?;
         line_number += current_lines;
 
-        let mut bytes = serde_json::to_vec(ev)
-            .map_err(|e| ChannelError::Adapter(format!("serialize ChannelEvent: {e}")))?;
+        let mut bytes = serde_json::to_vec(&EventLine {
+            origin,
+            event: ev.clone(),
+        })
+        .map_err(|e| ChannelError::Adapter(format!("serialize EventLine: {e}")))?;
         bytes.push(b'\n');
 
         // Rotate BEFORE the append when it would push the current page
@@ -845,7 +909,7 @@ impl ChannelStore {
                 if *b == b'\n' {
                     let content = &bytes[line_start..i];
                     if !content.is_empty() && idx >= start {
-                        let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                        let (_origin, ev) = parse_event_line(content).map_err(|e| {
                             ChannelError::Adapter(format!("decode event at line {idx}: {e}"))
                         })?;
                         out.push((idx.to_string(), ev));
@@ -925,7 +989,7 @@ impl ChannelStore {
                 if *b == b'\n' {
                     let content = &bytes[line_start..i];
                     if !content.is_empty() && idx >= from && idx < end {
-                        let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                        let (_origin, ev) = parse_event_line(content).map_err(|e| {
                             ChannelError::Adapter(format!("decode event at line {idx}: {e}"))
                         })?;
                         out.push((idx.to_string(), ev));
@@ -960,7 +1024,7 @@ impl ChannelStore {
         channel: &ChannelId,
         query: &ChannelQuery,
     ) -> Result<SearchPage> {
-        const POSTED_TAG: &[u8] = b"{\"kind\":\"posted\"";
+        const POSTED_TAG: &[u8] = b"\"kind\":\"posted\"";
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let pages = self.all_pages(&chan_dir).await?;
         let mut counts = Vec::with_capacity(pages.len());
@@ -1036,10 +1100,13 @@ impl ChannelStore {
                 scanned += 1;
                 floor = gidx;
                 let content = &bytes[s..e];
-                if !content.starts_with(POSTED_TAG) {
+                // Cheap byte prefilter before the JSON parse. Matches
+                // both line formats: bare `{"kind":"posted",...}` and
+                // the D7 envelope `{"origin":...,"event":{"kind":"posted",...}}`.
+                if !content.windows(POSTED_TAG.len()).any(|w| w == POSTED_TAG) {
                     continue;
                 }
-                let ev: ChannelEvent = serde_json::from_slice(content).map_err(|e| {
+                let (_origin, ev) = parse_event_line(content).map_err(|e| {
                     ChannelError::Adapter(format!("decode event at line {gidx}: {e}"))
                 })?;
                 if query_matches(&ev, needle.as_deref(), query.author.as_deref()) {
@@ -1195,7 +1262,9 @@ impl ChannelStore {
         ev: &ChannelEvent,
     ) -> Result<TaskId> {
         let tier = self.resolve_tier(channel).await?;
-        let line = self.append_event(tier, channel, ev).await?;
+        let line = self
+            .append_event(tier, channel, ev, EventOrigin::VerifiedRemote)
+            .await?;
         Ok(line.to_string())
     }
 
@@ -1450,7 +1519,8 @@ impl ChannelStore {
             name: name.to_string(),
             at: now_rfc3339,
         };
-        self.append_event(Tier::Runtime, channel, &ev).await?;
+        self.append_event(Tier::Runtime, channel, &ev, EventOrigin::Local)
+            .await?;
 
         Ok(())
     }
@@ -1529,7 +1599,9 @@ impl ChannelStore {
             at: Utc::now().to_rfc3339(),
             via: msg.via.clone(),
         };
-        let line = self.append_event(tier, channel, &ev).await?;
+        let line = self
+            .append_event(tier, channel, &ev, EventOrigin::Local)
+            .await?;
         Ok((line.to_string(), ev))
     }
 }
@@ -1583,7 +1655,8 @@ impl ChannelPort for ChannelStore {
             name: opts.name,
             at: now.to_rfc3339(),
         };
-        self.append_event(opts.tier, &channel, &event).await?;
+        self.append_event(opts.tier, &channel, &event, EventOrigin::Local)
+            .await?;
 
         Ok(channel)
     }
@@ -1637,7 +1710,8 @@ impl ChannelPort for ChannelStore {
             member: subject_wire_form(invitee),
             at: Utc::now().to_rfc3339(),
         };
-        self.append_event(tier, channel, &ev).await?;
+        self.append_event(tier, channel, &ev, EventOrigin::Local)
+            .await?;
         Ok(())
     }
 
@@ -1784,7 +1858,8 @@ impl ChannelPort for ChannelStore {
             member: principal.to_string(),
             at: Utc::now().to_rfc3339(),
         };
-        self.append_event(tier, channel, &ev).await?;
+        self.append_event(tier, channel, &ev, EventOrigin::Local)
+            .await?;
         Ok(())
     }
 
@@ -3000,6 +3075,95 @@ mod tests {
             line, "1",
             "Created is line 0, so the first remote event lands at line 1"
         );
+    }
+
+    /// ADR-058 D7: provenance envelope round-trip. NEW lines are
+    /// written as `{"origin": ..., "event": {...}}` — `local` for
+    /// local appends (including the synthetic `Created`), `verified-remote`
+    /// for `append_remote_event` — while legacy bare `ChannelEvent`
+    /// lines still read (treated as `local`). The read surface
+    /// (`peek`) is format-agnostic and returns plain events.
+    #[tokio::test]
+    async fn events_jsonl_provenance_round_trip() {
+        let cfg = tmp_cfg("provenance-roundtrip");
+        let store = ChannelStore::new(cfg.clone());
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        // A local post (line 1; line 0 is the synthetic Created).
+        store
+            .post(
+                &channel,
+                &Subject::from(&creator),
+                PostMsg::root("local one"),
+            )
+            .await
+            .unwrap();
+        // A dispatcher-verified remote mirror append (line 2).
+        let remote_event = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".to_string(),
+            parent: None,
+            text: "remote one".to_string(),
+            at: "2026-09-16T00:00:00Z".to_string(),
+            via: None,
+        };
+        store
+            .append_remote_event(&channel, &remote_event)
+            .await
+            .unwrap();
+        // A legacy bare-format line appended by a foreign writer
+        // (line 3) — the pre-D7 on-disk shape.
+        let events_path = cfg.channel_dir(&channel).join("events.jsonl");
+        let legacy = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_carol".to_string(),
+            parent: None,
+            text: "legacy one".to_string(),
+            at: "2026-09-16T00:00:01Z".to_string(),
+            via: None,
+        };
+        let mut line = serde_json::to_vec(&legacy).unwrap();
+        line.push(b'\n');
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&events_path)
+            .unwrap();
+        std::io::Write::write_all(&mut f, &line).unwrap();
+        drop(f);
+
+        // Raw on-disk provenance: envelope origins in line order.
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        let origins: Vec<EventOrigin> = raw
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| parse_event_line(l.as_bytes()).unwrap().0)
+            .collect();
+        assert_eq!(
+            origins,
+            vec![
+                EventOrigin::Local,          // synthetic Created
+                EventOrigin::Local,          // local post
+                EventOrigin::VerifiedRemote, // dispatcher-verified mirror append
+                EventOrigin::Local,          // legacy bare line → treated as local
+            ]
+        );
+
+        // The peek surface reads all four events regardless of line
+        // format, in order.
+        let events = store.peek(&channel, &Checkpoint::default()).await.unwrap();
+        assert_eq!(events.len(), 4, "got {events:?}");
+        let texts: Vec<&str> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["local one", "remote one", "legacy one"]);
     }
 
     /// `append_remote_event` does NOT enforce sender membership. A

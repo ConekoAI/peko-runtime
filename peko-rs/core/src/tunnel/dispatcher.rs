@@ -46,6 +46,10 @@ use peko_auth::ownership::Permission;
 pub(crate) enum BridgeCallerError {
     /// A JWT was presented but could not be validated.
     InvalidJwt,
+    /// The validated JWT is missing the typed `kind` claim (ADR-058
+    /// D5), or the claim is not `"user"` / `"visitor"`, or the `sub`
+    /// would alias another identity namespace.
+    InvalidKind,
     /// No verified or unverified caller could be determined.
     NoCaller,
 }
@@ -54,6 +58,9 @@ impl std::fmt::Display for BridgeCallerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BridgeCallerError::InvalidJwt => write!(f, "invalid JWT"),
+            BridgeCallerError::InvalidKind => {
+                write!(f, "JWT is missing a valid typed `kind` claim")
+            }
             BridgeCallerError::NoCaller => write!(f, "no caller identity provided"),
         }
     }
@@ -61,25 +68,25 @@ impl std::fmt::Display for BridgeCallerError {
 
 impl std::error::Error for BridgeCallerError {}
 
-/// Resolve the calling user from a PekoHub-proxied bridge payload (issue #17).
+/// Resolve the calling subject from a PekoHub-proxied bridge payload
+/// (issue #17, ADR-058 D5).
 ///
 /// PekoHub is the security boundary: it must set `Authorization: Bearer <jwt>`
 /// on every proxied request. When a JWT is present and a `JwtValidator` is
 /// configured, this function validates the JWT (signature, audience,
-/// issuer, expiry) and uses the validated `sub` claim as the caller.
-/// Cross-checks the validated `sub` against `x-pekohub-user-id` and warns
-/// if they disagree — a mismatch means PekoHub is asserting one user in
-/// the header while the JWT proves a different one, which is a tamper
-/// attempt worth surfacing.
+/// issuer, expiry) and maps the validated `(kind, sub)` claims into a
+/// typed [`Subject`] via [`Subject::from_bridge_claim`]:
 ///
-/// When no JWT is present:
-/// - If a `JwtValidator` is configured, the request is rejected with
-///   [`BridgeCallerError::NoCaller`]. The unverified `x-pekohub-user-id`
-///   header is **never** trusted once JWT validation is enabled — that
-///   would be a downgrade attack where any caller can claim any user
-///   simply by omitting the `Authorization` header.
-/// - If no validator is configured (test/disabled mode), falls back to
-///   the unverified header for backward compatibility with local tests.
+/// - `kind: "user"` → `Subject::User(sub)` (a hub account id);
+/// - `kind: "visitor"` → `Subject::Visitor(sub)` (a hub-minted
+///   anonymous id — never a user, principal, or the reserved `local`).
+///
+/// ADR-058 D5 made the `kind` claim mandatory (fail-closed): a
+/// validated token without a recognized `kind` is rejected with
+/// [`BridgeCallerError::InvalidKind`], and a `sub` containing `:` (or
+/// equal to `local` for visitors) is rejected as a namespace-aliasing
+/// attempt. A bridge token can never again produce a principal
+/// subject — the retired `from_bridge_user` string coercion is gone.
 ///
 /// If a JWT is present but validation fails, or if no validator is
 /// configured for a JWT-present request, the function returns
@@ -88,13 +95,12 @@ impl std::error::Error for BridgeCallerError {}
 pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
     jwt_validator: Option<&peko_auth::jwt::JwtValidator>,
-) -> Result<String, BridgeCallerError> {
-    // ADR-057: the caller identity is ALWAYS a signed EdDSA bridge
-    // token minted by PekoHub (sub = pekohub user id or a
-    // `principal:<did>` wire form, aud = this runtime's DID). The old
-    // unverified `x-pekohub-user-id` header fallback is gone — a
-    // runtime with a tunnel configured rejects every bridge request
-    // that does not carry a token its validator accepts.
+) -> Result<Subject, BridgeCallerError> {
+    // ADR-057 + ADR-058 D5: the caller identity is ALWAYS a signed
+    // EdDSA bridge token minted by PekoHub (typed `kind` claim + `sub`,
+    // aud = this runtime's DID). A runtime with a tunnel configured
+    // rejects every bridge request that does not carry a token its
+    // validator accepts.
     let Some(jwt) = extract_bearer_jwt(bridge_payload) else {
         return Err(BridgeCallerError::NoCaller);
     };
@@ -106,7 +112,21 @@ pub(crate) async fn resolve_bridge_caller(
         return Err(BridgeCallerError::InvalidJwt);
     };
     match validator.validate(&jwt).await {
-        Ok(validated) => Ok(validated.sub),
+        Ok(validated) => {
+            let Some(kind) = validated.kind.as_deref() else {
+                warn!(
+                    "validated bridge JWT carries no `kind` claim; rejecting request (ADR-058 D5)"
+                );
+                return Err(BridgeCallerError::InvalidKind);
+            };
+            Subject::from_bridge_claim(kind, &validated.sub).map_err(|e| {
+                warn!(
+                    "validated bridge JWT failed the typed-claim gate ({}); rejecting request",
+                    e
+                );
+                BridgeCallerError::InvalidKind
+            })
+        }
         Err(e) => {
             warn!("JWT validation failed ({}); rejecting request", e);
             Err(BridgeCallerError::InvalidJwt)
@@ -357,11 +377,45 @@ impl TunnelDispatcher {
                 }
                 // Named A2A caller — the id is a DID, used verbatim.
                 Subject::Principal(did) => Some(Subject::Principal(did.clone())),
+                // ADR-058 D5: a named visitor allow-list entry passes
+                // through verbatim — the Private-exposure ACL matches
+                // kind-aware, so only that exact visitor id is admitted.
+                Subject::Visitor(id) => Some(Subject::Visitor(id.clone())),
                 // Unauthenticated; never a named allow-list entry.
                 Subject::Public => None,
             })
             .collect();
         Some(principals)
+    }
+
+    /// ADR-058 D4: mint the `principalPop` proof-of-possession for an
+    /// `instance_announce` — a compact JWS (EdDSA) over
+    /// `{"runtimeId":..,"principalDid":..,"iat":..,"exp":..}` with
+    /// `iat = now`, `exp = now + 300`, signed with the principal's own
+    /// vault-backed key (D1). Returns `None` for legacy non-`did:key`
+    /// principals or when no vault key is loadable — those announces
+    /// go out without a PoP and the hub treats them as unverified
+    /// (hub policy, per the ADR).
+    async fn principal_pop(&self, principal_did: &str) -> Option<String> {
+        if !principal_did.starts_with("did:key:") {
+            return None;
+        }
+        let key = self
+            .host
+            .principal_signing_keys()
+            .signing_key_for_did(principal_did)
+            .await?;
+        let now = chrono::Utc::now().timestamp();
+        let payload = serde_json::json!({
+            "runtimeId": self.host.runtime_did(),
+            "principalDid": principal_did,
+            "iat": now,
+            "exp": now + 300,
+        });
+        Some(super::tunnel_channel_signature::jws_sign(
+            &key,
+            payload.to_string().as_bytes(),
+        ))
     }
 
     /// Send initial instance announcements for all local Principals.
@@ -384,6 +438,7 @@ impl TunnelDispatcher {
                 name: name.clone(),
                 agent_did: None,
                 principal_did: Some(did.0.clone()),
+                principal_pop: self.principal_pop(&did.0).await,
                 bundle_ref: None,
                 runtime_display_name: Some(self.runtime_display_name.clone()),
                 status: InstanceStatus::Online,
@@ -461,6 +516,7 @@ impl TunnelDispatcher {
             name: name.clone(),
             agent_did: None,
             principal_did: Some(did.0.clone()),
+            principal_pop: self.principal_pop(&did.0).await,
             bundle_ref: None,
             runtime_display_name: Some(self.runtime_display_name.clone()),
             status: InstanceStatus::Online,
@@ -662,14 +718,12 @@ impl TunnelDispatcher {
         };
 
         // ADR-057 transport audit: resolve the caller FIRST, then run
-        // the exposure ACL against the *resolved* identity. The old
-        // order keyed the Private-instance allowlist on the raw
-        // `x-pekohub-user-id` header — an unverified hub-asserted
-        // claim. With a JWT validator configured the resolved value is
-        // the validated `sub`; without one it remains the header (the
-        // documented runtime-trusts-hub mode), but the ACL is at least
-        // consistent with the identity every later stage uses.
-        let caller_user = match resolve_bridge_caller(
+        // the exposure ACL against the *resolved* identity. ADR-058 D5:
+        // the resolved identity is a typed `Subject` mapped from the
+        // bridge token's `(kind, sub)` claims — `user:<hub account>`
+        // or `visitor:<hub-minted id>`, never a principal subject and
+        // never the reserved `local` id.
+        let caller_principal = match resolve_bridge_caller(
             &bridge_payload,
             self.host.jwt_validator().as_ref(),
         )
@@ -686,7 +740,6 @@ impl TunnelDispatcher {
                     .await;
             }
         };
-        let caller_principal = Subject::from_bridge_user(&caller_user);
 
         // The audit emit's `agent_did` positional argument is the
         // AuditEvent struct's legacy `agent_did: Option<String>`
@@ -702,7 +755,7 @@ impl TunnelDispatcher {
                 Some(&principal_name),
                 serde_json::json!({
                     "request_id": &request_id,
-                    "caller": &caller_user,
+                    "caller": caller_principal.to_string(),
                 }),
             )
             .await
@@ -711,7 +764,7 @@ impl TunnelDispatcher {
         // Defense-in-depth: enforce the local exposure ACL against the
         // resolved caller identity (see the reorder note above).
         if let Err(e) = self
-            .check_request_allowed(&principal_name, &bridge_payload, &caller_user)
+            .check_request_allowed(&principal_name, &bridge_payload, &caller_principal)
             .await
         {
             warn!("Tunnel ACL denied request for {}: {}", principal_name, e);
@@ -1128,12 +1181,14 @@ impl TunnelDispatcher {
                 if instance_id == payload.instance_id {
                     let did = principal.did().await;
                     let status = self.get_instance_status(&name).await;
+                    let principal_pop = self.principal_pop(&did.0).await;
                     let announce_payload = InstanceAnnouncePayload {
                         id: instance_id,
                         instance_type: InstanceType::Principal,
                         name: name.clone(),
                         agent_did: None,
                         principal_did: Some(did.0),
+                        principal_pop,
                         bundle_ref: None,
                         runtime_display_name: Some(self.runtime_display_name.clone()),
                         status,
@@ -1675,7 +1730,7 @@ impl TunnelDispatcher {
         &self,
         agent_name: &str,
         bridge_payload: &serde_json::Value,
-        caller_user: &str,
+        caller: &peko_auth::Subject,
     ) -> anyhow::Result<()> {
         let instance_id = self.instance_id(agent_name);
 
@@ -1756,13 +1811,14 @@ impl TunnelDispatcher {
                 anyhow::bail!("Agent is not exposed")
             }
             InstanceExposure::Private => {
-                // The caller id was resolved before this ACL ran (see
-                // `handle_proxied_request`) — the validated JWT sub
-                // when a validator is configured, the bridge header in
-                // the documented runtime-trusts-hub fallback mode.
-                let user_id = caller_user.trim();
-
-                if user_id.is_empty() {
+                // The caller identity was resolved before this ACL ran
+                // (see `handle_proxied_request`) — a typed `Subject`
+                // mapped from the validated bridge token's `(kind,
+                // sub)` claims (ADR-058 D5). Membership is a
+                // kind-aware equality check: a visitor subject only
+                // matches a visitor allow-list entry, a user only a
+                // user entry — no cross-kind aliasing.
+                if !caller.is_session_peer() || caller.subject_id().is_empty() {
                     warn!(
                         agent_name,
                         "Private instance request denied: no resolved caller identity"
@@ -1773,13 +1829,14 @@ impl TunnelDispatcher {
                 if instance_state
                     .allowed_principals
                     .iter()
-                    .any(|s| matches!(s, peko_auth::Subject::User(id) if id == user_id))
+                    .any(|s| s == caller)
                 {
                     Ok(())
                 } else {
                     warn!(
                         agent_name,
-                        user_id, "Private instance request denied: user not in allowed_principals"
+                        caller = %caller,
+                        "Private instance request denied: caller not in allowed_principals"
                     );
                     anyhow::bail!("Forbidden")
                 }
@@ -2011,16 +2068,26 @@ mod tests {
     }
 
     /// Mint an EdDSA JWT for the given sub, with the audience/issuer
-    /// expected by `ed25519_validator()`.
+    /// expected by `ed25519_validator()`. ADR-058 D5: carries the
+    /// typed `kind: "user"` claim (see [`mint_jwt_with_kind`]).
     fn mint_jwt(signing_key: &SigningKey, sub: &str) -> String {
+        mint_jwt_with_kind(signing_key, Some("user"), sub)
+    }
+
+    /// Mint an EdDSA JWT with an explicit `kind` claim (`None` omits
+    /// the claim entirely — the D5 fail-closed test case).
+    fn mint_jwt_with_kind(signing_key: &SigningKey, kind: Option<&str>, sub: &str) -> String {
         let header = serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": "test-key"});
-        let claims = serde_json::json!({
+        let mut claims = serde_json::json!({
             "iss": "pekohub",
             "sub": sub,
             "jti": format!("test-jti-{sub}"),
             "aud": "did:key:z6MkTestRuntime",
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
+        if let Some(kind) = kind {
+            claims["kind"] = serde_json::Value::String(kind.to_string());
+        }
         let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
         let claims_b64 = URL_SAFE_NO_PAD.encode(claims.to_string());
         let message = format!("{header_b64}.{claims_b64}");
@@ -2030,8 +2097,8 @@ mod tests {
     }
 
     /// When PekoHub sends an `Authorization: Bearer <jwt>` and a
-    /// `JwtValidator` is configured, the validated `sub` claim is the
-    /// caller (issue #17 acceptance criteria).
+    /// `JwtValidator` is configured, the validated `(kind, sub)` claims
+    /// map to a typed caller `Subject` (issue #17 + ADR-058 D5).
     #[tokio::test]
     async fn resolve_bridge_caller_uses_validated_jwt_sub() {
         let (validator, signing_key) = ed25519_validator();
@@ -2044,8 +2111,84 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            "user-jwt"
+            Subject::User("user-jwt".to_string())
         );
+    }
+
+    /// ADR-058 D5: `kind: "visitor"` maps to a `Subject::Visitor` —
+    /// a distinct namespace that can never alias a user or principal.
+    #[tokio::test]
+    async fn resolve_bridge_caller_maps_visitor_kind_to_visitor_subject() {
+        let (validator, signing_key) = ed25519_validator();
+        let jwt = mint_jwt_with_kind(&signing_key, Some("visitor"), "vis_abc123");
+
+        let payload = serde_json::json!({
+            "headers": {"Authorization": format!("Bearer {jwt}")},
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator))
+                .await
+                .unwrap(),
+            Subject::Visitor("vis_abc123".to_string())
+        );
+    }
+
+    /// ADR-058 D5 (fail-closed): a validated token with NO `kind`
+    /// claim is rejected — the untyped stringly-`sub` era is over.
+    #[tokio::test]
+    async fn resolve_bridge_caller_rejects_missing_kind_claim() {
+        let (validator, signing_key) = ed25519_validator();
+        let jwt = mint_jwt_with_kind(&signing_key, None, "user-jwt");
+
+        let payload = serde_json::json!({
+            "headers": {"Authorization": format!("Bearer {jwt}")},
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            Err(BridgeCallerError::InvalidKind)
+        );
+    }
+
+    /// ADR-058 D5: an unknown `kind` (including `principal` — a bridge
+    /// token can never again produce a principal subject) is rejected.
+    #[tokio::test]
+    async fn resolve_bridge_caller_rejects_unknown_kind_claim() {
+        let (validator, signing_key) = ed25519_validator();
+        for kind in ["principal", "admin", ""] {
+            let jwt = mint_jwt_with_kind(&signing_key, Some(kind), "did:key:z6MkVictim");
+            let payload = serde_json::json!({
+                "headers": {"Authorization": format!("Bearer {jwt}")},
+            });
+            assert_eq!(
+                resolve_bridge_caller(&payload, Some(&validator)).await,
+                Err(BridgeCallerError::InvalidKind),
+                "kind {kind:?} must be rejected"
+            );
+        }
+    }
+
+    /// ADR-058 D5: namespace-aliasing subs are rejected at the bridge —
+    /// a visitor id of `principal:did:key:z…`, `user:<id>`, or `local`
+    /// was the D5 forgery vector.
+    #[tokio::test]
+    async fn resolve_bridge_caller_rejects_namespace_aliasing_subs() {
+        let (validator, signing_key) = ed25519_validator();
+        for (kind, sub) in [
+            ("visitor", "principal:did:key:z6MkVictim"),
+            ("visitor", "user:39"),
+            ("visitor", "local"),
+            ("user", "principal:did:key:z6MkVictim"),
+        ] {
+            let jwt = mint_jwt_with_kind(&signing_key, Some(kind), sub);
+            let payload = serde_json::json!({
+                "headers": {"Authorization": format!("Bearer {jwt}")},
+            });
+            assert_eq!(
+                resolve_bridge_caller(&payload, Some(&validator)).await,
+                Err(BridgeCallerError::InvalidKind),
+                "(kind={kind:?}, sub={sub:?}) must be rejected"
+            );
+        }
     }
 
     /// Tampered JWT (signature doesn't verify) → rejected instead of
@@ -2131,8 +2274,65 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            "user-jwt"
+            Subject::User("user-jwt".to_string())
         );
+    }
+
+    /// ADR-058 D4: a vault-backed (`did:key`) principal's announce
+    /// PoP is a compact JWS over {"runtimeId","principalDid","iat","exp"}
+    /// (exp = iat + 300) that verifies against the key embedded in the
+    /// principal's DID.
+    #[tokio::test]
+    async fn principal_pop_mints_verifiable_jws_for_vault_backed_principal() {
+        let app_state = create_test_app_state().await;
+        let principal = create_test_principal(
+            &app_state,
+            "pop-agent",
+            Subject::User("local".to_string()),
+            vec![],
+            peko_auth::Exposure::Public,
+        )
+        .await;
+        let did = principal.did().await.0;
+        assert!(
+            did.starts_with("did:key:"),
+            "D1: genesis must mint a did:key principal DID; got {did}"
+        );
+
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let pop = dispatcher
+            .principal_pop(&did)
+            .await
+            .expect("vault-backed did:key principal must produce a principalPop");
+
+        let key = crate::tunnel::did_key::did_key_to_verifying_key(&did).unwrap();
+        let (_segment, payload) = crate::tunnel::tunnel_channel_signature::jws_verify(&key, &pop)
+            .expect("principalPop must verify against the principal DID key");
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(payload["principalDid"].as_str(), Some(did.as_str()));
+        assert_eq!(
+            payload["runtimeId"].as_str(),
+            Some(dispatcher.host.runtime_did().as_str())
+        );
+        let iat = payload["iat"].as_i64().expect("iat present");
+        let exp = payload["exp"].as_i64().expect("exp present");
+        assert_eq!(
+            exp - iat,
+            300,
+            "PoP lifetime is 300s (iat=now, exp=now+300)"
+        );
+    }
+
+    /// ADR-058 D4: legacy non-`did:key` principals announce without a
+    /// PoP (the hub treats them as unverified — its policy).
+    #[tokio::test]
+    async fn principal_pop_is_none_for_legacy_did() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        assert!(dispatcher
+            .principal_pop("did:peko:public:legacy:abc")
+            .await
+            .is_none());
     }
 
     #[tokio::test]
@@ -2321,7 +2521,11 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "any-user"}});
         let result = dispatcher
-            .check_request_allowed("public-agent", &bridge_payload, "any-user")
+            .check_request_allowed(
+                "public-agent",
+                &bridge_payload,
+                &Subject::User("any-user".to_string()),
+            )
             .await;
         assert!(result.is_ok());
     }
@@ -2346,7 +2550,11 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
         let result = dispatcher
-            .check_request_allowed("unexposed-agent", &bridge_payload, "user-123")
+            .check_request_allowed(
+                "unexposed-agent",
+                &bridge_payload,
+                &Subject::User("user-123".to_string()),
+            )
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2373,7 +2581,11 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload, "user-123")
+            .check_request_allowed(
+                "private-agent",
+                &bridge_payload,
+                &Subject::User("user-123".to_string()),
+            )
             .await;
         assert!(result.is_ok());
     }
@@ -2398,7 +2610,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload, "")
+            .check_request_allowed("private-agent", &bridge_payload, &Subject::Public)
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2425,11 +2637,76 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-999"}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload, "user-999")
+            .check_request_allowed(
+                "private-agent",
+                &bridge_payload,
+                &Subject::User("user-999".to_string()),
+            )
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Forbidden"));
+    }
+
+    /// ADR-058 D5: the Private-exposure ACL is kind-aware — a visitor
+    /// subject matches only a visitor allow-list entry, never a user
+    /// entry with the same bare id (and vice versa).
+    #[tokio::test]
+    async fn test_check_request_allowed_private_is_kind_aware() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+
+        let instance_id = dispatcher.instance_id("private-agent");
+        {
+            let mut state = dispatcher.state.write().await;
+            state.instance_state.insert(
+                instance_id,
+                InstanceState {
+                    exposure: InstanceExposure::Private,
+                    allowed_principals: vec![
+                        peko_auth::Subject::User("peer-1".to_string()),
+                        peko_auth::Subject::Visitor("vis-2".to_string()),
+                    ],
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
+
+        let bridge_payload = serde_json::json!({"headers": {}});
+        // Exact kind + id matches are admitted.
+        assert!(dispatcher
+            .check_request_allowed(
+                "private-agent",
+                &bridge_payload,
+                &Subject::User("peer-1".to_string()),
+            )
+            .await
+            .is_ok());
+        assert!(dispatcher
+            .check_request_allowed(
+                "private-agent",
+                &bridge_payload,
+                &Subject::Visitor("vis-2".to_string()),
+            )
+            .await
+            .is_ok());
+        // Cross-kind same-id is denied (no aliasing).
+        assert!(dispatcher
+            .check_request_allowed(
+                "private-agent",
+                &bridge_payload,
+                &Subject::Visitor("peer-1".to_string()),
+            )
+            .await
+            .is_err());
+        assert!(dispatcher
+            .check_request_allowed(
+                "private-agent",
+                &bridge_payload,
+                &Subject::User("vis-2".to_string()),
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -2439,7 +2716,11 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
         let result = dispatcher
-            .check_request_allowed("unknown-agent", &bridge_payload, "user-123")
+            .check_request_allowed(
+                "unknown-agent",
+                &bridge_payload,
+                &Subject::User("user-123".to_string()),
+            )
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2471,7 +2752,7 @@ mod tests {
         // public chat reaching the runtime through the hub.
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("unlisted-agent", &bridge_payload, "")
+            .check_request_allowed("unlisted-agent", &bridge_payload, &Subject::Public)
             .await;
         assert!(result.is_ok());
     }

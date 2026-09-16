@@ -458,10 +458,10 @@ On-disk configuration and the capability grants derived from it. An empty/absent
 #### `subject::Subject` (ACTIVE)
 
 ```rust
-pub struct Subject { ... }
+pub enum Subject { User(String), Principal(PrincipalDID), Visitor(String), Public }
 ```
 
-The actor identity attached to a session (peer, caller). Replaces the pre-ADR-039 agent/team-scoped addressing.
+The actor identity attached to a session (peer, caller). Replaces the pre-ADR-039 agent/team-scoped addressing. ADR-058 D5 added `Visitor` (hub-minted anonymous peers, `/visitor-<id>` children, no owner authority) and replaced `from_bridge_user` with the fallible `Subject::from_bridge_claim(kind, sub)` for typed bridge-token claims.
 
 ---
 

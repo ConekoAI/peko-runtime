@@ -1681,11 +1681,28 @@ channels.
 <runtime_dir>/channels/<channel_id>/
   meta.json       # channel metadata (schema below)
   members.json    # { members: [String], remote_members: [RemoteMember] }
-  events.jsonl    # current page: one ChannelEvent per line, append-only
+  events.jsonl    # current page: one EventLine per line, append-only (see below)
   events.<n>.jsonl # rotated pages, 1 = oldest (present only after rotation)
   cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)
   read_marks.json # per-session digest read positions (HashMap<session-id, TaskId>)
 ```
+
+**Event-line provenance envelope (ADR-058 D7).** New `events.jsonl`
+lines are a storage-layer envelope, not a bare `ChannelEvent`:
+
+```json
+{"origin": "local" | "verified-remote", "event": { ...ChannelEvent... }}
+```
+
+`local` covers every local append (`create`, `post`, `invite`,
+`leave`, synthetic `Created`); `verified-remote` is written only by
+`append_remote_event`, the mirror path the inbound dispatcher feeds
+after the D2 envelope signatures verify. Legacy lines (bare
+`ChannelEvent` JSON, everything written pre-D7) are read as
+`{"origin": "local"}` — the two formats are distinguished by the
+presence of a recognized `origin` field, which no `ChannelEvent`
+variant carries. The `peko_protocol::channel::ChannelEvent` wire type
+is unchanged; the envelope exists only on disk.
 
 The current page rotates aside to `events.<n>.jsonl` when an append
 would push it past 8 MiB (`DEFAULT_ROTATE_BYTES`), mirroring

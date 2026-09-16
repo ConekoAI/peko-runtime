@@ -99,6 +99,14 @@ pub trait TunnelHost: Send + Sync {
     /// allowing a token to bypass the exposure-based ACL.
     fn invite_revocation_set(&self) -> Arc<InviteRevocationSet>;
 
+    /// ADR-058 D4: resolves the vault-backed signing key of a
+    /// locally-hosted principal (the same D1 keys that author-sign D2
+    /// envelopes). The dispatcher uses this to mint the `principalPop`
+    /// proof-of-possession JWS on `instance_announce` for principals
+    /// whose DID is a `did:key`.
+    fn principal_signing_keys(&self)
+        -> Arc<dyn super::cross_runtime_channel::PrincipalSigningKeys>;
+
     /// Cross-runtime channel port. The dispatcher's
     /// `handle_inbound_tunnel_channel_event` calls
     /// [`TunnelChannelPort::append_remote_event`] on this after

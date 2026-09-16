@@ -447,6 +447,7 @@ impl PeerChildTurns {
         let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
             (Some("user"), Some(id)) => Some(Subject::User(id.to_string())),
             (Some("principal"), Some(id)) => Some(Subject::Principal(id.to_string().into())),
+            (Some("visitor"), Some(id)) => Some(Subject::Visitor(id.to_string())),
             _ => None,
         };
         let channel = match (&self.channel_port, meta.slug.as_deref()) {
@@ -567,6 +568,7 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
         let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
             (Some("user"), Some(id)) => Subject::User(id.to_string()),
             (Some("principal"), Some(id)) => Subject::Principal(id.to_string().into()),
+            (Some("visitor"), Some(id)) => Subject::Visitor(id.to_string()),
             _ => return None,
         };
         let slug = meta.slug.as_deref()?;

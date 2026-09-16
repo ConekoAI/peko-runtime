@@ -108,10 +108,21 @@ pub fn default_pid_path() -> std::path::PathBuf {
     crate::common::paths::default_run_dir().join("daemon.pid")
 }
 
-/// Ensure the run directory exists
+/// Ensure the run directory exists.
+///
+/// ADR-058 D6 (Unix): the directory is hardened to mode `0700` — it
+/// holds `daemon.sock`, the local IPC trust boundary, so it gets the
+/// same hygiene as the vault and identity-key directories. The chmod
+/// runs on every call (not just at creation) so a pre-existing
+/// permissive directory is tightened too.
 pub fn ensure_run_dir() -> std::io::Result<std::path::PathBuf> {
     let run_dir = crate::common::paths::default_run_dir();
     std::fs::create_dir_all(&run_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
     Ok(run_dir)
 }
 

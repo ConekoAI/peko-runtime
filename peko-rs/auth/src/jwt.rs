@@ -21,6 +21,13 @@ use super::caller::CallerContext;
 pub struct ValidatedJwt {
     /// Subject (pekohub user ID)
     pub sub: String,
+    /// ADR-058 D5: typed caller kind for bridge tokens
+    /// (`"user" | "visitor"`). Optional at the validator layer — the
+    /// bridge caller-resolution path
+    /// (`tunnel::dispatcher::resolve_bridge_caller`) requires it and
+    /// rejects tokens without one; other JWT consumers (IPC auth) do
+    /// not.
+    pub kind: Option<String>,
     /// User name
     pub name: Option<String>,
     /// User email
@@ -55,6 +62,10 @@ struct JwtClaims {
     #[serde(default)]
     jti: String,
     aud: String,
+    /// ADR-058 D5: typed caller kind (`"user" | "visitor"`) on bridge
+    /// tokens. Optional here; required by the bridge resolution path.
+    #[serde(default)]
+    kind: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -479,6 +490,7 @@ impl JwtValidator {
 
         Ok(ValidatedJwt {
             sub: claims.sub,
+            kind: claims.kind,
             name: claims.name,
             email: claims.email,
             permissions: claims.permissions.unwrap_or_default(),

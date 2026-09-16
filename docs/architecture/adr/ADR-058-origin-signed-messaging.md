@@ -1,7 +1,8 @@
 # ADR-058: Origin-Signed Messaging — Per-Principal Keys, Proof-of-Possession Registration, Typed Bridge Claims
 
-**Status:** Accepted (2026-09-16). D1+D2+D3 implemented on branch
-`docs/adr-058-origin-signed-messaging`; D4–D7 pending.
+**Status:** Accepted (2026-09-16). D1–D7 implemented on branch
+`docs/adr-058-origin-signed-messaging` (D1+D2+D3 first; D4-runtime,
+D5, D6, D7 in the follow-up commit; hub side in pekohub).
 **Date:** 2026-09-16
 **Author:** rlsn (with Kimi Code)
 **Related:** [ADR-057](ADR-057-single-attribution-identity.md) (single
@@ -412,6 +413,46 @@ The hub TypeScript mirror types (`pekohub`
 `backend/src/services/tunnel-protocol.ts`) gained the
 `authorSignature` field on both envelope interfaces; the hub needed
 no logic change (spike 2).
+
+### Implementation notes (D4-runtime, D5, D6, D7)
+
+1. **D5 — typed claims, one mapping point.** The `kind` claim is
+   optional at the `JwtValidator` layer (the validator also serves the
+   IPC JWT path) and *required* in
+   `tunnel::dispatcher::resolve_bridge_caller`, which now returns a
+   typed `Subject` via `Subject::from_bridge_claim` (fail-closed on
+   missing/unknown kind, empty/`:`-carrying subs, visitor `local`).
+   The Private-exposure ACL match became kind-aware `Subject`
+   equality. `Subject::Visitor` is a session peer everywhere `User`
+   is, with these least-privilege exceptions: no Local-tier authority
+   (`common/authority.rs`), `/visitor-<id>` peer children, and no
+   deterministic principal-DID DM channel (slug-based `dm-<slug>`,
+   same as users).
+2. **D6 — peer-cred is Linux-only, via `nix` from the existing
+   tree.** The unix IPC transport is a *datagram* socket: macOS has
+   no per-message credential passing for `AF_UNIX/SOCK_DGRAM`, so the
+   `0700` run dir + `0600` socket modes are the mechanism there
+   (documented residual). On Linux, `SO_PASSCRED` +
+   `SCM_CREDENTIALS` (nix 0.26.4, already vendored via
+   keyring→secret-service→zbus; no new crate) rejects different-uid
+   datagrams in the receive loop. The inert `bind_address` knobs
+   (`network.bind_address` typed field + the free-form
+   `daemon.bind_address` examples/templates/docs) were deleted per
+   the ADR's preference; `[direct].bind_address` belongs to the
+   B5-retired direct transport and is untouched (separate cleanup).
+3. **D4 register PoP — `owner` source.** The signed register payload
+   is `{"nonce","runtimeDid","owner","iat","exp"}`; `exp` and `owner`
+   pass through verbatim from the hub's register-challenge response
+   (the hub discloses `owner` = the authenticated user id at
+   challenge time and compares it at register time — added during
+   review after the two sides initially disagreed on where `owner`
+   comes from). Hubs without the challenge endpoint receive the
+   legacy register body without `pop` (warn-only), so setup keeps
+   working against a pre-D4 hub.
+4. **D7 provenance is storage-layer only.** The envelope
+   (`{"origin","event"}`) wraps the line on disk; `ChannelEvent` wire
+   type, the `ChannelPort` API, and `peko log` output are unchanged.
+   Legacy bare lines parse as `local`.
 
 ---
 

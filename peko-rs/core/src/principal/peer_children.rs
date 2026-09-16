@@ -60,6 +60,9 @@ const MAX_SLUG_ATTEMPTS: usize = 10;
 /// - `user:{id}` → `user-{sanitized}` where sanitization keeps
 ///   lowercase ascii alphanumerics, maps everything else to `-`,
 ///   collapses repeats, and trims leading/trailing `-`;
+/// - `visitor:{id}` → `visitor-{sanitized}` (ADR-058 D5 — hub-minted
+///   anonymous peers; same sanitization as users, distinct slug
+///   space);
 /// - `principal:{did}` → `principal-{fragment}` where the fragment is
 ///   the first 16 lowercase ascii alphanumerics of the DID.
 ///
@@ -75,6 +78,21 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
                 "user".to_string()
             } else {
                 format!("user-{sanitized}")
+            };
+            cap_slug(&slug)
+        }
+        Subject::Visitor(id) => {
+            // ADR-058 D5: visitors are ordinary non-owner peers with
+            // their own `/visitor-<id>` slug space. The typed-claim
+            // gate (`Subject::from_bridge_claim`) already rejects ids
+            // containing `:` and the reserved `local`, so a visitor
+            // slug can never collide with `/local-user` or smuggle a
+            // `principal:` reference.
+            let sanitized = sanitize_slug_segment(id);
+            let slug = if sanitized.is_empty() {
+                "visitor".to_string()
+            } else {
+                format!("visitor-{sanitized}")
             };
             cap_slug(&slug)
         }
@@ -407,6 +425,21 @@ mod tests {
     }
 
     #[test]
+    fn slug_for_visitors_uses_own_space() {
+        // ADR-058 D5: visitors land in `/visitor-<id>` children,
+        // sanitized like users but in a distinct slug space.
+        assert_eq!(
+            peer_child_slug(&Subject::Visitor("vis_abc123".to_string())).unwrap(),
+            "visitor-vis-abc123"
+        );
+        // Nothing slug-safe survives → bare prefix (still valid).
+        assert_eq!(
+            peer_child_slug(&Subject::Visitor("!!!".to_string())).unwrap(),
+            "visitor"
+        );
+    }
+
+    #[test]
     fn slug_is_capped_at_max_len() {
         let long_id = "a".repeat(200);
         let slug = peer_child_slug(&Subject::User(long_id)).unwrap();
@@ -490,6 +523,26 @@ mod tests {
         assert_eq!(p.slug.as_deref(), Some("principal-didkeyz6mkstrang"));
         assert_eq!(p.peer_type.as_deref(), Some("principal"));
         assert_eq!(p.peer_id.as_deref(), Some("did:key:z6MkStranger"));
+    }
+
+    #[tokio::test]
+    async fn visitor_peer_child_provisions_in_own_slug_space() {
+        let (_dir, manager) = fixture().await;
+        let visitor = Subject::Visitor("vis_abc123".to_string());
+
+        let child_id = ensure_peer_child("root", &visitor, &manager).await.unwrap();
+
+        let metas = metas_of(&manager).await;
+        let child = metas
+            .iter()
+            .find(|m| m.session_id.to_string() == child_id)
+            .expect("child metadata exists");
+        assert_eq!(child.slug.as_deref(), Some("visitor-vis-abc123"));
+        assert_eq!(child.trigger, "spawn");
+        assert_eq!(child.title.as_deref(), Some("visitor:vis_abc123"));
+        // The REAL visitor peer is stamped (kind + bare id).
+        assert_eq!(child.peer_type.as_deref(), Some("visitor"));
+        assert_eq!(child.peer_id.as_deref(), Some("vis_abc123"));
     }
 
     #[tokio::test]
