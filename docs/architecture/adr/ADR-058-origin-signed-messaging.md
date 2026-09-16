@@ -1,6 +1,6 @@
 # ADR-058: Origin-Signed Messaging — Per-Principal Keys, Proof-of-Possession Registration, Typed Bridge Claims
 
-**Status:** Draft
+**Status:** Accepted (2026-09-16; implementation in progress on branch `docs/adr-058-origin-signed-messaging`)
 **Date:** 2026-09-16
 **Author:** rlsn (with Kimi Code)
 **Related:** [ADR-057](ADR-057-single-attribution-identity.md) (single
