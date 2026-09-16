@@ -5,7 +5,7 @@
 # Requires MINIMAX_API_KEY in the environment.
 #
 # Verifies the single-command UX:
-#   1. `peko principal create <name> -f template.toml` is BLOCKING and
+#   1. `peko create <name> -f template.toml` is BLOCKING and
 #      returns only when the principal is alive: workspace provisioned,
 #      definition seeded from the template (identity, intent, inline
 #      persona), daemon started, genesis + keepalive jobs seeded, and

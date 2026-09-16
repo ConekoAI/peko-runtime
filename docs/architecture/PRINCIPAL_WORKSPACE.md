@@ -1,4 +1,4 @@
-# Principal Workspace
+# Peko Workspace
 
 **Version:** 0.1.0 (ADR-047)
 **Date:** 2026-08-25
@@ -8,17 +8,17 @@
 
 ## Overview
 
-A principal's workspace contains everything the principal uses: identity,
+A peko's workspace contains everything the peko uses: identity,
 config, agent prompts, session history, and the tooling (tools, skills,
-MCP servers, hooks, plugins) the principal has chosen to install. The
-runtime's job is to scan the workspace on principal boot and dispatch by
+MCP servers, hooks, plugins) the peko has chosen to install. The
+runtime's job is to scan the workspace on peko boot and dispatch by
 tool name; there is no extension registry, no canonical funnel, and no
 manifest validation beyond presence.
 
 This replaces the legacy "extension" model (ADR-017, ADR-024, ADR-026,
 ADR-036) where every plugin passed through a single `ExtensionCore`
-adapter funnel. Under ADR-047 the principal workspace **is** the trust
-boundary: whatever is on disk is what the principal has.
+adapter funnel. Under ADR-047 the peko workspace **is** the trust
+boundary: whatever is on disk is what the peko has.
 
 For the trust-and-audit posture that makes this safe, see
 [ADR-046](adr/ADR-046-trust-and-audit.md).
@@ -28,7 +28,7 @@ For the trust-and-audit posture that makes this safe, see
 ## Workspace Layout
 
 ```
-~/.peko/principal/<name>/
+~/.peko/principals/<name>/
 ├── principal.toml
 ├── agents/<name>.md
 ├── kb/                              # persistent knowledge base (ADR-055)
@@ -52,7 +52,7 @@ For the trust-and-audit posture that makes this safe, see
 | Path                       | Contents                                                                  |
 |----------------------------|---------------------------------------------------------------------------|
 | `principal.toml`           | Owner, permissions, exposure, capabilities, root prompt                    |
-| `agents/<name>.md`         | Agent prompts (per-principal)                                             |
+| `agents/<name>.md`         | Agent prompts (per-peko)                                             |
 | `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `agents/<name>.md` for the named agent |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
 | `tools/<id>/tool.toml`     | Universal tool manifests                                                  |
@@ -64,23 +64,23 @@ For the trust-and-audit posture that makes this safe, see
 
 Tooling lives directly in the workspace: there is no `extensions/`
 directory and no `peko ext install` flow. Workspace-resident tooling is
-the only source of tools the principal can use.
+the only source of tools the peko can use.
 
 ---
 
 ## Managing workspace tooling
 
 ADR-050 (2026-08-30) removed the per-category CLI that ADR-047 §5 had
-introduced (`peko principal tool|skill|mcp|hook list / install /
+introduced (`peko peko tool|skill|mcp|hook list / install /
 remove`, plus the `agent` / `persona` variants). It was pure filesystem
 sugar over the workspace — the files are the truth, so manage them
 directly:
 
 ```
-ls ~/.peko/principal/<name>/{tools,skills,mcp,hooks,plugins}/   # list
-cp -r ./my-skill ~/.peko/principal/<name>/skills/<id>/          # install
-rm -r ~/.peko/principal/<name>/skills/<id>                      # remove
-peko principal show                  # includes catalog summary
+ls ~/.peko/principals/<name>/{tools,skills,mcp,hooks,plugins}/   # list
+cp -r ./my-skill ~/.peko/principals/<name>/skills/<id>/          # install
+rm -r ~/.peko/principals/<name>/skills/<id>                      # remove
+peko show                  # includes catalog summary
 ```
 
 The workspace `agents/` and `skills/` catalogs render **per turn** into
@@ -97,17 +97,17 @@ The legacy `peko ext *` command tree was retired in Phase 5.
 
 There are exactly two grounding paths, with two artifact shapes:
 
-- **Grow** — `peko principal create [-f <template.toml>]`: a template
+- **Grow** — `peko create [-f <template.toml>]`: a template
   is a **plain TOML file** (a `principal.toml` with `id`/`did`/
   `boot_state` stripped). This is also the registry artifact
-  (`peko principal push` distributes DNA, not creatures; a pulled
+  (`peko push` distributes DNA, not creatures; a pulled
   template is ground with `create -f` and a freshly minted identity).
-- **Wake** — `peko principal import <name>.peko`: a full-existence
-  **snapshot** (`tar.gz`) of a live principal — config, identity
+- **Wake** — `peko import <name>.peko`: a full-existence
+  **snapshot** (`tar.gz`) of a live peko — config, identity
   (DID doc + keys), agent prompts, sessions (with the
   `sessions.json`/`peers.json` routing index), authored cron schedule,
   plans, and installed workspace tooling. Import restores everything
-  to its tier; an `organized` principal keeps its rhythm (no genesis
+  to its tier; an `organized` peko keeps its rhythm (no genesis
   re-seed). Derived state (`cache/`, `locks/`, `memory_index.json`)
   is never packaged.
 
@@ -127,8 +127,8 @@ my-principal.peko (tar.gz)          # cryogenic transport
 Legacy packages that still ship an `extensions/<id>.ext` layer are
 accepted on import; new exports omit it.
 
-See [ADR-056](adr/ADR-056-full-existence-principal-snapshot.md),
-[ADR-047 §5](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md)
+See [ADR-056](adr/ADR-056-full-existence-peko-snapshot.md),
+[ADR-047 §5](adr/ADR-047-peko-workspace-as-tooling-trust-boundary.md)
 and [ADR-027 §3](adr/ADR-027-unified-packaging.md) for the format
 history.
 
@@ -136,7 +136,7 @@ history.
 
 ## Discovery & dispatch
 
-1. **Discovery**: at principal boot, scan
+1. **Discovery**: at peko boot, scan
    `<workspace>/{tools,skills,mcp,hooks,plugins}` and build a
    `PrincipalCatalog` keyed by tool name.
 2. **Dispatch**: `tool_runtime::dispatch(tool_name, args)` looks up the
@@ -146,7 +146,7 @@ history.
    prompt builder exactly once, as a list of
    `(tool_name, description, source_path)`.
 
-The runtime does not validate plugin contents. Whatever the principal
+The runtime does not validate plugin contents. Whatever the peko
 has installed is what the model sees. Per ADR-046, the audit log records
 every tool install/remove and every tool call — the audit log is the
 safety net, not a permission layer.
@@ -155,7 +155,7 @@ safety net, not a permission layer.
 
 ## Audit canary
 
-The principal-config drift detector (ADR-046 + ADR-047 §6) hashes
+The peko-config drift detector (ADR-046 + ADR-047 §6) hashes
 `tools/`, `hooks/`, and `mcp/` on each daemon boot and emits:
 
 - `principal.tool_installed` / `principal.tool_removed` (Info)
@@ -171,14 +171,14 @@ Info.
 ## Migration from the extension system
 
 If you have existing extensions installed under the legacy
-`~/.peko/extensions/` layout, copy them into the per-principal
+`~/.peko/extensions/` layout, copy them into the per-peko
 workspace by hand (the install CLI was removed in ADR-050):
 
 ```
-cp <path>/tool.toml   ~/.peko/principal/<name>/tools/<id>/tool.toml
-cp -r <skill-dir>     ~/.peko/principal/<name>/skills/<id>/      # SKILL.md inside
-cp <path>/server.json ~/.peko/principal/<name>/mcp/<id>/server.json
-cp <path>/hook.toml   ~/.peko/principal/<name>/hooks/<id>/hook.toml
+cp <path>/tool.toml   ~/.peko/principals/<name>/tools/<id>/tool.toml
+cp -r <skill-dir>     ~/.peko/principals/<name>/skills/<id>/      # SKILL.md inside
+cp <path>/server.json ~/.peko/principals/<name>/mcp/<id>/server.json
+cp <path>/hook.toml   ~/.peko/principals/<name>/hooks/<id>/hook.toml
 ```
 
 The catalog rebuild on the next boot picks them up automatically, and
@@ -194,14 +194,14 @@ flow.
 
 ## Related documentation
 
-- [ADR-047: Principal Workspace as the Tooling Trust Boundary](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) — design rationale
+- [ADR-047: Peko Workspace as the Tooling Trust Boundary](adr/ADR-047-peko-workspace-as-tooling-trust-boundary.md) — design rationale
 - [ADR-050: Capabilities as Workspace Files](adr/ADR-050-capabilities-as-workspace-files.md) — file-only management + per-turn prompt catalog
 - [ADR-046: Trust and Audit](adr/ADR-046-trust-and-audit.md) — audit posture
 - [ADR-027: Unified Packaging](adr/ADR-027-unified-packaging.md) — `plugins/` layer
-- [ADR-039: Principal Model](adr/ADR-039-principal-model.md) — principal-as-actor
-- [ADR-041: Principal-as-Container](adr/ADR-041-principal-as-container.md) — per-principal workspace tier
-- [ADR-055: The Principal Knowledge Base](adr/ADR-055-principal-kb.md) — the `kb/` persistent tree and its hot set
+- [ADR-039: Peko Model](adr/ADR-039-peko-model.md) — peko-as-actor
+- [ADR-041: Peko-as-Container](adr/ADR-041-peko-as-container.md) — per-peko workspace tier
+- [ADR-055: The peko Knowledge Base](adr/ADR-055-peko-kb.md) — the `kb/` persistent tree and its hot set
 
 ---
 
-*Version 0.1.0 · Principal Workspace · 2026-08-30 (ADR-050)*
+*Version 0.1.0 · peko Workspace · 2026-08-30 (ADR-050)*

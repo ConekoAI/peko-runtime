@@ -4,9 +4,9 @@
 # Demonstrates the minimal offline flow:
 #   1. Initialise an isolated home (no daemon needed).
 #   2. Seed a mock-llm provider entry so `--model mock-llm` resolves.
-#   3. `peko principal create …`
-#   4. `peko principal list`  → expect new principal
-#   5. `peko principal show …` → expect identity fields
+#   3. `peko create …`
+#   4. `peko list`  → expect new principal
+#   5. `peko show …` → expect identity fields
 #   6. Assert files on disk live inside the tempdir (not the user's $HOME).
 
 flow_main() {

@@ -21,6 +21,23 @@ commit messages, and design discussions.
 
 ---
 
+## Terminology (ADR-059)
+
+Since ADR-059, "peko" is also the user-facing term for what the code
+internally calls a `Principal`. Deliberate disambiguation:
+
+| Term | Meaning |
+|---|---|
+| **the Peko runtime** | the project, daemon, and `peko` binary |
+| **a peko** | one user-facing AI actor (internal type: `Principal`) |
+| **a `.peko` package** | portable full-existence archive of a peko |
+| **the PEKO model** | the Persistent Entity / Keepalive Orchestration paradigm |
+
+Older documents (historical ADRs, field reports) say "principal" for
+what user-facing surfaces now call "peko"; the terms are interchangeable.
+
+---
+
 ## What a PEKO is
 
 A self-organizing tree of dual-aspect nodes owned by one principal. Each

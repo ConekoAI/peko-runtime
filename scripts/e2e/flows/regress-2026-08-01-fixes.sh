@@ -340,7 +340,7 @@ flow_main() {
   echo
 
   # ============================================================
-  # Fix #12 — `peko principal persona show <name>` exists (Bug F
+  # Fix #12 — `peko persona show <name>` exists (Bug F
   # from scripts/e2e/reports/2026-08-01-non-technical-user-landlord-email.md).
   # The v2 Bug D fix added a `persona` block to `show --json`, but
   # a non-tech user still had no direct CLI read-back. The fix

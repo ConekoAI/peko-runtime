@@ -94,7 +94,7 @@ Role marker: COMMS_MARKER_EXPL74.
 EOF
 
   # ── principal.toml: [identity] / [intent] + routing.peer_agent ───
-  # `peko principal create` already emits all three sections (identity
+  # `peko create` already emits all three sections (identity
   # defaults to the principal name; intent lists are empty), so the
   # patch must SET keys inside existing sections, not append new ones.
   python3 - "$ws/principal.toml" <<'PY'

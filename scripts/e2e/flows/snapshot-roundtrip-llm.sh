@@ -4,8 +4,8 @@
 # ADR-056 full-existence snapshot, END-TO-END with a REAL LLM (MiniMax).
 # Requires MINIMAX_API_KEY in the environment.
 #
-# Verifies that `peko principal export` → `peko principal remove` →
-# `peko principal import` is cryogenic TRANSPORT of a LIVE principal —
+# Verifies that `peko export` → `peko remove` →
+# `peko import` is cryogenic TRANSPORT of a LIVE principal —
 # not cloning (there is exactly one export shape; cloning is
 # `principal create -f` with a fresh DID):
 #   1. `principal create -f` runs the real genesis turn (ADR-054);
