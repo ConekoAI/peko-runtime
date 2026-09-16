@@ -49,7 +49,7 @@ use crate::tools::builtin::messaging::subagent_runtime::{
 /// - `path` is the slug path the target session lives at, or will
 ///   live at on `new`. Required non-empty for `new` (a single
 ///   slug segment — the new session's address) and `resume` /
-///   `compact` (an absolute slug path `/a/b/c` naming the target).
+///   `compact` (an absolute slug path `sess:/a/b/c` naming the target).
 ///   Raw UUIDs and caller-relative slugs are refused at the runtime
 ///   layer via `resolve_reference`.
 /// - `prompt` is the task description.
@@ -73,7 +73,7 @@ pub struct AgentArgs {
     /// live (`new`). For `new`: a single slug segment (the new
     /// session's address — no `/`s, since intermediate segments are
     /// not materialized). For `resume` and `compact`: an absolute
-    /// slug path (`/a/b/c`). Never a raw UUID or caller-relative
+    /// slug path (`sess:/a/b/c`). Never a raw UUID or caller-relative
     /// slug. Required for `new`, `resume`, and `compact`.
     #[serde(default)]
     pub path: String,
@@ -93,7 +93,7 @@ pub struct AgentArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// ADR-053 (`branch` only): the session to snapshot. An absolute
-    /// slug path (`/a/b/c`) naming any session in the principal's
+    /// slug path (`sess:/a/b/c`) naming any session in the principal's
     /// store. Omitted means the calling session itself. Branching is
     /// read-only w.r.t. the source, so archived sources are allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,18 +169,18 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
             }
             // `path` is a uniform address (2026-09-08): a RELATIVE
             // slug segment (no `/`) mints/attaches `<caller>/<slug>`;
-            // an ABSOLUTE `/a/b` path resolves from the tree root and
-            // attaches when the session exists — only single-segment
+            // an ABSOLUTE `sess:/a/b` path resolves from the tree root
+            // and attaches when the session exists — only single-segment
             // absolute paths may be minted (intermediate segments are
             // not materialized). Raw UUIDs are refused either way.
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
                     "action \"new\" requires 'path' — a slug segment (1-64 chars, no '/') for a \
-                     caller-relative session, or an absolute path (\"/user-bob\") for a \
+                     caller-relative session, or an absolute path (\"sess:/user-bob\") for a \
                      top-level one"
                 ));
             }
-            if args.path.starts_with('/') {
+            if peko_session::path::strip_scheme_prefix(&args.path).starts_with('/') {
                 if let Err(e) = peko_session::path::validate_path(&args.path) {
                     return Err(anyhow::anyhow!(
                         "action \"new\" 'path' is not a valid slug path: {e}"
@@ -214,7 +214,7 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
                     "action \"compact\" requires 'path' — an absolute slug path \
-                     ('/a/b/c') naming the session to compact and continue"
+                     ('sess:/a/b/c') naming the session to compact and continue"
                 ));
             }
             if let Err(e) = peko_session::path::validate_path(&args.path) {
@@ -236,11 +236,11 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
             if args.path.is_empty() {
                 return Err(anyhow::anyhow!(
                     "action \"branch\" requires 'path' — a slug segment (1-64 chars, no '/') \
-                     for a caller-relative branch, or an absolute path (\"/briefing\") for a \
+                     for a caller-relative branch, or an absolute path (\"sess:/briefing\") for a \
                      top-level one"
                 ));
             }
-            if args.path.starts_with('/') {
+            if peko_session::path::strip_scheme_prefix(&args.path).starts_with('/') {
                 if let Err(e) = peko_session::path::validate_path(&args.path) {
                     return Err(anyhow::anyhow!(
                         "action \"branch\" 'path' is not a valid slug path: {e}"
@@ -762,7 +762,7 @@ Parameters:
 - action: "new" | "resume" | "compact" | "branch" (default: "new")
 - prompt: Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)
 - agent: Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for all actions)
-- path: Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('/a/b/c' from the session tool's list `path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions.
+- path: Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c' from the session tool's list `path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions.
 - model: Optional model override for the subagent (matches Claude Code's Agent schema; ignored for compact — the continuation run keeps the session's model)
 - source: (branch only) Absolute slug path of the session to snapshot. Omit to branch from YOUR current session.
 - overwrite: (branch only) When true and the target path already holds a spawned session, archive it and repoint the address to the new branch. Default false (refuse when the target exists).
@@ -786,10 +786,10 @@ Examples:
 {"prompt": "Use Write to create report.txt with a summary", "agent": "writer", "path": "writer-1"}
 
 // Persistent worker - continue a previous spawned session with its history
-{"action": "resume", "path": "/writer-1", "prompt": "Now update report.txt with the new numbers", "agent": "writer"}
+{"action": "resume", "path": "sess:/writer-1", "prompt": "Now update report.txt with the new numbers", "agent": "writer"}
 
 // Compact a long transcript now and continue with a follow-up task in the same run
-{"action": "compact", "path": "/writer-1", "prompt": "Now draft the final report from our work so far", "agent": "writer"}
+{"action": "compact", "path": "sess:/writer-1", "prompt": "Now draft the final report from our work so far", "agent": "writer"}
 
 // Branch from THIS session into a sideline briefing (does not touch this session)
 {"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above and send it to the user's channel", "agent": "writer"}
@@ -819,7 +819,7 @@ Examples:
                 },
                 "path": {
                     "type": "string",
-                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('/a/b/c') from the session tool's list (`path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions."
+                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c') from the session tool's list (`path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions."
                 },
                 "model": {
                     "type": "string",

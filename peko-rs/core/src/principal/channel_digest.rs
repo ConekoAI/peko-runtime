@@ -155,12 +155,17 @@ async fn render_channel_digest(
     let mut blocks: Vec<String> = Vec::new();
     for channel in channels {
         // Bound-channel discovery: DM channels carry a
-        // `passive_binding` equal to the bound session's `/slug` path
-        // or raw id; group channels have no binding and bind via the
-        // session's peer stamp instead.
+        // `passive_binding` equal to the bound session's address (the
+        // legacy bare `/slug` path or raw id; group channels have no
+        // binding and bind via the session's peer stamp instead).
+        // `own_path` carries the display-side `sess:` prefix, so both
+        // sides are normalized through `strip_scheme_prefix` before
+        // comparing — stored bindings never carry the prefix.
         let is_dm = match port.passive_binding(&channel).await.unwrap_or(None) {
             Some(b) => {
-                if b != own_path && b != session_key {
+                let b_path = peko_session::path::strip_scheme_prefix(&b);
+                let own = peko_session::path::strip_scheme_prefix(&own_path);
+                if b_path != own && b != session_key {
                     continue;
                 }
                 true

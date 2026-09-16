@@ -136,8 +136,8 @@ impl SessionManagerRuntime {
     ///
     /// Two accepted forms (see [`peko_session::path::resolve_reference`]):
     ///
-    /// - `/a/b/c` — absolute slug path (anchored at the caller's
-    ///   tree root, never a global root).
+    /// - `sess:/a/b/c` (or legacy bare `/a/b/c`) — absolute slug path
+    ///   anchored at the caller's tree root, never a global root.
     /// - The caller's own session id — engine-internal self-reference
     ///   shape; the engine passes its own `current_session_id`
     ///   verbatim (UUIDs in production) so callers don't have to
@@ -1811,15 +1811,15 @@ mod tests {
             all.iter().find(|s| s.session_id == id).unwrap()
         };
         assert_eq!(by_id("spawn1").slug.as_deref(), Some("a"));
-        assert_eq!(by_id("spawn1").path, "/a");
-        assert_eq!(by_id("child1").path, "/a/b");
-        assert_eq!(by_id("spawn2").path, "/c");
+        assert_eq!(by_id("spawn1").path, "sess:/a");
+        assert_eq!(by_id("child1").path, "sess:/a/b");
+        assert_eq!(by_id("spawn2").path, "sess:/c");
         // Slugless sessions fall back to their raw id (v5 UUID form
         // after Sprint 6) as last segment.
         assert_eq!(by_id("root:user:alice").slug, None);
         assert_eq!(
             by_id("root:user:alice").path,
-            format!("/{}", sid("root:user:alice"))
+            format!("sess:/{}", sid("root:user:alice"))
         );
     }
 

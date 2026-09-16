@@ -105,7 +105,7 @@ impl SessionTool {
         let path = params.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
             anyhow::anyhow!(
                 "action \"{action}\" requires 'path' — an absolute slug path \
-                     ('/a/b/c') naming the target session (use the `path` field from \
+                     ('sess:/a/b/c') naming the target session (use the `path` field from \
                      `session list`)"
             )
         })?;
@@ -123,7 +123,9 @@ impl SessionTool {
     /// `cp src dst` / `mv src dst`. Returns `(parent_str, slug)` —
     /// `parent_str` may be empty when the target is a single-segment
     /// slug whose new parent is the caller's tree root; the caller
-    /// passes `/` to the runtime in that case.
+    /// passes `/` to the runtime in that case. The `sess:` scheme
+    /// prefix is stripped before splitting so `sess:/slug` yields an
+    /// empty `parent_str` exactly like the legacy bare form.
     ///
     /// `target` is the unified destination field introduced in Sprint
     /// 7 Commit H (2026-08-22); it replaces the prior
@@ -139,7 +141,7 @@ impl SessionTool {
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "action \"{action}\" requires 'target' — an absolute slug path \
-                     naming the destination ('/parent/new_slug'); the last segment is \
+                     naming the destination ('sess:/parent/new_slug'); the last segment is \
                      the new slug, the rest is the destination parent. Mirrors bash \
                      `cp src dst` / `mv src dst`."
                 )
@@ -147,6 +149,7 @@ impl SessionTool {
         peko_session::path::validate_path(target).map_err(|e| {
             anyhow::anyhow!("action \"{action}\" 'target' is not a valid slug path: {e}")
         })?;
+        let target = peko_session::path::strip_scheme_prefix(target);
         let (parent_str, slug) = target.rsplit_once('/').ok_or_else(|| {
             anyhow::anyhow!(
                 "action \"{action}\" 'target' must include a parent path and a slug segment \
@@ -208,11 +211,11 @@ Per-action semantics (the action you choose determines which other params apply)
 - read_page: render one page's messages as transcript text (path optional, defaults to current; page required — a page number from list_pages; offset/limit window the rendered lines like Read). Responses are hard-capped per call; a truncation marker tells you the next offset. Use it to audit pre-compaction history after a summary looks wrong.
 - search_pages: case-insensitive substring search across ALL pages of a session including the live one (path optional, defaults to current; query required; max_results optional). Hits are page-tagged — follow up with read_page on the hit's page.
 
-Default nodes: the principal is seeded with two ordinary standing sessions at creation — `/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
+Default nodes: the principal is seeded with two ordinary standing sessions at creation — `sess:/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `sess:/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `sess:/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
 
-The `path` parameter is an absolute slug path (`/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session).
+The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session).
 
-The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
+The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`sess:/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
 Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` (there is no archive/unarchive; if you want it gone, remove it).
 
@@ -231,11 +234,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "path": {
                     "type": "string",
-                    "description": "Source session: an absolute slug path ('/a/b/c', anchored at the root of your session tree). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). Match the Agent tool's `path` parameter."
+                    "description": "Source session: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). Match the Agent tool's `path` parameter."
                 },
                 "target": {
                     "type": "string",
-                    "description": "Required for `copy` / `move`: destination slug path `<parent>/<new_slug>`. `<parent>` is an absolute slug path ('/a/b/c'); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `copy`: where to place the new copy. For `move`: the new address — to rename in place, set `target` to `<current_parent>/<new_slug>`. Mirrors bash `cp src dst` / `mv src dst`. Raw session ids and caller-relative slugs are refused at the runtime layer."
+                    "description": "Required for `copy` / `move`: destination slug path `<parent>/<new_slug>`. `<parent>` is an absolute slug path ('sess:/a/b/c'); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `copy`: where to place the new copy. For `move`: the new address — to rename in place, set `target` to `<current_parent>/<new_slug>`. Mirrors bash `cp src dst` / `mv src dst`. Raw session ids and caller-relative slugs are refused at the runtime layer."
                 },
                 "query": {
                     "type": "string",

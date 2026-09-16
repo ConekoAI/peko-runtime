@@ -4,10 +4,26 @@
 //!
 //! Sessions form trees via `SessionMetadata::parent_session_id`. Each
 //! session may carry a **slug** — a per-parent-unique path segment —
-//! so a session is addressable as `/a/b/c` from anywhere inside its
-//! own tree. Ids remain the canonical key everywhere (storage,
+//! so a session is addressable as `sess:/a/b/c` from anywhere inside
+//! its own tree. Ids remain the canonical key everywhere (storage,
 //! permits, registries); paths are a computed view only, resolved to
 //! ids at the tool-runtime boundary.
+//!
+//! ## The `sess:` scheme prefix
+//!
+//! Display paths carry the `sess:` scheme prefix ([`SCHEME_PREFIX`])
+//! so a session address can never be mistaken for a filesystem path —
+//! both grammars are `/`-rooted, and the LLM sees both in the same
+//! context (fs tools take `/Users/...`-style paths while session tools
+//! took bare `/a/b/c`). The prefix is unforgeable by construction:
+//! [`validate_slug`] rejects `:`, so no slug path can ever *contain*
+//! `sess:` — stripping exactly one leading prefix is lossless.
+//!
+//! Input is tolerant: every resolver accepts both `sess:/a/b/c` (the
+//! canonical form) and the legacy bare `/a/b/c` (config-authored
+//! bindings, stored channel bindings, in-flight transcripts). All
+//! parsing funnels through [`strip_scheme_prefix`], then treats the
+//! remainder exactly as before.
 //!
 //! ## Resolver semantics
 //!
@@ -38,6 +54,25 @@ use uuid::Uuid;
 /// Maximum slug length in characters (keeps paths readable and
 /// index entries small).
 pub const MAX_SLUG_LEN: usize = 64;
+
+/// The scheme prefix on every display path (`sess:/a/b/c`). Opaque
+/// `kind:` prefix in the same grammar family as `Subject`'s
+/// `user:alice` / `principal:helper` — deliberately NOT an RFC 3986
+/// URI (that would demand `sess://...`); the remainder is a
+/// `/`-rooted slug path, anchored at the caller's tree root.
+pub const SCHEME_PREFIX: &str = "sess:";
+
+/// Strip one leading [`SCHEME_PREFIX`]. Idempotent-safe by
+/// construction: slugs reject `:`, so a slug path can never contain a
+/// second `sess:` — but this only strips at the very start, and only
+/// when followed by `/` (a bare `sess:foo` is not a path shape and is
+/// left untouched for downstream refusals).
+#[must_use]
+pub fn strip_scheme_prefix(path: &str) -> &str {
+    path.strip_prefix(SCHEME_PREFIX)
+        .filter(|rest| rest.starts_with('/'))
+        .unwrap_or(path)
+}
 
 // ─── Slug validation + uniqueness ──────────────────────────────────
 
@@ -77,9 +112,9 @@ pub fn validate_slug(slug: &str) -> anyhow::Result<()> {
     }
 }
 
-/// Validate a path reference (`/a/b/c` or `a/b/c`) — the LLM-facing
-/// form used by tools like `Agent` and the session tool's `path`
-/// field. Splits on `/`, rejects empty segments and segments that
+/// Validate a path reference (`sess:/a/b/c` or legacy `/a/b/c`) — the
+/// LLM-facing form used by tools like `Agent` and the session tool's
+/// `path` field. Splits on `/`, rejects empty segments and segments that
 /// fail [`validate_slug`], rejects UUID-shaped segments that look
 /// like raw session ids, and accepts the empty string only when
 /// explicitly allowed (the caller can check first).
@@ -90,9 +125,10 @@ pub fn validate_slug(slug: &str) -> anyhow::Result<()> {
 /// (or [`resolve_path`] for absolute paths). A single bare UUID is
 /// never accepted; use the `path` field from `session list`.
 pub fn validate_path(path: &str) -> anyhow::Result<()> {
+    let path = strip_scheme_prefix(path);
     if path.is_empty() {
         return Err(anyhow::anyhow!(
-            "path is empty — pass a slug path ('/a/b/c')"
+            "path is empty — pass a slug path ('sess:/a/b/c')"
         ));
     }
     let trimmed = path.strip_prefix('/').unwrap_or(path);
@@ -172,12 +208,13 @@ fn tree_root(metas: &[SessionMetadata], from: SessionId) -> Option<SessionId> {
     Some(current.session_id)
 }
 
-/// Resolve a `/`-rooted session path to a session id.
+/// Resolve a `/`-rooted session path (optionally `sess:`-prefixed —
+/// [`strip_scheme_prefix`] is applied first) to a session id.
 ///
 /// `caller_session_id` anchors the lookup: `/` is the root of the
 /// CALLER's tree, never a global root. Values not starting with `/`
-/// are not paths — callers treat them as raw session ids and never
-/// reach this function.
+/// (after prefix stripping) are not paths — callers treat them as raw
+/// session ids and never reach this function.
 ///
 /// Errors (structured, actionable): caller metadata missing; unknown
 /// segment (lists the available child slugs at the failing level).
@@ -186,6 +223,7 @@ pub fn resolve_path(
     caller_session_id: SessionId,
     path: &str,
 ) -> anyhow::Result<SessionId> {
+    let path = strip_scheme_prefix(path);
     anyhow::ensure!(
         path.starts_with('/'),
         "session path '{path}' must start with '/' — pass a raw session id to address by id"
@@ -245,15 +283,16 @@ pub fn resolve_path(
 // ─── Display-side path computation ─────────────────────────────────
 
 /// Compute the absolute display path of a session, e.g.
-/// `/memory/task-b`.
+/// `sess:/memory/task-b`.
 ///
-/// Display-only inverse of [`resolve_path`]: ancestors without a slug
-/// are skipped as intermediate segments (the trunk session
-/// `parent_session_id == None` collapses into the leading `/`), and a
-/// slugless target falls back to its raw id as the last segment
-/// (`/memory/550e8400-…`). The resolver never accepts that fallback
-/// as input. Cycle-safe; a session missing from `metas` yields
-/// `/<id>`.
+/// Display-side inverse of [`resolve_path`]: the result carries the
+/// [`SCHEME_PREFIX`] so it can never be mistaken for a filesystem
+/// path; ancestors without a slug are skipped as intermediate
+/// segments (the trunk session `parent_session_id == None` collapses
+/// into the leading `/`), and a slugless target falls back to its raw
+/// id as the last segment (`sess:/memory/550e8400-…`). The resolver
+/// never accepts that fallback as input. Cycle-safe; a session
+/// missing from `metas` yields `sess:/<id>`.
 #[must_use]
 pub fn compute_path(metas: &[SessionMetadata], session_id: SessionId) -> String {
     let find = |id: SessionId| metas.iter().find(|m| m.session_id == id);
@@ -285,7 +324,7 @@ pub fn compute_path(metas: &[SessionMetadata], session_id: SessionId) -> String 
         cursor = meta.parent_session_id;
     }
     segments.reverse();
-    format!("/{}", segments.join("/"))
+    format!("{SCHEME_PREFIX}/{}", segments.join("/"))
 }
 
 // ─── Branch slug derivation ────────────────────────────────────────
@@ -325,7 +364,7 @@ pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: SessionId) -> Op
 ///
 /// | Form | Example | Resolver |
 /// |---|---|---|
-/// | Absolute slug path | `/a/b/c` | [`resolve_path`] (caller-anchored) |
+/// | Absolute slug path (`sess:`-prefixed or legacy bare) | `sess:/a/b/c` | [`resolve_path`] (caller-anchored) |
 /// | Caller's own session id | UUID | SELF (engine-internal call shape) |
 ///
 /// Everything else — non-`/`, non-self — is REFUSED with a structured
@@ -337,7 +376,8 @@ pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: SessionId) -> Op
 /// a sprint-6 runtime, and raw non-self UUIDs are by construction not
 /// produced by any tool the model sees. The earlier
 /// caller-relative-slug branch (`agent-c` style) was removed in
-/// sprint 6; only `/`-prefixed paths and the caller's own id pass.
+/// sprint 6; only `/`-prefixed paths (with or without the `sess:`
+/// scheme prefix) and the caller's own id pass.
 ///
 /// **Engine-internal self-reference:** the engine passes its own
 /// `current_session_id` verbatim (UUIDs in production). Bypassing the
@@ -350,12 +390,14 @@ pub fn resolve_reference(
 ) -> anyhow::Result<SessionId> {
     anyhow::ensure!(
         !reference.is_empty(),
-        "session reference is empty — pass a slug path ('/a/b/c')"
+        "session reference is empty — pass a slug path ('sess:/a/b/c')"
     );
     if reference == caller_session_id.to_string() {
         return Ok(caller_session_id);
     }
-    if reference.starts_with('/') {
+    // `sess:`-prefixed and legacy bare `/`-paths both dispatch to the
+    // slug walk; the prefix is stripped inside `resolve_path`.
+    if strip_scheme_prefix(reference).starts_with('/') {
         return resolve_path(metas, caller_session_id, reference);
     }
     // Engine-internal entrypoints (channel-binding driver, principal
@@ -370,7 +412,7 @@ pub fn resolve_reference(
     }
     Err(anyhow::anyhow!(
         "session reference '{reference}' is not a slug path — pass an absolute path \
-         ('/a/b/c') or your own session id; raw ids and caller-relative slugs are not \
+         ('sess:/a/b/c') or your own session id; raw ids and caller-relative slugs are not \
          accepted (use the `path` field from `session list` output)"
     ))
 }
@@ -570,31 +612,34 @@ mod tests {
         let s_memory = metas[1].session_id;
         let root = metas[0].session_id;
         let s_slugless = metas[4].session_id;
-        assert_eq!(compute_path(&metas, s_task), "/memory/task-b");
-        assert_eq!(compute_path(&metas, s_memory), "/memory");
+        assert_eq!(compute_path(&metas, s_task), "sess:/memory/task-b");
+        assert_eq!(compute_path(&metas, s_memory), "sess:/memory");
         // Root has no slug and no parent: bare "/<id>" fallback.
-        assert_eq!(compute_path(&metas, root), format!("/{root}"));
+        assert_eq!(compute_path(&metas, root), format!("sess:/{root}"));
         // Slugless target: raw id as the last segment.
-        assert_eq!(compute_path(&metas, s_slugless), format!("/{s_slugless}"));
+        assert_eq!(
+            compute_path(&metas, s_slugless),
+            format!("sess:/{s_slugless}")
+        );
         // Slugless INTERMEDIATE ancestor is skipped.
         let s_deep = SessionId::new();
         let mut deep = tree();
         deep.push(meta_at(s_deep, Some(s_slugless), Some("deep")));
-        assert_eq!(compute_path(&deep, s_deep), "/deep");
+        assert_eq!(compute_path(&deep, s_deep), "sess:/deep");
     }
 
     #[test]
     fn compute_path_handles_missing_and_cyclic_metadata() {
         let metas = tree();
         let ghost = SessionId::new();
-        assert_eq!(compute_path(&metas, ghost), format!("/{ghost}"));
+        assert_eq!(compute_path(&metas, ghost), format!("sess:/{ghost}"));
         let a = SessionId::new();
         let b = SessionId::new();
         let cyclic = vec![
             meta_at(a, Some(b), Some("a")),
             meta_at(b, Some(a), Some("b")),
         ];
-        assert!(compute_path(&cyclic, a).starts_with('/'));
+        assert!(compute_path(&cyclic, a).starts_with("sess:/"));
     }
 
     // ─── derive_branch_slug ────────────────────────────────────────
@@ -751,5 +796,62 @@ mod tests {
         let other_uuid = "660e8400-e29b-41d4-a716-446655440099";
         let resolved = resolve_reference(&metas, own_id, other_uuid).unwrap();
         assert_eq!(resolved.to_string(), other_uuid);
+    }
+
+    // ─── `sess:` scheme prefix ──────────────────────────────────────
+
+    #[test]
+    fn strip_scheme_prefix_strips_only_wellformed_prefix() {
+        // Canonical form: stripped.
+        assert_eq!(strip_scheme_prefix("sess:/a/b"), "/a/b");
+        // Legacy bare form: untouched.
+        assert_eq!(strip_scheme_prefix("/a/b"), "/a/b");
+        // Prefix without a `/` body is not a path shape — untouched
+        // (downstream refusals handle it).
+        assert_eq!(strip_scheme_prefix("sess:foo"), "sess:foo");
+        // No prefix at all.
+        assert_eq!(strip_scheme_prefix("root:cron:alice"), "root:cron:alice");
+        // Only the very start counts (slugs reject `:`, so a second
+        // `sess:` can never appear inside a path — unforgeable).
+        assert_eq!(strip_scheme_prefix("sess:/a/sess:b"), "/a/sess:b");
+    }
+
+    #[test]
+    fn validate_path_accepts_prefixed_form() {
+        validate_path("sess:/memory/task-b").unwrap();
+        assert!(validate_path("sess:/").is_err()); // bare `/` still refused
+                                                   // Prefixed single-segment paths validate like bare ones.
+        validate_path("sess:/memory").unwrap();
+    }
+
+    #[test]
+    fn resolve_path_accepts_prefixed_form() {
+        let metas = tree();
+        let s_task = metas[2].session_id;
+        let root = metas[0].session_id;
+        assert_eq!(
+            resolve_path(&metas, s_task, "sess:/memory/task-b").unwrap(),
+            s_task
+        );
+        assert_eq!(resolve_path(&metas, s_task, "sess:/").unwrap(), root);
+        // Error messages echo the (stripped) path.
+        let err = resolve_path(&metas, root, "sess:/memory/nope").unwrap_err();
+        assert!(err.to_string().contains("/memory/nope"), "{err}");
+    }
+
+    #[test]
+    fn resolve_reference_accepts_prefixed_paths_and_refuses_prefixed_non_paths() {
+        let metas = tree();
+        let s_task = metas[2].session_id;
+        let s_memory = metas[1].session_id;
+        // `sess:`-prefixed path: accepted.
+        assert_eq!(
+            resolve_reference(&metas, s_task, "sess:/memory").unwrap(),
+            s_memory
+        );
+        // `sess:` without a `/` body: not a path shape → refused with
+        // the unified message (never silently parsed as anything else).
+        let err = resolve_reference(&metas, s_task, "sess:memory").unwrap_err();
+        assert!(err.to_string().contains("not a slug path"), "{err}");
     }
 }
