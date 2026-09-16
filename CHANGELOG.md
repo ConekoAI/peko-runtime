@@ -4,6 +4,44 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-058 D1/D2/D3 — origin-signed cross-runtime messaging (2026-09-16)
+
+Breaking wire change (pre-launch, no compat shim — see
+`docs/architecture/adr/ADR-058-origin-signed-messaging.md`):
+
+- **D1 — every principal gets its own keypair; the principal DID is the
+  key.** Daemon-side principal genesis now mints a per-principal ed25519
+  keypair and derives the principal DID as `did:key` of that key
+  (replacing `did:peko:public:<name>:<hash>`). The private-key seed is
+  custodied in the vault under the new `principal-identity` namespace
+  (`{did}#keys-1`), isolated from the runtime key's `identity`
+  first-match reconstruction scan. Test / offline-CLI construction
+  (no vault) keeps the legacy minting path.
+- **D3 — envelope cryptography is JWS (EdDSA, compact serialization,
+  embedded payload).** The bespoke length-prefixed pre-image in
+  `tunnel_channel_signature` is gone; both `TunnelChannelEvent` and
+  `TunnelChannelInvite` signatures are now compact JWS over a versioned
+  JSON payload (`peko-channel-event/2` / `peko-channel-invite/2`)
+  carrying every envelope field plus `iat`/`exp` (5-minute validity,
+  30s expiry leeway, 60s future-`iat` allowance). The signing input is
+  canonical by construction, so the hub's `JSON.parse`→`stringify`
+  relay round-trip cannot break signatures; interop with the hub's
+  `jose` is byte-exact (ADR-058 spike 3). Signed `iat`/`exp` close the
+  replay window — the 4096-entry FIFO dedupe cache is now the second
+  layer, not the only one.
+- **D2 — envelopes carry an author signature.** `TunnelChannelEvent` /
+  `TunnelChannelInvite` gain an `authorSignature` field: a compact JWS
+  by the authoring principal's own key over the SAME payload segment as
+  the runtime counter-signature (the receiver requires the segments to
+  be byte-identical). On the inbound path, a `did:key`
+  `source_principal_did` must present a valid author signature AND be a
+  registered remote member of the channel mirror (`is_remote_member` is
+  finally wired into the receive path); a `did:key` invite `creator_did`
+  must additionally equal `source_principal_did`. Non-`did:key` authors
+  (`user:<id>`, legacy bare ids) are accepted as runtime-vouched. A
+  compromised runtime can no longer speak for principals it does not
+  host.
+
 ### Filesystem model: whole-store reach, no GC, no privilege (2026-09-12)
 
 - **The session hierarchy is now purely organizational** — like paths

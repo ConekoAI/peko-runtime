@@ -1241,6 +1241,56 @@ impl Vault {
     }
 
     // ------------------------------------------------------------------
+    // Principal identity private key (typed adapters) — ADR-058 D1.
+    //
+    // Dedicated `principal-identity` namespace: the runtime key's
+    // `try_reconstruct_from_vault` first-match scan walks the
+    // `"identity"` namespace, so principal keys MUST live elsewhere —
+    // a principal key surfacing in that scan would rebuild the runtime
+    // DID from the wrong key.
+    // ------------------------------------------------------------------
+
+    /// Store a principal identity private key (ADR-058 D1).
+    pub fn set_principal_identity_private_key(
+        &self,
+        key_id: &str,
+        algorithm: &str,
+        key: &str,
+    ) -> Result<()> {
+        let mut c = Credential::now(
+            "principal-identity",
+            key_id,
+            CredentialKind::PrivateKey,
+            SecretString::new(key.to_string().into()),
+        );
+        if let Some(id) = self.credential_id_for_slot("principal-identity", key_id) {
+            c.id = id;
+        }
+        c.metadata = serde_json::json!({ "algorithm": algorithm });
+        c.system_owned = true;
+        self.set_credential_internal(&c)
+    }
+
+    /// Get a principal identity private key by key id.
+    pub fn get_principal_identity_private_key(&self, key_id: &str) -> Option<SecretString> {
+        self.get_material_for("principal-identity", key_id)
+            .ok()
+            .flatten()
+    }
+
+    /// Remove a principal identity private key.
+    pub fn delete_principal_identity_private_key(&self, key_id: &str) -> Result<bool> {
+        let ids = self.credential_ids_for_slot("principal-identity", key_id);
+        let mut any = false;
+        for id in ids {
+            if self.delete_credential_internal(&id)? {
+                any = true;
+            }
+        }
+        Ok(any)
+    }
+
+    // ------------------------------------------------------------------
     // Tunnel private key (typed adapters)
     // ------------------------------------------------------------------
 
@@ -2456,6 +2506,59 @@ mod tests {
             .unwrap();
         let key = vault.get_tunnel_private_key("did:key:z6MkTunnel").unwrap();
         assert_eq!(key.expose_secret(), "dHVubmVsLWtleQ==");
+    }
+
+    #[test]
+    fn test_principal_identity_key_storage() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+
+        vault
+            .set_principal_identity_private_key(
+                "did:key:z6MkPrincipal#keys-1",
+                "ed25519-raw-base64",
+                "cHJpbmNpcGFsLWtleQ==",
+            )
+            .unwrap();
+        let key = vault
+            .get_principal_identity_private_key("did:key:z6MkPrincipal#keys-1")
+            .unwrap();
+        assert_eq!(key.expose_secret(), "cHJpbmNpcGFsLWtleQ==");
+        assert!(vault
+            .delete_principal_identity_private_key("did:key:z6MkPrincipal#keys-1")
+            .unwrap());
+        assert!(vault
+            .get_principal_identity_private_key("did:key:z6MkPrincipal#keys-1")
+            .is_none());
+    }
+
+    /// ADR-058 D1: principal keys live in the `principal-identity`
+    /// namespace so the runtime key's `identity` first-match
+    /// reconstruction scan can never see them — and vice versa.
+    #[test]
+    fn test_principal_identity_namespace_isolated_from_identity() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+
+        vault
+            .set_principal_identity_private_key(
+                "did:key:z6MkP#keys-1",
+                "ed25519-raw-base64",
+                "cA==",
+            )
+            .unwrap();
+        // Not visible through the runtime identity namespace.
+        assert!(vault
+            .get_identity_private_key("did:key:z6MkP#keys-1")
+            .is_none());
+
+        vault
+            .set_identity_private_key("did:key:z6MkR#keys-1", "ed25519-raw-base64", "cg==")
+            .unwrap();
+        // Not visible through the principal identity namespace.
+        assert!(vault
+            .get_principal_identity_private_key("did:key:z6MkR#keys-1")
+            .is_none());
     }
 
     #[test]

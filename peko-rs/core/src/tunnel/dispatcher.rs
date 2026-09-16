@@ -23,6 +23,8 @@ const MAX_CONCURRENT_DISPATCHES: usize = 64;
 
 use peko_auth::Subject;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
 use super::host::TunnelHost;
 use super::protocol::{
     ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
@@ -33,7 +35,7 @@ use super::{
     did_key::did_key_to_verifying_key,
     tunnel_channel_audit,
     tunnel_channel_signature::{
-        verify_channel_event, verify_channel_invite, ChannelInviteSignedFields, ChannelSignedFields,
+        verify_author_signature, verify_channel_event, verify_channel_invite,
     },
 };
 
@@ -573,6 +575,7 @@ impl TunnelDispatcher {
                 channel_id,
                 event,
                 signature,
+                author_signature,
             } => {
                 self.handle_inbound_tunnel_channel_event(
                     request_id,
@@ -582,6 +585,7 @@ impl TunnelDispatcher {
                     channel_id,
                     event,
                     signature,
+                    author_signature,
                 )
                 .await?;
             }
@@ -608,6 +612,7 @@ impl TunnelDispatcher {
                 passive_binding,
                 initial_members,
                 signature,
+                author_signature,
             } => {
                 self.handle_inbound_tunnel_channel_invite(
                     request_id,
@@ -621,6 +626,7 @@ impl TunnelDispatcher {
                     passive_binding,
                     initial_members,
                     signature,
+                    author_signature,
                 )
                 .await?;
             }
@@ -1185,31 +1191,36 @@ impl TunnelDispatcher {
 
     /// Handle an inbound `TunnelChannelEvent` — a push-only channel
     /// fan-out from a peer runtime. peko-channel cross-runtime PR-A
-    /// commit 3.
+    /// commit 3; ADR-058 D2/D3 v2 envelope.
     ///
     /// Pipeline:
     ///
     /// 1. Derive the verifying key from `source_runtime_id` (the
     ///    self-certifying `did:key` form). Invalid DIDs are dropped
-    ///    with a warn (same defense-in-depth layer as
-    ///    [`Self::handle_inbound_principal_to_principal_request`]) —
-    ///    the hub's source-allowlist is the primary gate, this is the
-    ///    receiver-side check that catches a hub bug or stale
-    ///    forwarder.
-    /// 2. Re-serialize the `event` to JSON bytes and feed them to
-    ///    [`verify_channel_event`] so the signer and verifier agree
-    ///    on byte-for-byte identical pre-image input. (serde_json
-    ///    emits struct fields in declaration order, so the round-trip
-    ///    is stable; this is documented in
-    ///    `tunnel_channel_signature::ChannelSignedFields`.)
-    /// 3. Emit the `received_inbound` audit line via
+    ///    with a warn — the hub's source-allowlist is the primary
+    ///    gate, this is the receiver-side check.
+    /// 2. Verify the runtime counter-signature — a compact JWS over
+    ///    the v2 payload (`verify_channel_event` checks the version
+    ///    tag and the `iat`/`exp` freshness window). The payload's
+    ///    fields must equal the envelope's, and `event_b64u` must
+    ///    decode to the re-serialized `event` bytes — any mismatch
+    ///    means a mangled/malicious envelope even if the signature
+    ///    holds.
+    /// 3. ADR-058 D2 author gate: when `source_principal_did` is a
+    ///    `did:key`, the envelope MUST carry a non-empty
+    ///    `author_signature` that verifies against the key embedded
+    ///    in that DID over the SAME payload segment, and the author
+    ///    must be a registered remote member of the channel mirror
+    ///    (`is_remote_member`). Non-`did:key` authors (e.g.
+    ///    `user:<id>`, legacy bare ids) are accepted as
+    ///    runtime-vouched with a debug log.
+    /// 4. Emit the `received_inbound` audit line via
     ///    [`tunnel_channel_audit::emit_received_inbound`].
-    /// 4. Append the event to the local `events.jsonl` mirror via
+    /// 5. Append the event to the local `events.jsonl` mirror via
     ///    [`crate::tunnel::TunnelChannelPort::append_remote_event`].
-    ///    The local mirror write trusts the upstream signature (which
-    ///    steps 1-3 just verified), so it skips the membership / parent
-    ///    / sender checks that the local `post` path enforces — those
-    ///    guarantees were already provided by the source runtime.
+    ///    The local mirror write trusts the upstream verification
+    ///    (steps 1-4), so it skips the membership / parent / sender
+    ///    checks that the local `post` path enforces.
     ///
     /// No response is sent back to the source runtime — channel
     /// events are push-only.
@@ -1223,6 +1234,7 @@ impl TunnelDispatcher {
         channel_id: String,
         event: peko_protocol::channel::ChannelEvent,
         signature: String,
+        author_signature: String,
     ) -> anyhow::Result<()> {
         // 0. ADR-057 transport audit: reject envelopes not addressed to
         // us. `recipient_runtime_id` is signature-covered, so a
@@ -1238,10 +1250,10 @@ impl TunnelDispatcher {
             return Ok(());
         }
 
-        // 0b. Replay protection: the signed pre-image carries no
-        // timestamp/nonce, so a captured envelope re-injected through
-        // the hub re-verifies forever. Dedupe on the signature-covered
+        // 0b. Replay protection: dedupe on the signature-covered
         // `request_id` (bounded FIFO — see `mark_envelope_seen`).
+        // ADR-058 D3 adds signed `iat`/`exp` on top; the dedupe cache
+        // is now the belt-and-suspenders second layer.
         {
             let mut state = self.state.write().await;
             if !state.mark_envelope_seen(&request_id) {
@@ -1263,9 +1275,36 @@ impl TunnelDispatcher {
             }
         };
 
-        // 2. Re-serialize the event for the pre-image. We must use the
-        // same byte sequence the source runtime signed; serde_json's
-        // stable declaration-order emission is what guarantees this.
+        // 2. Verify the runtime counter-signature (ADR-058 D3 compact
+        // JWS; version tag + freshness window checked inside).
+        let (payload, payload_segment) = match verify_channel_event(&verifying_key, &signature) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelEvent: signature verification failed for source_runtime_id={source_runtime_id}: {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        // 2b. The signed payload must agree with the envelope it
+        // rides — a mismatch means a mangled/malicious envelope even
+        // though the signature itself holds.
+        if payload.request_id != request_id
+            || payload.source_runtime_id != source_runtime_id
+            || payload.recipient_runtime_id != recipient_runtime_id
+            || payload.source_principal_did != source_principal_did
+            || payload.channel_id != channel_id
+        {
+            warn!(
+                "inbound TunnelChannelEvent: dropping envelope whose fields disagree with the signed payload (request_id={request_id})"
+            );
+            return Ok(());
+        }
+        // Re-serialize the event for the payload-bytes comparison and
+        // the audit preview. We must use the same byte sequence the
+        // source runtime signed; serde_json's stable
+        // declaration-order emission is what guarantees this.
         let event_bytes = match serde_json::to_vec(&event) {
             Ok(b) => b,
             Err(e) => {
@@ -1275,23 +1314,79 @@ impl TunnelDispatcher {
                 return Ok(());
             }
         };
-
-        let signed = ChannelSignedFields {
-            request_id: &request_id,
-            source_runtime_id: &source_runtime_id,
-            recipient_runtime_id: &recipient_runtime_id,
-            source_principal_did: &source_principal_did,
-            channel_id: &channel_id,
-            event_bytes: &event_bytes,
+        let payload_event_bytes = match URL_SAFE_NO_PAD.decode(&payload.event_b64u) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelEvent: payload event_b64u is not valid base64url (request_id={request_id}): {e}"
+                );
+                return Ok(());
+            }
         };
-        if let Err(e) = verify_channel_event(&verifying_key, signed, &signature) {
+        if payload_event_bytes != event_bytes {
             warn!(
-                "inbound TunnelChannelEvent: signature verification failed for source_runtime_id={source_runtime_id}: {e}"
+                "inbound TunnelChannelEvent: dropping envelope whose event bytes disagree with the signed payload (request_id={request_id})"
             );
             return Ok(());
         }
 
-        // 3. Audit. Always emit a row, regardless of whether the
+        // 3. ADR-058 D2 author gate. A `did:key` author must prove
+        // possession of the DID's key AND be a registered remote
+        // member of the channel mirror; anything else is accepted as
+        // runtime-vouched (legacy path).
+        let channel_id_typed = peko_protocol::channel::ChannelId(channel_id.clone());
+        if payload.source_principal_did.starts_with("did:key:") {
+            if author_signature.is_empty() {
+                warn!(
+                    "inbound TunnelChannelEvent: dropping did:key-authored envelope with no author signature (request_id={request_id}, author={})",
+                    payload.source_principal_did
+                );
+                return Ok(());
+            }
+            if let Err(e) = verify_author_signature(
+                &author_signature,
+                &payload_segment,
+                &payload.source_principal_did,
+            ) {
+                warn!(
+                    "inbound TunnelChannelEvent: author signature verification failed (request_id={request_id}, author={}): {e}",
+                    payload.source_principal_did
+                );
+                return Ok(());
+            }
+            match self
+                .host
+                .tunnel_channel_port()
+                .is_remote_member(
+                    &channel_id_typed,
+                    &source_runtime_id,
+                    &payload.source_principal_did,
+                )
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    warn!(
+                        "inbound TunnelChannelEvent: dropping envelope from did:key author who is not a remote member of the mirror (request_id={request_id}, channel_id={channel_id}, author={})",
+                        payload.source_principal_did
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(
+                        "inbound TunnelChannelEvent: remote-membership check failed, dropping envelope (request_id={request_id}, channel_id={channel_id}): {e}"
+                    );
+                    return Ok(());
+                }
+            }
+        } else {
+            debug!(
+                "inbound TunnelChannelEvent: non-did:key author {} accepted as runtime-vouched (request_id={request_id})",
+                payload.source_principal_did
+            );
+        }
+
+        // 4. Audit. Always emit a row, regardless of whether the
         // local-mirror append below succeeds; the row documents the
         // verify-and-(append-or-drop) decision.
         let event_kind = event.kind();
@@ -1305,8 +1400,8 @@ impl TunnelDispatcher {
             &super::tunnel_channel_audit::preview_event_payload(&preview_json),
         );
 
-        // 3b. ADR-057 transport audit: the inner event's channel must
-        // match the envelope's signed `channel_id` — the pre-image
+        // 4b. ADR-057 transport audit: the inner event's channel must
+        // match the envelope's signed `channel_id` — the payload
         // covers the envelope field, so a mismatched inner value is a
         // mangled/malicious envelope even though the signature holds.
         let inner_channel = event.channel();
@@ -1317,12 +1412,11 @@ impl TunnelDispatcher {
             return Ok(());
         }
 
-        // 4. Local-mirror append. The dispatcher is the single source
-        // of truth for signature validity (steps 1-3); the
+        // 5. Local-mirror append. The dispatcher is the single source
+        // of truth for envelope validity (steps 1-4); the
         // `append_remote_event` impl deliberately does not re-verify
         // or re-check membership, since layering a second check here
         // would either duplicate work or risk drift.
-        let channel_id_typed = peko_protocol::channel::ChannelId(channel_id.clone());
         if let Err(e) = self
             .host
             .tunnel_channel_port()
@@ -1349,36 +1443,35 @@ impl TunnelDispatcher {
 
     /// Handle an inbound `TunnelChannelInvite` — a one-shot bootstrap
     /// envelope from a peer runtime that created a cross-runtime
-    /// channel. peko-channel cross-runtime PR-3a commit 3.
+    /// channel. peko-channel cross-runtime PR-3a commit 3; ADR-058
+    /// D2/D3 v2 envelope.
     ///
     /// Pipeline (mirrors `handle_inbound_tunnel_channel_event`):
     ///
     /// 1. Derive the verifying key from `source_runtime_id` (the
     ///    self-certifying `did:key` form). Invalid DIDs are dropped
-    ///    with a warn — the hub's source-allowlist is the primary
-    ///    gate; this is the receiver-side defense.
-    /// 2. Re-serialize the `initial_members` list to JSON bytes and
-    ///    feed them to [`verify_channel_invite`] so the signer and
-    ///    verifier agree on byte-for-byte identical pre-image input
-    ///    (the `InitialMember` wire type uses
-    ///    `skip_serializing_if = "Option::is_none"` so a round-trip
-    ///    is byte-stable; verified by
-    ///    `peko_protocol::channel::tests::initial_member_skips_none_runtime_id`).
-    /// 3. Emit the `received_inbound` audit line via
+    ///    with a warn.
+    /// 2. Verify the runtime counter-signature (compact JWS over the
+    ///    v2 invite payload — version tag + freshness checked
+    ///    inside). The payload's fields must equal the envelope's and
+    ///    `initial_members_b64u` must decode to the re-serialized
+    ///    `initial_members` bytes.
+    /// 3. ADR-058 D2 author gate: when `creator_did` is a `did:key`,
+    ///    the envelope MUST carry a non-empty `author_signature` that
+    ///    verifies against the creator DID's key over the same
+    ///    payload segment, AND `creator_did` must equal
+    ///    `source_principal_did` (the inviter speaks for itself).
+    ///    Non-`did:key` creator DIDs are accepted as runtime-vouched
+    ///    with a debug log.
+    /// 4. Emit the `received_inbound` audit line via
     ///    [`tunnel_channel_audit::emit_received_inbound`] (kind =
-    ///    `"channel_invite"` — the audit kind namespace already
-    ///    accepts arbitrary strings; we keep one row per inbound
-    ///    envelope so the audit trail joins on `request_id`).
-    /// 4. Bootstrap the local mirror via the host's
+    ///    `"channel_invite"`).
+    /// 5. Bootstrap the local mirror via the host's
     ///    [`crate::tunnel::TunnelHost::dm_channel_mirror_bootstrap`]
     ///    (Phase 12a): the host resolves the invited local principal
     ///    from the invitee row, derives the receiver-local DM binding
-    ///    for DM invites, calls `join_remote` (which writes
-    ///    `meta.json` + `members.json` and seeds `events.jsonl` with
-    ///    a synthetic `ChannelEvent::Created`), and ensures a live
-    ///    subscriber. `join_remote` is idempotent
-    ///    (meta.json-existence check), so a duplicate envelope is a
-    ///    no-op.
+    ///    for DM invites, calls `join_remote` (idempotent), and
+    ///    ensures a live subscriber.
     ///
     /// Like the channel-event handler, no response is sent back to
     /// the source runtime — invites are push-only.
@@ -1396,6 +1489,7 @@ impl TunnelDispatcher {
         passive_binding: Option<String>,
         initial_members: Vec<peko_protocol::channel::InitialMember>,
         signature: String,
+        author_signature: String,
     ) -> anyhow::Result<()> {
         // 0. ADR-057 transport audit: recipient binding + replay
         // dedupe, mirroring the channel-event handler.
@@ -1429,9 +1523,40 @@ impl TunnelDispatcher {
             }
         };
 
-        // 2. Re-serialize `initial_members` so the pre-image bytes
-        // match what the source runtime signed. `serde_json` emits
-        // vec items in declaration order; round-trip is stable.
+        // 2. Verify the runtime counter-signature (ADR-058 D3 compact
+        // JWS; version tag + freshness window checked inside).
+        let (payload, payload_segment) = match verify_channel_invite(&verifying_key, &signature) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelInvite: signature verification failed for \
+                     source_runtime_id={source_runtime_id}: {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        // 2b. The signed payload must agree with the envelope it
+        // rides. `passive_binding` signs as the empty string when the
+        // envelope carries `None`.
+        if payload.request_id != request_id
+            || payload.source_runtime_id != source_runtime_id
+            || payload.recipient_runtime_id != recipient_runtime_id
+            || payload.source_principal_did != source_principal_did
+            || payload.channel_id != channel_id
+            || payload.creator != creator
+            || payload.creator_did != creator_did
+            || payload.name != name
+            || payload.passive_binding != passive_binding.as_deref().unwrap_or("")
+        {
+            warn!(
+                "inbound TunnelChannelInvite: dropping envelope whose fields disagree with the signed payload (request_id={request_id})"
+            );
+            return Ok(());
+        }
+        // Re-serialize `initial_members` for the payload-bytes
+        // comparison and the audit preview. `serde_json` emits vec
+        // items in declaration order; round-trip is stable.
         let initial_members_bytes = match serde_json::to_vec(&initial_members) {
             Ok(b) => b,
             Err(e) => {
@@ -1442,28 +1567,57 @@ impl TunnelDispatcher {
                 return Ok(());
             }
         };
-
-        let signed = ChannelInviteSignedFields {
-            request_id: &request_id,
-            source_runtime_id: &source_runtime_id,
-            recipient_runtime_id: &recipient_runtime_id,
-            source_principal_did: &source_principal_did,
-            channel_id: &channel_id,
-            creator: &creator,
-            creator_did: &creator_did,
-            name: &name,
-            passive_binding: passive_binding.as_deref().unwrap_or(""),
-            initial_members_bytes: &initial_members_bytes,
+        let payload_members_bytes = match URL_SAFE_NO_PAD.decode(&payload.initial_members_b64u) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "inbound TunnelChannelInvite: payload initial_members_b64u is not valid base64url (request_id={request_id}): {e}"
+                );
+                return Ok(());
+            }
         };
-        if let Err(e) = verify_channel_invite(&verifying_key, signed, &signature) {
+        if payload_members_bytes != initial_members_bytes {
             warn!(
-                "inbound TunnelChannelInvite: signature verification failed for \
-                 source_runtime_id={source_runtime_id}: {e}"
+                "inbound TunnelChannelInvite: dropping envelope whose initial_members disagree with the signed payload (request_id={request_id})"
             );
             return Ok(());
         }
 
-        // 3. Audit. Always emit, regardless of whether the
+        // 3. ADR-058 D2 author gate: a `did:key` creator must prove
+        // possession of its key and be the principal the envelope
+        // names as source. Anything else is runtime-vouched (legacy).
+        if payload.creator_did.starts_with("did:key:") {
+            if author_signature.is_empty() {
+                warn!(
+                    "inbound TunnelChannelInvite: dropping did:key-authored invite with no author signature (request_id={request_id}, creator_did={})",
+                    payload.creator_did
+                );
+                return Ok(());
+            }
+            if let Err(e) =
+                verify_author_signature(&author_signature, &payload_segment, &payload.creator_did)
+            {
+                warn!(
+                    "inbound TunnelChannelInvite: author signature verification failed (request_id={request_id}, creator_did={}): {e}",
+                    payload.creator_did
+                );
+                return Ok(());
+            }
+            if payload.creator_did != payload.source_principal_did {
+                warn!(
+                    "inbound TunnelChannelInvite: dropping invite whose did:key creator_did ({}) does not match source_principal_did ({}) (request_id={request_id})",
+                    payload.creator_did, payload.source_principal_did
+                );
+                return Ok(());
+            }
+        } else {
+            debug!(
+                "inbound TunnelChannelInvite: non-did:key creator_did {} accepted as runtime-vouched (request_id={request_id})",
+                payload.creator_did
+            );
+        }
+
+        // 4. Audit. Always emit, regardless of whether the
         // local-mirror bootstrap below succeeds.
         let preview_json = String::from_utf8_lossy(&initial_members_bytes).into_owned();
         tunnel_channel_audit::emit_received_inbound(
@@ -1475,7 +1629,7 @@ impl TunnelDispatcher {
             &super::tunnel_channel_audit::preview_event_payload(&preview_json),
         );
 
-        // 4. Bootstrap the local mirror through the host (Phase
+        // 5. Bootstrap the local mirror through the host (Phase
         // 12a): principal resolution + receiver-local DM binding +
         // `join_remote` (idempotent on the meta.json-existence
         // check, so a duplicate envelope is a no-op) + the live
@@ -1824,7 +1978,6 @@ mod tests {
 
     // ─── Issue #17: JWT wiring (signed identity) ───────────────────────────
 
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use ed25519_dalek::{Signer, SigningKey};
 
     /// Build a `(validator, signing_key)` pair whose `validator` accepts
@@ -2450,9 +2603,11 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// Build a fresh signed `TunnelChannelEvent` envelope for tests.
-    /// Mirrors the production outbound path: serialize the event to
-    /// JSON, build the canonical pre-image, sign with the source
-    /// runtime's key, base64url-encode the signature.
+    /// Mirrors the production outbound path (ADR-058 D3): serialize
+    /// the event to JSON, build the v2 payload, sign a compact JWS
+    /// with the source runtime's key. Tests use non-`did:key` authors
+    /// (`prin_alice`, …), so no author signature is produced — the
+    /// receiver accepts those as runtime-vouched.
     fn build_signed_tunnel_channel_event(
         kp: &peko_identity::keys::KeyPair,
         request_id: &str,
@@ -2471,7 +2626,10 @@ mod tests {
             channel_id,
             event_bytes: &event_bytes,
         };
-        let sig = crate::tunnel::sign_channel_event(&kp.signing_key, signed);
+        let iat = chrono::Utc::now().timestamp();
+        let (sig, author_sig) =
+            crate::tunnel::sign_channel_event(&kp.signing_key, None, signed, iat, iat + 300);
+        assert!(author_sig.is_empty(), "no author key → no author JWS");
         (sig, event.clone())
     }
 
@@ -2521,6 +2679,7 @@ mod tests {
                 "chan_abcdefgh".to_string(),
                 event,
                 signature,
+                String::new(),
             )
             .await
             .expect("valid signed envelope must not error");
@@ -2573,6 +2732,7 @@ mod tests {
                 "chan_abcdefgh".to_string(),
                 event,
                 signature,
+                String::new(),
             )
             .await;
         // Returns Ok — the rejection is logged and dropped, not
@@ -2613,6 +2773,7 @@ mod tests {
                 "chan_abcdefgh".to_string(),
                 event,
                 "any-base64url".to_string(),
+                String::new(),
             )
             .await;
         assert!(
@@ -2678,6 +2839,7 @@ mod tests {
                 channel_id_str.clone(),
                 event,
                 signature,
+                String::new(),
             )
             .await
             .expect("verified envelope must not error");
@@ -2749,11 +2911,152 @@ mod tests {
                 bogus.as_str().to_string(),
                 event,
                 signature,
+                String::new(),
             )
             .await;
         assert!(
             result.is_ok(),
             "unknown channel must not propagate as an error (channels are push-only); got: {result:?}"
+        );
+    }
+
+    /// ADR-058 D2: a `did:key`-authored event is accepted only when
+    /// the author signature verifies over the same payload segment
+    /// AND the author is a registered remote member of the mirror. A
+    /// did:key author with no membership row — or with an empty
+    /// author signature — is dropped even when every other check
+    /// passes.
+    #[tokio::test]
+    async fn inbound_did_key_author_requires_author_signature_and_membership() {
+        use crate::ipc::handlers::channel::ChannelHost;
+        use peko_channel::ChannelPort;
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let creator = peko_subject::PrincipalId("prin_alice".into());
+        let channel = app_state
+            .channel_port()
+            .create(&creator, peko_channel::CreateOpts::runtime("team"))
+            .await
+            .expect("local channel create must succeed");
+        let channel_id_str = channel.as_str().to_string();
+
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (_handle, _rx) = mock_tunnel_handle();
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let author = peko_identity::keys::KeyPair::generate();
+        let author_did = crate::tunnel::verifying_key_to_did_key(&author.verifying_key);
+
+        // Build a dual-signed (runtime + author) envelope for the
+        // did:key author, mirroring the production outbound path.
+        let build = |request_id: &str| {
+            let event = peko_protocol::channel::ChannelEvent::Posted {
+                channel: channel.clone(),
+                author: author_did.clone(),
+                parent: None,
+                text: "hello from the did:key author".to_string(),
+                at: "2026-09-16T00:00:00Z".to_string(),
+                via: None,
+            };
+            let event_bytes = serde_json::to_vec(&event).expect("event must serialize");
+            let signed = crate::tunnel::ChannelSignedFields {
+                request_id,
+                source_runtime_id: &source_runtime_id,
+                recipient_runtime_id: &local_runtime_id,
+                source_principal_did: &author_did,
+                channel_id: &channel_id_str,
+                event_bytes: &event_bytes,
+            };
+            let iat = chrono::Utc::now().timestamp();
+            let (sig, author_sig) = crate::tunnel::sign_channel_event(
+                &kp.signing_key,
+                Some(&author.signing_key),
+                signed,
+                iat,
+                iat + 300,
+            );
+            (sig, author_sig, event)
+        };
+
+        let peek_len = || async {
+            dispatcher
+                .host
+                .tunnel_channel_port()
+                .peek(&channel, &peko_channel::Checkpoint::default())
+                .await
+                .expect("local peek must succeed")
+                .len()
+        };
+
+        // 1. Valid author signature but NO membership row → dropped.
+        let (sig, author_sig, event) = build("chan-evt-did-nomember");
+        dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-did-nomember".to_string(),
+                source_runtime_id.clone(),
+                local_runtime_id.clone(),
+                author_did.clone(),
+                channel_id_str.clone(),
+                event,
+                sig,
+                author_sig,
+            )
+            .await
+            .expect("drop must not error");
+        assert_eq!(
+            peek_len().await,
+            1,
+            "only Created; a did:key event without remote membership must be dropped"
+        );
+
+        // 2. did:key author with an EMPTY author signature → dropped.
+        let (sig, _author_sig, event) = build("chan-evt-did-nosig");
+        dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-did-nosig".to_string(),
+                source_runtime_id.clone(),
+                local_runtime_id.clone(),
+                author_did.clone(),
+                channel_id_str.clone(),
+                event,
+                sig,
+                String::new(),
+            )
+            .await
+            .expect("drop must not error");
+        assert_eq!(
+            peek_len().await,
+            1,
+            "a did:key event with no author signature must be dropped"
+        );
+
+        // 3. Register the author as a remote member of the mirror →
+        //    the dual-signed envelope is accepted and appended.
+        dispatcher
+            .host
+            .tunnel_channel_port()
+            .add_remote_member(&channel, &source_runtime_id, &author_did)
+            .await
+            .expect("add_remote_member must succeed");
+        let (sig, author_sig, event) = build("chan-evt-did-member");
+        dispatcher
+            .handle_inbound_tunnel_channel_event(
+                "chan-evt-did-member".to_string(),
+                source_runtime_id,
+                local_runtime_id,
+                author_did,
+                channel_id_str,
+                event,
+                sig,
+                author_sig,
+            )
+            .await
+            .expect("verified envelope must not error");
+        assert_eq!(
+            peek_len().await,
+            2,
+            "Created + the accepted did:key-authored Posted"
         );
     }
 
@@ -2763,10 +3066,10 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// Build a fresh signed `TunnelChannelInvite` envelope for tests.
-    /// Mirrors the production outbound path:
-    /// `fanout_dm_invite` → serialize initial_members → build the
-    /// canonical pre-image → sign with the source runtime's key →
-    /// base64url-encode the signature.
+    /// Mirrors the production outbound path (ADR-058 D3):
+    /// `fanout_dm_invite` → serialize initial_members → build the v2
+    /// payload → sign a compact JWS with the source runtime's key.
+    /// Tests use non-`did:key` creators, so no author signature.
     #[allow(clippy::too_many_arguments)]
     fn build_signed_tunnel_channel_invite(
         kp: &peko_identity::keys::KeyPair,
@@ -2795,7 +3098,10 @@ mod tests {
             passive_binding: passive_binding.unwrap_or(""),
             initial_members_bytes: &initial_members_bytes,
         };
-        let sig = crate::tunnel::sign_channel_invite(&kp.signing_key, signed);
+        let iat = chrono::Utc::now().timestamp();
+        let (sig, author_sig) =
+            crate::tunnel::sign_channel_invite(&kp.signing_key, None, signed, iat, iat + 300);
+        assert!(author_sig.is_empty(), "no author key → no author JWS");
         (sig, initial_members.to_vec())
     }
 
@@ -2874,6 +3180,7 @@ mod tests {
                 None,
                 initial_members,
                 signature,
+                String::new(),
             )
             .await
             .expect("valid signed invite must not error");
@@ -2995,6 +3302,7 @@ mod tests {
                 Some("/source-side-slug-zzz9".to_string()),
                 initial_members,
                 signature,
+                String::new(),
             )
             .await
             .expect("valid signed DM invite must not error");
@@ -3093,6 +3401,7 @@ mod tests {
                 None,
                 initial_members,
                 signature,
+                String::new(),
             )
             .await
             .expect("unknown-invitee invite must not error");

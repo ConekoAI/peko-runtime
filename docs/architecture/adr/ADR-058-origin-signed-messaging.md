@@ -1,6 +1,7 @@
 # ADR-058: Origin-Signed Messaging — Per-Principal Keys, Proof-of-Possession Registration, Typed Bridge Claims
 
-**Status:** Accepted (2026-09-16; implementation in progress on branch `docs/adr-058-origin-signed-messaging`)
+**Status:** Accepted (2026-09-16). D1+D2+D3 implemented on branch
+`docs/adr-058-origin-signed-messaging`; D4–D7 pending.
 **Date:** 2026-09-16
 **Author:** rlsn (with Kimi Code)
 **Related:** [ADR-057](ADR-057-single-attribution-identity.md) (single
@@ -285,7 +286,7 @@ principal signature, not a hub claim.)
   envelope/signature sections are superseded by D2/D3. ADR-049's
   invite rules are amended by D2's verified-creator requirement.
 
-## 4. Implementation map (planned)
+## 4. Implementation map (as built, 2026-09-16)
 
 **peko-runtime:**
 
@@ -384,6 +385,33 @@ principal signature, not a hub claim.)
 
 No premise changed materially; the hub-signature correction (spike
 2) is reflected in D2/D3 and the implementation map.
+
+### Implementation notes (D1+D2+D3, merged on this branch)
+
+Two adjustments fell out of code review that the draft did not
+anticipate:
+
+1. **Invite `initial_members` re-keying.** The sender re-keys
+   source-local principal rows in the invite snapshot to their
+   vault-backed `did:key` DIDs — the receiver files those rows as
+   its `remote_members`, and its inbound author gate
+   (`is_remote_member`) matches the event envelope's
+   `source_principal_did`, which is the same DID. Without the
+   re-key the receiver would hold a local-id row that a
+   did:key-authored event can never match.
+2. **Author-DID resolution tolerates both id forms.**
+   `Subject::Principal` carries either the principal's id
+   (`prin_<uuid>`, the `principals` map key) or its DID, depending
+   on the call path. `VaultPrincipalSigningKeys::did_for_principal`
+   resolves by id first and falls back to
+   `PrincipalManager::find_by_did`; a miss on the wrong form would
+   have silently downgraded cross-runtime DM traffic to
+   runtime-vouched on exactly the paths D2 protects.
+
+The hub TypeScript mirror types (`pekohub`
+`backend/src/services/tunnel-protocol.ts`) gained the
+`authorSignature` field on both envelope interfaces; the hub needed
+no logic change (spike 2).
 
 ---
 

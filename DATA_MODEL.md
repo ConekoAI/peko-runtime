@@ -1834,6 +1834,41 @@ The source side, symmetrically, records the invitee as a
 before sending), with `principal_id` = the invitee's bare id/DID
 (its `@<runtime>` routing suffix stripped).
 
+### 5¾.3½ Cross-runtime envelope signatures v2 (ADR-058, 2026-09-16)
+
+`TunnelChannelEvent` / `TunnelChannelInvite` envelopes on the tunnel
+wire carry TWO signatures, both **compact JWS** (EdDSA / RFC 7515,
+embedded payload, header `{"alg":"EdDSA","typ":"JWS"}`,
+base64url-no-pad; signing input `b64u(header) || "." ||
+b64u(payload)` — canonical by construction, so the hub's
+`JSON.parse`→`stringify` relay round-trip cannot break them):
+
+- `signature` — the source **runtime** counter-signature, verified
+  against the key derived from `sourceRuntimeId` (`did:key`).
+- `authorSignature` — the **author principal**'s signature over the
+  SAME payload segment (byte-identical binding), verified against the
+  key embedded in a `did:key` `sourcePrincipalDid`. Empty when the
+  author has no vault-backed key (legacy runtime-vouched path).
+
+Both JWS embed one JSON payload, versioned `peko-channel-event/2` /
+`peko-channel-invite/2`, with snake_case fields: every envelope field
+(`request_id`, `source_runtime_id`, `recipient_runtime_id`,
+`source_principal_did`, `channel_id`, plus `creator`, `creator_did`,
+`name`, `passive_binding` for invites), the inner payload as
+`event_b64u` / `initial_members_b64u` (base64url-no-pad of the
+serialized `ChannelEvent` / `InitialMember[]` bytes), and `iat`/`exp`
+(Unix seconds; sender mints `exp = iat + 300`). Receivers reject
+payloads with `now > exp + 30s` or `iat > now + 60s`, any
+envelope↔payload field mismatch, and — for `did:key` authors — a
+missing/invalid author signature or (events) a non-member author /
+(invites) `creator_did != source_principal_did`. The v1 bespoke
+length-prefixed pre-image is deleted (no compat shim, pre-launch).
+
+Principal DIDs of new principals are `did:key` of the principal's own
+ed25519 key (D1); the seed lives in the vault under the
+`principal-identity` namespace as `{did}#keys-1` (base64-STANDARD
+32-byte seed, `ed25519-raw-base64`, `system_owned`).
+
 ### 5¾.4 Read/write performance notes (2026-09-03)
 
 The append path is O(1) in the common case: `ChannelStore` keeps a

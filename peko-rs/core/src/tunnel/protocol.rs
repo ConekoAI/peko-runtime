@@ -330,7 +330,18 @@ pub enum TunnelMessage {
         /// (matching `RuntimeHello.signature`) so the
         /// wire form matches the existing tunnel signature fields
         /// and the pekohub TypeScript decoder can share a parser.
+        ///
+        /// ADR-058 D3: the value is a compact JWS (EdDSA, embedded
+        /// payload) whose payload carries every envelope field plus
+        /// `iat`/`exp` — see `tunnel_channel_signature`.
         signature: String,
+        /// ADR-058 D2: compact JWS by the authoring principal's own
+        /// key over the SAME payload segment as `signature`. Empty
+        /// when the author has no vault-backed key (legacy
+        /// runtime-vouched path — the receiver accepts non-`did:key`
+        /// authors on the runtime's say-so, but requires this
+        /// signature plus remote-membership for `did:key` authors).
+        author_signature: String,
     },
 
     /// Bootstrap envelope for a cross-runtime channel invite.
@@ -411,8 +422,15 @@ pub enum TunnelMessage {
         initial_members: Vec<InitialMember>,
         /// Ed25519 signature, base64url-no-pad, over the canonical
         /// pre-image described in `tunnel_channel_signature`. Same
-        /// shape as `TunnelChannelEvent.signature`.
+        /// shape as `TunnelChannelEvent.signature` (ADR-058 D3: a
+        /// compact JWS over the v2 payload with `iat`/`exp`).
         signature: String,
+        /// ADR-058 D2: compact JWS by the creator principal's own key
+        /// over the SAME payload segment as `signature`. Empty for
+        /// legacy runtime-vouched invites; required (plus
+        /// `creator_did == source_principal_did`) when `creator_did`
+        /// is a `did:key`.
+        author_signature: String,
     },
 }
 
@@ -908,6 +926,7 @@ mod tests {
             channel_id: "chan_abcdefgh".to_string(),
             event,
             signature: "base64url-sig".to_string(),
+            author_signature: "base64url-author-sig".to_string(),
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
@@ -938,6 +957,10 @@ mod tests {
             json.contains("\"channelId\""),
             "field channelId must be camelCase, got: {json}"
         );
+        assert!(
+            json.contains("\"authorSignature\""),
+            "field authorSignature must be camelCase, got: {json}"
+        );
         // The nested event uses its own `kind` discriminant.
         assert!(
             json.contains("\"kind\":\"posted\""),
@@ -954,6 +977,7 @@ mod tests {
                 channel_id,
                 event,
                 signature,
+                author_signature,
             } => {
                 assert_eq!(request_id, "chan-evt-1");
                 assert_eq!(source_runtime_id, "did:key:zRuntimeA");
@@ -961,6 +985,7 @@ mod tests {
                 assert_eq!(source_principal_did, "prin_alice");
                 assert_eq!(channel_id, "chan_abcdefgh");
                 assert_eq!(signature, "base64url-sig");
+                assert_eq!(author_signature, "base64url-author-sig");
                 match event {
                     peko_protocol::channel::ChannelEvent::Posted {
                         channel,
@@ -1010,6 +1035,7 @@ mod tests {
             passive_binding: Some("/principal-bob".to_string()),
             initial_members,
             signature: "base64url-sig".to_string(),
+            author_signature: "base64url-author-sig".to_string(),
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
@@ -1044,6 +1070,10 @@ mod tests {
             json.contains("\"initialMembers\""),
             "field initialMembers must be camelCase, got: {json}"
         );
+        assert!(
+            json.contains("\"authorSignature\""),
+            "field authorSignature must be camelCase, got: {json}"
+        );
         // `runtime_id: None` is skipped on the wire (no null leak).
         assert!(
             !json.contains("\"runtimeId\":null"),
@@ -1069,6 +1099,7 @@ mod tests {
                 passive_binding,
                 initial_members: decoded_members,
                 signature,
+                author_signature,
             } => {
                 assert_eq!(request_id, "chan-invite-1");
                 assert_eq!(source_runtime_id, "did:key:zRuntimeA");
@@ -1080,6 +1111,7 @@ mod tests {
                 assert_eq!(name, "team-chat");
                 assert_eq!(passive_binding.as_deref(), Some("/principal-bob"));
                 assert_eq!(signature, "base64url-sig");
+                assert_eq!(author_signature, "base64url-author-sig");
                 assert_eq!(decoded_members.len(), 2);
                 assert_eq!(decoded_members[0].principal_did, "prin_alice");
                 assert_eq!(decoded_members[0].runtime_id, None);
