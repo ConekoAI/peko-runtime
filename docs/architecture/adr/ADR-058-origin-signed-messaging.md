@@ -109,9 +109,16 @@ security. Concretely:
 ### D1 — Every principal gets its own keypair; the principal DID is the key
 
 At principal genesis (ADR-054), the runtime generates an ed25519
-keypair for the principal, stores the private key in the existing
-identity key storage (`peko-identity`, `0700` dir / `0600` files),
-and derives the principal DID as `did:key` of *that* key. The
+keypair for the principal and derives the principal DID as `did:key`
+of *that* key. (Genesis already mints a per-principal ed25519
+identity today, but as `did:peko:public:<name>:<keyhash>` with the
+private key never loaded for signing — this ADR switches minting to
+`did:key`, moves the private key into the vault
+(`CredentialKind::PrivateKey`, `system_owned`, under a dedicated
+`principal-identity` namespace so the runtime key's first-match
+vault reconstruction scan can never grab a principal key), and
+actually signs with it; `peko_identity::runtime::public_key_to_did_key`
+is reused as-is for DID derivation.) The
 principal DID stops being an arbitrary string a runtime asserts and
 becomes a self-certifying identifier only the key holder can act
 for. The runtime DID (ADR-032) remains what it is: runtime
@@ -151,6 +158,10 @@ The bespoke length-prefixed pre-image in
 canonicalization, algorithm agility, and audited implementations for
 free: `jose` on the hub (TypeScript), `jsonwebtoken` (or
 `ed25519-dalek` + JWS compact serialization directly) on the runtime.
+Because the hub `JSON.parse`→`stringify` round-trips every relayed
+frame, signatures must cover a canonical pre-image, never raw wire
+bytes — the JWS signing input (`b64u(header) || "." || b64u(payload)`)
+satisfies this by construction.
 The signed payload gains `iat`/`exp`, closing ADR-057 §5's residual
 replay window properly — the bounded 4096-entry FIFO dedupe cache
 becomes a belt-and-suspenders second layer instead of the only
@@ -278,11 +289,20 @@ principal signature, not a hub claim.)
 
 **peko-runtime:**
 
-- `peko-rs/identity/` — generalize key storage to per-principal keys
-  (spike item: confirm the current single-runtime-key store
-  generalizes cleanly).
+- `peko-rs/identity/` — no restructuring needed (spike 1): vault
+  slots are already keyed by arbitrary `key_id`, the `IdentityVault`
+  port mirrors that, and `KeyStorage` is per-DID. Changes: mint
+  principal keys via `KeyPair::generate()` +
+  `public_key_to_did_key` in
+  `PrincipalManager::generate_identity`, store private keys in the
+  vault under a new `principal-identity` namespace (NOT the runtime
+  key's `"identity"` namespace — `try_reconstruct_from_vault`
+  first-match scan would rebuild the runtime DID from a principal
+  key), and add a per-principal signing-key loader/cache analogous
+  to `load_runtime_signing_key` in `daemon/state.rs`.
 - `peko-rs/core/src/principal/factory.rs` + genesis (ADR-054) —
-  keypair generation, DID derivation.
+  keypair generation, DID derivation (replaces the current
+  `did:peko:public:<name>:<keyhash>` minting).
 - `peko-rs/core/src/tunnel/tunnel_channel_signature.rs` — replaced
   by JWS envelope sign/verify (D3); dual-signature envelope types in
   `peko-rs/protocol/` (D2).
@@ -303,22 +323,67 @@ principal signature, not a hub claim.)
 - `backend/src/routes/api/runtimes.ts` +
   `services/tunnel-manager.ts` (register + announce) — nonce
   challenge + PoP verification; `services/tunnel-crypto.ts` +
-  `jose` for JWS (D3/D4; spike item: verify the relay path can
-  check the second signature without restructuring).
+  `jose` for JWS (D3/D4). Spike 2 confirmed the relay path needs
+  **no** change for the author signature: the hub never parses
+  inner event payloads and does not verify envelope signatures
+  today (its only signature checks are the handshake nonces). The
+  envelope changes must preserve the top-level `type` /
+  `sourceRuntimeId` / `recipientRuntimeId` fields (routing +
+  allowlist) and should keep `channelId` / `requestId` names for
+  log correlation; the TS mirror types in
+  `backend/src/services/tunnel-protocol.ts` track the new schema.
 - `packages/shared` — envelope and token schema updates.
 
-## 5. Verification spikes before commit
+## 5. Verification spikes (2026-09-16) — all three pass
 
-1. `peko-identity` key storage generalizes to N principal keys
-   without restructuring (file layout, locking, vault interaction).
-2. Hub `tunnel-manager` can verify the author (principal) signature
-   on relayed envelopes without becoming a message inspector — it
-   only needs the *runtime* counter-signature for its allowlist;
-   principal verification belongs to the receiver. Confirm no relay
-   fast-path depends on parsing event internals.
-3. `jose` ↔ Rust JWS interop for EdDSA detached payloads across the
-   exact envelope schema (one round-trip test vector committed on
-   both sides).
+1. **Identity storage generalizes to N principal keys — PASS, no
+   structural blocker.** Every N-key primitive already exists: vault
+   slots keyed by arbitrary `key_id` (`Vault::set/get_identity_private_key`,
+   `CredentialKind::PrivateKey` marked `system_owned`), the
+   `IdentityVault` trait port, per-DID `KeyStorage`
+   (`identity/src/storage.rs`, 0600 files / 0700 dirs), and the pure
+   `public_key_to_did_key` codec (`identity/src/runtime.rs:225`),
+   reusable as-is. Singleton assumptions are confined to
+   `RuntimeIdentity` itself (fixed `identity.toml` path; the
+   `try_reconstruct_from_vault` first-match scan — hence the
+   dedicated `principal-identity` vault namespace in D1). Discovery:
+   principals *already* receive a per-principal ed25519 keypair at
+   genesis (`PrincipalManager::generate_identity`,
+   `principal/manager.rs:705`), but minted as
+   `did:peko:public:<name>:<keyhash>` and never loaded for signing —
+   so D1 is a minting-format switch + vault custody + first actual
+   use, not new machinery. Existing principals' `did:peko` DIDs
+   change format under D1 (pre-launch: acceptable, no migration —
+   see Consequences).
+2. **Hub relay path is payload-agnostic — PASS.** For channel
+   events/invites the hub reads only top-level `type`,
+   `sourceRuntimeId` (allowlist), and `recipientRuntimeId`
+   (connection-map routing); `channelId`/`requestId` appear in warn
+   logs only. It never parses inner event payloads, has no channel
+   ACL/metrics coupling, and — correction to a working assumption
+   during drafting — does **not** verify the runtime envelope
+   signature at all (its only signature checks are the handshake
+   nonces); the receiver-side envelope verification in
+   `tunnel/dispatcher.rs` is the only check, which D2 extends.
+   Constraint recorded in D3: the hub re-encodes frames, so
+   canonical pre-images are mandatory. The retired
+   `principal_to_principal_request` path *does* have field coupling
+   (`targetPrincipalDid` directory lookup, `callerPrincipalDid` ACL)
+   — another reason it must stay retired.
+3. **`jose` ↔ Rust EdDSA JWS interop — PASS, byte-exact both
+   directions.** Round-trip spike (scratch:
+   `target/tmp/spike-jws/` + `target/tmp/spike-jws-rs/`): jose 6.2.3
+   `CompactSign` (EdDSA, the ADR-058 envelope schema with
+   `iat`/`exp`) verified by Rust `ed25519-dalek` 2.2 `verify_strict`,
+   and an `ed25519-dalek` compact JWS verified by jose
+   `compactVerify` — payload bytes identical both ways. The signing
+   input is the standard `b64u(header) || "." || b64u(payload)`;
+   detached-payload transport only omits the middle segment, so this
+   vector covers the D3 design. These vectors should be promoted to
+   committed round-trip tests on both repos during implementation.
+
+No premise changed materially; the hub-signature correction (spike
+2) is reflected in D2/D3 and the implementation map.
 
 ---
 
