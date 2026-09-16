@@ -458,10 +458,10 @@ On-disk configuration and the capability grants derived from it. An empty/absent
 #### `subject::Subject` (ACTIVE)
 
 ```rust
-pub struct Subject { ... }
+pub enum Subject { User(String), Principal(PrincipalDID), Visitor(String), Public }
 ```
 
-The actor identity attached to a session (peer, caller). Replaces the pre-ADR-039 agent/team-scoped addressing.
+The actor identity attached to a session (peer, caller). Replaces the pre-ADR-039 agent/team-scoped addressing. ADR-058 D5 added `Visitor` (hub-minted anonymous peers, `/visitor-<id>` children, no owner authority) and replaced `from_bridge_user` with the fallible `Subject::from_bridge_claim(kind, sub)` for typed bridge-token claims.
 
 ---
 
@@ -856,7 +856,7 @@ peer DM channels now. Deleted/changed public items:
 |-----------|--------|--------|---------|
 | `TunnelMessage::{PrincipalToPrincipalRequest, PrincipalToPrincipalResponse}` | `tunnel::protocol` | ❌ Deleted | Signed RPC envelopes superseded by `TunnelChannelEvent`/`TunnelChannelInvite` fan-out |
 | `PendingA2aResponses` / `A2aResponsePayload` / `A2aWaitError`; `tunnel::a2a_audit` | `tunnel::{a2a_pending,a2a_audit}` | ❌ Deleted | Response correlation registry + audit helpers for the retired RPC stack |
-| `SignedFields` / `sign_request` / `verify_request` | `tunnel::a2a_signature` | ❌ Deleted | `build_pre_image` / `sign_pre_image` / `verify_pre_image` / `A2A_SIGNATURE_DOMAIN` remain (shared by `tunnel_channel_signature` + `invite_token`) |
+| `SignedFields` / `sign_request` / `verify_request` | `tunnel::a2a_signature` | ❌ Deleted | `build_pre_image` / `sign_pre_image` / `verify_pre_image` / `A2A_SIGNATURE_DOMAIN` remain (consumed by `invite_token`; `tunnel_channel_signature` moved to JWS under ADR-058) |
 | `tunnel::direct` (server/client/manager/routing/handshake) | `tunnel::direct` | ❌ Deleted | Direct transport retired; `tls.rs` relocated to `tunnel::tls` (tunnel client still consumes `build_client_config`) |
 | `TunnelHost::pending_a2a_responses`; `AppState::{pending_a2a_responses, direct_manager, direct_*}`; `DirectHealth` | `tunnel::host`, `daemon::state` | ❌ Deleted | Host/state surface of the retired stack |
 | `CrossRuntimeA2aCtx` | `tunnel::cross_runtime` | ⚠️ Changed | Now `{ directory, caller_runtime_id, principal_manager, channel_port: Arc<TunnelChannelPort>, response_timeout }` |
@@ -1040,6 +1040,31 @@ public items:
 | `TunnelChannelPort::read_mark` / `advance_read_mark` | `core::tunnel::tunnel_channel_port` | ✅ New | Delegates to the wrapped local store (local-persistence concern; no cross-runtime fan-out) |
 | `ChannelDigestSessionContextHandler` / `CHANNEL_DIGEST_HOOK_PRIORITY` | `principal::channel_digest` | ✅ New (crate-internal) | Renders `channel activity since you last read:` — per bound channel (DM via `passive_binding`, group via the session's `peer_id == <channel wire id>` stamp) a `N new message(s)` header with ≤5 previews (`[via <path>]` else `[<author>]`), an overflow line, and a 2 KiB whole-line cap. First observation adopts the tip and renders nothing; the mark then advances to the max line observed. Registered on the daemon-global core as `principal:channel-digest-context` (priority 90) |
 | `ChannelReadTool::execute_with_context` mark advance | `tools::builtin::channel::channel_read` | ⚠️ Changed | On a successful, non-empty page with `ctx.session_id` set, advances the session's read mark to the newest returned line id (best-effort; a persistence failure never fails the read) |
+
+### ADR-058 D1/D2/D3 — origin-signed messaging (2026-09-16)
+
+Branch `docs/adr-058-origin-signed-messaging`. Cross-runtime channel
+envelopes migrate from channel security to object security: per-principal
+`did:key` keys (D1), a second author signature on every envelope (D2),
+and JWS compact serialization with `iat`/`exp` replacing the bespoke
+length-prefixed pre-image (D3). Breaking wire change, no compat shim.
+New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `Vault::{set,get,delete}_principal_identity_private_key` | `common::vault` | ✅ New | Typed adapters for per-principal ed25519 seeds under the dedicated `principal-identity` namespace (isolated from the runtime key's `identity` first-match reconstruction scan) |
+| `PrincipalManager::with_identity_vault` + `identity_vault` field | `principal::manager` | ✅ New | Daemon-wired vault; when attached, genesis mints a per-principal ed25519 keypair, DID = `did:key` of that key (was `did:peko:public:<name>:<hash>`), seed custodied in the vault as `{did}#keys-1`. `generate_identity` now returns `Result<String, _>` (the DID) |
+| `jws_sign` / `jws_verify` | `tunnel::tunnel_channel_signature` | ✅ New | Compact JWS (EdDSA, embedded payload, header `{"alg":"EdDSA","typ":"JWS"}`) primitives — byte-interop with the hub's `jose` |
+| `ChannelEventPayload` / `ChannelInvitePayload` (+ `CHANNEL_EVENT_PAYLOAD_VERSION` / `CHANNEL_INVITE_PAYLOAD_VERSION`) | `tunnel::tunnel_channel_signature` | ✅ New | The v2 signed payloads (`v`, envelope fields, `event_b64u` / `initial_members_b64u`, `iat`, `exp`) |
+| `sign_channel_event` / `sign_channel_invite` | `tunnel::tunnel_channel_signature` | ⚠️ Changed | Now `(runtime_key, author_key: Option<&SigningKey>, fields, iat, exp) -> (String, String)` — both JWS embed the SAME payload segment (D2 binding) |
+| `verify_channel_event` / `verify_channel_invite` | `tunnel::tunnel_channel_signature` | ⚠️ Changed | Now `(runtime_key, compact) -> Result<(Payload, payload_segment)>`; checks the version tag and the freshness window (`exp + 30s` leeway, `iat ≤ now + 60s`) |
+| `verify_author_signature` | `tunnel::tunnel_channel_signature` | ✅ New | Derives the author key from the `did:key` DID, verifies the JWS, and requires the author's payload segment to be byte-identical to the runtime signature's |
+| `CHANNEL_SIGNATURE_DOMAIN` / `CHANNEL_INVITE_SIGNATURE_DOMAIN` / `canonical_pre_image` / `invite_canonical_pre_image` | `tunnel::tunnel_channel_signature` | ❌ Deleted | The v1 bespoke pre-image is replaced by JWS (D3) |
+| `PrincipalSigningKeys` / `NoPrincipalKeys`; `CrossRuntimeChannelCtx::principal_keys` | `tunnel::cross_runtime_channel` | ✅ New | Async trait resolving a local principal's `did:key` + vault-backed author signing key for outbound fan-out; `NoPrincipalKeys` = runtime-vouched fallback |
+| `TunnelMessage::TunnelChannelEvent::author_signature` / `TunnelChannelInvite::author_signature` (`authorSignature`) | `tunnel::protocol` | ✅ New | Compact JWS by the author principal's key over the same payload segment as `signature`; empty on the legacy runtime-vouched path |
+| `TunnelChannelPort::is_remote_member` | `tunnel::tunnel_channel_port` | ✅ New | Delegate to `ChannelStore::is_remote_member`; the dispatcher gates `did:key`-authored events on it (membership claims are now signature-backed) |
+| Inbound `TunnelChannelEvent` / `TunnelChannelInvite` handlers | `tunnel::dispatcher` | ⚠️ Changed | Verify the runtime JWS + payload/envelope field consistency, then the D2 author gate: `did:key` authors need a valid author signature + remote membership (events) or `creator_did == source_principal_did` (invites); non-`did:key` authors stay runtime-vouched |
+| `VaultPrincipalSigningKeys` | `daemon::state` | ✅ New (crate-internal) | Production `PrincipalSigningKeys` impl: DID lookup via `PrincipalManager`, key load from the vault's `principal-identity` namespace, per-DID cache |
 
 ---
 

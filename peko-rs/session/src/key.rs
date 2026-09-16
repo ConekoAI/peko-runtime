@@ -251,8 +251,9 @@ pub fn scope_from_key(key: &str) -> Option<SessionScope> {
 /// Format: agent:{agent}:peer:{type}:{id}
 ///
 /// After ADR-039, `Subject` is an alias for `Subject`. The key format
-/// is **byte-stable** for `Subject::User` and `Subject::Principal` —
-/// these are the only valid session peers (`Subject::is_session_peer`).
+/// is **byte-stable** for `Subject::User`, `Subject::Principal`, and
+/// `Subject::Visitor` (ADR-058 D5) — these are the valid session peers
+/// (`Subject::is_session_peer`).
 /// For `Subject::Public`, the function falls back to `peer:user:default`
 /// and logs a warning, so a stray non-peer subject never produces an
 /// orphan key. This is the documented behavior, not a bug.
@@ -268,6 +269,13 @@ pub fn derive_base_session_key(agent: &str, peer: &peko_subject::Subject) -> Str
                 "agent:{}:peer:agent:{}",
                 agent,
                 sanitize_key_component(id.as_str())
+            )
+        }
+        Subject::Visitor(id) => {
+            format!(
+                "agent:{}:peer:visitor:{}",
+                agent,
+                sanitize_key_component(id)
             )
         }
         Subject::Public => {

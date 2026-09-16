@@ -336,6 +336,7 @@ fn encode_subject(subject: &Subject) -> Vec<u8> {
         // Display format that may evolve.
         Subject::User(id) => format!("user:{id}").into_bytes(),
         Subject::Principal(id) => format!("principal:{id}").into_bytes(),
+        Subject::Visitor(id) => format!("visitor:{id}").into_bytes(),
         Subject::Public => b"public".to_vec(),
     }
 }

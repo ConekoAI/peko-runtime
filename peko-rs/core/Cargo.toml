@@ -284,6 +284,15 @@ jsonwebtoken = "9"
 # `peko-extension-host` Cargo.toml in Phase F2 foldback.
 jsonschema = { version = "0.48", default-features = false }
 
+# ADR-058 D6: per-message peer-uid check (SO_PASSCRED + SCM_CREDENTIALS)
+# on the Linux Unix-datagram IPC transport. `nix` 0.26.4 is already in
+# the lock tree (keyring → secret-service → zbus), so this target edge
+# vends no new crate. macOS has no per-message credential passing for
+# AF_UNIX/SOCK_DGRAM — the 0700 run-dir / 0600 socket modes are the
+# trust mechanism there (see ipc/server.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.26.4", default-features = false, features = ["socket", "uio"] }
+
 [features]
 # `test-utils` is intentionally NOT in `default`: it exposes resolver/hub-directory
 # test hooks that must not ship in the production binary. Tests that need

@@ -99,6 +99,25 @@ pub trait TunnelHost: Send + Sync {
     /// allowing a token to bypass the exposure-based ACL.
     fn invite_revocation_set(&self) -> Arc<InviteRevocationSet>;
 
+    /// ADR-058 D4: resolves the vault-backed signing key of a
+    /// locally-hosted principal (the same D1 keys that author-sign D2
+    /// envelopes). The dispatcher uses this to mint the `principalPop`
+    /// proof-of-possession JWS on `instance_announce` for principals
+    /// whose DID is a `did:key`.
+    fn principal_signing_keys(&self)
+        -> Arc<dyn super::cross_runtime_channel::PrincipalSigningKeys>;
+
+    /// ADR-058 post-review cutoff gate: whether inbound cross-runtime
+    /// channel events/invites authored by NON-`did:key` principals
+    /// (runtime-vouched / "asserted-remote") are accepted. Rollout
+    /// default `true`; the production host wires this to
+    /// `AuthConfig::accept_asserted_remote_channel_authors` so the
+    /// ADR's post-migration refusal (`false`) is a config flip, not a
+    /// code change.
+    fn accept_asserted_remote_channel_authors(&self) -> bool {
+        true
+    }
+
     /// Cross-runtime channel port. The dispatcher's
     /// `handle_inbound_tunnel_channel_event` calls
     /// [`TunnelChannelPort::append_remote_event`] on this after

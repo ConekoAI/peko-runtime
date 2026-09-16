@@ -392,9 +392,12 @@ can use the hidden `peko config` commands or edit the file by hand.
 
 ```toml
 [daemon]
-bind_address = "127.0.0.1:11435"
 log_level = "info"
 ```
+
+The daemon's IPC/HTTP bind is a loopback constant (`127.0.0.1`) — there is
+no `bind_address` knob (ADR-058 D6 removed the inert one); remote daemon
+access is not a supported feature.
 
 Model selection is now catalog-driven (PR 1 of `feature/model-first-config`).
 The `[defaults]` block no longer exists — pick the default model via the

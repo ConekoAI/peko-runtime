@@ -286,6 +286,17 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
 
+    // Unique-per-run identity: the container backend's database
+    // persists across runs, so fixed external_id/namespace values
+    // collide with a previously-seeded row on the second run
+    // (`users_external_id_key` duplicate). A run-scoped suffix keeps
+    // the test idempotent against a dirty DB without a global reset
+    // (which would race concurrently-running sibling tests).
+    let run_id = uuid::Uuid::new_v4().simple().to_string();
+    let external_id = format!("tunnel-test-user-{run_id}");
+    let namespace = format!("tunneltestuser{run_id}");
+    let email = format!("tunnel-{run_id}@test.com");
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
@@ -296,11 +307,11 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     let user_resp = client
         .post(format!("{}/test/create-user", backend.url))
         .json(&serde_json::json!({
-            "external_id": "tunnel-test-user",
+            "external_id": external_id,
             "provider": "github",
-            "namespace": "tunneltestuser",
+            "namespace": namespace,
             "display_name": "Tunnel Test User",
-            "email": "tunnel@test.com"
+            "email": email
         }))
         .send()
         .await
@@ -350,6 +361,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             agent_did: None,
             bundle_ref: None,
             principal_did: None,
+            principal_pop: None,
             runtime_display_name: Some("Test Runtime".to_string()),
             status: InstanceStatus::Online,
             exposure: InstanceExposure::Public,
@@ -577,6 +589,7 @@ async fn test_instance_announce_registers_directory_entry() {
             agent_did: None,
             bundle_ref: None,
             principal_did: Some(principal_did.to_string()),
+            principal_pop: None,
             runtime_display_name: Some("Transport Test Runtime".to_string()),
             status: InstanceStatus::Online,
             exposure: InstanceExposure::Public,

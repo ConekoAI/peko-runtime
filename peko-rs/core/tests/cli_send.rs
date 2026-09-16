@@ -253,11 +253,23 @@ fn channel_event_logs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 /// Parse the `Posted` events out of a channel `events.jsonl`,
 /// returning `(author, text)` rows oldest first.
+///
+/// ADR-058 D7: tolerates both line formats — the new
+/// `{"origin": ..., "event": {...}}` envelope and the legacy bare
+/// `ChannelEvent` JSON.
 fn posted_rows(path: &std::path::Path) -> Vec<(String, String)> {
     std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .map(|v| {
+            // Unwrap the D7 provenance envelope when present.
+            if v.get("event").is_some_and(|e| e.is_object()) && v.get("origin").is_some() {
+                v["event"].clone()
+            } else {
+                v
+            }
+        })
         .filter(|v| v["kind"] == "posted")
         .map(|v| {
             (

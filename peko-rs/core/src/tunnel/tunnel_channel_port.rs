@@ -247,8 +247,45 @@ impl TunnelChannelPort {
         let event_bytes =
             serde_json::to_vec(ev).map_err(|e| format!("serialize ChannelEvent: {e}"))?;
 
+        // ADR-058 D2: resolve the author's own signing key. When the
+        // source is a locally-hosted principal with a vault-backed
+        // `did:key` identity, the envelope's `source_principal_did`
+        // carries that DID and the envelope gains an author JWS over
+        // the same payload segment as the runtime counter-signature.
+        // Otherwise the envelope keeps the legacy wire id and goes
+        // out runtime-vouched (`author_signature: ""`).
+        //
+        // ADR-058 review fix (fail-closed): a vault-backed `did:key`
+        // principal whose signing key cannot be loaded (transient
+        // vault failure) must FAIL the send — silently downgrading to
+        // the legacy wire id would produce exactly the runtime-vouched
+        // envelope the receiver's D2 author gate exists to refuse.
+        let author: Option<(String, Arc<ed25519_dalek::SigningKey>)> = match source {
+            Subject::Principal(did) => {
+                let pid = PrincipalId::from_did(did);
+                match ctx.principal_keys.did_for_principal(&pid).await {
+                    Some(did) => match ctx.principal_keys.signing_key_for_did(&did).await {
+                        Some(key) => Some((did, key)),
+                        None => {
+                            return Err(format!(
+                                "author signing key unavailable for vault-backed principal \
+                                     {did} (channel={}): refusing to send a runtime-vouched \
+                                     envelope for a did:key author",
+                                channel.as_str()
+                            ));
+                        }
+                    },
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        let source_wire_id = match &author {
+            Some((did, _)) => did.clone(),
+            None => subject_wire_form(source),
+        };
+
         let mut failures: Vec<String> = Vec::new();
-        let source_wire_id = subject_wire_form(source);
         for recipient_runtime_id in unique_runtimes {
             // Fresh request_id per recipient — the hub can scope
             // replay protection per request id and the audit rows
@@ -263,7 +300,15 @@ impl TunnelChannelPort {
                 channel_id: channel.as_str(),
                 event_bytes: &event_bytes,
             };
-            let signature = crate::tunnel::sign_channel_event(&ctx.signing_key, signed);
+            // ADR-058 D3: `iat = now`, `exp = now + 300` (seconds, UTC).
+            let iat = chrono::Utc::now().timestamp();
+            let (signature, author_signature) = crate::tunnel::sign_channel_event(
+                &ctx.signing_key,
+                author.as_ref().map(|(_, k)| k.as_ref()),
+                signed,
+                iat,
+                iat + 300,
+            );
 
             // Audit on the source runtime side. The receiver's
             // `received_inbound` audit row is emitted by the
@@ -287,6 +332,7 @@ impl TunnelChannelPort {
                 channel_id: channel.as_str().to_string(),
                 event: ev.clone(),
                 signature,
+                author_signature,
             };
 
             if let Err(e) = handle.send(envelope) {
@@ -314,6 +360,27 @@ impl TunnelChannelPort {
     ) -> Result<()> {
         self.local
             .add_remote_member(channel, runtime_id, principal_id)
+            .await
+    }
+
+    /// Predicate: is the `(runtime_id, principal_id)` pair registered
+    /// as a remote member of `channel`? ADR-058 D2: the inbound
+    /// dispatcher gates `did:key`-authored events on this check —
+    /// membership claims are now backed by principal signatures, so
+    /// the check is meaningful for the first time.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces the store's read errors (missing `members.json`,
+    /// unknown channel) so the caller can fail closed.
+    pub async fn is_remote_member(
+        &self,
+        channel: &ChannelId,
+        runtime_id: &str,
+        principal_id: &str,
+    ) -> Result<bool> {
+        self.local
+            .is_remote_member(channel, runtime_id, principal_id)
             .await
     }
 
@@ -488,13 +555,29 @@ impl TunnelChannelPort {
                 channel.as_str()
             )
         })?;
-        let initial_members: Vec<peko_protocol::channel::InitialMember> = local
-            .iter()
-            .filter(|p| p.subject_id() != invitee.0)
-            .map(|p| peko_protocol::channel::InitialMember {
-                principal_did: subject_wire_form(p),
+        // ADR-058 D2: source-local principal rows are emitted under
+        // the principal's vault-backed `did:key` DID when one exists —
+        // the receiver files these rows as its `remote_members`, and
+        // its inbound author gate (`is_remote_member`) matches the
+        // event envelope's `source_principal_did`, which is the same
+        // DID. Without the re-key the receiver would hold a local-id
+        // row that a did:key-authored event can never match.
+        let mut local_rows: Vec<peko_protocol::channel::InitialMember> = Vec::new();
+        for p in local.iter().filter(|p| p.subject_id() != invitee.0) {
+            let mut wire = subject_wire_form(p);
+            if let Subject::Principal(did) = p {
+                let pid = PrincipalId::from_did(did);
+                if let Some(vault_did) = ctx.principal_keys.did_for_principal(&pid).await {
+                    wire = vault_did;
+                }
+            }
+            local_rows.push(peko_protocol::channel::InitialMember {
+                principal_did: wire,
                 runtime_id: Some(ctx.caller_runtime_id.clone()),
-            })
+            });
+        }
+        let initial_members: Vec<peko_protocol::channel::InitialMember> = local_rows
+            .into_iter()
             .chain(
                 remote
                     .iter()
@@ -518,11 +601,36 @@ impl TunnelChannelPort {
             .map_err(|e| format!("serialize initial_members for invite envelope: {e}"))?;
 
         let request_id = Uuid::new_v4().to_string();
+        // ADR-058 D2: when the creator's DID is vault-backed (the DM
+        // provisioning path passes the inviter's real `did:key`), the
+        // envelope's `source_principal_did` carries that DID and the
+        // envelope gains an author JWS over the same payload segment.
+        // The bare `ChannelPort::invite` path passes a local id with
+        // no vault key → legacy runtime-vouched invite.
+        //
+        // ADR-058 review fix (fail-closed): a `did:key` creator whose
+        // signing key cannot be loaded must FAIL the invite — the
+        // receiver's author gate drops unsigned did:key envelopes, so
+        // silently downgrading would send an envelope the receiver
+        // refuses while masking the vault failure here.
+        let author_key = ctx.principal_keys.signing_key_for_did(creator_did).await;
+        if author_key.is_none() && creator_did.starts_with("did:key:") {
+            return Err(format!(
+                "creator signing key unavailable for vault-backed creator {creator_did} \
+                 (channel={}): refusing to send a runtime-vouched invite for a did:key creator",
+                channel.as_str()
+            ));
+        }
+        let source_principal_wire = if author_key.is_some() {
+            creator_did.to_string()
+        } else {
+            inviter.to_string()
+        };
         let signed = crate::tunnel::ChannelInviteSignedFields {
             request_id: &request_id,
             source_runtime_id: &ctx.caller_runtime_id,
             recipient_runtime_id: &invitee_runtime_id,
-            source_principal_did: &inviter.to_string(),
+            source_principal_did: &source_principal_wire,
             channel_id: channel.as_str(),
             creator: &meta.creator,
             creator_did,
@@ -530,7 +638,15 @@ impl TunnelChannelPort {
             passive_binding: meta.passive_binding.as_deref().unwrap_or(""),
             initial_members_bytes: &initial_members_bytes,
         };
-        let signature = crate::tunnel::sign_channel_invite(&ctx.signing_key, signed);
+        // ADR-058 D3: `iat = now`, `exp = now + 300` (seconds, UTC).
+        let iat = chrono::Utc::now().timestamp();
+        let (signature, author_signature) = crate::tunnel::sign_channel_invite(
+            &ctx.signing_key,
+            author_key.as_deref(),
+            signed,
+            iat,
+            iat + 300,
+        );
 
         // Audit on the source runtime side. The receiver's
         // `received_inbound` audit row is emitted by the
@@ -549,7 +665,7 @@ impl TunnelChannelPort {
             request_id,
             source_runtime_id: ctx.caller_runtime_id.clone(),
             recipient_runtime_id: invitee_runtime_id.clone(),
-            source_principal_did: inviter.to_string(),
+            source_principal_did: source_principal_wire,
             channel_id: channel.as_str().to_string(),
             creator: meta.creator.clone(),
             creator_did: creator_did.to_string(),
@@ -557,6 +673,7 @@ impl TunnelChannelPort {
             passive_binding: meta.passive_binding.clone(),
             initial_members,
             signature,
+            author_signature,
         };
 
         handle
@@ -1143,6 +1260,7 @@ mod tests {
             signing_key,
             caller_runtime_id: caller_runtime_id.to_string(),
             tunnel: tunnel_slot,
+            principal_keys: Arc::new(crate::tunnel::cross_runtime_channel::NoPrincipalKeys),
         });
         (ctx, rx)
     }
@@ -1219,6 +1337,7 @@ mod tests {
             channel_id,
             event,
             signature,
+            author_signature,
         ) = match env {
             crate::tunnel::TunnelMessage::TunnelChannelEvent {
                 request_id,
@@ -1228,6 +1347,7 @@ mod tests {
                 channel_id,
                 event,
                 signature,
+                author_signature,
             } => (
                 request_id,
                 source_runtime_id,
@@ -1236,6 +1356,7 @@ mod tests {
                 channel_id,
                 event,
                 signature,
+                author_signature,
             ),
             other => panic!("expected TunnelChannelEvent, got {other:?}"),
         };
@@ -1248,6 +1369,10 @@ mod tests {
         // request_id is a fresh UUIDv4 (length 36 incl. hyphens).
         assert_eq!(request_id.len(), 36, "request_id should be a UUIDv4");
         assert!(!signature.is_empty(), "envelope must carry a signature");
+        assert!(
+            author_signature.is_empty(),
+            "NoPrincipalKeys ctx → runtime-vouched envelope (no author signature)"
+        );
 
         // The event body carries the post text + author.
         match &event {
@@ -1258,25 +1383,22 @@ mod tests {
             other => panic!("expected Posted in envelope, got {other:?}"),
         }
 
-        // Signature verifies against ctx.signing_key.
+        // Signature verifies against ctx.signing_key (ADR-058 D3:
+        // compact JWS whose payload carries every envelope field).
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let event_bytes = serde_json::to_vec(&event).unwrap();
-        // Re-derive the recipient runtime id from the outbound path
-        // so this assertion matches the bytes the source runtime
-        // actually signed (the test ctx has a single recipient).
-        let recipient_runtime_id = "did:key:zRuntimeB".to_string();
-        crate::tunnel::verify_channel_event(
-            &ctx.signing_key.verifying_key(),
-            crate::tunnel::ChannelSignedFields {
-                request_id: &request_id,
-                source_runtime_id: &source_runtime_id,
-                recipient_runtime_id: &recipient_runtime_id,
-                source_principal_did: &source_principal_did,
-                channel_id: &channel_id,
-                event_bytes: &event_bytes,
-            },
-            &signature,
-        )
-        .expect("outbound signature must verify");
+        let (payload, _segment) =
+            crate::tunnel::verify_channel_event(&ctx.signing_key.verifying_key(), &signature)
+                .expect("outbound signature must verify");
+        assert_eq!(payload.request_id, request_id);
+        assert_eq!(payload.source_runtime_id, source_runtime_id);
+        assert_eq!(payload.recipient_runtime_id, recipient_runtime_id);
+        assert_eq!(payload.source_principal_did, source_principal_did);
+        assert_eq!(payload.channel_id, channel_id);
+        assert_eq!(
+            URL_SAFE_NO_PAD.decode(&payload.event_b64u).unwrap(),
+            event_bytes
+        );
     }
 
     /// Two remote members on the same runtime fan out to a single
@@ -1450,6 +1572,7 @@ mod tests {
             signing_key,
             caller_runtime_id: "did:key:zRuntimeA".into(),
             tunnel: tunnel_slot,
+            principal_keys: Arc::new(crate::tunnel::cross_runtime_channel::NoPrincipalKeys),
         });
         port.set_ctx(ctx).await;
 
@@ -1568,6 +1691,7 @@ mod tests {
             passive_binding,
             initial_members,
             signature,
+            author_signature,
         ) = match env {
             crate::tunnel::TunnelMessage::TunnelChannelInvite {
                 request_id,
@@ -1581,6 +1705,7 @@ mod tests {
                 passive_binding,
                 initial_members,
                 signature,
+                author_signature,
             } => (
                 request_id,
                 source_runtime_id,
@@ -1593,6 +1718,7 @@ mod tests {
                 passive_binding,
                 initial_members,
                 signature,
+                author_signature,
             ),
             other => panic!("expected TunnelChannelInvite, got {other:?}"),
         };
@@ -1611,6 +1737,10 @@ mod tests {
         assert_eq!(passive_binding, None, "unbound channel → no DM marker");
         assert_eq!(request_id.len(), 36, "request_id should be a UUIDv4");
         assert!(!signature.is_empty(), "envelope must carry a signature");
+        assert!(
+            author_signature.is_empty(),
+            "bare invite path has no vault-backed creator DID → runtime-vouched"
+        );
 
         // Phase 12a snapshot re-keying: the source's own row (alice)
         // is remote from the receiver's view; the invitee row is
@@ -1628,25 +1758,28 @@ mod tests {
             "the invitee row is the receiver-addressed one"
         );
 
-        // Signature verifies against ctx.signing_key.
+        // Signature verifies against ctx.signing_key (ADR-058 D3:
+        // compact JWS whose payload carries every envelope field).
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let initial_members_bytes = serde_json::to_vec(&initial_members).unwrap();
-        crate::tunnel::verify_channel_invite(
-            &ctx.signing_key.verifying_key(),
-            crate::tunnel::ChannelInviteSignedFields {
-                request_id: &request_id,
-                source_runtime_id: &source_runtime_id,
-                recipient_runtime_id: &recipient_runtime_id,
-                source_principal_did: &source_principal_did,
-                channel_id: &channel_id,
-                creator: &creator,
-                creator_did: &creator_did,
-                name: &name,
-                passive_binding: "",
-                initial_members_bytes: &initial_members_bytes,
-            },
-            &signature,
-        )
-        .expect("outbound invite signature must verify");
+        let (payload, _segment) =
+            crate::tunnel::verify_channel_invite(&ctx.signing_key.verifying_key(), &signature)
+                .expect("outbound invite signature must verify");
+        assert_eq!(payload.request_id, request_id);
+        assert_eq!(payload.source_runtime_id, source_runtime_id);
+        assert_eq!(payload.recipient_runtime_id, recipient_runtime_id);
+        assert_eq!(payload.source_principal_did, source_principal_did);
+        assert_eq!(payload.channel_id, channel_id);
+        assert_eq!(payload.creator, creator);
+        assert_eq!(payload.creator_did, creator_did);
+        assert_eq!(payload.name, name);
+        assert_eq!(payload.passive_binding, "");
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(&payload.initial_members_b64u)
+                .unwrap(),
+            initial_members_bytes
+        );
 
         // No second envelope — the invitee resolves to exactly one
         // unique runtime.
@@ -1756,25 +1889,29 @@ mod tests {
             .expect("invitee row present");
         assert_eq!(invitee_row.principal_did, "did:peko:principal:bob");
 
-        // The full signed field set verifies.
+        // The full signed payload verifies (creator_did here is a
+        // legacy non-`did:key` form → runtime-vouched, no author
+        // signature).
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let initial_members_bytes = serde_json::to_vec(&initial_members).unwrap();
-        crate::tunnel::verify_channel_invite(
-            &ctx.signing_key.verifying_key(),
-            crate::tunnel::ChannelInviteSignedFields {
-                request_id: &request_id,
-                source_runtime_id: &source_runtime_id,
-                recipient_runtime_id: &recipient_runtime_id,
-                source_principal_did: "prin_alice",
-                channel_id: channel.as_str(),
-                creator: "prin_alice",
-                creator_did: &creator_did,
-                name: "dm-principal-bob",
-                passive_binding: "/principal-bob",
-                initial_members_bytes: &initial_members_bytes,
-            },
-            &signature,
-        )
-        .expect("DM invite signature must verify");
+        let (payload, _segment) =
+            crate::tunnel::verify_channel_invite(&ctx.signing_key.verifying_key(), &signature)
+                .expect("DM invite signature must verify");
+        assert_eq!(payload.request_id, request_id);
+        assert_eq!(payload.source_runtime_id, source_runtime_id);
+        assert_eq!(payload.recipient_runtime_id, recipient_runtime_id);
+        assert_eq!(payload.source_principal_did, "prin_alice");
+        assert_eq!(payload.channel_id, channel.as_str());
+        assert_eq!(payload.creator, "prin_alice");
+        assert_eq!(payload.creator_did, creator_did);
+        assert_eq!(payload.name, "dm-principal-bob");
+        assert_eq!(payload.passive_binding, "/principal-bob");
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(&payload.initial_members_b64u)
+                .unwrap(),
+            initial_members_bytes
+        );
     }
 
     /// Mirror-side fan-back (Phase 12a): after `join_remote` with the

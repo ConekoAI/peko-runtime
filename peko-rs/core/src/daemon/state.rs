@@ -800,6 +800,10 @@ impl AppState {
             .with_resolver(resolver.clone())
             .with_extension_store(Arc::clone(&extension_store))
             .with_observability(Arc::clone(&observability))
+            // ADR-058 D1: principal genesis mints a per-principal
+            // ed25519 key (DID = did:key of that key) and custodies
+            // the seed in the vault's `principal-identity` namespace.
+            .with_identity_vault(Arc::clone(&vault))
             // Sprint 3 Phase 10: peer ingress auto-provisions the
             // peer's DM channel through the daemon-global port.
             .with_channel_port(channel_port.clone());
@@ -1775,11 +1779,23 @@ impl AppState {
         let (directory, signing_key, caller_runtime_id) =
             self.build_cross_runtime_ctx_parts(cred, vault)?;
 
+        // ADR-058 D2: outbound envelopes carry an author signature
+        // from the authoring principal's own vault-backed key when
+        // one exists (D1). Built from the SAME vault + principal
+        // manager the daemon already holds.
+        let principal_keys: Arc<dyn crate::tunnel::cross_runtime_channel::PrincipalSigningKeys> =
+            Arc::new(VaultPrincipalSigningKeys {
+                vault: Arc::clone(&self.vault),
+                principal_manager: Arc::clone(&self.principal_manager),
+                cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            });
+
         let ctx = Arc::new(CrossRuntimeChannelCtx {
             directory,
             signing_key,
             caller_runtime_id,
             tunnel: self.tunnel_handle_slot(),
+            principal_keys,
         });
 
         // Push into the existing `TunnelChannelPort`'s ctx slot. The
@@ -1947,6 +1963,63 @@ fn load_runtime_signing_key(
     Ok(Arc::new(SigningKey::from_bytes(&key_arr)))
 }
 
+/// ADR-058 D2: production `PrincipalSigningKeys` impl — resolves a
+/// locally-hosted principal's `did:key` DID through the
+/// `PrincipalManager` and loads the matching signing key from the
+/// vault's `principal-identity` namespace (cached per DID; keys never
+/// change for the lifetime of a principal).
+struct VaultPrincipalSigningKeys {
+    vault: Arc<crate::common::vault::Vault>,
+    principal_manager: Arc<PrincipalManager>,
+    cache: std::sync::Mutex<std::collections::HashMap<String, Arc<ed25519_dalek::SigningKey>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::tunnel::cross_runtime_channel::PrincipalSigningKeys for VaultPrincipalSigningKeys {
+    async fn did_for_principal(&self, principal: &peko_subject::PrincipalId) -> Option<String> {
+        // `Subject::Principal` / `PrincipalId` carry EITHER the
+        // principal's id (`prin_<uuid>` — the `principals` map key)
+        // or its DID (`did:key:…` — e.g. DID-keyed DM paths), so
+        // resolve by id first and fall back to the DID scan; a miss
+        // on the wrong form would silently downgrade the envelope to
+        // runtime-vouched on exactly the cross-runtime paths D2 is
+        // meant to protect.
+        let p = match self.principal_manager.get(principal.clone()).await {
+            Some(p) => p,
+            None => self.principal_manager.find_by_did(&principal.0).await?,
+        };
+        let did = p.did().await.0;
+        // Only vault-backed (D1) DIDs participate in author signing;
+        // legacy `did:peko:public:*` identities have no loadable key.
+        did.starts_with("did:key:").then_some(did)
+    }
+
+    async fn signing_key_for_did(&self, did: &str) -> Option<Arc<ed25519_dalek::SigningKey>> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use secrecy::ExposeSecret as _;
+
+        if let Some(key) = self
+            .cache
+            .lock()
+            .expect("principal signing-key cache lock poisoned")
+            .get(did)
+        {
+            return Some(Arc::clone(key));
+        }
+        let secret = self
+            .vault
+            .get_principal_identity_private_key(&format!("{did}#keys-1"))?;
+        let bytes = BASE64.decode(secret.expose_secret().trim()).ok()?;
+        let key_arr: [u8; 32] = bytes.try_into().ok()?;
+        let key = Arc::new(ed25519_dalek::SigningKey::from_bytes(&key_arr));
+        self.cache
+            .lock()
+            .expect("principal signing-key cache lock poisoned")
+            .insert(did.to_string(), Arc::clone(&key));
+        Some(key)
+    }
+}
+
 /// Load `peko.toml` from the config directory, falling back to defaults
 /// if the file does not exist or cannot be parsed.
 ///
@@ -2042,6 +2115,20 @@ impl crate::tunnel::TunnelHost for AppState {
         Arc::clone(&self.invite_revocation_set)
     }
 
+    /// ADR-058 D4: built on demand from the same vault + principal
+    /// manager the D2 cross-runtime ctx uses (announces are rare, so a
+    /// shared cached instance is unnecessary; the per-DID key cache
+    /// lives inside each instance).
+    fn principal_signing_keys(
+        &self,
+    ) -> Arc<dyn crate::tunnel::cross_runtime_channel::PrincipalSigningKeys> {
+        Arc::new(VaultPrincipalSigningKeys {
+            vault: Arc::clone(&self.vault),
+            principal_manager: Arc::clone(&self.principal_manager),
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
     /// peko-channel cross-runtime PR-B commit 2: typed accessor for
     /// the concrete `TunnelChannelPort`. The dispatcher's
     /// `handle_inbound_tunnel_channel_event` calls
@@ -2049,6 +2136,14 @@ impl crate::tunnel::TunnelHost for AppState {
     /// verifying the envelope signature.
     fn tunnel_channel_port(&self) -> Arc<crate::tunnel::TunnelChannelPort> {
         Arc::clone(&self.tunnel_channel_port)
+    }
+
+    /// ADR-058 post-review cutoff gate: wired from the auth config
+    /// (`auth_config.toml` → `accept_asserted_remote_channel_authors`,
+    /// rollout default `true`). Flipping it to `false` refuses
+    /// runtime-vouched (non-`did:key`) channel authors.
+    fn accept_asserted_remote_channel_authors(&self) -> bool {
+        self.auth_config.accept_asserted_remote_channel_authors()
     }
 
     /// Sprint 3 Phase 12a: cross-runtime DM mirror bootstrap. The

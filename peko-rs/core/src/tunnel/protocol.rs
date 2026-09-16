@@ -90,6 +90,17 @@ pub struct InstanceAnnouncePayload {
     /// inbound A2A routing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub principal_did: Option<String>,
+    /// ADR-058 D4: proof of possession for `principal_did`. A compact
+    /// JWS (EdDSA, header `{"alg":"EdDSA","typ":"JWS"}`) over
+    /// `{"runtimeId":..,"principalDid":..,"iat":..,"exp":..}` (iat =
+    /// now, exp = now + 300) signed with the principal's own
+    /// vault-backed key (D1) — the hub verifies it against the key
+    /// embedded in the `did:key` DID, so a principal DID can no
+    /// longer be registered on say-so. Absent for legacy
+    /// non-`did:key` principals (the hub treats those as unverified —
+    /// hub policy, not runtime).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub principal_pop: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -330,7 +341,18 @@ pub enum TunnelMessage {
         /// (matching `RuntimeHello.signature`) so the
         /// wire form matches the existing tunnel signature fields
         /// and the pekohub TypeScript decoder can share a parser.
+        ///
+        /// ADR-058 D3: the value is a compact JWS (EdDSA, embedded
+        /// payload) whose payload carries every envelope field plus
+        /// `iat`/`exp` — see `tunnel_channel_signature`.
         signature: String,
+        /// ADR-058 D2: compact JWS by the authoring principal's own
+        /// key over the SAME payload segment as `signature`. Empty
+        /// when the author has no vault-backed key (legacy
+        /// runtime-vouched path — the receiver accepts non-`did:key`
+        /// authors on the runtime's say-so, but requires this
+        /// signature plus remote-membership for `did:key` authors).
+        author_signature: String,
     },
 
     /// Bootstrap envelope for a cross-runtime channel invite.
@@ -411,8 +433,15 @@ pub enum TunnelMessage {
         initial_members: Vec<InitialMember>,
         /// Ed25519 signature, base64url-no-pad, over the canonical
         /// pre-image described in `tunnel_channel_signature`. Same
-        /// shape as `TunnelChannelEvent.signature`.
+        /// shape as `TunnelChannelEvent.signature` (ADR-058 D3: a
+        /// compact JWS over the v2 payload with `iat`/`exp`).
         signature: String,
+        /// ADR-058 D2: compact JWS by the creator principal's own key
+        /// over the SAME payload segment as `signature`. Empty for
+        /// legacy runtime-vouched invites; required (plus
+        /// `creator_did == source_principal_did`) when `creator_did`
+        /// is a `did:key`.
+        author_signature: String,
     },
 }
 
@@ -572,6 +601,7 @@ mod tests {
                 agent_did: Some("did:peko:local:abc123".to_string()),
                 bundle_ref: Some("ref".to_string()),
                 principal_did: None,
+                principal_pop: None,
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -625,6 +655,7 @@ mod tests {
                 agent_did: None,
                 bundle_ref: None,
                 principal_did: None,
+                principal_pop: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -664,6 +695,7 @@ mod tests {
                 agent_did: Some("did:peko:local:abc123".to_string()),
                 bundle_ref: None,
                 principal_did: None,
+                principal_pop: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -690,6 +722,67 @@ mod tests {
         }
     }
 
+    /// ADR-058 D4: `InstanceAnnouncePayload.principal_pop` serializes
+    /// as `principalPop` when present and is omitted when `None`
+    /// (legacy non-`did:key` principals).
+    #[test]
+    fn test_instance_announce_principal_pop_wire_shape() {
+        let msg = TunnelMessage::InstanceAnnounce {
+            payload: InstanceAnnouncePayload {
+                id: "inst-5".to_string(),
+                instance_type: InstanceType::Principal,
+                name: "helper".to_string(),
+                agent_did: None,
+                bundle_ref: None,
+                principal_did: Some("did:key:z6MkTestPrincipal".to_string()),
+                principal_pop: Some("header.payload.sig".to_string()),
+                runtime_display_name: None,
+                status: InstanceStatus::Online,
+                exposure: InstanceExposure::Public,
+                allowed_principals: None,
+                capabilities: None,
+                metadata: None,
+            },
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            json.contains("\"principalPop\":\"header.payload.sig\""),
+            "principal_pop must serialize as `principalPop` (camelCase), got: {json}"
+        );
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::InstanceAnnounce { payload } => {
+                assert_eq!(payload.principal_pop.as_deref(), Some("header.payload.sig"));
+            }
+            _ => panic!("Expected InstanceAnnounce"),
+        }
+
+        // None → the key is absent from the wire form.
+        let msg = TunnelMessage::InstanceAnnounce {
+            payload: InstanceAnnouncePayload {
+                id: "inst-6".to_string(),
+                instance_type: InstanceType::Principal,
+                name: "legacy".to_string(),
+                agent_did: None,
+                bundle_ref: None,
+                principal_did: Some("did:peko:public:legacy:abc".to_string()),
+                principal_pop: None,
+                runtime_display_name: None,
+                status: InstanceStatus::Online,
+                exposure: InstanceExposure::Public,
+                allowed_principals: None,
+                capabilities: None,
+                metadata: None,
+            },
+        };
+        let json = String::from_utf8(msg.to_bytes().unwrap()).unwrap();
+        assert!(
+            !json.contains("principalPop"),
+            "None principal_pop must be omitted from the wire form, got: {json}"
+        );
+    }
+
     #[test]
     fn test_instance_announce_omits_agent_did_when_none() {
         // Legacy agent (no DID yet) — the field must be omitted so
@@ -705,6 +798,7 @@ mod tests {
                 agent_did: None,
                 bundle_ref: None,
                 principal_did: None,
+                principal_pop: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -908,6 +1002,7 @@ mod tests {
             channel_id: "chan_abcdefgh".to_string(),
             event,
             signature: "base64url-sig".to_string(),
+            author_signature: "base64url-author-sig".to_string(),
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
@@ -938,6 +1033,10 @@ mod tests {
             json.contains("\"channelId\""),
             "field channelId must be camelCase, got: {json}"
         );
+        assert!(
+            json.contains("\"authorSignature\""),
+            "field authorSignature must be camelCase, got: {json}"
+        );
         // The nested event uses its own `kind` discriminant.
         assert!(
             json.contains("\"kind\":\"posted\""),
@@ -954,6 +1053,7 @@ mod tests {
                 channel_id,
                 event,
                 signature,
+                author_signature,
             } => {
                 assert_eq!(request_id, "chan-evt-1");
                 assert_eq!(source_runtime_id, "did:key:zRuntimeA");
@@ -961,6 +1061,7 @@ mod tests {
                 assert_eq!(source_principal_did, "prin_alice");
                 assert_eq!(channel_id, "chan_abcdefgh");
                 assert_eq!(signature, "base64url-sig");
+                assert_eq!(author_signature, "base64url-author-sig");
                 match event {
                     peko_protocol::channel::ChannelEvent::Posted {
                         channel,
@@ -1010,6 +1111,7 @@ mod tests {
             passive_binding: Some("/principal-bob".to_string()),
             initial_members,
             signature: "base64url-sig".to_string(),
+            author_signature: "base64url-author-sig".to_string(),
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
@@ -1044,6 +1146,10 @@ mod tests {
             json.contains("\"initialMembers\""),
             "field initialMembers must be camelCase, got: {json}"
         );
+        assert!(
+            json.contains("\"authorSignature\""),
+            "field authorSignature must be camelCase, got: {json}"
+        );
         // `runtime_id: None` is skipped on the wire (no null leak).
         assert!(
             !json.contains("\"runtimeId\":null"),
@@ -1069,6 +1175,7 @@ mod tests {
                 passive_binding,
                 initial_members: decoded_members,
                 signature,
+                author_signature,
             } => {
                 assert_eq!(request_id, "chan-invite-1");
                 assert_eq!(source_runtime_id, "did:key:zRuntimeA");
@@ -1080,6 +1187,7 @@ mod tests {
                 assert_eq!(name, "team-chat");
                 assert_eq!(passive_binding.as_deref(), Some("/principal-bob"));
                 assert_eq!(signature, "base64url-sig");
+                assert_eq!(author_signature, "base64url-author-sig");
                 assert_eq!(decoded_members.len(), 2);
                 assert_eq!(decoded_members[0].principal_did, "prin_alice");
                 assert_eq!(decoded_members[0].runtime_id, None);

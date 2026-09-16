@@ -28,9 +28,42 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use ed25519_dalek::SigningKey;
+use peko_subject::PrincipalId;
 
 use crate::tunnel::hub_directory::AgentDirectory;
 use crate::tunnel::TunnelHandle;
+
+/// ADR-058 D2: resolves the vault-backed signing key of a
+/// locally-hosted principal so outbound channel envelopes can carry
+/// an **author signature** alongside the runtime counter-signature.
+///
+/// Async because the production impl (`VaultPrincipalSigningKeys` in
+/// `daemon::state`) resolves the principal DID through
+/// `PrincipalManager`'s tokio locks.
+#[async_trait::async_trait]
+pub trait PrincipalSigningKeys: Send + Sync {
+    /// DID (`did:key:...`) of a locally-hosted principal, if it has a
+    /// vault-backed key.
+    async fn did_for_principal(&self, principal: &PrincipalId) -> Option<String>;
+    /// Signing key for a principal DID, if vault-backed.
+    async fn signing_key_for_did(&self, did: &str) -> Option<Arc<SigningKey>>;
+}
+
+/// No-op impl for tests / non-daemon contexts: no principal ever has
+/// an author key, so envelopes go out runtime-vouched with an empty
+/// `author_signature`.
+pub struct NoPrincipalKeys;
+
+#[async_trait::async_trait]
+impl PrincipalSigningKeys for NoPrincipalKeys {
+    async fn did_for_principal(&self, _principal: &PrincipalId) -> Option<String> {
+        None
+    }
+
+    async fn signing_key_for_did(&self, _did: &str) -> Option<Arc<SigningKey>> {
+        None
+    }
+}
 
 /// Cross-runtime channel dispatch context. Holds the dependencies
 /// the outbound channel-event send path needs: the directory client
@@ -74,6 +107,11 @@ pub struct CrossRuntimeChannelCtx {
     /// `TunnelHandle` so reconnects are visible without rebuilding
     /// the ctx.
     pub tunnel: Arc<RwLock<Option<TunnelHandle>>>,
+
+    /// ADR-058 D2: resolves per-principal author signing keys
+    /// (vault-backed, `did:key` DIDs). `NoPrincipalKeys` in tests /
+    /// non-daemon contexts → envelopes go out runtime-vouched.
+    pub principal_keys: Arc<dyn PrincipalSigningKeys>,
 }
 
 impl std::fmt::Debug for CrossRuntimeChannelCtx {
@@ -83,6 +121,7 @@ impl std::fmt::Debug for CrossRuntimeChannelCtx {
             .field("signing_key", &"<redacted: ed25519 SigningKey>")
             .field("caller_runtime_id", &self.caller_runtime_id)
             .field("tunnel", &self.tunnel)
+            .field("principal_keys", &"<dyn PrincipalSigningKeys>")
             .finish()
     }
 }

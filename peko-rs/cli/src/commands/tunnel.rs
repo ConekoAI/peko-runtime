@@ -43,6 +43,36 @@ pub enum TunnelCommands {
     },
 }
 
+/// ADR-058 D4: build the `pop` object for the register body —
+/// `{nonce, jws}` where `jws` is a compact EdDSA JWS over
+/// `{"nonce":..,"runtimeDid":..,"owner":..,"iat":..,"exp":..}` signed
+/// with the runtime identity key. `exp` and `owner` pass through
+/// verbatim from the hub's register-challenge response.
+fn build_register_pop(
+    nonce: &str,
+    exp: &serde_json::Value,
+    owner: &serde_json::Value,
+    runtime_did: &str,
+    keypair: &peko_identity::keys::KeyPair,
+) -> serde_json::Value {
+    let now = chrono::Utc::now().timestamp();
+    let payload = serde_json::json!({
+        "nonce": nonce,
+        "runtimeDid": runtime_did,
+        "owner": owner,
+        "iat": now,
+        "exp": exp,
+    });
+    let jws = peko_core::tunnel::tunnel_channel_signature::jws_sign(
+        &keypair.signing_key,
+        payload.to_string().as_bytes(),
+    );
+    serde_json::json!({
+        "nonce": nonce,
+        "jws": jws,
+    })
+}
+
 /// Handle tunnel setup
 async fn handle_tunnel_setup(
     url: Option<String>,
@@ -124,14 +154,78 @@ async fn handle_tunnel_setup(
     // (`ownerId`); it is persisted into the credential so the daemon
     // can derive the local terminal's attribution identity from it
     // while logged in.
+    //
+    // ADR-058 D4: proof of possession. Before registering, fetch a
+    // server-issued challenge (`POST /v1/runtimes/register-challenge`
+    // → `{nonce, exp}`), then include `pop: {nonce, jws}` in the
+    // register body. The JWS is a compact EdDSA JWS over
+    // `{"nonce":..,"runtimeDid":..,"owner":..,"iat":..,"exp":..}`
+    // signed with the RUNTIME identity key — the same key behind
+    // `runtime_did` and the tunnel hello — so the directory row
+    // becomes a verified claim rather than a first-registrant squat.
+    // Hubs that predate D4 (challenge endpoint missing/failing) get
+    // the legacy register body without `pop`.
+    let challenge_url = format!("{}/v1/runtimes/register-challenge", http_url);
+    let mut pop_field: Option<serde_json::Value> = None;
+    match client
+        .post(&challenge_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(body) => {
+                match body.get("nonce").and_then(|v| v.as_str()) {
+                    Some(nonce) => {
+                        let now = chrono::Utc::now().timestamp();
+                        // `exp` / `owner` pass through VERBATIM from the
+                        // challenge so the signed payload matches what
+                        // the hub issued; `owner` is null when the hub
+                        // does not disclose it at challenge time.
+                        let exp = body
+                            .get("exp")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!(now + 300));
+                        let owner = body
+                            .get("owner")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        let pop = build_register_pop(nonce, &exp, &owner, &runtime_did, &keypair);
+                        pop_field = Some(pop);
+                        println!("   Registration PoP minted (ADR-058 D4).");
+                    }
+                    None => eprintln!(
+                        "   ⚠️  register-challenge response carried no nonce; \
+                         registering without PoP."
+                    ),
+                }
+            }
+            Err(e) => eprintln!(
+                "   ⚠️  Could not parse the register-challenge response ({e}); \
+                 registering without PoP."
+            ),
+        },
+        Ok(r) => eprintln!(
+            "   ⚠️  register-challenge returned HTTP {}; registering without PoP \
+             (hub predates ADR-058 D4?).",
+            r.status()
+        ),
+        Err(e) => {
+            eprintln!("   ⚠️  Could not reach register-challenge ({e}); registering without PoP.")
+        }
+    }
+    let mut register_body = serde_json::json!({
+        "runtime_did": runtime_did,
+        "display_name": "peko-runtime",
+    });
+    if let Some(pop) = pop_field {
+        register_body["pop"] = pop;
+    }
     let register_url = format!("{}/v1/runtimes/register", http_url);
     let register_resp = client
         .post(&register_url)
         .header("Authorization", format!("Bearer {}", api_key))
-        .json(&serde_json::json!({
-            "runtime_did": runtime_did,
-            "display_name": "peko-runtime",
-        }))
+        .json(&register_body)
         .send()
         .await;
     let mut hub_owner_id: Option<String> = None;
@@ -402,6 +496,46 @@ pub async fn handle_tunnel(
 mod tests {
     use super::*;
     use peko_core::ipc::packet::{RequestPacket, ResponsePacket};
+
+    /// ADR-058 D4: the register PoP is a compact JWS over the
+    /// canonical claim set, verifiable against the runtime identity
+    /// key (the key behind `runtime_did`).
+    #[test]
+    fn test_build_register_pop_signs_canonical_claims() {
+        let keypair = peko_identity::keys::KeyPair::generate();
+        let runtime_did =
+            peko_identity::runtime::public_key_to_did_key(&keypair.public_key_bytes());
+
+        let pop = build_register_pop(
+            "nonce-abc",
+            &serde_json::json!(1_900_000_000i64),
+            &serde_json::json!("user-42"),
+            &runtime_did,
+            &keypair,
+        );
+        assert_eq!(pop["nonce"].as_str(), Some("nonce-abc"));
+        let jws = pop["jws"].as_str().expect("jws present");
+
+        // Verifies against the key embedded in the claimed runtime DID.
+        let key = peko_core::tunnel::did_key_to_verifying_key(&runtime_did).unwrap();
+        let (_seg, payload) = peko_core::tunnel::tunnel_channel_signature::jws_verify(&key, jws)
+            .expect("PoP JWS must verify against the runtime DID key");
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(payload["nonce"].as_str(), Some("nonce-abc"));
+        assert_eq!(payload["runtimeDid"].as_str(), Some(runtime_did.as_str()));
+        assert_eq!(payload["owner"].as_str(), Some("user-42"));
+        assert_eq!(payload["exp"].as_i64(), Some(1_900_000_000));
+        assert!(payload["iat"].as_i64().is_some(), "iat present");
+
+        // A different runtime DID's key must NOT verify the PoP.
+        let other = peko_identity::keys::KeyPair::generate();
+        let other_did = peko_identity::runtime::public_key_to_did_key(&other.public_key_bytes());
+        let other_key = peko_core::tunnel::did_key_to_verifying_key(&other_did).unwrap();
+        assert!(
+            peko_core::tunnel::tunnel_channel_signature::jws_verify(&other_key, jws).is_err(),
+            "PoP must not verify against a different runtime key"
+        );
+    }
 
     #[test]
     fn test_tunnel_commands_enum() {

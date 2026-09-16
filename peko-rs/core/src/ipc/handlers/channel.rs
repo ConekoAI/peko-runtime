@@ -210,12 +210,13 @@ enum CallerBinding {
 /// inside the id (`Subject::User("user:<sub>")`, the grant-matching
 /// convention from issue #68/R5), while channel member rows store
 /// users as `Subject::User(<bare id>)` (the `user:<id>` wire form of
-/// ADR-049). Mirroring `Subject::from_bridge_user`'s normalization
-/// (strip one redundant `user:` prefix), the channel-side identity of
-/// a JWT caller with sub `39` is `Subject::User("39")` — exactly what
-/// an invite of `user:39` records. The Derived projection is the
-/// ADR-057 attribution subject (hub owner when logged in, else
-/// `user:local`; API keys attribute as the owner they belong to).
+/// ADR-049). The projection strips one redundant `user:` prefix (the
+/// normalization the retired `Subject::from_bridge_user` used to
+/// perform), so the channel-side identity of a JWT caller with sub
+/// `39` is `Subject::User("39")` — exactly what an invite of `user:39`
+/// records. The Derived projection is the ADR-057 attribution subject
+/// (hub owner when logged in, else `user:local`; API keys attribute
+/// as the owner they belong to).
 fn caller_binding(caller: &CallerContext) -> CallerBinding {
     use peko_auth::caller::Identity;
     match &caller.identity {
@@ -605,6 +606,16 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
+                // ADR-058 D7: membership-gated, same discipline as
+                // `ChannelPeek` — before this, any caller (including a
+                // pekohub JWT non-member) could enumerate a channel's
+                // membership roster.
+                if !self
+                    .gate_channel_read(&ch, caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 match self.router().handle_members(&ch).await {
                     Ok(resp) => {
                         let response = ResponsePacket::ChannelMembersResult {
@@ -629,6 +640,19 @@ impl RequestHandler for ChannelHandler {
                 request_id,
                 principal_name,
             } => {
+                // ADR-058 D7: enumerating a principal's channels is an
+                // operator read — Derived callers (local terminal /
+                // scoped API key) only, same discipline
+                // `gate_principal_operator` applies to the other
+                // principal-name-bearing variants. A pekohub JWT user
+                // has no per-channel entitlement here (the gate is not
+                // per-channel like `ChannelMembers`).
+                if !self
+                    .gate_principal_operator(caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
                 let Some(principal) = self.resolve_principal(&principal_name) else {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -1683,6 +1707,131 @@ mod tests {
     // ADR-049 Phase 4 (D6): CallerContext-based authorization
     // -----------------------------------------------------------------
 
+    /// ADR-058 D7: `ChannelMembers` carries the same caller-derived
+    /// membership gate as `ChannelPeek` — before the gate, any caller
+    /// (including a JWT non-member) could enumerate the roster.
+    #[tokio::test]
+    async fn handler_members_gates_on_caller_identity() {
+        let (tmp, host) = test_host();
+        let _ = tmp;
+        let handler = ChannelHandler::new(host.clone());
+        let (_adapter, ch) = seed_channel_with_user_member(&host).await;
+        let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
+
+        let members = || RequestPacket::ChannelMembers {
+            request_id: 1,
+            channel: ch.to_string(),
+        };
+
+        // Local caller (user:local is a seeded member) → roster.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(members(), &test_caller(), &sink, &peer)
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelMembersResult { .. }]
+            ),
+            "member local caller must read the roster; got {:?}",
+            captured.lock().unwrap()
+        );
+
+        // JWT member reads as themselves.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                members(),
+                &CallerContext::from_jwt("alice".to_string()),
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelMembersResult { .. }]
+            ),
+            "JWT member must read the roster; got {:?}",
+            captured.lock().unwrap()
+        );
+
+        // JWT non-member → permission error (the D7 denied path).
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                members(),
+                &CallerContext::from_jwt("mallory".to_string()),
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        match captured.lock().unwrap().as_slice() {
+            [ResponsePacket::Error { message, .. }] => {
+                assert!(message.contains("not a member"), "got {message}");
+            }
+            other => panic!("expected not-a-member for JWT non-member; got {other:?}"),
+        };
+    }
+
+    /// ADR-058 D7: `ChannelList` is an operator read — Derived callers
+    /// only (`gate_principal_operator` discipline). A pekohub JWT user
+    /// is refused before any principal resolution; a Derived caller
+    /// passes the gate (and only then hits the host's "not loaded"
+    /// resolution error, which proves the gate itself did not block).
+    #[tokio::test]
+    async fn handler_list_gates_to_operator_callers() {
+        let (tmp, host) = test_host();
+        let _ = tmp;
+        let handler = ChannelHandler::new(host.clone());
+        let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
+
+        let list = || RequestPacket::ChannelList {
+            request_id: 1,
+            principal_name: "root".to_string(),
+        };
+
+        // JWT caller → forbidden (the D7 denied path).
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                list(),
+                &CallerContext::from_jwt("mallory".to_string()),
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        match captured.lock().unwrap().as_slice() {
+            [ResponsePacket::Error { message, .. }] => {
+                assert!(message.contains("[forbidden]"), "got {message}");
+            }
+            other => panic!("expected [forbidden] for JWT caller; got {other:?}"),
+        }
+
+        // Derived (local) caller passes the gate; the PM-less test
+        // host then surfaces its ordinary resolution error — anything
+        // other than [forbidden] proves the gate let the caller
+        // through.
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(list(), &test_caller(), &sink, &peer)
+            .await
+            .expect("handle");
+        match captured.lock().unwrap().as_slice() {
+            [ResponsePacket::Error { message, .. }] => {
+                assert!(
+                    !message.contains("[forbidden]"),
+                    "Derived caller must pass the operator gate; got {message}"
+                );
+            }
+            other => panic!("expected resolution error for PM-less host; got {other:?}"),
+        };
+    }
+
     /// A pekohub JWT caller always reads as their own `user:<sub>`
     /// identity (ADR-057: there is no declared requester at all), and
     /// the membership gate always applies.
@@ -1737,7 +1886,8 @@ mod tests {
         };
 
         // A sub that itself carries the `user:` wire prefix normalizes
-        // to the same bare id (mirrors `from_bridge_user`).
+        // to the same bare id (the normalization the retired
+        // `from_bridge_user` used to perform).
         let jwt_prefixed = CallerContext::from_jwt("user:alice".to_string());
         let (captured, sink) = capture_sink();
         handler

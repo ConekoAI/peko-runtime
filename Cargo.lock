@@ -2290,6 +2290,7 @@ dependencies = [
  "jsonwebtoken",
  "keyring",
  "libc",
+ "nix",
  "peko-auth",
  "peko-channel",
  "peko-cron",

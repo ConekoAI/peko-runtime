@@ -4,6 +4,92 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-058 D1/D2/D3 — origin-signed cross-runtime messaging (2026-09-16)
+
+Breaking wire change (pre-launch, no compat shim — see
+`docs/architecture/adr/ADR-058-origin-signed-messaging.md`):
+
+- **D1 — every principal gets its own keypair; the principal DID is the
+  key.** Daemon-side principal genesis now mints a per-principal ed25519
+  keypair and derives the principal DID as `did:key` of that key
+  (replacing `did:peko:public:<name>:<hash>`). The private-key seed is
+  custodied in the vault under the new `principal-identity` namespace
+  (`{did}#keys-1`), isolated from the runtime key's `identity`
+  first-match reconstruction scan. Test / offline-CLI construction
+  (no vault) keeps the legacy minting path.
+- **D3 — envelope cryptography is JWS (EdDSA, compact serialization,
+  embedded payload).** The bespoke length-prefixed pre-image in
+  `tunnel_channel_signature` is gone; both `TunnelChannelEvent` and
+  `TunnelChannelInvite` signatures are now compact JWS over a versioned
+  JSON payload (`peko-channel-event/2` / `peko-channel-invite/2`)
+  carrying every envelope field plus `iat`/`exp` (5-minute validity,
+  30s expiry leeway, 60s future-`iat` allowance). The signing input is
+  canonical by construction, so the hub's `JSON.parse`→`stringify`
+  relay round-trip cannot break signatures; interop with the hub's
+  `jose` is byte-exact (ADR-058 spike 3). Signed `iat`/`exp` close the
+  replay window — the 4096-entry FIFO dedupe cache is now the second
+  layer, not the only one.
+- **D2 — envelopes carry an author signature.** `TunnelChannelEvent` /
+  `TunnelChannelInvite` gain an `authorSignature` field: a compact JWS
+  by the authoring principal's own key over the SAME payload segment as
+  the runtime counter-signature (the receiver requires the segments to
+  be byte-identical). On the inbound path, a `did:key`
+  `source_principal_did` must present a valid author signature AND be a
+  registered remote member of the channel mirror (`is_remote_member` is
+  finally wired into the receive path); a `did:key` invite `creator_did`
+  must additionally equal `source_principal_did`. Non-`did:key` authors
+  (`user:<id>`, legacy bare ids) are accepted as runtime-vouched. A
+  compromised runtime can no longer speak for principals it does not
+  host.
+
+### ADR-058 D4/D5/D6/D7 — PoP registration, typed bridge claims, transport hardening (2026-09-16)
+
+- **D4 — directory writes carry proof of possession.** `peko tunnel
+  setup` now fetches `POST /v1/runtimes/register-challenge` and
+  includes `pop: {nonce, jws}` in the register body — a compact EdDSA
+  JWS over `{"nonce","runtimeDid","owner","iat","exp"}` signed with the
+  runtime identity key (hubs predating D4 get the legacy body without
+  `pop`). `InstanceAnnouncePayload` gains `principalPop`: for
+  `did:key` principals, a compact JWS over
+  `{"runtimeId","principalDid","iat","exp"}` (exp = iat + 300) signed
+  with the principal's own vault-backed key (D1). Legacy non-`did:key`
+  principals announce without it (hub policy treats them as
+  unverified).
+- **D5 — bridge token claims are typed; `Subject::Visitor` added.**
+  The bridge JWT must now carry `kind: "user" | "visitor"`;
+  `resolve_bridge_caller` maps `(kind, sub)` via the new
+  `Subject::from_bridge_claim` and rejects (fail-closed) missing or
+  unknown kinds, empty subs, subs containing `:`, and visitor sub
+  `local`. The stringly-typed `from_bridge_user` coercion (whose
+  `principal:`-prefix mapping let a hub-minted visitor id forge a
+  principal subject or `user:local`) is deleted — a bridge token can
+  never again produce a principal subject. `Subject::Visitor(<id>)` is
+  a distinct `SubjectKind` (`visitor:<id>` display/wire form): session
+  peers with their own `/visitor-<id>` peer children, kind-aware
+  Private-exposure ACL matching, no Local-tier authority, no owner
+  equality (grant matching is `Subject` equality throughout).
+- **D6 — local transport hardening.** `$PEKO_HOME/run` is created and
+  maintained at mode `0700`; `daemon.sock` is chmod `0600` after bind.
+  On Linux the Unix-datagram IPC socket enables `SO_PASSCRED` and the
+  receive loop rejects any datagram whose `SCM_CREDENTIALS` uid differs
+  from the daemon's (via `nix` 0.26.4, already vendored — no new
+  crate; macOS has no per-message credential passing for
+  AF_UNIX/SOCK_DGRAM, so the mode bits are the mechanism there —
+  documented residual). The inert `daemon.bind_address` /
+  `network.bind_address` knobs are deleted (the bind is a loopback
+  constant); the UDP loopback fallback is documented as
+  unauthenticatable same-host trust.
+- **D7 — channel read gates + event provenance.** IPC `ChannelMembers`
+  is membership-gated like `ChannelPeek`/`ChannelEventsWatch`;
+  `ChannelList` is operator-gated (Derived callers only). New
+  `events.jsonl` lines are written as a provenance envelope
+  `{"origin": "local" | "verified-remote", "event": {...}}` —
+  `append_remote_event` (dispatcher-verified mirrors) writes
+  `verified-remote`, everything else `local`; readers tolerate legacy
+  bare `ChannelEvent` lines (treated as `local`). The
+  `ChannelEvent` wire type is unchanged and `peko log` output is
+  unchanged.
+
 ### Filesystem model: whole-store reach, no GC, no privilege (2026-09-12)
 
 - **The session hierarchy is now purely organizational** — like paths

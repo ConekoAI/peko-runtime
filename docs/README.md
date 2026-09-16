@@ -23,7 +23,7 @@ Complete documentation for the Peko multi-agent runtime.
 
 - **[Principal Workspace](architecture/PRINCIPAL_WORKSPACE.md)** — Per-principal tooling, layout, plugin packaging (ADR-047)
 - **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-051
+- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-058
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
@@ -56,7 +56,7 @@ docs/
 │   ├── CAPABILITY_BASED_EXTENSIONS.md
 │   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
 │   ├── builtin-tools.md
-│   └── adr/                         # ADR-001 through ADR-051
+│   └── adr/                         # ADR-001 through ADR-058
 └── mcp/
     ├── MCP.md
     ├── QUICK_START.md
@@ -107,6 +107,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-049](architecture/adr/ADR-049-multi-party-group-channels.md) | Multi-party group channels: users + principals as members, `Subject`-typed membership/authorship, user write path, loop-safe wake policy |
 | [ADR-050](architecture/adr/ADR-050-capabilities-as-workspace-files.md) | Capabilities as workspace files: extension-management CLI + persona IPC retired; per-turn workspace agents/skills catalog in the system prompt; presence = visibility |
 | [ADR-051](architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md) | Compaction pages as an addressable archive: logical page chain over compaction boundary events, agent retrieval via read/search tools, page catalog in the summary message |
+| [ADR-058](architecture/adr/ADR-058-origin-signed-messaging.md) | Origin-signed messaging *(Draft)*: per-principal keys, author-signed envelopes (JWS), proof-of-possession registration, typed bridge claims, local peer credentials |
 
 ---
 

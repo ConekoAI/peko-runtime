@@ -173,6 +173,13 @@ pub struct PrincipalManager {
     /// manager first, so this is a post-construction install behind
     /// interior mutability, not a builder arg).
     dm_subscriber_hook: std::sync::RwLock<Option<crate::principal::peer_dm::PeerDmSubscriberHook>>,
+    /// ADR-058 D1: when attached (daemon path), principal genesis mints
+    /// a per-principal ed25519 keypair whose DID is the `did:key` of
+    /// that key, and stores the private-key seed in the vault under
+    /// the `principal-identity` namespace. `None` (tests / offline
+    /// CLI) keeps the legacy `KeyStorage` minting
+    /// (`did:peko:public:<name>:<hash>`).
+    identity_vault: Option<Arc<crate::common::vault::Vault>>,
 }
 
 impl PrincipalManager {
@@ -210,6 +217,7 @@ impl PrincipalManager {
             peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
             channel_port: None,
             dm_subscriber_hook: std::sync::RwLock::new(None),
+            identity_vault: None,
         }
     }
 
@@ -253,6 +261,18 @@ impl PrincipalManager {
         peer_registry: Arc<crate::principal::peer::PeerRegistry>,
     ) -> Self {
         self.peer_registry = Some(peer_registry);
+        self
+    }
+
+    /// ADR-058 D1: attach the credential vault used to custody
+    /// per-principal identity keys. When attached, principal genesis
+    /// mints an ed25519 keypair, derives the principal DID as
+    /// `did:key` of that key, and stores the seed in the vault under
+    /// the `principal-identity` namespace. When `None` (tests /
+    /// offline CLI), the legacy `KeyStorage` minting path is kept.
+    #[must_use]
+    pub fn with_identity_vault(mut self, vault: Arc<crate::common::vault::Vault>) -> Self {
+        self.identity_vault = Some(vault);
         self
     }
 
@@ -340,8 +360,8 @@ impl PrincipalManager {
 
         // Generate and persist a real DID identity for this Principal.
         let mut config = config;
-        let identity = self.generate_identity(&name).await?;
-        config.did = Some(PrincipalDID(identity.did));
+        let did = self.generate_identity(&name).await?;
+        config.did = Some(PrincipalDID(did));
         // Persist the generated id so daemon restarts load the same
         // principal identity (peer DM channels are keyed by it).
         config.id = Some(id.clone());
@@ -702,10 +722,42 @@ impl PrincipalManager {
             .map_err(PrincipalManagerError::Io)
     }
 
-    async fn generate_identity(
-        &self,
-        name: &str,
-    ) -> Result<peko_identity::Identity, PrincipalManagerError> {
+    /// Mint the principal's DID identity. Returns the DID string.
+    ///
+    /// ADR-058 D1: when the daemon's `identity_vault` is attached,
+    /// this generates a per-principal ed25519 keypair, derives the
+    /// principal DID as `did:key` of that key, and custodies the
+    /// private-key seed in the vault under the `principal-identity`
+    /// namespace (key id `{did}#keys-1`, base64-STANDARD 32-byte seed,
+    /// algorithm `ed25519-raw-base64`). The DID is now a
+    /// self-certifying identifier only the key holder can act for; the
+    /// cross-runtime channel fan-out loads the key back for author
+    /// signatures (`VaultPrincipalSigningKeys` in `daemon::state`).
+    ///
+    /// Without a vault (tests / offline CLI), the legacy
+    /// `KeyStorage`-backed minting is kept
+    /// (`did:peko:public:<name>:<hash>` — never loaded for signing).
+    async fn generate_identity(&self, name: &str) -> Result<String, PrincipalManagerError> {
+        if let Some(vault) = &self.identity_vault {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+            use rand::RngCore as _;
+
+            let mut seed = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut seed);
+            let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+            let did = peko_identity::runtime::public_key_to_did_key(
+                &signing_key.verifying_key().to_bytes(),
+            );
+            vault
+                .set_principal_identity_private_key(
+                    &format!("{did}#keys-1"),
+                    "ed25519-raw-base64",
+                    &BASE64.encode(seed),
+                )
+                .map_err(|e| PrincipalManagerError::Identity(e.to_string()))?;
+            return Ok(did);
+        }
+
         let identity_dir = self
             .path_resolver
             .principal_layout(name)
@@ -715,7 +767,7 @@ impl PrincipalManager {
         tokio::fs::create_dir_all(&identity_dir).await?;
         let identity_dir = identity_dir.clone();
         let name = name.to_string();
-        tokio::task::spawn_blocking(move || {
+        let identity = tokio::task::spawn_blocking(move || {
             let storage = KeyStorage::with_path(identity_dir)
                 .map_err(|e| PrincipalManagerError::Identity(e.to_string()))?;
             storage
@@ -723,7 +775,8 @@ impl PrincipalManager {
                 .map_err(|e| PrincipalManagerError::Identity(e.to_string()))
         })
         .await
-        .map_err(|e| PrincipalManagerError::Identity(e.to_string()))?
+        .map_err(|e| PrincipalManagerError::Identity(e.to_string()))??;
+        Ok(identity.did)
     }
 
     /// Get (or create) the session-creation mutex for a given Principal.
@@ -2082,6 +2135,77 @@ mod tests {
             .root
             .join("identity");
         assert!(identity_dir.exists(), "identity directory should exist");
+    }
+
+    /// ADR-058 D1: a manager wired with `with_identity_vault` (the
+    /// daemon path) mints the principal DID as `did:key` of a fresh
+    /// per-principal ed25519 key and custodies the seed in the vault
+    /// under the `principal-identity` namespace — and the seed's
+    /// public half IS the DID's key.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn create_with_identity_vault_mints_did_key_and_vaults_seed() {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use secrecy::ExposeSecret as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        std::env::set_var("PEKO_HOME", temp.path());
+        peko_identity::init_test_env();
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let catalog_path = temp.path().join("models.toml");
+        let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            temp.path(),
+            "test-passphrase",
+        ));
+        let manager = PrincipalManager::with_path_resolver(
+            path_resolver,
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(resolver)
+        .with_identity_vault(Arc::clone(&vault));
+
+        let principal = create_test_principal(&manager, "stressy").await;
+        let did = principal.did().await.0;
+        assert!(
+            did.starts_with("did:key:z6Mk"),
+            "D1: the principal DID must be did:key of the principal key, got {did}"
+        );
+
+        // The seed is custodied in the vault under the dedicated
+        // namespace…
+        let secret = vault
+            .get_principal_identity_private_key(&format!("{did}#keys-1"))
+            .expect("the seed must be in the vault");
+        let seed_bytes = BASE64
+            .decode(secret.expose_secret())
+            .expect("seed is base64-STANDARD");
+        let seed: [u8; 32] = seed_bytes.try_into().expect("seed is 32 bytes (ed25519)");
+        // …its public half is exactly the DID's key…
+        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+        assert_eq!(
+            peko_identity::runtime::public_key_to_did_key(&signing.verifying_key().to_bytes()),
+            did,
+            "the vault seed must correspond to the principal DID"
+        );
+        // …and it is NOT visible in the runtime key's `identity`
+        // namespace (the first-match reconstruction scan must never
+        // see principal keys).
+        assert!(vault
+            .get_identity_private_key(&format!("{did}#keys-1"))
+            .is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -578,21 +578,27 @@ impl RuntimeAuthority {
 
     /// Local-tier gate: only the runtime (`Subject::Public`) or a
     /// principal-typed subject may receive a `LocalPath`. Peer-as-User
-    /// (CLI without a peer session) cannot obtain a `LocalPath`.
+    /// (CLI without a peer session) cannot obtain a `LocalPath`;
+    /// neither can a hub-minted visitor (ADR-058 D5 — visitors are
+    /// ordinary non-owner peers with no local authority).
     fn assert_local_entitled(&self) -> Result<(), AuthorityError> {
         match self.actor.as_ref() {
             Subject::Public | Subject::Principal(_) => Ok(()),
-            Subject::User(_) => Err(AuthorityError::TierDenied { tier: Tier::Local }),
+            Subject::User(_) | Subject::Visitor(_) => {
+                Err(AuthorityError::TierDenied { tier: Tier::Local })
+            }
         }
     }
 
     /// Shared-tier read gate (Phase B permissive). Any non-`Public`
     /// actor can read Shared paths. The tighter write gate lands in
-    /// Phase C alongside `Capabilities` composition.
+    /// Phase C alongside `Capabilities` composition. Visitors count
+    /// as non-`Public` here: they are hub-minted identified peers,
+    /// not unauthenticated access.
     fn assert_shared_read_entitled(&self) -> Result<(), AuthorityError> {
         match self.actor.as_ref() {
             Subject::Public => Err(AuthorityError::TierDenied { tier: Tier::Shared }),
-            Subject::User(_) | Subject::Principal(_) => Ok(()),
+            Subject::User(_) | Subject::Principal(_) | Subject::Visitor(_) => Ok(()),
         }
     }
 
