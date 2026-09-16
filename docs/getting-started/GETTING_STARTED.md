@@ -56,17 +56,17 @@ export KIMI_API_KEY="your-kimi-key"
 This stores the provider wiring in the runtime catalog and the API key in the
 encrypted vault.
 
-### 4. Create Your First Principal
+### 4. Create Your First Peko
 
 ```bash
-# Create a new Principal
-./target/release/peko principal create my-principal
+# Create a new peko
+./target/release/peko create my-principal
 ```
 
 This creates:
 ```
 my-principal/
-├── principal.toml   # Principal configuration
+├── principal.toml   # peko configuration
 ├── agents/
 │   └── primary.md   # Root agent prompt (edit this!)
 ├── .gitignore       # Excludes sessions/, workspace/
@@ -74,12 +74,12 @@ my-principal/
 └── workspace/       # Working files
 ```
 
-### 5. Edit Your Principal (Optional)
+### 5. Edit Your Peko (Optional)
 
-Edit `my-principal/agents/primary.md` to give your Principal a personality:
+Edit `my-principal/agents/primary.md` to give your peko a personality:
 
 ```markdown
-# My First Principal
+# My First peko
 
 You are a helpful coding assistant.
 
@@ -97,11 +97,11 @@ Friendly, concise, and encouraging.
 ### 6. Send a Message
 
 ```bash
-# Send a message to your Principal
+# Send a message to your peko
 ./target/release/peko send my-principal "Hello, what can you do?"
 ```
 
-You'll see the Principal's response streamed to your terminal.
+You'll see the peko's response streamed to your terminal.
 
 ---
 
@@ -109,21 +109,21 @@ You'll see the Principal's response streamed to your terminal.
 
 | Resource | Description |
 |----------|-------------|
-| [Tutorial: Building Your First Principal](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive (file keeps its historical name; content follows ADR-041) |
+| [Tutorial: Building Your First peko](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive (file keeps its historical name; content follows ADR-041) |
 | [CLI Reference](../user-guide/CLI_REFERENCE.md) | All commands explained |
-| [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) | Per-principal tooling layout (ADR-047) |
-| [User's Guide](../user-guide/USERS_GUIDE.md) | Principals, tooling, troubleshooting |
+| [peko Workspace](../architecture/PRINCIPAL_WORKSPACE.md) | Per-peko tooling layout (ADR-047) |
+| [User's Guide](../user-guide/USERS_GUIDE.md) | pekos, tooling, troubleshooting |
 
 ---
 
 ## Common Commands
 
 ```bash
-# Principal lifecycle
-peko principal list              # List all Principals
-peko principal create my-principal  # Create a new Principal
-peko principal show my-principal # Show Principal details
-peko principal export my-principal  # Export to .principal package
+# peko lifecycle
+peko list              # List all pekos
+peko create my-principal  # Create a new peko
+peko show my-principal # Show peko details
+peko export my-principal  # Export to .peko package
 
 # Send messages
 peko send my-principal "Hello!"  # Send a message
@@ -136,7 +136,7 @@ peko daemon stop                 # Stop daemon
 
 # Get help
 peko --help                      # Global help
-peko principal --help            # Principal commands
+peko --help            # peko lifecycle commands
 peko send --help                 # Send command help
 peko daemon --help               # Daemon commands
 ```
@@ -145,13 +145,13 @@ peko daemon --help               # Daemon commands
 
 ## Troubleshooting
 
-### "Principal not found"
+### "Peko not found"
 ```bash
-# Check that the Principal exists
-peko principal list
+# Check that the peko exists
+peko list
 
-# Create the Principal if needed
-peko principal create my-principal
+# Create the peko if needed
+peko create my-principal
 ```
 
 ### "API key not found"
@@ -174,9 +174,9 @@ sudo apt-get install libssl-dev pkg-config
 
 ## Requirements Checklist
 
-✅ **Time to first Principal:** Under 5 minutes  
+✅ **Time to first peko:** Under 5 minutes  
 ✅ **No configuration required:** Sensible defaults  
-✅ **Git-friendly:** `peko principal create` creates proper `.gitignore`  
+✅ **Git-friendly:** `peko create` creates proper `.gitignore`  
 ✅ **Actionable errors:** All errors include suggested fixes
 
 ---

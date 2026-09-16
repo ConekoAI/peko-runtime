@@ -2,7 +2,7 @@
 # scripts/e2e/flows/explore-landlord-email.sh
 #
 # Non-technical-user exploratory flow. Scenario: a non-tech user asks
-# a peko principal to help draft a polite-but-firm email to their
+# a peko to help draft a polite-but-firm email to their
 # landlord about a broken dishwasher. They iterate on the tone across
 # multiple turns, then probe log / quota / persona surfaces.
 #

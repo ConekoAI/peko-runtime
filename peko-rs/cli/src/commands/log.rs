@@ -142,7 +142,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
     // unless it is a channel member.
     if let Recipient::Group(slug) = parse_recipient(&principal) {
         if peer_subject.is_some() {
-            anyhow::bail!("--peer applies to principal threads, not group channels");
+            anyhow::bail!("--peer applies to peko threads, not group channels");
         }
         let client = DaemonClient::connect()
             .await
@@ -233,9 +233,9 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
         })?;
         println!("{json}");
     } else if accumulated.is_empty() {
-        println!("📭 No messages for peer '{resolved_peer}' on principal '{principal}'.");
+        println!("📭 No messages for peer '{resolved_peer}' on peko '{principal}'.");
     } else {
-        println!("📜 Principal '{principal}' — peer '{resolved_peer}':");
+        println!("📜 Peko '{principal}' — peer '{resolved_peer}':");
         for msg in &accumulated {
             render_chat_message(msg);
         }

@@ -19,85 +19,85 @@ peko [OPTIONS] <COMMAND>
 | `-q, --quiet` | Suppress non-error output |
 | `-v, --verbose...` | Enable verbose logging (-v=info, -vv=debug, -vvv=trace) |
 | `--debug` | Show debug information including stack traces |
-| `-U, --user <USER>` | Caller Subject for `peko send` / `peko stop` / `peko log` (peer axis on a Principal's thread) |
+| `-U, --user <USER>` | Caller Subject for `peko send` / `peko stop` / `peko log` (peer axis on a peko's thread) |
 
 ---
 
 ## Commands
 
-### `principal` — Principal Management
+### `principal` — Peko Management
 
-Manage Principals — the top-level AI actor that owns identity, memory,
+Manage pekos — the top-level AI actor that owns identity, memory,
 intent, governance, capability grants, and thin Markdown agent prompts.
 
 ```bash
-peko principal <COMMAND>
+peko <COMMAND>
 ```
 
 #### Subcommands
 
 | Subcommand | Description |
 |-----------|-------------|
-| `create <NAME>` | Create a new Principal |
-| `list` | List all Principals |
-| `show <NAME>` | Show Principal configuration and agent prompts |
-| `export <NAME>` | Export a Principal to a `.principal` package |
-| `import <PATH>` | Import a Principal from a `.principal` package |
-| `push <NAME>` | Push a Principal package to a registry |
-| `pull <REF>` | Pull a Principal package from a registry |
-| `permit <NAME> <SUBJECT> <PERMISSION>` | Grant a permission on a Principal |
-| `revoke <NAME> <SUBJECT> <PERMISSION>` | Revoke a permission from a Principal |
-| `permissions <NAME>` | List permissions on a Principal |
+| `create <NAME>` | Create a new peko |
+| `list` | List all pekos |
+| `show <NAME>` | Show peko configuration and agent prompts |
+| `export <NAME>` | Export a peko to a `.peko` package |
+| `import <PATH>` | Import a peko from a `.peko` package |
+| `push <NAME>` | Push a peko package to a registry |
+| `pull <REF>` | Pull a peko package from a registry |
+| `permit <NAME> <SUBJECT> <PERMISSION>` | Grant a permission on a peko |
+| `revoke <NAME> <SUBJECT> <PERMISSION>` | Revoke a permission from a peko |
+| `permissions <NAME>` | List permissions on a peko |
 
 > Messaging is `peko send` / `peko log` (ADR-048). Agent prompts are
 > workspace files (`agents/<name>.md`) managed by editing files, not CLI
-> commands (ADR-050); `peko principal show` lists them.
+> commands (ADR-050); `peko show` lists them.
 
 #### Examples
 
 ```bash
-# Create a Principal
-peko principal create my-principal
+# Create a peko
+peko create my-principal
 
-# List Principals
-peko principal list
+# List pekos
+peko list
 
-# Show a Principal
-peko principal show my-principal
+# Show a peko
+peko show my-principal
 
 # Send a message
 peko send my-principal "Hello!"
 
 # Export with extensions embedded
-peko principal export my-principal --with-extensions
+peko export my-principal --with-extensions
 
 # Push to the default registry
-peko principal push my-principal:v1.0
+peko push my-principal:v1.0
 
-# Show a Principal (includes the workspace agents/skills catalog)
-peko principal show my-principal
+# Show a peko (includes the workspace agents/skills catalog)
+peko show my-principal
 ```
 
 ---
 
-### `send` — Send Message to a Principal
+### `send` — Send Message to a Peko
 
-Post a message onto your thread with a Principal. This is the primary
-way to interact with Peko. If the Principal is idle, a run starts and
+Post a message onto your thread with a peko. This is the primary
+way to interact with Peko. If the peko is idle, a run starts and
 the reply streams back; if a run is already in flight, the message is
 queued onto the session inbox and folds into the running turn at the
 next agentic iteration — the CLI prints a busy notice to stderr and
 exits 0 (use `--wait` to block for the reply instead).
 
 ```bash
-peko send <PRINCIPAL> [MESSAGE]
+peko send <PEKO> [MESSAGE]
 ```
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `<PRINCIPAL>` | Principal name |
+| `<PRINCIPAL>` | peko name |
 | `[MESSAGE]` | Message to send (optional if --file or --stdin is used) |
 
 #### Options
@@ -106,7 +106,7 @@ peko send <PRINCIPAL> [MESSAGE]
 |--------|-------|-------------|
 | `-f, --file <PATH>` | - | Read message from file |
 | `--stdin` | - | Read message from stdin |
-| `--wait` | - | On the busy path, block until the Principal's next reply on the thread (10-minute cap) |
+| `--wait` | - | On the busy path, block until the peko's next reply on the thread (10-minute cap) |
 | `--peer <SUBJECT>` | - | Send as this peer instead of `-U/--user` (wire form `user:<id>`) |
 | `--model <MODEL_ID>` | - | Override the configured model for this message only |
 
@@ -118,10 +118,10 @@ Group channels (`group:<slug>` recipients) post as the caller's user
 identity (ADR-049): `peko send group:<slug> "<msg>"` writes to the
 group channel's log as `user:<id>`; membership is the write
 authorization, so you must be a member of the group. A user root post
-wakes every member principal, each in its own per-`(principal,
+wakes every member peko, each in its own per-`(peko,
 channel)` session, and their replies post back to the group (ADR-049
 D4). `--wait` and `--model` stay refused — a group post fans out to
-one run per member principal, so there is no single run to await or
+one run per member peko, so there is no single run to await or
 steer.
 
 #### Examples
@@ -136,7 +136,7 @@ peko send my-principal --file prompt.txt
 # Pipe from stdin
 echo "Hello!" | peko send my-principal --stdin
 
-# Follow up while the Principal is busy (queued; block for the reply)
+# Follow up while the peko is busy (queued; block for the reply)
 peko send my-principal "also check the calendar" --wait
 
 # Override the model for a single message
@@ -147,11 +147,11 @@ peko send my-principal "Hello!" --model anthropic-claude-sonnet-4-5
 
 ### `stop` — Stop the Running Turn
 
-Soft-stop the run bound to your thread with a Principal: the agentic
+Soft-stop the run bound to your thread with a peko: the agentic
 loop exits at the next iteration boundary, subagents observe the
 cancel cascade at their own boundaries, a `⏹ stopped by user` marker
 is posted to the thread (visible in `peko log`), and a stop-context
-note is left for the next turn so the Principal acknowledges what was
+note is left for the next turn so the peko acknowledges what was
 interrupted.
 
 Idempotent: with no run in flight it prints "no running turn" and
@@ -159,14 +159,14 @@ exits 0 — safe to call from scripts. Replaces the retired
 `peko interrupt <request-id>` (ADR-048).
 
 ```bash
-peko stop <PRINCIPAL> [--peer <SUBJECT>]
+peko stop <PEKO> [--peer <SUBJECT>]
 ```
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `<PRINCIPAL>` | Principal name |
+| `<PRINCIPAL>` | peko name |
 
 #### Options
 
@@ -175,9 +175,9 @@ peko stop <PRINCIPAL> [--peer <SUBJECT>]
 | `--peer <SUBJECT>` | Stop the run on this peer's thread instead of your own (owner only). Wire form `user:<id>` or `principal:<did>`. |
 
 The privacy contract matches `log` (ADR-042): the caller must be the
-thread's peer or the Principal's owner. Group channels (`group:<slug>`)
+thread's peer or the peko's owner. Group channels (`group:<slug>`)
 are refused (ADR-049 D7): a group wake fans out to one run per member
-principal, so there is no single run to stop — per-member stop is
+peko, so there is no single run to stop — per-member stop is
 future work.
 
 #### Examples
@@ -361,10 +361,10 @@ peko model remove my-local
 
 ---
 
-### `capability` — Principal Capability Authority
+### `capability` — Peko Capability Authority
 
-Manage the fine-grained capability grants that control what a Principal
-is allowed to do. Capabilities are stored in the Principal's
+Manage the fine-grained capability grants that control what a peko
+is allowed to do. Capabilities are stored in the peko's
 `principal.toml` under `[capabilities] grants` and are the single source
 of truth for extension/tool/agent authority.
 
@@ -439,10 +439,10 @@ peko search info acme/researcher
 
 ---
 
-### `channel` — Multi-Principal Channels
+### `channel` — Multi-Peko Channels
 
-Multi-principal chat primitives (PR-1+). A channel is a small fan-out
-chat room: up to 8 principal members (user members are uncapped —
+Multi-peko chat primitives (PR-1+). A channel is a small fan-out
+chat room: up to 8 peko members (user members are uncapped —
 ADR-049), file-backed event log keyed at the channel id. Members
 (principals and `user:<id>` users alike) can post, reply, and peek;
 the engine observes every event through the audit ring buffer
@@ -457,11 +457,11 @@ peko channel <SUBCOMMAND>
 | Subcommand | Description |
 |-----------|-------------|
 | `create <CREATOR> <NAME> [--bind PATH] [--id CHANNEL_ID]` | Create a channel owned by `creator`. `--bind` sets a passive binding (DM-tier channel); `--id` pins an explicit id such as `group:<slug>` (omit to mint a fresh `chan_<8 base36>`). |
-| `invite <CHANNEL> <INVITER> <INVITEE>` | Add `invitee` to `channel` (inviter must already be a member). `invitee` is a principal name or a `user:<id>` wire form. |
-| `post <CHANNEL> <SENDER> <TEXT>` | Post a message (optional `--parent` for replies). `sender` is a principal name or a `user:<id>` wire form (must be a member). |
+| `invite <CHANNEL> <INVITER> <INVITEE>` | Add `invitee` to `channel` (inviter must already be a member). `invitee` is a peko name or a `user:<id>` wire form. |
+| `post <CHANNEL> <SENDER> <TEXT>` | Post a message (optional `--parent` for replies). `sender` is a peko name or a `user:<id>` wire form (must be a member). |
 | `peek <CHANNEL> [--since CURSOR]` | Read events from the log (JSON). Membership-gated against your `-U` user identity (ADR-049 D6). |
 | `members <CHANNEL>` | List current members (principals and users). |
-| `ls <PRINCIPAL>` | List channels where a principal is a member. |
+| `ls <PRINCIPAL>` | List channels where a peko is a member. |
 | `show <CHANNEL>` | Membership snapshot (display name + members). |
 | `leave <CHANNEL> <PRINCIPAL>` | Remove `principal` from `channel`. |
 | `pin-to-shared <CHANNEL>` | Copy a Runtime-tier channel into the Shared tier (PR-3d). |
@@ -480,12 +480,12 @@ peko channel peek chan_a1b2c3d4 --json
 # Read on a cron schedule — see the recipe below.
 ```
 
-#### Reading a channel on a schedule (`peko channel poll`)
+#### Reading a channel on a schedule (`Peko channel poll`)
 
-The `peko_channel_read` built-in tool lets any principal's agentic loop
+The `peko_channel_read` built-in tool lets any peko's agentic loop
 read its own channel events on demand. To pull events on an interval
-without the principal being online, schedule the tool via the
-principal's own `CronCreate` agentic-loop tool (e.g. send a message
+without the peko being online, schedule the tool via the
+peko's own `CronCreate` agentic-loop tool (e.g. send a message
 to `bob` asking it to schedule itself):
 
 ```text
@@ -496,34 +496,34 @@ The cron engine loads enabled jobs on its next tick
 (`peko-rs/core/src/daemon/cron_engine/mod.rs`) and dispatches each
 `SpawnTool` job through `AsyncExecutor`, attributing the run to the
 job's `principal_id`. The `ChannelRead` invocation runs under the
-principal's capability snapshot at dispatch time — same boundary model
+peko's capability snapshot at dispatch time — same boundary model
 as any other async tool run. Add `--wake-on-completion` to surface a
 steer message into `bob`'s root inbox when a non-empty read completes.
 
-Use the `CronList` tool from the principal itself to confirm the job
+Use the `CronList` tool from the peko itself to confirm the job
 landed and `CronDelete` to remove it.
 
-#### Tools backing `peko channel`
+#### Tools backing `Peko channel`
 
 | Tool name | Who invokes it | What it does |
 |-----------|----------------|-------------|
-| `ChannelRead` | Principal's agentic loop (on demand), or `CronCreate`'s `SpawnTool` (scheduled). | Reads the channel's event log, scoped to the calling principal's membership. Tail-anchored by default (newest `limit` events, each with a line-number `id`); `since` pages forward for catch-up, `before` pages backward via `next_cursor` (`ChannelPort::peek_tail` / `peek_with_ids`). |
+| `ChannelRead` | peko's agentic loop (on demand), or `CronCreate`'s `SpawnTool` (scheduled). | Reads the channel's event log, scoped to the calling peko's membership. Tail-anchored by default (newest `limit` events, each with a line-number `id`); `since` pages forward for catch-up, `before` pages backward via `next_cursor` (`ChannelPort::peek_tail` / `peek_with_ids`). |
 
 PR-3c observes every channel event (post, invite, leave, pin) in the
 audit ring buffer regardless of whether the tool fires — so the
-principal boundary stays intact even when no one is reading.
+Peko boundary stays intact even when no one is reading.
 
 ---
 
 ### `ext` — Extension Management
 
 > **Retired.** The `peko ext *` command tree (ADR-047, 2026-08-25) and
-> the per-category `peko principal tool|skill|mcp|hook|agent|persona`
+> the per-category `peko tool|skill|mcp|hook|agent|persona`
 > CLI (ADR-050, 2026-08-30) are both gone. Tooling lives directly in
-> the principal's workspace (`tools/`, `skills/`, `mcp/`, `hooks/`,
+> the peko's workspace (`tools/`, `skills/`, `mcp/`, `hooks/`,
 > `plugins/`) as plain files — list with `ls`, install by copying files
 > in, remove with `rm`. New `agents/` / `skills/` files appear in the
-> principal's system prompt on the next iteration (ADR-050).
+> peko's system prompt on the next iteration (ADR-050).
 >
 > See [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md)
 > for the full layout. The subcommand table below is retained for
@@ -631,22 +631,22 @@ peko daemon restart
 
 ---
 
-### `log` — Inspect Principal Activity
+### `log` — Inspect Peko Activity
 
-Read (or follow) a Principal's conversation thread. There is no
+Read (or follow) a peko's conversation thread. There is no
 `peko session` command and there will never be one (ADR-042); this
-command is the only way to inspect a Principal's working state without
+command is the only way to inspect a peko's working state without
 running a turn.
 
 The **default view** is the **owner-root view**: the conversation
-running on the Principal's owner's behalf. Use `--peer` to read a
+running on the peko's owner's behalf. Use `--peer` to read a
 specific peer's thread (subject to the privacy contract below).
 `--watch` blocks and streams new messages live — replay of rows newer
 than `--cursor` first, then rows as they're posted (heartbeats keep a
 quiet thread's stream alive).
 
 A `group:<slug>` recipient reads that group channel's log directly via
-the channel IPC, bypassing the principal privacy model. The read is
+the channel IPC, bypassing the peko privacy model. The read is
 membership-gated (ADR-049 D6): the daemon refuses unless your `-U`
 user identity is a member of the group. Authors render verbatim.
 Group `--limit` is a server-side tail read (the newest N rows, no
@@ -657,25 +657,25 @@ heartbeats and would die at the CLI's idle timeout on a quiet channel
 so each poll reads only newly appended lines.
 
 ```bash
-peko log [OPTIONS] <PRINCIPAL>
+peko log [OPTIONS] <PEKO>
 ```
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `<PRINCIPAL>` | Principal name or `group:<slug>` (required) |
+| `<PRINCIPAL>` | peko name or `group:<slug>` (required) |
 
 #### Options
 
 | Option | Description |
 |--------|-------------|
-| `--peer <SUBJECT>` | A specific peer's conversation thread. Defaults to the Principal's owner. Subject parse: `user:<id>`, `principal:<did>`, or `public`. Principal threads only. |
+| `--peer <SUBJECT>` | A specific peer's conversation thread. Defaults to the peko's owner. Subject parse: `user:<id>`, `principal:<did>`, or `public`. Peko threads only. |
 | `--limit <N>` | Hard cap on the number of messages returned (default 50, max 1000) — a single page. |
 | `--all` | Drain all pages (bounded multi-page loop) instead of a single page. |
 | `--since <DURATION>` | Only entries newer than the duration. Accepts `<N>h`, `<N>d`, `<N>m`, `<N>s` (e.g. `24h`, `7d`, `30m`, `3600s`). |
 | `--search <TEXT>` | Case-insensitive substring filter on message text; the daemon keeps paging older history until the page fills. Ignored with `--watch`. |
-| `--author <AUTHOR>` | Exact author filter (channel-log author: `user:<id>`, or the principal's id). Ignored with `--watch`. |
+| `--author <AUTHOR>` | Exact author filter (channel-log author: `user:<id>`, or the peko's id). Ignored with `--watch`. |
 | `--cursor <CURSOR>` | Opaque pagination cursor from a prior call's `next_cursor`. With `--watch`, seeds the replay start. |
 | `--watch` | Block and stream new messages live (replay newer than `--cursor` first). Ignores `--limit`/`--since`/`--all`. |
 | `--json` | Emit messages as JSON (pretty array; with `--watch`: NDJSON — one message object per line). Group threads emit `{id, at, author, text}` rows. |
@@ -708,7 +708,7 @@ peko log group:eng-standup --watch --json
 
 #### Privacy Contract (ADR-042)
 
-- The **owner** can read any peer's thread on their Principal.
+- The **owner** can read any peer's thread on their peko.
 - A **non-owner peer** can only read their own thread (`--peer
   user:<self>`); the principal must grant that peer `Chat` permission.
 - A **stranger** (no `Chat` grant) is rejected regardless of `--peer`.
@@ -725,7 +725,7 @@ peko log group:eng-standup --watch --json
   — the no-session-externally contract this command enforces.
 - [ADR-048](../architecture/adr/ADR-048-channel-native-cli-surface.md)
   — the channel-native send/stop/log surface, including `--watch`.
-- [`send`](#send--send-message-to-a-principal) — drive a
+- [`send`](#send--send-message-to-a-peko) — drive a
   conversation.
 - [`stop`](#stop--stop-the-running-turn) — stop the running turn on
   a thread.
@@ -793,17 +793,17 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 peko login --api-key "$PEKO_API_KEY"
 peko auth status
 
-# Principal management
-peko principal create my-principal
-peko principal list
-peko principal show my-principal
-peko principal export my-principal
+# peko management
+peko create my-principal
+peko list
+peko show my-principal
+peko export my-principal
 
 # Send messages
 peko send my-principal "Hello!"
 peko send my-principal --file prompt.txt
 
-# Inspect Principal activity (owner-root view by default)
+# Inspect peko activity (owner-root view by default)
 peko log my-principal
 peko log my-principal --since 24h --json
 
@@ -818,7 +818,7 @@ peko credential set llm anthropic-claude-sonnet-4-5 \
   --kind api_key --material "$ANTHROPIC_API_KEY"
 
 # Extensions are workspace files (ADR-050) — list them on disk
-ls ~/.peko/principal/my-principal/{tools,skills,mcp,hooks}/
+ls ~/.peko/principals/my-principal/{tools,skills,mcp,hooks}/
 
 # Daemon
 peko daemon start --foreground
@@ -836,7 +836,7 @@ peko system doctor
 
 The following commands remain functional but are hidden from `--help` because
 they expose operational internals or legacy behavior. They are intended for
-operators and scripts, not day-to-day Principal use.
+operators and scripts, not day-to-day peko use.
 
 | Command | Purpose |
 |---------|---------|

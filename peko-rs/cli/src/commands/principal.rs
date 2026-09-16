@@ -1,8 +1,10 @@
-//! Principal management commands
+//! Peko lifecycle management commands
 //!
-//! Principals are top-level AI actors that own identity, memory, intent,
-//! governance, capabilities, and thin Markdown agent prompts. This module
-//! implements the `peko principal` CLI surface.
+//! A peko (ADR-059 user-facing term; internal type: `Principal`) is a
+//! top-level AI actor that owns identity, memory, intent, governance,
+//! capabilities, and thin Markdown agent prompts. The verbs here are
+//! flattened to the top level (`peko create`, `peko list`, ...);
+//! `peko principal <sub>` remains as a hidden compat alias.
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -24,34 +26,36 @@ use peko_core::principal::{
     PrincipalManager,
 };
 
-/// Subcommands for `peko principal`.
+/// Subcommands for peko lifecycle management. Flattened to the top
+/// level (`peko create`, ...) since ADR-059; `peko principal <sub>`
+/// still parses via the hidden alias.
 #[derive(Subcommand)]
 pub enum PrincipalCommands {
-    /// Create a new Principal and block until it is alive (ADR-054)
+    /// Create a new peko and block until it is alive (ADR-054)
     ///
     /// One command for the whole genesis pipeline: provisions the
     /// workspace (P0), seeds the definition (P1 — from `--file` when
     /// given, defaults otherwise), makes sure the daemon is running
-    /// and knows the principal, schedules the genesis turn (P2), and
+    /// and knows the peko, schedules the genesis turn (P2), and
     /// waits for the trunk's first self-turn to complete. Pass
     /// `--detach` for fire-and-forget (scripts/CI).
     ///
-    /// Re-defining later = edit the principal's `principal.toml`
+    /// Re-defining later = edit the peko's `principal.toml`
     /// directly (presence = visibility, ADR-050 — the next turn picks
     /// it up).
     Create {
-        /// Principal name
+        /// Peko name
         name: String,
 
-        /// Configured model id to pin this principal to (see
+        /// Configured model id to pin this peko to (see
         /// `peko model list`). Optional only when the `--file`
         /// template carries `preferred_model_id`; exactly one of the
         /// two must provide it. There is no runtime default model, so
-        /// an unpinned principal fails every send.
+        /// an unpinned peko fails every send.
         #[arg(long, value_name = "MODEL_ID")]
         model: Option<String>,
 
-        /// Path to a template `principal.toml` seeding the principal's
+        /// Path to a template `principal.toml` seeding the peko's
         /// full definition: `[identity]`, `[intent]`, `preferred_model_id`,
         /// `[capabilities]`, `[[permissions]]`, `exposure`, `quota`, and
         /// an optional inline `persona` (Markdown body for the root
@@ -64,13 +68,13 @@ pub enum PrincipalCommands {
         file: Option<String>,
 
         /// Force a destructive re-create. Without `--force`,
-        /// `peko principal create <existing>` refuses with a clear
+        /// `peko create <existing>` refuses with a clear
         /// error — protects identity, agents, memory, and session
         /// history from a one-keystroke wipe (see Bug 2 in
         /// scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md).
-        /// With `--force`, the existing principal is removed first —
+        /// With `--force`, the existing peko is removed first —
         /// its workspace, agents/, memory/, and session history are
-        /// all wiped before the new principal is written. There is
+        /// all wiped before the new peko is written. There is
         /// no undo. Combine with `--yes` to skip the confirmation
         /// prompt in non-interactive shells.
         #[arg(long)]
@@ -89,24 +93,24 @@ pub enum PrincipalCommands {
         detach: bool,
 
         /// How long to wait for the genesis turn before giving up
-        /// (seconds). The principal stays seeded either way — it will
+        /// (seconds). The peko stays seeded either way — it will
         /// genesis at the next daemon boot.
         #[arg(long, value_name = "SECS", default_value_t = 300)]
         wait_timeout: u64,
     },
 
-    /// List Principals
+    /// List pekos
     List,
 
-    /// Show Principal configuration and agent prompts
+    /// Show peko configuration and agent prompts
     Show {
-        /// Principal name
+        /// Peko name
         name: String,
     },
 
-    /// Remove a Principal and all its data
+    /// Remove a peko and all its data
     Remove {
-        /// Principal name
+        /// Peko name
         name: String,
 
         /// Skip the confirmation prompt
@@ -114,24 +118,24 @@ pub enum PrincipalCommands {
         yes: bool,
     },
 
-    /// Export a Principal to a `.peko` package (a full-existence
+    /// Export a peko to a `.peko` package (a full-existence
     /// snapshot — sessions, authored cron schedule, plans, and
     /// installed workspace tooling travel with it; ADR-056)
     Export {
-        /// Principal name
+        /// Peko name
         name: String,
 
-        /// Output file path (defaults to `<name>.principal`)
+        /// Output file path (defaults to `<name>.peko`)
         #[arg(short, long)]
         output: Option<String>,
     },
 
-    /// Import a Principal from a `.peko` package
+    /// Import a peko from a `.peko` package
     Import {
         /// Path to the `.peko` package
         file_path: String,
 
-        /// Rename the imported Principal
+        /// Rename the imported peko
         #[arg(short, long)]
         name: Option<String>,
 
@@ -149,9 +153,9 @@ pub enum PrincipalCommands {
         yes: bool,
     },
 
-    /// Push a Principal package to a registry
+    /// Push a peko package to a registry
     Push {
-        /// Principal name
+        /// Peko name
         name: String,
 
         /// Registry host (defaults to workspace config)
@@ -163,16 +167,16 @@ pub enum PrincipalCommands {
         registry_token: Option<String>,
     },
 
-    /// Pull a Principal package from a registry and import it
+    /// Pull a peko package from a registry and import it
     Pull {
-        /// Registry reference (e.g. `owner/principal:version`)
+        /// Registry reference (e.g. `owner/peko:version`)
         registry_ref: String,
 
-        /// Rename the imported Principal
+        /// Rename the imported peko
         #[arg(short, long)]
         name: Option<String>,
 
-        /// Overwrite an existing Principal with the same name
+        /// Overwrite an existing peko with the same name
         #[arg(short, long)]
         force: bool,
 
@@ -193,9 +197,9 @@ pub enum PrincipalCommands {
         registry_token: Option<String>,
     },
 
-    /// Grant a permission on a Principal
+    /// Grant a permission on a peko
     Permit {
-        /// Principal name
+        /// Peko name
         name: String,
 
         /// Subject to grant permission to (e.g. `user:alice`, `public`)
@@ -205,9 +209,9 @@ pub enum PrincipalCommands {
         permission: String,
     },
 
-    /// Revoke a permission from a Principal
+    /// Revoke a permission from a peko
     Revoke {
-        /// Principal name
+        /// Peko name
         name: String,
 
         /// Subject to revoke permission from
@@ -217,15 +221,15 @@ pub enum PrincipalCommands {
         permission: String,
     },
 
-    /// List permissions on a Principal
+    /// List permissions on a peko
     Permissions {
-        /// Principal name
+        /// Peko name
         name: String,
     },
 
-    /// Mint a signed invite link for a Principal (share with one friend)
+    /// Mint a signed invite link for a peko (share with one friend)
     Invite {
-        /// Principal name
+        /// Peko name
         name: String,
 
         /// Comma-separated permissions to grant via the invite
@@ -242,26 +246,26 @@ pub enum PrincipalCommands {
 
     /// Revoke a previously minted invite token
     RevokeInvite {
-        /// Principal name
+        /// Peko name
         name: String,
 
-        /// The `jti` (UUID) printed by `peko principal invite`
+        /// The `jti` (UUID) printed by `peko invite`
         jti: String,
     },
 
-    /// Show principals whose `principal.toml` has changed since
+    /// Show pekos whose `principal.toml` has changed since
     /// the last daemon boot (ADR-046 drift detection).
     ///
-    /// Compares each principal's SHA-256 against the baseline file
+    /// Compares each peko's SHA-256 against the baseline file
     /// the daemon wrote at the previous startup. Outputs the
-    /// drifted principal name(s) — line-level TOML diff is a
+    /// drifted peko name(s) — line-level TOML diff is a
     /// follow-up; this is the "something changed" canary.
     ///
     /// Useful in scripts:
-    ///   peko principal diff && echo "config drift detected" || true
+    ///   peko diff && echo "config drift detected" || true
     Diff {
-        /// Restrict to a single principal. Without this flag,
-        /// every principal is checked.
+        /// Restrict to a single peko. Without this flag,
+        /// every peko is checked.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
         /// Output as JSON.
@@ -494,12 +498,12 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
         if baseline.is_empty() {
             println!("✅ No drift baseline yet — run the daemon once to capture current hashes.");
         } else {
-            println!("✅ No principal config drift detected.");
+            println!("✅ No peko config drift detected.");
         }
         return Ok(());
     }
 
-    println!("⚠️  {} drifted principal(s):", drifted.len());
+    println!("⚠️  {} drifted peko(s):", drifted.len());
     for row in &drifted {
         match (&row.current_hash, &row.expected_hash) {
             (None, Some(prev_hash)) => {
@@ -561,7 +565,7 @@ fn load_template(path: &str) -> Result<TemplateBundle> {
 fn persona_agent_prompt(name: &str, description: Option<&str>, persona: &str) -> String {
     let description = description
         .map(str::to_string)
-        .unwrap_or_else(|| format!("The {name} Principal"));
+        .unwrap_or_else(|| format!("The {name} peko"));
     format!(
         "---\nname: primary\ndescription: \"{description}\"\n---\n\n\
          {persona}\n\n\
@@ -647,9 +651,10 @@ async fn provision_principal(
         // is a no-op on an unregistered principal. Then wipe.
         let manager = build_manager(paths);
         let _ = load_principal(name, &manager, paths).await?;
-        manager.remove(name).await.context(
-            "destructive re-create failed; the existing principal may be partially removed",
-        )?;
+        manager
+            .remove(name)
+            .await
+            .context("destructive re-create failed; the existing peko may be partially removed")?;
     }
 
     // ── P1 definition: template or defaults ─────────────────────────
@@ -740,7 +745,7 @@ async fn provision_principal(
     // ── P0 provision ────────────────────────────────────────────────
     let principal = manager.create(config).await?;
     println!(
-        "Created principal '{}' at {} (model: {model_id})",
+        "Created peko '{}' at {} (model: {model_id})",
         name,
         principal.workspace_path.display()
     );
@@ -779,10 +784,10 @@ async fn boot_principal(
             .await
         {
             Ok(peko_core::ipc::ResponsePacket::PrincipalLoaded { .. }) => {
-                println!("Daemon: principal '{name}' loaded");
+                println!("Daemon: peko '{name}' loaded");
             }
             Ok(peko_core::ipc::ResponsePacket::Error { message, .. }) => {
-                anyhow::bail!("daemon refused to load principal '{name}': {message}");
+                anyhow::bail!("daemon refused to load peko '{name}': {message}");
             }
             Ok(other) => {
                 anyhow::bail!("unexpected daemon response to reload: {other:?}");
@@ -808,7 +813,7 @@ async fn boot_principal(
                 Err(_) => false,
             };
             if ready {
-                println!("Daemon: ready (principal '{name}' loaded at boot)");
+                println!("Daemon: ready (peko '{name}' loaded at boot)");
                 break;
             }
             if std::time::Instant::now() > deadline {
@@ -917,13 +922,13 @@ async fn list_principals(paths: &GlobalPaths, json: bool) -> Result<()> {
     if json {
         // Same envelope shape as `log --json` and `show --json`:
         // a single JSON document the user can pipe into `jq`. Empty
-        // list is `[]`, not "No principals found."
+        // list is `[]`, not "No pekos found."
         println!("{}", render_list_principals_json(&names)?);
         return Ok(());
     }
 
     if names.is_empty() {
-        println!("No principals found.");
+        println!("No pekos found.");
     } else {
         for name in &names {
             println!("{name}");
@@ -1058,7 +1063,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
 
     let did_str = did.map(|d| d.0).unwrap_or_else(|| "(none)".to_string());
 
-    println!("Principal: {}", display_name);
+    println!("Peko: {}", display_name);
     println!("  DID:     {}", did_str);
     println!("  Workspace: {}", principal.workspace_path.display());
 
@@ -1112,7 +1117,7 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool
     // and so a missing principal fails with a clear error before prompting.
     let _principal = load_principal(name, &manager, paths).await?;
 
-    if !yes && !confirm_prompt(&format!("Remove principal '{name}' and all its data?"))? {
+    if !yes && !confirm_prompt(&format!("Remove peko '{name}' and all its data?"))? {
         println!("Remove cancelled.");
         return Ok(());
     }
@@ -1125,7 +1130,7 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool
         // cancellation if we ever add a non-zero cancellation exit.
         println!("{}", render_remove_principal_json(name)?);
     } else {
-        println!("Removed principal '{name}'");
+        println!("Removed peko '{name}'");
     }
     Ok(())
 }
@@ -1138,11 +1143,11 @@ async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
         ResponsePacket::PrincipalExported {
             name, output_path, ..
         } => {
-            println!("Exported principal '{name}' to {output_path}");
+            println!("Exported peko '{name}' to {output_path}");
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to export principal: {message}");
+            anyhow::bail!("Failed to export peko: {message}");
         }
         other => {
             anyhow::bail!("Unexpected response from daemon: {other:?}");
@@ -1186,7 +1191,7 @@ async fn import_principal(
         );
     }
 
-    if !yes && !confirm_prompt("Import this principal?")? {
+    if !yes && !confirm_prompt("Import this peko?")? {
         println!("Import cancelled.");
         return Ok(());
     }
@@ -1206,11 +1211,11 @@ async fn import_principal(
         ResponsePacket::PrincipalImported {
             name, config_path, ..
         } => {
-            println!("Imported principal '{name}' at {config_path}");
+            println!("Imported peko '{name}' at {config_path}");
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to import principal: {message}");
+            anyhow::bail!("Failed to import peko: {message}");
         }
         other => {
             anyhow::bail!("Unexpected response from daemon: {other:?}");
@@ -1278,7 +1283,7 @@ fn decode_preview_response(
             validation_warnings,
         }),
         ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to preview principal {operation}: {message}");
+            anyhow::bail!("Failed to preview peko {operation}: {message}");
         }
         other => {
             anyhow::bail!("Unexpected response from daemon: {other:?}");
@@ -1287,7 +1292,7 @@ fn decode_preview_response(
 }
 
 fn render_import_preview(preview: &PrincipalImportPreview, selected_capabilities: &[String]) {
-    println!("Principal import preview:");
+    println!("Peko import preview:");
     println!("  Name:        {}", preview.name);
     println!("  Version:     {}", preview.version);
     println!("  DID:         {}", preview.did);
@@ -1363,7 +1368,7 @@ fn prompt_capability_selection(required: &[String], default_enabled: bool) -> Re
         return Ok(Vec::new());
     }
 
-    println!("\nSelect capabilities to grant to the imported Principal:");
+    println!("\nSelect capabilities to grant to the imported peko:");
     let mut selected = Vec::new();
     for cap in required {
         let default_label = if default_enabled { "Y/n" } else { "y/N" };
@@ -1411,11 +1416,11 @@ async fn push_principal(
 
     match response {
         ResponsePacket::PrincipalPushed { name, digest, .. } => {
-            println!("Pushed principal '{name}' (digest {digest})");
+            println!("Pushed peko '{name}' (digest {digest})");
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to push principal: {message}");
+            anyhow::bail!("Failed to push peko: {message}");
         }
         other => {
             anyhow::bail!("Unexpected response from daemon: {other:?}");
@@ -1465,7 +1470,7 @@ async fn pull_principal(
         );
     }
 
-    if !yes && !confirm_prompt("Pull and import this principal?")? {
+    if !yes && !confirm_prompt("Pull and import this peko?")? {
         println!("Pull cancelled.");
         return Ok(());
     }
@@ -1490,11 +1495,11 @@ async fn pull_principal(
             digest,
             ..
         } => {
-            println!("Pulled principal '{name}' {version} (digest {digest})");
+            println!("Pulled peko '{name}' {version} (digest {digest})");
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to pull principal: {message}");
+            anyhow::bail!("Failed to pull peko: {message}");
         }
         other => {
             anyhow::bail!("Unexpected response from daemon: {other:?}");
@@ -1586,10 +1591,10 @@ async fn list_permissions(name: &str) -> Result<()> {
     match response {
         ResponsePacket::PrincipalPermissions { permissions, .. } => {
             if permissions.is_empty() {
-                println!("No permissions granted on principal '{name}'.");
+                println!("No permissions granted on peko '{name}'.");
                 return Ok(());
             }
-            println!("Permissions on principal '{name}':");
+            println!("Permissions on peko '{name}':");
             for grant in permissions {
                 println!(
                     "  {:?} for {} (granted by {} at {})",
@@ -1672,7 +1677,7 @@ async fn mint_invite(name: &str, scope: Vec<String>, ttl: &str) -> Result<()> {
             claims,
             ..
         } => {
-            println!("Minted invite for principal '{name}'");
+            println!("Minted invite for peko '{name}'");
             println!("  jti:  {}", claims.jti);
             println!(
                 "  exp:  {} ({}s from now)",
@@ -1712,7 +1717,7 @@ async fn revoke_invite(name: &str, jti: &str) -> Result<()> {
 
     match response {
         ResponsePacket::PrincipalInviteRevoked { name, jti, .. } => {
-            println!("Revoked invite {jti} on principal '{name}'.");
+            println!("Revoked invite {jti} on peko '{name}'.");
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
@@ -1738,18 +1743,18 @@ async fn load_principal(
         .shared_config(
             &paths
                 .principal_id_for(name)
-                .ok_or_else(|| anyhow::anyhow!("principal '{name}' not found"))?,
+                .ok_or_else(|| anyhow::anyhow!("peko '{name}' not found"))?,
         )
         .map_err(|e| anyhow::anyhow!("authority error: {e}"))?
         .into_path_buf();
     if !config_path.exists() {
-        anyhow::bail!("principal '{name}' not found");
+        anyhow::bail!("peko '{name}' not found");
     }
 
     manager
         .load(&config_path)
         .await
-        .context("failed to load principal")
+        .context("failed to load peko")
 }
 
 fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
@@ -1816,7 +1821,7 @@ fn default_agent_prompt(name: &str) -> String {
 }
 
 /// JSON envelope for `peko principal list --json`. Empty list is `[]`
-/// (never "No principals found."), matching `log --json` / `show --json`.
+/// (never "No pekos found."), matching `log --json` / `show --json`.
 fn render_list_principals_json(names: &[String]) -> serde_json::Result<String> {
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -1994,6 +1999,54 @@ mod tests {
                 assert!(yes);
             }
             _other => panic!("expected Principal remove command"),
+        }
+    }
+
+    /// ADR-059: the lifecycle verbs are flattened to the top level.
+    /// `peko create <name>` parses into the same `PrincipalCommands::Create`
+    /// payload as the legacy nested form.
+    #[test]
+    fn top_level_create_parses_adr059() {
+        let cli = Cli::try_parse_from([
+            "peko", "create", "my-peko", "--model", "kimi-k2", "--detach",
+        ])
+        .expect("should parse top-level create (ADR-059)");
+
+        match cli.command {
+            Commands::Peko(PrincipalCommands::Create {
+                name,
+                model,
+                detach,
+                ..
+            }) => {
+                assert_eq!(name, "my-peko");
+                assert_eq!(model.as_deref(), Some("kimi-k2"));
+                assert!(detach);
+            }
+            _other => panic!("expected flattened top-level create command"),
+        }
+    }
+
+    /// ADR-059: `peko list` reaches the same handler as `peko principal list`.
+    #[test]
+    fn top_level_list_parses_adr059() {
+        let cli =
+            Cli::try_parse_from(["peko", "list"]).expect("should parse top-level list (ADR-059)");
+        match cli.command {
+            Commands::Peko(PrincipalCommands::List) => {}
+            _other => panic!("expected flattened top-level list command"),
+        }
+    }
+
+    /// ADR-059 compatibility: the legacy `peko principal <sub>` namespace
+    /// still parses (hidden alias) so existing scripts keep working.
+    #[test]
+    fn principal_namespace_alias_still_parses() {
+        let cli = Cli::try_parse_from(["peko", "principal", "list"])
+            .expect("hidden `peko principal` alias must keep parsing (ADR-059)");
+        match cli.command {
+            Commands::Principal(PrincipalCommands::List) => {}
+            _other => panic!("expected hidden alias to dispatch Principal(List)"),
         }
     }
 
@@ -2373,7 +2426,7 @@ updated_at = "2026-01-01T00:00:00Z"
         // Sentinel must be gone — the destructive re-create wiped it.
         assert!(
             !shared.agents_dir.join("sentinel.md").exists(),
-            "destructive --force must remove the prior principal's on-disk state"
+            "destructive --force must remove the prior peko's on-disk state"
         );
 
         // And a fresh principal.toml must be in place — the new

@@ -1,17 +1,17 @@
 # Peko 🐱
 
-**Lightweight Multi-Principal Runtime**
+**Lightweight Multi-Peko Runtime**
 
-Peko is a Rust-based multi-principal runtime: local AI Principals with DID identity, A2A protocol messaging, per-peer long-running memory, and a unified extension architecture. Principal is the only top-level runtime actor (ADR-041); agent prompts are thin Markdown files inside a Principal. Sessions are an internal storage noun (ADR-042) and are not surfaced in the CLI.
+Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, A2A protocol messaging, per-peer long-running memory, and a unified extension architecture. Peko is the only top-level runtime actor (ADR-041); agent prompts are thin Markdown files inside a peko. Sessions are an internal storage noun (ADR-042) and are not surfaced in the CLI.
 
 > **Version:** 0.1.0 | **License:** MIT
 >
-> **Terminology:** Principal is the only top-level actor (ADR-041). Sessions are internal storage (ADR-042). See the [terminology map](docs/architecture/adr/ADR-042-no-external-session-concept.md#5-terminology-map-canonical-reference) for the public vs. internal noun glossary.
+> **Terminology:** A **peko** is the only top-level actor (ADR-041) — the user-facing name for what the code internally calls a `Principal` (ADR-059). Sessions are internal storage (ADR-042). Disambiguation: **the Peko runtime** (project/daemon/binary) · **a peko** (one actor) · **a `.peko` package** (portable archive) · **the PEKO model** (architecture). See also the [terminology map](docs/architecture/adr/ADR-042-no-external-session-concept.md#5-terminology-map-canonical-reference) and [ADR-059](docs/architecture/adr/ADR-059-peko-as-user-facing-term.md).
 
 ## Philosophy
 
 - **Lightweight** — Small binary, fast startup
-- **Principal-centric** — A Principal is the single top-level actor; agents are thin prompts inside it
+- **Peko-centric** — A peko is the single top-level actor; agents are thin prompts inside it
 - **Secure** — ed25519 identity, DID-based addressing
 - **Extensible** — Unified hook-based extension system
 - **Daemon-first** — The CLI is a thin client; all execution happens in the daemon
@@ -20,8 +20,8 @@ Peko is a Rust-based multi-principal runtime: local AI Principals with DID ident
 
 ### Core Architecture
 - ✅ **DID Identity System** — ed25519-based decentralized identifiers
-- ✅ **A2A Protocol** — Agent-to-Agent messaging between Principals
-- ✅ **Principal Orchestration** — Top-level AI actors that own memory, intent, and governance
+- ✅ **A2A Protocol** — Agent-to-Agent messaging between pekos
+- ✅ **Peko Orchestration** — Top-level AI actors that own memory, intent, and governance
 - ✅ **Per-Peer Long-Running Memory** — Each `(Principal, peer)` pair keeps a long-running thread; the runtime owns lifecycle (no CLI surface)
 - ✅ **Event Router** — Central event routing and subscription system
 
@@ -45,7 +45,7 @@ Peko is a Rust-based multi-principal runtime: local AI Principals with DID ident
 
 ### Security & Portability
 - ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
-- ✅ **Portable Principals** — Export/import Principals as `.principal` packages
+- ✅ **Portable pekos** — Export/import pekos as `.peko` packages
 
 ---
 
@@ -81,10 +81,10 @@ cargo build --release
 # Add a model to the catalog (only needed once; pick a template + wire id)
 ./target/release/peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
 
-# Create a Principal (default model is the catalog default)
-./target/release/peko principal create myprincipal
+# Create a peko (default model is the catalog default)
+./target/release/peko create myprincipal
 
-# Send a message to a Principal (primary interaction method)
+# Send a message to a peko (primary interaction method)
 ./target/release/peko send myprincipal "Hello, what can you do?"
 
 # Send from a file or stdin
@@ -111,35 +111,35 @@ Peko uses a hierarchical command structure (`peko <noun> <verb>`).
 -q, --quiet             # Suppress non-error output
 -v, -vv, -vvv           # Verbose logging (repeat for more)
 --debug                 # Show debug information including stack traces
--U, --user <USER>       # Caller Subject for `peko send` / `peko log` (peer axis on a Principal's thread)
+-U, --user <USER>       # Caller Subject for `peko send` / `peko log` (peer axis on a peko's thread)
 ```
 
 ### Commands
 
-#### Principal Management
+#### Peko Management
 ```bash
-peko principal create <NAME>                       # Create a Principal
-peko principal list [--long]                        # List all Principals
-peko principal show <NAME>                          # Show Principal details
-peko principal export <NAME> [--output <PATH>]      # Export to .principal package
-peko principal import <FILE> [--name <NEW_NAME>]    # Import from .principal package
-peko principal push <NAME>:<TAG>                    # Push to registry
-peko principal pull <REF>                           # Pull from registry
-peko principal permit <NAME> <SUBJECT> <PERMISSION> # Grant permission
-peko principal revoke <NAME> <SUBJECT> <PERMISSION> # Revoke permission
+peko create <NAME>                       # Create a peko
+peko list [--long]                        # List all pekos
+peko show <NAME>                          # Show peko details
+peko export <NAME> [--output <PATH>]      # Export to .peko package
+peko import <FILE> [--name <NEW_NAME>]    # Import from .peko package
+peko push <NAME>:<TAG>                    # Push to registry
+peko pull <REF>                           # Pull from registry
+peko permit <NAME> <SUBJECT> <PERMISSION> # Grant permission
+peko revoke <NAME> <SUBJECT> <PERMISSION> # Revoke permission
 ```
 
-> **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a Principal's workspace (`agents/<name>.md`); teams were removed in favor of Principal-to-Principal interaction. Agent prompts are listed via `peko principal show <NAME>` and managed as files (ADR-050).
+> **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a peko's workspace (`agents/<name>.md`); teams were removed in favor of peko-to-peko interaction. Agent prompts are listed via `peko show <NAME>` and managed as files (ADR-050).
 
-#### Talk to a Principal (Primary Interaction)
+#### Talk to a Peko (Primary Interaction)
 ```bash
-peko send <PRINCIPAL> [MESSAGE]                    # Post to your thread; streams the reply
-peko send <PRINCIPAL> "…" --wait                   # If busy: queued — block for the reply
-peko send <PRINCIPAL> --file <PATH>                # Send message from file
-peko send <PRINCIPAL> --stdin                      # Read message from stdin
-peko stop <PRINCIPAL>                              # Soft-stop the running turn (idempotent)
-peko log <PRINCIPAL>                               # Read the thread
-peko log <PRINCIPAL> --watch                       # Follow the thread live
+peko send <PEKO> [MESSAGE]                    # Post to your thread; streams the reply
+peko send <PEKO> "…" --wait                   # If busy: queued — block for the reply
+peko send <PEKO> --file <PATH>                # Send message from file
+peko send <PEKO> --stdin                      # Read message from stdin
+peko stop <PEKO>                              # Soft-stop the running turn (idempotent)
+peko log <PEKO>                               # Read the thread
+peko log <PEKO> --watch                       # Follow the thread live
 ```
 
 #### Authentication (v3: catalog + vault)
@@ -154,8 +154,8 @@ peko model add --custom --id my-local \
 # 2. Store the API key in the encrypted vault (one per model)
 peko credential set llm openai-gpt-4o --kind api_key --material "$OPENAI_API_KEY"
 
-# 3. Create a Principal — it inherits the catalog default model
-peko principal create alice
+# 3. Create a peko — it inherits the catalog default model
+peko create alice
 
 # Inspect / manage the catalog and vault
 peko model list
@@ -172,17 +172,17 @@ peko logout
 #### Extension Management
 
 > **Retired.** The `peko ext *` command tree (ADR-047) and the
-> per-category `peko principal tool|skill|mcp|hook|agent|persona` CLI
-> (ADR-050) are both gone. Tooling is plain files in the principal's
+> per-category `peko tool|skill|mcp|hook|agent|persona` CLI
+> (ADR-050) are both gone. Tooling is plain files in the peko's
 > workspace — manage it with your editor and the filesystem:
 >
 > ```bash
-> ls ~/.peko/principal/<name>/{tools,skills,mcp,hooks}/   # list
-> cp -r ./my-skill ~/.peko/principal/<name>/skills/       # install
-> rm -r ~/.peko/principal/<name>/skills/my-skill          # remove
+> ls ~/.peko/principals/<name>/{tools,skills,mcp,hooks}/   # list
+> cp -r ./my-skill ~/.peko/principals/<name>/skills/       # install
+> rm -r ~/.peko/principals/<name>/skills/my-skill          # remove
 > ```
 >
-> See [Principal Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md).
+> See [Peko Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md).
 > The lines below are retained for historical reference.
 
 ```bash
@@ -237,7 +237,7 @@ peko model test <MODEL_ID>                        # Live-test a model
 The `note` field on each catalog entry is the standardized way to
 express subjective quality or routing intent that spec flags cannot
 capture. Parent agents can read it via the `model_list` builtin tool
-(`peko send` to a principal will surface these as filterable notes).
+(`peko send` to a peko will surface these as filterable notes).
 
 #### Cost Controls
 
@@ -296,8 +296,8 @@ All capabilities — tools, skills, MCP servers, and channels — are implemente
 
 > **Retired.** The `peko ext *` flow (ADR-047) and the per-category
 > install CLI (ADR-050) are both gone. Tooling lives directly in the
-> principal's workspace — copy files into
-> `~/.peko/principal/<name>/{tools,skills,mcp,hooks}/` and edit them
+> peko's workspace — copy files into
+> `~/.peko/principals/<name>/{tools,skills,mcp,hooks}/` and edit them
 > there.
 >
 > The block below is retained for historical reference.
@@ -329,20 +329,20 @@ Extensions hook into the agentic loop at 22 different points:
 - **Event Hooks**: `EventSubscribe`, `EventEmit`
 - **Lifecycle Hooks**: `AgentShutdown`, `AgentIteration`
 
-Learn more: [Principal Workspace Documentation](docs/architecture/PRINCIPAL_WORKSPACE.md) (ADR-047 — replaces the extension framework)
+Learn more: [peko Workspace Documentation](docs/architecture/PRINCIPAL_WORKSPACE.md) (ADR-047 — replaces the extension framework)
 
 ---
 
-## Portable Principals
+## Portable Pekos
 
-Export Principals as `.principal` packages and import them on other machines:
+Export pekos as `.peko` packages and import them on other machines:
 
 ```bash
-# Export a Principal to a .principal package
-peko principal export my-principal --output ./my-principal.principal
+# Export a peko to a .peko package
+peko export my-principal --output ./my-principal.peko
 
-# Import a Principal
-peko principal import ./my-principal.principal --name imported-principal
+# Import a peko
+peko import ./my-principal.peko --name imported-principal
 ```
 
 **Package Contents:**
@@ -360,7 +360,7 @@ peko principal import ./my-principal.principal --name imported-principal
 
 ## Daemon Mode
 
-The daemon is a long-running process that owns Principals, executes `send`
+The daemon is a long-running process that owns pekos, executes `send`
 requests, and polls for scheduled jobs.
 
 ```bash
@@ -377,10 +377,10 @@ peko daemon stop
 peko daemon restart
 ```
 
-Scheduled jobs are managed by the Principal itself via the
-`tool:Cron{Create,List,Delete}` tools (gated by the principal's
+Scheduled jobs are managed by the peko itself via the
+`tool:Cron{Create,List,Delete}` tools (gated by the peko's
 `tool:*` grants). Operators interact with schedules by sending a
-message to the Principal that owns them.
+message to the peko that owns them.
 
 ---
 
@@ -430,7 +430,7 @@ src/
 ├── ipc/                # Inter-process communication
 ├── observability/      # Audit logging (pub(crate))
 ├── providers/          # LLM provider integrations (v3 catalog + resolver)
-├── registry/           # `.principal` packaging/export/import and remote registry client
+├── registry/           # `.peko` packaging/export/import and remote registry client
 ├── session/            # JSONL persistence, branching, indexing, compaction
 ├── tools/              # Tool framework (core, builtin, registry, factory)
 ├── tunnel/             # Pekohub tunnel protocol, A2A dispatcher, runtime discovery
@@ -489,7 +489,7 @@ MIT
 - [Tutorial: Building Your First Agent](docs/getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md) — Step-by-step walkthrough
 - [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, principals, workspace tooling
 - [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Every `peko` command and flag
-- [Principal Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md) — Per-principal tooling layout (ADR-047)
+- [peko Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md) — Per-peko tooling layout (ADR-047)
 - [PEKO Primitive](docs/architecture/PEKO.md) — Canonical term: Persistent Entity with Keepalive Orchestration
 - [Agent–Session Paradigm](docs/architecture/AGENT_SESSION_PARADIGM.md) — Full design rationale, gap audit, build order
 - [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-050

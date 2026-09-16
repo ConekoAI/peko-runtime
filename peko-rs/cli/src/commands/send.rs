@@ -318,12 +318,12 @@ async fn process_response_stream(
                     return Ok(());
                 }
                 anyhow::bail!(
-                    "Principal execution failed{}",
+                    "Peko execution failed{}",
                     error.map(|e| format!(": {e}")).unwrap_or_default()
                 );
             }
             ResponsePacket::Error { message, .. } => {
-                anyhow::bail!("Principal execution failed: {message}");
+                anyhow::bail!("Peko execution failed: {message}");
             }
             ResponsePacket::Heartbeat { .. } => {}
             _ => {}

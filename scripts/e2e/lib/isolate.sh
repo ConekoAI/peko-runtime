@@ -11,7 +11,7 @@ set +u
 #
 #   source "$(dirname "$0")/../lib/isolate.sh"
 #   peko_iso_init "my-flow"           # creates a fresh tempdir + exports vars
-#   peko peko principal create foo …  # any peko subprocess now hits the tempdir
+#   peko create foo …  # any peko subprocess now hits the tempdir
 #   peko_iso_done                     # cleanup (kill daemon, remove tempdir)
 #
 # What gets isolated (precedence low → high matches `peko` itself):

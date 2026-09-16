@@ -122,6 +122,9 @@ async fn run_command(
     _cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
     match command {
+        // ADR-059: the lifecycle verbs are top level (`peko create`, ...);
+        // `peko principal <sub>` remains as a hidden compat alias.
+        Commands::Peko(cmd) => principal::handle_principal(cmd, paths, json).await,
         Commands::Principal(cmd) => principal::handle_principal(cmd, paths, json).await,
         Commands::Send(args) => send::handle_send(args, paths).await,
         Commands::Stop(args) => stop::handle_stop(args, paths).await,

@@ -1,12 +1,12 @@
-# Tutorial: Building Your First Principal
+# Tutorial: Building Your First Peko
 
-In this tutorial, you'll build your first Peko Principal using the CLI. By the end, you'll have a working Principal that can process tasks and store conversations automatically.
+In this tutorial, you'll build your first peko using the CLI. By the end, you'll have a working peko that can process tasks and store conversations automatically.
 
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Step 1: Create a New Principal](#step-1-create-a-new-principal)
-3. [Step 2: Customize Your Principal](#step-2-customize-your-principal)
+2. [Step 1: Create a New peko](#step-1-create-a-new-peko)
+3. [Step 2: Customize Your peko](#step-2-customize-your-peko)
 4. [Step 3: Send Your First Message](#step-3-send-your-first-message)
 5. [Step 4: Run the Daemon](#step-4-run-the-daemon)
 6. [Step 5: Explore Extensions](#step-5-explore-extensions)
@@ -24,9 +24,9 @@ Before starting, ensure you have:
 
 ---
 
-## Step 1: Create a New Principal
+## Step 1: Create a New Peko
 
-The easiest way to create a Principal is with the `principal create` command:
+The easiest way to create a peko is with the `peko create` command:
 
 ```bash
 # Set your API key
@@ -36,15 +36,15 @@ export OPENAI_API_KEY="sk-..."
 peko model add --template openai --model gpt-4o \
     --key "$OPENAI_API_KEY"
 
-# Create a Principal
-peko principal create my-first-principal
+# Create a peko
+peko create my-first-principal
 ```
 
-This creates a Principal workspace in Peko's data directory with the following structure:
+This creates a peko workspace in Peko's data directory with the following structure:
 
 ```
 my-first-principal/
-├── principal.toml   # Principal configuration
+├── principal.toml   # peko configuration
 ├── agents/
 │   └── primary.md   # Root agent prompt
 ├── .gitignore
@@ -54,12 +54,12 @@ my-first-principal/
 
 ---
 
-## Step 2: Customize Your Principal
+## Step 2: Customize Your Peko
 
-Edit `my-first-principal/agents/primary.md` to give your Principal a personality:
+Edit `my-first-principal/agents/primary.md` to give your peko a personality:
 
 ```markdown
-# My First Principal
+# My First peko
 
 You are a helpful coding assistant.
 
@@ -74,11 +74,11 @@ You are a helpful coding assistant.
 Friendly, concise, and encouraging.
 ```
 
-You can also customize the Principal's configuration:
+You can also customize the peko's configuration:
 
 ```bash
 # View current config
-peko principal show my-first-principal
+peko show my-first-principal
 
 # The configuration includes capability grants, governance, provider hints, etc.
 ```
@@ -87,14 +87,14 @@ peko principal show my-first-principal
 
 ## Step 3: Send Your First Message
 
-Now let's interact with the Principal:
+Now let's interact with the peko:
 
 ```bash
 # Send a simple message
 peko send my-first-principal "Hello, what can you do?"
 ```
 
-You'll see the Principal's response streamed to your terminal.
+You'll see the peko's response streamed to your terminal.
 
 Try a more complex task:
 
@@ -143,15 +143,15 @@ peko daemon stop
 
 ## Step 5: Explore Extensions
 
-Extensions add tools and skills to your Principal. Built-in tools are
-available automatically; grant capabilities to a Principal to allow
+Extensions add tools and skills to your peko. Built-in tools are
+available automatically; grant capabilities to a peko to allow
 additional tools:
 
 ```bash
 # List installed extensions
 peko ext list
 
-# Grant a built-in tool capability to your Principal
+# Grant a built-in tool capability to your peko
 peko capability grant --principal my-principal tool:Bash
 
 # Revoke a capability you don't need
@@ -168,11 +168,11 @@ peko ext install <path-or-url>
 
 ## What's Next?
 
-Congratulations! You've built your first Peko Principal. Here are some things to try next:
+Congratulations! You've built your first peko. Here are some things to try next:
 
 ### 1. Explore Extensions
 
-Extensions add capabilities to your Principal:
+Extensions add capabilities to your peko:
 
 ```bash
 # List installed extensions
@@ -181,7 +181,7 @@ peko ext list
 # Install a new extension
 peko ext install <path-or-url>
 
-# Grant a capability to your Principal
+# Grant a capability to your peko
 peko capability grant --principal my-principal tool:<tool-name>
 ```
 
@@ -202,14 +202,14 @@ peko credential list --namespace llm
 peko model test openai-gpt-4o
 ```
 
-### 3. Export and Share Principals
+### 3. Export and Share Pekos
 
 ```bash
-# Export a Principal to a .principal package
-peko principal export my-first-principal
+# Export a peko to a .peko package
+peko export my-first-principal
 
-# Import a Principal
-peko principal import ./my-first-principal.principal
+# Import a peko
+peko import ./my-first-principal.peko
 ```
 
 ### 4. Run System Diagnostics
@@ -229,7 +229,7 @@ peko system clean
 
 - [User Guide](../user-guide/USERS_GUIDE.md) — Comprehensive guide to Peko
 - [CLI Reference](../user-guide/CLI_REFERENCE.md) — Command-line documentation
-- [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) — Per-principal tooling layout (ADR-047)
+- [peko Workspace](../architecture/PRINCIPAL_WORKSPACE.md) — Per-peko tooling layout (ADR-047)
 
 ---
 

@@ -7,7 +7,7 @@ Welcome to the Peko User Guide! This guide will help you understand and use Peko
 1. [What is Peko?](#what-is-peko)
 2. [Installation](#installation)
 3. [Core Concepts](#core-concepts)
-4. [Running Your First Principal](#running-your-first-principal)
+4. [Running Your First peko](#running-your-first-peko)
 5. [Configuration](#configuration)
 6. [Extensions](#extensions)
 7. [Troubleshooting](#troubleshooting)
@@ -19,8 +19,8 @@ Welcome to the Peko User Guide! This guide will help you understand and use Peko
 
 Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to:
 
-- Run autonomous AI Principals locally
-- Connect Principals to LLM providers (OpenAI, Anthropic, Kimi, Ollama, etc.)
+- Run autonomous AI pekos locally
+- Connect pekos to LLM providers (OpenAI, Anthropic, Kimi, Ollama, etc.)
 - Manage persistent conversation memory automatically
 - Orchestrate tools, skills, MCP servers, and gateways through a unified extension system
 
@@ -30,12 +30,12 @@ Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to
 |---------|-------------|
 | **Lightweight** | Small binary, starts quickly |
 | **Standalone** | Works without external services |
-| **Principal-Centric** | A Principal is the top-level actor you create and chat with |
-| **Persistent Memory** | JSONL-based session storage managed automatically per Principal |
+| **Peko-Centric** | A peko is the top-level actor you create and chat with |
+| **Persistent Memory** | JSONL-based session storage managed automatically per peko |
 | **Owner-Root Activity Feed** | `peko log <PRINCIPAL>` reads the owner's thread — including cron wakes and async completions — without exposing the session abstraction |
 | **DID Identity** | ed25519-based decentralized identifiers |
 | **Extensions** | Unified Extension Architecture for skills, MCP, tools, channels, hooks |
-| **Cron Scheduling** | Schedule recurring and one-time tasks, scoped to a Principal and run as its owner (operator/advanced) |
+| **Cron Scheduling** | Schedule recurring and one-time tasks, scoped to a peko and run as its owner (operator/advanced) |
 
 ---
 
@@ -72,23 +72,23 @@ cargo build --release
 
 ## Core Concepts
 
-### Principal
+### Peko
 
-A **Principal** is the top-level AI actor in Peko. It owns:
+A **Peko** is the top-level AI actor in Peko. It owns:
 
 - **Identity** — A unique DID (decentralized identifier)
 - **Configuration** — Settings including capability grants, provider hints, and governance
 - **Memory** — Conversation history stored as JSONL, managed automatically per peer
-- **Agent Prompts** — Thin Markdown files that shape the Principal's behavior
+- **Agent Prompts** — Thin Markdown files that shape the peko's behavior
 - **Extensions** — Allowed tools, skills, MCP servers, and gateways
 
-You interact with a Principal through `peko send` (post to your
+You interact with a peko through `peko send` (post to your
 thread), `peko stop` (halt the running turn), and `peko log` (read or
 follow the thread).
 
 ### DID (Decentralized Identifier)
 
-Every Principal gets a unique identifier like:
+Every peko gets a unique identifier like:
 
 ```
 did:peko:local:default:abc123def456
@@ -103,8 +103,8 @@ Format: `did:peko:{scope}:{tenant}:{identifier}`
 ### Session
 
 A Session is the implementation noun for one peer's running conversation
-with a Principal. Sessions are stored as JSONL files under the
-Principal's workspace, created automatically when a peer first sends,
+with a peko. Sessions are stored as JSONL files under the
+peko's workspace, created automatically when a peer first sends,
 resumed on every subsequent send from the same peer, and compacted
 when context pressure demands. Sessions are an internal storage
 detail — they are deliberately **not** exposed as a CLI command:
@@ -119,28 +119,28 @@ detail — they are deliberately **not** exposed as a CLI command:
   work the owner is entitled to see: cron wakes, async-task
   completions, etc.). `--watch` follows the thread live.
 - `peko log <PRINCIPAL> --peer <X>` — read peer `X`'s thread. Only
-  peer `X` itself or the principal's owner can request this; other
+  peer `X` itself or the peko's owner can request this; other
   peers cannot snoop on each other (see ADR-042 for the full
   privacy contract). The same rule governs `peko stop --peer <X>` and
   `peko log --watch --peer <X>`.
 
 **There is no `peko session` command and there will never be one.** The
-Principal is an integral actor; sessions are storage, not state that
+Peko is an integral actor; sessions are storage, not state that
 the user names, lists, or routes through. Operators who need to inspect
-raw session files read them directly from the Principal's workspace.
+raw session files read them directly from the peko's workspace.
 
 #### Privacy gate (ADR-042)
 
 The default `peko log <PRINCIPAL>` invocation (no `--peer`) returns
 the **owner-root view**, which is special: it is only readable by the
-Principal's owner. The privacy contract is enforced strictly, and
+peko's owner. The privacy contract is enforced strictly, and
 applies identically to `peko log --watch` and `peko stop`:
 
 | Caller | Command | Result |
 |---|---|---|
-| Principal's owner | `peko log <P>` | OK — owner-root view |
-| Principal's owner | `peko log <P> --peer user:<any>` | OK — owner can audit any peer thread |
-| Principal's owner | `peko stop <P> --peer user:<any>` | OK — owner can stop any peer's run |
+| peko's owner | `peko log <P>` | OK — owner-root view |
+| peko's owner | `peko log <P> --peer user:<any>` | OK — owner can audit any peer thread |
+| peko's owner | `peko stop <P> --peer user:<any>` | OK — owner can stop any peer's run |
 | Peer `user:bob` with `Chat` grant | `peko log <P> --peer user:bob` | OK — peer self-read |
 | Peer `user:bob` with `Chat` grant | `peko log <P> --watch --peer user:bob` | OK — peer self-watch |
 | Peer `user:bob` with `Chat` grant | `peko stop <P> --peer user:bob` | OK — peer stops their own run |
@@ -163,7 +163,7 @@ for the send/stop/log surface built on it.
 
 ---
 
-## Running Your First Principal
+## Running Your First Peko
 
 ### 1. Set Your API Key
 
@@ -184,10 +184,10 @@ export KIMI_API_KEY="your-kimi-key"
 ./target/release/peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
 ```
 
-### 3. Create a Principal
+### 3. Create a Peko
 
 ```bash
-./target/release/peko principal create my-principal
+./target/release/peko create my-principal
 ```
 
 ### 4. Send a Message
@@ -196,15 +196,15 @@ export KIMI_API_KEY="your-kimi-key"
 ./target/release/peko send my-principal "Hello, what can you do?"
 ```
 
-You'll see the Principal's response streamed to your terminal.
+You'll see the peko's response streamed to your terminal.
 
 ---
 
 ## Configuration
 
-### Principal Configuration
+### Peko Configuration
 
-Principals are configured via `principal.toml` stored in the Principal's workspace.
+Pekos are configured via `principal.toml` stored in the peko's workspace.
 
 Example `principal.toml`:
 
@@ -212,12 +212,12 @@ Example `principal.toml`:
 name = "my-principal"
 description = "A helpful assistant"
 
-# Optional per-Principal provider override. Most Principals should
+# Optional per-peko provider override. Most pekos should
 # omit this and use the global catalog default.
 # preferred_provider_id = "openai"
 # preferred_model_id = "gpt-4o-mini"
 
-# Capability grants — the single source of truth for what this Principal
+# Capability grants — the single source of truth for what this peko
 # may do. See `peko capability grant --help`.
 [capabilities]
 grants = ["tool:Bash", "tool:Read", "tool:Write"]
@@ -225,8 +225,8 @@ grants = ["tool:Bash", "tool:Read", "tool:Write"]
 
 #### Standing named children
 
-A Principal can declare **standing children** — named subagent sessions
-that persist for the Principal's lifetime and are resumed by name (e.g.
+A peko can declare **standing children** — named subagent sessions
+that persist for the peko's lifetime and are resumed by name (e.g.
 `/memory`):
 
 ```toml
@@ -237,10 +237,10 @@ description = "Long-term memory"   # optional; used as the session title
 
 Each table key is the child's name (1–64 chars, no `/`, no surrounding
 whitespace). At startup the runtime ensures each declared child exists as
-a session under the Principal's root — creating it without running any
+a session under the peko's root — creating it without running any
 LLM turn if missing, or leaving it untouched when it already exists.
 Standing children are exempt from idle-session pruning. Inside the
-Principal, the `Agent` tool's `new` action with a matching `name`
+peko, the `Agent` tool's `new` action with a matching `name`
 attaches to the standing session (keeping its full history) instead of
 spawning a fresh one; `subagent_type` must match the declaration.
 
@@ -269,11 +269,11 @@ spawning a fresh one; `subagent_type` must match the declaration.
 > **ADR-047 (2026-08-25).** The legacy "Unified Extension Architecture"
 > and `peko ext *` CLI were retired. Tooling — tools, skills, MCP
 > servers, hooks, and opaque plugins — now lives directly in the
-> principal's workspace. See
+> peko's workspace. See
 > [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md) for
 > the full layout and migration steps.
 
-The principal workspace at `~/.peko/principal/<name>/` is the canonical
+The peko workspace at `~/.peko/principals/<name>/` is the canonical
 trust boundary for tooling.
 
 ### List Installed Tooling
@@ -281,8 +281,8 @@ trust boundary for tooling.
 Tooling is plain files — list the workspace directories directly:
 
 ```bash
-ls ~/.peko/principal/<name>/{tools,skills,mcp,hooks,plugins}/
-peko principal show <name>          # catalog summary
+ls ~/.peko/principals/<name>/{tools,skills,mcp,hooks,plugins}/
+peko show <name>          # catalog summary
 ```
 
 ### Install a Plugin
@@ -290,62 +290,62 @@ peko principal show <name>          # catalog summary
 Copy the tooling into the workspace (ADR-050 — there is no install CLI):
 
 ```bash
-cp ./my-tool.toml        ~/.peko/principal/<name>/tools/<id>/tool.toml
-cp -r ./my-skill         ~/.peko/principal/<name>/skills/<id>/   # contains SKILL.md
-cp ./server.json         ~/.peko/principal/<name>/mcp/<id>/server.json
-cp ./hook.toml           ~/.peko/principal/<name>/hooks/<id>/hook.toml
+cp ./my-tool.toml        ~/.peko/principals/<name>/tools/<id>/tool.toml
+cp -r ./my-skill         ~/.peko/principals/<name>/skills/<id>/   # contains SKILL.md
+cp ./server.json         ~/.peko/principals/<name>/mcp/<id>/server.json
+cp ./hook.toml           ~/.peko/principals/<name>/hooks/<id>/hook.toml
 ```
 
-New `agents/` and `skills/` files appear in the principal's system
+New `agents/` and `skills/` files appear in the peko's system
 prompt on the next agentic iteration — no restart required.
 
 ### Grant/Revoke Capabilities
 
-Access to installed tooling is controlled through capabilities on a Principal:
+Access to installed tooling is controlled through capabilities on a peko:
 
 ```bash
-# Grant a capability to a Principal
+# Grant a capability to a peko
 peko capability grant --principal <principal-name> <capability>
 
-# Revoke a capability from a Principal
+# Revoke a capability from a peko
 peko capability revoke --principal <principal-name> <capability>
 ```
 
-Principal-scoped authorization is configured in `principal.toml` under
+peko-scoped authorization is configured in `principal.toml` under
 `[capabilities] grants`. Capabilities are typed grant strings such as
 `tool:<tool-name>`, `skill:<skill-id>`, `agent:<agent-type>`, or
 `mcp:<server-id>`.
 
 ### MCP Servers
 
-MCP (Model Context Protocol) servers live in the principal workspace
-under `~/.peko/principal/<name>/mcp/<server-id>/server.json`:
+MCP (Model Context Protocol) servers live in the peko workspace
+under `~/.peko/principals/<name>/mcp/<server-id>/server.json`:
 
 ```bash
 # MCP servers live in the principal's workspace — install by copying
 # the manifest in (there is no install CLI, ADR-050)
-mkdir -p ~/.peko/principal/<name>/mcp/<server-id>
-cp <server-path>/server.json ~/.peko/principal/<name>/mcp/<server-id>/server.json
+mkdir -p ~/.peko/principals/<name>/mcp/<server-id>
+cp <server-path>/server.json ~/.peko/principals/<name>/mcp/<server-id>/server.json
 
-# Grant MCP capabilities to a Principal
+# Grant MCP capabilities to a peko
 peko capability grant --principal <principal-name> mcp:<server-id>
 ```
 
 No `start` / `stop` / `restart` / `status` step is required — the
-runtime discovers MCP servers at principal boot.
+runtime discovers MCP servers at peko boot.
 
 ---
 
 ## Cron Scheduling
 
-The daemon can run scheduled jobs on behalf of a Principal. Each job is
-scoped to exactly one Principal by DID and executes as that Principal's
+The daemon can run scheduled jobs on behalf of a peko. Each job is
+scoped to exactly one peko by DID and executes as that peko's
 owner, so it reuses the same `peko send` permission path and session memory.
 
-Cron is now an **internal principal tool** (like Bash, Session). Operators
-interact with schedules by asking the Principal itself to manage them via
+Cron is now an **internal peko tool** (like Bash, Session). Operators
+interact with schedules by asking the peko itself to manage them via
 the `CronCreate` / `CronList` / `CronDelete` agentic-loop tools (gated
-by the principal's `tool:*` grants — same F37 funnel as any other
+by the peko's `tool:*` grants — same F37 funnel as any other
 internal tool). The legacy `peko cron` CLI was retired.
 
 Supported schedules:
@@ -353,7 +353,7 @@ Supported schedules:
 - **Cron expression** — standard 6-field cron (`sec min hour dom mon dow`)
 - **One-time `at`** — RFC3339 timestamp (one-shot; auto-deleted)
 - **Interval `every`** — fixed millisecond interval
-- **Idle** — fires after the Principal has had no user activity for N minutes
+- **Idle** — fires after the peko has had no user activity for N minutes
 
 ### SpawnTool attribution: `wake_on_completion` and `timeout_secs`
 
@@ -361,16 +361,16 @@ Supported schedules:
 
 | Attribute | Default | What it does |
 |-----------|---------|--------------|
-| `wake_on_completion` | `false` for cron-spawned runs (`true` for natural agent spawns) | When `true`, the executor posts a `SteeringMessage` into the Principal's root inbox saying "Your N:NN cron job `{name}` completed. You can check details with the TaskOutput tool." |
+| `wake_on_completion` | `false` for cron-spawned runs (`true` for natural agent spawns) | When `true`, the executor posts a `SteeringMessage` into the peko's root inbox saying "Your N:NN cron job `{name}` completed. You can check details with the TaskOutput tool." |
 | `timeout_secs` | `7200` (2h) for everyone | Per-run timeout. The cron tool overrides per call. |
 
 If the fire is an `Agent` tool run, the spawned session transcript
-appears automatically in the Principal's session list.
+appears automatically in the peko's session list.
 
-### Example: daily Principal digest
+### Example: daily Peko digest
 
-Send a message to your Principal asking it to schedule the digest. From
-inside an agent turn (or as a user invoking the principal's chat):
+Send a message to your peko asking it to schedule the digest. From
+inside an agent turn (or as a user invoking the peko's chat):
 
 ```text
 CronCreate {
@@ -398,27 +398,27 @@ CronCreate {
 ```
 
 On fire the daemon runs `Bash { command: ... }` on behalf of your
-Principal. Because `wake_on_completion=true`, the Principal's next
+peko. Because `wake_on_completion=true`, the peko's next
 turn opens with a one-line steer message pointing at the task id.
 
-Jobs are stored in the per-principal schedule file
+Jobs are stored in the per-peko schedule file
 (`<data_dir>/principals/<name>/local/cron/schedule.toml`) and can be
 listed, inspected, and removed with the `CronList` and `CronDelete`
-tools from inside the owning principal's agent turn.
+tools from inside the owning peko's agent turn.
 
 ---
 
 ## Troubleshooting
 
-### Principal Won't Respond
+### Peko Won't Respond
 
-**Problem:** Principal fails to respond to messages.
+**Problem:** peko fails to respond to messages.
 
 **Solution:**
-- Check the Principal exists: `peko principal list`
+- Check the peko exists: `peko list`
 - Verify your API key is set: `echo $OPENAI_API_KEY`
 - Check a model is configured: `peko model list`
-- Check the Principal configuration: `peko principal show my-principal`
+- Check the peko configuration: `peko show my-principal`
 
 ### API Key Errors
 
@@ -435,7 +435,7 @@ tools from inside the owning principal's agent turn.
 
 **Solution:**
 - Memory compaction is automatic; send another message to resume the current session
-- Inspect the Principal workspace with `peko principal show my-principal`
+- Inspect the peko workspace with `peko show my-principal`
 
 ### Getting Help
 
@@ -444,7 +444,7 @@ tools from inside the owning principal's agent turn.
 ./target/release/peko --help
 
 # Show command-specific help
-./target/release/peko principal --help
+./target/release/peko --help
 ./target/release/peko send --help
 # peko ext and the per-category install CLI were retired (ADR-047 / ADR-050) —
 # workspace tooling is managed as plain files; see PRINCIPAL_WORKSPACE.md
@@ -455,7 +455,7 @@ tools from inside the owning principal's agent turn.
 ## Next Steps
 
 - Read the [CLI Reference](CLI_REFERENCE.md) for all commands
-- Read the [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) to understand where tooling lives (ADR-047)
+- Read the [peko Workspace](../architecture/PRINCIPAL_WORKSPACE.md) to understand where tooling lives (ADR-047)
 - Read the [Tutorial: Building Your First Agent](../getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md)
 
 ---

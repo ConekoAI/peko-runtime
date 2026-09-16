@@ -211,10 +211,10 @@ async fn set(
                 });
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             } else if !config.has_any_limit() {
-                let target = if is_peer { "peer" } else { "principal" };
+                let target = if is_peer { "peer" } else { "peko" };
                 println!("✅ Quota cleared for '{name}' — {target} is now unlimited.");
             } else {
-                let target = if is_peer { "peer" } else { "principal" };
+                let target = if is_peer { "peer" } else { "peko" };
                 println!("✅ Quota updated for {target} '{name}':");
                 render_status(&name, &config, &state, false);
             }
@@ -241,7 +241,7 @@ async fn reset(name: String, is_peer: bool, json: bool) -> Result<()> {
                 });
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             } else {
-                let target = if is_peer { "peer" } else { "principal" };
+                let target = if is_peer { "peer" } else { "peko" };
                 println!(
                     "✅ Quota reset for {target} '{name}' — fresh window started at {}.",
                     state.window_start.to_rfc3339()

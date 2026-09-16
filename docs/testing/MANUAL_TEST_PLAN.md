@@ -10,12 +10,12 @@
 >   cards. Providers can be edited, removed, enabled/disabled, and set as the
 >   runtime default. Each provider card expands to show its stored
 >   credentials, an "add credential" form, and a rotation-binding panel.
-> - **RP7** added a model dropdown to the **Create a Principal** modal. After
+> - **RP7** added a model dropdown to the **Create a peko** modal. After
 >   picking a provider, the user can optionally pin a model; otherwise the
->   principal inherits the provider's default model.
+>   Peko inherits the provider's default model.
 > - **RP8** added `--provider` and `--model` flags to `peko send`, letting a
 >   single message override the resolved provider/model without changing the
->   principal's configuration.
+>   peko's configuration.
 >
 > **What changed in v0.3 (engine adoption)**
 > The desktop now co-exists with `peko daemon start` from the CLI. If a
@@ -36,7 +36,7 @@
 > §1 (engine lifecycle), §2 (principals), §8 (settings), and §12.2 (crash
 > recovery) are rewritten below to reflect v0.3/v0.4.
 
-This checklist exercises **peko-desktop** (the Tauri/React UI) against **peko-runtime** (the daemon) end-to-end. Work through it top-to-bottom. Every row has an **Expected** column — if what you see differs, mark the test **Fail**, choose a **Severity**, and write a short **Note** describing what actually happened.
+This checklist exercises **Peko-desktop** (the Tauri/React UI) against **Peko-runtime** (the daemon) end-to-end. Work through it top-to-bottom. Every row has an **Expected** column — if what you see differs, mark the test **Fail**, choose a **Severity**, and write a short **Note** describing what actually happened.
 
 ---
 
@@ -151,10 +151,10 @@ If you set `PEKO_HOME`, `PEKO_CONFIG_DIR`, or `PEKO_DATA_DIR` earlier, swap thos
 |---|---|---|---|---|---|
 | T-101 | With the app closed, run `pgrep -f "peko daemon"` (or `tasklist /FI "IMAGENAME eq peko.exe"` on Windows). Confirm no engine processes are running. | No matching processes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Proves we're starting from a clean slate |
 | T-102 | Launch the desktop (`pnpm tauri dev` or the bundled app) | App window opens; engine shows up in the process list within ~2 seconds. **The header has no engine pill. The Dashboard has no engine card. The status footer is empty.** | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-103 | Look at the header, the Dashboard, the status footer, and the Settings page tabs | None of them mention "engine" or "daemon". The header has the theme toggle. The Dashboard shows Principals / Extensions / Quick Actions. Settings has tabs for **General / Credentials / Runtimes / About** only — no Daemon tab. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If any of those surfaces shows an engine state badge or pill on a healthy run, or if Settings exposes a Daemon tab, mark **M** — happy-path invisibility is the v0.3 contract. |
+| T-103 | Look at the header, the Dashboard, the status footer, and the Settings page tabs | None of them mention "engine" or "daemon". The header has the theme toggle. The Dashboard shows pekos / Extensions / Quick Actions. Settings has tabs for **General / Credentials / Runtimes / About** only — no Daemon tab. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If any of those surfaces shows an engine state badge or pill on a healthy run, or if Settings exposes a Daemon tab, mark **M** — happy-path invisibility is the v0.3 contract. |
 | T-104 | **Owned-engine close path** — close the desktop window (X button / `⌘W` / `Alt+F4`). | Engine process exits within a few seconds. Re-run the `pgrep` from T-101 and confirm it's gone. No `zombie peko process holding the lockfile` left behind. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This path applies when the desktop spawned its own sidecar (the path T-101 → T-102 takes). For the **borrowed-engine** close path (desktop adopted a CLI daemon), see T-107a — the engine is expected to *survive* the desktop close, by design. |
-| T-105 | **First-run walkthrough (T-105)** — assuming a fresh profile (no principals, no credentials, `peko.onboarding.seen` not set in localStorage — see T-009..T-013 for the reset recipe), launch the desktop. | The **First-run walkthrough** overlay auto-appears full-screen above any route. It shows four steps: **(1) pick provider**, **(2) paste API key**, **(3) test credential**, **(4) create principal**. Each step has its own Skip control and a top-level "Skip for now" closes the overlay without creating anything. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If the overlay does NOT appear on a fresh profile, or if any of the four steps is missing, mark **M**. After T-105 the localStorage flag `peko.onboarding.seen = "1"` is set even when the user skipped — the "Replay onboarding" escape hatch lives in Settings → About. |
-| T-105a | Look at the two stat cards on the Dashboard (now reachable by clicking the Dashboard nav rail item — the walkthrough overlay is dismissed after T-105's last step or Skip) | **Principals: N** and **Extensions: M** — both real numbers (≥ 0), not "undefined" | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-105 | **First-run walkthrough (T-105)** — assuming a fresh profile (no principals, no credentials, `peko.onboarding.seen` not set in localStorage — see T-009..T-013 for the reset recipe), launch the desktop. | The **First-run walkthrough** overlay auto-appears full-screen above any route. It shows four steps: **(1) pick provider**, **(2) paste API key**, **(3) test credential**, **(4) create peko**. Each step has its own Skip control and a top-level "Skip for now" closes the overlay without creating anything. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If the overlay does NOT appear on a fresh profile, or if any of the four steps is missing, mark **M**. After T-105 the localStorage flag `peko.onboarding.seen = "1"` is set even when the user skipped — the "Replay onboarding" escape hatch lives in Settings → About. |
+| T-105a | Look at the two stat cards on the Dashboard (now reachable by clicking the Dashboard nav rail item — the walkthrough overlay is dismissed after T-105's last step or Skip) | **Pekos: N** and **Extensions: M** — both real numbers (≥ 0), not "undefined" | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-107 | **Adoption** — with the desktop closed, start a CLI daemon: `peko daemon start`. Then launch the desktop. | App opens. **Nothing in the chrome changes** — still no header pill, no Dashboard card, status footer empty. The engine's "borrowed from CLI daemon" state is **not surfaced** to the desktop user (T-103 invisibility contract — there is no Settings → Daemon tab). | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | If any chrome element claims the engine is "running" or "stopped" without telling the user whose process it is, mark **m** — that's a regression of the invisibility rule. |
 | T-107a | With the desktop open and a CLI daemon borrowed (state from T-107), close the desktop. Re-run `pgrep -f "peko daemon"`. | The CLI daemon is still alive. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Adoption is mirror-only — the desktop must not stop a process it did not start. |
 | T-107b | Reopen the desktop. | Chat works. No engine chrome appears. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Reopening the desktop after the CLI daemon survives confirms adoption round-trips cleanly. |
@@ -164,20 +164,20 @@ If you set `PEKO_HOME`, `PEKO_CONFIG_DIR`, or `PEKO_DATA_DIR` earlier, swap thos
 
 ---
 
-## 2. Principals (sidebar & lifecycle)
+## 2. Pekos (sidebar & lifecycle)
 
-A **Principal** is a long-lived AI assistant — it owns its memory, identity, and settings. Desktop users create one in-app via the **Create a principal** modal (Dashboard → New Principal, sidebar empty-state CTA, or Chat empty-state). The CLI (`peko principal new <name> …`) is still supported for automation.
+A **Peko** is a long-lived AI assistant — it owns its memory, identity, and settings. Desktop users create one in-app via the **Create a peko** modal (Dashboard → New peko, sidebar empty-state CTA, or Chat empty-state). The CLI (`peko new <name> …`) is still supported for automation.
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-201 | From the Dashboard, click **New Principal** (or open the sidebar empty-state CTA "Create your first principal" if the list is empty). Fill **Name** = `alice`, optionally a description, optionally pick a **provider** pill, optionally pick a **model** from the dropdown that appears, and click **Create**. | Modal closes. The new `alice` principal appears in the sidebar without a manual refresh. The wire path is `principalCreate()` (api.ts) → `principal_create` IPC (peko-runtime PR #185) → `PrincipalManager::create`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | **Replaces the old CLI invocation** — desktop users should not need the CLI for principal creation. The model dropdown only appears after a provider is selected and only lists models exposed by that provider's catalog entry. |
-| T-201a | **CLI regression** — open a terminal and run `peko principal new bob --provider openai --model gpt-4o-mini --description "CLI regression"` | Bob is created; appears in the sidebar after a refresh | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the CLI path that the desktop modal replaced; keep it green for automation users. |
-| T-201b | **CLI per-message override regression** — with `bob` selected, run `peko send bob "Say the model name" --model gpt-4o-mini` | Command succeeds and the response reflects the requested model. The principal's stored defaults are unchanged. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Validates per-message `--model` wiring (the `--provider` / `--no-stream` flags no longer exist on `send` — ADR-048). |
+| T-201 | From the Dashboard, click **New peko** (or open the sidebar empty-state CTA "Create your first peko" if the list is empty). Fill **Name** = `alice`, optionally a description, optionally pick a **provider** pill, optionally pick a **model** from the dropdown that appears, and click **Create**. | Modal closes. The new `alice` peko appears in the sidebar without a manual refresh. The wire path is `principalCreate()` (api.ts) → `principal_create` IPC (peko-runtime PR #185) → `PrincipalManager::create`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | **Replaces the old CLI invocation** — desktop users should not need the CLI for peko creation. The model dropdown only appears after a provider is selected and only lists models exposed by that provider's catalog entry. |
+| T-201a | **CLI regression** — open a terminal and run `peko new bob --provider openai --model gpt-4o-mini --description "CLI regression"` | Bob is created; appears in the sidebar after a refresh | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the CLI path that the desktop modal replaced; keep it green for automation users. |
+| T-201b | **CLI per-message override regression** — with `bob` selected, run `peko send bob "Say the model name" --model gpt-4o-mini` | Command succeeds and the response reflects the requested model. The peko's stored defaults are unchanged. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Validates per-message `--model` wiring (the `--provider` / `--no-stream` flags no longer exist on `send` — ADR-048). |
 | T-202 | In the desktop, refresh the sidebar (or switch pages and back) | Sidebar lists **alice** with a bot icon and a green dot (local, connected) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-203 | Click **alice** in the sidebar | Main panel navigates to **Chat** for alice (URL becomes `/chat/alice`) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-204 | Type `ali` in the **Search principals…** box | Only alice remains in the list | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-205 | Clear the search box | Full list returns | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-205a | **Duplicate-name error path** — try to create another principal named `alice` via the modal. | Modal surfaces an inline error pill (e.g. "principal alice already exists"). No row is added to the sidebar. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Proves the runtime's `Manager::create` → `AlreadyExists` → `ResponsePacket::Error` plumbing surfaces cleanly without crashing. |
+| T-205a | **Duplicate-name error path** — try to create another peko named `alice` via the modal. | Modal surfaces an inline error pill (e.g. "peko alice already exists"). No row is added to the sidebar. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Proves the runtime's `Manager::create` → `AlreadyExists` → `ResponsePacket::Error` plumbing surfaces cleanly without crashing. |
 | T-206 | Right-click on alice in the sidebar | Context menu appears with **Open Chat** and **View Activity** | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-207 | Click **View Activity** from the menu | Navigates to `/log/alice`, shows an empty-state ("No events yet" or similar) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-208 | Go back to Chat via the sidebar | Returns to `/chat/alice` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
@@ -235,7 +235,7 @@ A **Principal** is a long-lived AI assistant — it owns its memory, identity, a
 
 ---
 
-## 4. Principal Log (Activity)
+## 4. Peko Log (Activity)
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
@@ -248,7 +248,7 @@ A **Principal** is a long-lived AI assistant — it owns its memory, identity, a
 
 ## 5. Cron (scheduled tasks)
 
-> A cron job sends a scheduled message to a principal. Example: every 2 minutes, ask alice to say "pong".
+> A cron job sends a scheduled message to a peko. Example: every 2 minutes, ask alice to say "pong".
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
@@ -279,7 +279,7 @@ Skip this section if PekoHub login isn't configured.
 |---|---|---|---|---|---|
 | T-701 | Settings → Runtimes / Registry, log in with your hub token | Status flips to **authenticated** | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-702 | Open the **Registry** page, search for `alice` or any name | Result cards render with description + author | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-703 | Click a result's **Pull** button | A new principal appears in the sidebar after a refresh | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-703 | Click a result's **Pull** button | A new peko appears in the sidebar after a refresh | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
 
@@ -350,7 +350,7 @@ Skip this section if PekoHub login isn't configured.
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-1001 | Open **Daemon Log** (rail icon or Dashboard link) | Scrollable log of daemon lines renders | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-1002 | Send a chat message, return to Daemon Logs | New log lines mentioning the principal / send event appear | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-1002 | Send a chat message, return to Daemon Logs | New log lines mentioning the peko / send event appear | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
 
@@ -398,16 +398,16 @@ Skip this section if PekoHub login isn't configured.
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-1205 | Look around the desktop for any "Sessions" page, list, or dropdown | You should **not** find one. (Per-principal Activity is OK — that's `peko log`.) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-1205 | Look around the desktop for any "Sessions" page, list, or dropdown | You should **not** find one. (Per-peko Activity is OK — that's `peko log`.) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 > ⚠️ If T-1205 finds a Sessions page that lists other users' conversations, mark **B** (Blocker) and capture a screenshot.
 
-### 12.4 Portable Principal export / import
+### 12.4 Portable Peko export / import
 
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
-| T-1206 | Run `peko principal export alice --output /tmp/alice.principal` | `/tmp/alice.principal` exists; no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-1207 | Run `peko principal import /tmp/alice.principal --name alice-copy` | Command succeeds | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-1206 | Run `peko export alice --output /tmp/alice.peko` | `/tmp/alice.peko` exists; no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-1207 | Run `peko import /tmp/alice.peko --name alice-copy` | Command succeeds | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-1208 | Refresh the desktop sidebar | **alice-copy** appears in the sidebar | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---

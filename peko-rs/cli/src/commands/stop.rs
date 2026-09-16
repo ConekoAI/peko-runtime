@@ -35,7 +35,7 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
     // Group channels never trigger agent runs, so there is nothing
     // to stop.
     if let Recipient::Group(_) = parse_recipient(&args.principal) {
-        bail!("groups have no bound run; stop a principal instead");
+        bail!("groups have no bound run; stop a peko instead");
     }
     let peer = args.peer.as_deref().map(parse_subject).transpose()?;
     let thread = args.peer.clone().unwrap_or_else(|| "owner".to_string());

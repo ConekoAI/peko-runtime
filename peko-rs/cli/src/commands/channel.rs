@@ -211,7 +211,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                             .resolver()
                             .lookup_principal_id_by_name(&creator)
                             .with_context(|| {
-                                format!("Creator principal '{creator}' not found on disk")
+                                format!("Creator peko '{creator}' not found on disk")
                             })?;
                         // ADR-049 Phase 2 (D5): validate the explicit id
                         // up front; `None` keeps the chan_* mint.
@@ -248,7 +248,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                             .resolver()
                             .lookup_principal_id_by_name(&inviter)
                             .with_context(|| {
-                                format!("Inviter principal '{inviter}' not found on disk")
+                                format!("Inviter peko '{inviter}' not found on disk")
                             })?;
                         // ADR-049 Phase 1: a `user:<id>` invitee is taken
                         // verbatim (validated by wire form only); anything
@@ -260,7 +260,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                                     .resolver()
                                     .lookup_principal_id_by_name(&invitee)
                                     .with_context(|| {
-                                        format!("Invitee principal '{invitee}' not found on disk")
+                                        format!("Invitee peko '{invitee}' not found on disk")
                                     })?;
                                 Subject::from(&id)
                             }
@@ -334,7 +334,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                                 .resolver()
                                 .lookup_principal_id_by_name(&sender)
                                 .with_context(|| {
-                                    format!("Sender principal '{sender}' not found on disk")
+                                    format!("Sender peko '{sender}' not found on disk")
                                 })?;
                             Subject::from(&id)
                         };
@@ -432,9 +432,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         let p_id = paths
                             .resolver()
                             .lookup_principal_id_by_name(&principal)
-                            .with_context(|| {
-                                format!("Principal '{principal}' not found on disk")
-                            })?;
+                            .with_context(|| format!("Peko '{principal}' not found on disk"))?;
                         let resp = router.handle_list(&p_id).await?;
                         Ok(resp.channels)
                     })
@@ -498,9 +496,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         let principal_id = paths
                             .resolver()
                             .lookup_principal_id_by_name(&principal)
-                            .with_context(|| {
-                                format!("Principal '{principal}' not found on disk")
-                            })?;
+                            .with_context(|| format!("Peko '{principal}' not found on disk"))?;
                         let resp = router.handle_leave(&ch, &principal_id).await?;
                         Ok((resp.channel, resp.principal))
                     })

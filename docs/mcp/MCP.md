@@ -2,19 +2,19 @@
 
 > **Note (ADR-047 / ADR-050).** The `peko ext *` flow this document
 > originally described has been retired, and the per-category
-> `peko principal mcp` CLI that replaced it was removed in ADR-050
-> (2026-08-30). MCP servers now live directly in the principal's
-> workspace under `~/.peko/principal/<name>/mcp/<id>/server.json` —
+> `peko mcp` CLI that replaced it was removed in ADR-050
+> (2026-08-30). MCP servers now live directly in the peko's
+> workspace under `~/.peko/principals/<name>/mcp/<id>/server.json` —
 > install by copying the manifest in, list with `ls`:
 >
 > ```bash
-> mkdir -p ~/.peko/principal/<name>/mcp/<id>
-> cp <server-path>/server.json ~/.peko/principal/<name>/mcp/<id>/server.json
-> ls ~/.peko/principal/<name>/mcp/              # list workspace MCP servers
+> mkdir -p ~/.peko/principals/<name>/mcp/<id>
+> cp <server-path>/server.json ~/.peko/principals/<name>/mcp/<id>/server.json
+> ls ~/.peko/principals/<name>/mcp/              # list workspace MCP servers
 > ```
 >
 > No `start` / `stop` / `restart` / `status` step is required — the
-> runtime discovers the server at principal boot. See
+> runtime discovers the server at peko boot. See
 > [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md) for
 > the full workspace layout. The body of this document is retained for
 > historical reference and will be rewritten in a follow-up PR.
@@ -28,7 +28,7 @@ MCP is an open protocol that standardizes how applications provide context to LL
 - Connect to MCP servers via stdio (local) or SSE (remote)
 - Discover and invoke tools from MCP servers
 - Use MCP resources and prompts
-- Manage multiple MCP servers through the principal workspace (ADR-047) — formerly via the Unified Extension Architecture
+- Manage multiple MCP servers through the peko workspace (ADR-047) — formerly via the Unified Extension Architecture
 
 ## Quick Start
 
@@ -39,31 +39,31 @@ MCP servers are managed as workspace files. For example, to use an MCP filesyste
 ```bash
 # Install the MCP server into the principal's workspace (ADR-047/050):
 # copy its manifest under mcp/<id>/server.json
-mkdir -p ~/.peko/principal/<name>/mcp/<id>
-cp <server-path>/server.json ~/.peko/principal/<name>/mcp/<id>/server.json
+mkdir -p ~/.peko/principals/<name>/mcp/<id>
+cp <server-path>/server.json ~/.peko/principals/<name>/mcp/<id>/server.json
 ```
 
 ### 2. Verify It's Working
 
 ```bash
 # List MCP servers installed in the workspace
-ls ~/.peko/principal/<name>/mcp/
+ls ~/.peko/principals/<name>/mcp/
 ```
 
-## Managing MCP via the Principal Workspace
+## Managing MCP via the Peko Workspace
 
-Peko manages MCP servers through the principal workspace (ADR-047); the
-`peko ext *` and `peko principal mcp` CLI surfaces were retired
+Peko manages MCP servers through the peko workspace (ADR-047); the
+`peko ext *` and `peko mcp` CLI surfaces were retired
 (ADR-050).
 
 ### Install an MCP Server
 
-Copy the server's `server.json` into `~/.peko/principal/<name>/mcp/<id>/`.
+Copy the server's `server.json` into `~/.peko/principals/<name>/mcp/<id>/`.
 
 ### List MCP Servers
 
 ```bash
-ls ~/.peko/principal/<name>/mcp/
+ls ~/.peko/principals/<name>/mcp/
 ```
 
 ### Grant/Revoke MCP Capabilities
@@ -81,12 +81,12 @@ peko capability revoke --principal <principal-name> mcp:<mcp-server>
 ## Configuration
 
 MCP server settings live in `server.json` inside the workspace
-directory; edit the file directly and restart the principal (or the
+directory; edit the file directly and restart the peko (or the
 daemon) to pick up changes.
 
 ## Using MCP Tools with Agents
 
-MCP tools are automatically available to a Principal when the corresponding
+MCP tools are automatically available to a peko when the corresponding
 `mcp:` capability is granted. When MCP servers are present in the
 workspace, their tools are discovered and merged with built-in tools.
 
@@ -98,7 +98,7 @@ workspace, their tools are discovered and merged with built-in tools.
 grants = ["mcp:filesystem-mcp"]
 ```
 
-Grant the MCP capability to the Principal:
+Grant the MCP capability to the peko:
 
 ```bash
 peko capability grant --principal coding-agent mcp:filesystem-mcp

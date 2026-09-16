@@ -3,7 +3,9 @@
 //! This module contains all CLI subcommands for Peko.
 //! Each submodule handles a specific command category:
 //!
-//! - `principal`: Principal (top-level AI actor) lifecycle management
+//! - `principal`: peko (top-level AI actor) lifecycle management.
+//!   The verbs are flattened to the top level (`peko create`, ...);
+//!   `peko principal <sub>` remains as a hidden alias (ADR-059).
 //! - `config`: Configuration management
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Long-running daemon mode (cron engine + IPC server)
@@ -45,10 +47,10 @@ use std::path::PathBuf;
 #[command(propagate_version = true)]
 #[command(after_help = "Examples:
   peko daemon start                          # Start the daemon
-  peko principal create myprincipal          # Create a new Principal
-  peko principal export myprincipal -o myprincipal.principal  # Export Principal
-  peko send myprincipal \"Hello\"             # Send message to a Principal
-  peko log myprincipal                       # Read principal activity (owner-root view)
+  peko create my-peko                        # Create a new peko
+  peko export my-peko -o my-peko.peko        # Export a peko package
+  peko send my-peko \"Hello\"                  # Send message to a peko
+  peko log my-peko                           # Read peko activity (owner-root view)
 ")]
 pub struct Cli {
     /// Configuration directory override
@@ -90,19 +92,33 @@ pub struct Cli {
 /// Top-level commands
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Principal management commands (AI Principal container)
-    #[command(subcommand)]
+    /// Peko lifecycle management (ADR-059)
+    ///
+    /// A peko is the user-facing AI actor: identity, memory, intent,
+    /// governance, capabilities, and thin Markdown agent prompts.
+    /// The lifecycle verbs live directly at the top level —
+    /// `peko create`, `peko list`, `peko export`, ... — because
+    /// `peko send` / `peko log` / `peko stop` already address a peko
+    /// without a namespace.
+    #[command(flatten)]
+    Peko(principal::PrincipalCommands),
+
+    /// Deprecated hidden alias for the peko lifecycle commands
+    /// (ADR-059): `peko principal <sub>` still dispatches to the
+    /// same handlers, but is no longer shown in help. Migrate to
+    /// the top-level forms.
+    #[command(subcommand, hide = true)]
     Principal(principal::PrincipalCommands),
 
-    /// Send a message to a Principal (unified command)
+    /// Send a message to a peko (unified command)
     ///
-    /// This is the primary way to interact with a Principal. Examples:
-    ///   peko send myprincipal "Hello"
-    ///   peko send myprincipal --file prompt.txt
-    ///   echo "Hello" | peko send myprincipal --stdin
+    /// This is the primary way to interact with a peko. Examples:
+    ///   peko send my-peko "Hello"
+    ///   peko send my-peko --file prompt.txt
+    ///   echo "Hello" | peko send my-peko --stdin
     Send(send::SendArgs),
 
-    /// Soft-stop the running turn on your thread with a Principal.
+    /// Soft-stop the running turn on your thread with a peko.
     ///
     /// The run cancels at the next agentic boundary and a
     /// `⏹ stopped by user` marker is posted to the thread. Idempotent:
@@ -111,10 +127,10 @@ pub enum Commands {
     /// thread.
     Stop(stop::StopArgs),
 
-    /// Read a Principal's activity (owner-root view by default)
+    /// Read a peko's activity (owner-root view by default)
     ///
     /// There is no `peko session` command and there will never be one;
-    /// this command is the only user-facing way to inspect a Principal's
+    /// this command is the only user-facing way to inspect a peko's
     /// working state without running a turn.
     Log(log::LogCommand),
 
@@ -142,8 +158,8 @@ pub enum Commands {
     #[command(subcommand)]
     Daemon(daemon::DaemonCommands),
 
-    /// Multi-principal chat primitive (channels) — read/create/post
-    /// events across principals.
+    /// Multi-peko chat primitive (channels) — read/create/post
+    /// events across pekos.
     ///
     /// Examples:
     ///   peko channel create alice "team alpha"
@@ -158,7 +174,7 @@ pub enum Commands {
     #[command(subcommand)]
     Model(model::ModelCommands),
 
-    /// Search the PekoHub registry for principals and extensions
+    /// Search the PekoHub registry for pekos and extensions
     #[command(subcommand)]
     Search(search::SearchCommands),
 
@@ -174,16 +190,16 @@ pub enum Commands {
     #[command(subcommand, hide = true)]
     Tunnel(tunnel::TunnelCommands),
 
-    /// Per-principal token quota management (F18)
+    /// Per-peko token quota management (F18)
     ///
-    /// Inspect or replace a Principal's input / output / request
+    /// Inspect or replace a peko's input / output / request
     /// limits. The daemon owns the live counters; the CLI is a thin
     /// IPC client.
     ///
     /// Examples:
-    ///   peko quota status myprincipal
-    ///   peko quota set myprincipal --input 1000000 --output 500000 --cycle daily
-    ///   peko quota reset myprincipal
+    ///   peko quota status my-peko
+    ///   peko quota set my-peko --input 1000000 --output 500000 --cycle daily
+    ///   peko quota reset my-peko
     #[command(subcommand)]
     Quota(quota::QuotaCommands),
 
