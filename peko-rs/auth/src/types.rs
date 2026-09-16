@@ -125,6 +125,18 @@ pub struct AuthConfigFile {
     pub trusted_issuers: Vec<String>,
     /// Rate limit configuration
     pub rate_limit: RateLimitConfigFile,
+    /// ADR-058 post-review cutoff gate: accept inbound cross-runtime
+    /// channel events/invites whose author is NOT a `did:key`
+    /// principal (runtime-vouched / "asserted-remote"). Rollout
+    /// default `true`; set `false` to enforce the ADR's post-migration
+    /// refusal — after every peer runtime has re-genesised onto D1
+    /// keys this should be flipped off permanently.
+    #[serde(default = "default_accept_asserted_remote")]
+    pub accept_asserted_remote_channel_authors: bool,
+}
+
+fn default_accept_asserted_remote() -> bool {
+    true
 }
 
 impl Default for AuthConfigFile {
@@ -136,6 +148,7 @@ impl Default for AuthConfigFile {
             enable_api_key: false,
             trusted_issuers: vec!["pekohub".to_string()],
             rate_limit: RateLimitConfigFile::default(),
+            accept_asserted_remote_channel_authors: default_accept_asserted_remote(),
         }
     }
 }

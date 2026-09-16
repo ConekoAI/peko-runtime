@@ -107,6 +107,17 @@ pub trait TunnelHost: Send + Sync {
     fn principal_signing_keys(&self)
         -> Arc<dyn super::cross_runtime_channel::PrincipalSigningKeys>;
 
+    /// ADR-058 post-review cutoff gate: whether inbound cross-runtime
+    /// channel events/invites authored by NON-`did:key` principals
+    /// (runtime-vouched / "asserted-remote") are accepted. Rollout
+    /// default `true`; the production host wires this to
+    /// `AuthConfig::accept_asserted_remote_channel_authors` so the
+    /// ADR's post-migration refusal (`false`) is a config flip, not a
+    /// code change.
+    fn accept_asserted_remote_channel_authors(&self) -> bool {
+        true
+    }
+
     /// Cross-runtime channel port. The dispatcher's
     /// `handle_inbound_tunnel_channel_event` calls
     /// [`TunnelChannelPort::append_remote_event`] on this after

@@ -1435,6 +1435,18 @@ impl TunnelDispatcher {
                 }
             }
         } else {
+            // ADR-058 post-review cutoff gate: a non-`did:key` author
+            // is "asserted-remote" — the runtime vouches, the author
+            // proves nothing. Accepted during rollout only; the
+            // `accept_asserted_remote_channel_authors` config flip
+            // (auth_config.toml) enforces the post-migration refusal.
+            if !self.host.accept_asserted_remote_channel_authors() {
+                warn!(
+                    "inbound TunnelChannelEvent: dropping asserted-remote (non-did:key) author {} — accept_asserted_remote_channel_authors=false (request_id={request_id})",
+                    payload.source_principal_did
+                );
+                return Ok(());
+            }
             debug!(
                 "inbound TunnelChannelEvent: non-did:key author {} accepted as runtime-vouched (request_id={request_id})",
                 payload.source_principal_did
@@ -1666,6 +1678,15 @@ impl TunnelDispatcher {
                 return Ok(());
             }
         } else {
+            // ADR-058 post-review cutoff gate (mirrors the event
+            // handler): a non-`did:key` creator is asserted-remote.
+            if !self.host.accept_asserted_remote_channel_authors() {
+                warn!(
+                    "inbound TunnelChannelInvite: dropping asserted-remote (non-did:key) creator_did {} — accept_asserted_remote_channel_authors=false (request_id={request_id})",
+                    payload.creator_did
+                );
+                return Ok(());
+            }
             debug!(
                 "inbound TunnelChannelInvite: non-did:key creator_did {} accepted as runtime-vouched (request_id={request_id})",
                 payload.creator_did

@@ -2138,6 +2138,14 @@ impl crate::tunnel::TunnelHost for AppState {
         Arc::clone(&self.tunnel_channel_port)
     }
 
+    /// ADR-058 post-review cutoff gate: wired from the auth config
+    /// (`auth_config.toml` → `accept_asserted_remote_channel_authors`,
+    /// rollout default `true`). Flipping it to `false` refuses
+    /// runtime-vouched (non-`did:key`) channel authors.
+    fn accept_asserted_remote_channel_authors(&self) -> bool {
+        self.auth_config.accept_asserted_remote_channel_authors()
+    }
+
     /// Sprint 3 Phase 12a: cross-runtime DM mirror bootstrap. The
     /// dispatcher calls this after the invite signature verifies (see
     /// the trait docs for the contract).

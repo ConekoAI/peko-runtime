@@ -254,15 +254,27 @@ impl TunnelChannelPort {
         // the same payload segment as the runtime counter-signature.
         // Otherwise the envelope keeps the legacy wire id and goes
         // out runtime-vouched (`author_signature: ""`).
+        //
+        // ADR-058 review fix (fail-closed): a vault-backed `did:key`
+        // principal whose signing key cannot be loaded (transient
+        // vault failure) must FAIL the send — silently downgrading to
+        // the legacy wire id would produce exactly the runtime-vouched
+        // envelope the receiver's D2 author gate exists to refuse.
         let author: Option<(String, Arc<ed25519_dalek::SigningKey>)> = match source {
             Subject::Principal(did) => {
                 let pid = PrincipalId::from_did(did);
                 match ctx.principal_keys.did_for_principal(&pid).await {
-                    Some(did) => ctx
-                        .principal_keys
-                        .signing_key_for_did(&did)
-                        .await
-                        .map(|key| (did, key)),
+                    Some(did) => match ctx.principal_keys.signing_key_for_did(&did).await {
+                        Some(key) => Some((did, key)),
+                        None => {
+                            return Err(format!(
+                                "author signing key unavailable for vault-backed principal \
+                                     {did} (channel={}): refusing to send a runtime-vouched \
+                                     envelope for a did:key author",
+                                channel.as_str()
+                            ));
+                        }
+                    },
                     None => None,
                 }
             }
@@ -595,7 +607,20 @@ impl TunnelChannelPort {
         // envelope gains an author JWS over the same payload segment.
         // The bare `ChannelPort::invite` path passes a local id with
         // no vault key → legacy runtime-vouched invite.
+        //
+        // ADR-058 review fix (fail-closed): a `did:key` creator whose
+        // signing key cannot be loaded must FAIL the invite — the
+        // receiver's author gate drops unsigned did:key envelopes, so
+        // silently downgrading would send an envelope the receiver
+        // refuses while masking the vault failure here.
         let author_key = ctx.principal_keys.signing_key_for_did(creator_did).await;
+        if author_key.is_none() && creator_did.starts_with("did:key:") {
+            return Err(format!(
+                "creator signing key unavailable for vault-backed creator {creator_did} \
+                 (channel={}): refusing to send a runtime-vouched invite for a did:key creator",
+                channel.as_str()
+            ));
+        }
         let source_principal_wire = if author_key.is_some() {
             creator_did.to_string()
         } else {

@@ -467,3 +467,101 @@ no logic change (spike 2).
 | Unguarded local socket (modes, uid), source-IP trust, dead `bind_address` knob | D6 |
 | Ungated `ChannelMembers`/`ChannelList`; no mirrored-event provenance | D7 |
 | (Not findings, future asks) delegated authz, hub-blind content | D8 (deferred) |
+
+---
+
+## 6. Post-implementation review (2026-09-16, ADR-057 §5-style pass)
+
+A decision-by-decision re-audit of both repos on the implementation
+branches (`peko-runtime` `docs/adr-058-origin-signed-messaging` @
+`17c5d8d1`, `pekohub` `feat/adr-058-envelope-mirror` @ `f812ec1`)
+confirmed every decision is implemented as specified — D1 minting +
+`principal-identity` vault custody + dual-form `did_for_principal`
+resolution; D2 dual-JWS with byte-identical payload-segment binding,
+receiver-side `is_remote_member` + creator≡source gates; D3 fixed
+canonical JWS header + `iat`/`exp` freshness (exp 300 s, leeway 30 s /
+60 s future-iat) with the replay cache demoted to second layer; D4
+nonce-burning single-use challenge with `owner` disclosed and
+pass-through-verbatim on both sides; D5 required `kind` claim with the
+`principal:` path deleted and fail-closed `from_bridge_claim`
+(empty / `:`-carrying / visitor-`local` all rejected); D6 `0700`/`0600`
+modes + Linux `SO_PASSCRED` same-uid (fail-closed on missing creds) +
+`bind_address` knob deletion, macOS datagram residual documented; D7
+membership/operator read gates + `{"origin","event"}` provenance
+envelope with legacy lines parsing as `local`. Targeted suites green:
+12/12 signature, dispatcher author-gate, 3/3 PoP, members-gate,
+19/19 subject (hub's 236/236 + tsc clean reported at commit, not
+re-run here). The pass surfaced the following:
+
+1. **Sender-side silent downgrade (medium).** In
+   `tunnel_channel_port.rs`, when a vault-backed `did:key` principal's
+   key load fails transiently (`did_for_principal` returns the DID but
+   `signing_key_for_did` returns `None` — vault read error), the
+   envelope silently falls back to the legacy wire id with an empty
+   author signature, which the receiver accepts as runtime-vouched.
+   The downgrade is exactly the path D2 exists to close. Fix: when the
+   resolved principal DID is `did:key`, a missing signing key must
+   fail the send (or at minimum warn loudly), never downgrade.
+2. **No cutoff for the runtime-vouched path (medium, process).** Both
+   inbound handlers accept non-`did:key` authors as runtime-vouched
+   indefinitely; the ADR's "post-migration, `asserted-remote` appends
+   are refused" has no enforcement switch or date. Legacy
+   `did:peko:public:*` principals still exist, and the offline-CLI
+   minting fallback (no vault) still produces them — so the
+   unauthenticated-author path stays live in practice. Needs either a
+   re-key tool for existing principals or a config gate with a cutoff.
+3. **Hub register upsert fires before the ownership check (low).**
+   `runtimes.ts` runs `onConflictDoUpdate` (which overwrites
+   `displayName` and bumps `lastSeenAt`) *then* 403s when
+   `row.ownerId !== user.id` — a valid-PoP caller who is not the row
+   owner still clobbers the owner's display name and last-seen stamp.
+   Move the ownership check before the upsert or make the update
+   conditional on `ownerId`.
+4. **Migration 0014 not applied (deploy blocker, hub).**
+   `principal_did_verified` exists in `schema.ts` and
+   `drizzle/0014_add_principal_did_verified.sql` is committed but not
+   applied to the database; announce persistence of the verified flag
+   will fail until it runs.
+5. **Per-process challenge stores (low, scale-out note).** The D4
+   register-challenge store (like the pre-existing tunnel-handshake
+   nonce store) is in-memory per process; a multi-replica hub breaks
+   both PoP flows. Fine for the single-instance deployment; revisit
+   with shared storage at scale-out.
+6. **Accepted, no action.** (a) Replay-cache FIFO eviction remains
+   flood-evictable, but the 300 s signed `exp` bounds a replayed
+   envelope's usefulness — the D3 belt-and-suspenders posture as
+   designed. (b) Invites deliberately skip `is_remote_member` (an
+   invite *creates* membership); a compromised sending runtime keeps
+   only the nuisance powers the Consequences section already accepts.
+   (c) The per-DID signing-key cache is never invalidated — sound,
+   since DID = key means a re-genesis mints a new DID.
+
+### Resolutions (2026-09-16, same-day fix pass)
+
+1. **Fixed (fail-closed send).** `fanout_event` / `fanout_dm_invite`
+   now return an error when a `did:key` author/creator's signing key
+   cannot be loaded — no silent downgrade to runtime-vouched.
+2. **Fixed (cutoff gate).** `auth_config.toml` gains
+   `accept_asserted_remote_channel_authors` (default `true` for
+   rollout; `false` refuses asserted-remote authors), wired
+   `AuthConfig` → `TunnelHost::accept_asserted_remote_channel_authors`
+   → both inbound handlers.
+3. **Fixed (hub register ordering).** Ownership is checked (and 403
+   returned) *before* the upsert; the post-write re-check remains as
+   defense in depth.
+4. **Applied (hub schema).** `principal_did_verified` reached the
+   database via `drizzle-kit push` — the repo's actual schema workflow.
+   **Follow-up flagged:** the drizzle *migrate* journal cannot
+   bootstrap a fresh database (entries 0010–0013 missing, synthetic
+   `when` timestamps skip 0008a–d, and no migration ever creates the
+   `runtimes` table — dev databases were built with `push`). The
+   migrate chain should be squashed to a fresh baseline or retired in
+   favor of push.
+5. **Cleaned (dead code).** The hub's retired P2P RPC relay
+   (`principal_to_principal_request`/`_response` — no runtime has sent
+   it since sprint 3 Phase 12b) is deleted: dispatch arms, handlers,
+   in-flight registry, `HubA2A*` counters, mirror types, and the
+   `principal_forwarding` integration suite (replaced by a
+   channel-event metrics test). The runtime's parsed-but-never-read
+   `[direct]` config block (`DirectNetworkConfig`) is deleted with a
+   parse-compat test.
