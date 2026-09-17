@@ -448,7 +448,15 @@ async fn test_registry_client_push_and_pull() {
         peko_core::registry::agent_registry::agent_manifest_digest(&agent_manifest)
             .expect("manifest digest");
 
-    // Also store the RegistryManifest JSON for the client
+    // Also store the RegistryManifest JSON for the client.
+    //
+    // This inherits the `principal` kind from `RegistryManifest`'s
+    // default, and that is load-bearing: PekoHub accepts exactly one
+    // kind and answers anything else with `410 Gone` (ADR-056 D6 —
+    // `agent` was retired by ADR-041, `extension` by ADR-047 §5 /
+    // ADR-050). These hub-gated tests silently pushed `kind = "agent"`
+    // for as long as `default_kind()` returned the retired value, so
+    // never set a non-`principal` kind here.
     let mut reg_manifest = RegistryManifest::new("test-agent", "1.0.0")
         .with_digest(manifest_digest.as_str())
         .with_ref(format!("{host}/ns/test-agent:v1.0"));
@@ -579,7 +587,9 @@ async fn test_registry_client_skips_existing_layers() {
         peko_core::registry::agent_registry::agent_manifest_digest(&agent_manifest)
             .expect("manifest digest");
 
-    // Store RegistryManifest JSON
+    // Store RegistryManifest JSON. Inherits the `principal` kind from
+    // the default — see the note in `test_registry_client_push_and_pull`
+    // for why a non-`principal` kind is rejected with `410 Gone`.
     let mut reg_manifest = RegistryManifest::new("skip-test", "1.0.0")
         .with_digest(manifest_digest.as_str())
         .with_ref(format!("{}/ns/skip-test:v1.0", backend.url));
