@@ -454,15 +454,15 @@ impl RegistryClient {
         Ok(manifest)
     }
 
-    /// Push a template artifact to a registry (ADR-056).
+    /// Push a seed artifact to a registry (ADR-056).
     ///
     /// The registry distributes DNA, not creatures: the descriptor's
-    /// config blob is the **template TOML** (a stripped
+    /// config blob is the **seed TOML** (a stripped
     /// `principal.toml` — no DID, no keys, no lived state) and there
     /// are no content layers. The publisher is established by the
     /// registry credential at push time; content integrity is carried
     /// by the OCI digests. (Detached cryptographic endorsement of the
-    /// template bytes by the source DID is a tracked follow-up.)
+    /// seed bytes by the source DID is a tracked follow-up.)
     ///
     /// Full-existence snapshots are never pushed — they travel
     /// peer-to-peer as cryogenic transport, not through the registry.
@@ -518,7 +518,7 @@ impl RegistryClient {
     ///
     /// Two artifact shapes are recognized by the OCI config blob:
     ///
-    /// - **Template TOML** (ADR-056 — the only shape new pushes
+    /// - **Seed TOML** (ADR-056 — the only shape new pushes
     ///   produce): the config blob is a stripped `principal.toml`. It
     ///   is written verbatim to `output_path` and ground via
     ///   `peko principal create <name> -f <file>` (fresh identity,
@@ -539,14 +539,14 @@ impl RegistryClient {
 
         let manifest = self.pull(registry_ref, progress).await?;
 
-        // The config blob is either a template TOML or a signed
+        // The config blob is either a seed TOML or a signed
         // PrincipalManifest.
         let config_bytes = self.registry.get_layer(&manifest.config.digest).await?;
         let config_str = std::str::from_utf8(&config_bytes)
             .map_err(|e| anyhow::anyhow!("principal config blob is not utf-8: {e}"))?;
 
         if PrincipalManifest::from_toml(config_str).is_err() {
-            // Template artifact: write the TOML verbatim.
+            // Seed artifact: write the TOML verbatim.
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }

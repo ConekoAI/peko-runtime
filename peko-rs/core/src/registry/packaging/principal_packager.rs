@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// snapshot (definition + identity-bearing local state + workspace
 /// tooling). The pre-ADR-056 "definition only" mode and its
 /// `include_sessions` hybrid flag are removed: cloning is
-/// `principal create -f <template.toml>` (fresh DID, fresh genesis),
+/// `peko create -s <seed.toml>` (fresh DID, fresh genesis),
 /// and transporting a live principal is export → import of a
 /// snapshot (same DID, state verbatim). Registry distribution uses
 /// [`PrincipalPackager::export_for_registry`], which emits a
@@ -67,7 +67,7 @@ pub struct PrincipalRegistryDescriptor {
 /// excluded and rebuilt at import.
 ///
 /// **Grounding semantics (ADR-056):** there are exactly two ways to
-/// ground a principal at a runtime. `principal create -f` grows one
+/// ground a principal at a runtime. `peko create -s` grows one
 /// from a template (fresh DID, genesis runs); importing a snapshot
 /// wakes a transported one (same DID, boot state and schedule
 /// verbatim, no genesis re-seed). A DID is therefore never forked
@@ -78,7 +78,7 @@ pub struct PrincipalRegistryDescriptor {
 /// emits a *template* payload — config with `id`/`did`/`boot_state`
 /// stripped, agent prompts, and workspace tooling, signed by the
 /// source DID as endorsement. No keys, no sessions, no local state
-/// ever leaves the host through the registry; a pulled template
+/// ever leaves the host through the registry; a pulled seed
 /// clones via a freshly minted identity.
 ///
 /// **Phase A/5/7 history:** the legacy `with_memory_dir` knob and the
@@ -142,11 +142,11 @@ impl PrincipalPackager {
         self.create_archive(&files, &options).await
     }
 
-    /// Emit the template payload for registry distribution (ADR-056).
+    /// Emit the seed payload for registry distribution (ADR-056).
     ///
     /// The registry distributes DNA, not creatures — and DNA is a
     /// **plain TOML file** (a `principal.toml` with `id`, `did`, and
-    /// `boot_state` stripped), exactly the shape `principal create -f`
+    /// `boot_state` stripped), exactly the shape `peko create -s`
     /// consumes. No package wrapper, no keys, no sessions, no
     /// cron/plans ever leave the host through the registry: the TOML
     /// is inspectable with `cat`, diffable, and groundable via a
@@ -159,48 +159,48 @@ impl PrincipalPackager {
         self,
         options: PrincipalExportOptions,
     ) -> anyhow::Result<PrincipalRegistryDescriptor> {
-        let template_toml = self.template_toml()?;
-        let template_bytes = template_toml.into_bytes();
+        let seed_toml = self.seed_toml()?;
+        let seed_bytes = seed_toml.into_bytes();
 
         // Write the TOML artifact to disk (the caller treats it as the
         // pushed artifact and may clean it up).
         let artifact_path = match &options.output_path {
             Some(p) => PathBuf::from(p),
-            None => PathBuf::from(format!("{}.template.toml", self.config.name)),
+            None => PathBuf::from(format!("{}.seed.toml", self.config.name)),
         };
         if let Some(parent) = artifact_path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| {
                 format!("Failed to create output directory: {}", parent.display())
             })?;
         }
-        tokio::fs::write(&artifact_path, &template_bytes).await?;
+        tokio::fs::write(&artifact_path, &seed_bytes).await?;
 
-        // OCI transport: the template TOML IS the config blob; there
+        // OCI transport: the seed TOML IS the config blob; there
         // are no content layers.
         let mut layer_data: HashMap<String, Vec<u8>> = HashMap::new();
-        let config_digest = compute_digest(&template_bytes);
-        layer_data.insert(config_digest.clone(), template_bytes.clone());
+        let config_digest = compute_digest(&seed_bytes);
+        layer_data.insert(config_digest.clone(), seed_bytes.clone());
 
         let did_doc = serde_json::to_vec_pretty(&self.identity.to_did_document()?)?;
 
         Ok(PrincipalRegistryDescriptor {
             package_path: artifact_path,
-            manifest_toml: template_bytes,
+            manifest_toml: seed_bytes,
             layers: Vec::new(),
             layer_data,
             did_doc,
         })
     }
 
-    /// The stripped template TOML (ADR-056): a `principal.toml` whose
-    /// `id`, `did`, and `boot_state` are removed, so `principal create
-    /// -f` mints a fresh identity and infers the boot state.
-    pub fn template_toml(&self) -> anyhow::Result<String> {
-        let mut template_config = self.config.clone();
-        template_config.id = None;
-        template_config.did = None;
-        template_config.boot_state = None;
-        toml::to_string_pretty(&template_config)
+    /// The stripped seed TOML (ADR-056): a `principal.toml` whose
+    /// `id`, `did`, and `boot_state` are removed, so `peko create -s`
+    /// mints a fresh identity and infers the boot state.
+    pub fn seed_toml(&self) -> anyhow::Result<String> {
+        let mut seed_config = self.config.clone();
+        seed_config.id = None;
+        seed_config.did = None;
+        seed_config.boot_state = None;
+        toml::to_string_pretty(&seed_config)
             .map_err(|e| anyhow::anyhow!("Failed to serialize template config: {e}"))
     }
 
@@ -756,10 +756,10 @@ mod tests {
     /// ADR-056: the registry artifact is a plain TOML template — a
     /// `principal.toml` stripped of `id`/`did`/`boot_state`. It is
     /// not a package at all: inspectable with `cat`, groundable via
-    /// `principal create -f`, and incapable of carrying keys or lived
+    /// `peko create -s`, and incapable of carrying keys or lived
     /// state.
     #[tokio::test]
-    async fn registry_template_is_a_plain_toml() {
+    async fn registry_seed_is_a_plain_toml() {
         use crate::principal::config::BootState;
 
         let identity = Identity::new("template", DIDScope::Local).await.unwrap();
@@ -768,7 +768,7 @@ mod tests {
         config.set_boot_state(BootState::Organized);
 
         let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("template.template.toml");
+        let out = tmp.path().join("template.seed.toml");
 
         let packager = PrincipalPackager::new(config, identity);
         let descriptor = packager

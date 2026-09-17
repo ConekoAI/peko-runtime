@@ -5,17 +5,17 @@
 # Requires MINIMAX_API_KEY in the environment.
 #
 # Verifies the single-command UX:
-#   1. `peko create <name> -f template.toml` is BLOCKING and
+#   1. `peko create <name> -s seed.toml` is BLOCKING and
 #      returns only when the principal is alive: workspace provisioned,
-#      definition seeded from the template (identity, intent, inline
+#      definition seeded from the seed file (identity, intent, inline
 #      persona), daemon started, genesis + keepalive jobs seeded, and
 #      the one-shot genesis turn executed by the real model.
 #   2. Post-conditions: boot state genesis_pending, keepalive job
 #      present, trunk session JSONL carries the genesis brief AND a
-#      real assistant turn, template persona landed in agents/primary.md.
+#      real assistant turn, seed persona landed in agents/primary.md.
 #   3. Ingress: `peko send` round-trips through the peer child with the
 #      real model while the pipeline is live.
-#   4. Bare create against a RUNNING daemon: `--detach` + no template
+#   4. Bare create against a RUNNING daemon: `--detach` + no seed
 #      exercises the PrincipalReload IPC path (daemon learns the new
 #      principal without a restart) and the default-definition path
 #      (empty identity → genesis adopts).
@@ -50,11 +50,11 @@ flow_main() {
     --key "$MINIMAX_API_KEY"
   peko_iso_assert_rc_zero
 
-  # ── definition template (a principal.toml + inline persona) ─────
-  local template="$_PEKO_ISO_TEMPDIR/alive-e2e.template.toml"
+  # ── seed definition (a principal.toml + inline persona) ─────────
+  local seed="$_PEKO_ISO_TEMPDIR/alive-e2e.seed.toml"
   # NOTE: top-level keys (preferred_model_id, persona) must precede the
   # table sections — classic TOML scoping.
-  cat >"$template" <<TOML
+  cat >"$seed" <<TOML
 name = "alive-e2e"
 preferred_model_id = "minimax-m3"
 persona = """
@@ -72,7 +72,7 @@ TOML
 
   # ── ONE command: blocking create → alive ─────────────────────────
   echo "⏳ blocking create (includes the genesis turn; MiniMax latency applies)…"
-  peko_iso_run principal create "$principal" -f "$template" --wait-timeout 420
+  peko_iso_run principal create "$principal" -s "$seed" --wait-timeout 420
   peko_iso_assert_rc_zero
   peko_iso_assert_contains "is alive"
 
@@ -98,7 +98,7 @@ print(" ".join(j["id"] for j in d["jobs"]))
   fi
 
   if grep -q "You are Alive E2E, a compact probe principal" "$shared_dir/agents/primary.md"; then
-    echo "✅ template persona landed in agents/primary.md"
+    echo "✅ seed persona landed in agents/primary.md"
   else
     echo "❌ persona missing from agents/primary.md" >&2
     cat "$shared_dir/agents/primary.md" >&2

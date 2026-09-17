@@ -38,6 +38,33 @@ what user-facing surfaces now call "peko"; the terms are interchangeable.
 
 ---
 
+## Terminology (ADR-060)
+
+Since ADR-060, the artifact you hand to `peko create` is a **seed** —
+the DNA a peko grows from, not a template stamped into copies. (A
+template implies the output matches its source; `create` strips
+`id`/`did`/`boot_state` and mints a fresh identity every time.)
+
+| Term | Meaning |
+|---|---|
+| **a seed** | the stripped `principal.toml` DNA — the input to `peko create` |
+| **seeding** | the act: P1 definition, P2 genesis job scheduling |
+| **a peko** | the actor that grows from a seed |
+| **an existence** | a full `.peko` snapshot — never distributed by the hub |
+| **the registry** | pekohub; it distributes seeds, never creatures |
+
+`peko create -s <seed.toml>` is the current flag; `-f`/`--file` is a
+hidden compat alias. The word "template" survives in two unrelated
+senses that are **not** renames of this concept — provider/model
+presets (`template_id`, `peko model add --template anthropic`) and
+prompt templates (`peko-rs/engine/src/prompt/`).
+
+Historical documents say "template" or `-f` for what this ADR calls a
+seed; per ADR-059's policy they are immutable records, and this table
+is the bridge.
+
+---
+
 ## What a PEKO is
 
 A self-organizing tree of dual-aspect nodes owned by one principal. Each

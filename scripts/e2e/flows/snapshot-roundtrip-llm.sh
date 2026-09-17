@@ -7,8 +7,8 @@
 # Verifies that `peko export` → `peko remove` →
 # `peko import` is cryogenic TRANSPORT of a LIVE principal —
 # not cloning (there is exactly one export shape; cloning is
-# `principal create -f` with a fresh DID):
-#   1. `principal create -f` runs the real genesis turn (ADR-054);
+# `peko create -s` with a fresh DID):
+#   1. `peko create -s` runs the real genesis turn (ADR-054);
 #   2. authored state is accumulated the way the trunk would:
 #      a cron job via the CronCreate tool surface, a workspace skill,
 #      a kb note, a plan file — plus a hand-stamp to `organized`
@@ -51,8 +51,8 @@ flow_main() {
   peko_iso_assert_rc_zero
 
   # ── ONE command: blocking create → alive (real genesis turn) ─────
-  local template="$tempdir/snap-e2e.template.toml"
-  cat >"$template" <<TOML
+  local seed="$tempdir/snap-e2e.seed.toml"
+  cat >"$seed" <<TOML
 name = "snap-e2e"
 preferred_model_id = "minimax-m3"
 persona = """
@@ -69,7 +69,7 @@ preferences = ["Keep replies short"]
 TOML
 
   echo "⏳ blocking create (includes the genesis turn; MiniMax latency applies)…"
-  peko_iso_run principal create "$principal" -f "$template" --wait-timeout 420
+  peko_iso_run principal create "$principal" -s "$seed" --wait-timeout 420
   peko_iso_assert_rc_zero
   peko_iso_assert_contains "is alive"
   echo "✅ principal created and alive (genesis turn done)"

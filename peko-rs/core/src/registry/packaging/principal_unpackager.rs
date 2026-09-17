@@ -163,14 +163,14 @@ impl PrincipalUnpackager {
             .clone();
         let manifest = self.parse_manifest(&files)?;
 
-        // ADR-056: templates are plain TOML files ground via
-        // `principal create -f` — keyless packages are no longer a
+        // ADR-056: seeds are plain TOML files ground via
+        // `peko create -s` — keyless packages are no longer a
         // supported artifact shape. Fail fast, before any crypto work.
         if !files.contains_key("identity/keys.enc") {
             anyhow::bail!(
-                "This package carries no keys — it looks like a template artifact. \
-                 Templates are plain TOML files: ground one with \
-                 `peko principal create <name> -f <template.toml>`."
+                "This package carries no keys — it looks like a seed artifact. \
+                 Seeds are plain TOML files: ground one with \
+                 `peko create <name> -s <seed.toml>`."
             );
         }
 
@@ -1402,13 +1402,13 @@ mod tests {
         );
     }
 
-    /// ADR-056: the registry artifact is a plain TOML template —
+    /// ADR-056: the registry artifact is a plain TOML seed —
     /// `export_for_registry` emits a stripped `principal.toml`, not a
-    /// package. Templates are ground via `principal create -f`, so a
+    /// package. Seeds are ground via `peko create -s`, so a
     /// keyless *package* is rejected with actionable guidance rather
     /// than silently cloned.
     #[tokio::test]
-    async fn registry_artifact_is_a_template_toml() {
+    async fn registry_artifact_is_a_seed_toml() {
         use crate::registry::packaging::principal_packager::PrincipalExportOptions;
 
         let identity = Identity::new("tmpl-src", DIDScope::Local).await.unwrap();
@@ -1418,7 +1418,7 @@ mod tests {
         config.set_boot_state(BootState::Organized);
 
         let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("tmpl-src.template.toml");
+        let out = tmp.path().join("tmpl-src.seed.toml");
         let packager = PrincipalPackager::new(config, identity);
         let descriptor = packager
             .export_for_registry(PrincipalExportOptions {
@@ -1428,17 +1428,17 @@ mod tests {
             .await
             .unwrap();
 
-        // The artifact on disk is the template TOML, not an archive.
+        // The artifact on disk is the seed TOML, not an archive.
         let artifact = std::fs::read_to_string(&out).unwrap();
         assert!(!artifact.contains("prin_tmpl_source"), "{artifact}");
         assert!(!artifact.contains(&source_did), "{artifact}");
         assert!(!artifact.contains("boot_state"), "{artifact}");
         assert!(
             !out.display().to_string().ends_with(".peko"),
-            "templates are TOML files, not packages"
+            "seeds are TOML files, not packages"
         );
 
-        // The OCI config blob IS the template TOML; no content layers.
+        // The OCI config blob IS the seed TOML; no content layers.
         assert!(descriptor.layers.is_empty());
         let blob = std::str::from_utf8(&descriptor.manifest_toml).unwrap();
         assert_eq!(blob, &artifact);
@@ -1462,8 +1462,8 @@ mod tests {
             .expect_err("keyless packages are not a supported artifact shape");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("principal create") && msg.contains("-f"),
-            "expected create -f guidance, got: {msg}"
+            msg.contains("peko create") && msg.contains("-s"),
+            "expected create -s guidance, got: {msg}"
         );
     }
 

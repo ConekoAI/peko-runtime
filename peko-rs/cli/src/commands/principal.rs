@@ -34,7 +34,7 @@ pub enum PrincipalCommands {
     /// Create a new peko and block until it is alive (ADR-054)
     ///
     /// One command for the whole genesis pipeline: provisions the
-    /// workspace (P0), seeds the definition (P1 — from `--file` when
+    /// workspace (P0), seeds the definition (P1 — from `--seed` when
     /// given, defaults otherwise), makes sure the daemon is running
     /// and knows the peko, schedules the genesis turn (P2), and
     /// waits for the trunk's first self-turn to complete. Pass
@@ -48,24 +48,35 @@ pub enum PrincipalCommands {
         name: String,
 
         /// Configured model id to pin this peko to (see
-        /// `peko model list`). Optional only when the `--file`
-        /// template carries `preferred_model_id`; exactly one of the
+        /// `peko model list`). Optional only when the `--seed`
+        /// carries `preferred_model_id`; exactly one of the
         /// two must provide it. There is no runtime default model, so
         /// an unpinned peko fails every send.
         #[arg(long, value_name = "MODEL_ID")]
         model: Option<String>,
 
-        /// Path to a template `principal.toml` seeding the peko's
+        /// Path to a seed `principal.toml` carrying the peko's
         /// full definition: `[identity]`, `[intent]`, `preferred_model_id`,
         /// `[capabilities]`, `[[permissions]]`, `exposure`, `quota`, and
         /// an optional inline `persona` (Markdown body for the root
         /// agent prompt). Unspecified fields take runtime defaults.
-        /// `id`, `did`, and `boot_state` in the template are ignored —
+        /// `id`, `did`, and `boot_state` in the seed are ignored —
         /// a fresh identity is always generated. TOML note: top-level
         /// keys (`preferred_model_id`, `persona`) must appear BEFORE
         /// the first `[table]` header.
-        #[arg(short = 'f', long = "file", value_name = "TEMPLATE_TOML")]
-        file: Option<String>,
+        ///
+        /// A seed is DNA, not a template: the peko that grows from it
+        /// is never a copy of its source (ADR-060).
+        ///
+        /// `-f` / `--file` remains a hidden compat alias (ADR-060).
+        #[arg(
+            short = 's',
+            long = "seed",
+            short_alias = 'f',
+            alias = "file",
+            value_name = "SEED_TOML"
+        )]
+        seed: Option<String>,
 
         /// Force a destructive re-create. Without `--force`,
         /// `peko create <existing>` refuses with a clear
@@ -284,7 +295,7 @@ pub async fn handle_principal(
         PrincipalCommands::Create {
             name,
             model,
-            file,
+            seed,
             force,
             yes,
             detach,
@@ -293,7 +304,7 @@ pub async fn handle_principal(
             create_principal(
                 &name,
                 model.as_deref(),
-                file.as_deref(),
+                seed.as_deref(),
                 force,
                 yes,
                 detach,
@@ -527,33 +538,32 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
     Ok(())
 }
 
-/// Template keys tolerated in a `--file` template beyond the
+/// Seed keys tolerated in a `--seed` file beyond the
 /// `PrincipalConfig` shape. serde ignores unknown keys when
 /// deserializing `PrincipalConfig`, so the file is parsed twice —
 /// once as the config, once for these extras — without loss.
 #[derive(serde::Deserialize)]
-struct TemplateExtras {
+struct SeedExtras {
     persona: Option<String>,
 }
 
-/// Parsed `--file` template: the config fields plus the optional
+/// Parsed `--seed` file: the config fields plus the optional
 /// inline `persona` (Markdown body for the root agent prompt).
-struct TemplateBundle {
+struct SeedBundle {
     config: PrincipalConfig,
     persona: Option<String>,
 }
 
-/// Load and parse a `--file` create template. The file IS a
+/// Load and parse a `--seed` create seed. The file IS a
 /// `principal.toml` (plus tolerated extras), so exports round-trip:
-/// `peko principal export` → edit → `peko principal create -f`.
-fn load_template(path: &str) -> Result<TemplateBundle> {
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("read template {}", path))?;
+/// `peko export` → edit → `peko create -s`.
+fn load_seed(path: &str) -> Result<SeedBundle> {
+    let content = std::fs::read_to_string(path).with_context(|| format!("read seed {}", path))?;
     let config: PrincipalConfig = toml::from_str(&content)
-        .with_context(|| format!("parse template {} as principal.toml", path))?;
-    let extras: TemplateExtras =
-        toml::from_str(&content).with_context(|| format!("parse template {} extras", path))?;
-    Ok(TemplateBundle {
+        .with_context(|| format!("parse seed {} as principal.toml", path))?;
+    let extras: SeedExtras =
+        toml::from_str(&content).with_context(|| format!("parse seed {} extras", path))?;
+    Ok(SeedBundle {
         config,
         persona: extras.persona,
     })
@@ -579,22 +589,21 @@ fn persona_agent_prompt(name: &str, description: Option<&str>, persona: &str) ->
 async fn create_principal(
     name: &str,
     model_id: Option<&str>,
-    template_path: Option<&str>,
+    seed_path: Option<&str>,
     force: bool,
     yes: bool,
     detach: bool,
     wait_timeout: u64,
     paths: &GlobalPaths,
 ) -> Result<()> {
-    let manager =
-        match provision_principal(name, model_id, template_path, force, yes, paths).await? {
-            Some(m) => m,
-            None => return Ok(()), // cancelled at the --force confirmation
-        };
+    let manager = match provision_principal(name, model_id, seed_path, force, yes, paths).await? {
+        Some(m) => m,
+        None => return Ok(()), // cancelled at the --force confirmation
+    };
     boot_principal(name, &manager, paths, detach, wait_timeout).await
 }
 
-/// Provision half of `create`: overwrite guard, template/defaults
+/// Provision half of `create`: overwrite guard, seed/defaults
 /// composition, model-pin validation, root agent prompt, and
 /// `PrincipalManager::create`. Returns the CLI-local manager with the
 /// new principal registered. Unit tests stop here — the boot half
@@ -602,7 +611,7 @@ async fn create_principal(
 async fn provision_principal(
     name: &str,
     model_id: Option<&str>,
-    template_path: Option<&str>,
+    seed_path: Option<&str>,
     force: bool,
     yes: bool,
     paths: &GlobalPaths,
@@ -657,20 +666,22 @@ async fn provision_principal(
             .context("destructive re-create failed; the existing peko may be partially removed")?;
     }
 
-    // ── P1 definition: template or defaults ─────────────────────────
-    let (mut config, persona) = match template_path {
+    // ── P1 definition: seed or defaults ─────────────────────────────
+    let (mut config, persona) = match seed_path {
         Some(path) => {
-            let bundle = load_template(path)?;
+            let bundle = load_seed(path)?;
             let mut config = bundle.config;
-            // The CLI arg names the principal; a template `name` is
+            // The CLI arg names the principal; a seed `name` is
             // overridden (the arg is what the user typed).
             config.name = name.to_string();
-            // Fresh identity, always: a template must not transplant
-            // another principal's id, DID, or boot state.
+            // Fresh identity, always: a seed must not transplant
+            // another principal's id, DID, or boot state. This is what
+            // makes the artifact a seed rather than a template — the
+            // peko that grows from it is never a copy (ADR-060).
             config.id = None;
             config.did = None;
             config.boot_state = None;
-            // A template without an `[owner]` section deserializes to
+            // A seed without an `[owner]` section deserializes to
             // the default empty subject — the creating local user owns
             // the principal, same as a bare create.
             if matches!(&config.owner, Subject::User(id) if id.is_empty()) {
@@ -690,7 +701,7 @@ async fn provision_principal(
 
     // Enforce the model pin at creation: there is no runtime default
     // model, so an unpinned principal would fail every send with
-    // "no model configured". `--model` overrides the template value;
+    // "no model configured". `--model` overrides the seed value;
     // exactly one of the two must provide it. Validate against the
     // catalog now so a typo'd id fails here instead of at first use.
     let model_id = match model_id {
@@ -701,7 +712,7 @@ async fn provision_principal(
         None => config.preferred_model_id.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "no model pinned — pass --model <MODEL_ID> or set \
-                 `preferred_model_id` in the --file template"
+                 `preferred_model_id` in the --seed"
             )
         })?,
     };
@@ -2211,9 +2222,9 @@ mod tests {
 
     #[test]
     fn principal_create_model_pin_precedence() {
-        // `--model` is optional only when the `--file` template pins
-        // `preferred_model_id`; the flag overrides the template value.
-        // Parse-level: no model and no file is fine at parse time —
+        // `--model` is optional only when the `--seed` pins
+        // `preferred_model_id`; the flag overrides the seed value.
+        // Parse-level: no model and no seed is fine at parse time —
         // the requirement is enforced in `create_principal`.
         let cli = Cli::try_parse_from([
             "peko",
@@ -2230,7 +2241,7 @@ mod tests {
                 model,
                 force,
                 yes,
-                file,
+                seed,
                 detach,
                 wait_timeout,
             }) => {
@@ -2238,7 +2249,7 @@ mod tests {
                 assert_eq!(model.as_deref(), Some("anthropic-haiku"));
                 assert!(!force);
                 assert!(!yes);
-                assert!(file.is_none());
+                assert!(seed.is_none());
                 assert!(!detach);
                 assert_eq!(wait_timeout, 300);
             }
@@ -2247,24 +2258,53 @@ mod tests {
     }
 
     #[test]
-    fn principal_create_parses_file_template() {
+    fn principal_create_parses_seed() {
         let cli = Cli::try_parse_from([
             "peko",
             "principal",
             "create",
             "scout",
-            "-f",
+            "-s",
             "/tmp/scout.principal.toml",
             "--detach",
         ])
-        .expect("should parse principal create with -f template");
+        .expect("should parse principal create with -s seed");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create { name, file, .. }) => {
+            Commands::Principal(PrincipalCommands::Create { name, seed, .. }) => {
                 assert_eq!(name, "scout");
-                assert_eq!(file.as_deref(), Some("/tmp/scout.principal.toml"));
+                assert_eq!(seed.as_deref(), Some("/tmp/scout.principal.toml"));
             }
             _other => panic!("expected Principal create command"),
+        }
+    }
+
+    /// ADR-060: `-f` / `--file` stay as hidden compat aliases for
+    /// `--seed`, so scripts and the command the hub publishes keep
+    /// working unchanged.
+    #[test]
+    fn principal_create_accepts_hidden_file_seed_aliases() {
+        for flag in ["-f", "--file", "-s", "--seed"] {
+            let cli = Cli::try_parse_from([
+                "peko",
+                "principal",
+                "create",
+                "scout",
+                flag,
+                "/tmp/scout.principal.toml",
+            ])
+            .unwrap_or_else(|e| panic!("`{flag}` should parse as a seed alias: {e}"));
+
+            match cli.command {
+                Commands::Principal(PrincipalCommands::Create { seed, .. }) => {
+                    assert_eq!(
+                        seed.as_deref(),
+                        Some("/tmp/scout.principal.toml"),
+                        "`{flag}` must bind the seed field"
+                    );
+                }
+                _other => panic!("expected Principal create command"),
+            }
         }
     }
 
@@ -2304,7 +2344,8 @@ mod tests {
     fn principal_create_parses_force_flag() {
         // `--force` is the explicit override for the overwrite guard —
         // see Bug 2 in scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
-        // (Long-form only: `-f` now selects the definition template.)
+        // (Long-form only: `-s` selects the seed, and `-f` is its
+        // hidden compat alias — neither is free for `--force`.)
         let cli = Cli::try_parse_from([
             "peko",
             "principal",

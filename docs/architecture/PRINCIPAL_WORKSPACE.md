@@ -97,11 +97,13 @@ The legacy `peko ext *` command tree was retired in Phase 5.
 
 There are exactly two grounding paths, with two artifact shapes:
 
-- **Grow** — `peko create [-f <template.toml>]`: a template
+- **Grow** — `peko create [-s <seed.toml>]`: a seed
   is a **plain TOML file** (a `principal.toml` with `id`/`did`/
   `boot_state` stripped). This is also the registry artifact
   (`peko push` distributes DNA, not creatures; a pulled
-  template is ground with `create -f` and a freshly minted identity).
+  seed is ground with `create -s` and a freshly minted identity).
+  Because the identity is always minted fresh, the artifact is a
+  seed rather than a template (ADR-060).
 - **Wake** — `peko import <name>.peko`: a full-existence
   **snapshot** (`tar.gz`) of a live peko — config, identity
   (DID doc + keys), agent prompts, sessions (with the

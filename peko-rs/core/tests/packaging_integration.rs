@@ -1,7 +1,7 @@
 //! Full packaging integration test (Principal-era, ADR-056).
 //!
 //! End-to-end pipeline:
-//!   export .peko snapshot → push (template TOML) → pull → ground via create -f
+//!   export .peko snapshot → push (seed TOML) → pull → ground via create -s
 //!
 //! This test is marked `#[ignore]` because it requires:
 //!   - Node.js 22+ with tsx installed  (local mode)
@@ -231,9 +231,9 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     );
 
     // ═════════════════════════════════════════════════════════════════
-    // 2. PUSH to registry (template TOML — ADR-056)
+    // 2. PUSH to registry (seed TOML — ADR-056)
     // ═════════════════════════════════════════════════════════════════
-    // `PrincipalPackager::export_for_registry` produces a template
+    // `PrincipalPackager::export_for_registry` produces a seed
     // descriptor: the OCI config blob is a stripped `principal.toml`
     // (no DID, no keys, no lived state) with zero content layers.
     // `push_principal` stores the blob and pushes a `RegistryManifest`
@@ -294,7 +294,7 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     let pull_config = test_registry_config(&backend.url);
     let pull_client = RegistryClient::new(pull_config, pull_registry.clone());
 
-    let pull_output = base_dir.join("pulled.template.toml");
+    let pull_output = base_dir.join("pulled.seed.toml");
     let mut pull_events = Vec::new();
     let pull_result = pull_client
         .pull_principal(&registry_ref_str, &pull_output, |event| {
@@ -310,32 +310,29 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
 
     assert!(
         pull_output.exists(),
-        "pulled template artifact should exist at {}",
+        "pulled seed artifact should exist at {}",
         pull_output.display()
     );
 
     // ═════════════════════════════════════════════════════════════════
-    // 4. PULLED ARTIFACT: a template TOML (ADR-056)
+    // 4. PULLED ARTIFACT: a seed TOML (ADR-056)
     // ═════════════════════════════════════════════════════════════════
     // The registry distributes DNA, not creatures: the pushed config
-    // blob is a template TOML (a stripped `principal.toml`), and pull
+    // blob is a seed TOML (a stripped `principal.toml`), and pull
     // writes it verbatim. It is ground via
-    // `peko principal create <name> -f <file>` — fresh identity,
+    // `peko create <name> -s <file>` — fresh identity,
     // inferred boot state — never by re-importing the source identity.
     let pulled_toml = tokio::fs::read_to_string(&pull_output).await?;
-    let template: PrincipalConfig = toml::from_str(&pulled_toml)?;
+    let seed: PrincipalConfig = toml::from_str(&pulled_toml)?;
     assert_eq!(
-        template.name, "integration-principal",
-        "template carries the principal's name (DNA)"
+        seed.name, "integration-principal",
+        "seed carries the principal's name (DNA)"
     );
+    assert!(seed.id.is_none(), "seed must not carry a runtime id");
+    assert!(seed.did.is_none(), "seed must not carry a DID");
     assert!(
-        template.id.is_none(),
-        "template must not carry a runtime id"
-    );
-    assert!(template.did.is_none(), "template must not carry a DID");
-    assert!(
-        template.boot_state.is_none(),
-        "template must not carry a boot state"
+        seed.boot_state.is_none(),
+        "seed must not carry a boot state"
     );
 
     Ok(())
