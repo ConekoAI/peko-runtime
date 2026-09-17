@@ -119,6 +119,7 @@ Peko uses a hierarchical command structure (`peko <noun> <verb>`).
 #### Peko Management
 ```bash
 peko create <NAME>                       # Create a peko
+peko create <NAME> -s <SEED.toml>        # Grow a peko from a seed
 peko list [--long]                        # List all pekos
 peko show <NAME>                          # Show peko details
 peko export <NAME> [--output <PATH>]      # Export to .peko package

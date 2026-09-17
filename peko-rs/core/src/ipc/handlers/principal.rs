@@ -3278,13 +3278,13 @@ async fn preview_principal_pull(
         .pull_principal(registry_ref, &temp_path, |_| {})
         .await?;
 
-    // ADR-056: a pulled template is a plain TOML file, ground via
-    // `principal create -f` — not an importable package.
-    if is_template_artifact(&temp_path) {
-        let kept = keep_template_artifact(host, &temp_path)?;
+    // ADR-056: a pulled seed is a plain TOML file, ground via
+    // `peko create -s` — not an importable package.
+    if is_seed_artifact(&temp_path) {
+        let kept = keep_seed_artifact(host, &temp_path)?;
         anyhow::bail!(
-            "This registry artifact is a template (plain TOML), not a snapshot. \
-             Ground it with: peko principal create <name> -f {}",
+            "This registry artifact is a seed (plain TOML), not a snapshot. \
+             Ground it with: peko create <name> -s {}",
             kept.display()
         );
     }
@@ -3294,12 +3294,12 @@ async fn preview_principal_pull(
     preview
 }
 
-/// ADR-056: a pulled template artifact is a plain TOML file (a
+/// ADR-056: a pulled seed artifact is a plain TOML file (a
 /// stripped `principal.toml`) rather than a `.peko` snapshot package.
 /// Distinguish by shape: a snapshot's config blob is a
 /// `PrincipalManifest` (with a `principal` metadata section); a
-/// template is a bare `PrincipalConfig`.
-fn is_template_artifact(path: &std::path::Path) -> bool {
+/// seed is a bare `PrincipalConfig`.
+fn is_seed_artifact(path: &std::path::Path) -> bool {
     use crate::principal::config::PrincipalConfig;
     use crate::registry::packaging::principal_manifest::PrincipalManifest;
 
@@ -3315,14 +3315,14 @@ fn is_template_artifact(path: &std::path::Path) -> bool {
     toml::from_str::<PrincipalConfig>(text).is_ok()
 }
 
-/// Move a pulled template artifact out of the transient preview path
+/// Move a pulled seed artifact out of the transient preview path
 /// into a stable cache location the user can ground from.
-fn keep_template_artifact(
+fn keep_seed_artifact(
     host: &dyn PrincipalHost,
     temp_path: &std::path::Path,
 ) -> anyhow::Result<std::path::PathBuf> {
     let kept = host.cache_dir().join(format!(
-        "pulled-template-{}.toml",
+        "pulled-seed-{}.toml",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -3377,13 +3377,13 @@ async fn pull_principal_package(
         .pull_principal(registry_ref, &temp_path, |_| {})
         .await?;
 
-    // ADR-056: a pulled template is a plain TOML file, ground via
-    // `principal create -f` — not an importable package.
-    if is_template_artifact(&temp_path) {
-        let kept = keep_template_artifact(host, &temp_path)?;
+    // ADR-056: a pulled seed is a plain TOML file, ground via
+    // `peko create -s` — not an importable package.
+    if is_seed_artifact(&temp_path) {
+        let kept = keep_seed_artifact(host, &temp_path)?;
         anyhow::bail!(
-            "This registry artifact is a template (plain TOML), not a snapshot. \
-             Ground it with: peko principal create <name> -f {}",
+            "This registry artifact is a seed (plain TOML), not a snapshot. \
+             Ground it with: peko create <name> -s {}",
             kept.display()
         );
     }

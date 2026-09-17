@@ -49,6 +49,37 @@ peko <COMMAND>
 | `revoke <NAME> <SUBJECT> <PERMISSION>` | Revoke a permission from a peko |
 | `permissions <NAME>` | List permissions on a peko |
 
+#### `create` flags
+
+`peko create <NAME>` runs the whole genesis pipeline: it provisions the
+workspace (P0), seeds the definition (P1), and schedules the genesis
+turn (P2). All other flags are long-form only.
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--seed <SEED_TOML>` | Path to a seed `principal.toml` carrying the peko's full definition — `[identity]`, `[intent]`, `preferred_model_id`, `[capabilities]`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona`. Unspecified fields take runtime defaults. |
+| `--model <MODEL_ID>` | Pin the peko to a configured model. Optional only when the seed carries `preferred_model_id`; exactly one of the two must supply it. |
+| `--force` | Destructive re-create. The existing peko's workspace, agents, memory, and session history are wiped first. No undo. |
+| `--yes` | Skip the destructive confirmation prompt. Only meaningful with `--force`. |
+| `--detach` | Return immediately instead of waiting for the genesis turn. |
+| `--wait-timeout <SECS>` | How long to wait for the genesis turn. Default `300`. |
+
+A **seed** is DNA, not a template: `id`, `did`, and `boot_state` in the
+file are ignored and a fresh identity is always minted, so the peko
+that grows from a seed is never a copy of its source (ADR-060).
+`-f` / `--file` remain as hidden compat aliases for `--seed`.
+
+```bash
+# Grow a peko from a seed
+peko create scout -s scout.seed.toml
+
+# A seed without an inline model must be paired with --model
+peko create scout -s scout.seed.toml --model anthropic-sonnet-4-5
+
+# Fire-and-forget (scripts/CI)
+peko create scout -s scout.seed.toml --detach
+```
+
 > Messaging is `peko send` / `peko log` (ADR-048). Agent prompts are
 > workspace files (`agents/<name>.md`) managed by editing files, not CLI
 > commands (ADR-050); `peko show` lists them.
