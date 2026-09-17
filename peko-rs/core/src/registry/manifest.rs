@@ -46,7 +46,9 @@ pub struct RegistryManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<serde_json::Map<String, serde_json::Value>>,
     // --- Internal fields (not serialized to wire) ---
-    /// Package kind: "agent", "extension", or "principal"
+    /// Package kind. `principal` is the only accepted wire value; see
+    /// `default_kind` for why the retired `agent`/`extension`/`team`
+    /// spellings are not defaults.
     #[serde(skip)]
     pub kind: String,
     /// Agent name
@@ -77,7 +79,8 @@ pub struct RegistryManifest {
     /// SPDX license expression
     #[serde(skip)]
     pub license: Option<String>,
-    /// Bundle type: "agent", "extension", or "principal"
+    /// Bundle type. `principal` is the only accepted wire value
+    /// (ADR-005 §1 keeps the machine spelling while the UI says "seed").
     #[serde(skip)]
     pub bundle_type: Option<String>,
     /// Extension type: "skill", "mcp", "tool", "channel", etc.
@@ -155,7 +158,16 @@ pub struct RegistryManifest {
 }
 
 fn default_kind() -> String {
-    "agent".to_string()
+    // `principal` is the only kind PekoHub accepts. `agent`/`team` were
+    // retired by ADR-041, and `extension` by ADR-047 §5 / ADR-050
+    // (capabilities are plain workspace files now), so the hub answers
+    // any other value with `410 Gone` (ADR-056 D6). This used to
+    // default to `"agent"`, which meant a manifest built without an
+    // explicit `with_kind` was silently un-pushable — and it was the
+    // default every test inherited. See ADR-060's carve-out note: the
+    // *wire value* stays `principal`; only the user-facing term moved
+    // to "seed".
+    "principal".to_string()
 }
 
 impl RegistryManifest {
@@ -745,8 +757,11 @@ mod tests {
 
     #[test]
     fn test_kind_field() {
+        // The default must be the only kind PekoHub accepts — a
+        // retired default here means a manifest built without an
+        // explicit `with_kind` is silently un-pushable.
         let manifest = RegistryManifest::new("test", "1.0.0");
-        assert_eq!(manifest.kind, "agent");
+        assert_eq!(manifest.kind, "principal");
 
         let manifest = RegistryManifest::new("test", "1.0.0").with_kind("extension");
         assert_eq!(manifest.kind, "extension");
@@ -765,12 +780,12 @@ mod tests {
     #[test]
     fn test_annotation_roundtrip() {
         let mut manifest = RegistryManifest::new("test-agent", "1.2.3")
-            .with_kind("agent")
+            .with_kind("principal")
             .with_ref("pekohub.com/ns/test-agent:v1.2.3")
             .with_digest("sha256:deadbeef")
             .with_description("A test agent")
             .with_author("alice")
-            .with_bundle_type("agent")
+            .with_bundle_type("principal")
             .with_tags("[\"ai\", \"research\"]");
         manifest.add_layer(Layer::new("sha256:layer1", LayerType::Config, 100));
 
@@ -782,7 +797,8 @@ mod tests {
         assert!(json.contains("org.opencontainers.image.authors"));
         assert!(json.contains("alice"));
         assert!(json.contains("dev.pekohub.bundleType"));
-        assert!(json.contains("agent"));
+        // The kind annotation carries the only accepted wire value.
+        assert!(json.contains("\"principal\""));
         assert!(json.contains("dev.pekohub.tags"));
         // tags are stored as a JSON string; check roundtrip via restored value instead
         assert_eq!(
@@ -798,10 +814,10 @@ mod tests {
         let restored = RegistryManifest::from_json(&json).unwrap();
         assert_eq!(restored.name, "test-agent");
         assert_eq!(restored.version, "1.2.3");
-        assert_eq!(restored.kind, "agent");
+        assert_eq!(restored.kind, "principal");
         assert_eq!(restored.description, Some("A test agent".to_string()));
         assert_eq!(restored.author, Some("alice".to_string()));
-        assert_eq!(restored.bundle_type, Some("agent".to_string()));
+        assert_eq!(restored.bundle_type, Some("principal".to_string()));
         assert_eq!(restored.tags, Some("[\"ai\", \"research\"]".to_string()));
         assert_eq!(restored.layers.len(), 1);
         assert_eq!(restored.layers[0].digest, "sha256:layer1");
