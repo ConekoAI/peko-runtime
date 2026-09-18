@@ -76,8 +76,8 @@ fn scan_max_positional_index(body: &str) -> usize {
 /// [`SharedSkillRuntime`] port. Production wiring uses the
 /// workspace-scanning `WorkspaceSkillRuntime`
 /// (`crate::extensions::skill::reader`), which resolves skills from
-/// the principal's workspace `skills/` directory. Tests substitute an
-/// in-memory mock.
+/// the principal's workspace `skills/` directory. Tests use the same
+/// runtime pointed at a tempdir.
 pub struct SkillTool {
     runtime: SharedSkillRuntime,
 }
@@ -87,18 +87,6 @@ impl SkillTool {
     #[must_use]
     pub fn new(runtime: SharedSkillRuntime) -> Self {
         Self { runtime }
-    }
-
-    /// Convenience: build with a default runtime wrapping the supplied
-    /// static catalog-like object (anything with `resolve_skill`).
-    ///
-    /// For production, prefer `SkillTool::new(SharedSkillRuntime)` so
-    /// the caller can swap in a different runtime (e.g., a test mock).
-    #[must_use]
-    pub fn from_catalog(catalog: &'static impl default_runtime::DefaultSkillCatalog) -> Self {
-        Self {
-            runtime: std::sync::Arc::new(default_runtime::CatalogAdapter { catalog }),
-        }
     }
 }
 
@@ -327,112 +315,10 @@ fn substitute_args(body: &str, named: &[String], args: &[String]) -> String {
     out.replace(ESCAPE_SENTINEL, "$")
 }
 
-// ─── Default catalog adapter (for `SkillTool::from_catalog`) ─────
-
-/// Default runtime adapter that delegates to a static catalog-like
-/// object with `resolve_skill` and `list_skills` methods. Used by
-/// `SkillTool::from_catalog` so existing root-side wiring that
-/// supplies the global `SkillCatalog` keeps working.
-pub mod default_runtime {
-    use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
-
-    use crate::tools::builtin::skill::SkillEntry;
-
-    /// Trait that mirrors the surface `SkillCatalog` exposes to the
-    /// tool. Implementations must be safe to share across threads
-    /// (typically `&'static` singleton).
-    pub trait DefaultSkillCatalog: Send + Sync {
-        /// Look up a skill entry by name.
-        fn resolve_skill(&self, name: &str) -> Option<SkillEntry>;
-        /// List all registered skill names, sorted.
-        fn list_skills(&self) -> Vec<String>;
-    }
-
-    /// Adapter wrapping a `DefaultSkillCatalog` to expose it as
-    /// [`SkillRuntime`]. The wrapper is the smallest possible — it
-    /// exists solely so `SkillTool::from_catalog` can produce a
-    /// `SharedSkillRuntime` from a static catalog reference.
-    pub struct CatalogAdapter {
-        pub catalog: &'static dyn DefaultSkillCatalog,
-    }
-
-    impl crate::tools::builtin::skill::SkillRuntime for CatalogAdapter {
-        fn resolve_skill(&self, name: &str) -> Option<SkillEntry> {
-            self.catalog.resolve_skill(name)
-        }
-        fn list_skills(&self) -> Vec<String> {
-            self.catalog.list_skills()
-        }
-    }
-
-    /// In-memory catalog used by tests in this module.
-    #[derive(Debug, Default)]
-    pub struct InMemorySkillCatalog {
-        entries: Mutex<std::collections::HashMap<String, PathBuf>>,
-    }
-
-    impl InMemorySkillCatalog {
-        /// Build an empty in-memory catalog.
-        #[must_use]
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        /// Build a global-singleton in-memory catalog.
-        #[must_use]
-        pub fn global() -> &'static Self {
-            static CATALOG: OnceLock<InMemorySkillCatalog> = OnceLock::new();
-            CATALOG.get_or_init(InMemorySkillCatalog::default)
-        }
-
-        /// Register (or overwrite) a skill entry.
-        pub fn register(&self, name: impl Into<String>, path: impl Into<PathBuf>) {
-            self.entries
-                .lock()
-                .expect("InMemorySkillCatalog mutex poisoned")
-                .insert(name.into(), path.into());
-        }
-
-        /// Remove a skill entry by name. Idempotent.
-        pub fn unregister(&self, name: &str) {
-            self.entries
-                .lock()
-                .expect("InMemorySkillCatalog mutex poisoned")
-                .remove(name);
-        }
-    }
-
-    impl DefaultSkillCatalog for InMemorySkillCatalog {
-        fn resolve_skill(&self, name: &str) -> Option<SkillEntry> {
-            self.entries
-                .lock()
-                .expect("InMemorySkillCatalog mutex poisoned")
-                .get(name)
-                .map(|path| SkillEntry {
-                    name: name.to_string(),
-                    path: path.clone(),
-                    extension_id: None,
-                })
-        }
-        fn list_skills(&self) -> Vec<String> {
-            let mut names: Vec<String> = self
-                .entries
-                .lock()
-                .expect("InMemorySkillCatalog mutex poisoned")
-                .keys()
-                .cloned()
-                .collect();
-            names.sort();
-            names
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::skill::tool::default_runtime::InMemorySkillCatalog;
+    use crate::extensions::skill::WorkspaceSkillRuntime;
     use peko_tools_core::ToolContext;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
@@ -551,17 +437,14 @@ mod tests {
             .with_workspace(workspace.to_string_lossy().to_string())
     }
 
-    /// Build a `SkillTool` that delegates to a fresh in-memory catalog
-    /// pre-loaded with the supplied entries. The catalog lives in a
-    /// static singleton so it can be passed as `&'static` to
-    /// `SkillTool::from_catalog` (which is the convenient production
-    /// shape).
-    fn tool_with_catalog(entries: &[(&str, &std::path::Path)]) -> SkillTool {
-        let catalog = InMemorySkillCatalog::new();
-        for (name, path) in entries {
-            catalog.register(*name, *path);
-        }
-        SkillTool::from_catalog(Box::leak(Box::new(catalog) as Box<InMemorySkillCatalog>))
+    /// Build a `SkillTool` backed by the production workspace runtime
+    /// rooted at `skills_root` — tests write `<skills_root>/<name>/SKILL.md`
+    /// fixtures and resolve them through the same code path production
+    /// uses (`WorkspaceSkillRuntime`).
+    fn tool_with_workspace(skills_root: &std::path::Path) -> SkillTool {
+        SkillTool::new(std::sync::Arc::new(WorkspaceSkillRuntime::new(
+            skills_root.to_path_buf(),
+        )))
     }
 
     fn write_skill(dir: &std::path::Path, name: &str, body: &str, args: &[&str]) {
@@ -602,7 +485,7 @@ mod tests {
             "Open issue $issue on branch $branch.\nFull: $ARGUMENTS",
             &["issue", "branch"],
         );
-        let tool = tool_with_catalog(&[("fix", &tmp.path().join("fix").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(
                 json!({
@@ -627,7 +510,7 @@ mod tests {
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
-        let tool = tool_with_catalog(&[("fix", &tmp.path().join("fix").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(json!({ "name": "fix" }), &test_ctx(&["*"], tmp.path()))
             .await
@@ -642,7 +525,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // Skill exists on disk but the allowlist doesn't include it.
         write_skill(tmp.path(), "fix", "body", &[]);
-        let tool = tool_with_catalog(&[("fix", &tmp.path().join("fix").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(json!({ "name": "fix" }), &test_ctx(&["other"], tmp.path()))
             .await
@@ -658,7 +541,7 @@ mod tests {
         // the allowlist check fires before any disk access.
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
-        let tool = tool_with_catalog(&[]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(json!({ "name": "docker" }), &test_ctx(&[], tmp.path()))
             .await
@@ -670,8 +553,8 @@ mod tests {
     #[tokio::test]
     async fn execute_rejects_missing_name_param() {
         let _id = next_test_id();
-        let _tmp = TempDir::new().unwrap();
-        let tool = tool_with_catalog(&[]);
+        let tmp = TempDir::new().unwrap();
+        let tool = tool_with_workspace(tmp.path());
         let err = tool.execute(json!({})).await.unwrap_err();
         assert!(err
             .to_string()
@@ -684,7 +567,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // No `arguments:` frontmatter; body still uses $issue.
         write_skill(tmp.path(), "minimal", "Issue $issue", &[]);
-        let tool = tool_with_catalog(&[("minimal", &tmp.path().join("minimal").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(
                 json!({
@@ -704,7 +587,7 @@ mod tests {
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "Docker", "Docker body", &[]);
-        let tool = tool_with_catalog(&[("Docker", &tmp.path().join("Docker").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(
                 json!({ "name": "Docker" }),
@@ -721,7 +604,7 @@ mod tests {
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "live", "CWD: !`pwd`", &[]);
-        let tool = tool_with_catalog(&[("live", &tmp.path().join("live").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(json!({ "name": "live" }), &test_ctx(&["live"], tmp.path()))
             .await
@@ -745,7 +628,7 @@ mod tests {
         // Opener on its own line per the plan's exact-match rule.
         let body_str = "Intro\n```!\necho alpha\n```\nOutro";
         write_skill(tmp.path(), "fence", body_str, &[]);
-        let tool = tool_with_catalog(&[("fence", &tmp.path().join("fence").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(
                 json!({ "name": "fence" }),
@@ -771,10 +654,7 @@ mod tests {
             "allowed-tools:\n  - \"echo *\"\n",
             "Got: !`ls /`",
         );
-        let tool = tool_with_catalog(&[(
-            "guarded_block",
-            &tmp.path().join("guarded_block").join("SKILL.md"),
-        )]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(
                 json!({ "name": "guarded_block" }),
@@ -799,10 +679,7 @@ mod tests {
             "allowed-tools:\n  - \"echo *\"\n",
             "Got: !`echo hello`",
         );
-        let tool = tool_with_catalog(&[(
-            "guarded_allow",
-            &tmp.path().join("guarded_allow").join("SKILL.md"),
-        )]);
+        let tool = tool_with_workspace(tmp.path());
         let result = tool
             .execute_with_context(
                 json!({ "name": "guarded_allow" }),
@@ -818,7 +695,7 @@ mod tests {
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
-        let tool = tool_with_catalog(&[("fix", &tmp.path().join("fix").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         let ctx = ToolContext::for_hook_run("hook_run", "hook", "Skill");
         let result = tool
             .execute_with_context(json!({ "name": "fix" }), &ctx)
@@ -832,7 +709,7 @@ mod tests {
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
-        let tool = tool_with_catalog(&[("fix", &tmp.path().join("fix").join("SKILL.md"))]);
+        let tool = tool_with_workspace(tmp.path());
         // No capabilities or active extension provided for this caller.
         let result = tool
             .execute_with_context(
@@ -845,35 +722,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_resolves_extension_storage_style_path() {
-        // Skills installed via the extension framework live under a path like
-        // ~/.peko/data/extensions/<id>/SKILL.md rather than the legacy
-        // ~/.peko/skills/<name>/SKILL.md layout. The Skill tool should still
-        // resolve them through the catalog.
+    async fn execute_rejects_traversal_name_as_unknown_skill() {
+        // `Skill {name: "../secret"}` must not escape the workspace
+        // skills dir — even under the `skill:*` wildcard grant, which
+        // prefix-matches the traversal string. The workspace runtime
+        // refuses any name that is not a single plain path component,
+        // so the tool surfaces `unknown_skill`.
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
-        let ext_dir = tmp
-            .path()
-            .join("data")
-            .join("extensions")
-            .join("superpowers");
-        std::fs::create_dir_all(&ext_dir).unwrap();
-        let skill_md = ext_dir.join("SKILL.md");
-        std::fs::write(
-            &skill_md,
-            "---\nname: superpowers\ndescription: Superpowers skill\n---\n\nbody from extension storage\n",
-        )
-        .unwrap();
-        let tool = tool_with_catalog(&[("superpowers", &skill_md)]);
+        let skills_dir = tmp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        // The traversal target lives OUTSIDE the skills dir.
+        write_skill(tmp.path(), "secret", "s3cret", &[]);
+        let tool = tool_with_workspace(&skills_dir);
 
         let result = tool
             .execute_with_context(
-                json!({ "name": "superpowers" }),
-                &test_ctx(&["superpowers"], tmp.path()),
+                json!({ "name": "../secret" }),
+                &test_ctx(&["*"], tmp.path()),
             )
             .await
             .unwrap();
-        assert_eq!(result["name"], "superpowers");
-        assert_eq!(result["body"], "body from extension storage");
+        assert_eq!(result["error"], "unknown_skill");
     }
 }

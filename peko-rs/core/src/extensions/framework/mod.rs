@@ -18,7 +18,7 @@
 //!
 //! Everything else (concrete `ExtensionStore`, hook dispatcher,
 //! capability gate, async executor, transport, discovery +
-//! extension_storage, skill catalog, framework services, protocol
+//! extension_storage, framework services, protocol
 //! shared subtrees) stays in root.
 //!
 //! Extension type implementations (MCP, Gateway, Skill, etc.) live
@@ -105,8 +105,11 @@ pub mod registry;
 /// resolution, extension-host wiring layer.
 pub mod services;
 
-/// Extension catalog (skills/agents/commands indexed by type).
-pub mod skill_catalog;
+// 2026-09-18 (skills-as-files cleanup): the `skill_catalog` module
+// (global `SkillCatalog` populated from extension manifests) was
+// deleted. Skills are workspace files resolved by
+// `extensions::skill::reader::WorkspaceSkillRuntime`; nothing in
+// production read the catalog any more.
 
 /// Process-wide `ExtensionStore` trait port + concrete impl.
 /// Two files: `store_trait.rs` (the trait port) + `store.rs` (the
