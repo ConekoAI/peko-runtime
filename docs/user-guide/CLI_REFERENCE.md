@@ -99,8 +99,9 @@ peko show my-principal
 # Send a message
 peko send my-principal "Hello!"
 
-# Export with extensions embedded
-peko export my-principal --with-extensions
+# Export a full-existence .peko package (sessions, cron, plans, and
+# workspace tooling — skills/ included — travel with it; ADR-056)
+peko export my-principal            # writes my-principal.peko; override with --output <path>
 
 # Push to the default registry
 peko push my-principal:v1.0
@@ -393,6 +394,14 @@ peko model remove my-local
 ---
 
 ### `capability` — Peko Capability Authority
+
+> **Retired.** The `peko capability` command tree is gone (ADR-050,
+> 2026-08-30). Capability grants are edited directly in the peko's
+> `principal.toml` under `[capabilities] grants` (default starter
+> bundle: `tool:*` / `agent:*` / `skill:*` wildcards; replace the
+> wildcards with specific grants to restrict). The subcommand table
+> below is retained for historical reference and will be removed in a
+> follow-up PR.
 
 Manage the fine-grained capability grants that control what a peko
 is allowed to do. Capabilities are stored in the peko's

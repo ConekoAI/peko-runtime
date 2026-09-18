@@ -301,20 +301,24 @@ prompt on the next agentic iteration — no restart required.
 
 ### Grant/Revoke Capabilities
 
-Access to installed tooling is controlled through capabilities on a peko:
+Access to installed tooling is controlled by capability grants, edited
+directly in the peko's `principal.toml` — there is no grant CLI
+(ADR-050):
 
-```bash
-# Grant a capability to a peko
-peko capability grant --principal <principal-name> <capability>
-
-# Revoke a capability from a peko
-peko capability revoke --principal <principal-name> <capability>
+```toml
+# ~/.peko/principals/<name>/principal.toml
+[capabilities]
+# Fresh pekos ship wildcard grants that allow everything:
+# grants = ["tool:*", "agent:*", "skill:*", ...]
+# Replace the wildcards with specific grants to restrict the peko:
+grants = ["tool:Read", "tool:Bash", "skill:docker"]
 ```
 
-peko-scoped authorization is configured in `principal.toml` under
-`[capabilities] grants`. Capabilities are typed grant strings such as
-`tool:<tool-name>`, `skill:<skill-id>`, `agent:<agent-type>`, or
-`mcp:<server-id>`.
+Capabilities are typed grant strings such as `tool:<tool-name>`,
+`skill:<skill-id>`, `agent:<agent-type>`, or `mcp:<server-id>`; a
+trailing `*` matches by prefix. Skills specifically are plain
+`SKILL.md` files under `skills/` — see
+[Skills](../architecture/SKILLS.md) for format and authoring.
 
 ### MCP Servers
 
@@ -326,10 +330,10 @@ under `~/.peko/principals/<name>/mcp/<server-id>/server.json`:
 # the manifest in (there is no install CLI, ADR-050)
 mkdir -p ~/.peko/principals/<name>/mcp/<server-id>
 cp <server-path>/server.json ~/.peko/principals/<name>/mcp/<server-id>/server.json
-
-# Grant MCP capabilities to a peko
-peko capability grant --principal <principal-name> mcp:<server-id>
 ```
+
+If the peko's `[capabilities].grants` in `principal.toml` have been
+restricted, add an `mcp:<server-id>` grant there to allow the server.
 
 No `start` / `stop` / `restart` / `status` step is required — the
 runtime discovers MCP servers at peko boot.
