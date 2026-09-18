@@ -294,8 +294,10 @@ src/extensions/
 │       ├── protocol.rs
 │       ├── transport.rs
 │       └── adapter.rs
-├── skill/         # SKILL.md capabilities
-│   └── adapter.rs
+├── skill/         # SKILL.md capabilities (workspace files — no adapter)
+│   ├── mod.rs          # re-exports (SkillFrontmatter, parser, runtime, handler)
+│   ├── prompt.rs       # WorkspaceSkillsPromptHandler — per-turn skills catalog
+│   └── reader.rs       # WorkspaceSkillRuntime — resolves <workspace>/skills/<name>/SKILL.md
 ├── builtin/       # Core built-in tools
 │   └── adapter.rs
 └── general/       # Multi-hook extensions
@@ -308,12 +310,18 @@ Each extension type provides an adapter implementing `ExtensionTypeAdapter`:
 
 | Adapter | Module Path | Type |
 |---------|-------------|------|
-| `SkillAdapter` | `extensions::skill::adapter` | `skill` |
 | `McpAdapter` | `extensions::mcp::adapter` | `mcp` |
 | `UniversalToolAdapter` | `extensions::universal::adapter` | `universal-tool` |
 | `BuiltinToolAdapter` | `extensions::builtin::adapter` | `builtin` |
 | `GatewayAdapter` | `extensions::gateway::adapter` | `gateway` |
 | `GeneralExtensionAdapter` | `extensions::general::adapter` | `general` |
+
+> `skill` is **not** an adapter-backed extension type any more (ADR-047
+> Phase 2 PR 1). Skills are plain workspace files
+> (`<workspace>/skills/<name>/SKILL.md`): `WorkspaceSkillRuntime`
+> (`extensions::skill::reader`) resolves them for the `Skill` tool and
+> `WorkspaceSkillsPromptHandler` (`extensions::skill::prompt`) renders
+> the per-turn catalog. See `docs/architecture/SKILLS.md`.
 
 ### `extensions::extension_types`
 

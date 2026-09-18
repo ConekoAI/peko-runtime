@@ -66,20 +66,21 @@ pub struct PrincipalRegistryDescriptor {
 /// Derived Local state (`cache/`, `locks/`, `memory_index.json`) is
 /// excluded and rebuilt at import.
 ///
-/// **Grounding semantics (ADR-056):** there are exactly two ways to
+/// **Grounding semantics (ADR-056/ADR-060):** there are exactly two ways to
 /// ground a principal at a runtime. `peko create -s` grows one
-/// from a template (fresh DID, genesis runs); importing a snapshot
+/// from a seed (fresh DID, genesis runs); importing a snapshot
 /// wakes a transported one (same DID, boot state and schedule
 /// verbatim, no genesis re-seed). A DID is therefore never forked
-/// across live runtimes — cloning goes through a template with a
+/// across live runtimes — cloning goes through a seed with a
 /// fresh identity.
 ///
-/// **Registry artifact:** [`PrincipalPackager::export_for_registry`]
-/// emits a *template* payload — config with `id`/`did`/`boot_state`
-/// stripped, agent prompts, and workspace tooling, signed by the
-/// source DID as endorsement. No keys, no sessions, no local state
-/// ever leaves the host through the registry; a pulled seed
-/// clones via a freshly minted identity.
+/// **Registry artifact (ADR-060):** [`PrincipalPackager::export_for_registry`]
+/// emits a *seed* payload — a plain `principal.toml` with
+/// `id`/`did`/`boot_state` stripped, and nothing else. No keys, no
+/// sessions, no agent prompts, and no workspace tooling ever leave the
+/// host through the registry; a pulled seed clones via a freshly
+/// minted identity. (The full `.peko` export above is the one that
+/// carries `skills/` and the rest of the workspace tooling.)
 ///
 /// **Phase A/5/7 history:** the legacy `with_memory_dir` knob and the
 /// embedded-extension paths are gone; workspace tooling lives in the

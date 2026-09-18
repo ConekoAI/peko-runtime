@@ -4,6 +4,43 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Skills as plain files — guidance doc, traversal fix, dead catalog removal (2026-09-18)
+
+- **New doc: `docs/architecture/SKILLS.md`** — the canonical skills
+  reference (file format, per-turn `<runtime-context>` catalog, `Skill`
+  tool invocation, dynamic-context shell blocks, argument substitution,
+  authoring guidance, trust model). Skills are deliberately *just
+  files*: the agent owns discovery/creation/management; the doc is
+  guidance for humans and agents, not new machinery. Indexed from
+  `docs/README.md`.
+- **Fix: path traversal in skill resolution.** `WorkspaceSkillRuntime`
+  joined the caller-supplied skill name onto `skills/` unsanitized, so
+  `Skill {name: "../foo"}` resolved outside the workspace skills
+  directory (and the `skill:*` wildcard grant prefix-matched it). A
+  skill name must now be a single plain path component (no `/`, no `\`,
+  not `.`/`..`/empty); anything else reports `unknown_skill`, same as a
+  nonexistent skill — no new error surface.
+- **Removed the dead legacy skill-catalog chain.** The global
+  `SkillCatalog` (`extensions::framework::skill_catalog`), its
+  `ExtensionStore` population/uninstall hooks, the legacy
+  `{data_dir}/skills/` discovery path in `load_all`
+  (`PathResolver::skills_dir` + the framework `paths::PathResolver`
+  trait method), and `SkillTool::from_catalog` with its
+  `default_runtime` adapter module are all deleted. Production resolves
+  skills exclusively through `WorkspaceSkillRuntime` rooted at
+  `<workspace>/skills/`; the tool's tests were ported onto it.
+- **Docs aligned with retired/current surfaces.** The tutorial and
+  user's guide no longer teach the retired `peko ext *` /
+  `peko capability` CLIs (file-based workspace flow instead);
+  `CLI_REFERENCE.md` drops the nonexistent `peko export
+  --with-extensions` flag and marks the `capability` section retired;
+  `builtin-tools.md` describes the real Skill-tool + per-turn-catalog
+  mechanism; `API_SURFACE.md` replaces the deleted `SkillAdapter`
+  listing with the current `extensions::skill` shape;
+  `principal_packager`'s struct doc now says the registry payload is
+  the TOML seed only (ADR-060); `DATA_MODEL.md` §14.2 points at
+  `SKILLS.md` for the current format.
+
 ### ADR-058 D1/D2/D3 — origin-signed cross-runtime messaging (2026-09-16)
 
 Breaking wire change (pre-launch, no compat shim — see

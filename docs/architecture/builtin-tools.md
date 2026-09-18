@@ -401,7 +401,12 @@ parity program:
   - `group:<slug>`: fire-and-forget post to a named group channel. Groups are multi-principal, multi-user channels (ADR-049): principal-authored posts never wake other members (D4 loop safety — members read on their own rhythm via `ChannelRead`); a `user:*`-authored root post wakes every member principal, each in its own per-`(principal, channel)` session, and the reply posts back to the group.
   The legacy `send_peer` tool (sprint 2 rename of `principal_send`, itself the successor to `a2a_send` from ADR-023) is retired in sprint 4 — its principal branch (RPC) and user branch (messenger note) are now reachable through the `principal:<did>` and `user:<id>` channel-id forms respectively. The signed-RPC `PrincipalToPrincipalRequest` stack was retired in sprint 3 Phase 12b.
 - MCP-provided tools (`web_search`, `fetch`, etc.) — provided via MCP servers.
-- Skills — still prompt-injected via the `prompt:skills` hook.
+- Skills — loaded through the built-in `Skill` tool (`{name, args}` → the
+  SKILL.md body as the tool result), not a prompt hook. The model learns
+  which skills exist from the per-turn skills catalog — one
+  `- {name}: {description}` line per `<workspace>/skills/<name>/SKILL.md`,
+  rendered into the tail `<runtime-context>` user message. See
+  [SKILLS.md](SKILLS.md).
 
 ## Configuration gates
 

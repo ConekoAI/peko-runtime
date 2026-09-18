@@ -3,11 +3,11 @@
 //! ## Why a trait?
 //!
 //! The framework's `ExtensionStore::load_all` walks the
-//! skills/agents directories to discover installed
+//! agents directory to discover installed
 //! extensions. The directory layout is a root-owned concern
 //! (`src/common/paths.rs::PathResolver`), and the framework can't
 //! import the concrete `PathResolver` struct from the leaf host
-//! crate. The trait below carries the two directory methods
+//! crate. The trait below carries the directory method
 //! the framework uses; root's concrete `PathResolver` impls it.
 //!
 //! Phase 8 commit 1 previously shipped a placeholder trait so the
@@ -60,10 +60,6 @@ pub fn default_agent_workspace(agent_name: &str) -> PathBuf {
 /// `PathResolver` impls it via `#[automatically_derived]`-style
 /// delegation.
 pub trait PathResolver: Send + Sync {
-    /// Path to the skills directory (`{data_dir}/skills`).
-    /// Discovery walks this directory for skill manifests.
-    fn skills_dir(&self) -> PathBuf;
-
     /// Path to the agents directory (`{data_dir}/agents`).
     /// Discovery walks this directory for agent manifests.
     fn agents_dir(&self) -> PathBuf;

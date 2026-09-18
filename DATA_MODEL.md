@@ -2494,6 +2494,12 @@ Every installable extension includes a manifest that describes it.
 
 ### 14.2 SKILL.md Frontmatter (Skill Extensions)
 
+> **Note (2026-09):** the skill *extension-manifest* context below is
+> retired (ADR-047/050) — skills are no longer installed extensions. A
+> skill is a plain workspace file at `<workspace>/skills/<name>/SKILL.md`;
+> the current format reference is
+> [`docs/architecture/SKILLS.md`](docs/architecture/SKILLS.md).
+
 ```yaml
 ---
 name: docker-skill

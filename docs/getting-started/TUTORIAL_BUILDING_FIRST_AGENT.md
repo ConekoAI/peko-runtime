@@ -9,7 +9,7 @@ In this tutorial, you'll build your first peko using the CLI. By the end, you'll
 3. [Step 2: Customize Your peko](#step-2-customize-your-peko)
 4. [Step 3: Send Your First Message](#step-3-send-your-first-message)
 5. [Step 4: Run the Daemon](#step-4-run-the-daemon)
-6. [Step 5: Explore Extensions](#step-5-explore-extensions)
+6. [Step 5: Add a Skill](#step-5-add-a-skill)
 7. [What's Next?](#whats-next)
 
 ---
@@ -141,28 +141,35 @@ peko daemon stop
 
 ---
 
-## Step 5: Explore Extensions
+## Step 5: Add a Skill
 
-Extensions add tools and skills to your peko. Built-in tools are
-available automatically; grant capabilities to a peko to allow
-additional tools:
-
-```bash
-# List installed extensions
-peko ext list
-
-# Grant a built-in tool capability to your peko
-peko capability grant --principal my-principal tool:Bash
-
-# Revoke a capability you don't need
-peko capability revoke --principal my-principal tool:Bash
-```
-
-You can also install custom extensions:
+A peko's tooling is plain files in its workspace — there is no
+extension manager or install CLI (ADR-050). To teach your peko a
+reusable procedure, write a skill:
 
 ```bash
-peko ext install <path-or-url>
+mkdir -p ~/.peko/principals/my-first-principal/skills/hello-skill
+cat > ~/.peko/principals/my-first-principal/skills/hello-skill/SKILL.md <<'EOF'
+---
+name: hello-skill
+description: Use when the user asks for a greeting — reply with a short, friendly hello.
+---
+
+# Hello Skill
+
+Greet the user by name if you know it; keep the reply to one line.
+EOF
 ```
+
+The skill shows up in the peko's per-turn catalog on the very next
+message — no restart. When a task matches the description, the peko
+loads the body via the built-in `Skill` tool and follows it. See
+[Skills](../architecture/SKILLS.md) for the file format, discovery, and
+authoring guidance.
+
+To restrict which tools or skills a peko may use, edit
+`[capabilities].grants` in its `principal.toml`
+(`~/.peko/principals/<name>/principal.toml`).
 
 ---
 
@@ -170,20 +177,22 @@ peko ext install <path-or-url>
 
 Congratulations! You've built your first peko. Here are some things to try next:
 
-### 1. Explore Extensions
+### 1. Add Workspace Tooling
 
-Extensions add capabilities to your peko:
+Tools, skills, MCP servers, and hooks are plain files in the peko's
+workspace — manage them by editing files, not CLI commands:
 
 ```bash
-# List installed extensions
-peko ext list
+# List installed tooling
+ls ~/.peko/principals/my-first-principal/{tools,skills,mcp,hooks}/
 
-# Install a new extension
-peko ext install <path-or-url>
-
-# Grant a capability to your peko
-peko capability grant --principal my-principal tool:<tool-name>
+# Catalog summary
+peko show my-first-principal
 ```
+
+See [Skills](../architecture/SKILLS.md) for the SKILL.md format and
+[peko Workspace](../architecture/PRINCIPAL_WORKSPACE.md) for the full
+tooling layout.
 
 ### 2. Configure Authentication
 

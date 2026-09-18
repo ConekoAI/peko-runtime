@@ -3,23 +3,24 @@
 //! Phase 10d extracts the `Skill` tool, the YAML-frontmatter parser,
 //! the `SkillFrontmatter` / `SkillEntry` DTOs, and the body-substitution
 //! helpers out of root. Per the Phase 10 plan rule ("Built-ins must not
-//! import daemon state"), the tool here does NOT call
-//! `crate::extensions::framework::skill_catalog::SkillCatalog` directly.
-//! It speaks to a runtime port trait ([`SkillRuntime`]) that the daemon
-//! side implements (root's `src/extensions/skill/skill_runtime_impl.rs`).
+//! import daemon state"), the tool here does not scan the workspace
+//! itself. It speaks to a runtime port trait ([`SkillRuntime`]) that the
+//! daemon side implements (root's
+//! `src/extensions/skill/reader.rs::WorkspaceSkillRuntime`).
 //!
 //! ## DTOs
 //!
 //! [`SkillFrontmatter`] (parsed YAML frontmatter) and [`SkillEntry`]
-//! (catalog record) are the canonical types. The root re-exports these
+//! (resolved skill record) are the canonical types. The root re-exports these
 //! from peko-tools-builtin via `pub use crate::tools::builtin::skill::{...};`
 //! for backwards compatibility.
 //!
 //! ## Port
 //!
-//! [`SkillRuntime`] is the three-method surface the `SkillTool` needs:
-//! resolve / list / exists. The daemon side adapts the global
-//! `SkillCatalog` to this trait; tests substitute an in-memory mock.
+//! [`SkillRuntime`] is the resolve / list surface the `SkillTool` needs.
+//! The daemon side implements it with `WorkspaceSkillRuntime`, which
+//! reads `<workspace>/skills/<name>/SKILL.md` directly. Tests point the
+//! same runtime at a tempdir.
 
 pub mod body;
 pub mod frontmatter;
@@ -36,7 +37,6 @@ use std::sync::Arc;
 
 /// Entry for a single discovered skill.
 ///
-/// Mirrors root's `crate::extensions::framework::skill_catalog::SkillEntry`.
 /// `extension_id` is opaque to peko-tools-builtin (it is the
 /// `peko_extension_api::ExtensionId` newtype on the root side) so we
 /// keep it as a `String` here. The daemon adapter converts at the
@@ -53,11 +53,12 @@ pub struct SkillEntry {
 
 // ─── SkillRuntime port trait ───────────────────────────────────────
 
-/// Runtime port the `SkillTool` uses to talk to the skill catalog.
+/// Runtime port the `SkillTool` uses to resolve skill files.
 ///
-/// The daemon side implements this with `SkillCatalogRuntime` (root's
-/// `src/extensions/skill/skill_runtime_impl.rs`) which wraps the global
-/// `SkillCatalog`. Tests substitute an in-memory mock.
+/// The daemon side implements this with `WorkspaceSkillRuntime`
+/// (root's `src/extensions/skill/reader.rs`), which reads directly
+/// from the principal's workspace `skills/` directory. Tests point
+/// the same runtime at a tempdir.
 #[async_trait::async_trait]
 pub trait SkillRuntime: Send + Sync {
     /// Resolve a skill by name. Returns `None` if no such skill is
@@ -80,7 +81,7 @@ pub type SharedSkillRuntime = Arc<dyn SkillRuntime>;
 // ─── Test fixture ──────────────────────────────────────────────────
 
 /// In-memory [`SkillRuntime`] for tests. Mirrors the production
-/// `SkillCatalog` semantics: name → entry, sorted list.
+/// workspace-runtime semantics: name → entry, sorted list.
 #[cfg(test)]
 pub struct TestSkillRuntime {
     entries: std::sync::Mutex<std::collections::HashMap<String, SkillEntry>>,

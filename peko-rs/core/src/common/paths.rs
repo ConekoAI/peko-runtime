@@ -726,14 +726,6 @@ impl PathResolver {
         self.data_dir.join("tools")
     }
 
-    /// Get the Skills directory
-    ///
-    /// Path: `{data_dir}/skills`
-    #[must_use]
-    pub fn skills_dir(&self) -> PathBuf {
-        self.data_dir.join("skills")
-    }
-
     /// Get the Agents directory
     ///
     /// Path: `{data_dir}/agents`
@@ -887,10 +879,6 @@ impl PathResolver {
 // =============================================================================
 
 impl crate::extensions::framework::paths::PathResolver for PathResolver {
-    fn skills_dir(&self) -> PathBuf {
-        PathResolver::skills_dir(self)
-    }
-
     fn agents_dir(&self) -> PathBuf {
         PathResolver::agents_dir(self)
     }
