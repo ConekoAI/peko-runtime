@@ -52,6 +52,20 @@ impl WorkspaceSkillRuntime {
 #[async_trait]
 impl SkillRuntime for WorkspaceSkillRuntime {
     fn resolve_skill(&self, name: &str) -> Option<SkillEntry> {
+        // `name` is joined onto `skills_dir` directly, so it must be a
+        // single plain path component — anything else (`..`, `a/b`,
+        // `a\b`, absolute paths, empty) would resolve outside the
+        // skills directory. Invalid names behave like a nonexistent
+        // skill (`unknown_skill` at the tool layer), not a new error
+        // surface.
+        let mut components = std::path::Path::new(name).components();
+        if !matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        ) || name.contains(['/', '\\'])
+        {
+            return None;
+        }
         let skill_md = self.skills_dir.join(name).join("SKILL.md");
         if !skill_md.is_file() {
             return None;
@@ -145,5 +159,51 @@ mod tests {
         let rt = WorkspaceSkillRuntime::new(std::path::PathBuf::from("/no/such/path/here"));
         assert!(rt.list_skills().is_empty());
         assert!(rt.resolve_skill("anything").is_none());
+    }
+
+    #[test]
+    fn resolve_rejects_path_traversal_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        // A real SKILL.md OUTSIDE the skills dir — the traversal target.
+        make_skill(tmp.path(), "secret", "should never resolve");
+        // A legit skill inside the skills dir.
+        make_skill(&skills_dir, "docker", "Docker ops");
+
+        let rt = WorkspaceSkillRuntime::new(skills_dir);
+
+        // The traversal target exists on disk; it must still not resolve.
+        assert!(rt.resolve_skill("../secret").is_none());
+        // Other multi-component / non-plain-component shapes.
+        for bad in [
+            "..",
+            ".",
+            "",
+            "nested/skill",
+            "nested\\skill",
+            "/etc",
+            "./docker",
+            "docker/",
+            "docker/../secret",
+        ] {
+            assert!(rt.resolve_skill(bad).is_none(), "should reject {bad:?}");
+        }
+
+        // Normal single-component names still resolve.
+        assert!(rt.resolve_skill("docker").is_some());
+    }
+
+    #[test]
+    fn list_skills_never_produces_rejected_names() {
+        // Every name `list_skills` can return is a real directory entry,
+        // hence a single plain component — so it always round-trips
+        // through `resolve_skill`'s traversal guard.
+        let tmp = tempfile::tempdir().unwrap();
+        make_skill(tmp.path(), "docker", "Docker ops");
+        let rt = WorkspaceSkillRuntime::new(tmp.path().to_path_buf());
+        for name in rt.list_skills() {
+            assert!(rt.resolve_skill(&name).is_some(), "{name} should resolve");
+        }
     }
 }
