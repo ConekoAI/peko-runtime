@@ -207,7 +207,7 @@ SDK holds no credentials and no policy.
 
 When the daemon spawns a workflow process (D7 runner, or the Bash
 tool), it injects: `PEKO_DAEMON_SOCK`, `PEKO_WORKSPACE`,
-`PEKO_PRINCIPAL_ID`, `PEKO_SESSION_ID`, and `PEKO_RUN_TOKEN`.
+`PEKO_PRINCIPAL_ID`, `PEKO_SESSION_KEY`, and `PEKO_RUN_TOKEN`.
 
 The precedent for context injection already ships (the universal tool
 adapter injects `{session_id, agent_id, run_id, workspace}` into
