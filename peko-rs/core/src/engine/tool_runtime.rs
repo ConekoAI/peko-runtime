@@ -303,6 +303,8 @@ impl ToolRuntime {
                 tool_name,
                 params,
                 workspace,
+                None,
+                None,
                 capabilities,
                 active_extensions,
             )
@@ -328,11 +330,20 @@ impl ToolRuntime {
     /// handler needs the triplet so capability-gate denials and tool
     /// errors surface to the caller as data (`success: false`), not as
     /// a transport error.
+    ///
+    /// `principal_id` / `principal_name` carry the **server-resolved**
+    /// calling principal (phase 2a): the gate probes the
+    /// principal-scoped registration before falling back to the system
+    /// scope, and principal-scoped tools (`ModelCall`, cron) read the
+    /// identity off the resulting `ToolContext`. Both are `None` for
+    /// unattributed standalone calls (fail-closed downstream).
     pub async fn execute_tool_full_with_workspace(
         &self,
         tool_name: &str,
         params: serde_json::Value,
         workspace: &std::path::Path,
+        principal_id: Option<String>,
+        principal_name: Option<String>,
         capabilities: Option<Vec<String>>,
         active_extensions: Option<Vec<String>>,
     ) -> Result<(String, serde_json::Value, bool)> {
@@ -344,8 +355,8 @@ impl ToolRuntime {
             None,
             None,
             None,
-            None,
-            None,
+            principal_id,
+            principal_name,
             capabilities,
             active_extensions,
             None,

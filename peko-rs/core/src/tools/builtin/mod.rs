@@ -39,6 +39,7 @@ pub mod tasks;
 
 // Root-only impls that didn't have a sat counterpart:
 pub mod agent_catalog;
+pub mod model_call;
 pub mod model_list;
 pub mod tool_search;
 
@@ -56,6 +57,7 @@ pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
     AgentTool, SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime,
 };
+pub use model_call::{ModelCallTool, MODEL_CALL_TOOL_NAME};
 pub use model_list::{ModelListTool, MODEL_LIST_TOOL_NAME};
 pub use plan::{
     PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool, PlanMarkStepTool,

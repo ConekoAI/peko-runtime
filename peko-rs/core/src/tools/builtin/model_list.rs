@@ -283,6 +283,7 @@ fn spec_to_json(s: &peko_providers::spec::ModelSpec) -> Value {
             ThinkingMode::CustomBudget => "custom_budget",
         },
         "json_mode": s.json_mode,
+        "decisions": s.decisions,
         "pricing": s.pricing.as_ref().map(|p| json!({
             "input_per_million": p.input_per_million,
             "output_per_million": p.output_per_million,
@@ -352,6 +353,7 @@ mod tests {
             streaming: true,
             thinking: ThinkingMode::Optional,
             json_mode: true,
+            decisions: false,
             pricing: Some(PricingHint {
                 input_per_million: Some(3.0),
                 output_per_million: Some(15.0),
@@ -367,6 +369,7 @@ mod tests {
             streaming: true,
             thinking: ThinkingMode::Disabled,
             json_mode: false,
+            decisions: false,
             pricing: None,
         }
     }

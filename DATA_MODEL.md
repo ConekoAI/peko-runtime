@@ -33,6 +33,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
 12. [mcp.json — MCP Server Config](#12-mcpjson--mcp-server-config)
 13. [Tool Protocol — stdin/stdout](#13-tool-protocol--stdinstdout)
    13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
+   13¾. [`ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)](#13¾-modelcall--one-shot-inference--the-judgment-wire-adr-061-phase-2a)
 14. [Extension Manifest](#14-extension-manifest)
 15. [Type Reference](#15-type-reference)
 16. [Changelog](#16-changelog)
@@ -2531,6 +2532,119 @@ to deny-all.
 
 A funnel-internal failure instead answers `{"type": "error", "request_id": N,
 "message": "…"}`.
+
+---
+
+## 13¾. `ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)
+
+`ModelCall` is a built-in tool (gated by `tool:ModelCall`; the starter bundle's
+`tool:*` covers it) providing **one-shot inference: no session persistence, no
+tool-calling loop, no streaming**. Every call is attributed server-side to the
+calling principal (from `ToolContext.principal_name`, never from the params),
+refuses to run without one, and charges that principal's quota meter from
+provider-reported usage after the call.
+
+**Mode selection** — exactly one per call:
+
+- **Completion** — `prompt` present. One non-streaming chat completion with
+  `tools: None`.
+- **Judgment** — `state` + `questions` present. POSTs to the resolved entry's
+  decision API (below). `system` / `max_tokens` / `temperature` are rejected in
+  this mode.
+
+```json
+{
+  "model":       "string? (catalog id; defaults to the principal's preferred_model_id)",
+  "prompt":      "string?  (completion mode)",
+  "system":      "string?  (completion mode)",
+  "max_tokens":  "integer? (completion mode)",
+  "temperature": "number?  (completion mode)",
+  "state":       "string | object?  (judgment mode)",
+  "questions":   "object?  (judgment mode — map of question key → spec)"
+}
+```
+
+Completion result:
+
+```json
+{ "mode": "completion", "text": "…", "model": "<catalog id>",
+  "usage": { "input": 12, "output": 40, "total": 52 } }
+```
+
+### `ModelSpec.decisions` (models.toml)
+
+Judgment mode is gated on a catalog opt-in flag so an ordinary chat entry can
+never be mistaken for a decision API:
+
+```toml
+# ~/.peko/models.toml
+[entries.jev]
+display_name = "Jev"
+api_format   = "openai_completions"      # inert for judgment mode
+base_url     = "https://api.example.com" # POSTs go to {base_url}/v1/evaluate
+model_id     = "jev-1"
+requires_key = true
+credential_id = "jev"                    # vault credential, as for chat models
+enabled      = true
+
+[entries.jev.spec]
+decisions = true                         # ← the flag; serde-default false
+pricing = { input_per_million = 0.042 }  # judgment APIs bill input only
+```
+
+Like the other `ModelSpec` fields, `decisions` is **hand-edit-only** — no
+`peko model add` / `peko model edit` flag sets it (`edit` covers `--note`
+only). It surfaces read-only via `peko model show` (`spec.decisions`),
+`--json`, and the `model_list` tool. Old `models.toml` files load unchanged
+(`#[serde(default)]` ⇒ `false`).
+
+### Judgment wire shape
+
+Request — `POST {base_url}/v1/evaluate` with `Authorization: Bearer <credential>`
+(the vault credential resolved through the same chain as chat providers; the
+header is omitted when the entry has `requires_key = false`). `questions` is
+passed through verbatim:
+
+```json
+{
+  "model": "jev-1",
+  "state": "deploy failed twice",
+  "questions": {
+    "continueWorking": { "type": "boolean", "instructions": "Is there pending work?" },
+    "priority":        { "type": "choice", "options": ["high", "low"], "instructions": "…" },
+    "severity":        { "type": "score", "min": 1, "max": 5, "instructions": "…" }
+  }
+}
+```
+
+Response — the runtime requires a top-level `answers` object and passes each
+per-question answer through **verbatim** (`probability` rides along when
+present); the choice/score response fields are intentionally not pinned.
+An optional `usage` block (`input_tokens` / `prompt_tokens` / `input`,
+`output_tokens` / `completion_tokens` / `output`) is metered when present:
+
+```json
+{
+  "answers": {
+    "continueWorking": { "answer": true,  "probability": 0.92 },
+    "priority":        { "answer": "high", "probability": 0.70 },
+    "severity":        { "answer": 4,      "probability": 0.61 }
+  },
+  "usage": { "input_tokens": 1200 }
+}
+```
+
+Judgment result returned to the caller:
+
+```json
+{ "mode": "judgment", "model": "jev",
+  "answers": { "continueWorking": { "answer": true, "probability": 0.92 } },
+  "usage": { "input": 1200, "output": 0, "total": 1200 } }
+```
+
+(`usage` is omitted from the result when the response carried none; in that
+case only the meter's request counter advances — token counts are never
+synthesized from request params.)
 
 ---
 

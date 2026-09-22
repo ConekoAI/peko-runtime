@@ -1091,6 +1091,21 @@ Wire shape documented in `DATA_MODEL.md` §13½. New/changed public items:
 | `ToolHandler::resolve_session_grants` | `ipc::handlers::tool` (crate-internal) | ✅ New | The `AsyncSpawn`/`ExecuteTool` shared attribution path |
 | `peko_workflow` Python SDK (`tools.call`) | `sdks/python/peko_workflow` | ✅ New | Stdlib-only unix-socket client for workflow processes |
 
+### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
+
+Branch `feat/agent-workflows`. One-shot, sessionless inference as a built-in
+tool (completion + judgment modes), metered against the calling principal.
+Wire shapes documented in `DATA_MODEL.md` §13¾. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ModelCallTool` / `MODEL_CALL_TOOL_NAME` | `tools::builtin::model_call` | ✅ New | The `ModelCall` built-in (`tool:ModelCall` gate); holds `Weak<PrincipalManager>` for server-side meter + default-model resolution |
+| `ModelSpec.decisions` | `peko_providers::spec` | ✅ Extended | Judgment-class opt-in flag (serde-default `false`, hand-edit `models.toml`); mirrored onto IPC `packet::ModelSpec` + the `model_list` projection |
+| `LlmResolver::resolve_api_key` | `peko_providers::resolver` | ✅ Visibility (was private) | Credential resolution for judgment mode — same chain `build_provider` uses |
+| `Provider::chat_response_with_options` | `peko_providers::core` | ✅ New | One-shot chat completion with caller-owned `ChatOptions` and `tools: None` on the wire |
+| `compute_cost_usd` | `peko_engine::stacked_metered_provider` (re-exported `peko_engine`) | ✅ Visibility (was private) | Shared PricingHint → USD formula for the tool's post-call charge |
+| `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `principal_id` / `principal_name` params so `ExecuteTool` carries server-resolved attribution into the funnel |
+
 ---
 
 ## Test Coverage Requirements

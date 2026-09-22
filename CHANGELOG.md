@@ -4,6 +4,52 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
+
+- **New built-in tool: `ModelCall`** — the one-shot inference primitive of
+  [ADR-061](docs/architecture/adr/ADR-061-agent-authored-workflows.md) D3:
+  no session persistence, no tool-calling loop, no streaming. Two modes,
+  exactly one per call: completion (`{model?, prompt, system?, max_tokens?,
+  temperature?}` → one non-streaming chat completion with `tools: None` →
+  `{text, model, usage}`) and judgment (`{model?, state, questions}` →
+  `POST {base_url}/v1/evaluate` on the resolved catalog entry → typed
+  `answers` passed through verbatim, `probability` included when present).
+  Model resolution reuses `LlmResolver` precedence (`model` param = explicit
+  override, else the calling principal's `preferred_model_id`); credentials
+  come from the same vault chain as chat providers.
+- **Server-side attribution + metering.** The calling principal is derived
+  from `ToolContext.principal_name` (never from tool params); calls without
+  a resolvable principal are refused. Completion mode applies the subagent
+  `cost_per_call_max` pre-flight (4K-in + 1K-out projection against the
+  entry's `PricingHint`) before any traffic; both modes charge the
+  principal's `QuotaMeter` after the call from provider-reported usage
+  (never request params), folding USD cost via the shared
+  `compute_cost_usd` so `budget_per_cycle` applies.
+- **`ModelSpec.decisions: bool`** (serde-default `false`) — the judgment-
+  class opt-in on catalog entries (ADR-061 D4). Hand-edit-only in
+  `models.toml` like the other spec fields (`peko model edit` covers
+  `--note` only); surfaced read-only via `peko model show`, `--json`, the
+  IPC `ModelSummary` mirror, and the `model_list` tool. A judgment-class
+  model is added with `peko model add`, described in `note`, and
+  discovered via `model_list` — no special provider plumbing; the
+  chat-shaped `ApiAdapter` contract is untouched.
+- **Registration**: `daemon::state` registers `ModelCall` once on the
+  shared `ExtensionCore` (system scope) after the `PrincipalManager` is
+  built — the tool holds `Weak<PrincipalManager>` for meter/default-model
+  resolution, so it cannot be part of `ToolRuntime::register_builtins`.
+  Both the agentic loop and the phase-1 `ExecuteTool` IPC path reach it
+  through the F37 funnel; the `ExecuteTool` handler now threads the
+  server-resolved principal id/name through
+  `ToolRuntime::execute_tool_full_with_workspace` (two new optional
+  parameters) so the tool sees the same attribution on both paths.
+  Gated by `tool:ModelCall`; the starter bundle's `tool:*` covers it.
+- **New public API**: `Provider::chat_response_with_options`
+  (one-shot, `tools: None`, caller-owned `ChatOptions`),
+  `LlmResolver::resolve_api_key` (was private), and
+  `peko_engine::compute_cost_usd` (was private).
+- Wire shapes documented in `DATA_MODEL.md` §13¾; the tool is catalogued
+  in `docs/architecture/builtin-tools.md`.
+
 ### ADR-061 phase 1 — `ExecuteTool` IPC for agent-authored workflows (2026-09-22)
 
 - **New IPC variant: `RequestPacket::ExecuteTool`** — synchronous tool

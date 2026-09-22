@@ -323,8 +323,16 @@ impl LlmResolver {
         Provider::new(AnyAdapter::Mock(adapter), "mock-key".to_string(), options).map(Arc::new)
     }
 
-    /// Internal: look up the API key for a configured model.
-    fn resolve_api_key(&self, config: &ModelConfig) -> Result<SecretString> {
+    /// Resolve the API key for a configured model through the same
+    /// chain `build_provider` uses (credential provider → secret store
+    /// → empty-when-`requires_key = false` → env bootstrap).
+    ///
+    /// Made public for ADR-061 (D4): the `ModelCall` built-in's
+    /// judgment mode POSTs directly to the entry's `base_url` (a
+    /// decision API is not chat-shaped, so no `Provider` is built) but
+    /// must source the credential through the identical vault path.
+    /// Callers must never log or persist the returned material.
+    pub fn resolve_api_key(&self, config: &ModelConfig) -> Result<SecretString> {
         // 1. Credential provider via credential_id.
         if let Some(id) = &config.credential_id {
             if let Some(provider) = &self.credentials {

@@ -864,6 +864,26 @@ impl AppState {
             Some(Arc::clone(&principal_manager)),
         );
 
+        // ADR-061 phase 2a (D3): register the `ModelCall` built-in on
+        // the system scope of the shared core. Unlike the rest of
+        // `GLOBAL_TOOL_NAMES` it cannot be registered by
+        // `ToolRuntime::register_builtins` — the tool needs the
+        // `PrincipalManager` handle (per-principal meter +
+        // `preferred_model_id` resolution at execute time), which only
+        // exists from here on. Registered once; both the agentic loop
+        // and the `ExecuteTool` IPC path reach it through the F37
+        // funnel, gated by `tool:ModelCall`.
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            &global_core,
+            Arc::new(crate::tools::builtin::ModelCallTool::new(Arc::downgrade(
+                &principal_manager,
+            ))),
+        )
+        .await
+        {
+            tracing::warn!("Failed to register built-in tool 'ModelCall' with ExtensionCore: {e}");
+        }
+
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;
         let api_key_store = if auth_config.enable_api_key() {
@@ -2509,6 +2529,7 @@ fn model_spec_to_wire(spec: peko_providers::spec::ModelSpec) -> crate::ipc::pack
             peko_providers::spec::ThinkingMode::CustomBudget => ModelThinkingMode::CustomBudget,
         },
         json_mode: spec.json_mode,
+        decisions: spec.decisions,
         pricing: spec.pricing.map(|p| ModelPricingHint {
             input_per_million: p.input_per_million,
             output_per_million: p.output_per_million,

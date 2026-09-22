@@ -31,6 +31,14 @@ pub const GLOBAL_TOOL_NAMES: &[&str] = &[
     // loop calls this on demand; principal boundary preserved
     // because the principal invokes the tool itself.
     "ChannelRead",
+    // ADR-061 phase 2a (D3) — one-shot completion / judgment-model
+    // dispatch. Unlike the rest of this list it is NOT registered by
+    // `ToolRuntime::register_builtins`: it needs the daemon-global
+    // `PrincipalManager` (meter + default-model resolution), which is
+    // built after the tool runtime, so `daemon::state` registers it on
+    // the shared core once the manager exists. It is listed here so the
+    // principal catalog gates it by `tool:ModelCall` like any built-in.
+    "ModelCall",
     // Sprint 4: `ChannelSend` is per-agent (see
     // `AGENT_SPECIFIC_TOOL_NAMES` below) because the tool needs the
     // caller's principal DID bound at construction — global

@@ -162,6 +162,20 @@ impl RequestHandler for ToolHandler {
     }
 }
 
+/// Server-side attribution for one `session_key` (ADR-042 + F8 +
+/// ADR-057). Everything in here is derived from the resolved principal —
+/// never from the packet. On any resolution failure every field is
+/// `None`, which the downstream gate treats as deny-all (fail-closed).
+struct SessionAttribution {
+    capabilities: Option<Vec<String>>,
+    active_extensions: Option<Vec<String>>,
+    /// Stable principal id + human-readable name, threaded into the
+    /// funnel so principal-scoped tools (e.g. ADR-061 `ModelCall`,
+    /// cron) can resolve per-principal state at handle time.
+    principal_id: Option<String>,
+    principal_name: Option<String>,
+}
+
 impl ToolHandler {
     /// Resolve the owning principal's capability grants and active
     /// extension set server-side from a session key (ADR-042 + F8 —
@@ -181,7 +195,7 @@ impl ToolHandler {
     /// enable set whether they were spawned by chat traffic or by this
     /// IPC path.
     ///
-    /// Fail-closed: any resolution failure returns `(None, None)` —
+    /// Fail-closed: any resolution failure returns all-`None` fields —
     /// deny-all downstream — and warns so the mismatch is visible in
     /// tracing without leaking data to the caller. `caller` labels the
     /// warn line with the owning variant ("AsyncSpawn" / "ExecuteTool").
@@ -189,7 +203,7 @@ impl ToolHandler {
         &self,
         session_key: &str,
         caller: &'static str,
-    ) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    ) -> SessionAttribution {
         let parts = parse_session_key(session_key);
         let principal_agent = parts.agent;
 
@@ -209,17 +223,24 @@ impl ToolHandler {
                     &principal.agent_prompts,
                     &global_items,
                 );
-                (
-                    Some(caps.to_strings()),
-                    Some(catalog.active_extensions().to_vec()),
-                )
+                SessionAttribution {
+                    capabilities: Some(caps.to_strings()),
+                    active_extensions: Some(catalog.active_extensions().to_vec()),
+                    principal_id: Some(principal.id.0.clone()),
+                    principal_name: Some(principal.name().await),
+                }
             }
             None => {
                 warn!(
                     "{caller} session_key={session_key} resolved to unknown principal \
                      '{principal_agent}'; falling back to fail-closed (no grants)",
                 );
-                (None, None)
+                SessionAttribution {
+                    capabilities: None,
+                    active_extensions: None,
+                    principal_id: None,
+                    principal_name: None,
+                }
             }
         }
     }
@@ -241,9 +262,11 @@ impl ToolHandler {
         workspace: PathBuf,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<()> {
-        let (resolved_capabilities, resolved_active_extensions) = self
+        let attribution = self
             .resolve_session_grants(&session_key, "AsyncSpawn")
             .await;
+        let resolved_capabilities = attribution.capabilities;
+        let resolved_active_extensions = attribution.active_extensions;
 
         let tool_runtime = self.host.tool_runtime();
         let executor = self.host.async_task_executor();
@@ -306,7 +329,7 @@ impl ToolHandler {
         workspace: PathBuf,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<()> {
-        let (resolved_capabilities, resolved_active_extensions) = self
+        let attribution = self
             .resolve_session_grants(&session_key, "ExecuteTool")
             .await;
 
@@ -316,8 +339,10 @@ impl ToolHandler {
                 &tool_name,
                 params,
                 &workspace,
-                resolved_capabilities,
-                resolved_active_extensions,
+                attribution.principal_id,
+                attribution.principal_name,
+                attribution.capabilities,
+                attribution.active_extensions,
             )
             .await;
 

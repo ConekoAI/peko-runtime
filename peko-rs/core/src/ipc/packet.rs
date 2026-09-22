@@ -1985,6 +1985,11 @@ pub struct ModelSpec {
     pub thinking: ModelThinkingMode,
     #[serde(default)]
     pub json_mode: bool,
+    /// ADR-061 (D4): judgment-class model flag. Read by the
+    /// `ModelCall` built-in's judgment-mode gate; the desktop does
+    /// not consume it today.
+    #[serde(default)]
+    pub decisions: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricingHint>,
 }
@@ -2002,6 +2007,7 @@ impl Default for ModelSpec {
             streaming: true,
             thinking: ModelThinkingMode::Disabled,
             json_mode: false,
+            decisions: false,
             pricing: None,
         }
     }

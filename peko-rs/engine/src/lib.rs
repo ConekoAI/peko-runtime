@@ -140,7 +140,7 @@ pub use spec_gate::{check as check_spec, SpecGateError};
 // sites that pre-date Phase 6 keep compiling.
 pub use peko_providers::ProviderView;
 pub use peko_session::{SessionCore, SessionView};
-pub use stacked_metered_provider::StackedMeteredProvider;
+pub use stacked_metered_provider::{compute_cost_usd, StackedMeteredProvider};
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
