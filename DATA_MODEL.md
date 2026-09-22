@@ -32,6 +32,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
 11. [Markdown Files](#11-markdown-files)
 12. [mcp.json — MCP Server Config](#12-mcpjson--mcp-server-config)
 13. [Tool Protocol — stdin/stdout](#13-tool-protocol--stdinstdout)
+   13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
 14. [Extension Manifest](#14-extension-manifest)
 15. [Type Reference](#15-type-reference)
 16. [Changelog](#16-changelog)
@@ -2472,6 +2473,64 @@ A tool may include a `<toolname>.json` sidecar that describes its schema. The ru
 ```
 
 The `parameters` schema is JSON Schema draft-07.
+
+---
+
+## 13½. IPC — `ExecuteTool` Packet (ADR-061 phase 1)
+
+The daemon's IPC protocol is one JSON datagram per message over a unix socket
+(`$PEKO_HOME/run/daemon.sock` or `~/.peko/run/daemon.sock`, override
+`PEKO_DAEMON_SOCK`), Windows named pipe, or loopback-UDP fallback; packets are
+capped at `MAX_PACKET_SIZE = 60 000` bytes. `ExecuteTool` is the synchronous
+tool-execution variant — the callback surface for agent-authored workflow
+processes (`sdks/python/peko_workflow`), mirroring `async_spawn`'s
+server-side attribution.
+
+**Request** (`RequestPacket::ExecuteTool`):
+
+```json
+{
+  "type":        "execute_tool",
+  "request_id":  1,
+  "tool_name":   "Glob",
+  "params":      { "pattern": "*.py" },
+  "session_key": "agent:researcher:cli:default",
+  "workspace":   "/path/to/workspace"
+}
+```
+
+The wire carries *where the call lands* (`session_key`), never *who the caller
+claims to be* (ADR-057): the daemon parses the key, resolves the owning
+principal server-side, and derives capability grants and active extensions
+from it — grants in the packet are never accepted. An unknown key fails closed
+to deny-all.
+
+**Response** (`ResponsePacket::ToolExecuted`) — the F37 funnel's
+`tool_result_from_hook` triplet:
+
+```json
+{
+  "type":       "tool_executed",
+  "request_id": 1,
+  "content":    "matches: [\"a.py\"]",
+  "result":     { "matches": ["a.py"] },
+  "success":    true,
+  "truncated":  false
+}
+```
+
+- `content` — the display string the agentic loop would feed the model.
+- `result` — the structured value (`null` when truncated).
+- `success` — `false` for tool errors **and** capability-gate denials alike
+  (the fail-closed path surfaces as data, not a transport error; the denial
+  text in `content` reads `Error: Tool '<name>' is currently disabled…`).
+- `truncated` — when the serialized payload would exceed the datagram budget,
+  `result` is dropped to `null` and `content` is clipped until the packet
+  fits, suffixed with `[truncated by peko: result exceeded the IPC packet
+  budget]`. (ADR-061's spill-to-workspace-file is a phase-2 refinement.)
+
+A funnel-internal failure instead answers `{"type": "error", "request_id": N,
+"message": "…"}`.
 
 ---
 

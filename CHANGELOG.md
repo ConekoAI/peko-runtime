@@ -4,6 +4,36 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-061 phase 1 — `ExecuteTool` IPC for agent-authored workflows (2026-09-22)
+
+- **New IPC variant: `RequestPacket::ExecuteTool`** — synchronous tool
+  execution for external (workflow) processes, the attribution-path spike of
+  [ADR-061](docs/architecture/adr/ADR-061-agent-authored-workflows.md).
+  Fields mirror `AsyncSpawn` (`request_id`, `tool_name`, `params`,
+  `session_key`, `workspace`); the reply is `ResponsePacket::ToolExecuted`
+  carrying the F37 funnel's `(content, result, success)` triplet plus a
+  `truncated` flag. The handler shares `AsyncSpawn`'s attribution path (now
+  factored as `ToolHandler::resolve_session_grants`): the principal is
+  resolved server-side from `session_key`, grants and active extensions are
+  derived from it — never from the packet — and resolution failure fails
+  closed to deny-all. Gate denials and tool errors arrive as
+  `success: false` data, not transport errors.
+- **Datagram-budget truncation.** A `ToolExecuted` payload that would exceed
+  `MAX_PACKET_SIZE` is clipped (`content` halved until it fits, marker
+  appended, `result` dropped to `null`, `truncated: true`) instead of
+  failing serialization. Spill-to-workspace-file (ADR-061 D2) is a phase-2
+  refinement.
+- **`ToolRuntime::execute_tool_full_with_workspace`** — the triplet-returning
+  sibling of `execute_tool_with_workspace` (which now delegates to it).
+- **`DaemonClient::execute_tool`** — single-request/response client method
+  mirroring `spawn_async_task`'s structure.
+- **New Python SDK: `sdks/python/peko_workflow`** (stdlib-only) —
+  `peko_workflow.tools.call(name, **params)` over the daemon's unix-datagram
+  IPC, reading `PEKO_DAEMON_SOCK` / `PEKO_SESSION_KEY` / `PEKO_WORKSPACE`.
+  macOS/Linux only for the spike; Windows named pipe is a TODO.
+- Wire shape documented in `DATA_MODEL.md` §13½; handler-level attribution
+  tests pin the resolve / fail-closed / gate-denied paths.
+
 ### Skills as plain files — guidance doc, traversal fix, dead catalog removal (2026-09-18)
 
 - **New doc: `docs/architecture/SKILLS.md`** — the canonical skills

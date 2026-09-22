@@ -298,21 +298,15 @@ impl ToolRuntime {
         capabilities: Option<Vec<String>>,
         active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
-        let (display, json, success) = peko_engine::funnel::execute_tool_via_core_with_context(
-            &*self.extension_core,
-            tool_name,
-            params,
-            Some(workspace.to_string_lossy().to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            capabilities,
-            active_extensions,
-            None,
-        )
-        .await?;
+        let (display, json, success) = self
+            .execute_tool_full_with_workspace(
+                tool_name,
+                params,
+                workspace,
+                capabilities,
+                active_extensions,
+            )
+            .await?;
 
         if !success {
             return Err(anyhow::anyhow!(display));
@@ -326,6 +320,37 @@ impl ToolRuntime {
         }
 
         Ok(json)
+    }
+
+    /// Execute a tool with an explicit workspace override, returning the
+    /// funnel's full `(display, json, success)` triplet instead of
+    /// flattening failures into `Err`. ADR-061: the `ExecuteTool` IPC
+    /// handler needs the triplet so capability-gate denials and tool
+    /// errors surface to the caller as data (`success: false`), not as
+    /// a transport error.
+    pub async fn execute_tool_full_with_workspace(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+        workspace: &std::path::Path,
+        capabilities: Option<Vec<String>>,
+        active_extensions: Option<Vec<String>>,
+    ) -> Result<(String, serde_json::Value, bool)> {
+        peko_engine::funnel::execute_tool_via_core_with_context(
+            &*self.extension_core,
+            tool_name,
+            params,
+            Some(workspace.to_string_lossy().to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            capabilities,
+            active_extensions,
+            None,
+        )
+        .await
     }
 
     /// List all registered tools visible to the system scope

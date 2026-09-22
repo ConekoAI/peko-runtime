@@ -116,6 +116,35 @@ impl DaemonClient {
         self.send_request(packet).await
     }
 
+    /// Execute a tool synchronously through the daemon, attributed to
+    /// the principal that owns `session_key` (ADR-061 phase 1). The
+    /// daemon resolves the principal server-side and derives grants and
+    /// active extensions from it — the wire carries neither. The reply
+    /// is a single `ResponsePacket::ToolExecuted` whose `success` flag
+    /// covers tool errors and capability-gate denials alike; the caller
+    /// inspects `success`/`content`/`result`/`truncated`.
+    ///
+    /// # Errors
+    /// Returns error if the request cannot be sent or the daemon
+    /// replies with a transport-level `Error` packet.
+    pub async fn execute_tool(
+        &self,
+        tool_name: impl Into<String>,
+        params: serde_json::Value,
+        session_key: impl Into<String>,
+        workspace: std::path::PathBuf,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ExecuteTool {
+            request_id,
+            tool_name: tool_name.into(),
+            params,
+            session_key: session_key.into(),
+            workspace,
+        };
+        self.request_response(packet).await
+    }
+
     /// Cancel an async task
     ///
     /// # Errors

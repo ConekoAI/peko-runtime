@@ -1074,6 +1074,23 @@ New/changed public items:
 | Inbound `TunnelChannelEvent` / `TunnelChannelInvite` handlers | `tunnel::dispatcher` | ⚠️ Changed | Verify the runtime JWS + payload/envelope field consistency, then the D2 author gate: `did:key` authors need a valid author signature + remote membership (events) or `creator_did == source_principal_did` (invites); non-`did:key` authors stay runtime-vouched |
 | `VaultPrincipalSigningKeys` | `daemon::state` | ✅ New (crate-internal) | Production `PrincipalSigningKeys` impl: DID lookup via `PrincipalManager`, key load from the vault's `principal-identity` namespace, per-DID cache |
 
+### ADR-061 phase 1 — `ExecuteTool` IPC (2026-09-22)
+
+Branch `feat/agent-workflows`. Synchronous, attributed tool execution for
+external workflow processes: the daemon resolves the principal from
+`session_key` server-side, derives grants/extensions from it (never from the
+wire, fail-closed to deny-all), and executes through the F37 funnel.
+Wire shape documented in `DATA_MODEL.md` §13½. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `RequestPacket::ExecuteTool` (`execute_tool`) | `ipc::packet` | ✅ New | `{request_id, tool_name, params, session_key, workspace}` — mirrors `AsyncSpawn` |
+| `ResponsePacket::ToolExecuted` (`tool_executed`) | `ipc::packet` | ✅ New | `{request_id, content, result, success, truncated}` — the funnel's `(display, json, success)` triplet + datagram-budget truncation flag |
+| `DaemonClient::execute_tool` | `ipc::client` | ✅ New | Single request/response call mirroring `spawn_async_task`'s structure |
+| `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ New | Triplet-returning execution variant; `execute_tool_with_workspace` now delegates to it |
+| `ToolHandler::resolve_session_grants` | `ipc::handlers::tool` (crate-internal) | ✅ New | The `AsyncSpawn`/`ExecuteTool` shared attribution path |
+| `peko_workflow` Python SDK (`tools.call`) | `sdks/python/peko_workflow` | ✅ New | Stdlib-only unix-socket client for workflow processes |
+
 ---
 
 ## Test Coverage Requirements
