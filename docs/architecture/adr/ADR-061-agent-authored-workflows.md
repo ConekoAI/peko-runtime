@@ -1,7 +1,10 @@
 # ADR-061: Agent-Authored Workflows — `ExecuteTool` IPC and the `ModelCall` Primitive
 
-**Status:** Draft (2026-09-22). Attribution-path spike implemented on
-branch `feat/agent-workflows` (§5).
+**Status:** Draft (2026-09-22). Phases 1–2 implemented on branch
+`feat/agent-workflows`: `ExecuteTool` + `peko_workflow` SDK +
+attribution tests (phase 1); `ModelCall` + `ModelSpec.decisions`,
+`Workflow` runner + `PEKO_RUN_TOKEN` registry, `workflows/` prompt
+catalog (phase 2). See §5.
 **Date:** 2026-09-22
 **Author:** rlsn (with Kimi Code)
 **Related:** [ADR-046](ADR-046-trust-and-audit.md) (trust + audit),
