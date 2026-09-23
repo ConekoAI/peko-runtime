@@ -1117,7 +1117,7 @@ injected; callbacks authenticate with a per-spawn run token. Wire shapes in
 |-----------|--------|--------|---------|
 | `WorkflowTool` / `WORKFLOW_TOOL_NAME` / `MAX_WORKFLOW_DEPTH` | `tools::builtin::workflow` | ✅ New | The `Workflow` built-in (`tool:Workflow` gate); `Weak<PrincipalManager>` + `Arc<RunTokenRegistry>` handles |
 | `WorkspaceWorkflowsPromptHandler` / `WORKFLOW_CATALOG_HOOK_PRIORITY` | `tools::builtin::workflow` | ✅ New | Per-turn `workflows` catalog section (renderer `SectionSlot::Workflows`) |
-| `RunTokenRegistry` / `RunTokenEntry` | `ipc::run_tokens` | ✅ New | In-memory `PEKO_RUN_TOKEN` mint/verify with TTL + lazy expiry sweep |
+| `RunTokenRegistry` / `RunTokenEntry` | `ipc::run_tokens` | ✅ New | In-memory `PEKO_RUN_TOKEN` mint/verify with TTL + lazy expiry sweep. **2026-09-23 (caller-awareness):** `RunTokenEntry` gains `caller_session_id: Option<String>` — the tree node the `Workflow` ran from; the `ExecuteTool` handler threads it into `ToolContext.session_id` on validated calls so tree-relative tools classify the workflow caller as that node |
 | `RequestPacket::ExecuteTool.run_token` | `ipc::packet` | ✅ Extended | Optional additive field; validated + session-matched server-side, fail-closed |
 | `DaemonClient::execute_tool_with_token` | `ipc::client` | ✅ New | `execute_tool` + `run_token`; the old method delegates with `None` |
 | `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `session_id` (the handler threads the packet's `session_key` into `ToolContext`) |

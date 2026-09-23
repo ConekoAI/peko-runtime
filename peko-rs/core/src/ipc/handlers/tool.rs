@@ -350,6 +350,12 @@ impl ToolHandler {
     ) -> anyhow::Result<()> {
         // Run-token authentication (phase 2b). Never log the token.
         let mut token_depth = None;
+        // Caller-awareness: the tree node the calling `Workflow` was
+        // invoked from, resolved from the server-minted token record —
+        // NEVER from the packet. Threaded into `ToolContext.session_id`
+        // in place of the session-key string so tree-relative tools
+        // classify the workflow caller as that node.
+        let mut token_caller_session_id: Option<String> = None;
         if let Some(token) = run_token.as_deref() {
             let caller_principal = parse_session_key(&session_key).agent.to_string();
             let validated = self
@@ -360,7 +366,10 @@ impl ToolHandler {
                     entry.session_key == session_key && entry.principal_name == caller_principal
                 });
             match validated {
-                Some(entry) => token_depth = Some(entry.workflow_depth),
+                Some(entry) => {
+                    token_depth = Some(entry.workflow_depth);
+                    token_caller_session_id = entry.caller_session_id;
+                }
                 None => {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -391,13 +400,21 @@ impl ToolHandler {
             .resolve_session_grants(&session_key, "ExecuteTool")
             .await;
 
+        // Session-id selection: a valid token carrying the calling node
+        // id threads the real session UUID; a token without one (or no
+        // token at all) threads the session-key string — the pre-fix
+        // dangling behavior. The id flows through the session layer's
+        // existing `caller_context` classification, which treats
+        // unknown/stale ids as dangling — no new privilege logic.
+        let threaded_session_id = token_caller_session_id.unwrap_or_else(|| session_key.clone());
+
         let tool_runtime = self.host.tool_runtime();
         let triplet = tool_runtime
             .execute_tool_full_with_workspace(
                 &tool_name,
                 params,
                 &workspace,
-                Some(session_key.clone()),
+                Some(threaded_session_id),
                 attribution.principal_id,
                 attribution.principal_name,
                 attribution.capabilities,
@@ -503,6 +520,7 @@ mod tests {
     };
     use peko_auth::Subject;
     use peko_extension_api::Capabilities;
+    use peko_tools_core::Tool as _;
     use serde_json::json;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -883,6 +901,7 @@ mod tests {
             "tokprincipal",
             "agent:tokprincipal:cli:default",
             1,
+            None,
             std::time::Duration::from_mins(1),
         );
 
@@ -944,6 +963,7 @@ mod tests {
             "tokmismatch",
             "agent:tokmismatch:workflow:run-1",
             1,
+            None,
             std::time::Duration::from_mins(1),
         );
 
@@ -975,6 +995,7 @@ mod tests {
             "tokexpired",
             "agent:tokexpired:cli:default",
             1,
+            None,
             std::time::Duration::ZERO,
         );
 
@@ -1013,6 +1034,7 @@ mod tests {
             "toka",
             "agent:toka:cli:default",
             1,
+            None,
             std::time::Duration::from_mins(1),
         );
 
@@ -1059,6 +1081,7 @@ mod tests {
             "deepwf",
             "agent:deepwf:workflow:run-1",
             crate::tools::builtin::MAX_WORKFLOW_DEPTH,
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1106,6 +1129,264 @@ mod tests {
         assert!(
             !content.contains("nesting depth") && content.contains("workflows"),
             "depth 99 from the wire must be stripped (fail later at the path guard), got: {content}"
+        );
+    }
+
+    // ── Caller-aware workflow runs (run token carries the node) ─────
+
+    /// Probe tool: classifies the caller from the threaded
+    /// `ToolContext.session_id` through the REAL ownership layer
+    /// (`session::ownership::caller_context`) over a real
+    /// store-produced metadata slice — the same classification the
+    /// `Agent` tool and session guards apply. Returns the threaded id
+    /// plus the classification so tests can compare a workflow call
+    /// against a direct call field-by-field.
+    struct ClassifyProbeTool {
+        metas: Vec<peko_session::SessionMetadata>,
+    }
+
+    #[async_trait]
+    impl peko_tools_core::Tool for ClassifyProbeTool {
+        fn name(&self) -> &'static str {
+            "ClassifyProbe"
+        }
+        fn description(&self) -> String {
+            "test probe".to_string()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            anyhow::bail!("probe only supports execute_with_context")
+        }
+        async fn execute_with_context(
+            &self,
+            _params: serde_json::Value,
+            ctx: &peko_tools_core::ToolContext,
+        ) -> anyhow::Result<serde_json::Value> {
+            let id = ctx.session_id.clone().unwrap_or_default();
+            let caller = crate::session::ownership::caller_context(&id, &self.metas);
+            Ok(json!({
+                "threaded": id,
+                "dangling": caller.dangling,
+                "is_base": caller.is_base,
+                "ancestors": caller.ancestors,
+            }))
+        }
+    }
+
+    /// Seed a real session store with trunk + child; returns the
+    /// metadata slice and the canonical ids.
+    async fn seed_tree() -> (TempDir, Vec<peko_session::SessionMetadata>, String, String) {
+        let temp = TempDir::new().expect("tempdir");
+        let mut manager = peko_session::SessionManager::new()
+            .with_sessions_dir_internal(temp.path())
+            .with_agent_name("wf-agent");
+        let peer = Subject::User("alice".to_string());
+        manager
+            .create_session(
+                "wf-agent",
+                &peer,
+                peko_session::SessionCreateOptions::new().with_session_id("trunk"),
+            )
+            .await
+            .expect("create trunk");
+        let trunk_id = peko_session::SessionId::from("trunk").to_string();
+        manager
+            .create_session(
+                "wf-agent",
+                &peer,
+                peko_session::SessionCreateOptions::new()
+                    .with_session_id("child")
+                    .with_parent(trunk_id.clone()),
+            )
+            .await
+            .expect("create child");
+        let child_id = peko_session::SessionId::from("child").to_string();
+        let metas = manager
+            .list_all_sessions(false)
+            .await
+            .expect("list sessions");
+        (temp, metas, trunk_id, child_id)
+    }
+
+    async fn fixture_with_probe(
+        name: &str,
+        metas: Vec<peko_session::SessionMetadata>,
+    ) -> (Fixture, Arc<ClassifyProbeTool>) {
+        let fx = fixture(name, Capabilities::starter_bundle()).await;
+        let probe = Arc::new(ClassifyProbeTool { metas });
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            fx.tool_runtime.extension_core(),
+            probe.clone(),
+        )
+        .await
+        .expect("register probe");
+        (fx, probe)
+    }
+
+    /// THE equivalence test: a workflow callback whose run token
+    /// carries the calling node id is threaded that node id and
+    /// classifies through the ownership layer EXACTLY as a direct call
+    /// from that node does — same id, non-dangling, same ancestors.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_with_caller_node_behaves_as_direct_call_from_that_node() {
+        let (_t, metas, trunk_id, child_id) = seed_tree().await;
+        let (fx, probe) = fixture_with_probe("calleraware", metas).await;
+
+        // The workflow side: ExecuteTool with a token minted against
+        // the child node.
+        let token = fx.run_tokens.mint(
+            "calleraware",
+            "agent:calleraware:workflow:run-1",
+            1,
+            Some(child_id.clone()),
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            20,
+            "ClassifyProbe",
+            json!({}),
+            "agent:calleraware:workflow:run-1",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success);
+
+        // The direct side: the same tool driven with the node id, as
+        // the engine does on the agent-loop path.
+        let direct = probe
+            .execute_with_context(
+                json!({}),
+                &peko_tools_core::ToolContext::default_for_tool("ClassifyProbe")
+                    .with_session_id(child_id.clone()),
+            )
+            .await
+            .expect("direct call");
+
+        // Field-by-field equality: the workflow call IS the node.
+        assert_eq!(result, direct);
+        // And the classification is real: child of trunk, not dangling.
+        assert_eq!(result["threaded"], json!(child_id));
+        assert_eq!(result["dangling"], json!(false));
+        assert_eq!(result["is_base"], json!(false));
+        assert_eq!(result["ancestors"], json!([trunk_id]));
+    }
+
+    /// A token WITHOUT a caller node keeps the pre-fix behavior: the
+    /// session-key string is threaded and classifies dangling.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_without_caller_node_threads_key_string() {
+        let (_t, metas, _trunk_id, _child_id) = seed_tree().await;
+        let (fx, _probe) = fixture_with_probe("noctx", metas).await;
+
+        let token = fx.run_tokens.mint(
+            "noctx",
+            "agent:noctx:workflow:direct",
+            1,
+            None,
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            21,
+            "ClassifyProbe",
+            json!({}),
+            "agent:noctx:workflow:direct",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success);
+        assert_eq!(result["threaded"], json!("agent:noctx:workflow:direct"));
+        assert_eq!(result["dangling"], json!(true));
+    }
+
+    /// Tokenless (local-trust) calls are unchanged: the session-key
+    /// string is threaded and classifies dangling.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_tokenless_threads_key_string_unchanged() {
+        let (_t, metas, _trunk_id, _child_id) = seed_tree().await;
+        let (fx, _probe) = fixture_with_probe("plain", metas).await;
+
+        let response = execute_tool(
+            &fx.handler,
+            22,
+            "ClassifyProbe",
+            json!({}),
+            "agent:plain:workflow:direct",
+            &fx.workspace,
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success);
+        assert_eq!(result["threaded"], json!("agent:plain:workflow:direct"));
+        assert_eq!(result["dangling"], json!(true));
+    }
+
+    /// A node id that no longer exists in the store degrades to
+    /// dangling: the handler passes the id through unchanged and the
+    /// session layer's existing classification decides — no new
+    /// privilege logic.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_stale_caller_node_degrades_to_dangling() {
+        let (_t, metas, _trunk_id, _child_id) = seed_tree().await;
+        let (fx, _probe) = fixture_with_probe("stale", metas).await;
+
+        let stale = "11111111-2222-3333-4444-555555555555".to_string();
+        let token = fx.run_tokens.mint(
+            "stale",
+            "agent:stale:workflow:run-9",
+            1,
+            Some(stale.clone()),
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            23,
+            "ClassifyProbe",
+            json!({}),
+            "agent:stale:workflow:run-9",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success);
+        assert_eq!(
+            result["threaded"],
+            json!(stale),
+            "handler passes the token's node id through"
+        );
+        assert_eq!(
+            result["dangling"],
+            json!(true),
+            "session layer classifies the stale node as dangling"
         );
     }
 }

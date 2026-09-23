@@ -4,6 +4,25 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Caller-aware workflow runs (ADR-061, 2026-09-23)
+
+- **Run tokens now carry the calling session node.** `RunTokenEntry` gains
+  `caller_session_id: Option<String>` — the canonical session UUID of the
+  tree node the `Workflow` tool was invoked from (mint path detects a bare
+  UUID-shaped `ToolContext.session_id` via `SessionId::parse`; key-shaped
+  or absent context stores `None`). On a validated `ExecuteTool` call the
+  handler threads that node id into `ToolContext.session_id` instead of
+  the `agent:{principal}:workflow:{…}` key string, so tree-relative tools
+  (`Agent`, the session layer's ownership guards) classify the workflow
+  caller as that node: `Agent new` parents under the caller, ownership
+  guards see its ancestors, cron jobs created from a workflow fire into
+  the caller's origin session. Tokens without a node (and tokenless
+  calls) keep the dangling fail-closed behavior, and a node id whose
+  session was since deleted degrades to dangling at the session layer —
+  no new privilege logic. Nested `Workflow` calls inherit the node
+  automatically (their `ctx.session_id` is already the resolved id). The
+  entry is in-memory only — not a wire change.
+
 ### ADR-061 phase 2b — `Workflow` runner, run tokens, `workflows/` catalog (2026-09-23)
 
 - **New built-in tool: `Workflow`** (gated by `tool:Workflow`) — runs an

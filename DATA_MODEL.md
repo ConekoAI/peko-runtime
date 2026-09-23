@@ -2520,6 +2520,18 @@ into the workflow process as `PEKO_RUN_TOKEN`; the registry is in-memory and
 dies with the daemon. When `run_token` is absent, the pre-2b local-transport
 trust applies unchanged.
 
+**Caller-awareness** (in-memory record, *not* a wire change): each registry
+entry also carries `caller_session_id` — the canonical session UUID of the
+tree node the `Workflow` tool was invoked from (`None` for no-context
+spawns). On a validated call the handler threads it into
+`ToolContext.session_id` in place of the session-key string, so
+tree-relative tools (`Agent`, the session layer's ownership guards) classify
+the workflow caller as that node — spawns parent under it, ownership guards
+see its ancestors. Tokens without a node (and tokenless calls) keep
+threading the session-key string — the dangling, fail-closed behavior. A
+node id whose session has since been deleted degrades to dangling at the
+session layer, which owns that decision.
+
 **Response** (`ResponsePacket::ToolExecuted`) — the F37 funnel's
 `tool_result_from_hook` triplet:
 

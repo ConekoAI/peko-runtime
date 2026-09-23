@@ -289,10 +289,20 @@ impl Tool for WorkflowTool {
 
         // ── 6. Identity env (D6) + run token ─────────────────────────
         let session_key = workflow_session_key(&principal_name, ctx.session_id.as_deref());
+        // Caller-awareness: the token records the session-tree NODE the
+        // tool was invoked from, so the ExecuteTool handler can thread
+        // it back into `ToolContext.session_id` on every callback —
+        // tree-relative tools then classify the workflow caller as that
+        // node. On a nested (workflow→ExecuteTool→Workflow) call the
+        // handler already threaded the parent's resolved node id into
+        // this ctx, so the SAME node id propagates into the child's
+        // token automatically.
+        let caller_session_id = detect_caller_session_id(ctx.session_id.as_deref());
         let run_token = self.run_tokens.mint(
             &principal_name,
             &session_key,
             caller_depth + 1,
+            caller_session_id,
             Duration::from_millis(timeout_ms) + RUN_TOKEN_TTL_MARGIN,
         );
         let env = build_workflow_env(
@@ -431,6 +441,30 @@ fn resolve_workflow_path(workspace: &Path, rel: &str) -> anyhow::Result<PathBuf>
         bail!("Workflow: '{rel}' is not a Python (.py) file");
     }
     Ok(canonical)
+}
+
+/// Detect the calling tree node from `ToolContext.session_id` for the
+/// run token's `caller_session_id` field.
+///
+/// Only a bare canonical session UUID identifies a node: the engine
+/// sets `ctx.session_id` to the live session's UUID on agent-loop
+/// calls, and (post-handler-threading) a nested `Workflow` call carries
+/// the parent's resolved node UUID. Anything key-shaped
+/// (`agent:{p}:workflow:…`, cron origin keys) or absent maps to `None`
+/// — the `ExecuteTool` handler then keeps threading the session-key
+/// string (dangling, fail-closed — today's behavior).
+///
+/// Uses the strict [`peko_session::SessionId::parse`] (NOT
+/// `SessionId::from`, which v5-derives any string into a phantom UUID —
+/// a key string must NOT become a synthetic node), normalizing to the
+/// canonical lowercase hyphenated form the ownership layer compares
+/// against stored metadata.
+fn detect_caller_session_id(session_id: Option<&str>) -> Option<String> {
+    let raw = session_id?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    peko_session::SessionId::parse(raw).map(|id| id.to_string())
 }
 
 /// Build the session key injected as `PEKO_SESSION_KEY` (D6). The key
@@ -806,6 +840,7 @@ mod tests {
         manager: Arc<PrincipalManager>,
         tool: WorkflowTool,
         workspace: PathBuf,
+        run_tokens: Arc<RunTokenRegistry>,
     }
 
     /// PrincipalManager with one principal, plus the Workflow tool wired
@@ -839,12 +874,14 @@ mod tests {
             .clone();
         std::fs::create_dir_all(workspace.join("workflows")).expect("workflows dir");
 
-        let tool = WorkflowTool::new(Arc::downgrade(&manager), Arc::new(RunTokenRegistry::new()));
+        let run_tokens = Arc::new(RunTokenRegistry::new());
+        let tool = WorkflowTool::new(Arc::downgrade(&manager), Arc::clone(&run_tokens));
         Fixture {
             _temp: temp,
             manager,
             tool,
             workspace,
+            run_tokens,
         }
     }
 
@@ -1224,6 +1261,102 @@ print("argv:" + ",".join(sys.argv[1:]))
             elapsed < std::time::Duration::from_secs(10),
             "kill should be prompt, took {elapsed:?}"
         );
+    }
+
+    // ── Caller-node detection (mint path) ────────────────────────────
+
+    #[test]
+    fn detect_caller_session_id_accepts_only_bare_uuids() {
+        // Agent-loop path: the engine hands the live session UUID.
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(detect_caller_session_id(Some(uuid)).as_deref(), Some(uuid));
+        // Uppercase normalizes to the canonical lowercase form the
+        // ownership layer compares against stored metadata.
+        assert_eq!(
+            detect_caller_session_id(Some("550E8400-E29B-41D4-A716-446655440000")).as_deref(),
+            Some(uuid)
+        );
+        // Key strings carry no node identity — the handler keeps
+        // threading them (dangling, fail-closed).
+        assert_eq!(
+            detect_caller_session_id(Some("agent:caller:workflow:abc")),
+            None
+        );
+        assert_eq!(
+            detect_caller_session_id(Some("agent:caller:cli:default")),
+            None
+        );
+        assert_eq!(detect_caller_session_id(None), None);
+        assert_eq!(detect_caller_session_id(Some("")), None);
+        assert_eq!(detect_caller_session_id(Some("  ")), None);
+        assert_eq!(detect_caller_session_id(Some("not-a-uuid")), None);
+    }
+
+    /// The minted run token carries the calling node id: a `Workflow`
+    /// call whose `ctx.session_id` is a bare session UUID (the
+    /// agent-loop shape — and, post-handler-threading, also the nested
+    /// workflow→Workflow shape) mints a token with
+    /// `caller_session_id = Some(<that node>)`, so the child's
+    /// callbacks classify as the node.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn minted_token_carries_calling_node() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not on PATH");
+            return;
+        }
+        let fx = fixture("runner").await;
+        write_workflow(
+            &fx.workspace,
+            "token_dump.py",
+            "import os\nprint(os.environ['PEKO_RUN_TOKEN'])\nprint(os.environ['PEKO_SESSION_KEY'])\n",
+        );
+        let node = "550e8400-e29b-41d4-a716-446655440000";
+        let out = fx
+            .tool
+            .execute_with_context(
+                json!({"path": "token_dump.py"}),
+                &ctx_for("runner", Some(node)),
+            )
+            .await
+            .expect("run");
+        assert_eq!(out["success"], true, "got: {out}");
+        let stdout = out["stdout"].as_str().unwrap();
+        let token = stdout.lines().next().expect("token line");
+        // The minted token records the calling node…
+        let entry = fx.run_tokens.verify(token).expect("token verifies");
+        assert_eq!(entry.caller_session_id.as_deref(), Some(node));
+        assert_eq!(entry.principal_name, "runner");
+        // …and the session key wraps the node id into the workflow
+        // namespace (attribution envelope).
+        let session_key = stdout.lines().nth(1).expect("session key line");
+        assert_eq!(session_key, format!("agent:runner:workflow:{node}"));
+    }
+
+    /// A no-context invocation (`ctx.session_id` absent) mints a token
+    /// with `caller_session_id = None` — the dangling path.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn minted_token_without_context_carries_no_node() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not on PATH");
+            return;
+        }
+        let fx = fixture("runner").await;
+        write_workflow(
+            &fx.workspace,
+            "token_dump.py",
+            "import os\nprint(os.environ['PEKO_RUN_TOKEN'])\n",
+        );
+        let out = fx
+            .tool
+            .execute_with_context(json!({"path": "token_dump.py"}), &ctx_for("runner", None))
+            .await
+            .expect("run");
+        assert_eq!(out["success"], true, "got: {out}");
+        let token = out["stdout"].as_str().unwrap().trim().to_string();
+        let entry = fx.run_tokens.verify(&token).expect("token verifies");
+        assert_eq!(entry.caller_session_id, None);
     }
 
     // ── Prompt catalog ───────────────────────────────────────────────

@@ -39,6 +39,16 @@ pub struct RunTokenEntry {
     /// (`tools::builtin::workflow::MAX_WORKFLOW_DEPTH`) cannot be
     /// spoofed from the wire.
     pub workflow_depth: u32,
+    /// The canonical session UUID of the tree node the `Workflow` tool
+    /// was invoked FROM — the caller-awareness link. When `Some`, the
+    /// `ExecuteTool` handler threads it into `ToolContext.session_id`
+    /// (instead of the session-key string) so tree-relative tools
+    /// (`Agent`, session-layer ownership guards) classify the workflow
+    /// caller as that node — `Agent new` parents under it, ownership
+    /// guards see its ancestors. `None` for no-context invocations
+    /// (`workflow:direct`), which keep the dangling fail-closed
+    /// behavior. In-memory only — never a wire field.
+    pub caller_session_id: Option<String>,
     /// Absolute expiry (mint time + run timeout + margin).
     pub expires_at: DateTime<Utc>,
 }
@@ -58,13 +68,16 @@ impl RunTokenRegistry {
     }
 
     /// Mint a fresh token for `(principal_name, session_key)` with the
-    /// given TTL. The token is 32 random bytes, base64-url encoded
+    /// given TTL. `caller_session_id` is the canonical session UUID of
+    /// the tree node the caller was running in (`None` for no-context
+    /// spawns). The token is 32 random bytes, base64-url encoded
     /// (no padding) — safe for env vars and JSON without escaping.
     pub fn mint(
         &self,
         principal_name: &str,
         session_key: &str,
         workflow_depth: u32,
+        caller_session_id: Option<String>,
         ttl: Duration,
     ) -> String {
         let mut bytes = [0u8; 32];
@@ -74,6 +87,7 @@ impl RunTokenRegistry {
             principal_name: principal_name.to_string(),
             session_key: session_key.to_string(),
             workflow_depth,
+            caller_session_id,
             expires_at: Utc::now()
                 + chrono::Duration::from_std(ttl).unwrap_or_else(|_| chrono::Duration::hours(1)),
         };
@@ -120,6 +134,7 @@ mod tests {
             "peko-a",
             "agent:peko-a:workflow:abc",
             1,
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             Duration::from_mins(1),
         );
         assert_eq!(token.len(), 43, "32 bytes → 43 url-safe chars (no pad)");
@@ -127,13 +142,25 @@ mod tests {
         assert_eq!(entry.principal_name, "peko-a");
         assert_eq!(entry.session_key, "agent:peko-a:workflow:abc");
         assert_eq!(entry.workflow_depth, 1);
+        assert_eq!(
+            entry.caller_session_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    #[test]
+    fn caller_session_id_defaults_to_none() {
+        let registry = RunTokenRegistry::new();
+        let token = registry.mint("p", "agent:p:workflow:x", 0, None, Duration::from_mins(1));
+        let entry = registry.verify(&token).expect("verifies");
+        assert_eq!(entry.caller_session_id, None);
     }
 
     #[test]
     fn tokens_are_unique_per_mint() {
         let registry = RunTokenRegistry::new();
-        let a = registry.mint("p", "agent:p:workflow:x", 0, Duration::from_mins(1));
-        let b = registry.mint("p", "agent:p:workflow:x", 0, Duration::from_mins(1));
+        let a = registry.mint("p", "agent:p:workflow:x", 0, None, Duration::from_mins(1));
+        let b = registry.mint("p", "agent:p:workflow:x", 0, None, Duration::from_mins(1));
         assert_ne!(a, b);
     }
 
@@ -148,7 +175,7 @@ mod tests {
         let registry = RunTokenRegistry::new();
         // Zero TTL → expired by the time verify runs (expiry must be
         // strictly in the future).
-        let token = registry.mint("p", "agent:p:workflow:x", 0, Duration::ZERO);
+        let token = registry.mint("p", "agent:p:workflow:x", 0, None, Duration::ZERO);
         assert!(registry.verify(&token).is_none(), "expired must not verify");
         assert_eq!(registry.len(), 0, "lazy sweep removed the expired entry");
     }
