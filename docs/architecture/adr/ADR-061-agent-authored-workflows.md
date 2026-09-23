@@ -150,8 +150,8 @@ the OpenClaw shape `agent:{agent}:{context}:{identifier}` — only the
 session-tree reference: sessions are UUID-identified (storage) and
 slug-path-addressed (LLM-facing), and the OpenClaw derivation
 machinery (`SessionScope`, `SessionKeyContext`, `derive_session_key`)
-is dead code retained only in tests. The v1 parser survives for this
-envelope; the v2 peer/overlay keys survive inside the session
+was dead code outside tests and is removed. The v1 parser survives for
+this envelope; the v2 peer/overlay keys survive inside the session
 manager's spawn-cleanup path. Replacing the envelope with structured
 packet fields (`{principal, node?}`) across `AsyncSpawn` +
 `ExecuteTool` is a possible future wire cleanup, deliberately not done
