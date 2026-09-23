@@ -705,23 +705,15 @@ pub struct SessionContext {
 
 Lightweight routing metadata for a resolved session. For actual session operations, use the `SessionHandle` obtained from `SessionManager::resolve_session`.
 
-#### `session::key::SessionKeyContext`
+#### `session::key::SessionKeyContext` (REMOVED 2026-09-24)
 
-**Status:** ACTIVE
-
-```rust
-pub struct SessionKeyContext {
-    pub channel: Option<String>,
-    pub sender_id: Option<String>,
-    pub channel_id: Option<String>,
-    pub account_id: Option<String>,
-    pub thread_id: Option<String>,
-    pub web_token: Option<String>,
-    pub chat_type: ChatType,
-}
-```
-
-Context for deriving semantic session keys. Not to be confused with the runtime `SessionContext`.
+**Status:** ❌ REMOVED (ADR-061 follow-up)
+**Also removed:** `derive_session_key`, `SessionScope`, `ChatType`,
+`scope_from_key` — the legacy OpenClaw derivation machinery had no
+production callers left. Session keys are minted by
+`derive_base_session_key` (peer routing) and UUID session ids; parsing
+(`parse_session_key`, v2 peer/overlay helpers) and the filename/key
+sanitizers remain in `peko_session::key`.
 
 #### `agent::context::AgentContext` (REMOVED in 0.1.0)
 
@@ -879,8 +871,9 @@ peer DM channels now. Deleted/changed public items:
 // SessionContext → ExecutionContext
 pub type SessionContext = ExecutionContext;
 
-// SessionContext (key module) → SessionKeyContext  
-pub type SessionContext = SessionKeyContext;
+// SessionContext (key module) → SessionKeyContext  — RETIRED 2026-09-24:
+// `SessionKeyContext` (and the OpenClaw derivation machinery around it)
+// was removed with no production callers; the alias no longer exists.
 ```
 
 ### PEKO Sprint 5 (2026-08-20) — slug-path addressing on the LLM-facing surface
