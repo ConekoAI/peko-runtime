@@ -4,6 +4,28 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Caller-aware `session` tool on the `ExecuteTool` path (ADR-061, 2026-09-23)
+
+- **New `CallerAwareSessionTool`** (`tools::builtin::session::caller_aware`)
+  — the `session` builtin with per-call caller resolution. Daemon mode
+  (registered system-scope in `daemon/state` next to `ModelCall`/`Workflow`)
+  resolves the principal, sessions dir, run-permit registry, and quota meter
+  per call from `ToolContext` + `PrincipalManager`, seeding a fresh
+  `SessionManagerRuntime` whose caller cell is `ctx.session_id` — the
+  token-resolved node id on the `ExecuteTool` path. Agent mode replaces the
+  per-agent construction (identical behavior on the loop path — the
+  ctx-carried id IS the run id the shared cell holds; ctx-less dispatches
+  delegate to the shared runtime unchanged). Previously
+  `ExecuteTool("session")` only resolved for principals whose agent had
+  booted, and then classified against the agent's *last* run (stale cell);
+  unbooted principals got "tool not available".
+- `SessionManagerRuntime` gains `Clone` + `with_current_session(id)` — a
+  shallow clone with a fresh per-call caller cell (port trait untouched).
+- A workflow callback with a node-carrying run token now gets the calling
+  node's `session status` (parented under the trunk), whole-store `list`
+  scoped to the right principal, and working ownership guards; tokenless /
+  no-node calls keep the dangling fail-closed behavior.
+
 ### Caller-aware workflow runs (ADR-061, 2026-09-23)
 
 - **Run tokens now carry the calling session node.** `RunTokenEntry` gains

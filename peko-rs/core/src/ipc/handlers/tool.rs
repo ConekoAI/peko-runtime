@@ -1389,4 +1389,341 @@ mod tests {
             "session layer classifies the stale node as dangling"
         );
     }
+
+    // ── Caller-aware `session` tool on the ExecuteTool path ─────────
+
+    /// Seed the fixture principal's REAL store with trunk + child
+    /// (slugs t/c), ids prefixed for cross-principal distinctness.
+    async fn seed_principal_tree(fx: &Fixture, principal: &str, prefix: &str) -> (String, String) {
+        let sessions_dir = fx
+            .manager
+            .get_by_name(principal)
+            .await
+            .expect("principal")
+            .memory
+            .sessions_dir()
+            .clone();
+        let mut manager = peko_session::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir)
+            .with_agent_name(principal);
+        let peer = Subject::User("alice".to_string());
+        manager
+            .create_session(
+                principal,
+                &peer,
+                peko_session::SessionCreateOptions::new()
+                    .with_session_id(format!("{prefix}-trunk")),
+            )
+            .await
+            .expect("trunk");
+        let trunk = peko_session::SessionId::from(format!("{prefix}-trunk").as_str()).to_string();
+        manager
+            .create_session(
+                principal,
+                &peer,
+                peko_session::SessionCreateOptions::new()
+                    .with_session_id(format!("{prefix}-child"))
+                    .with_parent(trunk.clone()),
+            )
+            .await
+            .expect("child");
+        let child = peko_session::SessionId::from(format!("{prefix}-child").as_str()).to_string();
+        manager
+            .set_session_slug(&trunk, Some("t".to_string()))
+            .await
+            .expect("slug t");
+        manager
+            .set_session_slug(&child, Some("c".to_string()))
+            .await
+            .expect("slug c");
+        (trunk, child)
+    }
+
+    /// Register the daemon-side caller-aware `session` tool on the
+    /// fixture core (daemon/state.rs does this in production).
+    async fn register_daemon_session_tool(fx: &Fixture) {
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            fx.tool_runtime.extension_core(),
+            Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
+                Arc::downgrade(&fx.manager),
+                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            )),
+        )
+        .await
+        .expect("register session");
+    }
+
+    /// Pre-change evidence: without the daemon-side registration (and
+    /// no booted agent), `ExecuteTool("session")` resolves to nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_session_unresolvable_without_daemon_registration() {
+        let fx = fixture("nosess", Capabilities::starter_bundle()).await;
+        let response = execute_tool(
+            &fx.handler,
+            30,
+            "session",
+            json!({"action": "list"}),
+            "agent:nosess:cli:default",
+            &fx.workspace,
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            content, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(
+            !success,
+            "unregistered session tool must not execute: {content}"
+        );
+    }
+
+    /// THE headline test: a `session status` call through `ExecuteTool`
+    /// with a token bound to the child node returns EXACTLY what a
+    /// direct in-run call as the child returns — the calling node's
+    /// status, parented under the trunk.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_session_status_matches_direct_call_from_token_node() {
+        let fx = fixture("sesshead", Capabilities::starter_bundle()).await;
+        register_daemon_session_tool(&fx).await;
+        let (trunk, child) = seed_principal_tree(&fx, "sesshead", "head").await;
+
+        let token = fx.run_tokens.mint(
+            "sesshead",
+            "agent:sesshead:workflow:run-1",
+            1,
+            Some(child.clone()),
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            31,
+            "session",
+            json!({"action": "status"}),
+            "agent:sesshead:workflow:run-1",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success, "status via token must succeed: {result}");
+
+        // The direct side: the stock tool as the child itself (the
+        // loop-path construction, cell = child).
+        let sessions_dir = fx
+            .manager
+            .get_by_name("sesshead")
+            .await
+            .expect("principal")
+            .memory
+            .sessions_dir()
+            .clone();
+        let manager = peko_session::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir)
+            .with_agent_name("sesshead");
+        let runtime = crate::session::session_runtime_impl::SessionManagerRuntime::new(
+            Arc::new(tokio::sync::RwLock::new(manager)),
+            Arc::new(tokio::sync::RwLock::new(Some(child.clone()))),
+            "sesshead".to_string(),
+            None,
+            None,
+        );
+        let direct = crate::tools::builtin::SessionTool::new(
+            Arc::new(runtime) as crate::tools::builtin::session::SharedSessionRuntime
+        )
+        .execute(json!({"action": "status"}))
+        .await
+        .expect("direct status");
+
+        assert_eq!(result["session_id"], direct["session_id"]);
+        assert_eq!(result["parent_session"], direct["parent_session"]);
+        assert_eq!(result["message_count"], direct["message_count"]);
+        assert_eq!(result["session_id"], json!(child));
+        assert_eq!(result["parent_session"], json!(trunk));
+    }
+
+    /// A token bound to the TRUNK node resolves the trunk (parentless
+    /// base caller — the whole-store identity).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_session_trunk_token_resolves_trunk() {
+        let fx = fixture("sesstrunk", Capabilities::starter_bundle()).await;
+        register_daemon_session_tool(&fx).await;
+        let (trunk, _child) = seed_principal_tree(&fx, "sesstrunk", "base").await;
+
+        let token = fx.run_tokens.mint(
+            "sesstrunk",
+            "agent:sesstrunk:workflow:run-1",
+            1,
+            Some(trunk.clone()),
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            32,
+            "session",
+            json!({"action": "status"}),
+            "agent:sesstrunk:workflow:run-1",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success, "got: {result}");
+        assert_eq!(result["session_id"], json!(trunk));
+        assert_eq!(result["parent_session"], serde_json::Value::Null);
+    }
+
+    /// Token without a node: the session-key string threads → dangling
+    /// — a destructive op is refused with the structured dangling
+    /// message and has no side effect.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_session_without_node_degrades_to_dangling() {
+        let fx = fixture("sessdang", Capabilities::starter_bundle()).await;
+        register_daemon_session_tool(&fx).await;
+        let (_trunk, _child) = seed_principal_tree(&fx, "sessdang", "dang").await;
+
+        let token = fx.run_tokens.mint(
+            "sessdang",
+            "agent:sessdang:workflow:direct",
+            1,
+            None,
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            33,
+            "session",
+            json!({"action": "remove", "path": "sess:/t/c"}),
+            "agent:sessdang:workflow:direct",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            content, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(!success, "dangling caller must be refused: {content}");
+        assert!(
+            content.contains("no entry in the session store"),
+            "structured dangling refusal expected, got: {content}"
+        );
+
+        // No side effect: the child is still in the store.
+        let sessions_dir = fx
+            .manager
+            .get_by_name("sessdang")
+            .await
+            .expect("principal")
+            .memory
+            .sessions_dir()
+            .clone();
+        let mut manager =
+            peko_session::SessionManager::new().with_sessions_dir_internal(sessions_dir);
+        let metas = manager.list_all_sessions(false).await.expect("list");
+        assert!(
+            metas
+                .iter()
+                .any(|m| m.session_id.to_string().ends_with('c') || m.slug.as_deref() == Some("c")),
+            "child must survive the refused remove"
+        );
+    }
+
+    /// Tokenless (local-trust) calls degrade identically: key string
+    /// threaded, dangling refusal on destructive ops.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_session_tokenless_degrades_to_dangling() {
+        let fx = fixture("sessplain", Capabilities::starter_bundle()).await;
+        register_daemon_session_tool(&fx).await;
+        let (_trunk, _child) = seed_principal_tree(&fx, "sessplain", "plain").await;
+
+        let response = execute_tool(
+            &fx.handler,
+            34,
+            "session",
+            json!({"action": "remove", "path": "sess:/t/c"}),
+            "agent:sessplain:workflow:direct",
+            &fx.workspace,
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            content, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(!success);
+        assert!(
+            content.contains("no entry in the session store"),
+            "got: {content}"
+        );
+    }
+
+    /// Principal isolation: a token for principal A's node never
+    /// touches principal B's store — the per-call resolution scopes to
+    /// the principal resolved from the session key.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_session_isolates_principal_stores() {
+        let fx = fixture("sessA", Capabilities::starter_bundle()).await;
+        fx.manager
+            .create(test_principal_config(
+                "sessB",
+                Capabilities::starter_bundle(),
+            ))
+            .await
+            .expect("create sessB");
+        register_daemon_session_tool(&fx).await;
+        let (_ta, child_a) = seed_principal_tree(&fx, "sessA", "alpha").await;
+        let (trunk_b, _child_b) = seed_principal_tree(&fx, "sessB", "beta").await;
+
+        let token = fx.run_tokens.mint(
+            "sessA",
+            "agent:sessA:workflow:run-1",
+            1,
+            Some(child_a.clone()),
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            35,
+            "session",
+            json!({"action": "list"}),
+            "agent:sessA:workflow:run-1",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success, "got: {result}");
+        let listed = result["sessions"].to_string();
+        assert!(listed.contains(&child_a), "A's node listed: {listed}");
+        assert!(
+            !listed.contains(&trunk_b),
+            "B's store must never appear: {listed}"
+        );
+    }
 }

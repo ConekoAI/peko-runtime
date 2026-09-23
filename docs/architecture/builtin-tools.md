@@ -366,7 +366,12 @@ and symlink escapes refused; non-`.py` refused). The child env is minimal
 `PEKO_PRINCIPAL_ID` / `PEKO_SESSION_KEY` / `PEKO_RUN_TOKEN` /
 `PEKO_WORKFLOW_DEPTH` injected — the workflow calls back through
 `ExecuteTool` with this principal's identity and the run token
-authenticating each callback (wire shape: DATA_MODEL.md §13½/§13⅞). Timeout
+authenticating each callback (wire shape: DATA_MODEL.md §13½/§13⅞). The
+run token also carries the **calling session node**, so tree-relative
+callbacks behave as if the calling agent made them directly: `Agent new`
+parents under the caller, `CronCreate` fires into the caller's origin
+session, and `session` resolves the caller's store + status per call
+(`CallerAwareSessionTool`). Timeout
 or abort kills the child. A workflow at depth ≥ 2 may not spawn another
 workflow (server-derived depth, unspoofable from the wire).
 

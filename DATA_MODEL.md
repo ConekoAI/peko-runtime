@@ -2530,7 +2530,12 @@ the workflow caller as that node — spawns parent under it, ownership guards
 see its ancestors. Tokens without a node (and tokenless calls) keep
 threading the session-key string — the dangling, fail-closed behavior. A
 node id whose session has since been deleted degrades to dangling at the
-session layer, which owns that decision.
+session layer, which owns that decision. The `session` builtin itself is
+caller-aware on this path (`CallerAwareSessionTool`, registered system-scope
+at daemon start): it builds the per-call `SessionManagerRuntime` from the
+threaded ctx — `status`/`history`/`list` and the ownership guards see the
+calling node; tokenless or no-node calls degrade to dangling exactly as a
+session with missing metadata does on the agent path.
 
 **Response** (`ResponsePacket::ToolExecuted`) — the F37 funnel's
 `tool_result_from_hook` triplet:

@@ -905,6 +905,28 @@ impl AppState {
             tracing::warn!("Failed to register built-in tool 'Workflow' with ExtensionCore: {e}");
         }
 
+        // ADR-061 caller-awareness: daemon-global `session` builtin
+        // whose caller (store, meter, run permits, current session)
+        // resolves PER CALL from the `ToolContext` — on the
+        // `ExecuteTool` path the token-resolved node id, on the loop
+        // path the live run id. Pre-boot principals (no agent turn
+        // yet) have no per-agent `session` instance, so this system-
+        // scope registration is what makes `ExecuteTool("session")`
+        // resolve at all; for booted principals the per-agent
+        // `CallerAwareSessionTool::for_agent` instance shadows it with
+        // identical per-call semantics.
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            &global_core,
+            Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
+                Arc::downgrade(&principal_manager),
+                Arc::clone(&inbox_registry),
+            )),
+        )
+        .await
+        {
+            tracing::warn!("Failed to register built-in tool 'session' with ExtensionCore: {e}");
+        }
+
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;
         let api_key_store = if auth_config.enable_api_key() {
