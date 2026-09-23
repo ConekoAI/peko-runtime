@@ -1726,4 +1726,101 @@ mod tests {
             "B's store must never appear: {listed}"
         );
     }
+
+    /// Async* per-call stamping on the workflow path: `AsyncSpawn` via
+    /// `ExecuteTool` with a node-carrying run token stamps the task's
+    /// `parent_session_key` with the token's node id — and the
+    /// completion event is delivered to THAT session's inbox
+    /// (wake-on-completion), not a stale cell value.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_async_spawn_stamps_token_node_and_delivers_there() {
+        use crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime;
+        use crate::tools::builtin::async_control::AsyncRuntime as _;
+
+        let fx = fixture("asyncwf", Capabilities::starter_bundle()).await;
+        let inbox_registry =
+            crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
+        let executor = Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
+        let principal_id = fx
+            .manager
+            .get_by_name("asyncwf")
+            .await
+            .expect("principal")
+            .id
+            .0
+            .clone();
+        let runtime = Arc::new(AsyncExecutorRuntime::new(
+            Arc::clone(&executor),
+            Arc::downgrade(fx.tool_runtime.extension_core()),
+            None, // no agent-DID cell — the request must carry the parent
+            peko_subject::PrincipalId(principal_id.clone()),
+            Arc::new(vec!["tool:*".to_string()]),
+            Arc::new(Vec::<String>::new()),
+        ));
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            fx.tool_runtime.extension_core(),
+            Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+                Arc::clone(&runtime).as_shared(),
+            )),
+        )
+        .await
+        .expect("register AsyncSpawn");
+
+        let node = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let token = fx.run_tokens.mint(
+            "asyncwf",
+            "agent:asyncwf:workflow:run-1",
+            1,
+            Some(node.clone()),
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            40,
+            "AsyncSpawn",
+            json!({"tool": "Glob", "params": {"pattern": "*.nothing", "path": fx.workspace.to_string_lossy()}}),
+            "agent:asyncwf:workflow:run-1",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            result, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success, "spawn must succeed: {result}");
+        let task_id = result["task_id"].as_str().expect("task_id");
+
+        // The task record is stamped with the token's node id.
+        let view = runtime.lookup(task_id).await.expect("task registered");
+        assert_eq!(view.parent_session_key, node);
+
+        // Wake-on-completion: the CompletionEvent lands in the node's
+        // inbox (the stamped origin), proving the delivery key is the
+        // per-call stamp.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let delivered = loop {
+            if let Some(inbox) = inbox_registry.peek_inbox(&node).await {
+                if inbox.len().await > 0 {
+                    break inbox.drain_all().await;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "completion never arrived in the node's inbox"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        };
+        assert!(
+            delivered.iter().any(|item| matches!(
+                item,
+                peko_extension_api::AsyncInboxItem::Completion(env)
+                    if env.parent_session_key == node && env.tool_name == "Glob"
+            )),
+            "completion for the spawned Glob must land in the node's inbox: {delivered:?}"
+        );
+    }
 }

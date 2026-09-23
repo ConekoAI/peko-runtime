@@ -82,6 +82,30 @@ Returns: { task_id, status, tool_name }"
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        self.execute_inner(params, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &peko_tools_core::ToolContext,
+    ) -> anyhow::Result<serde_json::Value> {
+        // ADR-061 follow-up: stamp the parent session PER CALL from
+        // `ToolContext.session_id` — the run id on the agent-loop path,
+        // the token-resolved node id (or the session-key string when
+        // nodeless) on the `ExecuteTool` path. The runtime still falls
+        // back to its legacy session-key cell when this is absent
+        // (ctx-less in-process dispatches).
+        self.execute_inner(params, ctx.session_id.clone()).await
+    }
+}
+
+impl AsyncSpawnTool {
+    async fn execute_inner(
+        &self,
+        params: serde_json::Value,
+        parent_session_id: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
         let tool_name = params
             .get("tool")
             .and_then(|v| v.as_str())
@@ -119,6 +143,7 @@ Returns: { task_id, status, tool_name }"
             label,
             wake_on_completion,
             timeout_secs,
+            parent_session_id: parent_session_id.filter(|s| !s.is_empty()),
         };
 
         // The runtime adapter wraps the per-agent ExtensionCore snap and

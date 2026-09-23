@@ -75,6 +75,17 @@ pub struct SpawnRequest {
     /// executor's default (2h).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Per-call parent session identity (ADR-061 follow-up): the
+    /// session the spawn is attributed to — stamped as the task
+    /// record's `parent_session_key` and used as the completion-event
+    /// delivery inbox key. Filled by `AsyncSpawnTool` from
+    /// `ToolContext.session_id` (the run id on the agent-loop path;
+    /// the token-resolved node id — or session-key string — on the
+    /// `ExecuteTool` path). `None` delegates stamping to the runtime's
+    /// legacy session-key cell (in-process dispatches without session
+    /// ctx).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
 }
 
 fn default_true() -> bool {

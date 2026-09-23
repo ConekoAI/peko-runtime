@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Async* per-call parent-session stamping (ADR-061 follow-up, 2026-09-24)
+
+- **`AsyncSpawn` stamps the parent session per call.** `SpawnRequest` gains
+  `parent_session_id: Option<String>`, filled by `AsyncSpawnTool` from
+  `ToolContext.session_id` — the run id on the agent-loop path, the
+  token-resolved node id (or session-key string when nodeless) on the
+  `ExecuteTool` path. `AsyncExecutorRuntime::spawn` stamps the task record's
+  `parent_session_key` (and therefore the completion-event delivery inbox)
+  from the request first; the legacy session-key cell (keyed by agent DID,
+  stale between runs) remains only as the fallback for ctx-less in-process
+  dispatches. Async* lookups/status/output read the task record, so they
+  inherit the per-call stamp.
+
+### Dead session-key machinery removed (ADR-061 follow-up, 2026-09-24)
+
+- Removed `derive_session_key`, `SessionScope`, `SessionKeyContext`,
+  `ChatType`, and `scope_from_key` from `peko_session::key` — no production
+  callers remained (keys are minted by `derive_base_session_key` and UUID
+  session ids). `parse_session_key`, the v2 peer/overlay helpers, and the
+  key/filename sanitizers stay. `API_SURFACE.md` marks the removals.
+
 ### Caller-aware `session` tool on the `ExecuteTool` path (ADR-061, 2026-09-23)
 
 - **New `CallerAwareSessionTool`** (`tools::builtin::session::caller_aware`)
