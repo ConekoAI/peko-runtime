@@ -4,7 +4,8 @@
 `feat/agent-workflows`: `ExecuteTool` + `peko_workflow` SDK +
 attribution tests (phase 1); `ModelCall` + `ModelSpec.decisions`,
 `Workflow` runner + `PEKO_RUN_TOKEN` registry, `workflows/` prompt
-catalog (phase 2). See §5.
+catalog (phase 2). Caller-aware execution (D10) added 2026-09-23.
+See §5.
 **Date:** 2026-09-22
 **Author:** rlsn (with Kimi Code)
 **Related:** [ADR-046](ADR-046-trust-and-audit.md) (trust + audit),
@@ -142,6 +143,20 @@ with the full result spilled to a file under the workspace, the
 response carrying the path — the same truncation-with-pointer pattern
 as the skills catalog.
 
+**What `session_key` is (and is not).** The field predates this ADR
+(`AsyncSpawn` already carries it) and is an *attribution envelope* in
+the OpenClaw shape `agent:{agent}:{context}:{identifier}` — only the
+`agent` segment is read, to resolve the owning principal. It is NOT a
+session-tree reference: sessions are UUID-identified (storage) and
+slug-path-addressed (LLM-facing), and the OpenClaw derivation
+machinery (`SessionScope`, `SessionKeyContext`, `derive_session_key`)
+is dead code retained only in tests. The v1 parser survives for this
+envelope; the v2 peer/overlay keys survive inside the session
+manager's spawn-cleanup path. Replacing the envelope with structured
+packet fields (`{principal, node?}`) across `AsyncSpawn` +
+`ExecuteTool` is a possible future wire cleanup, deliberately not done
+here.
+
 ### D3: One new built-in tool — `ModelCall`
 
 `ModelCall` is a one-shot inference primitive: **no session
@@ -260,6 +275,36 @@ the capability system denies. Policy thresholds live in code or
 config, not in model output. This is one-directional authority: a
 judgment can close a door that was open; it cannot open one that was
 closed.
+
+### D10: Caller-aware execution — the run token carries the calling node
+
+A workflow's tool calls must behave *exactly* as if the calling agent
+made them directly: `Session status` defaults to the calling node,
+`Agent new` parents under it, ownership guards classify it. The
+phase-2 threading carried only the session *key* (D2's attribution
+envelope), which never resolves to a tree node — tree-relative tools
+classified workflow callers as dangling (fail-closed, but useless).
+
+The run-token entry therefore carries `caller_session_id`: the
+canonical UUID of the node the `Workflow` tool was invoked from,
+detected with strict `SessionId::parse` (never `SessionId::from`,
+which would mint phantom ids from key strings). On a validated token
+the `ExecuteTool` handler threads that node id into
+`ToolContext.session_id`; tokenless calls keep the key string. The
+node id comes only from the server-minted record — a packet can never
+name a node — and the session layer's existing `caller_context` treats
+unknown/stale ids as dangling, so no new privilege logic exists and
+deleting the node degrades safely.
+
+Built-in tools read caller identity through two channels:
+`ToolContext.session_id` (Agent, Cron, Task — covered by the
+threading) and construction-time cells. The one cell-bound tool,
+`Session`, gets a caller-aware adapter that resolves the principal's
+store + caller node per call and delegates to the stock tool; the
+per-agent registration path is unchanged (byte-identical output
+pinned by test). The `Async*` family's spawn-stamping cell remains a
+known bookkeeping-only follow-up (it drives wake-on-completion
+delivery, not ownership decisions).
 
 ## 3. Consequences
 
