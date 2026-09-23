@@ -25,6 +25,21 @@ except peko.ToolError as e:
     print(f"denied by the capability gate: {e.content}")
 ```
 
+## Workspace path defaults
+
+fs/shell tools are pinned to the client's workspace (`PEKO_WORKSPACE`, else the
+explicit `workspace=`, else the cwd) — the daemon's own fallback root predates
+workflow processes and would otherwise resolve outside the principal's
+workspace:
+
+| Tool | Param | Default applied by the SDK |
+|---|---|---|
+| `Glob`, `Grep` | `path` (search root) | the workspace, when omitted |
+| `Read`, `Write`, `Edit` | `path` (file) | relative paths joined onto the workspace |
+| `Bash` | `cwd` | the workspace, when omitted |
+
+Explicit absolute paths always pass through untouched.
+
 Environment (injected by the daemon when it spawns a workflow process via the
 `Workflow` tool — ADR-061 D6; when running a workflow by hand, set
 `PEKO_SESSION_KEY` yourself and leave `PEKO_RUN_TOKEN` unset to use the

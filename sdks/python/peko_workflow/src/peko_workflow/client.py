@@ -41,6 +41,14 @@ _RUN_TOKEN_ENV = "PEKO_RUN_TOKEN"
 
 _bind_counter = itertools.count()
 
+# Server-side fs/shell tools are constructed with a fallback root that
+# predates workflow processes, so a workflow's omitted or relative path
+# would resolve outside the principal's workspace. The SDK pins these
+# params to the client workspace (`PEKO_WORKSPACE` or `workspace=`).
+_ROOT_DIR_TOOLS = frozenset({"Glob", "Grep"})  # `path` = search root dir
+_FILE_PATH_TOOLS = frozenset({"Read", "Write", "Edit"})  # `path` = the file
+_CWD_TOOLS = frozenset({"Bash"})  # `cwd` = working directory
+
 
 class DaemonError(RuntimeError):
     """Transport-level failure: daemon unreachable, oversized packet, timeout, error packet."""
@@ -150,6 +158,7 @@ class Client:
                 "no session_key: pass Client(session_key=...) or set "
                 f"{_SESSION_KEY_ENV} (the daemon injects it when it spawns a workflow)"
             )
+        params = self._with_workspace_defaults(tool_name, params)
         request = {
             "type": "execute_tool",
             "request_id": next(self._request_ids),
@@ -165,6 +174,27 @@ class Client:
             # `session_key` server-side.
             request["run_token"] = self.run_token
         return self._roundtrip(request, timeout=self.timeout)
+
+    def _with_workspace_defaults(self, tool_name: str, params: dict) -> dict:
+        """Pin fs/shell tools to the client workspace (ADR-061).
+
+        `Glob`/`Grep` get their search-root `path` defaulted to the
+        workspace; `Read`/`Write`/`Edit` get a relative file `path`
+        joined onto the workspace; `Bash` gets `cwd` defaulted. Explicit
+        absolute paths always pass through untouched.
+        """
+        if not self.workspace:
+            return params
+        params = dict(params)
+        if tool_name in _ROOT_DIR_TOOLS:
+            params.setdefault("path", self.workspace)
+        elif tool_name in _FILE_PATH_TOOLS:
+            path = params.get("path")
+            if isinstance(path, str) and path and not os.path.isabs(path):
+                params["path"] = os.path.join(self.workspace, path)
+        elif tool_name in _CWD_TOOLS:
+            params.setdefault("cwd", self.workspace)
+        return params
 
     def _roundtrip(self, request: dict, timeout: float) -> dict:
         if self._sock is None:
