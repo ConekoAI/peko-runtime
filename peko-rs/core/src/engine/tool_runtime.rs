@@ -305,6 +305,7 @@ impl ToolRuntime {
                 workspace,
                 None,
                 None,
+                None,
                 capabilities,
                 active_extensions,
             )
@@ -331,17 +332,23 @@ impl ToolRuntime {
     /// errors surface to the caller as data (`success: false`), not as
     /// a transport error.
     ///
-    /// `principal_id` / `principal_name` carry the **server-resolved**
-    /// calling principal (phase 2a): the gate probes the
-    /// principal-scoped registration before falling back to the system
-    /// scope, and principal-scoped tools (`ModelCall`, cron) read the
-    /// identity off the resulting `ToolContext`. Both are `None` for
-    /// unattributed standalone calls (fail-closed downstream).
+    /// `session_id` / `principal_id` / `principal_name` carry the
+    /// **server-resolved** calling context (phase 2a/2b): the gate
+    /// probes the principal-scoped registration before falling back to
+    /// the system scope, and principal-scoped tools (`ModelCall`,
+    /// `Workflow`, cron) read the identity off the resulting
+    /// `ToolContext`. On the `ExecuteTool` path `session_id` carries
+    /// the packet's `session_key` (the workflow's attribution anchor —
+    /// e.g. `agent:<principal>:workflow:<uuid>`), not a session UUID.
+    /// All three are `None` for unattributed standalone calls
+    /// (fail-closed downstream).
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_tool_full_with_workspace(
         &self,
         tool_name: &str,
         params: serde_json::Value,
         workspace: &std::path::Path,
+        session_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
         capabilities: Option<Vec<String>>,
@@ -353,7 +360,7 @@ impl ToolRuntime {
             params,
             Some(workspace.to_string_lossy().to_string()),
             None,
-            None,
+            session_id,
             None,
             principal_id,
             principal_name,

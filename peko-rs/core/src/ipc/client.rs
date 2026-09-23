@@ -134,6 +134,28 @@ impl DaemonClient {
         session_key: impl Into<String>,
         workspace: std::path::PathBuf,
     ) -> anyhow::Result<ResponsePacket> {
+        self.execute_tool_with_token(tool_name, params, session_key, workspace, None)
+            .await
+    }
+
+    /// `execute_tool` + an optional workflow run token (ADR-061 phase
+    /// 2b): the `PEKO_RUN_TOKEN` a `Workflow` spawn injected into the
+    /// calling process. The daemon validates it against its in-memory
+    /// registry and requires it to name the same `session_key` /
+    /// principal; unknown, expired, or mismatched tokens are refused
+    /// with a transport-level `Error` packet.
+    ///
+    /// # Errors
+    /// Returns error if the request cannot be sent or the daemon
+    /// replies with a transport-level `Error` packet.
+    pub async fn execute_tool_with_token(
+        &self,
+        tool_name: impl Into<String>,
+        params: serde_json::Value,
+        session_key: impl Into<String>,
+        workspace: std::path::PathBuf,
+        run_token: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::ExecuteTool {
             request_id,
@@ -141,6 +163,7 @@ impl DaemonClient {
             params,
             session_key: session_key.into(),
             workspace,
+            run_token,
         };
         self.request_response(packet).await
     }

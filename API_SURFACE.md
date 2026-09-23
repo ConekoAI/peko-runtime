@@ -1106,6 +1106,22 @@ Wire shapes documented in `DATA_MODEL.md` §13¾. New/changed public items:
 | `compute_cost_usd` | `peko_engine::stacked_metered_provider` (re-exported `peko_engine`) | ✅ Visibility (was private) | Shared PricingHint → USD formula for the tool's post-call charge |
 | `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `principal_id` / `principal_name` params so `ExecuteTool` carries server-resolved attribution into the funnel |
 
+### ADR-061 phase 2b — `Workflow` runner + run tokens (2026-09-23)
+
+Branch `feat/agent-workflows`. Agent-authored Python workflows
+(`<workspace>/workflows/*.py`) run as subprocesses with PEKO identity env
+injected; callbacks authenticate with a per-spawn run token. Wire shapes in
+`DATA_MODEL.md` §13½ + §13⅞. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `WorkflowTool` / `WORKFLOW_TOOL_NAME` / `MAX_WORKFLOW_DEPTH` | `tools::builtin::workflow` | ✅ New | The `Workflow` built-in (`tool:Workflow` gate); `Weak<PrincipalManager>` + `Arc<RunTokenRegistry>` handles |
+| `WorkspaceWorkflowsPromptHandler` / `WORKFLOW_CATALOG_HOOK_PRIORITY` | `tools::builtin::workflow` | ✅ New | Per-turn `workflows` catalog section (renderer `SectionSlot::Workflows`) |
+| `RunTokenRegistry` / `RunTokenEntry` | `ipc::run_tokens` | ✅ New | In-memory `PEKO_RUN_TOKEN` mint/verify with TTL + lazy expiry sweep |
+| `RequestPacket::ExecuteTool.run_token` | `ipc::packet` | ✅ Extended | Optional additive field; validated + session-matched server-side, fail-closed |
+| `DaemonClient::execute_tool_with_token` | `ipc::client` | ✅ New | `execute_tool` + `run_token`; the old method delegates with `None` |
+| `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `session_id` (the handler threads the packet's `session_key` into `ToolContext`) |
+
 ---
 
 ## Test Coverage Requirements

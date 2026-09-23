@@ -1,6 +1,6 @@
 # Peko Workflow SDK
 
-Client SDK for **agent-authored workflows** (ADR-061 phase 1): plain Python
+Client SDK for **agent-authored workflows** (ADR-061): plain Python
 files in a principal's workspace that call back into the peko daemon over IPC
 to execute tools **with the calling peko's identity** — server-side principal
 resolution, server-side capability derivation, execution through the F37
@@ -25,15 +25,17 @@ except peko.ToolError as e:
     print(f"denied by the capability gate: {e.content}")
 ```
 
-Environment (injected by the daemon when it spawns a workflow process —
-ADR-061 D6; for the phase-1 spike, set `PEKO_SESSION_KEY` yourself when
-running a workflow by hand):
+Environment (injected by the daemon when it spawns a workflow process via the
+`Workflow` tool — ADR-061 D6; when running a workflow by hand, set
+`PEKO_SESSION_KEY` yourself and leave `PEKO_RUN_TOKEN` unset to use the
+local-trust path):
 
 | Variable | Meaning | Default |
 |---|---|---|
 | `PEKO_DAEMON_SOCK` | Daemon unix socket path | `$PEKO_HOME/run/daemon.sock`, else `~/.peko/run/daemon.sock` |
 | `PEKO_SESSION_KEY` | Session key the daemon resolves to the owning principal (`agent:<name>:...`) | required — `DaemonError` if unset |
 | `PEKO_WORKSPACE` | Workspace path handed to the tool context | current working directory |
+| `PEKO_RUN_TOKEN` | Spawn-time run token authenticating each `ExecuteTool` callback (phase 2b) | unset — local-transport trust only |
 
 For finer control (explicit socket/session, reuse across processes):
 
@@ -57,7 +59,7 @@ mirroring the Rust `DaemonClient`.
 ```json
 {"type": "execute_tool", "request_id": 1, "tool_name": "Glob",
  "params": {"pattern": "*.py"}, "session_key": "agent:researcher:cli:default",
- "workspace": "/path/to/workspace"}
+ "workspace": "/path/to/workspace", "run_token": "<optional, phase 2b>"}
 ```
 
 ```json
@@ -66,7 +68,9 @@ mirroring the Rust `DaemonClient`.
 ```
 
 `success: false` covers tool errors *and* capability-gate denials (the
-fail-closed path surfaces as data, not a transport error). Results larger
+fail-closed path surfaces as data, not a transport error). An invalid or
+expired `run_token` instead answers with a transport-level
+`{"type": "error", ...}` packet (raised as `DaemonError`). Results larger
 than the 60 000-byte datagram budget arrive with `truncated: true`, `content`
 clipped with a `[truncated by peko: ...]` marker, and `result: null`.
 

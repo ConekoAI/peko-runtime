@@ -327,6 +327,49 @@ its quota meter from provider-reported usage; completion mode applies the
 same `cost_per_call_max` pre-flight as subagent spawns. Calls without a
 resolvable calling principal are refused (no unmetered inference).
 
+## Workflows
+
+### `Workflow` 🔧 (ADR-061 phase 2b)
+
+Run an agent-authored Python workflow from the principal's `workflows/`
+directory as a subprocess. Procedural memory: a saved loop/poll/batch runs
+as code instead of a turn-by-turn agent loop; schedulable via
+`CronCreate` → `SpawnTool` → `Workflow`.
+
+```json
+{
+  "path": "string (required) — file under workflows/, e.g. \"triage.py\"",
+  "args": "string[]? — argv for the script",
+  "timeout_ms": "integer? — default 300000, hard cap 3600000"
+}
+```
+
+Return:
+
+```json
+{
+  "workflow": "triage.py",
+  "success": true,
+  "timed_out": false,
+  "exit_code": 0,
+  "duration_ms": 812,
+  "stdout": "… (bounded 16 KiB tail; truncation marker when cut)",
+  "stderr": "",
+  "stdout_truncated": false,
+  "stderr_truncated": false
+}
+```
+
+**Guardrails:** `path` is canonicalized inside `workflows/` (absolute, `..`,
+and symlink escapes refused; non-`.py` refused). The child env is minimal
+(no daemon-env inheritance) with `PEKO_DAEMON_SOCK` / `PEKO_WORKSPACE` /
+`PEKO_PRINCIPAL_ID` / `PEKO_SESSION_KEY` / `PEKO_RUN_TOKEN` /
+`PEKO_WORKFLOW_DEPTH` injected — the workflow calls back through
+`ExecuteTool` with this principal's identity and the run token
+authenticating each callback (wire shape: DATA_MODEL.md §13½/§13⅞). Timeout
+or abort kills the child. A workflow at depth ≥ 2 may not spawn another
+workflow (server-derived depth, unspoofable from the wire).
+
 ## Planning todos
 
 ### `TaskCreate` ✅

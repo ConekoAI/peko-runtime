@@ -65,6 +65,13 @@ pub enum RequestPacket {
     /// `ResponsePacket::ToolExecuted` instead of a receipt. This is the
     /// callback surface for agent-authored workflow processes
     /// (`sdks/python/peko_workflow`).
+    ///
+    /// `run_token` (phase 2b, ADR-061 D6): the `PEKO_RUN_TOKEN` a
+    /// `Workflow` spawn injected into the calling process. When
+    /// present it must validate against the daemon's in-memory
+    /// registry AND name this packet's `session_key` / principal —
+    /// unknown, expired, or mismatched tokens fail closed. When
+    /// absent, the pre-2b local-transport trust applies unchanged.
     #[serde(rename = "execute_tool")]
     ExecuteTool {
         request_id: u64,
@@ -72,6 +79,10 @@ pub enum RequestPacket {
         params: serde_json::Value,
         session_key: String,
         workspace: PathBuf,
+        /// Optional workflow run token; additive in phase 2b (older
+        /// clients never send it, older daemons ignore unknown fields).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_token: Option<String>,
     },
 
     /// Cancel an async task
@@ -2615,6 +2626,7 @@ mod tests {
             params: serde_json::json!({"pattern": "*.rs"}),
             session_key: "agent:researcher:cli:default".to_string(),
             workspace: PathBuf::from("/tmp/workspace"),
+            run_token: None,
         };
 
         let bytes = req.to_bytes().unwrap();
@@ -2631,12 +2643,14 @@ mod tests {
                 params,
                 session_key,
                 workspace,
+                run_token,
             } => {
                 assert_eq!(request_id, 7);
                 assert_eq!(tool_name, "Glob");
                 assert_eq!(params, serde_json::json!({"pattern": "*.rs"}));
                 assert_eq!(session_key, "agent:researcher:cli:default");
                 assert_eq!(workspace, PathBuf::from("/tmp/workspace"));
+                assert_eq!(run_token, None);
             }
             _ => panic!("Wrong variant"),
         }

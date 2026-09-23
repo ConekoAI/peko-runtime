@@ -74,6 +74,10 @@ pub(crate) trait ToolHost: Send + Sync {
     /// Async task executor that owns the spawned task's lifecycle
     /// (cancellation, completion delivery).
     fn async_task_executor(&self) -> Arc<AsyncExecutor>;
+
+    /// Run-token registry (ADR-061 phase 2b, D6) that authenticates
+    /// `ExecuteTool` requests carrying a `PEKO_RUN_TOKEN`.
+    fn run_token_registry(&self) -> Arc<crate::ipc::run_tokens::RunTokenRegistry>;
 }
 
 /// `tool` domain request handler. Constructed with an `Arc<dyn ToolHost>`
@@ -135,6 +139,7 @@ impl RequestHandler for ToolHandler {
                 params,
                 session_key,
                 workspace,
+                run_token,
             } => {
                 self.handle_execute_tool(
                     request_id,
@@ -142,6 +147,7 @@ impl RequestHandler for ToolHandler {
                     params,
                     session_key,
                     workspace,
+                    run_token,
                     sink,
                 )
                 .await?;
@@ -320,15 +326,67 @@ impl ToolHandler {
     /// `(content, result, success)` triplet. Gate denials and tool
     /// errors arrive as `success: false` data, not a transport error;
     /// only a funnel-internal failure produces `ResponsePacket::Error`.
+    ///
+    /// Phase 2b (ADR-061 D6): when the packet carries a `run_token`,
+    /// it is authenticated against the daemon's `RunTokenRegistry`
+    /// BEFORE attribution — an unknown, expired, or session-mismatched
+    /// token is refused with a transport-level `Error` (fail closed).
+    /// The token only authenticates; grants still derive server-side
+    /// from `session_key` via [`Self::resolve_session_grants`], never
+    /// from the token payload. A validated token also lets the handler
+    /// stamp the server-recorded workflow depth into nested `Workflow`
+    /// calls (`_workflow_depth`), so the recursion guard can't be
+    /// spoofed from the wire — a tokenless request has the key stripped.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_execute_tool(
         &self,
         request_id: u64,
         tool_name: String,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
         session_key: String,
         workspace: PathBuf,
+        run_token: Option<String>,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<()> {
+        // Run-token authentication (phase 2b). Never log the token.
+        let mut token_depth = None;
+        if let Some(token) = run_token.as_deref() {
+            let caller_principal = parse_session_key(&session_key).agent.to_string();
+            let validated = self
+                .host
+                .run_token_registry()
+                .verify(token)
+                .filter(|entry| {
+                    entry.session_key == session_key && entry.principal_name == caller_principal
+                });
+            match validated {
+                Some(entry) => token_depth = Some(entry.workflow_depth),
+                None => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "ExecuteTool refused: run_token is unknown, expired, or does \
+                                  not match the packet's session_key"
+                            .to_string(),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+            }
+        }
+
+        // `_workflow_depth` is server-owned: strip whatever the wire
+        // carried, then set it from the validated token's record when
+        // the call targets the Workflow runner. A tokenless request
+        // (local-trust path) always runs at depth 0.
+        if tool_name == crate::tools::builtin::WORKFLOW_TOOL_NAME {
+            if let Some(obj) = params.as_object_mut() {
+                obj.remove("_workflow_depth");
+                if let Some(depth) = token_depth {
+                    obj.insert("_workflow_depth".to_string(), depth.into());
+                }
+            }
+        }
+
         let attribution = self
             .resolve_session_grants(&session_key, "ExecuteTool")
             .await;
@@ -339,6 +397,7 @@ impl ToolHandler {
                 &tool_name,
                 params,
                 &workspace,
+                Some(session_key.clone()),
                 attribution.principal_id,
                 attribution.principal_name,
                 attribution.capabilities,
@@ -458,6 +517,7 @@ mod tests {
         extension_store: Arc<ExtensionStore>,
         tool_runtime: Arc<ToolRuntime>,
         executor: Arc<AsyncExecutor>,
+        run_tokens: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
     }
 
     impl ToolHost for TestToolHost {
@@ -472,6 +532,9 @@ mod tests {
         }
         fn async_task_executor(&self) -> Arc<AsyncExecutor> {
             self.executor.clone()
+        }
+        fn run_token_registry(&self) -> Arc<crate::ipc::run_tokens::RunTokenRegistry> {
+            self.run_tokens.clone()
         }
     }
 
@@ -494,6 +557,9 @@ mod tests {
         _temp: TempDir,
         handler: ToolHandler,
         workspace: PathBuf,
+        run_tokens: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
+        manager: Arc<PrincipalManager>,
+        tool_runtime: Arc<ToolRuntime>,
     }
 
     fn test_principal_config(
@@ -548,18 +614,24 @@ mod tests {
             .await
             .expect("tool runtime");
 
+        let run_tokens = Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new());
+        let tool_runtime = Arc::new(tool_runtime);
         let host = TestToolHost {
-            manager,
+            manager: Arc::clone(&manager),
             extension_store: Arc::new(ExtensionStore::new()),
-            tool_runtime: Arc::new(tool_runtime),
+            tool_runtime: Arc::clone(&tool_runtime),
             executor: Arc::new(AsyncExecutor::new(
                 crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
             )),
+            run_tokens: Arc::clone(&run_tokens),
         };
         Fixture {
             _temp: temp,
             handler: ToolHandler::new(Arc::new(host)),
             workspace,
+            run_tokens,
+            manager,
+            tool_runtime,
         }
     }
 
@@ -573,6 +645,29 @@ mod tests {
         session_key: &str,
         workspace: &std::path::Path,
     ) -> ResponsePacket {
+        execute_tool_with_token(
+            handler,
+            request_id,
+            tool_name,
+            params,
+            session_key,
+            workspace,
+            None,
+        )
+        .await
+    }
+
+    /// `execute_tool` + a `run_token` on the packet (ADR-061 phase 2b).
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_tool_with_token(
+        handler: &ToolHandler,
+        request_id: u64,
+        tool_name: &str,
+        params: serde_json::Value,
+        session_key: &str,
+        workspace: &std::path::Path,
+        run_token: Option<String>,
+    ) -> ResponsePacket {
         let sink = CollectSink::default();
         let caller = CallerContext::local();
         let peer = PeerAddr::Ip("127.0.0.1:11435".parse().unwrap());
@@ -584,6 +679,7 @@ mod tests {
                     params,
                     session_key: session_key.to_string(),
                     workspace: workspace.to_path_buf(),
+                    run_token,
                 },
                 &caller,
                 &sink,
@@ -772,5 +868,244 @@ mod tests {
         assert!(!truncated);
         assert_eq!(content, "ok");
         assert_eq!(result, json!({"k": "v"}));
+    }
+
+    // ── ADR-061 phase 2b: run-token authentication ──────────────────
+
+    /// A validated `run_token` authenticates the call; attribution and
+    /// grants still derive from the session key (the tool runs).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_with_valid_run_token_executes() {
+        let fx = fixture("tokprincipal", Capabilities::starter_bundle()).await;
+        std::fs::write(fx.workspace.join("hello.txt"), "hi").expect("seed file");
+        let token = fx.run_tokens.mint(
+            "tokprincipal",
+            "agent:tokprincipal:cli:default",
+            1,
+            std::time::Duration::from_mins(1),
+        );
+
+        let response = execute_tool_with_token(
+            &fx.handler,
+            10,
+            "Glob",
+            json!({"pattern": "*.txt", "path": fx.workspace.to_string_lossy()}),
+            "agent:tokprincipal:cli:default",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+
+        let ResponsePacket::ToolExecuted {
+            content, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(success, "valid token + grants should run: {content}");
+        assert!(content.contains("hello.txt"), "content: {content}");
+    }
+
+    /// An unknown token fails closed with a transport-level `Error` —
+    /// the tool never runs.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_unknown_run_token_fails_closed() {
+        let fx = fixture("tokunknown", Capabilities::starter_bundle()).await;
+        let marker = fx.workspace.join("should_not_exist");
+
+        let response = execute_tool_with_token(
+            &fx.handler,
+            11,
+            "Bash",
+            json!({"command": format!("touch {}", marker.display())}),
+            "agent:tokunknown:cli:default",
+            &fx.workspace,
+            Some("not-a-real-token".to_string()),
+        )
+        .await;
+
+        let ResponsePacket::Error { message, .. } = response else {
+            panic!("expected Error, got {response:?}");
+        };
+        assert!(message.contains("run_token"), "message: {message}");
+        assert!(!marker.exists(), "refused tool must not have run");
+    }
+
+    /// A token minted for session A does not authenticate a packet
+    /// naming session B — even when both resolve to the same principal.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_mismatched_session_key_fails_closed() {
+        let fx = fixture("tokmismatch", Capabilities::starter_bundle()).await;
+        let marker = fx.workspace.join("should_not_exist");
+        let token = fx.run_tokens.mint(
+            "tokmismatch",
+            "agent:tokmismatch:workflow:run-1",
+            1,
+            std::time::Duration::from_mins(1),
+        );
+
+        let response = execute_tool_with_token(
+            &fx.handler,
+            12,
+            "Bash",
+            json!({"command": format!("touch {}", marker.display())}),
+            // Same principal, different session key than the token's.
+            "agent:tokmismatch:cli:default",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+
+        let ResponsePacket::Error { message, .. } = response else {
+            panic!("expected Error, got {response:?}");
+        };
+        assert!(message.contains("run_token"), "message: {message}");
+        assert!(!marker.exists(), "refused tool must not have run");
+    }
+
+    /// An expired token fails closed (zero-TTL mint).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_expired_run_token_fails_closed() {
+        let fx = fixture("tokexpired", Capabilities::starter_bundle()).await;
+        let token = fx.run_tokens.mint(
+            "tokexpired",
+            "agent:tokexpired:cli:default",
+            1,
+            std::time::Duration::ZERO,
+        );
+
+        let response = execute_tool_with_token(
+            &fx.handler,
+            13,
+            "Glob",
+            json!({"pattern": "*", "path": fx.workspace.to_string_lossy()}),
+            "agent:tokexpired:cli:default",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+
+        let ResponsePacket::Error { message, .. } = response else {
+            panic!("expected Error, got {response:?}");
+        };
+        assert!(message.contains("run_token"), "message: {message}");
+    }
+
+    /// A token minted for principal A does not authenticate a packet
+    /// whose session_key names principal B.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_cross_principal_token_fails_closed() {
+        let fx = fixture("toka", Capabilities::starter_bundle()).await;
+        // Same fixture manager hosts a second principal.
+        fx.manager
+            .create(test_principal_config(
+                "tokb",
+                Capabilities::starter_bundle(),
+            ))
+            .await
+            .expect("create second principal");
+        let token = fx.run_tokens.mint(
+            "toka",
+            "agent:toka:cli:default",
+            1,
+            std::time::Duration::from_mins(1),
+        );
+
+        let response = execute_tool_with_token(
+            &fx.handler,
+            14,
+            "Glob",
+            json!({"pattern": "*", "path": fx.workspace.to_string_lossy()}),
+            "agent:tokb:cli:default",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+
+        let ResponsePacket::Error { message, .. } = response else {
+            panic!("expected Error, got {response:?}");
+        };
+        assert!(message.contains("run_token"), "message: {message}");
+    }
+
+    /// Depth injection (ADR-061 D8): a validated run token stamps the
+    /// server-recorded `workflow_depth` into nested `Workflow` calls as
+    /// `_workflow_depth`; a workflow at MAX depth is refused. The depth
+    /// is server-derived — the wire cannot spoof it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn execute_tool_stamps_workflow_depth_from_run_token() {
+        let fx = fixture("deepwf", Capabilities::starter_bundle()).await;
+        // Register the Workflow runner on the fixture's core (daemon
+        // state.rs does this in production).
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            fx.tool_runtime.extension_core(),
+            Arc::new(crate::tools::builtin::WorkflowTool::new(
+                Arc::downgrade(&fx.manager),
+                Arc::clone(&fx.run_tokens),
+            )),
+        )
+        .await
+        .expect("register Workflow");
+
+        // A workflow running at MAX depth calls ExecuteTool("Workflow")
+        // — refused by the recursion guard.
+        let token = fx.run_tokens.mint(
+            "deepwf",
+            "agent:deepwf:workflow:run-1",
+            crate::tools::builtin::MAX_WORKFLOW_DEPTH,
+            std::time::Duration::from_mins(1),
+        );
+        let response = execute_tool_with_token(
+            &fx.handler,
+            15,
+            "Workflow",
+            json!({"path": "nonexistent.py"}),
+            "agent:deepwf:workflow:run-1",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            content, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(!success, "depth-MAX spawn must be refused: {content}");
+        assert!(
+            content.contains("nesting depth"),
+            "expected the recursion-guard refusal, got: {content}"
+        );
+
+        // A client-supplied `_workflow_depth` on a TOKENLESS call is
+        // stripped server-side: the same "refusal" does not happen at
+        // depth 0 — the failure surfaces later (path guard), proving
+        // the wire value was ignored.
+        let response = execute_tool(
+            &fx.handler,
+            16,
+            "Workflow",
+            json!({"path": "nonexistent.py", "_workflow_depth": 99}),
+            "agent:deepwf:cli:default",
+            &fx.workspace,
+        )
+        .await;
+        let ResponsePacket::ToolExecuted {
+            content, success, ..
+        } = response
+        else {
+            panic!("expected ToolExecuted, got {response:?}");
+        };
+        assert!(!success);
+        assert!(
+            !content.contains("nesting depth") && content.contains("workflows"),
+            "depth 99 from the wire must be stripped (fail later at the path guard), got: {content}"
+        );
     }
 }

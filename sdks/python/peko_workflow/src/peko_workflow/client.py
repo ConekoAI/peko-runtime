@@ -1,9 +1,10 @@
-"""Thin IPC client for the peko daemon's `ExecuteTool` surface (ADR-061 phase 1).
+"""Thin IPC client for the peko daemon's `ExecuteTool` surface (ADR-061).
 
 Wire shape (one JSON datagram per message over a unix socket):
 
     request:  {"type": "execute_tool", "request_id": N, "tool_name": str,
-               "params": {...}, "session_key": str, "workspace": str}
+               "params": {...}, "session_key": str, "workspace": str,
+               "run_token": str?}        # phase 2b — see below
     response: {"type": "tool_executed", "request_id": N, "content": str,
                "result": <any json>, "success": bool, "truncated": bool}
          or   {"type": "error", "request_id": N, "message": str}
@@ -12,6 +13,11 @@ Attribution is server-side: the daemon resolves the principal from
 `session_key` and derives capability grants from it. The wire never
 carries grants, and the SDK holds no credentials and no policy —
 everything it can do, the calling peko can do.
+
+Phase 2b (ADR-061 D6): when the daemon spawns a workflow via the
+`Workflow` tool it injects `PEKO_RUN_TOKEN`; the client echoes it as
+`run_token` on every request. The daemon validates it (unknown /
+expired / session-mismatched tokens are refused with an error packet).
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ _SOCK_ENV = "PEKO_DAEMON_SOCK"
 _HOME_ENV = "PEKO_HOME"
 _SESSION_KEY_ENV = "PEKO_SESSION_KEY"
 _WORKSPACE_ENV = "PEKO_WORKSPACE"
+_RUN_TOKEN_ENV = "PEKO_RUN_TOKEN"
 
 _bind_counter = itertools.count()
 
@@ -78,11 +85,13 @@ class Client:
         socket_path: str | None = None,
         session_key: str | None = None,
         workspace: str | None = None,
+        run_token: str | None = None,
         timeout: float = _DEFAULT_TIMEOUT_SECS,
     ):
         self.socket_path = socket_path or default_socket_path()
         self.session_key = session_key or os.environ.get(_SESSION_KEY_ENV)
         self.workspace = workspace or os.environ.get(_WORKSPACE_ENV) or os.getcwd()
+        self.run_token = run_token or os.environ.get(_RUN_TOKEN_ENV)
         self.timeout = timeout
         self._request_ids = itertools.count(1)
         self._sock: socket.socket | None = None
@@ -149,6 +158,12 @@ class Client:
             "session_key": self.session_key,
             "workspace": self.workspace,
         }
+        if self.run_token:
+            # ADR-061 D6: authenticate the callback independently of
+            # transport trust. The daemon validates the token against
+            # its in-memory registry; grants still derive from
+            # `session_key` server-side.
+            request["run_token"] = self.run_token
         return self._roundtrip(request, timeout=self.timeout)
 
     def _roundtrip(self, request: dict, timeout: float) -> dict:

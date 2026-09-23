@@ -11,8 +11,8 @@ def default_client() -> Client:
     """The process-wide client, connected on first use from the environment.
 
     Reads `PEKO_DAEMON_SOCK` (or the default socket path), `PEKO_SESSION_KEY`,
-    and `PEKO_WORKSPACE` — the variables the daemon injects when it spawns a
-    workflow process.
+    `PEKO_WORKSPACE`, and `PEKO_RUN_TOKEN` — the variables the daemon injects
+    when it spawns a workflow process.
     """
     global _default_client
     if _default_client is None:

@@ -34,6 +34,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
 13. [Tool Protocol — stdin/stdout](#13-tool-protocol--stdinstdout)
    13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
    13¾. [`ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)](#13¾-modelcall--one-shot-inference--the-judgment-wire-adr-061-phase-2a)
+   13⅞. [`Workflow` runner + the `workflows/` directory (ADR-061 phase 2b)](#13⅞-workflow-runner--the-workflows-directory-adr-061-phase-2b)
 14. [Extension Manifest](#14-extension-manifest)
 15. [Type Reference](#15-type-reference)
 16. [Changelog](#16-changelog)
@@ -2496,7 +2497,8 @@ server-side attribution.
   "tool_name":   "Glob",
   "params":      { "pattern": "*.py" },
   "session_key": "agent:researcher:cli:default",
-  "workspace":   "/path/to/workspace"
+  "workspace":   "/path/to/workspace",
+  "run_token":   "optional — ADR-061 phase 2b"
 }
 ```
 
@@ -2505,6 +2507,18 @@ claims to be* (ADR-057): the daemon parses the key, resolves the owning
 principal server-side, and derives capability grants and active extensions
 from it — grants in the packet are never accepted. An unknown key fails closed
 to deny-all.
+
+**`run_token`** (phase 2b, ADR-061 D6): when present, the token must validate
+against the daemon's in-memory `RunTokenRegistry` (unknown or expired fails
+closed) AND its recorded `session_key` / `principal_name` must match the
+packet's `session_key` — a mismatch fails closed. Validation failure answers
+with a transport-level `{"type": "error", ...}` (not a `success: false`
+result). The token only *authenticates*: grants still derive from the
+session key, never from the token. Tokens are minted by the `Workflow` tool
+at spawn (32 random bytes, base64url, TTL = run timeout + 60 s) and injected
+into the workflow process as `PEKO_RUN_TOKEN`; the registry is in-memory and
+dies with the daemon. When `run_token` is absent, the pre-2b local-transport
+trust applies unchanged.
 
 **Response** (`ResponsePacket::ToolExecuted`) — the F37 funnel's
 `tool_result_from_hook` triplet:
@@ -2645,6 +2659,72 @@ Judgment result returned to the caller:
 (`usage` is omitted from the result when the response carried none; in that
 case only the meter's request counter advances — token counts are never
 synthesized from request params.)
+
+---
+
+## 13⅞. `Workflow` runner + the `workflows/` directory (ADR-061 phase 2b)
+
+Workflows are **agent-authored Python files at `<workspace>/workflows/*.py`**
+(D1) — procedural memory following ADR-050's presence-equals-visibility rule:
+a dropped file appears in the per-turn `workflows` prompt catalog (the tail
+`<runtime-context>` message) on the next iteration — one
+`- {name}: {first docstring line} (workflows/{name}.py)` line per file,
+sorted, mtime-keyed cache, 8 KB cap with a list-the-directory pointer on
+overflow. No CLI tree, no restart.
+
+The `Workflow` built-in (gated by `tool:Workflow`) runs one as a subprocess:
+
+```json
+{ "path": "triage.py", "args": ["--fast"], "timeout_ms": 300000 }
+```
+
+- `path` is relative to `<workspace>/workflows/`; it is canonicalized and
+  anything escaping that directory (absolute paths, `..`, symlink escapes)
+  is refused, as are non-`.py` targets and missing files. The interpreter is
+  `python3` on `PATH`.
+- `timeout_ms` defaults to 300 000 and is capped at 3 600 000; on timeout or
+  abort the child process is killed.
+- stdout/stderr are captured as bounded TAILs (16 KiB each); a truncated
+  stream is prepended with `[… truncated by peko: showing the last 16 KiB …]`
+  and carries `stdout_truncated` / `stderr_truncated: true`.
+
+Result:
+
+```json
+{ "workflow": "triage.py", "success": true, "timed_out": false,
+  "exit_code": 0, "duration_ms": 812,
+  "stdout": "…", "stderr": "",
+  "stdout_truncated": false, "stderr_truncated": false }
+```
+
+(`exit_code` is `null` when the process was killed by signal/timeout;
+`timed_out: true` marks the timeout path, which returns partial output as
+data rather than an error.)
+
+**Spawn-time environment** (D6): the child gets a *minimal* env — never the
+daemon's (secrets must not leak). Only `PATH` / `HOME` / locale / temp-dir /
+Windows platform vars pass through, plus the identity set:
+
+| Variable | Value |
+|---|---|
+| `PEKO_DAEMON_SOCK` | the daemon's unix socket (`$PEKO_HOME/run/daemon.sock`) |
+| `PEKO_WORKSPACE` | the calling principal's workspace path |
+| `PEKO_PRINCIPAL_ID` | the calling principal's stable id |
+| `PEKO_SESSION_KEY` | the calling session's attribution key (below) |
+| `PEKO_RUN_TOKEN` | freshly minted run token (see §13½ `run_token`) |
+| `PEKO_WORKFLOW_DEPTH` | nesting depth of the spawned process (agent-spawned = 1) |
+
+`PEKO_SESSION_KEY` is constructed server-side so that
+`parse_session_key(key).agent` is the calling principal's name — the segment
+`ExecuteTool` attribution resolves from. The agent-loop path (where the tool
+sees the session UUID) yields `agent:{principal}:workflow:{session_uuid}`;
+a nested workflow→`ExecuteTool` path reuses the parent's key verbatim.
+
+**Recursion guard** (D8): a call at `PEKO_WORKFLOW_DEPTH >= 2` is refused
+("a workflow may not spawn itself"). On the `ExecuteTool` path the depth is
+server-derived — the handler strips any client-supplied `_workflow_depth`
+param and stamps the validated run token's recorded depth instead — so the
+guard cannot be spoofed from the wire.
 
 ---
 

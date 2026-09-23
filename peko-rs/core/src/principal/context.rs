@@ -526,12 +526,13 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 ///
 /// Built-ins (Read, Bash, glob, grep, Cron*, Task*, Async*, …) are
 /// registered, along with the workspace-scanning prompt handlers that
-/// render the `agents` / `skills` system-prompt sections
-/// ([`WorkspaceAgentsPromptHandler`] / [`WorkspaceSkillsPromptHandler`]).
+/// render the `agents` / `skills` / `workflows` system-prompt sections
+/// ([`WorkspaceAgentsPromptHandler`] / [`WorkspaceSkillsPromptHandler`] /
+/// `tools::builtin::WorkspaceWorkflowsPromptHandler`).
 /// The handlers resolve the workspace from the hook context at invoke
-/// time and re-scan `<workspace>/agents/` / `<workspace>/skills/`
-/// whenever the directory mtime changes, so one registration on this
-/// daemon-global core serves all principals. The `agent_catalog` tool
+/// time and re-scan `<workspace>/agents/` / `<workspace>/skills/` /
+/// `<workspace>/workflows/` whenever the scanned files' mtimes change,
+/// so one registration on this daemon-global core serves all principals. The `agent_catalog` tool
 /// is *not* installed here — it is the only per-call tool and the
 /// runner installs it via [`install_agent_catalog`] on each message.
 ///
@@ -603,7 +604,7 @@ async fn install_principal_tool_bag(
     // prompt suffix on the next iteration (ADR-052 D2/D4). Presence
     // in the workspace = visible (ADR-047) — no capability or
     // active-extension filter.
-    let catalog_hooks: [(HookPoint, Arc<dyn HookHandler>, ExtensionId); 3] = [
+    let catalog_hooks: [(HookPoint, Arc<dyn HookHandler>, ExtensionId); 4] = [
         (
             HookPoint::PromptSystemSection {
                 section: "identity".to_string(),
@@ -627,6 +628,17 @@ async fn install_principal_tool_bag(
             },
             Arc::new(WorkspaceSkillsPromptHandler::new()),
             ExtensionId::new("skill:workspace-catalog"),
+        ),
+        // ADR-061 phase 2b (D1): the `workflows/` catalog rides the
+        // same per-turn tail message — dropping a `.py` file into
+        // `<workspace>/workflows/` makes it visible next iteration.
+        (
+            HookPoint::PromptSystemSection {
+                section: "workflows".to_string(),
+                priority: crate::tools::builtin::WORKFLOW_CATALOG_HOOK_PRIORITY,
+            },
+            Arc::new(crate::tools::builtin::WorkspaceWorkflowsPromptHandler::new()),
+            ExtensionId::new("workflow:workspace-catalog"),
         ),
     ];
     for (point, handler, extension_id) in catalog_hooks {

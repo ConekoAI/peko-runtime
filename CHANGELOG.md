@@ -4,6 +4,45 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-061 phase 2b — `Workflow` runner, run tokens, `workflows/` catalog (2026-09-23)
+
+- **New built-in tool: `Workflow`** (gated by `tool:Workflow`) — runs an
+  agent-authored Python file from `<workspace>/workflows/` as a subprocess
+  with the caller's identity injected (ADR-061 D6/D7). `path` is
+  canonicalized inside `workflows/` (absolute/`..`/symlink escapes,
+  non-`.py`, and missing files are refused); the interpreter is `python3`
+  on `PATH`. The child gets a minimal env (no daemon-env inheritance —
+  secrets never leak) with `PEKO_DAEMON_SOCK`, `PEKO_WORKSPACE`,
+  `PEKO_PRINCIPAL_ID`, `PEKO_SESSION_KEY`, `PEKO_RUN_TOKEN`, and
+  `PEKO_WORKFLOW_DEPTH` injected. stdout/stderr come back as bounded 16 KiB
+  tails with a truncation marker; `timeout_ms` defaults to 300 000 (hard
+  cap 3 600 000) and timeout/abort kills the child. Schedulable as-is via
+  `CronCreate` → `SpawnTool` → `Workflow` (D7).
+- **`PEKO_RUN_TOKEN` authentication for `ExecuteTool`** (D6): an in-memory
+  `RunTokenRegistry` on the daemon (lazy sweep, dies with the process)
+  hands each spawned workflow a 32-byte base64url token (TTL = run timeout
+  + 60 s). `RequestPacket::ExecuteTool` gains an optional additive
+  `run_token` field; when present it must validate and match the packet's
+  `session_key`/principal (unknown/expired/mismatched → transport-level
+  error, fail closed). The token only *authenticates* — grants still
+  derive server-side from the session key. `DaemonClient` gains
+  `execute_tool_with_token`; the Python SDK reads `PEKO_RUN_TOKEN` and
+  echoes it on every request.
+- **Recursion guard** (D8): a workflow at depth ≥ 2 cannot spawn another
+  workflow. Depth is server-derived on the IPC path — the `ExecuteTool`
+  handler strips any client-supplied `_workflow_depth` and stamps the
+  validated token's recorded depth — so it cannot be spoofed from the wire.
+- **`workflows/` prompt catalog** (D1): `WorkspaceWorkflowsPromptHandler`
+  scans `<workspace>/workflows/*.py` (name + first docstring line, sorted,
+  mtime-keyed cache, 8 KB cap with a list-the-directory pointer) and rides
+  the tail `<runtime-context>` message — presence = visibility, no restart.
+  The renderer gains the `workflows` built-in section slot.
+- The handler now threads the packet's `session_key` into the funnel as
+  `ToolContext.session_id`, so a nested workflow's callbacks attribute to
+  the parent workflow's session key verbatim.
+- Wire shapes and the env contract are documented in `DATA_MODEL.md`
+  §13½ + §13⅞; the tool is catalogued in `docs/architecture/builtin-tools.md`.
+
 ### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
 
 - **New built-in tool: `ModelCall`** — the one-shot inference primitive of

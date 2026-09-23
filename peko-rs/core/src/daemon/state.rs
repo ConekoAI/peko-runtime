@@ -143,6 +143,11 @@ pub(crate) struct AppState {
     /// Tool runtime for async task execution (ADR-020)
     pub tool_runtime: Arc<ToolRuntime>,
 
+    /// Run-token registry (ADR-061 phase 2b, D6): the `Workflow` runner
+    /// mints `PEKO_RUN_TOKEN`s here at spawn; the IPC `ExecuteTool`
+    /// handler authenticates them. In-memory, dies with the daemon.
+    pub run_token_registry: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
+
     /// Async task executor for daemon-side background execution (ADR-020)
     pub async_task_executor: Arc<AsyncExecutor>,
 
@@ -864,15 +869,20 @@ impl AppState {
             Some(Arc::clone(&principal_manager)),
         );
 
-        // ADR-061 phase 2a (D3): register the `ModelCall` built-in on
-        // the system scope of the shared core. Unlike the rest of
-        // `GLOBAL_TOOL_NAMES` it cannot be registered by
-        // `ToolRuntime::register_builtins` — the tool needs the
-        // `PrincipalManager` handle (per-principal meter +
-        // `preferred_model_id` resolution at execute time), which only
-        // exists from here on. Registered once; both the agentic loop
-        // and the `ExecuteTool` IPC path reach it through the F37
-        // funnel, gated by `tool:ModelCall`.
+        // ADR-061 phase 2 (D3/D6/D7): register the `ModelCall` and
+        // `Workflow` built-ins on the system scope of the shared core.
+        // Unlike the rest of `GLOBAL_TOOL_NAMES` they cannot be
+        // registered by `ToolRuntime::register_builtins` — they need
+        // the `PrincipalManager` handle (per-principal meter /
+        // workspace / `preferred_model_id` resolution at execute
+        // time), which only exists from here on; `Workflow`
+        // additionally mints `PEKO_RUN_TOKEN`s from the daemon-shared
+        // registry created here (held on AppState so the IPC
+        // `ExecuteTool` handler can authenticate callbacks).
+        // Registered once; both the agentic loop and the `ExecuteTool`
+        // IPC path reach them through the F37 funnel, gated by
+        // `tool:ModelCall` / `tool:Workflow`.
+        let run_token_registry = Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new());
         if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
             &global_core,
             Arc::new(crate::tools::builtin::ModelCallTool::new(Arc::downgrade(
@@ -882,6 +892,17 @@ impl AppState {
         .await
         {
             tracing::warn!("Failed to register built-in tool 'ModelCall' with ExtensionCore: {e}");
+        }
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            &global_core,
+            Arc::new(crate::tools::builtin::WorkflowTool::new(
+                Arc::downgrade(&principal_manager),
+                Arc::clone(&run_token_registry),
+            )),
+        )
+        .await
+        {
+            tracing::warn!("Failed to register built-in tool 'Workflow' with ExtensionCore: {e}");
         }
 
         // ADR-034: Initialize auth components
@@ -1006,6 +1027,7 @@ impl AppState {
             lifecycle,
             session_service,
             tool_runtime,
+            run_token_registry,
             async_task_executor,
             inbox_registry,
             background_runtime_manager,
@@ -2341,6 +2363,10 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
 
     fn tool_runtime(&self) -> Arc<ToolRuntime> {
         self.tool_runtime.clone()
+    }
+
+    fn run_token_registry(&self) -> Arc<crate::ipc::run_tokens::RunTokenRegistry> {
+        self.run_token_registry.clone()
     }
 
     fn async_task_executor(&self) -> Arc<AsyncExecutor> {

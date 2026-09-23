@@ -39,6 +39,11 @@ pub const GLOBAL_TOOL_NAMES: &[&str] = &[
     // the shared core once the manager exists. It is listed here so the
     // principal catalog gates it by `tool:ModelCall` like any built-in.
     "ModelCall",
+    // ADR-061 phase 2b (D7) — workflow runner. Same registration
+    // reason as ModelCall: it needs the `PrincipalManager` (caller
+    // resolution) and the daemon's `RunTokenRegistry` (spawn tokens),
+    // so `daemon::state` registers it. Gated by `tool:Workflow`.
+    "Workflow",
     // Sprint 4: `ChannelSend` is per-agent (see
     // `AGENT_SPECIFIC_TOOL_NAMES` below) because the tool needs the
     // caller's principal DID bound at construction — global
