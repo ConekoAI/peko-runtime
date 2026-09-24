@@ -143,6 +143,11 @@ pub(crate) struct AppState {
     /// Tool runtime for async task execution (ADR-020)
     pub tool_runtime: Arc<ToolRuntime>,
 
+    /// Run-token registry (ADR-061 phase 2b, D6): the `Workflow` runner
+    /// mints `PEKO_RUN_TOKEN`s here at spawn; the IPC `ExecuteTool`
+    /// handler authenticates them. In-memory, dies with the daemon.
+    pub run_token_registry: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
+
     /// Async task executor for daemon-side background execution (ADR-020)
     pub async_task_executor: Arc<AsyncExecutor>,
 
@@ -864,6 +869,64 @@ impl AppState {
             Some(Arc::clone(&principal_manager)),
         );
 
+        // ADR-061 phase 2 (D3/D6/D7): register the `ModelCall` and
+        // `Workflow` built-ins on the system scope of the shared core.
+        // Unlike the rest of `GLOBAL_TOOL_NAMES` they cannot be
+        // registered by `ToolRuntime::register_builtins` — they need
+        // the `PrincipalManager` handle (per-principal meter /
+        // workspace / `preferred_model_id` resolution at execute
+        // time), which only exists from here on; `Workflow`
+        // additionally mints `PEKO_RUN_TOKEN`s from the daemon-shared
+        // registry created here (held on AppState so the IPC
+        // `ExecuteTool` handler can authenticate callbacks).
+        // Registered once; both the agentic loop and the `ExecuteTool`
+        // IPC path reach them through the F37 funnel, gated by
+        // `tool:ModelCall` / `tool:Workflow`.
+        let run_token_registry = Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new());
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            &global_core,
+            Arc::new(crate::tools::builtin::ModelCallTool::new(Arc::downgrade(
+                &principal_manager,
+            ))),
+        )
+        .await
+        {
+            tracing::warn!("Failed to register built-in tool 'ModelCall' with ExtensionCore: {e}");
+        }
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            &global_core,
+            Arc::new(crate::tools::builtin::WorkflowTool::new(
+                Arc::downgrade(&principal_manager),
+                Arc::clone(&run_token_registry),
+            )),
+        )
+        .await
+        {
+            tracing::warn!("Failed to register built-in tool 'Workflow' with ExtensionCore: {e}");
+        }
+
+        // ADR-061 caller-awareness: daemon-global `session` builtin
+        // whose caller (store, meter, run permits, current session)
+        // resolves PER CALL from the `ToolContext` — on the
+        // `ExecuteTool` path the token-resolved node id, on the loop
+        // path the live run id. Pre-boot principals (no agent turn
+        // yet) have no per-agent `session` instance, so this system-
+        // scope registration is what makes `ExecuteTool("session")`
+        // resolve at all; for booted principals the per-agent
+        // `CallerAwareSessionTool::for_agent` instance shadows it with
+        // identical per-call semantics.
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            &global_core,
+            Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
+                Arc::downgrade(&principal_manager),
+                Arc::clone(&inbox_registry),
+            )),
+        )
+        .await
+        {
+            tracing::warn!("Failed to register built-in tool 'session' with ExtensionCore: {e}");
+        }
+
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;
         let api_key_store = if auth_config.enable_api_key() {
@@ -986,6 +1049,7 @@ impl AppState {
             lifecycle,
             session_service,
             tool_runtime,
+            run_token_registry,
             async_task_executor,
             inbox_registry,
             background_runtime_manager,
@@ -2323,6 +2387,10 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
         self.tool_runtime.clone()
     }
 
+    fn run_token_registry(&self) -> Arc<crate::ipc::run_tokens::RunTokenRegistry> {
+        self.run_token_registry.clone()
+    }
+
     fn async_task_executor(&self) -> Arc<AsyncExecutor> {
         self.async_task_executor.clone()
     }
@@ -2509,6 +2577,7 @@ fn model_spec_to_wire(spec: peko_providers::spec::ModelSpec) -> crate::ipc::pack
             peko_providers::spec::ThinkingMode::CustomBudget => ModelThinkingMode::CustomBudget,
         },
         json_mode: spec.json_mode,
+        decisions: spec.decisions,
         pricing: spec.pricing.map(|p| ModelPricingHint {
             input_per_million: p.input_per_million,
             output_per_million: p.output_per_million,

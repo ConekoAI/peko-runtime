@@ -126,9 +126,9 @@ pub use jsonl::{
     NormalizedEntry, RotationReason, RotationSink, SessionStorage, TranscriptSearchHit,
 };
 pub use key::{
-    base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
-    parse_session_key, parse_session_key_v2, safe_filename_component, sanitize_key_component,
-    scope_from_key, ChatType, ParsedSessionKeyV2, SessionKeyContext, SessionKeyParts, SessionScope,
+    base_key_from_overlay, derive_base_session_key, derive_overlay_key, parse_session_key,
+    parse_session_key_v2, safe_filename_component, sanitize_key_component, ParsedSessionKeyV2,
+    SessionKeyParts,
 };
 pub use lock_utils::into_anyhow;
 pub use lock_utils::{

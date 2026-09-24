@@ -206,7 +206,6 @@ impl Agent {
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use crate::tools::builtin::SessionTool;
         use peko_tools_core::Tool;
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
@@ -251,10 +250,14 @@ impl Agent {
             // keeps the session tool's `quota` snapshot at `None`.
             self.subagent_executor.quota_meter().cloned(),
         );
-        tools.push(Arc::new(SessionTool::new(
-            std::sync::Arc::new(session_runtime)
-                as crate::tools::builtin::session::SharedSessionRuntime,
-        )));
+        // ADR-061 caller-awareness: `CallerAwareSessionTool::for_agent`
+        // wraps the same runtime — identical behavior on the loop path
+        // (the ctx-carried session id IS the run id the shared cell
+        // holds), but on the `ExecuteTool` path it classifies against
+        // the per-call token-resolved node instead of the stale cell.
+        tools.push(Arc::new(
+            crate::tools::builtin::CallerAwareSessionTool::for_agent(session_runtime),
+        ));
 
         // Add Agent tool with executor and session provider. When this agent
         // Sprint 7: the Agent tool reads its workspace from the runtime

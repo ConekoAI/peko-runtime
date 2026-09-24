@@ -1134,7 +1134,7 @@ mod tests {
     // All creation must go through SessionManager::create_session()
 
     #[test]
-    fn test_derive_session_key() {
+    fn test_derive_base_session_key() {
         let peer = Subject::User("alice".to_string());
         let key = crate::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");

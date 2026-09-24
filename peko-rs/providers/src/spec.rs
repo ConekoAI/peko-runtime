@@ -129,6 +129,16 @@ pub struct ModelSpec {
     /// that don't publish rates leave it `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<PricingHint>,
+    /// ADR-061 (D4): whether this entry is a judgment-class model —
+    /// a decision API (`POST {base_url}/v1/evaluate`) that accepts
+    /// unstructured `state` + bounded `questions` and returns typed
+    /// answers with probabilities, rather than a chat model. The
+    /// `ModelCall` built-in's judgment mode refuses to run against
+    /// entries without this flag. Chat adapters ignore it entirely.
+    /// Defaults to `false`; no CLI flag sets it — hand-edit
+    /// `models.toml` (see DATA_MODEL.md).
+    #[serde(default)]
+    pub decisions: bool,
 }
 
 fn default_streaming_true() -> bool {
@@ -160,6 +170,7 @@ impl ModelSpec {
             thinking: ThinkingMode::Disabled,
             json_mode: false,
             pricing: None,
+            decisions: false,
         }
     }
 
@@ -176,6 +187,7 @@ impl ModelSpec {
             thinking: ThinkingMode::Optional,
             json_mode: true,
             pricing: None,
+            decisions: false,
         }
     }
 }
@@ -194,6 +206,8 @@ mod tests {
         assert_eq!(s.thinking, ThinkingMode::Disabled);
         assert!(!s.json_mode);
         assert!(s.pricing.is_none());
+        // ADR-061 D4: judgment-class entries opt in explicitly.
+        assert!(!s.decisions);
     }
 
     #[test]

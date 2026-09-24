@@ -294,6 +294,87 @@ description. **Sprint 8** renamed the LLM-facing field from
 `subagent_type` to `agent` to match its semantic and retired the legacy
 global TOML fallback (`{PEKO_HOME}/agents/<name>/config.toml`).
 
+## Inference
+
+### `ModelCall` 🔧 (ADR-061 phase 2a)
+
+One-shot LLM call with **no session persistence, no tool-calling loop, no
+streaming** — the cheap primitive workflows (via `ExecuteTool`) and agents
+(mid-turn classification) use instead of spawning a subagent. Exactly one
+mode per call:
+
+```json
+{
+  "model":       "string? (catalog id; defaults to the calling principal's preferred model)",
+  "prompt":      "string? — completion mode",
+  "system":      "string? — completion mode",
+  "max_tokens":  "integer? — completion mode",
+  "temperature": "number? — completion mode",
+  "state":       "string | object? — judgment mode (with questions)",
+  "questions":   "object? — judgment mode: map of question key → {type: boolean|choice|score, instructions, ...}"
+}
+```
+
+Completion returns `{mode, text, model, usage}`; judgment returns
+`{mode, model, answers, usage?}` with per-question answers (incl.
+`probability` when the API reports it) passed through verbatim. Judgment
+mode POSTs `{model, state, questions}` to `{base_url}/v1/evaluate` and is
+only valid against catalog entries whose `ModelSpec` declares
+`decisions: true` (hand-edit `models.toml`; see DATA_MODEL.md §13¾).
+
+Every call is attributed server-side to the calling principal and charges
+its quota meter from provider-reported usage; completion mode applies the
+same `cost_per_call_max` pre-flight as subagent spawns. Calls without a
+resolvable calling principal are refused (no unmetered inference).
+
+## Workflows
+
+### `Workflow` 🔧 (ADR-061 phase 2b)
+
+Run an agent-authored Python workflow from the principal's `workflows/`
+directory as a subprocess. Procedural memory: a saved loop/poll/batch runs
+as code instead of a turn-by-turn agent loop; schedulable via
+`CronCreate` → `SpawnTool` → `Workflow`.
+
+```json
+{
+  "path": "string (required) — file under workflows/, e.g. \"triage.py\"",
+  "args": "string[]? — argv for the script",
+  "timeout_ms": "integer? — default 300000, hard cap 3600000"
+}
+```
+
+Return:
+
+```json
+{
+  "workflow": "triage.py",
+  "success": true,
+  "timed_out": false,
+  "exit_code": 0,
+  "duration_ms": 812,
+  "stdout": "… (bounded 16 KiB tail; truncation marker when cut)",
+  "stderr": "",
+  "stdout_truncated": false,
+  "stderr_truncated": false
+}
+```
+
+**Guardrails:** `path` is canonicalized inside `workflows/` (absolute, `..`,
+and symlink escapes refused; non-`.py` refused). The child env is minimal
+(no daemon-env inheritance) with `PEKO_DAEMON_SOCK` / `PEKO_WORKSPACE` /
+`PEKO_PRINCIPAL_ID` / `PEKO_SESSION_KEY` / `PEKO_RUN_TOKEN` /
+`PEKO_WORKFLOW_DEPTH` injected — the workflow calls back through
+`ExecuteTool` with this principal's identity and the run token
+authenticating each callback (wire shape: DATA_MODEL.md §13½/§13⅞). The
+run token also carries the **calling session node**, so tree-relative
+callbacks behave as if the calling agent made them directly: `Agent new`
+parents under the caller, `CronCreate` fires into the caller's origin
+session, and `session` resolves the caller's store + status per call
+(`CallerAwareSessionTool`). Timeout
+or abort kills the child. A workflow at depth ≥ 2 may not spawn another
+workflow (server-derived depth, unspoofable from the wire).
+
 ## Planning todos
 
 ### `TaskCreate` ✅

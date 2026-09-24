@@ -415,6 +415,65 @@ impl Provider {
         .await
     }
 
+    /// ADR-061 (D3): one-shot, tool-free chat completion with
+    /// caller-owned [`ChatOptions`].
+    ///
+    /// Unlike [`chat_with_tools`](Self::chat_with_tools), the request is
+    /// built with `tools: None`, so the wire payload carries no tool
+    /// surface at all (an empty `&[]` would still serialize
+    /// `"tools": []` + `tool_choice`). Unlike
+    /// [`chat_response_with_system`](Self::chat_response_with_system),
+    /// the caller controls the full options (`max_tokens`, …) instead
+    /// of just a temperature. The caller's `cache_retention` /
+    /// `prompt_cache_key` are overridden by the runtime-options
+    /// projection, same as the sibling chat methods.
+    ///
+    /// No session persistence, no streaming, no tool-calling loop —
+    /// one request, one response. This is the completion-mode engine
+    /// of the `ModelCall` built-in.
+    pub async fn chat_response_with_options(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        model: &str,
+        options: &ChatOptions,
+    ) -> anyhow::Result<ChatResponse> {
+        self.with_auth_rotation(|provider| {
+            let provider = provider.clone();
+            let system_prompt = system_prompt.map(str::to_string);
+            let message = message.to_string();
+            let model = model.to_string();
+            let mut options = options.clone();
+            async move {
+                let messages: Vec<LlmMessage> = if let Some(system) = system_prompt {
+                    vec![LlmMessage::system(system), LlmMessage::user(message)]
+                } else {
+                    vec![LlmMessage::user(message)]
+                };
+
+                let (cache_retention, prompt_cache_key) =
+                    project_cache_options(&provider.adapter, &provider.options);
+                options.cache_retention = cache_retention;
+                options.prompt_cache_key = prompt_cache_key;
+
+                if let AnyAdapter::Mock(mock) = &provider.adapter {
+                    return mock.chat_with_tools(&model, &messages, None, &options);
+                }
+
+                let (path, body) = provider
+                    .adapter
+                    .build_request(&model, &messages, None, &options, false)?;
+                let per_request_headers = provider.adapter.extra_request_headers(&model, &options);
+                let response: serde_json::Value = provider
+                    .client
+                    .post_json(&path, &body, &per_request_headers)
+                    .await?;
+                provider.adapter.parse_response(&model, response)
+            }
+        })
+        .await
+    }
+
     /// Chat with native tool calling support (blocking)
     ///
     /// `model_id` is the wire-format model identifier; it is threaded

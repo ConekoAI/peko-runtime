@@ -139,15 +139,27 @@ impl AsyncRuntime for AsyncExecutorRuntime {
             .upgrade()
             .ok_or_else(|| anyhow!("ExtensionCore has been dropped; cannot spawn"))?;
 
-        // Look up the session key for *this* tool's owning agent
-        // (issue #68 — concurrent agents must not stamp each other's
-        // `parent_session_key`).
-        let session_key = match self.agent_id.as_deref() {
-            Some(agent_id) => core
-                .current_session_key(agent_id)
-                .unwrap_or_else(|| "unknown".to_string()),
-            None => "unknown".to_string(),
-        };
+        // Parent-session stamping, per call (ADR-061 follow-up): the
+        // request's `parent_session_id` — filled by `AsyncSpawnTool`
+        // from `ToolContext.session_id` — wins. It is the run id on the
+        // agent-loop path and the token-resolved node id (or the
+        // session-key string when nodeless) on the `ExecuteTool` path.
+        // The legacy session-key cell (keyed by this runtime's agent
+        // DID on the shared core, issue #68) is now only the fallback
+        // for ctx-less in-process dispatches — it is stale between
+        // runs and was never correct on the workflow path.
+        let session_key = request
+            .parent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                self.agent_id
+                    .as_deref()
+                    .and_then(|agent_id| core.current_session_key(agent_id))
+            })
+            .unwrap_or_else(|| "unknown".to_string());
 
         let config = AsyncToolConfig {
             timeout_secs: request.timeout_secs,

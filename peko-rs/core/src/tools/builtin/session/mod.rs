@@ -43,9 +43,11 @@
 //! is gone — the caller picks the destination slug explicitly.
 
 pub mod cache;
+pub mod caller_aware;
 pub mod tool;
 
 pub use cache::SessionCache;
+pub use caller_aware::CallerAwareSessionTool;
 pub use tool::SessionTool;
 
 // ─── DTOs (canonical home; root re-exports these) ─────────────────

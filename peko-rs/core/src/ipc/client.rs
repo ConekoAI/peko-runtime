@@ -116,6 +116,58 @@ impl DaemonClient {
         self.send_request(packet).await
     }
 
+    /// Execute a tool synchronously through the daemon, attributed to
+    /// the principal that owns `session_key` (ADR-061 phase 1). The
+    /// daemon resolves the principal server-side and derives grants and
+    /// active extensions from it — the wire carries neither. The reply
+    /// is a single `ResponsePacket::ToolExecuted` whose `success` flag
+    /// covers tool errors and capability-gate denials alike; the caller
+    /// inspects `success`/`content`/`result`/`truncated`.
+    ///
+    /// # Errors
+    /// Returns error if the request cannot be sent or the daemon
+    /// replies with a transport-level `Error` packet.
+    pub async fn execute_tool(
+        &self,
+        tool_name: impl Into<String>,
+        params: serde_json::Value,
+        session_key: impl Into<String>,
+        workspace: std::path::PathBuf,
+    ) -> anyhow::Result<ResponsePacket> {
+        self.execute_tool_with_token(tool_name, params, session_key, workspace, None)
+            .await
+    }
+
+    /// `execute_tool` + an optional workflow run token (ADR-061 phase
+    /// 2b): the `PEKO_RUN_TOKEN` a `Workflow` spawn injected into the
+    /// calling process. The daemon validates it against its in-memory
+    /// registry and requires it to name the same `session_key` /
+    /// principal; unknown, expired, or mismatched tokens are refused
+    /// with a transport-level `Error` packet.
+    ///
+    /// # Errors
+    /// Returns error if the request cannot be sent or the daemon
+    /// replies with a transport-level `Error` packet.
+    pub async fn execute_tool_with_token(
+        &self,
+        tool_name: impl Into<String>,
+        params: serde_json::Value,
+        session_key: impl Into<String>,
+        workspace: std::path::PathBuf,
+        run_token: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ExecuteTool {
+            request_id,
+            tool_name: tool_name.into(),
+            params,
+            session_key: session_key.into(),
+            workspace,
+            run_token,
+        };
+        self.request_response(packet).await
+    }
+
     /// Cancel an async task
     ///
     /// # Errors

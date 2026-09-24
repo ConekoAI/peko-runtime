@@ -830,6 +830,10 @@ struct ModelSpecWire {
     streaming: bool,
     thinking: String,
     json_mode: bool,
+    /// ADR-061 (D4): judgment-class model flag. Not settable via CLI
+    /// flags (spec fields are hand-edit-only in `models.toml`); shown
+    /// here so `peko model show --json` reflects the persisted entry.
+    decisions: bool,
     pricing: Option<PricingHintWire>,
 }
 
@@ -842,6 +846,7 @@ impl ModelSpecWire {
             streaming: s.streaming,
             thinking: thinking_wire(s.thinking).to_string(),
             json_mode: s.json_mode,
+            decisions: s.decisions,
             pricing: s.pricing.map(PricingHintWire::from_hint),
         }
     }
@@ -949,6 +954,7 @@ fn print_detail(e: &ModelConfig) {
             println!("      streaming:      {}", s.streaming);
             println!("      thinking:       {}", thinking_wire(s.thinking));
             println!("      json_mode:      {}", s.json_mode);
+            println!("      decisions:      {}", s.decisions);
             if let Some(p) = s.pricing {
                 println!(
                     "      pricing:        in ${}/Mtok, out ${}/Mtok",

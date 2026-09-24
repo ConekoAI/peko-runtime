@@ -40,9 +40,9 @@
 //!   `crate::agentic_loop::build_tool_definitions` and the
 //!   `list_tool_definitions_with_allowlist` filter in
 //!   `peko_core::extensions::framework::core::registry`).
-//! - **`skills` / `agents` ride the tail.** Both sections render in the
-//!   runtime-context message ([`PromptRenderer::render_runtime_context`]),
-//!   not the frozen system prompt, so agents/skills added to the
+//! - **`skills` / `agents` / `workflows` ride the tail.** These sections render
+//!   in the runtime-context message ([`PromptRenderer::render_runtime_context`]),
+//!   not the frozen system prompt, so agents/skills/workflows added to the
 //!   workspace appear on the very next iteration while `messages[0]`
 //!   stays byte-identical for the provider prefix cache. Per-section
 //!   change detection means the catalogs are only re-injected when the
@@ -298,17 +298,19 @@ impl PromptRenderer {
         state: &mut RuntimeContextState,
     ) -> Option<String> {
         // Parallel hook dispatch: the workspace-catalog sections
-        // (`identity`, `agents`, `skills`) and `SessionContextBuild` are
-        // independent, so fire them concurrently. Each `dispatch_text`
+        // (`identity`, `agents`, `skills`, `workflows`) and
+        // `SessionContextBuild` are independent, so fire them
+        // concurrently. Each `dispatch_text`
         // carries its own 2s timeout. The handlers cache their scans
         // (keyed on file-level `(mtime, len)` stats), so rendering every
         // iteration purely for the change compare is cheap. `identity`
         // soft-fails to empty when no handler is registered — the
         // section then simply doesn't ride.
-        let (identity, agents, skills, session_ctx) = tokio::join!(
+        let (identity, agents, skills, workflows, session_ctx) = tokio::join!(
             self.dispatch_text("identity", ctx),
             self.dispatch_text("agents", ctx),
             self.dispatch_text("skills", ctx),
+            self.dispatch_text("workflows", ctx),
             self.dispatch_session_context(ctx),
         );
 
@@ -369,6 +371,11 @@ impl PromptRenderer {
         }
         if let Some(section) =
             state.take_changed(SectionSlot::Skills, format_skills_section(&skills))
+        {
+            sections.push(section);
+        }
+        if let Some(section) =
+            state.take_changed(SectionSlot::Workflows, format_workflows_section(&workflows))
         {
             sections.push(section);
         }
@@ -542,6 +549,7 @@ enum SectionSlot {
     SessionContext,
     Agents,
     Skills,
+    Workflows,
 }
 
 /// ADR-052 D6: prompt-section names the renderer dispatches as
@@ -549,7 +557,7 @@ enum SectionSlot {
 /// are deduped away — a workspace hook binding e.g. "agents" augments
 /// the built-in catalog via registry aggregation and must not cause a
 /// second dispatch under the custom-section path.
-const BUILTIN_PROMPT_SECTIONS: [&str; 3] = ["identity", "agents", "skills"];
+const BUILTIN_PROMPT_SECTIONS: [&str; 4] = ["identity", "agents", "skills", "workflows"];
 
 impl SectionSlot {
     /// Human-readable section name used in the update/retraction
@@ -566,6 +574,7 @@ impl SectionSlot {
             SectionSlot::SessionContext => "session context",
             SectionSlot::Agents => "agents",
             SectionSlot::Skills => "skills",
+            SectionSlot::Workflows => "workflows",
         }
     }
 
@@ -606,6 +615,7 @@ pub struct RuntimeContextState {
     session_context: Option<String>,
     agents: Option<String>,
     skills: Option<String>,
+    workflows: Option<String>,
     /// ADR-052 D6: last injected raw render per custom (workspace-hook)
     /// prompt-section name. A missing key means "never injected this
     /// run" — the same `None` case as the fixed slots above.
@@ -643,6 +653,7 @@ impl RuntimeContextState {
             SectionSlot::SessionContext => &mut self.session_context,
             SectionSlot::Agents => &mut self.agents,
             SectionSlot::Skills => &mut self.skills,
+            SectionSlot::Workflows => &mut self.workflows,
         };
         take_changed_cell(cell, rendered, slot.label(), slot.notice_on_update())
     }
@@ -905,6 +916,22 @@ When delegating, choose the most appropriate agent from the list below. Each age
 <available_agents>
 {text}
 </available_agents>"
+    )
+}
+
+/// ADR-061 D1/D7: workspace workflows catalog. Rides the tail
+/// `<runtime-context>` message like the agents/skills catalogs.
+fn format_workflows_section(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    format!(
+        r"## Workflows
+Procedural scripts this principal has saved under `workflows/`. Run one with the `Workflow` tool (`path` = the listed file) instead of re-deriving the procedure turn by turn; a workflow can call tools back through the runtime with this principal's capabilities. When a task matches an existing workflow, prefer running it; when you repeat a procedure twice, consider writing it as a workflow.
+
+<available_workflows>
+{text}
+</available_workflows>"
     )
 }
 

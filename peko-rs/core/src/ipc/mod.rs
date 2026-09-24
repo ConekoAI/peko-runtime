@@ -32,6 +32,7 @@ pub(crate) mod handlers;
 pub mod packet;
 pub mod pipe_security;
 pub mod response_sink;
+pub mod run_tokens;
 pub(crate) mod send_response;
 pub mod server;
 pub mod stream;

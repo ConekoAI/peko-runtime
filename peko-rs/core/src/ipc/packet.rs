@@ -56,6 +56,35 @@ pub enum RequestPacket {
         workspace: PathBuf,
     },
 
+    /// Execute a tool synchronously with the calling principal's
+    /// capabilities (ADR-061 phase 1). The synchronous counterpart of
+    /// `AsyncSpawn`: same server-side attribution (the principal is
+    /// resolved from `session_key`, grants and active extensions are
+    /// derived from it server-side — never carried on the wire), but
+    /// the handler awaits the result and returns it as
+    /// `ResponsePacket::ToolExecuted` instead of a receipt. This is the
+    /// callback surface for agent-authored workflow processes
+    /// (`sdks/python/peko_workflow`).
+    ///
+    /// `run_token` (phase 2b, ADR-061 D6): the `PEKO_RUN_TOKEN` a
+    /// `Workflow` spawn injected into the calling process. When
+    /// present it must validate against the daemon's in-memory
+    /// registry AND name this packet's `session_key` / principal —
+    /// unknown, expired, or mismatched tokens fail closed. When
+    /// absent, the pre-2b local-transport trust applies unchanged.
+    #[serde(rename = "execute_tool")]
+    ExecuteTool {
+        request_id: u64,
+        tool_name: String,
+        params: serde_json::Value,
+        session_key: String,
+        workspace: PathBuf,
+        /// Optional workflow run token; additive in phase 2b (older
+        /// clients never send it, older daemons ignore unknown fields).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_token: Option<String>,
+    },
+
     /// Cancel an async task
     #[serde(rename = "async_cancel")]
     AsyncCancel { request_id: u64, task_id: String },
@@ -877,6 +906,7 @@ impl RequestPacket {
     pub fn request_id(&self) -> u64 {
         match self {
             Self::AsyncSpawn { request_id, .. }
+            | Self::ExecuteTool { request_id, .. }
             | Self::AsyncCancel { request_id, .. }
             | Self::Ping { request_id }
             | Self::Shutdown { request_id, .. }
@@ -1101,6 +1131,24 @@ pub enum ResponsePacket {
     AsyncReceipt {
         request_id: u64,
         receipt: crate::extensions::framework::async_exec::executor::AsyncTaskReceipt,
+    },
+
+    /// Synchronous tool-execution result (ADR-061 phase 1) — the reply
+    /// to `RequestPacket::ExecuteTool`. Carries the F37 funnel triplet
+    /// (`tool_result_from_hook`): `content` is the display string the
+    /// agentic loop would feed the model, `result` the structured
+    /// value, and `success` is false for tool errors AND
+    /// capability-gate denials alike (the fail-closed path surfaces as
+    /// data, not a transport error). Payloads that would exceed the
+    /// datagram budget arrive with `truncated: true`, `content` clipped
+    /// to fit (marker appended) and `result` dropped to null.
+    #[serde(rename = "tool_executed")]
+    ToolExecuted {
+        request_id: u64,
+        content: String,
+        result: serde_json::Value,
+        success: bool,
+        truncated: bool,
     },
 
     /// Final success/failure marker
@@ -1948,6 +1996,11 @@ pub struct ModelSpec {
     pub thinking: ModelThinkingMode,
     #[serde(default)]
     pub json_mode: bool,
+    /// ADR-061 (D4): judgment-class model flag. Read by the
+    /// `ModelCall` built-in's judgment-mode gate; the desktop does
+    /// not consume it today.
+    #[serde(default)]
+    pub decisions: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricingHint>,
 }
@@ -1965,6 +2018,7 @@ impl Default for ModelSpec {
             streaming: true,
             thinking: ModelThinkingMode::Disabled,
             json_mode: false,
+            decisions: false,
             pricing: None,
         }
     }
@@ -2348,6 +2402,7 @@ impl ResponsePacket {
         match self {
             Self::Text { request_id, .. }
             | Self::AsyncReceipt { request_id, .. }
+            | Self::ToolExecuted { request_id, .. }
             | Self::Done { request_id, .. }
             | Self::Error { request_id, .. }
             | Self::Pong { request_id, .. }
@@ -2427,6 +2482,7 @@ impl ResponsePacket {
         match self {
             Self::Text { .. } => "Text",
             Self::AsyncReceipt { .. } => "AsyncReceipt",
+            Self::ToolExecuted { .. } => "ToolExecuted",
             Self::Done { .. } => "Done",
             Self::Error { .. } => "Error",
             Self::Pong { .. } => "Pong",
@@ -2555,6 +2611,81 @@ mod tests {
                 assert_eq!(name, "helper");
                 assert_eq!(message, "Hello");
                 assert_eq!(override_model, Some("gpt-4o".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_execute_tool_roundtrip() {
+        // ADR-061 phase 1: the workflow callback packet mirrors the
+        // `AsyncSpawn` field set — never carries capabilities.
+        let req = RequestPacket::ExecuteTool {
+            request_id: 7,
+            tool_name: "Glob".to_string(),
+            params: serde_json::json!({"pattern": "*.rs"}),
+            session_key: "agent:researcher:cli:default".to_string(),
+            workspace: PathBuf::from("/tmp/workspace"),
+            run_token: None,
+        };
+
+        let bytes = req.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"execute_tool\""),
+            "expected `execute_tool` in serialized payload, got: {json}"
+        );
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExecuteTool {
+                request_id,
+                tool_name,
+                params,
+                session_key,
+                workspace,
+                run_token,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(tool_name, "Glob");
+                assert_eq!(params, serde_json::json!({"pattern": "*.rs"}));
+                assert_eq!(session_key, "agent:researcher:cli:default");
+                assert_eq!(workspace, PathBuf::from("/tmp/workspace"));
+                assert_eq!(run_token, None);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_tool_executed_roundtrip() {
+        let resp = ResponsePacket::ToolExecuted {
+            request_id: 7,
+            content: "matches: [\"a.rs\"]".to_string(),
+            result: serde_json::json!({"matches": ["a.rs"]}),
+            success: true,
+            truncated: false,
+        };
+
+        let bytes = resp.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"tool_executed\""),
+            "expected `tool_executed` in serialized payload, got: {json}"
+        );
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ToolExecuted {
+                request_id,
+                content,
+                result,
+                success,
+                truncated,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(content, "matches: [\"a.rs\"]");
+                assert_eq!(result, serde_json::json!({"matches": ["a.rs"]}));
+                assert!(success);
+                assert!(!truncated);
             }
             _ => panic!("Wrong variant"),
         }

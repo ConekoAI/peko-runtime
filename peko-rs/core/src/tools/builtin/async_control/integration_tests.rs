@@ -200,8 +200,64 @@ mod tests {
         assert_eq!(status["status"], "completed");
         assert_eq!(
             status["parent_session_key"], "session_under_test",
-            "set_session_key resolved the parent key from the core",
+            "no ctx: legacy session-key cell remains the fallback stamp",
         );
+    }
+
+    /// ADR-061 follow-up: `ToolContext.session_id` stamps the parent
+    /// session PER CALL — the request's `parent_session_id` beats the
+    /// legacy session-key cell.
+    #[tokio::test]
+    async fn test_spawn_stamps_ctx_session_id_over_cell() {
+        let rig = setup_with_stop(vec!["tool:stub_tool".to_string()], false).await;
+        // The cell holds the legacy stamp; the ctx-carried id must win.
+        let receipt = rig
+            .spawn
+            .execute_with_context(
+                serde_json::json!({"tool": "stub_tool", "params": {}}),
+                &peko_tools_core::ToolContext::default_for_tool("AsyncSpawn")
+                    .with_session_id("ctx-session-A"),
+            )
+            .await
+            .expect("spawn with ctx");
+        let task_id = receipt["task_id"].as_str().expect("task_id");
+        let status = poll_terminal(&rig, task_id, "completed").await;
+        assert_eq!(
+            status["parent_session_key"], "ctx-session-A",
+            "ctx session id must stamp, not the cell value"
+        );
+    }
+
+    /// The staleness regression pin: two sequential spawns carrying
+    /// different ctx ids each stamp their own — nothing is sticky
+    /// between runs the way the session-key cell was.
+    #[tokio::test]
+    async fn test_spawn_sequential_ctx_ids_stamp_independently() {
+        let rig = setup_with_stop(vec!["tool:stub_tool".to_string()], false).await;
+        let mut task_ids = Vec::new();
+        for id in ["ctx-run-1", "ctx-run-2"] {
+            let receipt = rig
+                .spawn
+                .execute_with_context(
+                    serde_json::json!({"tool": "stub_tool", "params": {}}),
+                    &peko_tools_core::ToolContext::default_for_tool("AsyncSpawn")
+                        .with_session_id(id),
+                )
+                .await
+                .expect("spawn with ctx");
+            task_ids.push((
+                receipt["task_id"].as_str().expect("task_id").to_string(),
+                id,
+            ));
+        }
+        for (task_id, expected) in &task_ids {
+            let status = poll_terminal(&rig, task_id, "completed").await;
+            assert_eq!(
+                status["parent_session_key"],
+                serde_json::json!(expected),
+                "task {task_id} must carry its own caller's stamp"
+            );
+        }
     }
 
     /// Pin: `block:false` returns immediately. `block:true` with a

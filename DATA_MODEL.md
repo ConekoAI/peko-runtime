@@ -32,6 +32,9 @@ This document defines every on-disk and in-memory data format used by the Peko r
 11. [Markdown Files](#11-markdown-files)
 12. [mcp.json — MCP Server Config](#12-mcpjson--mcp-server-config)
 13. [Tool Protocol — stdin/stdout](#13-tool-protocol--stdinstdout)
+   13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
+   13¾. [`ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)](#13¾-modelcall--one-shot-inference--the-judgment-wire-adr-061-phase-2a)
+   13⅞. [`Workflow` runner + the `workflows/` directory (ADR-061 phase 2b)](#13⅞-workflow-runner--the-workflows-directory-adr-061-phase-2b)
 14. [Extension Manifest](#14-extension-manifest)
 15. [Type Reference](#15-type-reference)
 16. [Changelog](#16-changelog)
@@ -2472,6 +2475,273 @@ A tool may include a `<toolname>.json` sidecar that describes its schema. The ru
 ```
 
 The `parameters` schema is JSON Schema draft-07.
+
+---
+
+## 13½. IPC — `ExecuteTool` Packet (ADR-061 phase 1)
+
+The daemon's IPC protocol is one JSON datagram per message over a unix socket
+(`$PEKO_HOME/run/daemon.sock` or `~/.peko/run/daemon.sock`, override
+`PEKO_DAEMON_SOCK`), Windows named pipe, or loopback-UDP fallback; packets are
+capped at `MAX_PACKET_SIZE = 60 000` bytes. `ExecuteTool` is the synchronous
+tool-execution variant — the callback surface for agent-authored workflow
+processes (`sdks/python/peko_workflow`), mirroring `async_spawn`'s
+server-side attribution.
+
+**Request** (`RequestPacket::ExecuteTool`):
+
+```json
+{
+  "type":        "execute_tool",
+  "request_id":  1,
+  "tool_name":   "Glob",
+  "params":      { "pattern": "*.py" },
+  "session_key": "agent:researcher:cli:default",
+  "workspace":   "/path/to/workspace",
+  "run_token":   "optional — ADR-061 phase 2b"
+}
+```
+
+The wire carries *where the call lands* (`session_key`), never *who the caller
+claims to be* (ADR-057): the daemon parses the key, resolves the owning
+principal server-side, and derives capability grants and active extensions
+from it — grants in the packet are never accepted. An unknown key fails closed
+to deny-all.
+
+**`run_token`** (phase 2b, ADR-061 D6): when present, the token must validate
+against the daemon's in-memory `RunTokenRegistry` (unknown or expired fails
+closed) AND its recorded `session_key` / `principal_name` must match the
+packet's `session_key` — a mismatch fails closed. Validation failure answers
+with a transport-level `{"type": "error", ...}` (not a `success: false`
+result). The token only *authenticates*: grants still derive from the
+session key, never from the token. Tokens are minted by the `Workflow` tool
+at spawn (32 random bytes, base64url, TTL = run timeout + 60 s) and injected
+into the workflow process as `PEKO_RUN_TOKEN`; the registry is in-memory and
+dies with the daemon. When `run_token` is absent, the pre-2b local-transport
+trust applies unchanged.
+
+**Caller-awareness** (in-memory record, *not* a wire change): each registry
+entry also carries `caller_session_id` — the canonical session UUID of the
+tree node the `Workflow` tool was invoked from (`None` for no-context
+spawns). On a validated call the handler threads it into
+`ToolContext.session_id` in place of the session-key string, so
+tree-relative tools (`Agent`, the session layer's ownership guards) classify
+the workflow caller as that node — spawns parent under it, ownership guards
+see its ancestors. Tokens without a node (and tokenless calls) keep
+threading the session-key string — the dangling, fail-closed behavior. A
+node id whose session has since been deleted degrades to dangling at the
+session layer, which owns that decision. The `session` builtin itself is
+caller-aware on this path (`CallerAwareSessionTool`, registered system-scope
+at daemon start): it builds the per-call `SessionManagerRuntime` from the
+threaded ctx — `status`/`history`/`list` and the ownership guards see the
+calling node; tokenless or no-node calls degrade to dangling exactly as a
+session with missing metadata does on the agent path.
+
+**Response** (`ResponsePacket::ToolExecuted`) — the F37 funnel's
+`tool_result_from_hook` triplet:
+
+```json
+{
+  "type":       "tool_executed",
+  "request_id": 1,
+  "content":    "matches: [\"a.py\"]",
+  "result":     { "matches": ["a.py"] },
+  "success":    true,
+  "truncated":  false
+}
+```
+
+- `content` — the display string the agentic loop would feed the model.
+- `result` — the structured value (`null` when truncated).
+- `success` — `false` for tool errors **and** capability-gate denials alike
+  (the fail-closed path surfaces as data, not a transport error; the denial
+  text in `content` reads `Error: Tool '<name>' is currently disabled…`).
+- `truncated` — when the serialized payload would exceed the datagram budget,
+  `result` is dropped to `null` and `content` is clipped until the packet
+  fits, suffixed with `[truncated by peko: result exceeded the IPC packet
+  budget]`. (ADR-061's spill-to-workspace-file is a phase-2 refinement.)
+
+A funnel-internal failure instead answers `{"type": "error", "request_id": N,
+"message": "…"}`.
+
+---
+
+## 13¾. `ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)
+
+`ModelCall` is a built-in tool (gated by `tool:ModelCall`; the starter bundle's
+`tool:*` covers it) providing **one-shot inference: no session persistence, no
+tool-calling loop, no streaming**. Every call is attributed server-side to the
+calling principal (from `ToolContext.principal_name`, never from the params),
+refuses to run without one, and charges that principal's quota meter from
+provider-reported usage after the call.
+
+**Mode selection** — exactly one per call:
+
+- **Completion** — `prompt` present. One non-streaming chat completion with
+  `tools: None`.
+- **Judgment** — `state` + `questions` present. POSTs to the resolved entry's
+  decision API (below). `system` / `max_tokens` / `temperature` are rejected in
+  this mode.
+
+```json
+{
+  "model":       "string? (catalog id; defaults to the principal's preferred_model_id)",
+  "prompt":      "string?  (completion mode)",
+  "system":      "string?  (completion mode)",
+  "max_tokens":  "integer? (completion mode)",
+  "temperature": "number?  (completion mode)",
+  "state":       "string | object?  (judgment mode)",
+  "questions":   "object?  (judgment mode — map of question key → spec)"
+}
+```
+
+Completion result:
+
+```json
+{ "mode": "completion", "text": "…", "model": "<catalog id>",
+  "usage": { "input": 12, "output": 40, "total": 52 } }
+```
+
+### `ModelSpec.decisions` (models.toml)
+
+Judgment mode is gated on a catalog opt-in flag so an ordinary chat entry can
+never be mistaken for a decision API:
+
+```toml
+# ~/.peko/models.toml
+[entries.jev]
+display_name = "Jev"
+api_format   = "openai_completions"      # inert for judgment mode
+base_url     = "https://api.example.com" # POSTs go to {base_url}/v1/evaluate
+model_id     = "jev-1"
+requires_key = true
+credential_id = "jev"                    # vault credential, as for chat models
+enabled      = true
+
+[entries.jev.spec]
+decisions = true                         # ← the flag; serde-default false
+pricing = { input_per_million = 0.042 }  # judgment APIs bill input only
+```
+
+Like the other `ModelSpec` fields, `decisions` is **hand-edit-only** — no
+`peko model add` / `peko model edit` flag sets it (`edit` covers `--note`
+only). It surfaces read-only via `peko model show` (`spec.decisions`),
+`--json`, and the `model_list` tool. Old `models.toml` files load unchanged
+(`#[serde(default)]` ⇒ `false`).
+
+### Judgment wire shape
+
+Request — `POST {base_url}/v1/evaluate` with `Authorization: Bearer <credential>`
+(the vault credential resolved through the same chain as chat providers; the
+header is omitted when the entry has `requires_key = false`). `questions` is
+passed through verbatim:
+
+```json
+{
+  "model": "jev-1",
+  "state": "deploy failed twice",
+  "questions": {
+    "continueWorking": { "type": "boolean", "instructions": "Is there pending work?" },
+    "priority":        { "type": "choice", "options": ["high", "low"], "instructions": "…" },
+    "severity":        { "type": "score", "min": 1, "max": 5, "instructions": "…" }
+  }
+}
+```
+
+Response — the runtime requires a top-level `answers` object and passes each
+per-question answer through **verbatim** (`probability` rides along when
+present); the choice/score response fields are intentionally not pinned.
+An optional `usage` block (`input_tokens` / `prompt_tokens` / `input`,
+`output_tokens` / `completion_tokens` / `output`) is metered when present:
+
+```json
+{
+  "answers": {
+    "continueWorking": { "answer": true,  "probability": 0.92 },
+    "priority":        { "answer": "high", "probability": 0.70 },
+    "severity":        { "answer": 4,      "probability": 0.61 }
+  },
+  "usage": { "input_tokens": 1200 }
+}
+```
+
+Judgment result returned to the caller:
+
+```json
+{ "mode": "judgment", "model": "jev",
+  "answers": { "continueWorking": { "answer": true, "probability": 0.92 } },
+  "usage": { "input": 1200, "output": 0, "total": 1200 } }
+```
+
+(`usage` is omitted from the result when the response carried none; in that
+case only the meter's request counter advances — token counts are never
+synthesized from request params.)
+
+---
+
+## 13⅞. `Workflow` runner + the `workflows/` directory (ADR-061 phase 2b)
+
+Workflows are **agent-authored Python files at `<workspace>/workflows/*.py`**
+(D1) — procedural memory following ADR-050's presence-equals-visibility rule:
+a dropped file appears in the per-turn `workflows` prompt catalog (the tail
+`<runtime-context>` message) on the next iteration — one
+`- {name}: {first docstring line} (workflows/{name}.py)` line per file,
+sorted, mtime-keyed cache, 8 KB cap with a list-the-directory pointer on
+overflow. No CLI tree, no restart.
+
+The `Workflow` built-in (gated by `tool:Workflow`) runs one as a subprocess:
+
+```json
+{ "path": "triage.py", "args": ["--fast"], "timeout_ms": 300000 }
+```
+
+- `path` is relative to `<workspace>/workflows/`; it is canonicalized and
+  anything escaping that directory (absolute paths, `..`, symlink escapes)
+  is refused, as are non-`.py` targets and missing files. The interpreter is
+  `python3` on `PATH`.
+- `timeout_ms` defaults to 300 000 and is capped at 3 600 000; on timeout or
+  abort the child process is killed.
+- stdout/stderr are captured as bounded TAILs (16 KiB each); a truncated
+  stream is prepended with `[… truncated by peko: showing the last 16 KiB …]`
+  and carries `stdout_truncated` / `stderr_truncated: true`.
+
+Result:
+
+```json
+{ "workflow": "triage.py", "success": true, "timed_out": false,
+  "exit_code": 0, "duration_ms": 812,
+  "stdout": "…", "stderr": "",
+  "stdout_truncated": false, "stderr_truncated": false }
+```
+
+(`exit_code` is `null` when the process was killed by signal/timeout;
+`timed_out: true` marks the timeout path, which returns partial output as
+data rather than an error.)
+
+**Spawn-time environment** (D6): the child gets a *minimal* env — never the
+daemon's (secrets must not leak). Only `PATH` / `HOME` / locale / temp-dir /
+Windows platform vars pass through, plus the identity set:
+
+| Variable | Value |
+|---|---|
+| `PEKO_DAEMON_SOCK` | the daemon's unix socket (`$PEKO_HOME/run/daemon.sock`) |
+| `PEKO_WORKSPACE` | the calling principal's workspace path |
+| `PEKO_PRINCIPAL_ID` | the calling principal's stable id |
+| `PEKO_SESSION_KEY` | the calling session's attribution key (below) |
+| `PEKO_RUN_TOKEN` | freshly minted run token (see §13½ `run_token`) |
+| `PEKO_WORKFLOW_DEPTH` | nesting depth of the spawned process (agent-spawned = 1) |
+
+`PEKO_SESSION_KEY` is constructed server-side so that
+`parse_session_key(key).agent` is the calling principal's name — the segment
+`ExecuteTool` attribution resolves from. The agent-loop path (where the tool
+sees the session UUID) yields `agent:{principal}:workflow:{session_uuid}`;
+a nested workflow→`ExecuteTool` path reuses the parent's key verbatim.
+
+**Recursion guard** (D8): a call at `PEKO_WORKFLOW_DEPTH >= 2` is refused
+("a workflow may not spawn itself"). On the `ExecuteTool` path the depth is
+server-derived — the handler strips any client-supplied `_workflow_depth`
+param and stamps the validated run token's recorded depth instead — so the
+guard cannot be spoofed from the wire.
 
 ---
 

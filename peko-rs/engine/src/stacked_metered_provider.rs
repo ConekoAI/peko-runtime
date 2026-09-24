@@ -291,7 +291,11 @@ impl StackedMeteredProvider {
 /// "all-billed-input-tokens" number and skip a separate
 /// cache/reasoning rate. Same assumption the meter already makes
 /// for `input_tokens` vs `output_tokens` accounting.
-fn compute_cost_usd(
+///
+/// `pub` since ADR-061 phase 2a: the `ModelCall` built-in charges
+/// the calling principal's meter directly (no `QuotaScope` wrapper)
+/// and needs the same formula for its post-call cost fold.
+pub fn compute_cost_usd(
     pricing: Option<peko_providers::spec::PricingHint>,
     input_tokens: u64,
     output_tokens: u64,

@@ -135,14 +135,14 @@ rather than a passive request handler.
   layer is intentionally id-shape-agnostic: engine-internal ids are
   opaque UUIDs (sprint 6 commit 1) and peer identity lives at the
   channel layer, not in the session id.
-- `session list` defaults to the **caller's subtree** (not the whole
-  principal's tree). Privileged trunk callers opt into a wider view
-  with `scope: "principal"`; non-privileged callers who ask for the
-  wider scope get ownership-clamped to their subtree with a structured
-  warning. The `path` parameter scopes further to any subtree the
-  caller has ownership access to.
-- **Subtree scoping**: a node manages only its own subtree — never
-  siblings, never ancestors, never the protected `root:*` family.
+- `session list` enumerates the principal's **whole store** for every
+  caller (filters: `peer`, `agent_id`, `active_minutes`,
+  `include_archived`) — reads are not subtree-gated. The subtree rule
+  survives only in the ownership guards for destructive ops
+  (delete/move/rename), per `session/ownership.rs`.
+- **Subtree scoping (destructive ops only)**: for delete/move/rename, a
+  spawned node manages only its own subtree — never siblings, never
+  ancestors, never the protected `root:*` family.
 - **Standing children** are declared in `principal.toml` `[children]`,
   ensured at root setup, and attach by name on `Agent new` rather than
   minting a fresh UUID.

@@ -4,6 +4,183 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Async* per-call parent-session stamping (ADR-061 follow-up, 2026-09-24)
+
+- **`AsyncSpawn` stamps the parent session per call.** `SpawnRequest` gains
+  `parent_session_id: Option<String>`, filled by `AsyncSpawnTool` from
+  `ToolContext.session_id` — the run id on the agent-loop path, the
+  token-resolved node id (or session-key string when nodeless) on the
+  `ExecuteTool` path. `AsyncExecutorRuntime::spawn` stamps the task record's
+  `parent_session_key` (and therefore the completion-event delivery inbox)
+  from the request first; the legacy session-key cell (keyed by agent DID,
+  stale between runs) remains only as the fallback for ctx-less in-process
+  dispatches. Async* lookups/status/output read the task record, so they
+  inherit the per-call stamp.
+
+### Dead session-key machinery removed (ADR-061 follow-up, 2026-09-24)
+
+- Removed `derive_session_key`, `SessionScope`, `SessionKeyContext`,
+  `ChatType`, and `scope_from_key` from `peko_session::key` — no production
+  callers remained (keys are minted by `derive_base_session_key` and UUID
+  session ids). `parse_session_key`, the v2 peer/overlay helpers, and the
+  key/filename sanitizers stay. `API_SURFACE.md` marks the removals.
+
+### Caller-aware `session` tool on the `ExecuteTool` path (ADR-061, 2026-09-23)
+
+- **New `CallerAwareSessionTool`** (`tools::builtin::session::caller_aware`)
+  — the `session` builtin with per-call caller resolution. Daemon mode
+  (registered system-scope in `daemon/state` next to `ModelCall`/`Workflow`)
+  resolves the principal, sessions dir, run-permit registry, and quota meter
+  per call from `ToolContext` + `PrincipalManager`, seeding a fresh
+  `SessionManagerRuntime` whose caller cell is `ctx.session_id` — the
+  token-resolved node id on the `ExecuteTool` path. Agent mode replaces the
+  per-agent construction (identical behavior on the loop path — the
+  ctx-carried id IS the run id the shared cell holds; ctx-less dispatches
+  delegate to the shared runtime unchanged). Previously
+  `ExecuteTool("session")` only resolved for principals whose agent had
+  booted, and then classified against the agent's *last* run (stale cell);
+  unbooted principals got "tool not available".
+- `SessionManagerRuntime` gains `Clone` + `with_current_session(id)` — a
+  shallow clone with a fresh per-call caller cell (port trait untouched).
+- A workflow callback with a node-carrying run token now gets the calling
+  node's `session status` (parented under the trunk), whole-store `list`
+  scoped to the right principal, and working ownership guards; tokenless /
+  no-node calls keep the dangling fail-closed behavior.
+
+### Caller-aware workflow runs (ADR-061, 2026-09-23)
+
+- **Run tokens now carry the calling session node.** `RunTokenEntry` gains
+  `caller_session_id: Option<String>` — the canonical session UUID of the
+  tree node the `Workflow` tool was invoked from (mint path detects a bare
+  UUID-shaped `ToolContext.session_id` via `SessionId::parse`; key-shaped
+  or absent context stores `None`). On a validated `ExecuteTool` call the
+  handler threads that node id into `ToolContext.session_id` instead of
+  the `agent:{principal}:workflow:{…}` key string, so tree-relative tools
+  (`Agent`, the session layer's ownership guards) classify the workflow
+  caller as that node: `Agent new` parents under the caller, ownership
+  guards see its ancestors, cron jobs created from a workflow fire into
+  the caller's origin session. Tokens without a node (and tokenless
+  calls) keep the dangling fail-closed behavior, and a node id whose
+  session was since deleted degrades to dangling at the session layer —
+  no new privilege logic. Nested `Workflow` calls inherit the node
+  automatically (their `ctx.session_id` is already the resolved id). The
+  entry is in-memory only — not a wire change.
+
+### ADR-061 phase 2b — `Workflow` runner, run tokens, `workflows/` catalog (2026-09-23)
+
+- **New built-in tool: `Workflow`** (gated by `tool:Workflow`) — runs an
+  agent-authored Python file from `<workspace>/workflows/` as a subprocess
+  with the caller's identity injected (ADR-061 D6/D7). `path` is
+  canonicalized inside `workflows/` (absolute/`..`/symlink escapes,
+  non-`.py`, and missing files are refused); the interpreter is `python3`
+  on `PATH`. The child gets a minimal env (no daemon-env inheritance —
+  secrets never leak) with `PEKO_DAEMON_SOCK`, `PEKO_WORKSPACE`,
+  `PEKO_PRINCIPAL_ID`, `PEKO_SESSION_KEY`, `PEKO_RUN_TOKEN`, and
+  `PEKO_WORKFLOW_DEPTH` injected. stdout/stderr come back as bounded 16 KiB
+  tails with a truncation marker; `timeout_ms` defaults to 300 000 (hard
+  cap 3 600 000) and timeout/abort kills the child. Schedulable as-is via
+  `CronCreate` → `SpawnTool` → `Workflow` (D7).
+- **`PEKO_RUN_TOKEN` authentication for `ExecuteTool`** (D6): an in-memory
+  `RunTokenRegistry` on the daemon (lazy sweep, dies with the process)
+  hands each spawned workflow a 32-byte base64url token (TTL = run timeout
+  + 60 s). `RequestPacket::ExecuteTool` gains an optional additive
+  `run_token` field; when present it must validate and match the packet's
+  `session_key`/principal (unknown/expired/mismatched → transport-level
+  error, fail closed). The token only *authenticates* — grants still
+  derive server-side from the session key. `DaemonClient` gains
+  `execute_tool_with_token`; the Python SDK reads `PEKO_RUN_TOKEN` and
+  echoes it on every request.
+- **Recursion guard** (D8): a workflow at depth ≥ 2 cannot spawn another
+  workflow. Depth is server-derived on the IPC path — the `ExecuteTool`
+  handler strips any client-supplied `_workflow_depth` and stamps the
+  validated token's recorded depth — so it cannot be spoofed from the wire.
+- **`workflows/` prompt catalog** (D1): `WorkspaceWorkflowsPromptHandler`
+  scans `<workspace>/workflows/*.py` (name + first docstring line, sorted,
+  mtime-keyed cache, 8 KB cap with a list-the-directory pointer) and rides
+  the tail `<runtime-context>` message — presence = visibility, no restart.
+  The renderer gains the `workflows` built-in section slot.
+- The handler now threads the packet's `session_key` into the funnel as
+  `ToolContext.session_id`, so a nested workflow's callbacks attribute to
+  the parent workflow's session key verbatim.
+- Wire shapes and the env contract are documented in `DATA_MODEL.md`
+  §13½ + §13⅞; the tool is catalogued in `docs/architecture/builtin-tools.md`.
+
+### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
+
+- **New built-in tool: `ModelCall`** — the one-shot inference primitive of
+  [ADR-061](docs/architecture/adr/ADR-061-agent-authored-workflows.md) D3:
+  no session persistence, no tool-calling loop, no streaming. Two modes,
+  exactly one per call: completion (`{model?, prompt, system?, max_tokens?,
+  temperature?}` → one non-streaming chat completion with `tools: None` →
+  `{text, model, usage}`) and judgment (`{model?, state, questions}` →
+  `POST {base_url}/v1/evaluate` on the resolved catalog entry → typed
+  `answers` passed through verbatim, `probability` included when present).
+  Model resolution reuses `LlmResolver` precedence (`model` param = explicit
+  override, else the calling principal's `preferred_model_id`); credentials
+  come from the same vault chain as chat providers.
+- **Server-side attribution + metering.** The calling principal is derived
+  from `ToolContext.principal_name` (never from tool params); calls without
+  a resolvable principal are refused. Completion mode applies the subagent
+  `cost_per_call_max` pre-flight (4K-in + 1K-out projection against the
+  entry's `PricingHint`) before any traffic; both modes charge the
+  principal's `QuotaMeter` after the call from provider-reported usage
+  (never request params), folding USD cost via the shared
+  `compute_cost_usd` so `budget_per_cycle` applies.
+- **`ModelSpec.decisions: bool`** (serde-default `false`) — the judgment-
+  class opt-in on catalog entries (ADR-061 D4). Hand-edit-only in
+  `models.toml` like the other spec fields (`peko model edit` covers
+  `--note` only); surfaced read-only via `peko model show`, `--json`, the
+  IPC `ModelSummary` mirror, and the `model_list` tool. A judgment-class
+  model is added with `peko model add`, described in `note`, and
+  discovered via `model_list` — no special provider plumbing; the
+  chat-shaped `ApiAdapter` contract is untouched.
+- **Registration**: `daemon::state` registers `ModelCall` once on the
+  shared `ExtensionCore` (system scope) after the `PrincipalManager` is
+  built — the tool holds `Weak<PrincipalManager>` for meter/default-model
+  resolution, so it cannot be part of `ToolRuntime::register_builtins`.
+  Both the agentic loop and the phase-1 `ExecuteTool` IPC path reach it
+  through the F37 funnel; the `ExecuteTool` handler now threads the
+  server-resolved principal id/name through
+  `ToolRuntime::execute_tool_full_with_workspace` (two new optional
+  parameters) so the tool sees the same attribution on both paths.
+  Gated by `tool:ModelCall`; the starter bundle's `tool:*` covers it.
+- **New public API**: `Provider::chat_response_with_options`
+  (one-shot, `tools: None`, caller-owned `ChatOptions`),
+  `LlmResolver::resolve_api_key` (was private), and
+  `peko_engine::compute_cost_usd` (was private).
+- Wire shapes documented in `DATA_MODEL.md` §13¾; the tool is catalogued
+  in `docs/architecture/builtin-tools.md`.
+
+### ADR-061 phase 1 — `ExecuteTool` IPC for agent-authored workflows (2026-09-22)
+
+- **New IPC variant: `RequestPacket::ExecuteTool`** — synchronous tool
+  execution for external (workflow) processes, the attribution-path spike of
+  [ADR-061](docs/architecture/adr/ADR-061-agent-authored-workflows.md).
+  Fields mirror `AsyncSpawn` (`request_id`, `tool_name`, `params`,
+  `session_key`, `workspace`); the reply is `ResponsePacket::ToolExecuted`
+  carrying the F37 funnel's `(content, result, success)` triplet plus a
+  `truncated` flag. The handler shares `AsyncSpawn`'s attribution path (now
+  factored as `ToolHandler::resolve_session_grants`): the principal is
+  resolved server-side from `session_key`, grants and active extensions are
+  derived from it — never from the packet — and resolution failure fails
+  closed to deny-all. Gate denials and tool errors arrive as
+  `success: false` data, not transport errors.
+- **Datagram-budget truncation.** A `ToolExecuted` payload that would exceed
+  `MAX_PACKET_SIZE` is clipped (`content` halved until it fits, marker
+  appended, `result` dropped to `null`, `truncated: true`) instead of
+  failing serialization. Spill-to-workspace-file (ADR-061 D2) is a phase-2
+  refinement.
+- **`ToolRuntime::execute_tool_full_with_workspace`** — the triplet-returning
+  sibling of `execute_tool_with_workspace` (which now delegates to it).
+- **`DaemonClient::execute_tool`** — single-request/response client method
+  mirroring `spawn_async_task`'s structure.
+- **New Python SDK: `sdks/python/peko_workflow`** (stdlib-only) —
+  `peko_workflow.tools.call(name, **params)` over the daemon's unix-datagram
+  IPC, reading `PEKO_DAEMON_SOCK` / `PEKO_SESSION_KEY` / `PEKO_WORKSPACE`.
+  macOS/Linux only for the spike; Windows named pipe is a TODO.
+- Wire shape documented in `DATA_MODEL.md` §13½; handler-level attribution
+  tests pin the resolve / fail-closed / gate-denied paths.
+
 ### Skills as plain files — guidance doc, traversal fix, dead catalog removal (2026-09-18)
 
 - **New doc: `docs/architecture/SKILLS.md`** — the canonical skills

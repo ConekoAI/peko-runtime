@@ -705,23 +705,15 @@ pub struct SessionContext {
 
 Lightweight routing metadata for a resolved session. For actual session operations, use the `SessionHandle` obtained from `SessionManager::resolve_session`.
 
-#### `session::key::SessionKeyContext`
+#### `session::key::SessionKeyContext` (REMOVED 2026-09-24)
 
-**Status:** ACTIVE
-
-```rust
-pub struct SessionKeyContext {
-    pub channel: Option<String>,
-    pub sender_id: Option<String>,
-    pub channel_id: Option<String>,
-    pub account_id: Option<String>,
-    pub thread_id: Option<String>,
-    pub web_token: Option<String>,
-    pub chat_type: ChatType,
-}
-```
-
-Context for deriving semantic session keys. Not to be confused with the runtime `SessionContext`.
+**Status:** ❌ REMOVED (ADR-061 follow-up)
+**Also removed:** `derive_session_key`, `SessionScope`, `ChatType`,
+`scope_from_key` — the legacy OpenClaw derivation machinery had no
+production callers left. Session keys are minted by
+`derive_base_session_key` (peer routing) and UUID session ids; parsing
+(`parse_session_key`, v2 peer/overlay helpers) and the filename/key
+sanitizers remain in `peko_session::key`.
 
 #### `agent::context::AgentContext` (REMOVED in 0.1.0)
 
@@ -879,8 +871,9 @@ peer DM channels now. Deleted/changed public items:
 // SessionContext → ExecutionContext
 pub type SessionContext = ExecutionContext;
 
-// SessionContext (key module) → SessionKeyContext  
-pub type SessionContext = SessionKeyContext;
+// SessionContext (key module) → SessionKeyContext  — RETIRED 2026-09-24:
+// `SessionKeyContext` (and the OpenClaw derivation machinery around it)
+// was removed with no production callers; the alias no longer exists.
 ```
 
 ### PEKO Sprint 5 (2026-08-20) — slug-path addressing on the LLM-facing surface
@@ -1073,6 +1066,57 @@ New/changed public items:
 | `TunnelChannelPort::is_remote_member` | `tunnel::tunnel_channel_port` | ✅ New | Delegate to `ChannelStore::is_remote_member`; the dispatcher gates `did:key`-authored events on it (membership claims are now signature-backed) |
 | Inbound `TunnelChannelEvent` / `TunnelChannelInvite` handlers | `tunnel::dispatcher` | ⚠️ Changed | Verify the runtime JWS + payload/envelope field consistency, then the D2 author gate: `did:key` authors need a valid author signature + remote membership (events) or `creator_did == source_principal_did` (invites); non-`did:key` authors stay runtime-vouched |
 | `VaultPrincipalSigningKeys` | `daemon::state` | ✅ New (crate-internal) | Production `PrincipalSigningKeys` impl: DID lookup via `PrincipalManager`, key load from the vault's `principal-identity` namespace, per-DID cache |
+
+### ADR-061 phase 1 — `ExecuteTool` IPC (2026-09-22)
+
+Branch `feat/agent-workflows`. Synchronous, attributed tool execution for
+external workflow processes: the daemon resolves the principal from
+`session_key` server-side, derives grants/extensions from it (never from the
+wire, fail-closed to deny-all), and executes through the F37 funnel.
+Wire shape documented in `DATA_MODEL.md` §13½. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `RequestPacket::ExecuteTool` (`execute_tool`) | `ipc::packet` | ✅ New | `{request_id, tool_name, params, session_key, workspace}` — mirrors `AsyncSpawn` |
+| `ResponsePacket::ToolExecuted` (`tool_executed`) | `ipc::packet` | ✅ New | `{request_id, content, result, success, truncated}` — the funnel's `(display, json, success)` triplet + datagram-budget truncation flag |
+| `DaemonClient::execute_tool` | `ipc::client` | ✅ New | Single request/response call mirroring `spawn_async_task`'s structure |
+| `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ New | Triplet-returning execution variant; `execute_tool_with_workspace` now delegates to it |
+| `ToolHandler::resolve_session_grants` | `ipc::handlers::tool` (crate-internal) | ✅ New | The `AsyncSpawn`/`ExecuteTool` shared attribution path |
+| `peko_workflow` Python SDK (`tools.call`) | `sdks/python/peko_workflow` | ✅ New | Stdlib-only unix-socket client for workflow processes |
+
+### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
+
+Branch `feat/agent-workflows`. One-shot, sessionless inference as a built-in
+tool (completion + judgment modes), metered against the calling principal.
+Wire shapes documented in `DATA_MODEL.md` §13¾. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ModelCallTool` / `MODEL_CALL_TOOL_NAME` | `tools::builtin::model_call` | ✅ New | The `ModelCall` built-in (`tool:ModelCall` gate); holds `Weak<PrincipalManager>` for server-side meter + default-model resolution |
+| `ModelSpec.decisions` | `peko_providers::spec` | ✅ Extended | Judgment-class opt-in flag (serde-default `false`, hand-edit `models.toml`); mirrored onto IPC `packet::ModelSpec` + the `model_list` projection |
+| `LlmResolver::resolve_api_key` | `peko_providers::resolver` | ✅ Visibility (was private) | Credential resolution for judgment mode — same chain `build_provider` uses |
+| `Provider::chat_response_with_options` | `peko_providers::core` | ✅ New | One-shot chat completion with caller-owned `ChatOptions` and `tools: None` on the wire |
+| `compute_cost_usd` | `peko_engine::stacked_metered_provider` (re-exported `peko_engine`) | ✅ Visibility (was private) | Shared PricingHint → USD formula for the tool's post-call charge |
+| `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `principal_id` / `principal_name` params so `ExecuteTool` carries server-resolved attribution into the funnel |
+
+### ADR-061 phase 2b — `Workflow` runner + run tokens (2026-09-23)
+
+Branch `feat/agent-workflows`. Agent-authored Python workflows
+(`<workspace>/workflows/*.py`) run as subprocesses with PEKO identity env
+injected; callbacks authenticate with a per-spawn run token. Wire shapes in
+`DATA_MODEL.md` §13½ + §13⅞. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `WorkflowTool` / `WORKFLOW_TOOL_NAME` / `MAX_WORKFLOW_DEPTH` | `tools::builtin::workflow` | ✅ New | The `Workflow` built-in (`tool:Workflow` gate); `Weak<PrincipalManager>` + `Arc<RunTokenRegistry>` handles |
+| `WorkspaceWorkflowsPromptHandler` / `WORKFLOW_CATALOG_HOOK_PRIORITY` | `tools::builtin::workflow` | ✅ New | Per-turn `workflows` catalog section (renderer `SectionSlot::Workflows`) |
+| `RunTokenRegistry` / `RunTokenEntry` | `ipc::run_tokens` | ✅ New | In-memory `PEKO_RUN_TOKEN` mint/verify with TTL + lazy expiry sweep. **2026-09-23 (caller-awareness):** `RunTokenEntry` gains `caller_session_id: Option<String>` — the tree node the `Workflow` ran from; the `ExecuteTool` handler threads it into `ToolContext.session_id` on validated calls so tree-relative tools classify the workflow caller as that node |
+| `CallerAwareSessionTool` (`for_daemon` / `for_agent`) | `tools::builtin::session::caller_aware` | ✅ New (2026-09-23) | `session` builtin with per-call caller resolution: daemon mode resolves store/meter/inbox per call from `ToolContext` + `PrincipalManager`; agent mode overrides the shared cell when `ctx.session_id` is present, delegates unchanged when absent (loop-path behavior identical) |
+| `SessionManagerRuntime::with_current_session` (+ `Clone`) | `session::session_runtime_impl` | ✅ Extended (2026-09-23) | Shallow clone with a fresh per-call caller cell; the `SessionRuntime` port trait is untouched |
+| `SpawnRequest.parent_session_id` | `tools::builtin::async_control` | ✅ Extended (2026-09-24) | Per-call parent-session stamp, filled by `AsyncSpawnTool` from `ToolContext.session_id`; `AsyncExecutorRuntime::spawn` stamps `parent_session_key` from it first (session-key cell is fallback-only for ctx-less dispatches) |
+| `RequestPacket::ExecuteTool.run_token` | `ipc::packet` | ✅ Extended | Optional additive field; validated + session-matched server-side, fail-closed |
+| `DaemonClient::execute_tool_with_token` | `ipc::client` | ✅ New | `execute_tool` + `run_token`; the old method delegates with `None` |
+| `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `session_id` (the handler threads the packet's `session_key` into `ToolContext`) |
 
 ---
 

@@ -54,6 +54,12 @@ use peko_session::{InboxRegistry, SessionManager, SessionMetadata};
 /// Adapter that exposes the real `SessionManager` through the
 /// `SessionRuntime` port trait, enforcing the D3/D4/D5 ownership,
 /// self, and run-permit guards for agent-owned session management.
+///
+/// `Clone` is shallow: the manager, inbox registry, and quota meter
+/// are shared `Arc`s; the `current_session_id` cell is shared too.
+/// [`Self::with_current_session`] is the per-call override — it shares
+/// everything EXCEPT the cell.
+#[derive(Clone)]
 pub struct SessionManagerRuntime {
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
@@ -102,6 +108,25 @@ impl SessionManagerRuntime {
         let metas = manager.list_all_sessions(false).await?;
         let caller = caller_context(&self.current_session_key(), &metas);
         Ok((caller, metas))
+    }
+
+    /// Per-call caller override (ADR-061 caller-awareness): a runtime
+    /// identical to this one except the `current_session_id` cell is a
+    /// FRESH cell pre-seeded with `id`. The manager, inbox registry,
+    /// and quota meter are shared. Used by the caller-aware `session`
+    /// tool so each call classifies against the `ToolContext`-carried
+    /// session id — the token-resolved node on the `ExecuteTool` path —
+    /// without mutating the shared cell (concurrent callers must not
+    /// clobber each other).
+    #[must_use]
+    pub fn with_current_session(&self, id: Option<String>) -> Self {
+        Self {
+            session_manager: Arc::clone(&self.session_manager),
+            current_session_id: Arc::new(tokio::sync::RwLock::new(id)),
+            caller_agent_name: self.caller_agent_name.clone(),
+            inbox_registry: self.inbox_registry.clone(),
+            quota_meter: self.quota_meter.clone(),
+        }
     }
 
     /// Log-then-return a guard refusal (the agent name makes refusals

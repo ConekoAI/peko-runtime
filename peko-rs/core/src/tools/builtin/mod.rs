@@ -39,8 +39,10 @@ pub mod tasks;
 
 // Root-only impls that didn't have a sat counterpart:
 pub mod agent_catalog;
+pub mod model_call;
 pub mod model_list;
 pub mod tool_search;
+pub mod workflow;
 
 // Re-exports of every tool *struct* at the canonical namespace so
 // `crate::tools::builtin::X` matches what existed in the
@@ -56,15 +58,21 @@ pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
     AgentTool, SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime,
 };
+pub use model_call::{ModelCallTool, MODEL_CALL_TOOL_NAME};
 pub use model_list::{ModelListTool, MODEL_LIST_TOOL_NAME};
 pub use plan::{
     PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool, PlanMarkStepTool,
     PlanRecordEvidenceTool,
 };
+pub use session::caller_aware::CallerAwareSessionTool;
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
 pub use tasks::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, Todo, TodoStatus};
 pub use tool_search::{ToolSearchTool, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME};
+pub use workflow::{
+    WorkflowTool, WorkspaceWorkflowsPromptHandler, MAX_WORKFLOW_DEPTH,
+    WORKFLOW_CATALOG_HOOK_PRIORITY, WORKFLOW_TOOL_NAME,
+};
 
 // Phase F4: thin re-exports of items that stay in the sat so root
 // callers can keep importing them through `crate::tools::builtin::*`
