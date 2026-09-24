@@ -159,6 +159,12 @@ The generated manifest is cached in `~/.pekobot/tools/{tool_name}/manifest.yaml`
 
 ## SDK Installation
 
+> **Archived — do not follow.** The `peko_tool` / `pekobot_tool` Python SDK was
+> removed on 2026-09-25, so the commands below no longer resolve. This
+> directory is a frozen snapshot of an e2e test. To write a universal tool
+> today, see
+> [`docs/architecture/UNIVERSAL_TOOLS.md`](../../../../../../../docs/architecture/UNIVERSAL_TOOLS.md).
+
 The test auto-installs the SDK, but you can install it manually:
 
 ```bash

@@ -4,6 +4,29 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Retired the `peko-tool` Python SDK (2026-09-25)
+
+- **Removed `sdks/python/peko_tool`** (the `@tool(...)` decorator SDK, ~570
+  LOC + 2 examples). It had not been meaningfully changed since the
+  pekobot→peko rename (`#75`), had no tests and no CI coverage, and its only
+  consumer — `peko-rs/core/e2e_tests_archive/extensions/universal/python/**`
+  — still imported the pre-rename `pekobot_tool`. It had also drifted from the
+  runtime: it documented `manifest.json` under a bare `tools/` directory (the
+  scanner only reads `<workspace>/tools/<id>/manifest.yaml`), served a
+  `tool/describe` method the runtime no longer sends, and generated a
+  `reserved_parameters` list where the parser expects a
+  `name → {source, field}` map.
+- **Universal tools themselves are unaffected** — `extensions/universal/` is
+  supported and maintained. New authoring guide at
+  [`docs/architecture/UNIVERSAL_TOOLS.md`](docs/architecture/UNIVERSAL_TOOLS.md)
+  covers the layout, manifest fields, executable discovery, the stdio
+  JSON-RPC wire shape, reserved parameters, and a stdlib-only Python example;
+  linked from `docs/README.md`.
+- Fixed the universal tool manifest filename in
+  `docs/architecture/PRINCIPAL_WORKSPACE.md` (`tool.toml` → `manifest.yaml`,
+  three places).
+- `sdks/python/peko_workflow` (ADR-061) is unrelated and unchanged.
+
 ### Async* per-call parent-session stamping (ADR-061 follow-up, 2026-09-24)
 
 - **`AsyncSpawn` stamps the parent session per call.** `SpawnRequest` gains
