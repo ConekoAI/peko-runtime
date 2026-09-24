@@ -58,6 +58,10 @@ _PEKO_ISO_SOCK=""
 _PEKO_ISO_BIN=""
 _PEKO_ISO_VAULT_PP="peko-test-vault-passphrase"
 _PEKO_ISO_DAEMON_PID=""
+# PID of the real `peko-daemon` process. `peko daemon start --foreground`
+# is a wrapper (PR #309), so $_PEKO_ISO_DAEMON_PID names the wrapper only;
+# this is the PID that must be killed to actually stop the daemon.
+_PEKO_ISO_DAEMON_CHILD_PID=""
 # Extra background PIDs a flow registers (mock LLM servers, `peko log
 # --watch` watchers, background `peko send` processes). peko_iso_done
 # kills them all, so cleanup happens even when a flow fails midway.
@@ -252,6 +256,13 @@ peko_iso_done() {
       [[ -n "$extra" ]] && kill "$extra" 2>/dev/null || true
     done < "$_PEKO_ISO_TEMPDIR/extra.pids"
   fi
+  # Kill the real daemon first, then the wrapper. `peko daemon start
+  # --foreground` spawns `peko-daemon` as a child (PR #309), so the
+  # wrapper PID alone is not enough — signalling only that leaves the
+  # daemon alive and orphaned.
+  if [[ -n "$_PEKO_ISO_DAEMON_CHILD_PID" ]]; then
+    kill "$_PEKO_ISO_DAEMON_CHILD_PID" 2>/dev/null || true
+  fi
   if [[ -n "$_PEKO_ISO_DAEMON_PID" ]]; then
     kill "$_PEKO_ISO_DAEMON_PID" 2>/dev/null || true
     wait "$_PEKO_ISO_DAEMON_PID" 2>/dev/null || true
@@ -269,6 +280,7 @@ peko_iso_done() {
       kill -9 "$stale" 2>/dev/null || true
     fi
   fi
+  _PEKO_ISO_DAEMON_CHILD_PID=""
   # Belt-and-suspenders: remove the sock file in case the daemon died on a
   # different PID (e.g. the daemon forked). Some flows don't start a daemon
   # at all (NO_DAEMON=1) so this is a no-op in that case.
@@ -281,7 +293,8 @@ peko_iso_done() {
   # Clear globals so a re-fired EXIT trap (e.g. when `peko_iso_done` is
   # called explicitly and then the shell exits) short-circuits both
   # branches above and prints nothing — the tempdir is already gone.
-  unset _PEKO_ISO_TEMPDIR _PEKO_ISO_PEKO_DIR _PEKO_ISO_SOCK _PEKO_ISO_DAEMON_PID
+  unset _PEKO_ISO_TEMPDIR _PEKO_ISO_PEKO_DIR _PEKO_ISO_SOCK _PEKO_ISO_DAEMON_PID \
+        _PEKO_ISO_DAEMON_CHILD_PID
   exit "$rc"
 }
 
@@ -379,7 +392,15 @@ peko_iso_start_daemon() {
   local debug_err="$_PEKO_ISO_TEMPDIR/daemon.err"
   echo "🚀 starting daemon (logs: $debug_err)"
   # --foreground is required: without it `peko daemon start` double-forks
-  # and we lose the child PID. With foreground, $! is the actual daemon.
+  # and we lose the child handle entirely.
+  #
+  # NOTE: `$!` is *not* the daemon. Since PR #309 the foreground command
+  # is a wrapper that spawns the `peko-daemon` binary and waits on it, so
+  # `$!` is the wrapper PID. Killing only that used to orphan the real
+  # daemon: it got reparented to init and ran forever, unreachable
+  # because the next run's daemon had since taken its socket. We capture
+  # the wrapper for signalling and resolve the real daemon PID from the
+  # run dir's daemon.pid (written by the wrapper) once it is ready.
   "$_PEKO_ISO_BIN" daemon start --foreground -v \
     >"$debug_out" 2>"$debug_err" &
   _PEKO_ISO_DAEMON_PID=$!
@@ -390,7 +411,14 @@ peko_iso_start_daemon() {
   while (( SECONDS < deadline )); do
     if peko_iso_run daemon status --json; then
       if [[ "$_peko_iso_capture_out" == *"\"running\": true"* ]]; then
-        echo "    daemon ready (pid=$_PEKO_ISO_DAEMON_PID)"
+        # Resolve the real daemon PID. The wrapper publishes the
+        # `peko-daemon` child's PID to <peko_dir>/run/daemon.pid; without
+        # it we can only signal the wrapper, which leaves the daemon
+        # running. Fall back to the wrapper so callers still have a PID.
+        if [[ -f "$_PEKO_ISO_PEKO_DIR/run/daemon.pid" ]]; then
+          _PEKO_ISO_DAEMON_CHILD_PID="$(cat "$_PEKO_ISO_PEKO_DIR/run/daemon.pid" 2>/dev/null || true)"
+        fi
+        echo "    daemon ready (wrapper=$_PEKO_ISO_DAEMON_PID daemon=${_PEKO_ISO_DAEMON_CHILD_PID:-unknown})"
         return 0
       fi
     fi

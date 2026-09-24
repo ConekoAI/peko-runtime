@@ -277,8 +277,15 @@ impl ConnectionManager {
         anyhow::bail!("No daemon found")
     }
 
+    /// Ping a *specific* Unix socket path, rather than whatever
+    /// `try_connect*` resolves from the environment.
+    ///
+    /// `pub(crate)` so `IpcServer::bind_unix_socket` can ask "is anything
+    /// actually serving the socket I just failed to bind?" — probing the
+    /// ambient default would answer the wrong question whenever the two
+    /// paths differ.
     #[cfg(unix)]
-    async fn connect_unix_with_timeout(
+    pub(crate) async fn connect_unix_with_timeout(
         path: &str,
         timeout: Duration,
     ) -> anyhow::Result<ConnectionHandle> {
@@ -454,7 +461,7 @@ impl ConnectionManager {
     }
 
     #[allow(dead_code)]
-    async fn connect_unix_with_timeout(
+    pub(crate) async fn connect_unix_with_timeout(
         _path: &str,
         _timeout: Duration,
     ) -> anyhow::Result<ConnectionHandle> {
