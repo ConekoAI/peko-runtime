@@ -6,9 +6,16 @@
 //! Foreground mode is critical: without it, `peko daemon start` daemonizes
 //! and we lose the child handle, leaving an orphan daemon that ignores
 //! `Drop` and pollutes the next test.
+//!
+//! Note that even in foreground mode the child is *not* the daemon: since
+//! PR #309 the foreground command spawns the `peko-daemon` binary and waits
+//! on it. `Drop` therefore signals the real daemon PID from the run dir's
+//! `daemon.pid` as well as the wrapper, because `Child::kill()` alone
+//! (SIGKILL) cannot be forwarded and would orphan the daemon.
 
 #![allow(dead_code)]
 
+use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
@@ -17,6 +24,9 @@ use super::cli::PekoCli;
 /// Owns a running `peko daemon` child. Killing on `Drop` is best-effort.
 pub struct DaemonGuard {
     child: Child,
+    /// `<peko_dir>/run/daemon.pid`, which the foreground wrapper
+    /// populates with the real `peko-daemon` PID.
+    pid_file: PathBuf,
 }
 
 impl DaemonGuard {
@@ -54,7 +64,8 @@ impl DaemonGuard {
             .spawn()
             .expect("spawn peko daemon start --foreground");
 
-        let mut guard = Self { child };
+        let pid_file = cli.peko_dir().join("run").join("daemon.pid");
+        let mut guard = Self { child, pid_file };
         guard.wait_ready(cli, Duration::from_secs(30));
         guard
     }
@@ -122,8 +133,42 @@ impl DaemonGuard {
     }
 }
 
+/// Ask a PID to shut down gracefully. Best effort — the PID may already
+/// be gone, and `Drop` falls back to `Child::kill()` regardless.
+fn terminate_pid(pid: u32) {
+    #[cfg(unix)]
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status();
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string()])
+        .status();
+}
+
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
+        // Stop the real daemon before the wrapper. `Child::kill()` sends
+        // SIGKILL, which the wrapper has no chance to forward, so relying
+        // on it alone leaves `peko-daemon` running — reparented to init,
+        // unreachable over IPC, and never shut down.
+        if let Ok(raw) = std::fs::read_to_string(&self.pid_file) {
+            if let Ok(pid) = raw.trim().parse::<u32>() {
+                terminate_pid(pid);
+            }
+        }
+        terminate_pid(self.child.id());
+
+        // Brief grace period so the graceful shutdown can take effect
+        // before the hard kill.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

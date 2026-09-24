@@ -32,7 +32,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket};
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
@@ -71,7 +71,6 @@ pub enum ServerSocket {
     #[cfg(unix)]
     Unix {
         socket: Arc<UnixDatagram>,
-        #[allow(dead_code)]
         path: Arc<std::path::PathBuf>,
     },
     Udp {
@@ -317,10 +316,43 @@ impl ServerSocket {
     }
 }
 
+/// Outcome of trying to bind the Unix socket.
+///
+/// `OwnedElsewhere` is split out from `Failed` because the two need
+/// opposite handling: a genuine transport failure should fall back to
+/// UDP, but "another daemon owns this run dir" must be fatal. Falling
+/// back there would let a second daemon come up on a weaker transport
+/// while the incumbent is still running — the exact invariant we are
+/// enforcing, just harder to see.
+#[cfg(unix)]
+enum UnixBind {
+    Bound(UnixDatagram),
+    OwnedElsewhere(String),
+    Failed(String),
+}
+
 /// IPC server that handles CLI requests
 pub struct IpcServer {
     socket: ServerSocket,
     app_state: AppState,
+}
+
+impl Drop for IpcServer {
+    /// Remove the bound socket file so the next daemon starts cleanly.
+    ///
+    /// Nothing used to delete this path: it outlived every shutdown, so
+    /// the next start always hit `AddrInUse` and had to heuristically
+    /// decide whether the file was abandoned. Cleaning up here makes
+    /// "socket exists" mean "a daemon is probably listening" again,
+    /// which is what the single-instance check relies on. Only reached
+    /// on a graceful shutdown — a SIGKILL leaves the file behind, which
+    /// is exactly what the liveness probe in `bind_unix_socket` covers.
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let ServerSocket::Unix { path, .. } = &self.socket {
+            let _ = std::fs::remove_file(path.as_path());
+        }
+    }
 }
 
 impl IpcServer {
@@ -342,11 +374,8 @@ impl IpcServer {
             let run_dir = ensure_run_dir()?;
             let sock_path = run_dir.join("daemon.sock");
 
-            // Remove stale socket file
-            let _ = std::fs::remove_file(&sock_path);
-
-            match UnixDatagram::bind(&sock_path) {
-                Ok(socket) => {
+            match Self::bind_unix_socket(&sock_path).await {
+                UnixBind::Bound(socket) => {
                     // ADR-058 D6: restrict the socket to the daemon's
                     // own uid. The comment below used to claim
                     // "filesystem mode bits" were the trust boundary,
@@ -405,8 +434,13 @@ impl IpcServer {
                         app_state,
                     });
                 }
-                Err(e) => {
-                    warn!("Failed to bind Unix socket ({}), falling back to UDP", e);
+                UnixBind::OwnedElsewhere(msg) => {
+                    // Not a transport problem, so no UDP fallback: that
+                    // would start a second daemon rather than stop one.
+                    return Err(anyhow::anyhow!(msg));
+                }
+                UnixBind::Failed(msg) => {
+                    warn!("Failed to bind Unix socket ({}), falling back to UDP", msg);
                 }
             }
         }
@@ -487,6 +521,122 @@ impl IpcServer {
             },
             app_state,
         })
+    }
+
+    /// Bind the daemon's Unix datagram socket, refusing to displace a
+    /// live incumbent.
+    ///
+    /// This used to `remove_file` the socket path *before* binding,
+    /// which silently disabled the one-daemon-per-run-dir invariant:
+    /// `bind()` reports `AddrInUse` when another daemon owns the path,
+    /// but deleting the file first meant the newcomer always bound
+    /// successfully. The incumbent kept running — it holds its own
+    /// bound descriptor — but no client could reach it any more, and
+    /// the only way to shut it down is over IPC. That is exactly how
+    /// daemons ended up leaked and unreachable.
+    ///
+    /// Now the path is only unlinked when the owner is provably gone.
+    ///
+    /// Liveness is decided by whether something answers IPC on the
+    /// socket, not by the `daemon.pid` lockfile: an abandoned lockfile
+    /// whose PID has since been recycled by an unrelated process would
+    /// otherwise block startup forever. The lockfile only enriches the
+    /// error message.
+    #[cfg(unix)]
+    async fn bind_unix_socket(sock_path: &std::path::Path) -> UnixBind {
+        match UnixDatagram::bind(sock_path) {
+            Ok(socket) => UnixBind::Bound(socket),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                // The path exists. It may belong to a live daemon, or
+                // just be an abandoned file — nothing removed it on
+                // shutdown, so a stale socket is the *normal* case
+                // after any restart.
+                if Self::socket_answers_ping(sock_path).await {
+                    return UnixBind::OwnedElsewhere(match Self::foreign_owner_pid(sock_path) {
+                        Some(pid) => format!(
+                            "another peko daemon is already serving {} (pid {pid}); \
+                             refusing to start a second one",
+                            sock_path.display()
+                        ),
+                        None => format!(
+                            "another peko daemon is already serving {}; \
+                             refusing to start a second one",
+                            sock_path.display()
+                        ),
+                    });
+                }
+                // Provably stale: a previous daemon died without
+                // cleaning up. Reclaim the path and bind once more.
+                debug!(
+                    "removing stale IPC socket {} (no live owner)",
+                    sock_path.display()
+                );
+                let _ = std::fs::remove_file(sock_path);
+                UnixDatagram::bind(sock_path)
+                    .map(UnixBind::Bound)
+                    .unwrap_or_else(|e| {
+                        UnixBind::Failed(format!(
+                            "failed to bind {} after removing the stale socket: {e}",
+                            sock_path.display()
+                        ))
+                    })
+            }
+            Err(e) => UnixBind::Failed(format!("failed to bind {}: {e}", sock_path.display())),
+        }
+    }
+
+    /// PID of a live daemon other than this process, according to the
+    /// `daemon.pid` lockfile sitting next to `sock_path`.
+    ///
+    /// `Daemon::run` writes its own PID only *after* the IPC server
+    /// binds, so at this point any PID we read still belongs to the
+    /// previous tenant of the run dir.
+    #[cfg(unix)]
+    fn foreign_owner_pid(sock_path: &std::path::Path) -> Option<u32> {
+        let pid_file = sock_path.parent()?.join("daemon.pid");
+        let raw = std::fs::read_to_string(&pid_file).ok()?;
+        let pid = raw.trim().parse::<u32>().ok()?;
+        if pid == std::process::id() {
+            return None;
+        }
+        crate::common::process::is_process_running(pid).then_some(pid)
+    }
+
+    /// True if something is actually answering IPC pings right now.
+    ///
+    /// This is the authoritative liveness test for a socket we failed
+    /// to bind. Two passes: a short one (a local Unix datagram round
+    /// trip is sub-millisecond when a daemon is serving) and a longer
+    /// fallback for an incumbent wedged under load. Both are bounded so
+    /// a dead socket can never stall daemon startup.
+    #[cfg(unix)]
+    async fn socket_answers_ping(sock_path: &std::path::Path) -> bool {
+        use crate::ipc::ConnectionManager;
+        let Some(path) = sock_path.to_str() else {
+            return false;
+        };
+        // Outer bound is double the handshake budget so the two don't
+        // race: the inner timeout is the one that should fire.
+        let ping = |timeout: Duration| {
+            tokio::time::timeout(
+                timeout * 2,
+                ConnectionManager::connect_unix_with_timeout(path, timeout),
+            )
+        };
+        // Fast pass: a healthy local daemon answers well within 300ms.
+        if ping(Duration::from_millis(300))
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        // Slow pass: the incumbent may be wedged under load. Give it a
+        // longer budget before concluding the socket was abandoned.
+        ping(Duration::from_secs(3))
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false)
     }
 
     /// Bind a Windows named pipe with the ADR-038 DACL.
@@ -1204,5 +1354,78 @@ mod peercred_tests {
 
         let _ = std::fs::remove_file(&server_path);
         let _ = std::fs::remove_file(&client_path);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod bind_tests {
+    //! Guards the one-daemon-per-run-dir invariant at the bind layer.
+    //!
+    //! The old code unlinked `daemon.sock` *before* binding, so a second
+    //! daemon always bound successfully and silently displaced the
+    //! incumbent. The displaced daemon kept running — it holds its own
+    //! descriptor — but no client could reach it any more, and the only
+    //! way to stop a daemon is over IPC. That is how daemons leaked.
+
+    use super::{IpcServer, UnixBind};
+
+    /// A socket file left behind by a daemon that died without cleaning
+    /// up must be reclaimed rather than mistaken for a live instance.
+    /// This is the ordinary case after every restart, so a false
+    /// positive here would wedge daemon startup permanently.
+    #[tokio::test]
+    async fn reclaims_stale_socket_file() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let sock = dir.path().join("daemon.sock");
+        std::fs::write(&sock, b"").expect("write stale socket file");
+
+        assert!(sock.exists(), "precondition: stale socket file present");
+
+        let bound = IpcServer::bind_unix_socket(&sock).await;
+        assert!(
+            matches!(bound, UnixBind::Bound(_)),
+            "a stale socket with no live owner must be reclaimed, not fatal"
+        );
+    }
+
+    /// An incumbent that is actually answering IPC must not be
+    /// displaced — this is the leak itself, so it is the assertion that
+    /// matters most.
+    ///
+    /// Stands up a minimal stand-in for a running daemon: bind the path
+    /// and answer every datagram with a `Pong`, which is all the
+    /// liveness probe requires.
+    #[tokio::test]
+    async fn refuses_to_displace_live_daemon() {
+        use crate::ipc::ResponsePacket;
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let sock = dir.path().join("daemon.sock");
+
+        let incumbent = tokio::net::UnixDatagram::bind(&sock).expect("bind incumbent");
+        let pong = ResponsePacket::Pong {
+            request_id: 0,
+            uptime_secs: 1,
+            version: "test".to_string(),
+        }
+        .to_bytes()
+        .expect("encode pong");
+
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 65536];
+            while let Ok((_, peer)) = incumbent.recv_from(&mut buf).await {
+                if let Some(path) = peer.as_pathname() {
+                    let _ = incumbent.send_to(&pong, path).await;
+                }
+            }
+        });
+
+        let second = IpcServer::bind_unix_socket(&sock).await;
+        assert!(
+            matches!(second, UnixBind::OwnedElsewhere(_)),
+            "a second daemon must not start against a live socket"
+        );
+        // The incumbent still owns the path: we must not have unlinked it.
+        assert!(sock.exists(), "incumbent's socket must survive the refusal");
     }
 }

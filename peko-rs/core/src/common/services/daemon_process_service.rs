@@ -510,7 +510,73 @@ impl DaemonProcessService {
                 .stderr(std::process::Stdio::inherit())
                 .kill_on_drop(false);
 
-            let status = cmd.status().await?;
+            let mut child = cmd.spawn()?;
+            let daemon_pid = child.id();
+
+            // Record the *daemon's* PID, not the CLI's.
+            //
+            // Since Phase 0.Z-C (PR #309) this process is a thin wrapper
+            // that spawns `peko-daemon` and waits on it, so anything
+            // holding this CLI's PID — `$!` in a shell script,
+            // `Child::id()` in a test harness — holds the wrong process.
+            // Publishing the child's PID here is what lets callers stop
+            // the daemon they actually started.
+            if let Some(pid) = daemon_pid {
+                if sidecar_mode {
+                    let _ = self.write_pid_sidecar(pid);
+                } else {
+                    let _ = self.write_pid(pid);
+                }
+            }
+
+            // Forward termination signals to the daemon.
+            //
+            // This is the leak fix. `kill_on_drop(false)` plus a plain
+            // `wait()` means a signal to *this* process kills the
+            // wrapper and nothing else: `peko-daemon` is reparented to
+            // init, keeps running forever, and — having lost its
+            // socket to whichever daemon took the path next — can no
+            // longer be reached over IPC to be told to shut down.
+            let mut status = None;
+            let signalled = tokio::select! {
+                st = child.wait() => { status = Some(st); false }
+                () = Self::termination_signal() => true,
+            };
+
+            if signalled {
+                if let Some(pid) = daemon_pid {
+                    debug!("forwarding termination signal to peko-daemon (pid {pid})");
+                    let _ = kill_by_pid(pid, false).await;
+                }
+
+                // Reap through the `Child` handle rather than polling
+                // the PID. `wait_for_exit` asks `is_process_running`,
+                // which is `kill(pid, 0)` — that still succeeds for a
+                // zombie, and a child we have not reaped yet *is* a
+                // zombie. Polling would therefore always burn the whole
+                // timeout before noticing the daemon was long gone.
+                //
+                // Bounded, so a daemon that ignores SIGTERM cannot pin
+                // the CLI forever; SIGKILL is the escalation.
+                match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
+                    Ok(st) => status = Some(st),
+                    Err(_) => {
+                        if let Some(pid) = daemon_pid {
+                            warn!("peko-daemon ignored SIGTERM; escalating to SIGKILL");
+                            let _ = kill_by_pid(pid, true).await;
+                        }
+                        status = Some(child.wait().await);
+                    }
+                }
+            }
+
+            // `wait()` keeps returning the same status once the child
+            // has been reaped, so this is a no-op when already set.
+            let status = match status {
+                Some(status) => status?,
+                None => child.wait().await?,
+            };
+            self.remove_pid_file_for(sidecar_mode);
             if !status.success() {
                 // Mirror the legacy `peko daemon start --foreground`
                 // behaviour: print the daemon's exit, don't fail the
@@ -534,6 +600,50 @@ impl DaemonProcessService {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "<unknown>".to_string())
         );
+    }
+
+    /// Resolves once this process receives SIGTERM, SIGINT or SIGHUP
+    /// (Ctrl-C on Windows).
+    ///
+    /// `run_foreground` selects on this alongside the daemon child's
+    /// exit so a signal aimed at the CLI is passed down to
+    /// `peko-daemon`. Without it the child is orphaned on every
+    /// teardown path that signals the CLI — Ctrl-C, `kill $!` from a
+    /// shell harness, `Child::kill()` from an integration test.
+    async fn termination_signal() {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut streams = Vec::new();
+            for kind in [
+                SignalKind::terminate(),
+                SignalKind::interrupt(),
+                SignalKind::hangup(),
+            ] {
+                if let Ok(stream) = signal(kind) {
+                    streams.push(stream);
+                }
+            }
+            if streams.is_empty() {
+                // No signal facility: never resolve, leaving the
+                // caller's select driven purely by the child's exit.
+                std::future::pending::<()>().await;
+                return;
+            }
+            let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+            for mut stream in streams {
+                let notify = std::sync::Arc::clone(&notify);
+                tokio::spawn(async move {
+                    stream.recv().await;
+                    notify.notify_one();
+                });
+            }
+            notify.notified().await;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 
     /// Resolve the standalone `peko-daemon` binary artifact next to the

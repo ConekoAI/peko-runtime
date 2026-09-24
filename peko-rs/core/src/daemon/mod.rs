@@ -313,18 +313,6 @@ impl Daemon {
             Err(e) => warn!("genesis: boot seeding failed (continuing boot): {e:#}"),
         }
 
-        // Write our own PID file so stop commands can find us even if the parent is gone
-        let pid_file = crate::ipc::default_pid_path();
-        if let Some(parent) = pid_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&pid_file, std::process::id().to_string());
-        info!(
-            "   PID file: {} (pid={})",
-            pid_file.display(),
-            std::process::id()
-        );
-
         // Mark daemon as ready (server is listening)
         app_state.set_ready(true).await;
         info!("✅ Daemon ready to accept requests");
@@ -370,6 +358,27 @@ impl Daemon {
                 error!("IPC server error: {}", e);
             }
         });
+
+        // Write our own PID file so stop commands can find us even if
+        // the parent is gone.
+        //
+        // Deliberately written *after* the IPC server binds. The bind is
+        // what enforces the one-daemon-per-run-dir invariant, and it
+        // detects an incumbent by reading `daemon.pid`; if we claimed
+        // that file first the check would only ever find ourselves and
+        // every second daemon would conclude the socket was free.
+        // Writing it late also means a daemon that fails to bind leaves
+        // no lockfile behind for the next start to trip over.
+        let pid_file = crate::ipc::default_pid_path();
+        if let Some(parent) = pid_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&pid_file, std::process::id().to_string());
+        info!(
+            "   PID file: {} (pid={})",
+            pid_file.display(),
+            std::process::id()
+        );
 
         // Phase 10b: install the cron runtime port so the
         // `Cron{Create,Delete,List}Tool`s (which live in
