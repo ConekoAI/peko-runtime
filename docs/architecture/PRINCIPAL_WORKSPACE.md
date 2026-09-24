@@ -41,7 +41,7 @@ For the trust-and-audit posture that makes this safe, see
 │   │                                #   note rides with that agent (D8)
 │   └── …                            # cold: refs/, journal/, imports/, datasets…
 ├── memory/sessions/<session_id>.jsonl
-├── tools/<tool-id>/tool.toml        # universal tools
+├── tools/<tool-id>/manifest.yaml   # universal tools — see UNIVERSAL_TOOLS.md
 ├── skills/<skill-id>/SKILL.md       # skills
 ├── mcp/<server-id>/server.json      # MCP servers
 ├── hooks/<hook-id>/hook.toml        # hooks
@@ -55,7 +55,7 @@ For the trust-and-audit posture that makes this safe, see
 | `agents/<name>.md`         | Agent prompts (per-peko)                                             |
 | `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `agents/<name>.md` for the named agent |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
-| `tools/<id>/tool.toml`     | Universal tool manifests                                                  |
+| `tools/<id>/manifest.yaml` | Universal tool manifests ([UNIVERSAL_TOOLS.md](UNIVERSAL_TOOLS.md))        |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
 | `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
@@ -177,7 +177,7 @@ If you have existing extensions installed under the legacy
 workspace by hand (the install CLI was removed in ADR-050):
 
 ```
-cp <path>/tool.toml   ~/.peko/principals/<name>/tools/<id>/tool.toml
+cp <path>/manifest.yaml ~/.peko/principals/<name>/tools/<id>/manifest.yaml
 cp -r <skill-dir>     ~/.peko/principals/<name>/skills/<id>/      # SKILL.md inside
 cp <path>/server.json ~/.peko/principals/<name>/mcp/<id>/server.json
 cp <path>/hook.toml   ~/.peko/principals/<name>/hooks/<id>/hook.toml

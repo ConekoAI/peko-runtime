@@ -23,6 +23,7 @@ Complete documentation for the Peko multi-agent runtime.
 
 - **[Principal Workspace](architecture/PRINCIPAL_WORKSPACE.md)** — Per-principal tooling, layout, plugin packaging (ADR-047)
 - **[Skills](architecture/SKILLS.md)** — Skills as workspace files: SKILL.md format, per-turn catalog, invocation, authoring
+- **[Universal Tools](architecture/UNIVERSAL_TOOLS.md)** — Workspace executables as tools: manifest.yaml, stdio JSON-RPC, reserved params
 - **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
 - **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-058
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
@@ -57,6 +58,7 @@ docs/
 │   ├── CAPABILITY_BASED_EXTENSIONS.md
 │   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
 │   ├── SKILLS.md                   # skills as workspace files (SKILL.md format + catalog)
+│   ├── UNIVERSAL_TOOLS.md          # universal tools: manifest.yaml + stdio JSON-RPC
 │   ├── builtin-tools.md
 │   └── adr/                         # ADR-001 through ADR-058
 └── mcp/
