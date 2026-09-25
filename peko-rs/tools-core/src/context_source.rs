@@ -3,8 +3,6 @@
 //! Provides a single source of truth for resolving runtime context fields
 //! (`agent_id`, `session_id`, etc.) from any context source.
 //!
-//! This eliminates duplication between Universal Tools and MCP implementations.
-//!
 //! # Module Boundary Note
 //!
 //! The `ContextSource` trait and `ContextResolver` live in `tools::core` because
@@ -17,7 +15,7 @@ use serde_json::Value;
 /// Unified context resolver for runtime fields
 ///
 /// This struct provides a single source of truth for resolving context fields,
-/// ensuring consistent behavior across all tool types (built-in, Universal, MCP).
+/// ensuring consistent behavior across all tool types (built-in, MCP).
 pub struct ContextResolver;
 
 /// Context sources that can be resolved

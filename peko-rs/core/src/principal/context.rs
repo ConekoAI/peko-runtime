@@ -429,13 +429,13 @@ impl PrincipalContext {
 
 /// Ensure the daemon-global [`ExtensionCore`] carries the principal
 /// tool bag: built-ins, the principal-scoped `Skill` tool, workspace
-/// MCP servers / universal tools / hooks, and the `{{agents}}` /
+/// MCP servers / hooks, and the `{{agents}}` /
 /// `{{skills}}` prompt-section handlers.
 ///
 /// Shared by [`PrincipalContext::core`] (the root-agent path) and
 /// `PeerChildTurns::build` (the peer-ingress path, which builds no
 /// `PrincipalContext`) so peer-child turns see the same tool bag as
-/// the root agent. Honors the core's `universal_extensions_loaded`
+/// the root agent. Honors the core's `tool_bag_installed`
 /// once-gate: the first caller performs the install; the prompt
 /// handlers resolve the workspace from the hook context at invoke
 /// time, so one registration serves every principal.
@@ -452,7 +452,7 @@ pub(crate) async fn ensure_principal_tool_bag(
         // construct an `Agent` directly.
         Arc::new(ExtensionCore::new())
     });
-    if !core.universal_extensions_loaded() {
+    if !core.tool_bag_installed() {
         // Phase 2 PR 1 (ADR-047): skills live under
         // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
         // runtime reads from that directory.
@@ -465,13 +465,6 @@ pub(crate) async fn ensure_principal_tool_bag(
         // `McpToolProxy` / `InjectableMcpToolProxy` instances
         // onto the global core.
         let mcp_dir = workspace_path.join("mcp");
-        // Phase 2 PR 3 (ADR-047 §2.1): universal tools live
-        // under `<workspace>/tools/<id>/manifest.yaml`. The
-        // scanner reads each manifest, constructs the
-        // canonical `peko_tools_core::Tool` impl (no framework
-        // hook layer), and registers it via
-        // `BuiltinToolAdapter::register_tool`.
-        let tools_dir = workspace_path.join("tools");
         // Phase 4 (ADR-047 §5): workspace hooks live under
         // `<workspace>/hooks/<id>/hook.toml`. See
         // `extensions::workspace_hooks::load_workspace_hooks`.
@@ -495,7 +488,6 @@ pub(crate) async fn ensure_principal_tool_bag(
             Arc::clone(&core),
             &skills_dir,
             &mcp_dir,
-            &tools_dir,
             &hooks_dir,
             principal_id,
             channel_port,
@@ -549,12 +541,10 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 /// port); `Arc::new(NoopChannelPort)` is fine for tests that don't
 /// have a real adapter wired up — `ChannelRead` will surface
 /// `Adapter` errors instead of silently zero-returning.
-#[allow(clippy::too_many_arguments)]
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     skills_dir: &Path,
     mcp_dir: &Path,
-    tools_dir: &Path,
     hooks_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
@@ -748,41 +738,6 @@ async fn install_principal_tool_bag(
         );
     }
 
-    // Phase 2 PR 3 (ADR-047 §2.1, §2.4): universal tools live
-    // under `<workspace>/tools/<id>/manifest.yaml`. The
-    // workspace scanner reads each manifest, finds the executable
-    // sibling, constructs the canonical `peko_tools_core::Tool`
-    // impl (`protocol::UniversalToolAdapter`), and registers it
-    // via `BuiltinToolAdapter::register_tool` — no framework
-    // hook layer.
-    //
-    // No auto-start: the tool's process spawns on first
-    // `execute()` call via `UniversalToolAdapter::execute`,
-    // matching the framework's prior behaviour where the
-    // `ToolExecute` hook fired lazily.
-    if tools_dir.exists() {
-        match crate::extensions::universal::load_workspace_universal_tools(
-            tools_dir,
-            core.as_ref(),
-            principal_id,
-        )
-        .await
-        {
-            Ok(loaded) => {
-                if loaded > 0 {
-                    tracing::info!(
-                        "registered {loaded} universal tool(s) from {}",
-                        tools_dir.display()
-                    );
-                }
-            }
-            Err(e) => tracing::warn!(
-                "Universal tools workspace scan failed for {}: {e}",
-                tools_dir.display()
-            ),
-        }
-    }
-
     // Phase 4 (ADR-047 §5): workspace-resident hooks live under
     // `<workspace>/hooks/<id>/hook.toml`. The scanner reads each
     // manifest and registers every `binds` entry against the canonical
@@ -795,7 +750,7 @@ async fn install_principal_tool_bag(
     // manifest's `command` / `args` / `env` / `timeout_secs` / `output`
     // map directly to `CommandHookConfig`.
     //
-    // Failure isolation matches the MCP / universal-tool posture:
+    // Failure isolation matches the MCP posture:
     // malformed manifests are logged at `warn!` and skipped, never
     // block the principal boot.
     if hooks_dir.exists() {
@@ -828,10 +783,10 @@ async fn install_principal_tool_bag(
     // memory and the `RootRouter` / `PrincipalManager` paths persist
     // session artifacts internally via `PrincipalMemory::record_session`.
 
-    // Mark the core as having run the universal-extension pass so
+    // Mark the core as having run the tool-bag install pass so
     // the lazy guard in `PrincipalContext::core` does not re-install
     // on every call.
-    core.mark_universal_extensions_loaded();
+    core.mark_tool_bag_installed();
 
     Ok(())
 }

@@ -776,24 +776,6 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_tier2_universal_tool_yaml() {
-        let temp = TempDir::new().unwrap();
-        let ext_dir = temp.path().join("my-tool");
-        std::fs::create_dir(&ext_dir).unwrap();
-        std::fs::write(
-            ext_dir.join("manifest.yaml"),
-            "id: calc\nname: Calculator\nextension_type: universal-tool\n",
-        )
-        .unwrap();
-
-        let store = ExtensionStore::new();
-        assert_eq!(
-            store.detect_extension_type_string(&ext_dir),
-            Some("universal-tool".to_string())
-        );
-    }
-
-    #[test]
     fn test_detect_tier2_general_yaml() {
         let temp = TempDir::new().unwrap();
         let ext_dir = temp.path().join("my-general");
@@ -909,7 +891,7 @@ mod tests {
 
         let mut manifest = ExtensionManifest::new(
             "calc-ext",
-            "universal-tool",
+            "general",
             "Calculator",
             "A calculator tool",
             "1.0.0",
@@ -920,7 +902,7 @@ mod tests {
         store
             .insert_test_extension(LoadedExtension {
                 manifest,
-                extension_type: "universal-tool".to_string(),
+                extension_type: "general".to_string(),
                 hook_ids: vec![],
                 path: PathBuf::from("/tmp/calc"),
             })

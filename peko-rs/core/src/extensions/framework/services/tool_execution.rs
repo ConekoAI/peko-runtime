@@ -3,7 +3,7 @@
 //! Centralized service for tool execution with parameter injection, panic isolation,
 //! and timeout handling. Part of `ExtensionCore`'s shared services.
 //!
-//! This is the unified execution service used by ALL tool handlers (built-in, MCP, Universal).
+//! This is the unified execution service used by ALL tool handlers (built-in, MCP).
 //! It provides consistent:
 //! - Parameter validation and injection
 //! - Panic isolation (catches tool panics)

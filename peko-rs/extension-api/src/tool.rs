@@ -22,8 +22,6 @@ pub enum ToolSource {
     BuiltIn,
     /// MCP tool from an MCP server
     Mcp { server: String },
-    /// Universal tool from an extension
-    Universal { extension_id: String },
     /// General extension tool
     General { extension_id: String },
 }
@@ -35,9 +33,6 @@ impl ToolSource {
         match self {
             ToolSource::BuiltIn => "built-in".to_string(),
             ToolSource::Mcp { server } => format!("MCP server: {server}"),
-            ToolSource::Universal { extension_id } => {
-                format!("universal extension: {extension_id}")
-            }
             ToolSource::General { extension_id } => format!("extension: {extension_id}"),
         }
     }

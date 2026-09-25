@@ -6,16 +6,19 @@
 //! 1. Hashes every `principal.toml` and emits a
 //!    `principal.config_drift` (Security) event on mismatch.
 //! 2. Hashes every workspace subdirectory under
-//!    `<workspace>/{tools,hooks,mcp}/<id>/` and emits per-category
+//!    `<workspace>/{hooks,mcp}/<id>/` and emits per-category
 //!    install/remove events:
-//!    - `principal.tool_installed` / `principal.tool_removed` (Info)
 //!    - `principal.hook_installed` / `principal.hook_removed` (Warning)
 //!    - `principal.mcp_installed`  / `principal.mcp_removed`  (Info)
 //!
 //! Hooks are Warning because, per ADR-047 §4.2, a malicious hook
 //! fires on every subsequent turn — the highest residual risk of the
-//! workspace-trust model. Tools and MCP servers only activate on
+//! workspace-trust model. MCP servers only activate on
 //! explicit invocation, so Info is enough.
+//!
+//! (The `tools/` category and its `principal.tool_installed` /
+//! `principal.tool_removed` events were retired in ADR-062 alongside
+//! the universal tools it watched.)
 //!
 //! **v1 limitation:** drift is only detected at daemon startup —
 //! in-session edits to `principal.toml` or workspace directories go
@@ -31,7 +34,6 @@
 //! {
 //!   "<principal>": {
 //!     "principal": "<sha256 of principal.toml>",
-//!     "tools":     {"<id>": "<sha256 of tools/<id>/*>"},
 //!     "hooks":     {"<id>": "<sha256 of hooks/<id>/*>"},
 //!     "mcp":       {"<id>": "<sha256 of mcp/<id>/*>"}
 //!   }
@@ -72,15 +74,12 @@ use walkdir::WalkDir;
 use peko_observability::{AuditSeverity, Observability};
 
 /// Per-principal baseline entry. `principal` covers the shared-tier
-/// `principal.toml` (Phase A); `tools`/`hooks`/`mcp` cover the
+/// `principal.toml` (Phase A); `hooks`/`mcp` cover the
 /// workspace subdirectories introduced by ADR-047.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BaselineEntry {
     /// SHA-256 of the raw bytes of `<shared>/principal.toml`.
     pub principal: String,
-    /// `<workspace>/tools/<id>` → SHA-256 of all files inside.
-    #[serde(default)]
-    pub tools: BTreeMap<String, String>,
     /// `<workspace>/hooks/<id>` → SHA-256 of all files inside.
     #[serde(default)]
     pub hooks: BTreeMap<String, String>,
@@ -99,17 +98,11 @@ struct WorkspaceCategory {
     installed_event: &'static str,
     /// `removed` event name.
     removed_event: &'static str,
-    /// Severity for both events (Info for tool/mcp; Warning for hooks).
+    /// Severity for both events (Info for mcp; Warning for hooks).
     severity: AuditSeverity,
 }
 
 const WORKSPACE_CATEGORIES: &[WorkspaceCategory] = &[
-    WorkspaceCategory {
-        dir_name: "tools",
-        installed_event: "principal.tool_installed",
-        removed_event: "principal.tool_removed",
-        severity: AuditSeverity::Info,
-    },
     WorkspaceCategory {
         dir_name: "hooks",
         installed_event: "principal.hook_installed",
@@ -147,7 +140,7 @@ pub async fn run_drift_check(
     // Read the previous baseline (if any). A corrupt baseline
     // shouldn't kill the daemon — we just treat the boot as the
     // first boot and write a fresh baseline. We also track
-    // `is_first_boot` so we don't emit "principal added" / "tool
+    // `is_first_boot` so we don't emit "principal added" / "hook
     // installed" / etc. drift events for everything on the very
     // first run (that's noise; the user is the one who created them).
     let (previous, is_first_boot) = match read_baseline(&baseline_path) {
@@ -341,7 +334,6 @@ fn build_baseline_entry(
     for cat in WORKSPACE_CATEGORIES {
         let map = hash_workspace_category(workspace_root, cat.dir_name);
         match cat.dir_name {
-            "tools" => entry.tools = map,
             "hooks" => entry.hooks = map,
             "mcp" => entry.mcp = map,
             _ => {}
@@ -419,9 +411,6 @@ fn hash_directory(path: &Path) -> Result<String> {
 /// uniformly without naming each one.
 fn category_maps(entry: &BaselineEntry) -> BTreeMap<(&'static str, String), String> {
     let mut out = BTreeMap::new();
-    for (id, hash) in &entry.tools {
-        out.insert(("tools", id.clone()), hash.clone());
-    }
     for (id, hash) in &entry.hooks {
         out.insert(("hooks", id.clone()), hash.clone());
     }
@@ -934,7 +923,6 @@ mod tests {
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();
-        write_workspace_entry(&principal_root, "tools", "my-tool", b"v1");
         write_workspace_entry(&principal_root, "hooks", "pre-llm", b"hook-body");
         write_workspace_entry(&principal_root, "mcp", "linear", b"server");
 
@@ -947,15 +935,14 @@ mod tests {
             .unwrap()
             .expect("baseline should exist after first boot");
         let entry = baseline.get("alice").expect("alice should be baselined");
-        assert!(entry.tools.contains_key("my-tool"));
         assert!(entry.hooks.contains_key("pre-llm"));
         assert!(entry.mcp.contains_key("linear"));
     }
 
-    /// Add a workspace tool between boots → `principal.tool_installed`
+    /// Add a workspace mcp server between boots → `principal.mcp_installed`
     /// Info event fires; baseline gains the new id.
     #[tokio::test]
-    async fn tool_installed_emits_info_event() {
+    async fn mcp_installed_emits_info_event() {
         let dir = tempdir().unwrap();
         let config_dir = dir.path().join("config");
         let data_dir = dir.path().join("data");
@@ -969,27 +956,27 @@ mod tests {
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();
-        write_workspace_entry(&principal_root, "tools", "old-tool", b"v1");
+        write_workspace_entry(&principal_root, "mcp", "old-server", b"v1");
 
         let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir.clone(), cache_dir);
         let obs1 = Arc::new(Observability::new("test"));
         assert_eq!(run_drift_check(&resolver, obs1).await.unwrap(), 0);
 
-        write_workspace_entry(&principal_root, "tools", "new-tool", b"v1");
+        write_workspace_entry(&principal_root, "mcp", "new-server", b"v1");
 
         let obs2 = Arc::new(Observability::new("test"));
         let n = run_drift_check(&resolver, obs2.clone()).await.unwrap();
-        assert_eq!(n, 1, "expected one drift event for the new tool");
+        assert_eq!(n, 1, "expected one drift event for the new server");
 
         let entries = obs2.get_audit_log(10).await;
         let installed = entries
             .iter()
-            .find(|e| e.event_type == "principal.tool_installed")
-            .expect("expected principal.tool_installed event");
+            .find(|e| e.event_type == "principal.mcp_installed")
+            .expect("expected principal.mcp_installed event");
         assert_eq!(installed.severity, AuditSeverity::Info);
         assert_eq!(installed.details["principal_name"], "alice");
-        assert_eq!(installed.details["id"], "new-tool");
-        assert_eq!(installed.details["category"], "tools");
+        assert_eq!(installed.details["id"], "new-server");
+        assert_eq!(installed.details["category"], "mcp");
         assert_eq!(installed.details["kind"], "added");
     }
 
@@ -1075,12 +1062,12 @@ mod tests {
         assert!(removed.details["actual_hash"].is_null());
     }
 
-    /// Edit a workspace tool's content between boots → fires the
-    /// `principal.tool_installed` Info event with `kind=changed` and
+    /// Edit a workspace mcp server's content between boots → fires the
+    /// `principal.mcp_installed` Info event with `kind=changed` and
     /// both hashes, so operators see content drift without a new
     /// event name.
     #[tokio::test]
-    async fn tool_content_edit_emits_changed_event() {
+    async fn mcp_content_edit_emits_changed_event() {
         let dir = tempdir().unwrap();
         let config_dir = dir.path().join("config");
         let data_dir = dir.path().join("data");
@@ -1094,14 +1081,14 @@ mod tests {
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();
-        write_workspace_entry(&principal_root, "tools", "my-tool", b"v1");
+        write_workspace_entry(&principal_root, "mcp", "linear", b"v1");
 
         let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir.clone(), cache_dir);
         let obs1 = Arc::new(Observability::new("test"));
         assert_eq!(run_drift_check(&resolver, obs1).await.unwrap(), 0);
 
         // Same id, different content.
-        write_workspace_entry(&principal_root, "tools", "my-tool", b"v2-totally-different");
+        write_workspace_entry(&principal_root, "mcp", "linear", b"v2-totally-different");
 
         let obs2 = Arc::new(Observability::new("test"));
         let n = run_drift_check(&resolver, obs2.clone()).await.unwrap();
@@ -1110,10 +1097,10 @@ mod tests {
         let entries = obs2.get_audit_log(10).await;
         let changed = entries
             .iter()
-            .find(|e| e.event_type == "principal.tool_installed")
-            .expect("expected principal.tool_installed event for content change");
+            .find(|e| e.event_type == "principal.mcp_installed")
+            .expect("expected principal.mcp_installed event for content change");
         assert_eq!(changed.severity, AuditSeverity::Info);
-        assert_eq!(changed.details["id"], "my-tool");
+        assert_eq!(changed.details["id"], "linear");
         assert_eq!(changed.details["kind"], "changed");
         assert!(changed.details["expected_hash"].is_string());
         assert!(changed.details["actual_hash"].is_string());

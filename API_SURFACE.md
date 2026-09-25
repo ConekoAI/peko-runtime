@@ -287,13 +287,6 @@ src/extensions/
 │       ├── adapter.rs
 │       ├── starter.rs
 │       └── router.rs
-├── universal/     # Executable tools
-│   ├── adapter.rs
-│   └── protocol/
-│       ├── manifest.rs
-│       ├── protocol.rs
-│       ├── transport.rs
-│       └── adapter.rs
 ├── skill/         # SKILL.md capabilities (workspace files — no adapter)
 │   ├── mod.rs          # re-exports (SkillFrontmatter, parser, runtime, handler)
 │   ├── prompt.rs       # WorkspaceSkillsPromptHandler — per-turn skills catalog
@@ -311,10 +304,14 @@ Each extension type provides an adapter implementing `ExtensionTypeAdapter`:
 | Adapter | Module Path | Type |
 |---------|-------------|------|
 | `McpAdapter` | `extensions::mcp::adapter` | `mcp` |
-| `UniversalToolAdapter` | `extensions::universal::adapter` | `universal-tool` |
 | `BuiltinToolAdapter` | `extensions::builtin::adapter` | `builtin` |
 | `GatewayAdapter` | `extensions::gateway::adapter` | `gateway` |
 | `GeneralExtensionAdapter` | `extensions::general::adapter` | `general` |
+
+> `universal-tool` is retired (ADR-062): the `UniversalToolAdapter` and
+> the whole `extensions::universal` module are gone. External code
+> reaches the catalog through MCP servers or the `Workflow` builtin
+> (ADR-061).
 
 > `skill` is **not** an adapter-backed extension type any more (ADR-047
 > Phase 2 PR 1). Skills are plain workspace files
@@ -328,7 +325,6 @@ Each extension type provides an adapter implementing `ExtensionTypeAdapter`:
 ```rust
 pub const SKILL: &str = "skill";
 pub const MCP: &str = "mcp";
-pub const UNIVERSAL_TOOL: &str = "universal-tool";
 pub const GATEWAY: &str = "gateway";
 pub const CUSTOM_PREFIX: &str = "custom:";
 
@@ -1152,7 +1148,6 @@ The following operations must be tested:
 5. **Tool Operations**
    - Register tools via ExtensionCore
    - Execute built-in tools
-   - Execute universal tools
    - Execute MCP tools
 
 ---

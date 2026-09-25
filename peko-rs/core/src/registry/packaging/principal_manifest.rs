@@ -36,7 +36,9 @@ pub struct PrincipalLayers {
     /// DAG storage (`local/plans/`), ADR-056.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plans: Option<String>,
-    /// Universal tools layer digest (`tools/<id>/`) — ADR-056.
+    /// Tools layer digest (`tools/<id>/`) — ADR-056. Retained for
+    /// reading legacy packages; the universal tools it carried were
+    /// retired in ADR-062.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<String>,
     /// Skills layer digest (`skills/<id>/`) — ADR-056 (workspace

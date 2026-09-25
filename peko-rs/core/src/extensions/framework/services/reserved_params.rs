@@ -22,9 +22,9 @@
 //! methods on the data types; the orphan rule forbids adding an
 //! inherent `impl` in this crate for a type that lives in
 //! `peko-extension-api`. The free functions below replace the methods
-//! at the 5 call sites (`extensions/universal/protocol/adapter.rs`,
-//! `extensions/mcp/runtime/injectable_proxy.rs`, and the historical
-//! internal sites in this file).
+//! at the call sites (`extensions/mcp/runtime/injectable_proxy.rs` and
+//! the historical internal sites in this file; the universal-tool
+//! adapter site was retired in ADR-062).
 
 use crate::extensions::framework::vault::VaultAccess;
 use peko_tools_core::ToolContext;

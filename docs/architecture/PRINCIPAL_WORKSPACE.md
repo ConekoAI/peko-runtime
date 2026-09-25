@@ -41,7 +41,6 @@ For the trust-and-audit posture that makes this safe, see
 │   │                                #   note rides with that agent (D8)
 │   └── …                            # cold: refs/, journal/, imports/, datasets…
 ├── memory/sessions/<session_id>.jsonl
-├── tools/<tool-id>/manifest.yaml   # universal tools — see UNIVERSAL_TOOLS.md
 ├── skills/<skill-id>/SKILL.md       # skills
 ├── mcp/<server-id>/server.json      # MCP servers
 ├── hooks/<hook-id>/hook.toml        # hooks
@@ -55,7 +54,6 @@ For the trust-and-audit posture that makes this safe, see
 | `agents/<name>.md`         | Agent prompts (per-peko)                                             |
 | `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `agents/<name>.md` for the named agent |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
-| `tools/<id>/manifest.yaml` | Universal tool manifests ([UNIVERSAL_TOOLS.md](UNIVERSAL_TOOLS.md))        |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
 | `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
@@ -77,7 +75,7 @@ sugar over the workspace — the files are the truth, so manage them
 directly:
 
 ```
-ls ~/.peko/principals/<name>/{tools,skills,mcp,hooks,plugins}/   # list
+ls ~/.peko/principals/<name>/{skills,mcp,hooks,plugins}/         # list
 cp -r ./my-skill ~/.peko/principals/<name>/skills/<id>/          # install
 rm -r ~/.peko/principals/<name>/skills/<id>                      # remove
 peko show                  # includes catalog summary
@@ -139,7 +137,7 @@ history.
 ## Discovery & dispatch
 
 1. **Discovery**: at peko boot, scan
-   `<workspace>/{tools,skills,mcp,hooks,plugins}` and build a
+   `<workspace>/{skills,mcp,hooks,plugins}` and build a
    `PrincipalCatalog` keyed by tool name.
 2. **Dispatch**: `tool_runtime::dispatch(tool_name, args)` looks up the
    catalog entry and invokes. No funnel, no `execute_tool_via_hook`
@@ -158,15 +156,15 @@ safety net, not a permission layer.
 ## Audit canary
 
 The peko-config drift detector (ADR-046 + ADR-047 §6) hashes
-`tools/`, `hooks/`, and `mcp/` on each daemon boot and emits:
+`hooks/` and `mcp/` on each daemon boot and emits:
 
-- `principal.tool_installed` / `principal.tool_removed` (Info)
 - `principal.hook_installed` / `principal.hook_removed` (Warning)
 - `principal.mcp_installed` / `principal.mcp_removed` (Info)
 
 Hook install/remove is Warning severity because hooks execute on the
-agent's behalf without an explicit model decision; tool/mcp changes are
-Info.
+agent's behalf without an explicit model decision; mcp changes are
+Info. (The `tools/` category was retired in ADR-062 alongside the
+universal tools it watched.)
 
 ---
 
@@ -177,11 +175,14 @@ If you have existing extensions installed under the legacy
 workspace by hand (the install CLI was removed in ADR-050):
 
 ```
-cp <path>/manifest.yaml ~/.peko/principals/<name>/tools/<id>/manifest.yaml
 cp -r <skill-dir>     ~/.peko/principals/<name>/skills/<id>/      # SKILL.md inside
 cp <path>/server.json ~/.peko/principals/<name>/mcp/<id>/server.json
 cp <path>/hook.toml   ~/.peko/principals/<name>/hooks/<id>/hook.toml
 ```
+
+Universal tools (`tools/<id>/manifest.yaml`) no longer load — they were
+retired in ADR-062; move that logic to an MCP server or a
+`workflows/*.py` workflow (ADR-061) instead of copying the manifest.
 
 The catalog rebuild on the next boot picks them up automatically, and
 `agents/` / `skills/` additions are visible in the system prompt on the

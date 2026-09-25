@@ -2760,7 +2760,10 @@ Every installable extension includes a manifest that describes it.
 | `gateway` | Gateway adapter | `manifest.yaml` |
 | `builtin` | Built-in tool | Embedded in runtime |
 | `general` | General extension | `manifest.yaml` |
-| `universal` | Universal tool adapter | `manifest.yaml` |
+
+> The `universal` (universal tool adapter) extension type was retired in
+> ADR-062; historical `universal-tool` manifests are rejected as invalid
+> types.
 
 ### 14.2 SKILL.md Frontmatter (Skill Extensions)
 

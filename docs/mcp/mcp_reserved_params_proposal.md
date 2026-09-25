@@ -294,7 +294,7 @@ server.setRequestHandler(InitializeRequestSchema, () => ({
 | Config parsing (mcp.toml) | Low | Add `reserved_parameters` section |
 | InjectableMcpToolProxy | Medium | Wrap existing McpToolProxy |
 | Schema modification | Low | Strip reserved params from LLM schema |
-| Runtime context injection | Low | Reuse Universal Tool logic |
+| Runtime context injection | Low | Reuse the reserved-params resolver already shared with the (since-retired, ADR-062) universal-tool adapter |
 | E2E tests | Medium | Test with example MCP server |
 | Documentation | Low | Update MCP docs |
 

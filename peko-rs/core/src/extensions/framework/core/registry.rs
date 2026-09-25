@@ -58,13 +58,18 @@ pub struct ExtensionCore {
     /// other's session key — the bug addressed in issue #68.
     session_keys: Arc<RwLock<HashMap<String, String>>>,
 
-    /// Set once the universal extensions directory has been scanned and
-    /// its tools registered on this core. A fresh `Agent` is built per
-    /// execution but they all share the daemon-global core, so without
-    /// this guard `Agent::init_builtins_async` re-walks the extensions
-    /// dir and rebuilds an `ExtensionStore` on every single run. Tool
-    /// registration is idempotent, so loading once per core is correct.
-    universal_extensions_loaded: Arc<std::sync::atomic::AtomicBool>,
+    /// Set once the principal tool bag (built-ins, workspace skills /
+    /// MCP servers / hooks, prompt-section handlers) has been installed
+    /// on this core. A fresh `Agent` is built per execution but they all
+    /// share the daemon-global core, so without this guard
+    /// `principal::context::ensure_principal_tool_bag` re-installs on
+    /// every single run. Tool registration is idempotent, so installing
+    /// once per core is correct.
+    ///
+    /// (Formerly `universal_extensions_loaded` — renamed when the
+    /// universal tool system was retired in ADR-062; the gate now
+    /// covers the whole tool-bag install it was sharing.)
+    tool_bag_installed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for ExtensionCore {
@@ -90,7 +95,7 @@ impl ExtensionCore {
             services,
             tool_instances: Arc::new(RwLock::new(HashMap::new())),
             session_keys: Arc::new(RwLock::new(HashMap::new())),
-            universal_extensions_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tool_bag_installed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -102,24 +107,23 @@ impl ExtensionCore {
             services,
             tool_instances: Arc::new(RwLock::new(HashMap::new())),
             session_keys: Arc::new(RwLock::new(HashMap::new())),
-            universal_extensions_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tool_bag_installed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
-    /// Whether the universal extensions directory has already been scanned
-    /// and loaded onto this core. Used by `Agent::init_builtins_async` to
-    /// skip the expensive per-execution dir walk + `ExtensionStore`
-    /// rebuild once the shared core is warm.
+    /// Whether the principal tool bag has already been installed onto
+    /// this core. Used by `ensure_principal_tool_bag` to skip the
+    /// per-execution re-install once the shared core is warm.
     #[must_use]
-    pub fn universal_extensions_loaded(&self) -> bool {
-        self.universal_extensions_loaded
+    pub fn tool_bag_installed(&self) -> bool {
+        self.tool_bag_installed
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Mark the universal extensions as loaded on this core. Called after a
-    /// successful directory scan so subsequent executions skip the rescan.
-    pub fn mark_universal_extensions_loaded(&self) {
-        self.universal_extensions_loaded
+    /// Mark the tool bag as installed on this core. Called after a
+    /// successful install pass so subsequent executions skip it.
+    pub fn mark_tool_bag_installed(&self) {
+        self.tool_bag_installed
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
@@ -320,7 +324,7 @@ impl ExtensionCore {
         }
 
         // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
-        // This ensures ALL tools (built-in, MCP, Universal) are checked consistently.
+        // This ensures ALL tools (built-in, MCP) are checked consistently.
         if let HookPoint::ToolExecute { ref tool_name } = point {
             let capabilities = match &input {
                 HookInput::ToolCall { capabilities, .. } => capabilities.as_ref(),

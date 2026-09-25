@@ -43,8 +43,8 @@
 //!
 //! Malformed manifests are logged at `warn!` and skipped; the scanner
 //! continues with the next hook. A single broken `hook.toml` cannot
-//! prevent other hooks from loading — the same posture as the MCP and
-//! universal-tool scanners.
+//! prevent other hooks from loading — the same posture as the MCP
+//! scanner.
 
 use crate::extensions::command_handler::{
     CommandHookConfig, CommandHookHandler, CommandOutputFormat,
@@ -108,7 +108,6 @@ pub struct HookManifest {
 /// individual hook misconfigurations.
 ///
 /// Mirrors [`crate::extensions::mcp::workspace::load_workspace_mcp_servers`]
-/// and [`crate::extensions::universal::workspace::load_workspace_universal_tools`]
 /// in shape: a single canonical workspace scanner per tool surface,
 /// called once per principal boot.
 pub async fn load_workspace_hooks(

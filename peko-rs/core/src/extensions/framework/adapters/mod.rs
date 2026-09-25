@@ -149,7 +149,7 @@ fn parse_pure_yaml_manifest(
 pub mod parsing {
     use anyhow::{Context, Result};
     use serde::de::DeserializeOwned;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     pub fn parse_yaml_frontmatter(content: &str) -> Result<(String, String)> {
         let mut lines = content.lines().peekable();
@@ -451,58 +451,6 @@ pub mod parsing {
             .with_context(|| format!("Failed to read file: {path:?}"))?;
         toml::from_str(&content).context("Failed to parse TOML")
     }
-
-    pub async fn find_executable(tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
-        let candidates = [
-            tool_path.join(format!("{tool_name}.py")),
-            tool_path.join(format!("{tool_name}.js")),
-            tool_path.join(format!("{tool_name}.sh")),
-            tool_path.join(tool_name),
-        ];
-        for candidate in &candidates {
-            if candidate.exists() {
-                return Some(candidate.clone());
-            }
-        }
-        let mut entries = tokio::fs::read_dir(tool_path).await.ok()?;
-        while let Some(entry) = entries.next_entry().await.ok().flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name() {
-                    if name != "manifest.yaml" {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    pub fn find_executable_sync(tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
-        let candidates = [
-            tool_path.join(format!("{tool_name}.py")),
-            tool_path.join(format!("{tool_name}.js")),
-            tool_path.join(format!("{tool_name}.sh")),
-            tool_path.join(tool_name),
-        ];
-        for candidate in &candidates {
-            if candidate.exists() {
-                return Some(candidate.clone());
-            }
-        }
-        let entries = std::fs::read_dir(tool_path).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name() {
-                    if name != "manifest.yaml" {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-        None
-    }
 }
 
 /// Manifest format definitions
@@ -615,13 +563,9 @@ mod tests {
     fn test_extract_extension_type_from_yaml_with_type() {
         let temp = TempDir::new().unwrap();
         let manifest = temp.path().join("manifest.yaml");
-        std::fs::write(
-            &manifest,
-            "id: test\nname: Test\nextension_type: universal-tool\n",
-        )
-        .unwrap();
+        std::fs::write(&manifest, "id: test\nname: Test\nextension_type: mcp\n").unwrap();
         let result = extract_extension_type_from_yaml(&manifest).unwrap();
-        assert_eq!(result, Some("universal-tool".to_string()));
+        assert_eq!(result, Some("mcp".to_string()));
     }
 
     #[test]

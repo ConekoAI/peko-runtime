@@ -46,7 +46,7 @@
 //! async fn example() {
 //!     let store = ExtensionStore::new();
 //!     // Sprint 9 Commit 3: the gateway adapter framework was retired.
-//!     // Skills / MCP / universal tools remain.
+//!     // Skills / MCP remain (universal tools retired in ADR-062).
 //!     store.install("./my-skill").await.unwrap();
 //! }
 //! ```

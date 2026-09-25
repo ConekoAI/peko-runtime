@@ -2,7 +2,7 @@
 //!
 //! Bridges `ExtensionCore` async hooks to the `AsyncExecutor` framework.
 //!
-//! This adapter enables extensions (MCP, Universal Tools, etc.) to participate
+//! This adapter enables extensions (MCP etc.) to participate
 //! in the async tool execution ecosystem with the same capabilities as built-in tools:
 //! - Return receipts for immediate non-blocking response
 //! - Background task execution

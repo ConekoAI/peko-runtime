@@ -255,7 +255,7 @@ test-cli-agent-signature:
 # tests drive the mock LLM. The L1 (lifecycle-only) PS scripts
 # that this slice replaced were deleted in Phase E. The L2
 # (start/stop/status) and L3 (LLM-driven tool execution) scripts
-# stay in `e2e_tests/extensions/{mcp,skill,universal,gateway}/` —
+# stay in `e2e_tests/extensions/{mcp,skill,gateway}/` —
 # they need Python and/or Node runtimes in the test environment.
 # See docs/integration/TESTING.md §7 for the extensions migration
 # context.

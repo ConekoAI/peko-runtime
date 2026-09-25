@@ -283,7 +283,7 @@ impl PeerChildTurns {
         // (`PrincipalContext::core` + `agent_runner`): the peer-ingress
         // path builds no `PrincipalContext`, so without this the peer
         // turn ran with built-ins only — no `Skill` tool, no workspace
-        // MCP/universal tools, no `{{agents}}`/`{{skills}}` prompt
+        // MCP tools, no `{{agents}}`/`{{skills}}` prompt
         // sections, and no `agent_catalog` (the tool the root prompt
         // advertises). Both installs are idempotent; the tool-bag
         // install honors the core's once-gate.

@@ -200,11 +200,11 @@ impl Clone for Agent {
 impl Agent {
     /// Initialize built-in tools and register them with `ExtensionCore`.
     ///
-    /// This asynchronous version loads Universal Tools from extensions directory
-    /// and registers only agent-specific built-in tools with `ExtensionCore`.
+    /// Registers only agent-specific built-in tools with `ExtensionCore`.
     /// Common built-in tools (Bash, Read, Write, etc.) are already
-    /// registered by the daemon's `AppState` startup via `ToolRuntime`.
-    /// Extension tools (Universal and MCP) are registered via `ExtensionStore` hooks.
+    /// registered by the daemon's `AppState` startup via `ToolRuntime`;
+    /// MCP tools come from the workspace scanner in
+    /// `principal::context::install_principal_tool_bag`.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use peko_tools_core::Tool;
 
@@ -405,80 +405,10 @@ impl Agent {
         // whitelist. This eliminates a race where concurrent agents overwrite
         // each other's capability set on the daemon-global `ExtensionCore`.
 
-        // Load Universal Tools from extensions directory (where `peko ext install` puts them).
-        //
-        // A fresh `Agent` is constructed per execution but they all share
-        // the daemon-global `ExtensionCore`, so this scan only needs to run
-        // once per core. Skip the dir walk + `ExtensionStore` rebuild once
-        // the core is warm — otherwise this re-walks disk on every run.
-        if self.extension_core.universal_extensions_loaded() {
-            tracing::debug!(
-                "Universal extensions already loaded on shared core; skipping rescan for agent '{}'",
-                self.config.name
-            );
-        } else {
-            let extensions_dir = crate::common::paths::PathResolver::new().extensions_root();
-            tracing::info!(
-                "Checking for Universal Tools in extensions directory: {}",
-                extensions_dir.display()
-            );
-            if extensions_dir.exists() {
-                tracing::info!(
-                    "Loading Universal Tools from '{}' for agent '{}'...",
-                    extensions_dir.display(),
-                    self.config.name
-                );
-                // Use ExtensionStore for unified tool discovery
-                use crate::extensions::framework::store::ExtensionStore;
-                let store = ExtensionStore::with_core(self.extension_core.clone());
-                // PR-C.5: `GeneralExtensionAdapter::register_adapter`
-                // call removed. No `ExtensionTypeAdapter` impls remain
-                // (skill/mcp/slash/universal/gateway retired in
-                // prior phases; validation deleted in PR-C.2;
-                // BuiltInAdapters gutted in PR-C.1; general adapter
-                // gutted here). `load_from_directory` only consults
-                // adapters for manifest types still produced by the
-                // validator path — which is itself deleted — so
-                // registering a no-op adapter here accomplished
-                // nothing.
-                match store.load_from_directory(&extensions_dir).await {
-                    Ok(loaded_ids) => {
-                        if loaded_ids.is_empty() {
-                            tracing::debug!("No extensions found in {}", extensions_dir.display());
-                        } else {
-                            tracing::info!(
-                                "✅ Loaded {} extensions: {:?}",
-                                loaded_ids.len(),
-                                loaded_ids
-                                    .iter()
-                                    .map(std::string::ToString::to_string)
-                                    .collect::<Vec<_>>()
-                            );
-                        }
-                        // Mark the core warm so later executions skip the rescan.
-                        // Only on success so a transient failure is retried next run.
-                        self.extension_core.mark_universal_extensions_loaded();
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "❌ Failed to load extensions from {}: {:#}",
-                            extensions_dir.display(),
-                            e
-                        );
-                        // Continue without extensions
-                    }
-                }
-            } else {
-                tracing::debug!(
-                    "Extensions directory not found at {} - no universal tools to load",
-                    extensions_dir.display()
-                );
-            }
-        }
-
         // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
         // Common built-in tools are already registered via ToolRuntime::register_builtins
-        // Extension tools (Universal and MCP) are already registered via ExtensionStore hooks
+        // (MCP tools come from the workspace scanner in
+        // `principal::context::install_principal_tool_bag`).
         // Agent-specific tools are per-agent and per-principal — each Agent instance
         // owns its own Async* family scoped to its own principal_id.
         for tool in &tools {

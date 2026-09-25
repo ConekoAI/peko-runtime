@@ -267,7 +267,7 @@ A **Peko** is a long-lived AI assistant — it owns its memory, identity, and se
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-601 | Open the **Extensions** page | Lists installed extensions with type / status / hooks columns | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-602 | If empty, install a simple skill or universal tool you trust | New entry appears in the list | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-602 | If empty, install a simple skill or MCP server you trust | New entry appears in the list | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 
 ---
 

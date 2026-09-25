@@ -4,6 +4,43 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Retired universal tools (ADR-062, 2026-09-25)
+
+- **Removed the universal tool system** — the JSON-RPC-over-stdio
+  protocol, `UniversalToolAdapter`, and the
+  `<workspace>/tools/<id>/manifest.yaml` scanner
+  (`peko-rs/core/src/extensions/universal/`, ~1.7k LOC) are deleted,
+  along with `examples/python_tool/` and
+  `peko-rs/core/e2e_tests_archive/extensions/universal/**`. Nothing
+  in-tree used the system: no live manifests, no integration coverage,
+  and a stale example. External code reaches the catalog through MCP
+  servers (schema'd tools) or the `Workflow` builtin (ADR-061 —
+  attributed Python subprocesses); see ADR-062 §4 for the migration
+  table.
+- **Scanner wiring deleted**: `install_principal_tool_bag` drops its
+  `tools_dir` parameter and scan block; the vestigial
+  global-extensions-dir scan in `agents/agent.rs` (which loaded
+  nothing — no `ExtensionTypeAdapter` impls remained) is gone.
+- **`universal-tool` is no longer a valid extension type**:
+  `extension_types::UNIVERSAL_TOOL` removed; historical manifests fail
+  `is_valid_type` as install errors (gateway/slash precedent).
+  `ToolSource::Universal` removed from `peko-extension-api`.
+- **`ExtensionCore::universal_extensions_loaded` renamed to
+  `tool_bag_installed`** — the once-gate had drifted into gating the
+  entire principal tool-bag install (skills, MCP, hooks, prompt
+  handlers); renamed with no behavior change.
+- **Drift canary drops the `tools/` category** — with nothing loading
+  from `<workspace>/tools/`, hashing it on boot was noise; the
+  `principal.tool_installed` / `principal.tool_removed` audit events
+  are retired. `hooks/` (Warning) and `mcp/` (Info) categories
+  unchanged.
+- **Housekeeping**: orphaned `parsing::find_executable{,_sync}` and
+  `PathResolver::{universal_tools_dir, tools_dir}` helpers removed;
+  `docs/architecture/UNIVERSAL_TOOLS.md` and
+  `docs/mcp/universal_vs_mcp_comparison.md` deleted. `LayerType::Tools`
+  stays for reading legacy `.peko` packages — snapshots still
+  ship/restore a workspace `tools/` directory as plain, inert files.
+
 ### Retired the `peko-tool` Python SDK (2026-09-25)
 
 - **Removed `sdks/python/peko_tool`** (the `@tool(...)` decorator SDK, ~570
@@ -16,12 +53,10 @@ All notable changes to Peko.
   `tool/describe` method the runtime no longer sends, and generated a
   `reserved_parameters` list where the parser expects a
   `name → {source, field}` map.
-- **Universal tools themselves are unaffected** — `extensions/universal/` is
-  supported and maintained. New authoring guide at
-  [`docs/architecture/UNIVERSAL_TOOLS.md`](docs/architecture/UNIVERSAL_TOOLS.md)
-  covers the layout, manifest fields, executable discovery, the stdio
-  JSON-RPC wire shape, reserved parameters, and a stdlib-only Python example;
-  linked from `docs/README.md`.
+- ~~**Universal tools themselves are unaffected** — `extensions/universal/` is
+  supported and maintained.~~ **Superseded the same day by ADR-062** (see
+  above): universal tools are now retired end to end, and
+  `docs/architecture/UNIVERSAL_TOOLS.md` was deleted with them.
 - Fixed the universal tool manifest filename in
   `docs/architecture/PRINCIPAL_WORKSPACE.md` (`tool.toml` → `manifest.yaml`,
   three places).

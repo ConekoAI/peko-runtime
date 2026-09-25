@@ -88,7 +88,7 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
 /// in `principal.toml`.
 ///
 /// `tools` are bare tool names (e.g. `"Write"`, `"Bash"`, `"Agent"`) or
-/// already-typed capability strings (e.g. `"universal:calculator_simple"`).
+/// already-typed capability strings (e.g. `"mcp:memory_server"`).
 /// Bare names are written as `tool:<name>`; strings that already contain a
 /// `:` are passed through verbatim into `principals/<name>/principal.toml`
 /// under `[capabilities] grants` after `peko principal create`.
