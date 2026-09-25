@@ -1,8 +1,7 @@
 //! Shared Process Transport
 //!
 //! Provides a unified interface for spawning and managing child processes
-//! for both Universal Tools and MCP servers. This eliminates duplication
-//! between the two transport implementations.
+//! for MCP servers (and historically Universal Tools — retired ADR-062).
 //!
 //! # Architecture
 //!

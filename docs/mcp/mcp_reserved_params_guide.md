@@ -255,17 +255,6 @@ peko ext info memory-server
 - If server includes reserved params in `description`, they remain visible
 - This is cosmetic - injection still works
 
-## Comparison with Universal Tools
-
-| Feature | MCP Tools | Universal Tools |
-|---------|-----------|-----------------|
-| Protocol | MCP (2024-11-05) | JSON-RPC 2.0 |
-| Connection | Persistent | Process-per-call |
-| Reserved params | Via adapter layer | Native support |
-| Schema filtering | Yes | Yes |
-| Sources | Runtime, Env, Static | Runtime, Env, Static |
-| Use case | External servers | Agent-specific tools |
-
 ## Future Enhancements
 
 Potential future improvements:
@@ -279,4 +268,3 @@ Potential future improvements:
 
 - [MCP Reserved Parameters Proposal](./mcp_reserved_params_proposal.md) - Original design document
 - [MCP Memory Server Example](../examples/mcp-memory-server/) - Example third-party MCP server
-- [Universal Tools Documentation](./universal_tools.md) - Similar feature for native tools

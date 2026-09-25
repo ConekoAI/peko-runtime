@@ -1,9 +1,7 @@
 //! Built-in Tool Adapter
 //!
-//! Registers native Tool trait implementations with `ExtensionCore`.
-//!
-//! Unlike `UniversalToolAdapter` which spawns external processes,
-//! this adapter uses direct trait calls for minimal overhead.
+//! Registers native Tool trait implementations with `ExtensionCore`
+//! using direct trait calls for minimal overhead.
 //!
 //! ## Usage
 //! ```rust,ignore

@@ -135,7 +135,10 @@ pub enum LayerType {
     /// Plans layer — the principal's authored Plan DAG storage
     /// (`local/plans/`), ADR-056.
     Plans,
-    /// Tools layer — universal tools (`tools/<id>/`), ADR-056.
+    /// Tools layer (`tools/<id>/`), ADR-056. Retained for legacy
+    /// packages: the universal tools it carried were retired in
+    /// ADR-062, but full-existence snapshots still ship/restore a
+    /// workspace `tools/` directory as plain files.
     Tools,
     /// Hooks layer — workspace hooks (`hooks/<id>/`), ADR-056.
     Hooks,

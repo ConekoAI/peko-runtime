@@ -23,9 +23,8 @@ Complete documentation for the Peko multi-agent runtime.
 
 - **[Principal Workspace](architecture/PRINCIPAL_WORKSPACE.md)** — Per-principal tooling, layout, plugin packaging (ADR-047)
 - **[Skills](architecture/SKILLS.md)** — Skills as workspace files: SKILL.md format, per-turn catalog, invocation, authoring
-- **[Universal Tools](architecture/UNIVERSAL_TOOLS.md)** — Workspace executables as tools: manifest.yaml, stdio JSON-RPC, reserved params
 - **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-058
+- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-062
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
@@ -38,7 +37,6 @@ Complete documentation for the Peko multi-agent runtime.
 - **[MCP Migration Guide](mcp/MIGRATION_GUIDE.md)** — Moving tools to MCP
 - **[Reserved Parameters Guide](mcp/mcp_reserved_params_guide.md)** — Runtime context injection
 - **[Reserved Parameters Proposal](mcp/mcp_reserved_params_proposal.md)** — Design proposal
-- **[Universal vs MCP Comparison](mcp/universal_vs_mcp_comparison.md)** — Protocol tradeoffs
 
 ---
 
@@ -58,16 +56,14 @@ docs/
 │   ├── CAPABILITY_BASED_EXTENSIONS.md
 │   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
 │   ├── SKILLS.md                   # skills as workspace files (SKILL.md format + catalog)
-│   ├── UNIVERSAL_TOOLS.md          # universal tools: manifest.yaml + stdio JSON-RPC
 │   ├── builtin-tools.md
-│   └── adr/                         # ADR-001 through ADR-058
+│   └── adr/                         # ADR-001 through ADR-062
 └── mcp/
     ├── MCP.md
     ├── QUICK_START.md
     ├── MIGRATION_GUIDE.md
     ├── mcp_reserved_params_guide.md
-    ├── mcp_reserved_params_proposal.md
-    └── universal_vs_mcp_comparison.md
+    └── mcp_reserved_params_proposal.md
 ```
 
 For top-level project docs, see [`../README.md`](../README.md).
@@ -112,6 +108,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-050](architecture/adr/ADR-050-capabilities-as-workspace-files.md) | Capabilities as workspace files: extension-management CLI + persona IPC retired; per-turn workspace agents/skills catalog in the system prompt; presence = visibility |
 | [ADR-051](architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md) | Compaction pages as an addressable archive: logical page chain over compaction boundary events, agent retrieval via read/search tools, page catalog in the summary message |
 | [ADR-058](architecture/adr/ADR-058-origin-signed-messaging.md) | Origin-signed messaging *(Draft)*: per-principal keys, author-signed envelopes (JWS), proof-of-possession registration, typed bridge claims, local peer credentials |
+| [ADR-062](architecture/adr/ADR-062-retire-universal-tools.md) | Universal tools retired: stdio protocol + `<workspace>/tools/` scanner deleted; migration to MCP or `Workflow` (ADR-061) |
 
 ---
 

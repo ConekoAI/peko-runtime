@@ -44,7 +44,7 @@ impl std::fmt::Debug for ManagedRuntime {
 
 /// The concrete runtime implementation
 pub enum RuntimeKind {
-    /// Child process (MCP server, out-of-process gateway, universal tool)
+    /// Child process (MCP server, workflow subprocess)
     Process {
         child: Child,
         pid: u32,

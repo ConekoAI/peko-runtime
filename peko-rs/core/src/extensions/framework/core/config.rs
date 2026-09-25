@@ -151,7 +151,7 @@ impl ExtensionServices {
     ///
     /// Returns the trait-object reference so callers can dispatch via
     /// the [`AsyncExecutionRouter`] port. Root-side adapters
-    /// (`extensions/{builtin,mcp,universal}/adapter.rs`) call
+    /// (`extensions/{builtin,mcp}/adapter.rs`) call
     /// `.execute_from_hook(...)` on this; the host's
     /// [`Self::wait_for_async_tasks`] delegates to
     /// `.wait_for_all_tasks(...)`.
@@ -347,7 +347,7 @@ impl TelemetryService {
 /// validator, runs the caller's preprocessor (if any), invokes the caller's
 /// `exec_fn` (the actual tool call), and maps the `Result<Value>` back to a
 /// `HookResult`. This is enough to satisfy the F37 funnel used by
-/// `BuiltinExecuteHandler` (and the parallel MCP / Universal adapters) when
+/// `BuiltinExecuteHandler` (and the parallel MCP adapter) when
 /// no real daemon-side `AsyncExecutor` is wired in — typical for unit tests
 /// that construct an `ExtensionCore` via `ExtensionCore::new()`.
 ///

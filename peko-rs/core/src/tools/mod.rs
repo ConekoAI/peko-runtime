@@ -36,7 +36,7 @@
 //! the cleanup invariant (root must not `pub use peko_*::*`).
 //!
 //! Previously, this module also contained `framework` (async_executor,
-//! universal protocol, shared utilities). The `core`/`types`/`manager`/
+//! tool protocol, shared utilities). The `core`/`types`/`manager`/
 //! `transport`/`services`/`protocols/shared` parts were lifted into the
 //! `peko-extension-host` workspace crate in Phase 8 (PRs #292, #293,
 //! follow-ups #294-#297). Root keeps `src/extensions/framework/` as a

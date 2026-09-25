@@ -119,7 +119,8 @@ impl InjectableMcpToolProxy {
     /// This creates a modified schema that hides the reserved parameters from the LLM,
     /// while still validating them internally.
     ///
-    /// Uses the shared schema filter for consistency with Universal Tools.
+    /// Uses the shared schema filter (the same one the retired
+    /// universal-tool adapter used — ADR-062).
     fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
         use crate::extensions::framework::protocols::shared::schema_filter::filter_reserved_params;
         use std::collections::HashSet;

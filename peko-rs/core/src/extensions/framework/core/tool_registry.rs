@@ -4,7 +4,7 @@
 //!
 //! ## Key shape
 //!
-//! Entries are keyed by `(String, PrincipalId)`. Built-in, universal, and MCP
+//! Entries are keyed by `(String, PrincipalId)`. Built-in and MCP
 //! tools are registered once at core init under
 //! [`PrincipalId::system`](peko_subject::PrincipalId::system) — the
 //! "system" sentinel that is visible to every principal. Per-principal tools
@@ -36,7 +36,7 @@ use tracing::{debug, instrument, warn};
 #[derive(Debug)]
 pub struct ToolRegistry {
     /// Tool index: maps `(tool_name, principal_id)` to the `HookId` of the
-    /// execution handler. Built-ins and universal tools are registered under
+    /// execution handler. Built-ins are registered under
     /// [`PrincipalId::system`]; per-principal tools under their own id.
     pub(crate) tool_index: SharedRegistry<(String, PrincipalId), HookId>,
 
@@ -121,7 +121,7 @@ impl ToolRegistry {
     /// The tool is keyed by `(tool_name, principal_id)`. Pass
     /// [`PrincipalId::system`](peko_subject::PrincipalId::system) as
     /// `principal_id` to register a globally-visible tool (built-ins,
-    /// universal, MCP). Per-principal tools override same-named system
+    /// MCP). Per-principal tools override same-named system
     /// entries on read; the system entry remains in place for other
     /// principals.
     ///
@@ -355,7 +355,7 @@ mod tests {
             .register_tool(
                 "Read",
                 HookId::new(),
-                ExtensionId::new("universal:read"),
+                ExtensionId::new("mcp:read"),
                 system(),
             )
             .await
@@ -370,7 +370,7 @@ mod tests {
             "tool whose owning extension is inactive should be denied"
         );
 
-        let active = ActiveExtensionSet::with_ids(["universal:read"]);
+        let active = ActiveExtensionSet::with_ids(["mcp:read"]);
         assert!(
             registry
                 .is_tool_enabled("Read", &caps, Some(&active), system())

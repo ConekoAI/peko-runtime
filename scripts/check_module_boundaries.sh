@@ -26,7 +26,7 @@ cd "$(dirname "$0")/.."
 
 EXIT_CODE=0
 
-EXTENSION_TYPES=(builtin gateway general mcp skill universal)
+EXTENSION_TYPES=(builtin gateway general mcp skill)
 
 # ---------------------------------------------------------------------------
 # Whether Rule 4 (commands -> persistence/packaging) is a hard gate.

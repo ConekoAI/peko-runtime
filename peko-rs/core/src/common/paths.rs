@@ -718,14 +718,6 @@ impl PathResolver {
         self.config_dir.join("vault.enc")
     }
 
-    /// Get the Universal Tools directory
-    ///
-    /// Path: `{data_dir}/tools`
-    #[must_use]
-    pub fn universal_tools_dir(&self) -> PathBuf {
-        self.data_dir.join("tools")
-    }
-
     /// Get the Agents directory
     ///
     /// Path: `{data_dir}/agents`
@@ -793,14 +785,6 @@ impl PathResolver {
     #[must_use]
     pub fn agent_workspace(&self, agent: &str) -> PathBuf {
         self.agent_workspaces_root(agent).join("personal")
-    }
-
-    /// Get the tools directory
-    ///
-    /// Path: `{data_dir}/tools`
-    #[must_use]
-    pub fn tools_dir(&self) -> PathBuf {
-        self.data_dir.join("tools")
     }
 
     /// Get the async tasks directory
@@ -1236,12 +1220,6 @@ impl GlobalPaths {
     #[must_use]
     pub fn agent_sessions_dir(&self, name: &str) -> PathBuf {
         self.resolver.agent_sessions_dir(name)
-    }
-
-    /// Get tools directory.
-    #[must_use]
-    pub fn tools_dir(&self) -> PathBuf {
-        self.resolver.tools_dir()
     }
 
     /// Get MCP configuration file path.

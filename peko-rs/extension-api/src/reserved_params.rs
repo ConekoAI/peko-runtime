@@ -19,7 +19,7 @@ use std::collections::HashMap;
 /// Unified reserved parameter configuration
 ///
 /// This is the single source of truth for reserved parameter configuration
-/// across all extension types (Universal Tools, MCP, etc.).
+/// across all extension types (MCP etc.).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ReservedParamsConfig {
     /// Map of parameter name to its source configuration

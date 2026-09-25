@@ -241,8 +241,8 @@ impl Capabilities {
     /// empty `tools: []` wire catalog. This bundle therefore carries the
     /// wildcard grants that make a fresh Principal useful out of the box:
     ///
-    /// - `tool:*` — every tool in the catalog (built-in, workspace, MCP,
-    ///   universal) is visible and callable. Wildcards match by prefix via
+    /// - `tool:*` — every tool in the catalog (built-in, workspace, MCP)
+    ///   is visible and callable. Wildcards match by prefix via
     ///   [`Capability::matches`].
     /// - `agent:*` — any workspace agent template (`agents/<name>/AGENT.md`)
     ///   passes the `Agent` tool's `is_subagent_enabled` check.

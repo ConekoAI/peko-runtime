@@ -759,7 +759,7 @@ impl AppState {
 
         // PR-C.5: `GeneralExtensionAdapter::register_adapter` call
         // removed. With PR-A/B/C.1-C.4 deleting every other adapter
-        // type (skill/mcp/slash/universal/gateway in prior phases;
+        // type (skill/mcp/slash/gateway in prior phases;
         // validation/BuiltInAdapters in PR-C.1+PR-C.2), no
         // `ExtensionTypeAdapter` impls remain in the daemon's
         // process. The store's `load_all` only consults adapters

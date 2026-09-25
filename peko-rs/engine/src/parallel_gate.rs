@@ -31,8 +31,8 @@
 //! Two concurrent `Write` calls in the same batch clobber each
 //! other; `Read + Write` to the same path can race; concurrent
 //! `Bash` calls share cwd state. F33 adds the gate at the
-//! `ToolExecutor::execute` chokepoint so built-ins and universal
-//! tools share the serialization.
+//! `ToolExecutor::execute` chokepoint so every tool shares the
+//! serialization.
 
 use std::sync::Arc;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};

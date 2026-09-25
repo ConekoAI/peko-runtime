@@ -1,6 +1,6 @@
 //! Shared utilities for Tool proxy implementations
 //!
-//! Provides common functionality for wrapping external tools (MCP, Universal, etc.)
+//! Provides common functionality for wrapping external tools (MCP etc.)
 //! with consistent context handling, abort/timeout checks, and progress reporting.
 
 // Phase 8c.1.C: lift from `src/extensions/framework/protocols/shared/proxy_utils.rs`.
@@ -121,7 +121,7 @@ pub fn format_status(tool_name: &str, server_name: Option<&str>, status: &str) -
 
 /// Estimate tool duration based on name heuristics
 ///
-/// This is a shared implementation used by both MCP and Universal tool proxies.
+/// This is a shared implementation used by the MCP tool proxies.
 #[must_use]
 pub fn estimate_tool_duration(name: &str) -> u64 {
     let name_lower = name.to_lowercase();

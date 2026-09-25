@@ -283,7 +283,6 @@ All capabilities — tools, skills, MCP servers, and channels — are implemente
 |-----------|------|---------|
 | **Skills** | `SKILL.md` | Documentation-driven agent capabilities |
 | **MCP Servers** | `config.json` | External tool server integration |
-| **Universal Tools** | `manifest.json` | Executable command-line tools |
 | **Built-in Tools** | Native code | Core runtime tools |
 | **Channels** | `CHANNEL.toml` | I/O adapters (CLI, HTTP, etc.) |
 | **General Extensions** | `extension.yaml` | Multi-hook custom extensions |
@@ -291,7 +290,9 @@ All capabilities — tools, skills, MCP servers, and channels — are implemente
 > **Sprint 9** retired the `gateway` extension type (chat-platform
 > adapters like Discord/Slack). External ingress now lands in per-peer
 > standing children via the agent-session paradigm; `peko ext install`
-> no longer accepts gateway manifests.
+> no longer accepts gateway manifests. **ADR-062** retired the
+> `universal-tool` type (executable manifest tools) — external code
+> reaches the catalog via MCP servers or `workflows/*.py` (ADR-061).
 
 ### Managing Extensions
 
@@ -425,8 +426,7 @@ src/
 │   ├── builtin/        # Built-in tool adapter
 │   ├── general/        # General extension adapter
 │   ├── mcp/            # MCP adapter
-│   ├── skill/          # Skill adapter
-│   └── universal/      # Universal tool adapter
+│   └── skill/          # Skill adapter
 ├── identity/           # DID identity system, ed25519 keys, key storage, runtime identity
 ├── ipc/                # Inter-process communication
 ├── observability/      # Audit logging (pub(crate))

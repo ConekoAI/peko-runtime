@@ -372,7 +372,7 @@ impl ToolRuntime {
     }
 
     /// List all registered tools visible to the system scope
-    /// (built-ins, universal, MCP). The daemon has a single shared
+    /// (built-ins, MCP). The daemon has a single shared
     /// `ExtensionCore` and `ToolRuntime` is process-scoped, so
     /// `PrincipalId::system()` is the right scope here.
     #[must_use]
