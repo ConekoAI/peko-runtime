@@ -207,7 +207,7 @@ impl SessionRuntime for SessionCache {
             .values()
             .filter(|s| {
                 let archived_match = include_archived || !s.archived;
-                let agent_match = agent_id.map_or(true, |a| s.agent_id.as_deref() == Some(a));
+                let agent_match = agent_id.map_or(true, |a| s.agent_name.as_deref() == Some(a));
                 let active_match = cutoff_ms.map_or(true, |_| {
                     chrono::DateTime::parse_from_rfc3339(&s.last_activity)
                         .map(|dt| dt.timestamp_millis() as u64 >= cutoff_ms.unwrap_or(0))
@@ -233,22 +233,40 @@ impl SessionRuntime for SessionCache {
         session_key: &str,
         limit: usize,
         _include_tools: bool,
-    ) -> anyhow::Result<Vec<HistoryMessage>> {
+    ) -> anyhow::Result<(Vec<HistoryMessage>, String)> {
         let histories = self.histories.lock().expect("histories mutex poisoned");
         let history = histories
             .get(&session_key.to_string())
             .cloned()
             .unwrap_or_default();
-        Ok(history.into_iter().take(limit).collect())
+        // Addressable path echo (test-double approximation of the
+        // production adapter's resolved slug path).
+        let path = {
+            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            sessions.get(session_key).map_or_else(
+                || format!("sess:/{}", Self::normalize_path(session_key)),
+                |info| format!("sess:{}", Self::normalize_path(&info.path)),
+            )
+        };
+        Ok((history.into_iter().take(limit).collect(), path))
     }
 
     async fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult> {
-        self.statuses
+        let path = {
+            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            sessions
+                .get(session_key)
+                .map(|info| format!("sess:{}", Self::normalize_path(&info.path)))
+        };
+        let mut status = self
+            .statuses
             .lock()
             .expect("statuses mutex poisoned")
             .get(&session_key.to_string())
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+        status.path = path.unwrap_or_default();
+        Ok(status)
     }
 
     fn current_session_key(&self) -> String {
@@ -292,6 +310,7 @@ impl SessionRuntime for SessionCache {
                 };
                 hits.push(SessionSearchHit {
                     session_id: info.session_id.clone(),
+                    path: format!("sess:{}", Self::normalize_path(&info.path)),
                     role: msg.role.clone(),
                     timestamp: msg.timestamp.clone(),
                     snippet: Self::snippet_around(&msg.content, start, needle.len()),
@@ -346,7 +365,7 @@ impl SessionRuntime for SessionCache {
         session_key: &str,
         _target_parent: String,
         _target_slug: String,
-        label: Option<String>,
+        title: Option<String>,
     ) -> anyhow::Result<BranchOutcome> {
         // In-memory test impl: ignore target_parent/target_slug (the
         // production adapter wires those into branch-then-reparent).
@@ -368,9 +387,8 @@ impl SessionRuntime for SessionCache {
         let new_key = format!("{session_key}-branch-{n}");
 
         let mut info = parent.clone();
-        info.session_key = new_key.clone();
         info.session_id = new_key.clone();
-        info.label = label.or(parent.label);
+        info.title = title.or(parent.title);
         sessions.insert(new_key.clone(), info);
 
         let history = self
@@ -401,7 +419,8 @@ impl SessionRuntime for SessionCache {
         }
 
         Ok(BranchOutcome {
-            new_session_id: new_key,
+            new_session_id: new_key.clone(),
+            new_path: format!("sess:/{}", new_key),
             parent_session_id: session_key.to_string(),
         })
     }
@@ -417,7 +436,7 @@ impl SessionRuntime for SessionCache {
             .get_mut(session_key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
         if let Some(ref title) = title {
-            info.label = Some(title.clone());
+            info.title = Some(title.clone());
         }
         if let Some(ref slug) = slug {
             info.slug = Some(slug.clone());
@@ -431,7 +450,7 @@ impl SessionRuntime for SessionCache {
             .get_mut(session_key)
         {
             if let Some(title) = title {
-                status.label = Some(title);
+                status.title = Some(title);
             }
         }
         Ok(())
@@ -520,13 +539,27 @@ impl SessionRuntime for SessionCache {
         let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
         let mut histories = self.histories.lock().expect("histories mutex poisoned");
         let mut statuses = self.statuses.lock().expect("statuses mutex poisoned");
+        // Slug paths at deletion time (post-order; the cache's path is
+        // the raw seeded one — normalize + prefix for the sess: form).
+        let deleted_paths = subtree
+            .iter()
+            .map(|id| {
+                sessions
+                    .get(id)
+                    .map(|info| format!("sess:{}", Self::normalize_path(&info.path)))
+                    .unwrap_or_else(|| format!("sess:/{}", id))
+            })
+            .collect();
         for id in &subtree {
             sessions.remove(id);
             histories.remove(id);
             statuses.remove(id);
         }
 
-        Ok(DeleteOutcome { deleted: subtree })
+        Ok(DeleteOutcome {
+            deleted: subtree,
+            deleted_paths,
+        })
     }
 }
 
@@ -537,10 +570,9 @@ mod tests {
 
     fn info(key: &str) -> SessionInfo {
         SessionInfo {
-            session_key: key.to_string(),
             session_id: key.to_string(),
-            agent_id: Some("agent".to_string()),
-            label: None,
+            agent_name: Some("agent".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 1,
@@ -556,6 +588,7 @@ mod tests {
     fn status(key: &str, parent: Option<&str>) -> SessionStatusResult {
         SessionStatusResult {
             session_id: key.to_string(),
+            path: String::new(),
             agent_name: "agent".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
@@ -579,7 +612,7 @@ mod tests {
             current_run_iterations: 0,
             peer_type: None,
             peer_id: None,
-            label: None,
+            title: None,
             parent_session: parent.map(String::from),
         }
     }
@@ -588,7 +621,7 @@ mod tests {
     async fn branch_copies_session_and_records_parentage() {
         let cache = SessionCache::new("main");
         let mut parent = info("p1");
-        parent.label = Some("parent".to_string());
+        parent.title = Some("parent".to_string());
         cache.add_session("p1".to_string(), parent, vec![], status("p1", None));
 
         let outcome = cache
@@ -608,10 +641,10 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|s| s.session_key == outcome.new_session_id)
+            .find(|s| s.session_id == outcome.new_session_id)
             .unwrap();
-        // Label inherited when not supplied.
-        assert_eq!(branch_info.label, Some("parent".to_string()));
+        // Title inherited when not supplied.
+        assert_eq!(branch_info.title, Some("parent".to_string()));
 
         assert!(cache
             .copy_session("missing", "/".into(), "x".into(), None)
@@ -696,7 +729,7 @@ mod tests {
             .list_sessions(None, None, 10, None, true, Some("sess:/p"))
             .await
             .unwrap();
-        let mut keys: Vec<&str> = scoped.iter().map(|s| s.session_key.as_str()).collect();
+        let mut keys: Vec<&str> = scoped.iter().map(|s| s.session_id.as_str()).collect();
         keys.sort_unstable();
         assert_eq!(keys, vec!["c1", "g1", "p"]);
 

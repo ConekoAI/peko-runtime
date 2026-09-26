@@ -401,10 +401,9 @@ impl SessionRuntime for SessionManagerRuntime {
                 let id_str = m.session_id.to_string();
                 let path = peko_session::path::compute_path(&metadatas, m.session_id);
                 SessionInfo {
-                    session_key: id_str.clone(),
                     session_id: id_str,
-                    agent_id: Some(m.agent_name.clone()),
-                    label: m.title.clone(),
+                    agent_name: Some(m.agent_name.clone()),
+                    title: m.title.clone(),
                     created_at: chrono::DateTime::from_timestamp_millis(m.created_at as i64)
                         .map(|dt| dt.to_rfc3339())
                         .unwrap_or_default(),
@@ -449,14 +448,21 @@ impl SessionRuntime for SessionManagerRuntime {
         session_key: &str,
         limit: usize,
         include_tools: bool,
-    ) -> anyhow::Result<Vec<HistoryMessage>> {
-        // D5: subtree callers may not read out-of-tree sessions.
-        let session_key = {
+    ) -> anyhow::Result<(Vec<HistoryMessage>, String)> {
+        // D5: subtree callers may not read out-of-tree sessions. The
+        // resolved slug path is returned alongside the messages so the
+        // tool can echo an addressable `path` even when the caller
+        // defaulted to the current session.
+        let (session_key, resolved_path) = {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             let session_key = self.resolve_ref(&caller, &metas, session_key)?;
             self.guard_dangling(&caller)?;
-            session_key
+            let resolved_path = peko_session::path::compute_path(
+                &metas,
+                peko_session::SessionId::from(session_key.as_str()),
+            );
+            (session_key, resolved_path)
         };
         let session_key = session_key.as_str();
 
@@ -486,7 +492,7 @@ impl SessionRuntime for SessionManagerRuntime {
             .take(limit)
             .collect();
 
-        Ok(messages)
+        Ok((messages, resolved_path))
     }
 
     async fn list_pages(
@@ -532,17 +538,18 @@ impl SessionRuntime for SessionManagerRuntime {
         // manager write lock; the events scan (`load_guarded_events`
         // re-acquires the same lock) happens AFTER dropping it so we
         // don't deadlock against ourselves.
-        let (metadata, sessions_dir) = {
+        let (metadata, sessions_dir, path) = {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             let session_id = &self.resolve_ref(&caller, &metas, session_id)?;
             self.guard_dangling(&caller)?;
             let metadata = manager.get_session_metadata(session_id).await?;
+            let path = peko_session::path::compute_path(&metas, metadata.session_id);
             let sessions_dir = manager
                 .sessions_dir()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
-            (metadata, sessions_dir)
+            (metadata, sessions_dir, path)
         };
 
         // Per-turn token breakdown comes from the most recent assistant
@@ -590,6 +597,7 @@ impl SessionRuntime for SessionManagerRuntime {
 
         Ok(SessionStatusResult {
             session_id: metadata.session_id.to_string(),
+            path,
             agent_name: metadata.agent_name,
             created_at: chrono::DateTime::from_timestamp_millis(metadata.created_at as i64)
                 .map(|dt| dt.to_rfc3339())
@@ -624,7 +632,7 @@ impl SessionRuntime for SessionManagerRuntime {
             current_run_iterations,
             peer_type: metadata.peer_type,
             peer_id: metadata.peer_id,
-            label: metadata.title,
+            title: metadata.title,
             parent_session: metadata.parent_session_id.map(|id| id.to_string()),
         })
     }
@@ -644,7 +652,7 @@ impl SessionRuntime for SessionManagerRuntime {
         limit: usize,
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>> {
-        let (ids, sessions_dir) = {
+        let (ids, sessions_dir, path_by_id) = {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             // Organizational subtree scope (same semantics as
@@ -690,7 +698,20 @@ impl SessionRuntime for SessionManagerRuntime {
                 .sessions_dir()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
-            (ids, sessions_dir)
+            // Addressable slug paths for the surviving sessions (the
+            // model follows up hits by `path`, never by raw id).
+            let mut path_by_id: std::collections::HashMap<String, String> =
+                std::collections::HashMap::with_capacity(ids.len());
+            for id in &ids {
+                path_by_id.insert(
+                    id.clone(),
+                    peko_session::path::compute_path(
+                        &metas,
+                        peko_session::SessionId::from(id.as_str()),
+                    ),
+                );
+            }
+            (ids, sessions_dir, path_by_id)
         };
 
         let storage = SessionStorage::new(sessions_dir);
@@ -698,7 +719,8 @@ impl SessionRuntime for SessionManagerRuntime {
         Ok(hits
             .into_iter()
             .map(|h| SessionSearchHit {
-                session_id: h.session_id,
+                session_id: h.session_id.clone(),
+                path: path_by_id.get(&h.session_id).cloned().unwrap_or_default(),
                 role: h.role,
                 timestamp: h.timestamp.to_rfc3339(),
                 snippet: h.snippet,
@@ -711,7 +733,7 @@ impl SessionRuntime for SessionManagerRuntime {
         session_key: &str,
         target_parent: String,
         target_slug: String,
-        label: Option<String>,
+        title: Option<String>,
     ) -> anyhow::Result<BranchOutcome> {
         let mut manager = self.session_manager.write().await;
         // Ownership guard on the source. Branching the caller's CURRENT
@@ -752,7 +774,7 @@ impl SessionRuntime for SessionManagerRuntime {
         // those guards operate on user-initiated mutations; for a
         // copy's internal reparenting, the parent-validity check above
         // is the right gate.
-        let new_session_id = manager.branch_session_by_id(&session_key, label).await?;
+        let new_session_id = manager.branch_session_by_id(&session_key, title).await?;
 
         if target_parent_id != session_key {
             manager
@@ -764,8 +786,15 @@ impl SessionRuntime for SessionManagerRuntime {
             .set_session_slug(&new_session_id.as_str(), Some(target_slug))
             .await?;
 
+        // Addressable path of the copy, computed over a FRESH metadata
+        // snapshot (the pre-branch `metas` don't contain the new
+        // session, and its ancestors may have been reparented above).
+        let fresh_metas = manager.list_all_sessions(false).await?;
+        let new_path = peko_session::path::compute_path(&fresh_metas, new_session_id);
+
         Ok(BranchOutcome {
             new_session_id: new_session_id.to_string(),
+            new_path,
             parent_session_id: session_key,
         })
     }
@@ -845,6 +874,21 @@ impl SessionRuntime for SessionManagerRuntime {
         }
         post_order.reverse();
 
+        // Slug paths each deleted session had at deletion time
+        // (computed over the pre-delete metadata snapshot — after
+        // removal they resolve to nothing).
+        let mut path_by_id: std::collections::HashMap<String, String> =
+            std::collections::HashMap::with_capacity(post_order.len());
+        for id in &post_order {
+            path_by_id.insert(
+                id.clone(),
+                peko_session::path::compute_path(
+                    &metas,
+                    peko_session::SessionId::from(id.as_str()),
+                ),
+            );
+        }
+
         // D3 run-permit protocol: acquire target + every descendant and
         // HOLD the permits across the deletes so no run can be in
         // flight — or start — mid-operation. `None` registry (stateless
@@ -882,12 +926,17 @@ impl SessionRuntime for SessionManagerRuntime {
         }
 
         let mut deleted = Vec::new();
+        let mut deleted_paths = Vec::new();
         for id in &post_order {
             if manager.delete_session_by_id(id).await? {
                 deleted.push(id.clone());
+                deleted_paths.push(path_by_id.get(id).cloned().unwrap_or_default());
             }
         }
-        Ok(DeleteOutcome { deleted })
+        Ok(DeleteOutcome {
+            deleted,
+            deleted_paths,
+        })
     }
 
     async fn move_session(
@@ -1285,7 +1334,7 @@ mod tests {
 
         // Reads on any session.
         h.add_user_message("spawn2", "hello from spawn2").await;
-        let history = h.runtime.get_history("/c", 10, false).await.unwrap();
+        let history = h.runtime.get_history("/c", 10, false).await.unwrap().0;
         assert_eq!(history.len(), 1);
         let status = h.runtime.get_status("/c").await.unwrap();
         assert_eq!(status.session_id, sid("spawn2"));
@@ -1807,7 +1856,7 @@ mod tests {
         let status = h.runtime.get_status("/a/b").await.unwrap();
         assert_eq!(status.session_id, sid("child1"));
         h.add_user_message("child1", "hello via path").await;
-        let history = h.runtime.get_history("/a/b", 10, false).await.unwrap();
+        let history = h.runtime.get_history("/a/b", 10, false).await.unwrap().0;
         assert_eq!(history.len(), 1);
 
         // "/" is the caller's topmost ancestor (the tree root).
@@ -2018,7 +2067,7 @@ mod tests {
         // is lenient (returns `Ok(vec![])` for missing sessions), but
         // `rename_session` / `delete_session` error on the existence guard.
         let raw_id = "550e8400-e29b-41d4-a716-446655440000";
-        let msgs = h.runtime.get_history(raw_id, 10, false).await.unwrap();
+        let msgs = h.runtime.get_history(raw_id, 10, false).await.unwrap().0;
         assert!(msgs.is_empty(), "missing session: empty history");
         let err = h
             .runtime

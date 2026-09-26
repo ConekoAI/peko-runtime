@@ -86,11 +86,11 @@ impl SessionTool {
     }
 
     fn build_history_response(
-        session_key: &str,
+        path: &str,
         messages: Vec<HistoryMessage>,
     ) -> serde_json::Value {
         json!({
-            "path": session_key,
+            "path": path,
             "total_messages": messages.len(),
             "messages": messages,
         })
@@ -222,7 +222,7 @@ impl Tool for SessionTool {
 
 Per-action semantics (the action you choose determines which other params apply):
 - status: one session's metadata + token usage (path optional, defaults to current)
-- list: query sessions (filters: path scopes results to a subtree, peer, agent_id, active_minutes; archived hidden unless include_archived:true)
+- list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes; archived hidden unless include_archived:true)
 - history: messages of a session (path optional, defaults to current; include_tools)
 - find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
 - copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
@@ -281,11 +281,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 },
                 "title": {
                     "type": "string",
-                    "description": "Optional for 'move': new display title (free-form label; does not affect addressing)."
-                },
-                "label": {
-                    "type": "string",
-                    "description": "Optional for 'copy': label/title for the new copy"
+                    "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy — legacy `label` still accepted) and for `move` (new display title)."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -301,9 +297,9 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     "type": "string",
                     "description": "Optional filter for 'list' and 'find': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
                 },
-                "agent_id": {
+                "agent_name": {
                     "type": "string",
-                    "description": "Optional filter for 'list': single agent name"
+                    "description": "Optional filter for 'list': single agent template name (the `agent_name` field on list entries). The legacy `agent_id` spelling is still accepted."
                 },
                 "limit": {
                     "type": "integer",
@@ -378,7 +374,13 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     ),
                     None => None,
                 };
-                let agent_id = params.get("agent_id").and_then(|v| v.as_str());
+                // `agent_name` is the canonical filter (the value is
+                // the agent template's NAME); the legacy `agent_id`
+                // spelling is tolerated.
+                let agent_id = params
+                    .get("agent_name")
+                    .or_else(|| params.get("agent_id"))
+                    .and_then(|v| v.as_str());
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
                 let include_archived = params
@@ -416,7 +418,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     .runtime
                     .get_history(&session_key, limit, include_tools)
                     .await?;
-                Ok(Self::build_history_response(&session_key, messages))
+                Ok(Self::build_history_response(&messages.1, messages.0))
             }
             SessionAction::Find => {
                 let query = params
@@ -451,14 +453,17 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 } else {
                     parent_str.to_string()
                 };
-                let label = params
-                    .get("label")
+                // `title` is the canonical name for the copy's display
+                // title; the legacy `label` spelling is tolerated.
+                let title = params
+                    .get("title")
+                    .or_else(|| params.get("label"))
                     .and_then(|v| v.as_str())
                     .map(String::from);
 
                 let outcome = self
                     .runtime
-                    .copy_session(session_key, target_parent, slug.to_string(), label)
+                    .copy_session(session_key, target_parent, slug.to_string(), title)
                     .await?;
                 Ok(serde_json::to_value(outcome)?)
             }
@@ -674,10 +679,9 @@ mod tests {
         let cache = SessionCache::new("main");
 
         let session = SessionInfo {
-            session_key: "test-session".to_string(),
             session_id: "abc123".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            label: Some("Test Session".to_string()),
+            agent_name: Some("test-agent".to_string()),
+            title: Some("Test Session".to_string()),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 10,
@@ -708,6 +712,7 @@ mod tests {
 
         let status = SessionStatusResult {
             session_id: "abc123".to_string(),
+            path: String::new(),
             agent_name: "test-agent".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
@@ -731,7 +736,7 @@ mod tests {
             current_run_iterations: 0,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
-            label: Some("Test Session".to_string()),
+            title: Some("Test Session".to_string()),
             parent_session: Some("main".to_string()),
         };
 
@@ -750,7 +755,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["total"], 1);
-        assert_eq!(result["sessions"][0]["session_key"], "test-session");
+        assert_eq!(result["sessions"][0]["session_id"], "abc123");
     }
 
     #[tokio::test]
@@ -759,10 +764,9 @@ mod tests {
         // Tree: p ── c1 ── g1, plus unrelated o1 — paths as `list`
         // would surface them to the model.
         let scoped_info = |key: &str, path: &str| SessionInfo {
-            session_key: key.to_string(),
             session_id: key.to_string(),
-            agent_id: Some("agent".to_string()),
-            label: None,
+            agent_name: Some("agent".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 1,
@@ -784,6 +788,7 @@ mod tests {
         };
         let empty_status = SessionStatusResult {
             session_id: String::new(),
+            path: String::new(),
             agent_name: "agent".to_string(),
             created_at: String::new(),
             last_activity: String::new(),
@@ -807,7 +812,7 @@ mod tests {
             current_run_iterations: 0,
             peer_type: None,
             peer_id: None,
-            label: None,
+            title: None,
             parent_session: None,
         };
         cache.add_session(
@@ -840,7 +845,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|s| s["session_key"].as_str().unwrap())
+            .map(|s| s["session_id"].as_str().unwrap())
             .collect();
         assert!(keys.contains(&"p"));
         assert!(keys.contains(&"g1"));
@@ -861,6 +866,15 @@ mod tests {
         assert!(ids.contains(&"p"));
         assert!(ids.contains(&"g1"));
         assert!(!ids.contains(&"o1"));
+        // Every hit carries the addressable path to follow up with.
+        let paths: Vec<&str> = result["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&"sess:/p"));
+        assert!(paths.contains(&"sess:/p/c1/g1"));
 
         // Malformed scope paths fail at the tool boundary (early-fail,
         // same shape as the other actions' `path` validation).
@@ -914,6 +928,7 @@ mod tests {
 
         let status = SessionStatusResult {
             session_id: "current123".to_string(),
+            path: String::new(),
             agent_name: "main".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
@@ -937,15 +952,14 @@ mod tests {
             current_run_iterations: 0,
             peer_type: None,
             peer_id: None,
-            label: None,
+            title: None,
             parent_session: None,
         };
 
         let session = SessionInfo {
-            session_key: "current-session".to_string(),
             session_id: "current123".to_string(),
-            agent_id: Some("main".to_string()),
-            label: None,
+            agent_name: Some("main".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 5,
@@ -1009,10 +1023,9 @@ mod tests {
         let cache = SessionCache::new("main");
 
         let alice_main = SessionInfo {
-            session_key: "alice-1".to_string(),
             session_id: "alice-1".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            label: None,
+            agent_name: Some("test-agent".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 5,
@@ -1024,10 +1037,9 @@ mod tests {
             path: String::new(),
         };
         let alice_other = SessionInfo {
-            session_key: "alice-2".to_string(),
             session_id: "alice-2".to_string(),
-            agent_id: Some("other-agent".to_string()),
-            label: None,
+            agent_name: Some("other-agent".to_string()),
+            title: None,
             created_at: "2024-01-02T00:00:00Z".to_string(),
             last_activity: "2024-01-02T01:00:00Z".to_string(),
             message_count: 3,
@@ -1039,10 +1051,9 @@ mod tests {
             path: String::new(),
         };
         let bob_main = SessionInfo {
-            session_key: "bob-1".to_string(),
             session_id: "bob-1".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            label: None,
+            agent_name: Some("test-agent".to_string()),
+            title: None,
             created_at: "2024-01-03T00:00:00Z".to_string(),
             last_activity: "2024-01-03T01:00:00Z".to_string(),
             message_count: 7,
@@ -1073,6 +1084,7 @@ mod tests {
     fn dummy_status(session_id: &str) -> SessionStatusResult {
         SessionStatusResult {
             session_id: session_id.to_string(),
+            path: String::new(),
             agent_name: "any".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
@@ -1096,7 +1108,7 @@ mod tests {
             current_run_iterations: 0,
             peer_type: None,
             peer_id: None,
-            label: None,
+            title: None,
             parent_session: None,
         }
     }
@@ -1216,10 +1228,9 @@ mod tests {
     async fn test_session_find_happy_path_and_missing_query() {
         let cache = SessionCache::new("main");
         let session = SessionInfo {
-            session_key: "s1".to_string(),
             session_id: "s1".to_string(),
-            agent_id: Some("main".to_string()),
-            label: None,
+            agent_name: Some("main".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 1,
@@ -1335,6 +1346,9 @@ mod tests {
         let new_id = result["new_session_id"].as_str().unwrap();
         assert_eq!(result["parent_session_id"], "test-session");
         assert_ne!(new_id, "test-session");
+        // The outcome echoes the copy's addressable path (the `label`
+        // input above is the tolerated legacy spelling of `title`).
+        assert_eq!(result["new_path"], "sess:/test-session-branch-1");
 
         // The copy is stored (listed) but NOT running, and carries the
         // copy label.
@@ -1343,10 +1357,10 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|s| s["session_key"] == new_id)
+            .find(|s| s["session_id"] == new_id)
             .expect("copy must appear in list");
         assert_eq!(copy["run_active"], false);
-        assert_eq!(copy["label"], "fork");
+        assert_eq!(copy["title"], "fork");
 
         // History is copied over.
         let history = tool
@@ -1412,10 +1426,9 @@ mod tests {
         cache.add_session(
             "parent-s".to_string(),
             SessionInfo {
-                session_key: "parent-s".to_string(),
                 session_id: "parent-s".to_string(),
-                agent_id: Some("test-agent".to_string()),
-                label: None,
+                agent_name: Some("test-agent".to_string()),
+                title: None,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 last_activity: "2024-01-01T01:00:00Z".to_string(),
                 message_count: 0,
@@ -1484,7 +1497,7 @@ mod tests {
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
         assert_eq!(list["sessions"][0]["slug"], "task-b");
         // Title untouched by a slug-only rename.
-        assert_eq!(list["sessions"][0]["label"], "Test Session");
+        assert_eq!(list["sessions"][0]["title"], "Test Session");
 
         // Title only (slug survives) — target must be present even
         // when only the display label changes.
@@ -1494,7 +1507,7 @@ mod tests {
         .await
         .unwrap();
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["sessions"][0]["label"], "New Title");
+        assert_eq!(list["sessions"][0]["title"], "New Title");
         assert_eq!(list["sessions"][0]["slug"], "task-b");
 
         // Both at once — different slug, new title.
@@ -1504,7 +1517,7 @@ mod tests {
         .await
         .unwrap();
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["sessions"][0]["label"], "T");
+        assert_eq!(list["sessions"][0]["title"], "T");
         assert_eq!(list["sessions"][0]["slug"], "s2");
     }
 
