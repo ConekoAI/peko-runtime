@@ -1,8 +1,8 @@
 //! Extensions module — Extension Framework + Type Implementations
 //!
 //! Contains both the **generic extension framework** (under `framework/`)
-//! and the **extension type implementations** (MCP, Gateway, Skill, Builtin,
-//! General). The framework is generic and dependency-free; type
+//! and the **extension type implementations** (MCP, Skill, Builtin,
+//! Agent). The framework is generic and dependency-free; type
 //! implementations sit beside it and depend on the framework.
 //!
 //! # Module Boundaries
@@ -23,8 +23,10 @@
 //! ├── (gateway retired — Sprint 9 Commit 3: chat-gateway adapter
 //! │   framework removed; ingress is now exclusively through
 //! │   per-peer standing children under the agent-session paradigm)
-//! ├── general/     # General extension adapter
+//! ├── (general retired — PR-C.5: the general adapter had no
+//! │   remaining production callers; command_handler was lifted out)
 //! ├── mcp/         # MCP adapter, protocol, runtime
+//! ├── agent/       # AGENT.md adapter
 //! └── skill/       # Skill adapter
 //! ```
 
@@ -79,17 +81,21 @@ pub mod agent;
 // framework `SlashAdapter` (Phase 2 PR 4) and the daemon-side
 // `SlashDispatcher` (the only consumer was `/help`, which is now
 // answered by the model itself from its visible prompt catalog).
-// Historical `COMMAND.md` ecosystem-standard files fail
-// `extension_types::is_valid_type` and surface as install errors.
+// Historical `COMMAND.md` ecosystem-standard files are skipped
+// silently at discovery: no adapter is registered for the "slash"
+// type, so `ExtensionStore::scan_directory` logs a debug line and
+// continues (there is no install-error path — `is_valid_type` has
+// no production callers).
 
 // Universal tools retired (ADR-062, 2026-09-25): the JSON-RPC-over-stdio
 // tool protocol, workspace `<workspace>/tools/<id>/manifest.yaml` scanner,
 // and `peko_tool` SDK are gone. External code reaches the catalog through
 // MCP (schema'd tool servers) or the `Workflow` builtin (ADR-061 —
 // attributed Python subprocesses calling back through the tool funnel).
-// Historical "universal-tool" manifest bytes fail
-// `extension_types::is_valid_type` and surface as install errors,
-// matching the gateway/slash precedent.
+// Historical "universal-tool" manifest bytes are skipped silently at
+// discovery for the same reason: no adapter is registered for the
+// retired type, so the scan logs a debug line and moves on — matching
+// the gateway/slash precedent.
 
 /// ADR-047 §5 Phase 4: workspace-resident hook scanner. Reads
 /// `<workspace>/hooks/<id>/hook.toml` and registers each binding
@@ -150,27 +156,23 @@ pub mod extension_types {
     /// MCP server extension type
     pub const MCP: &str = "mcp";
 
-    /// General extension type (full hook access; manifest-declarable via manifest.yaml)
-    pub const GENERAL: &str = "general";
-
     // Universal tools retired (ADR-062, 2026-09-25): `UNIVERSAL_TOOL`
     // ("universal-tool") removed alongside the protocol + scanner.
-    // Historical "universal-tool" manifest bytes fail `is_valid_type`
-    // and surface as install errors, matching the GATEWAY/SLASH
-    // precedent below.
+    // `GENERAL` ("general") was removed with the general adapter
+    // (PR-C.5) — no directory and no adapter serve that type.
+    // Historical manifests of retired types are skipped silently at
+    // discovery: `ExtensionStore::scan_directory` only loads types it
+    // has a registered adapter for, so legacy "universal-tool",
+    // "gateway", "slash", and "general" bytes log a debug line and are
+    // ignored. `is_valid_type` below remains the declarative
+    // validation surface (currently test-only — no production caller).
 
     // Sprint 9 Commit 3: `GATEWAY` constant retired along with the
-    // chat-gateway adapter framework. Any historical "gateway"
-    // manifest bytes in users' `extensions/` directories will fail
-    // `is_valid_type` and surface as install errors, which is the
-    // intended forward-only behavior.
+    // chat-gateway adapter framework.
     //
     // Post-slash-removal: `SLASH` constant retired alongside the
     // `SlashDispatcher` runtime (and the orphan `SlashAdapter` that
-    // Phase 2 PR 4 had already removed). Historical "slash"
-    // manifest bytes — including `COMMAND.md` files detected at
-    // Tier 1 ecosystem standard in `store.rs` — fail `is_valid_type`
-    // and surface as install errors, matching the GATEWAY precedent.
+    // Phase 2 PR 4 had already removed).
 
     /// Custom extension type prefix
     pub const CUSTOM_PREFIX: &str = "custom:";
@@ -181,13 +183,13 @@ pub mod extension_types {
     /// Check if a type is valid
     #[must_use]
     pub fn is_valid_type(ext_type: &str) -> bool {
-        matches!(ext_type, SKILL | AGENT | MCP | GENERAL) || ext_type.starts_with(CUSTOM_PREFIX)
+        matches!(ext_type, SKILL | AGENT | MCP) || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
     #[must_use]
     pub fn standard_types() -> Vec<&'static str> {
-        vec![SKILL, AGENT, MCP, GENERAL]
+        vec![SKILL, AGENT, MCP]
     }
 }
 
@@ -200,10 +202,10 @@ mod tests {
         // Sprint 9 Commit 3: GATEWAY constant retired.
         // Post-slash-removal: SLASH constant retired alongside SlashDispatcher.
         // ADR-062: UNIVERSAL_TOOL constant retired with the universal system.
+        // GENERAL was removed with the general adapter (PR-C.5).
         assert_eq!(extension_types::SKILL, "skill");
         assert_eq!(extension_types::AGENT, "agent");
         assert_eq!(extension_types::MCP, "mcp");
-        assert_eq!(extension_types::GENERAL, "general");
     }
 
     #[test]
@@ -211,6 +213,7 @@ mod tests {
         // Sprint 9 Commit 3: "gateway" is no longer a valid type.
         // Post-slash-removal: "slash" is no longer a valid type.
         // ADR-062: "universal-tool" is no longer a valid type.
+        // PR-C.5: "general" is no longer a valid type.
         assert!(extension_types::is_valid_type("skill"));
         assert!(extension_types::is_valid_type("agent"));
         assert!(extension_types::is_valid_type("mcp"));
@@ -219,6 +222,7 @@ mod tests {
         assert!(!extension_types::is_valid_type("gateway"));
         assert!(!extension_types::is_valid_type("slash"));
         assert!(!extension_types::is_valid_type("universal-tool"));
+        assert!(!extension_types::is_valid_type("general"));
     }
 
     #[test]
@@ -226,6 +230,7 @@ mod tests {
         // Sprint 9 Commit 3: gateway retired from standard types.
         // Post-slash-removal: slash retired from standard types.
         // ADR-062: universal-tool retired from standard types.
+        // PR-C.5: general retired from standard types.
         let types = extension_types::standard_types();
         assert!(types.contains(&"skill"));
         assert!(types.contains(&"agent"));
@@ -233,5 +238,6 @@ mod tests {
         assert!(!types.contains(&"gateway"));
         assert!(!types.contains(&"slash"));
         assert!(!types.contains(&"universal-tool"));
+        assert!(!types.contains(&"general"));
     }
 }

@@ -1,16 +1,15 @@
-# Module Boundary Check Script (PowerShell)
+# Module Boundary Check Script (PowerShell twin of check_module_boundaries.sh)
 # Usage: .\scripts\check_module_boundaries.ps1 [-Strict]
 #
-# Enforces the dependency rules from Issue 015:
-# 1. src/extension/ must NOT import from src/extensions/
-# 2. src/extensions/<type>/ should NOT import from src/extensions/<other_type>/
-# 3. src/extension/core/ must NOT import from src/daemon/ or src/tools/
+# Enforces the dependency rules from Issue 015, Issue 020, and Issue 021:
+# 1. src/extensions/framework/ must NOT import from concrete extension types
+#    (src/extensions/<type>/ where <type> != framework).
+# 2. src/extensions/<type>/ should NOT import from src/extensions/<other_type>/.
+# 3. src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/
+#    (except tools::core, the established one-way dep).
 #
-# Known violations (pre-existing, to be fixed in follow-up):
-# - src/extension/core/context.rs: references crate::tools::ToolContext
-# - src/extension/core/hook_registry.rs: references crate::tools::AbortSignal
-# - src/extension/protocols/shared/context_resolver.rs: references crate::extensions::universal::protocol::protocol::ExecutionContext
-# - src/extension/adapters/mod.rs: BuiltInAdapters constructs all extension type adapters
+# Phase 0.Z-B: core implementation moved under peko-rs/core/src/.
+# All rule paths below resolve against that root (repo-relative).
 
 param(
     [switch]$Strict = $false
@@ -20,84 +19,52 @@ $ErrorActionPreference = "Stop"
 $exitCode = 0
 $warningCount = 0
 
+$coreSrc = "peko-rs/core/src"
+$extensionTypes = @("builtin", "agent", "mcp", "skill")
+
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "Module Boundary Check (Issue 015)"
+Write-Host "Module Boundary Check (Issue 015 / 020 / 021)"
 if ($Strict) {
     Write-Host "MODE: Strict (warnings treated as failures)" -ForegroundColor Magenta
 }
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Known violations that are tracked but not yet fixed
-$knownViolations = @{
-    # All pre-existing violations from Issue 015 have been fixed.
-    # This hash table is kept for future known violations that need
-    # non-blocking treatment while being tracked for follow-up.
-}
-
-function Is-KnownViolation($filePath) {
-    $normalized = $filePath -replace '\\', '/'
-    foreach ($known in $knownViolations.Keys) {
-        if ($normalized.Contains($known)) {
-            return $knownViolations[$known]
-        }
-    }
-    return $null
-}
-
 # -----------------------------------------------------------------------------
-# Rule 1: src/extension/ must NOT import from src/extensions/
+# Rule 1: src/extensions/framework/ must NOT import from concrete extension types
 # -----------------------------------------------------------------------------
-Write-Host "Rule 1: src/extension/ must NOT import from src/extensions/" -ForegroundColor Yellow
+Write-Host "Rule 1: src/extensions/framework/ must NOT import from src/extensions/<type>/" -ForegroundColor Yellow
 Write-Host ""
 
-$rule1Violations = @()
-$files = Get-ChildItem -Recurse -Path "src/extension" -Filter "*.rs"
-foreach ($file in $files) {
-    $lines = Get-Content $file.FullName
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $line = $lines[$i]
-        # Skip comments
-        if ($line.Trim().StartsWith("//") -or $line.Trim().StartsWith("*")) {
-            continue
-        }
-        if ($line.Contains("crate::extensions::")) {
-            $known = Is-KnownViolation $file.FullName
-            $rule1Violations += @{
-                File = $file.FullName
-                Line = $i + 1
-                Text = $line.Trim()
-                Known = $known
+$rule1Failed = $false
+
+foreach ($typeDir in $extensionTypes) {
+    $frameworkDir = Join-Path $coreSrc "extensions/framework"
+    $files = Get-ChildItem -Recurse -Path $frameworkDir -Filter "*.rs"
+    foreach ($file in $files) {
+        $lines = Get-Content $file.FullName
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $line = $lines[$i]
+            # Skip comments
+            if ($line.Trim().StartsWith("//") -or $line.Trim().StartsWith("*")) {
+                continue
+            }
+            if ($line -match "^\s*use\s+crate::extensions::$typeDir::") {
+                if (-not $rule1Failed) {
+                    Write-Host "  FAIL: src/extensions/framework/ imports from concrete extension types" -ForegroundColor Red
+                    Write-Host ""
+                    $rule1Failed = $true
+                }
+                Write-Host "    src/extensions/framework/ -> crate::extensions::$typeDir::" -ForegroundColor Red
+                Write-Host "       $($file.FullName):$($i + 1)" -ForegroundColor DarkRed
+                Write-Host "       $($line.Trim())" -ForegroundColor DarkRed
+                $exitCode = 1
             }
         }
     }
 }
 
-$unknownRule1 = $rule1Violations | Where-Object { $_.Known -eq $null }
-$knownRule1 = $rule1Violations | Where-Object { $_.Known -ne $null }
-
-if ($unknownRule1.Count -gt 0) {
-    Write-Host "  FAIL: src/extension/ imports from src/extensions/" -ForegroundColor Red
-    Write-Host ""
-    foreach ($v in $unknownRule1) {
-        Write-Host "     $($v.File):$($v.Line)" -ForegroundColor Red
-        Write-Host "       $($v.Text)" -ForegroundColor DarkRed
-    }
-    Write-Host ""
-    $exitCode = 1
-}
-
-if ($knownRule1.Count -gt 0) {
-    Write-Host "  WARN: Known violations (tracked for follow-up)" -ForegroundColor DarkYellow
-    Write-Host ""
-    foreach ($v in $knownRule1) {
-        Write-Host "     $($v.File):$($v.Line) [$($v.Known)]" -ForegroundColor DarkYellow
-    }
-    Write-Host ""
-    $warningCount += $knownRule1.Count
-}
-
-if ($rule1Violations.Count -eq 0) {
+if (-not $rule1Failed) {
     Write-Host "  PASS: No forbidden imports found" -ForegroundColor Green
 }
 Write-Host ""
@@ -108,11 +75,10 @@ Write-Host ""
 Write-Host "Rule 2: src/extensions/<type>/ should NOT import from src/extensions/<other_type>/" -ForegroundColor Yellow
 Write-Host ""
 
-$extensionTypes = @("builtin", "gateway", "general", "mcp", "skill", "universal")
 $rule2Failed = $false
 
 foreach ($typeDir in $extensionTypes) {
-    $dirPath = "src/extensions/$typeDir"
+    $dirPath = Join-Path $coreSrc "extensions/$typeDir"
     if (-not (Test-Path $dirPath)) {
         continue
     }
@@ -131,7 +97,7 @@ foreach ($typeDir in $extensionTypes) {
                     Write-Host ""
                     $rule2Failed = $true
                 }
-                Write-Host "    src/extensions/$typeDir/ → crate::extensions::$otherType::" -ForegroundColor Red
+                Write-Host "    src/extensions/$typeDir/ -> crate::extensions::$otherType::" -ForegroundColor Red
                 Write-Host "       $($file.FullName)" -ForegroundColor DarkRed
                 $exitCode = 1
             }
@@ -145,13 +111,15 @@ if (-not $rule2Failed) {
 Write-Host ""
 
 # -----------------------------------------------------------------------------
-# Rule 3: src/extension/core/ must NOT import from src/daemon/ or src/tools/
+# Rule 3: src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/
+#         (tools::core is the one allowed one-way dep)
 # -----------------------------------------------------------------------------
-Write-Host "Rule 3: src/extension/core/ must NOT import from src/daemon/ or src/tools/" -ForegroundColor Yellow
+Write-Host "Rule 3: src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/ (except tools::core)" -ForegroundColor Yellow
 Write-Host ""
 
-$rule3Violations = @()
-$files = Get-ChildItem -Recurse -Path "src/extension/core" -Filter "*.rs"
+$rule3Failed = $false
+$frameworkCoreDir = Join-Path $coreSrc "extensions/framework/core"
+$files = Get-ChildItem -Recurse -Path $frameworkCoreDir -Filter "*.rs"
 foreach ($file in $files) {
     $lines = Get-Content $file.FullName
     for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -159,43 +127,20 @@ foreach ($file in $files) {
         if ($line.Trim().StartsWith("//") -or $line.Trim().StartsWith("*")) {
             continue
         }
-        if ($line.Contains("crate::daemon::") -or $line.Contains("crate::tools::")) {
-            $known = Is-KnownViolation $file.FullName
-            $rule3Violations += @{
-                File = $file.FullName
-                Line = $i + 1
-                Text = $line.Trim()
-                Known = $known
+        if ($line.Contains("crate::daemon::") -or ($line -match "crate::tools::(builtin|registry|factory)")) {
+            if (-not $rule3Failed) {
+                Write-Host "  FAIL: src/extensions/framework/core/ imports from forbidden modules (daemon, tools::builtin, tools::registry, tools::factory)" -ForegroundColor Red
+                Write-Host ""
+                $rule3Failed = $true
             }
+            Write-Host "       $($file.FullName):$($i + 1)" -ForegroundColor Red
+            Write-Host "       $($line.Trim())" -ForegroundColor DarkRed
+            $exitCode = 1
         }
     }
 }
 
-$unknownRule3 = $rule3Violations | Where-Object { $_.Known -eq $null }
-$knownRule3 = $rule3Violations | Where-Object { $_.Known -ne $null }
-
-if ($unknownRule3.Count -gt 0) {
-    Write-Host "  FAIL: src/extension/core/ imports from forbidden modules" -ForegroundColor Red
-    Write-Host ""
-    foreach ($v in $unknownRule3) {
-        Write-Host "     $($v.File):$($v.Line)" -ForegroundColor Red
-        Write-Host "       $($v.Text)" -ForegroundColor DarkRed
-    }
-    Write-Host ""
-    $exitCode = 1
-}
-
-if ($knownRule3.Count -gt 0) {
-    Write-Host "  WARN: Known violations (tracked for follow-up)" -ForegroundColor DarkYellow
-    Write-Host ""
-    foreach ($v in $knownRule3) {
-        Write-Host "     $($v.File):$($v.Line) [$($v.Known)]" -ForegroundColor DarkYellow
-    }
-    Write-Host ""
-    $warningCount += $knownRule3.Count
-}
-
-if ($rule3Violations.Count -eq 0) {
+if (-not $rule3Failed) {
     Write-Host "  PASS: No forbidden imports found" -ForegroundColor Green
 }
 Write-Host ""
@@ -219,9 +164,9 @@ if ($exitCode -eq 0 -and $warningCount -eq 0) {
     Write-Host "Module boundary violations detected" -ForegroundColor Red
     Write-Host ""
     Write-Host "Fix guidance:" -ForegroundColor Yellow
-    Write-Host "  - Framework code (src/extension/) must not depend on extension types"
+    Write-Host "  - Framework code (src/extensions/framework/) must not depend on concrete extension types"
     Write-Host "  - Extension types should depend on the framework, not each other"
-    Write-Host "  - Move shared code to src/extension/ or use trait abstractions"
+    Write-Host "  - src/extensions/framework/core/ must not depend on daemon/ or tools/ (except tools::core)"
 }
 
 exit $exitCode
