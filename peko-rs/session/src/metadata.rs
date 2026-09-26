@@ -114,15 +114,6 @@ mod tests {
     }
 
     #[test]
-    fn test_archive_flags_via_alias() {
-        let mut meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
-        assert!(!meta.archived);
-
-        meta.archived = true;
-        assert!(meta.archived);
-    }
-
-    #[test]
     fn test_slug_via_alias() {
         let mut meta = SessionMetadata::new("sess_456", "test_agent", "sess_456.jsonl");
         assert_eq!(meta.slug, None);

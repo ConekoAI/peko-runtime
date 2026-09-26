@@ -1,6 +1,7 @@
 # ADR-053: Agent Tool `branch` Action — Snapshot Sideline Runs
 
-**Status:** Proposed
+**Status:** Accepted (amended 2026-09-26 — `overwrite` reseeds the
+target in place instead of archive-and-repoint; see D3)
 **Date:** 2026-09-13
 **Author:** rlsn
 **Related:** [ADR-051](ADR-051-compaction-pages-as-addressable-archive.md)
@@ -135,11 +136,18 @@ absolute → attach-only). Resolution:
   the lossy shared-context copy is skipped), stamp the slug.
 - **Spawn-created session at the target, `overwrite: false`:** refuse
   (structured slug-conflict error, same as `new`).
-- **Spawn-created session at the target, `overwrite: true`:** the old
-  session's slug is cleared and the session is archived — the path now
-  resolves to the newly minted session. The old session id stays fully
-  inspectable (ADR-051: never truncate, never re-key); it simply loses
-  its address. Refuse when the old target has an active run.
+- **Spawn-created session at the target, `overwrite: true`:** the
+  target is OVERWRITTEN IN PLACE (real overwrite, amended 2026-09-26 —
+  the original design archived the old session and repointed the
+  address to a freshly minted one; that stranded the old session as an
+  unreachable tombstone and shifted every descendant's address when the
+  slug was cleared). The target keeps its id, slug, parent linkage, and
+  whole descendant subtree; the source's cache-window snapshot is
+  appended behind a compaction boundary that closes the target's
+  previous live transcript, which is retained as an ADR-051 page
+  (never truncated, never re-keyed — the page is inspectable via
+  `list_pages` / `read_page`). Refuse when the target has an active
+  run.
 - **Non-spawn session at the target:** refuse with
   `err_name_not_spawned` (same collision rule as `new` — never
   silently displace a user-triggered or peer-bound session).
@@ -148,8 +156,9 @@ A peer-bound standing child can never be an overwrite victim: peer
 children are not spawn-triggered, so the third rule refuses them
 outright.
 
-The old target is never deleted; `overwrite` means *repurpose the
-address*, not destroy the history.
+History is never destroyed and no session is displaced: `overwrite`
+means *reseed the target in place*. The previous live transcript stays
+readable as the newest archived page of the same session.
 
 ### D4 — Guards
 
@@ -183,10 +192,13 @@ spawn.
   touching it, repeatedly, with each run a pure function of the main
   context at fire time.
 - **Continuity of the sideline across fires is deliberately NOT
-  provided** by overwrite-repointing (each fire starts from a fresh
-  snapshot). A "briefing thread that remembers previous briefings"
-  would need snapshot + prior-child-turns merging — a different
-  decision, deferred.
+  provided** by overwrite (each fire starts from a fresh snapshot; the
+  previous fire's transcript is retained as a closed page, not part of
+  the live context). A "briefing thread that remembers previous
+  briefings" would need snapshot + prior-child-turns merging — a
+  different decision, deferred. High-frequency fires grow the target's
+  page list by one page per fire; a per-session page-limit retention
+  policy is a natural follow-up.
 - **The first child call dominates cost** when caches are cold; the
   cost pre-flight uses the existing conservative projection and does
   not model the copied window. Operators running high-frequency cron

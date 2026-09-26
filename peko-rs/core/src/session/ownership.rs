@@ -33,9 +33,11 @@
 //! The principal's trunk session (`root:self` — the only `root:*` id
 //! left after Phase 7 retired the per-peer `root:{peer}` /
 //! `root:cron:{peer}` sessions) is **continuous**: the engine owns its
-//! lifecycle (paging + compaction), so `delete` / `archive` on it are
-//! refused via [`err_live_base_managed`]. Archived state is read
-//! directly from `SessionMetadata::archived`.
+//! lifecycle (paging + compaction), so `delete` on it is refused via
+//! [`err_live_base_managed`]. The `archived` flag was removed
+//! entirely on 2026-09-26 (no writer remained after the real-overwrite
+//! branch path landed); the `err_resume_archived` / `err_compact_archived`
+//! constructors were retired with it.
 //!
 //! A session whose metadata is missing is treated as a tree root for
 //! *classification* (the walk ends there), but a dangling id in the
@@ -292,29 +294,6 @@ pub fn is_run_active_error(err: &anyhow::Error) -> bool {
         .any(|e| e.to_string().contains("has an active run in flight"))
 }
 
-/// `compact` on an archived session.
-///
-/// B3 cleanup: the archived-write chain (`set_archived` /
-/// `unarchive`) was retired end-to-end. Archived sessions can no
-/// longer be restored — the operator's recourse is to create a new
-/// session, which is what the error text directs the user to do.
-pub fn err_compact_archived(target: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "error: session is archived: archived sessions are not currently restorable; \
-         create a new session (target: '{target}')"
-    )
-}
-
-/// `resume` of an archived session. See [`err_compact_archived`] for
-/// the B3 rationale on why this refuses rather than offering an
-/// "unarchive" path.
-pub fn err_resume_archived(target: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "error: session is archived: archived sessions are not currently restorable; \
-         create a new session (target: '{target}')"
-    )
-}
-
 /// `resume` targeting the caller's own current session.
 pub fn err_resume_self(target: &str) -> anyhow::Error {
     anyhow::anyhow!("session '{target}' is already your current session")
@@ -418,7 +397,6 @@ mod tests {
 
         // Negative: other ownership refusals and unrelated errors.
         assert!(!is_run_active_error(&err_resume_self("session-1")));
-        assert!(!is_run_active_error(&err_resume_archived("session-1")));
         assert!(!is_run_active_error(&anyhow::anyhow!("provider exploded")));
     }
 
@@ -586,9 +564,7 @@ mod tests {
             err_out_of_tree("s", "c"),
             err_live_base_managed("s"),
             err_run_active("s"),
-            err_compact_archived("s"),
             err_compact_ancestor("s"),
-            err_resume_archived("s"),
             err_resume_self("s"),
             err_resume_cross_family("s", "c"),
             err_descendants_exist("s", &["d1".to_string()]),

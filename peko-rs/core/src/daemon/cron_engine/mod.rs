@@ -1053,14 +1053,14 @@ impl CronEngine {
             Ok(metas) => {
                 let live = metas
                     .iter()
-                    .any(|m| m.session_id.to_string() == origin && !m.archived);
+                    .any(|m| m.session_id.to_string() == origin);
                 if live {
                     origin
                 } else {
                     warn!(
                         job = %job.id,
                         origin_session = %origin,
-                        "cron job's origin session is gone or archived; firing from the trunk"
+                        "cron job's origin session is gone; firing from the trunk"
                     );
                     trunk_session_key.to_string()
                 }
