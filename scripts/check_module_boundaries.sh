@@ -26,7 +26,11 @@ cd "$(dirname "$0")/.."
 
 EXIT_CODE=0
 
-EXTENSION_TYPES=(builtin gateway general mcp skill)
+EXTENSION_TYPES=(builtin agent mcp skill)
+
+# Phase 0.Z-B: core implementation moved under peko-rs/core/src/.
+# All rule paths below resolve against this root (repo-relative).
+CORE_SRC="peko-rs/core/src"
 
 # ---------------------------------------------------------------------------
 # Whether Rule 4 (commands -> persistence/packaging) is a hard gate.
@@ -49,7 +53,7 @@ echo ""
 RULE1_FAILED=0
 
 for type_dir in "${EXTENSION_TYPES[@]}"; do
-    VIOLATIONS_1=$(grep -rE "^[[:space:]]*use crate::extensions::${type_dir}::" src/extensions/framework/ --include="*.rs" 2>/dev/null || true)
+    VIOLATIONS_1=$(grep -rE "^[[:space:]]*use crate::extensions::${type_dir}::" "$CORE_SRC/extensions/framework/" --include="*.rs" 2>/dev/null || true)
 
     if [ -n "$VIOLATIONS_1" ]; then
         if [ "$RULE1_FAILED" -eq 0 ]; then
@@ -66,7 +70,7 @@ for type_dir in "${EXTENSION_TYPES[@]}"; do
 done
 
 # Also catch non-use references (e.g. in code) while excluding doc comments.
-VIOLATIONS_1B=$(grep -r "crate::extensions::" src/extensions/framework/ --include="*.rs" 2>/dev/null \
+VIOLATIONS_1B=$(grep -r "crate::extensions::" "$CORE_SRC/extensions/framework/" --include="*.rs" 2>/dev/null \
     | grep -vE "crate::extensions::framework::" \
     | grep -vE "crate::extensions::\*" \
     | grep -vE ':[[:space:]]*://' \
@@ -103,7 +107,7 @@ echo ""
 RULE2_FAILED=0
 
 for type_dir in "${EXTENSION_TYPES[@]}"; do
-    if [ ! -d "src/extensions/$type_dir" ]; then
+    if [ ! -d "$CORE_SRC/extensions/$type_dir" ]; then
         continue
     fi
 
@@ -113,7 +117,7 @@ for type_dir in "${EXTENSION_TYPES[@]}"; do
         fi
 
         # Check for imports from other extension types
-        VIOLATIONS_2=$(grep -r "crate::extensions::$other_type::" "src/extensions/$type_dir/" --include="*.rs" 2>/dev/null || true)
+        VIOLATIONS_2=$(grep -r "crate::extensions::$other_type::" "$CORE_SRC/extensions/$type_dir/" --include="*.rs" 2>/dev/null || true)
 
         if [ -n "$VIOLATIONS_2" ]; then
             if [ "$RULE2_FAILED" -eq 0 ]; then
@@ -143,8 +147,8 @@ echo ""
 echo "Rule 3: src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/ (except tools::core)"
 echo ""
 
-VIOLATIONS_3A=$(grep -r "crate::daemon::" src/extensions/framework/core/ --include="*.rs" 2>/dev/null || true)
-VIOLATIONS_3B=$(grep -rE "crate::tools::(builtin|registry|factory)" src/extensions/framework/core/ --include="*.rs" 2>/dev/null || true)
+VIOLATIONS_3A=$(grep -r "crate::daemon::" "$CORE_SRC/extensions/framework/core/" --include="*.rs" 2>/dev/null || true)
+VIOLATIONS_3B=$(grep -rE "crate::tools::(builtin|registry|factory)" "$CORE_SRC/extensions/framework/core/" --include="*.rs" 2>/dev/null || true)
 
 if [ -n "$VIOLATIONS_3A" ] || [ -n "$VIOLATIONS_3B" ]; then
     echo "  ❌ FAIL: src/extensions/framework/core/ imports from forbidden modules (daemon, tools::builtin, tools::registry, tools::factory)"
@@ -231,7 +235,7 @@ echo ""
 echo "Rule 5: src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or src/daemon/"
 echo ""
 
-VIOLATIONS_5A=$(grep -rE "crate::(agents|tunnel|daemon)::" src/extensions/framework/ --include="*.rs" 2>/dev/null || true)
+VIOLATIONS_5A=$(grep -rE "crate::(agents|tunnel|daemon)::" "$CORE_SRC/extensions/framework/" --include="*.rs" 2>/dev/null || true)
 
 if [ -n "$VIOLATIONS_5A" ]; then
     echo "  ❌ FAIL: src/extensions/framework/ imports from agents/tunnel/daemon"
@@ -252,7 +256,7 @@ echo ""
 echo "Rule 6: src/extensions/framework/ must NOT import from src/principal/"
 echo ""
 
-VIOLATIONS_6A=$(grep -rE "crate::principal::" src/extensions/framework/ --include="*.rs" 2>/dev/null || true)
+VIOLATIONS_6A=$(grep -rE "crate::principal::" "$CORE_SRC/extensions/framework/" --include="*.rs" 2>/dev/null || true)
 
 if [ -n "$VIOLATIONS_6A" ]; then
     echo "  ❌ FAIL: src/extensions/framework/ imports from principal"
@@ -276,7 +280,7 @@ echo ""
 echo "Rule 7: src/agents/ must NOT import from src/principal/"
 echo ""
 
-VIOLATIONS_7A=$(grep -rE "crate::principal" src/agents/ --include="*.rs" 2>/dev/null \
+VIOLATIONS_7A=$(grep -rE "crate::principal" "$CORE_SRC/agents/" --include="*.rs" 2>/dev/null \
     | grep -vE ':[[:space:]]*//' \
     || true)
 
@@ -307,9 +311,9 @@ echo ""
 RULE8_FAILED=0
 VIOLATIONS_8=""
 
-for f in $(find src/principal -name '*.rs'); do
+for f in $(find "$CORE_SRC/principal" -name '*.rs'); do
     case "$f" in
-        src/principal/tests/*) continue ;;   # test code is allowed to cross-import
+        "$CORE_SRC"/principal/tests/*) continue ;;   # test code is allowed to cross-import
         *)
             hits=$(awk '
                 /^[[:space:]]*#\[cfg\(test\)\]/ { keep=0 }
@@ -352,7 +356,7 @@ echo ""
 RULE9_FAILED=0
 VIOLATIONS_9=""
 
-for f in $(find src/tunnel -name '*.rs'); do
+for f in $(find "$CORE_SRC/tunnel" -name '*.rs'); do
     hits=$(awk '
         /^[[:space:]]*#\[cfg\(test\)\]/ { keep=0 }
         /^[[:space:]]*mod tests \{/     { keep=0 }
@@ -392,7 +396,7 @@ echo ""
 RULE10_FAILED=0
 VIOLATIONS_10=""
 
-for f in $(find src/ipc/handlers -name '*.rs' ! -name 'mod.rs'); do
+for f in $(find "$CORE_SRC/ipc/handlers" -name '*.rs' ! -name 'mod.rs'); do
     # Match `crate::ipc::handlers::<lowercase>::` — i.e. a path into a
     # sibling handler module. The bare `crate::ipc::handlers::RequestHandler`
     # (the trait in mod.rs) is allowed.
@@ -426,7 +430,7 @@ echo ""
 echo "Rule 11: src/providers/ must NOT import from src/engine/"
 echo ""
 
-VIOLATIONS_11=$(grep -rE "crate::engine::" src/providers/ --include="*.rs" 2>/dev/null || true)
+VIOLATIONS_11=$(grep -rE "crate::engine::" "$CORE_SRC/providers/" --include="*.rs" 2>/dev/null || true)
 
 if [ -n "$VIOLATIONS_11" ]; then
     echo "  ❌ FAIL: src/providers/ imports from src/engine/"

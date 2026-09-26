@@ -59,9 +59,14 @@ Retire the universal tool system end to end:
   `<workspace>/tools/` parameter and scan block) and the vestigial
   global-extensions-dir scan in `agents/agent.rs`.
 - **Retire the `universal-tool` extension type**: the
-  `extension_types::UNIVERSAL_TOOL` constant is removed; historical
-  manifests fail `is_valid_type` and surface as install errors,
-  matching the gateway/slash precedent.
+  `extension_types::UNIVERSAL_TOOL` constant is removed. Historical
+  manifests are skipped silently at discovery —
+  `ExtensionStore::scan_directory` only loads extension types it has a
+  registered adapter for, so legacy "universal-tool" bytes log a debug
+  line and are ignored. (This matches the gateway/slash precedent, and
+  corrects an earlier draft of this section which claimed the bytes
+  "fail `is_valid_type` and surface as install errors" — `is_valid_type`
+  has no production callers, so there is no install-error path.)
 - **Remove** `ToolSource::Universal` from `peko-extension-api` (it had
   zero construction sites) and the now-orphaned helpers
   (`parsing::find_executable{,_sync}`, `PathResolver::universal_tools_dir`

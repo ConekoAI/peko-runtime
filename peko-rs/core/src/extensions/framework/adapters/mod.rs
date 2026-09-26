@@ -525,11 +525,15 @@ impl ExtensionState {
     }
 }
 
-// Phase 14.c.2a: the `builtin_tools` submodule moved to
-// `crate::principal::runtime::builtin_tools`. Callers in root
-// (`extensions/builtin/adapter.rs`, `extensions/framework/store.rs`,
-// `ipc/handlers/extension.rs`) now read
-// `crate::principal::runtime::builtin_tools::*` directly.
+/// `builtin_tools` — the canonical list of built-in tool names (global +
+/// agent-specific). Phase 14.c.2a briefly moved this submodule under the
+/// principal layer's `runtime` module, but that left the framework's
+/// `ExtensionStore::resolve_tool_name` reaching into the principal
+/// domain — a Rule 6 module-boundary violation (framework must not
+/// depend on principal). Restored here: the principal layer depends on
+/// the framework (already established), so `principal::runtime`
+/// re-exports this module for its catalog builder and other callers.
+pub mod builtin_tools;
 
 #[cfg(test)]
 mod tests {

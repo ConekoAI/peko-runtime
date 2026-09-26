@@ -648,9 +648,7 @@ impl ExtensionStore {
     }
 
     pub async fn resolve_tool_name(&self, name: &str) -> Option<ToolResolution> {
-        if crate::principal::runtime::builtin_tools::is_builtin_tool(name)
-            || name.starts_with("builtin:")
-        {
+        if super::adapters::builtin_tools::is_builtin_tool(name) || name.starts_with("builtin:") {
             return None;
         }
 
