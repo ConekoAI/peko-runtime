@@ -360,6 +360,13 @@ pub trait SessionRuntime: Send + Sync {
     /// - `limit`: cap on results returned.
     /// - `active_minutes`: only sessions updated within the last N minutes.
     /// - `include_archived`: include archived sessions (hidden by default).
+    /// - `subtree`: optional organizational scope — a session reference
+    ///   (`sess:/a/b`, same addressing as every other action's `path`)
+    ///   naming the subtree ROOT. When `Some`, results are limited to
+    ///   that session and its descendants (the hierarchy is purely
+    ///   organizational under the 2026-09-12 filesystem model — this is
+    ///   a query filter, not a privilege boundary). Unknown paths fail
+    ///   closed via `resolve_reference`. `None` spans the whole store.
     ///
     /// To find subagent sessions, the caller filters on
     /// `parent_session_id is not None` in its own reasoning.
@@ -373,6 +380,7 @@ pub trait SessionRuntime: Send + Sync {
         limit: usize,
         active_minutes: Option<i64>,
         include_archived: bool,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>>;
 
     /// Get session history
@@ -394,11 +402,17 @@ pub trait SessionRuntime: Send + Sync {
     /// - `query`: the needle.
     /// - `peer`: restrict to one peer's sessions (`None` = all peers).
     /// - `limit`: cap on hits returned.
+    /// - `subtree`: optional organizational scope — a session reference
+    ///   (`sess:/a/b`) naming the subtree ROOT; hits are limited to
+    ///   that session and its descendants (same semantics as
+    ///   [`SessionRuntime::list_sessions`]'s `subtree`). `None` spans
+    ///   the whole store.
     async fn search_sessions(
         &self,
         query: &str,
         peer: Option<&peko_subject::Subject>,
         limit: usize,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>>;
 
     /// ADR-051: list the logical compaction-page catalog of a session

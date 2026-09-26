@@ -101,6 +101,47 @@ impl SessionCache {
         })
     }
 
+    /// Normalize a session path for subtree matching: strip the `sess:`
+    /// scheme prefix (the cache stores bare or prefixed paths depending
+    /// on the seeder) and guarantee a leading `/`.
+    fn normalize_path(path: &str) -> String {
+        let stripped = peko_session::path::strip_scheme_prefix(path);
+        if stripped.starts_with('/') {
+            stripped.to_string()
+        } else {
+            format!("/{stripped}")
+        }
+    }
+
+    /// Resolve a subtree scope reference (`sess:/a/b`) against the
+    /// cached `SessionInfo`s.
+    ///
+    /// The cache has no real tree — sessions carry only their computed
+    /// `path` — so membership is a path-prefix test on the normalized
+    /// paths (the production adapter resolves the slug walk over real
+    /// metadata and tests ancestor chains by id instead). Fails closed
+    /// when no cached session's path matches the reference.
+    fn resolve_subtree(&self, subtree: &str) -> anyhow::Result<String> {
+        let want = Self::normalize_path(subtree);
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        sessions
+            .values()
+            .map(|s| Self::normalize_path(&s.path))
+            .find(|p| *p == want)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Session not found: {subtree} (no cached session has this path)"
+                )
+            })
+    }
+
+    /// Subtree membership test matching [`Self::resolve_subtree`] —
+    /// the session's normalized path equals the root's or sits under it.
+    fn in_subtree(info: &SessionInfo, root_path: &str) -> bool {
+        let path = Self::normalize_path(&info.path);
+        path == root_path || path.starts_with(&format!("{root_path}/"))
+    }
+
     /// Seeded events for a session (empty when none were seeded —
     /// mirrors `get_history`'s empty-for-missing behavior).
     fn events_for(&self, session_key: &str) -> Vec<peko_session::SessionEvent> {
@@ -151,10 +192,15 @@ impl SessionRuntime for SessionCache {
         limit: usize,
         active_minutes: Option<i64>,
         include_archived: bool,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cutoff_ms = active_minutes.map(|m| now.saturating_sub(m as u64 * 60 * 1000));
+        let root_path = match subtree {
+            Some(reference) => Some(self.resolve_subtree(reference)?),
+            None => None,
+        };
 
         let sessions = self.sessions.lock().expect("sessions mutex poisoned");
         let filtered: Vec<SessionInfo> = sessions
@@ -167,10 +213,14 @@ impl SessionRuntime for SessionCache {
                         .map(|dt| dt.timestamp_millis() as u64 >= cutoff_ms.unwrap_or(0))
                         .unwrap_or(true)
                 });
+                let subtree_match = root_path
+                    .as_deref()
+                    .map_or(true, |root| Self::in_subtree(s, root));
                 archived_match
                     && Self::peer_matches(s, peer_filter.as_ref())
                     && agent_match
                     && active_match
+                    && subtree_match
             })
             .take(limit)
             .cloned()
@@ -210,9 +260,14 @@ impl SessionRuntime for SessionCache {
         query: &str,
         peer: Option<&peko_subject::Subject>,
         limit: usize,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>> {
         let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
         let needle = query.to_lowercase();
+        let root_path = match subtree {
+            Some(reference) => Some(self.resolve_subtree(reference)?),
+            None => None,
+        };
 
         let sessions = self.sessions.lock().expect("sessions mutex poisoned");
         let histories = self.histories.lock().expect("histories mutex poisoned");
@@ -220,6 +275,12 @@ impl SessionRuntime for SessionCache {
         let mut hits = Vec::new();
         'outer: for (key, info) in sessions.iter() {
             if info.archived || !Self::peer_matches(info, peer_filter.as_ref()) {
+                continue;
+            }
+            if !root_path
+                .as_deref()
+                .map_or(true, |root| Self::in_subtree(info, root))
+            {
                 continue;
             }
             let Some(history) = histories.get(key) else {
@@ -543,7 +604,7 @@ mod tests {
         // SessionStatusResult) rather than from a `kind` enum. The
         // SessionInfo itself carries the inherited label.
         let branch_info = cache
-            .list_sessions(None, None, 10, None, true)
+            .list_sessions(None, None, 10, None, true, None)
             .await
             .unwrap()
             .into_iter()
@@ -585,12 +646,81 @@ mod tests {
             vec!["g1".to_string(), "c1".to_string(), "p".to_string()]
         );
         assert!(cache
-            .list_sessions(None, None, 10, None, true)
+            .list_sessions(None, None, 10, None, true, None)
             .await
             .unwrap()
             .is_empty());
 
         assert!(cache.delete_session("p", true).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_and_find_scope_to_subtree_path() {
+        let cache = SessionCache::new("main");
+        // Tree: p ── c1 ── g1, plus unrelated o1. The cache matches
+        // subtree scopes by computed-path prefix (see resolve_subtree).
+        let mut p = info("p");
+        p.path = "sess:/p".to_string();
+        let mut c1 = info("c1");
+        c1.path = "sess:/p/c1".to_string();
+        let mut g1 = info("g1");
+        g1.path = "sess:/p/c1/g1".to_string();
+        let mut o1 = info("o1");
+        o1.path = "sess:/o1".to_string();
+        let needle_msg = |text: &str| {
+            vec![HistoryMessage {
+                role: "user".to_string(),
+                content: text.to_string(),
+                tool_calls: None,
+                tool_results: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+            }]
+        };
+        cache.add_session("p".to_string(), p, needle_msg("needle in p"), status("p", None));
+        cache.add_session("c1".to_string(), c1, vec![], status("c1", Some("p")));
+        cache.add_session(
+            "g1".to_string(),
+            g1,
+            needle_msg("needle in g1"),
+            status("g1", Some("c1")),
+        );
+        cache.add_session(
+            "o1".to_string(),
+            o1,
+            needle_msg("needle in o1"),
+            status("o1", None),
+        );
+
+        // Scoped list: the subtree root itself + descendants, never o1.
+        let scoped = cache
+            .list_sessions(None, None, 10, None, true, Some("sess:/p"))
+            .await
+            .unwrap();
+        let mut keys: Vec<&str> = scoped.iter().map(|s| s.session_key.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["c1", "g1", "p"]);
+
+        // Legacy bare form is the same address.
+        let bare = cache
+            .list_sessions(None, None, 10, None, true, Some("/p"))
+            .await
+            .unwrap();
+        assert_eq!(bare.len(), 3);
+
+        // Unknown subtree path fails closed.
+        let err = cache
+            .list_sessions(None, None, 10, None, true, Some("sess:/missing"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no cached session"), "{err}");
+
+        // Scoped search: p's and g1's needles surface, never o1's.
+        let hits = cache
+            .search_sessions("needle", None, 10, Some("sess:/p"))
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|h| h.session_id != "o1"));
     }
 
     #[tokio::test]
@@ -619,7 +749,7 @@ mod tests {
             status("s2", None),
         );
         // s2 is seeded archived, so it must drop out of search results.
-        let hits = cache.search_sessions("NEEDLE", None, 10).await.unwrap();
+        let hits = cache.search_sessions("NEEDLE", None, 10, None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "s1");
         assert!(hits[0].snippet.contains("Needle"));

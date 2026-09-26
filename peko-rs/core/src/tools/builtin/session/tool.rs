@@ -117,6 +117,27 @@ impl SessionTool {
         Ok(path)
     }
 
+    /// Optional subtree scope for `list` / `find`: the `path` param
+    /// names the subtree ROOT (a session reference, `sess:/a/b` — same
+    /// addressing as every other action). Shape-validated here
+    /// (early-fail, mirrors `require_path`); resolved to a canonical
+    /// session id at the runtime layer. Absent / empty ⇒ `None` (the
+    /// whole store). Bare `/` is refused like everywhere else — to
+    /// span the whole store, omit the parameter.
+    fn optional_subtree(params: &serde_json::Value) -> anyhow::Result<Option<String>> {
+        match params.get("path").and_then(|v| v.as_str()) {
+            None | Some("") => Ok(None),
+            Some(path) => {
+                peko_session::path::validate_path(path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "'path' subtree scope is not a valid slug path: {e}"
+                    )
+                })?;
+                Ok(Some(path.to_string()))
+            }
+        }
+    }
+
     /// Extract and parse the bash-style `target` param for `copy` and
     /// `move`. The target is a slug path: the last segment is the new
     /// slug (under the parent = everything before), mirroring bash
@@ -201,9 +222,9 @@ impl Tool for SessionTool {
 
 Per-action semantics (the action you choose determines which other params apply):
 - status: one session's metadata + token usage (path optional, defaults to current)
-- list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
+- list: query sessions (filters: path scopes results to a subtree, peer, agent_id, active_minutes; archived hidden unless include_archived:true)
 - history: messages of a session (path optional, defaults to current; include_tools)
-- find: case-insensitive text search across session transcripts (query required; optional peer filter)
+- find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
 - copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
 - move: reparent a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
 - remove: delete a session (path required; recursive:true also deletes its descendants, children first)
@@ -213,7 +234,7 @@ Per-action semantics (the action you choose determines which other params apply)
 
 Default nodes: the principal is seeded with two ordinary standing sessions at creation — `sess:/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `sess:/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `sess:/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
 
-The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session).
+The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`, `path` is an organizational SCOPE: results are limited to the named session and its descendants (e.g. action `list` with path `sess:/agent-b` lists that subtree); omit `path` to span the whole store.
 
 The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`sess:/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
@@ -234,7 +255,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "path": {
                     "type": "string",
-                    "description": "Source session: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). Match the Agent tool's `path` parameter."
+                    "description": "Session address: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`: subtree SCOPE — results are limited to the named session and its descendants; omit to span the whole store. Match the Agent tool's `path` parameter."
                 },
                 "target": {
                     "type": "string",
@@ -364,6 +385,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     .get("include_archived")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let subtree = Self::optional_subtree(&params)?;
 
                 let sessions = self
                     .runtime
@@ -373,6 +395,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                         limit,
                         active_minutes,
                         include_archived,
+                        subtree.as_deref(),
                     )
                     .await?;
                 Ok(Self::build_list_response(sessions))
@@ -409,10 +432,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     None => None,
                 };
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+                let subtree = Self::optional_subtree(&params)?;
 
                 let hits = self
                     .runtime
-                    .search_sessions(query, peer.as_ref(), limit)
+                    .search_sessions(query, peer.as_ref(), limit, subtree.as_deref())
                     .await?;
                 Ok(json!({
                     "total": hits.len(),
@@ -727,6 +751,129 @@ mod tests {
 
         assert_eq!(result["total"], 1);
         assert_eq!(result["sessions"][0]["session_key"], "test-session");
+    }
+
+    #[tokio::test]
+    async fn test_session_list_and_find_accept_subtree_path_scope() {
+        let cache = Arc::new(SessionCache::new("main"));
+        // Tree: p ── c1 ── g1, plus unrelated o1 — paths as `list`
+        // would surface them to the model.
+        let scoped_info = |key: &str, path: &str| SessionInfo {
+            session_key: key.to_string(),
+            session_id: key.to_string(),
+            agent_id: Some("agent".to_string()),
+            label: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_activity: "2024-01-01T01:00:00Z".to_string(),
+            message_count: 1,
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            run_active: false,
+            slug: None,
+            path: path.to_string(),
+        };
+        let needle_msg = |text: &str| {
+            vec![HistoryMessage {
+                role: "user".to_string(),
+                content: text.to_string(),
+                tool_calls: None,
+                tool_results: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+            }]
+        };
+        let empty_status = SessionStatusResult {
+            session_id: String::new(),
+            agent_name: "agent".to_string(),
+            created_at: String::new(),
+            last_activity: String::new(),
+            timestamp_utc: String::new(),
+            timestamp: String::new(),
+            message_count: 0,
+            usage: UsageStats {
+                cumulative_input_tokens: 0,
+                cumulative_output_tokens: 0,
+                last_total_tokens: 0,
+                current_prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                reasoning_tokens: None,
+                model_context_limit: None,
+                cache_read_total: 0,
+                cache_creation_total: 0,
+                cache_hit_rate: None,
+            },
+            quota: None,
+            current_run_iterations: 0,
+            peer_type: None,
+            peer_id: None,
+            label: None,
+            parent_session: None,
+        };
+        cache.add_session(
+            "p".to_string(),
+            scoped_info("p", "sess:/p"),
+            needle_msg("needle in p"),
+            empty_status.clone(),
+        );
+        cache.add_session(
+            "g1".to_string(),
+            scoped_info("g1", "sess:/p/c1/g1"),
+            needle_msg("needle in g1"),
+            empty_status.clone(),
+        );
+        cache.add_session(
+            "o1".to_string(),
+            scoped_info("o1", "sess:/o1"),
+            needle_msg("needle in o1"),
+            empty_status,
+        );
+        let tool = SessionTool::new(cache.as_shared());
+
+        // `list` scoped to the subtree: p + g1, never o1.
+        let result = tool
+            .execute(json!({"action": "list", "path": "sess:/p"}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 2);
+        let keys: Vec<&str> = result["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["session_key"].as_str().unwrap())
+            .collect();
+        assert!(keys.contains(&"p"));
+        assert!(keys.contains(&"g1"));
+        assert!(!keys.contains(&"o1"));
+
+        // `find` honors the same scope.
+        let result = tool
+            .execute(json!({"action": "find", "query": "needle", "path": "sess:/p"}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 2);
+        let ids: Vec<&str> = result["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["session_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"p"));
+        assert!(ids.contains(&"g1"));
+        assert!(!ids.contains(&"o1"));
+
+        // Malformed scope paths fail at the tool boundary (early-fail,
+        // same shape as the other actions' `path` validation).
+        let err = tool
+            .execute(json!({"action": "list", "path": "/"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not a valid slug path"), "{err}");
+        let err = tool
+            .execute(json!({"action": "find", "query": "x", "path": "a//b"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not a valid slug path"), "{err}");
     }
 
     #[tokio::test]
