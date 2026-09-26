@@ -590,6 +590,79 @@ impl SessionStorage {
         Ok(events)
     }
 
+    /// Permanently drop the first `drop_events` parsed events of the
+    /// stitched transcript (page files in order, then the live file).
+    ///
+    /// The retention primitive behind the per-session `page_limit`
+    /// (the FIFO page cap): callers drop whole closed pages — events
+    /// plus their terminating boundary — and track the count in
+    /// `SessionEntry::pruned_pages` so page numbers stay stable
+    /// addresses across pruning.
+    ///
+    /// Files that lose every event are deleted (page files only — the
+    /// live file is left in place, empty, so concurrent appends keep
+    /// working); partially affected files are rewritten atomically
+    /// (tmp + rename). Unparseable lines are never counted as events
+    /// and are preserved. Acquires the live-file lock, so it is safe
+    /// against concurrent appends and reads.
+    pub async fn prune_head(&self, session_id: &str, drop_events: usize) -> Result<()> {
+        if drop_events == 0 {
+            return Ok(());
+        }
+        self.cleanup_temp_files(session_id).await?;
+        let paths = self.transcript_paths(session_id);
+        let live_path = self.session_path(session_id);
+        let _lock =
+            FileLock::acquire(self.session_path(session_id), SESSION_LOCK_TIMEOUT_MS).await?;
+
+        let mut remaining = drop_events;
+        for path in &paths {
+            if remaining == 0 {
+                break;
+            }
+            let content = fs::read_to_string(path).await?;
+            let mut kept_lines: Vec<&str> = Vec::new();
+            let mut dropped_here = 0usize;
+            for line in content.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if remaining > 0 {
+                    match serde_json::from_str::<SessionEvent>(line) {
+                        // Counted as an event by `load_events` — dropped.
+                        Ok(_) => {
+                            remaining -= 1;
+                            dropped_here += 1;
+                            continue;
+                        }
+                        // Invisible to the read model; preserve.
+                        Err(_) => {
+                            kept_lines.push(line);
+                            continue;
+                        }
+                    }
+                }
+                kept_lines.push(line);
+            }
+            if dropped_here == 0 {
+                continue;
+            }
+            if kept_lines.is_empty() {
+                if path == &live_path {
+                    fs::write(path, "").await?;
+                } else {
+                    fs::remove_file(path).await?;
+                }
+            } else {
+                let tmp = path.with_extension("jsonl.prune-tmp");
+                fs::write(&tmp, format!("{}\n", kept_lines.join("\n"))).await?;
+                fs::rename(&tmp, path).await?;
+            }
+        }
+        self.invalidate_context_cache(session_id).await?;
+        Ok(())
+    }
+
     /// Load session normalizing Event Format entries
     ///
     /// This method provides a unified view over session data. Like

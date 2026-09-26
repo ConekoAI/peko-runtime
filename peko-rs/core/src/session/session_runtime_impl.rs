@@ -40,9 +40,11 @@ use crate::session::ownership::{
     CallerContext,
 };
 use crate::tools::builtin::session::{
-    BranchOutcome, DeleteOutcome, HistoryMessage, QuotaSnapshot, SessionInfo, SessionRuntime,
-    SessionSearchHit, SessionStatusResult, ToolCallInfo, ToolResultInfo, UsageStats,
+    BranchOutcome, DeleteOutcome, HistoryMessage, PageCatalog, QuotaSnapshot, SessionInfo,
+    SessionRuntime, SessionSearchHit, SessionStatusResult, ToolCallInfo, ToolResultInfo,
+    UsageStats,
 };
+use anyhow::Context as _;
 use peko_message::LlmMessage;
 use peko_subject::Subject;
 
@@ -195,7 +197,7 @@ impl SessionManagerRuntime {
     async fn load_guarded_events(
         &self,
         session_key: &str,
-    ) -> anyhow::Result<Vec<peko_session::SessionEvent>> {
+    ) -> anyhow::Result<(Vec<peko_session::SessionEvent>, String)> {
         let (session_key, sessions_dir) = {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
@@ -208,7 +210,22 @@ impl SessionManagerRuntime {
             (session_key, sessions_dir)
         };
         let storage = SessionStorage::new(sessions_dir);
-        storage.load_events(&session_key).await
+        let events = storage.load_events(&session_key).await?;
+        Ok((events, session_key))
+    }
+
+    /// `pruned_pages` + `page_limit` for a resolved session id — the
+    /// stable-numbering inputs for the page read primitives.
+    async fn page_retention_state(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<(u32, Option<u32>)> {
+        let manager = self.session_manager.read().await;
+        let meta = manager
+            .get_session_metadata(session_id)
+            .await
+            .context("Failed to load page retention state")?;
+        Ok((meta.pruned_pages, meta.page_limit))
     }
 }
 
@@ -492,12 +509,21 @@ impl SessionRuntime for SessionManagerRuntime {
         Ok((messages, resolved_path))
     }
 
-    async fn list_pages(
-        &self,
-        session_key: &str,
-    ) -> anyhow::Result<Vec<peko_session::pages::SessionPage>> {
-        let events = self.load_guarded_events(session_key).await?;
-        Ok(peko_session::pages::list_pages(&events))
+    async fn list_pages(&self, session_key: &str) -> anyhow::Result<PageCatalog> {
+        let (events, session_id) = self.load_guarded_events(session_key).await?;
+        let (pruned, page_limit) = self.page_retention_state(&session_id).await?;
+        let mut pages = peko_session::pages::list_pages(&events);
+        // Stable addresses: offset the positional numbers by the
+        // pruned count so pages rotated out by the retention policy
+        // never renumber the survivors.
+        for page in &mut pages {
+            page.page_number += pruned as usize;
+        }
+        Ok(PageCatalog {
+            first_available_page: pruned as usize + 1,
+            page_limit,
+            pages,
+        })
     }
 
     async fn read_page(
@@ -507,8 +533,23 @@ impl SessionRuntime for SessionManagerRuntime {
         offset: usize,
         limit: usize,
     ) -> anyhow::Result<String> {
-        let events = self.load_guarded_events(session_key).await?;
-        Ok(peko_session::pages::read_page(&events, page, offset, limit))
+        let (events, session_id) = self.load_guarded_events(session_key).await?;
+        let (pruned, _page_limit) = self.page_retention_state(&session_id).await?;
+        if page <= pruned as usize {
+            return Err(anyhow::anyhow!(
+                "page {page} was rotated out by the session's page_limit retention policy —                  the oldest available page is {}",
+                pruned as usize + 1
+            ));
+        }
+        // Absolute page number -> positional index into the stitched
+        // event list.
+        let positional = page - pruned as usize;
+        Ok(peko_session::pages::read_page(
+            &events,
+            positional,
+            offset,
+            limit,
+        ))
     }
 
     async fn search_pages(
@@ -517,12 +558,34 @@ impl SessionRuntime for SessionManagerRuntime {
         query: &str,
         max_results: usize,
     ) -> anyhow::Result<Vec<peko_session::pages::SearchHit>> {
-        let events = self.load_guarded_events(session_key).await?;
+        let (events, session_id) = self.load_guarded_events(session_key).await?;
+        let (pruned, _page_limit) = self.page_retention_state(&session_id).await?;
         Ok(peko_session::pages::search_pages(
             &events,
             query,
             max_results,
-        ))
+        )
+        .into_iter()
+        .map(|hit| peko_session::pages::SearchHit {
+            page_number: hit.page_number + pruned as usize,
+            ..hit
+        })
+        .collect())
+    }
+
+    async fn set_page_limit(
+        &self,
+        session_key: &str,
+        limit: Option<u32>,
+    ) -> anyhow::Result<u64> {
+        let mut manager = self.session_manager.write().await;
+        let (caller, metas) = self.caller_and_metas(&mut manager).await?;
+        let session_id = self.resolve_ref(&caller, &metas, session_key)?;
+        self.guard_not_self(&caller, &session_id)?;
+        self.guard_dangling(&caller)?;
+        manager.set_page_limit(&session_id, limit).await?;
+        let pruned = manager.enforce_page_limit(&session_id).await?;
+        Ok(pruned as u64)
     }
 
     async fn get_status(&self, session_id: &str) -> anyhow::Result<SessionStatusResult> {
@@ -1358,6 +1421,65 @@ mod tests {
             .copy_session("/", "/".into(), "root-copy".into(), None)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn page_retention_rotates_pages_and_keeps_numbers_stable() {
+        let h = tree_harness("root:user:alice").await;
+
+        // Three closed pages on spawn2 ("c"): a user turn, then a
+        // boundary closing it.
+        for i in 1..=3 {
+            h.add_user_message("spawn2", &format!("page {i}")).await;
+            h.add_compaction("spawn2").await;
+        }
+
+        // Simulate a prior rotation (pruned_pages = 1) and cap at 2:
+        // of the 3 closed pages, one more rotates out.
+        {
+            let mut manager = h.manager.write().await;
+            let mut meta = manager
+                .metadata_controller
+                .write()
+                .await
+                .get_metadata(&sid("spawn2"), false)
+                .await
+                .unwrap()
+                .expect("spawn2 metadata");
+            meta.pruned_pages = 1;
+            meta.page_limit = Some(2);
+            manager
+                .metadata_controller
+                .write()
+                .await
+                .update_metadata(meta)
+                .await
+                .unwrap();
+            let pruned = manager.enforce_page_limit(&sid("spawn2")).await.unwrap();
+            assert_eq!(pruned, 1, "3 closed pages - cap 2 = 1 rotation");
+        }
+
+        // list_pages: STABLE absolute numbers — the survivors keep
+        // their identities (original pages 2 and 3 report as 3 and 4;
+        // the newest boundary is the last event, so there is no live
+        // page), and first_available_page tracks the rotation.
+        let catalog = h.runtime.list_pages("/c").await.unwrap();
+        assert_eq!(catalog.first_available_page, 3);
+        assert_eq!(catalog.page_limit, Some(2));
+        let numbers: Vec<usize> = catalog.pages.iter().map(|p| p.page_number).collect();
+        assert_eq!(numbers, vec![3, 4]);
+
+        // read_page on a rotated-out page is a clean structured error;
+        // absolute numbers address the survivors.
+        let err = h.runtime.read_page("/c", 2, 0, 100).await.unwrap_err();
+        assert!(err.to_string().contains("rotated out"), "{err}");
+        let page3 = h.runtime.read_page("/c", 3, 0, 100).await.unwrap();
+        assert!(page3.contains("page 2"), "absolute 3 = original page 2: {page3}");
+
+        // search_pages hits carry absolute page numbers too.
+        let hits = h.runtime.search_pages("/c", "page 3", 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].page_number, 4, "original page 3 reports as 4");
     }
 
     #[tokio::test]

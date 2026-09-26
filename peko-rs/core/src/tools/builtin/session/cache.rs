@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::{
-    BranchOutcome, DeleteOutcome, HistoryMessage, SessionInfo, SessionRuntime, SessionSearchHit,
-    SessionStatusResult, SharedSessionRuntime,
+    BranchOutcome, DeleteOutcome, HistoryMessage, PageCatalog, SessionInfo, SessionRuntime,
+    SessionSearchHit, SessionStatusResult, SharedSessionRuntime,
 };
 
 /// In-memory session cache for testing and placeholder use.
@@ -320,13 +320,13 @@ impl SessionRuntime for SessionCache {
         Ok(hits)
     }
 
-    async fn list_pages(
-        &self,
-        session_key: &str,
-    ) -> anyhow::Result<Vec<peko_session::pages::SessionPage>> {
-        Ok(peko_session::pages::list_pages(
-            &self.events_for(session_key),
-        ))
+    async fn list_pages(&self, session_key: &str) -> anyhow::Result<PageCatalog> {
+        // Test double: no pruning — positional numbers are absolute.
+        Ok(PageCatalog {
+            pages: peko_session::pages::list_pages(&self.events_for(session_key)),
+            first_available_page: 1,
+            page_limit: None,
+        })
     }
 
     async fn read_page(
@@ -355,6 +355,11 @@ impl SessionRuntime for SessionCache {
             query,
             max_results,
         ))
+    }
+
+    async fn set_page_limit(&self, _session_key: &str, _limit: Option<u32>) -> anyhow::Result<u64> {
+        // Test double: no retention policy — nothing to prune.
+        Ok(0)
     }
 
     async fn copy_session(

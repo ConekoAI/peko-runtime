@@ -312,12 +312,14 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         prompt: &str,
         agent: &str,
         overwrite: bool,
+        page_limit: Option<u32>,
         caller_session_key: &str,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<SubagentRunView> {
         let _ = agent; // validated tool-side; the run uses the resolved role prompt
         let root_config = crate::agents::subagent_executor::ExecutionConfig {
             max_depth: self.max_depth(),
+            page_limit,
             ..Default::default()
         };
         let view = self
@@ -411,6 +413,7 @@ fn build_root_execution_config(
         announce_completion: request.config.announce_completion,
         max_depth: request.config.max_depth,
         model_override,
+        page_limit: request.config.page_limit,
         // Agent tool `name` → the child session's slug (stamped by
         // `spawn_and_execute`; ignored on the resume path).
         slug: request.name.clone(),

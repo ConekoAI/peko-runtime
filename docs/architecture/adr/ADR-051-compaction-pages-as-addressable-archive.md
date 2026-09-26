@@ -1,6 +1,11 @@
 # ADR-051: Compaction Pages as an Addressable Archive
 
 **Status:** Proposed
+**Amended 2026-09-26:** pages are subject to an optional per-session
+FIFO retention cap (`page_limit`) — the oldest closed pages rotate out
+permanently when the cap is exceeded, and `pruned_pages` offsets page
+numbers so survivors keep their addresses (see the CHANGELOG entry and
+`Session::prune_overflow`).
 **Date:** 2026-09-05
 **Author:** rlsn
 **Related:** [ADR-042](ADR-042-no-external-session-concept.md) (session

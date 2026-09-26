@@ -821,7 +821,82 @@ impl Session {
                 details,
             )
             .await?;
+
+        // Retention (page_limit): the boundary just closed a page —
+        // rotate out the oldest pages when the session is over its
+        // cap. Failures are logged, never fatal: retention is
+        // best-effort and retried on the next boundary.
+        if let Err(e) = self.enforce_page_limit().await {
+            tracing::warn!("page_limit enforcement failed for {}: {e:#}", self.id);
+        }
         Ok(())
+    }
+
+    /// ADR-051 retention: rotate out the oldest closed pages
+    /// (permanently delete their events via
+    /// [`SessionStorage::prune_head`]) until the session is within its
+    /// `page_limit`. Returns the number of pages pruned; the CALLER
+    /// persists `pruned_pages += count` through its own
+    /// `MetadataController` (each controller instance carries an
+    /// in-memory index view — the manager must not rely on this
+    /// session's write to be visible in its own cache). No-op when no
+    /// limit is set or the session is within it.
+    pub async fn prune_overflow(&mut self) -> Result<usize> {
+        self.ensure_metadata_controller();
+        let limit = {
+            let Some(controller) = self.metadata_controller.as_mut() else {
+                return Ok(0);
+            };
+            let meta = controller
+                .get_metadata(&self.id, false)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Session {} not found", self.id))?;
+            meta.page_limit
+        };
+        let Some(limit) = limit else {
+            return Ok(0);
+        };
+        let events = self.storage.load_events(&self.id).await?;
+        let closed = events
+            .iter()
+            .filter(|e| crate::pages::is_compaction_boundary(e))
+            .count();
+        let overflow = closed.saturating_sub(limit as usize);
+        if overflow == 0 {
+            return Ok(0);
+        }
+        // Drop the first `overflow` closed pages: everything up to and
+        // including the `overflow`-th boundary from the front.
+        let mut seen = 0usize;
+        let mut keep_from = events.len();
+        for (idx, event) in events.iter().enumerate() {
+            if crate::pages::is_compaction_boundary(event) {
+                seen += 1;
+                if seen == overflow {
+                    keep_from = idx + 1;
+                    break;
+                }
+            }
+        }
+        self.storage.prune_head(&self.id, keep_from).await?;
+        Ok(overflow)
+    }
+
+    /// [`Self::prune_overflow`] + persist `pruned_pages` through this
+    /// session's own controller. Used by [`Self::record_compaction`],
+    /// whose only metadata channel is the session's own controller.
+    pub async fn enforce_page_limit(&mut self) -> Result<usize> {
+        let pruned = self.prune_overflow().await?;
+        if pruned > 0 {
+            self.ensure_metadata_controller();
+            if let Some(controller) = self.metadata_controller.as_mut() {
+                if let Some(mut meta) = controller.get_metadata(&self.id, false).await? {
+                    meta.pruned_pages += pruned as u32;
+                    controller.update_metadata(meta).await?;
+                }
+            }
+        }
+        Ok(pruned)
     }
 
     /// Load the most recent compaction summary

@@ -4,6 +4,32 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Per-session FIFO page retention (`page_limit`, 2026-09-26)
+
+- **`SessionEntry.page_limit` + `pruned_pages`** — a per-session cap on
+  closed compaction pages (ADR-051). When a boundary closes a page and
+  the session is over its cap, the OLDEST closed pages are rotated out:
+  their events are permanently deleted (`SessionStorage::prune_head`,
+  atomic tmp+rename rewrites under the live-file lock) and
+  `pruned_pages` advances.
+- **Page numbers are stable addresses**: `list_pages` /
+  `read_page` / `search_pages` report numbers offset by
+  `pruned_pages`, so pruning never renumbers survivors;
+  `first_available_page` in the `list_pages` response tracks the
+  rotation, and `read_page` on a rotated-out number returns a clean
+  structured error.
+- **Surface**: Agent tool `page_limit` param (`new` / `branch` only,
+  1-10000; applies to the session the action creates or reseeds);
+  session tool `move` accepts `page_limit` (0 = unlimited) and echoes
+  `pages_pruned` — pruning on a lowered cap is immediate and
+  irreversible.
+- **Enforcement points**: the engine compactor's boundary write
+  (`Session::record_compaction`), the branch real-overwrite reseed,
+  and `set_page_limit`. The `pruned_pages` counter is persisted by the
+  caller's own `MetadataController` (each controller instance carries
+  an in-memory index view; see `Session::prune_overflow`).
+
+
 ### Session archive flag retired + Agent `branch` overwrite reseeds in place (2026-09-26)
 
 - **The `archived` flag is removed end-to-end** — `SessionEntry.archived`,
