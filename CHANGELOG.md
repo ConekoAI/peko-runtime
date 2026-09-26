@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Session archive flag retired + Agent `branch` overwrite reseeds in place (2026-09-26)
+
+- **The `archived` flag is removed end-to-end** — `SessionEntry.archived`,
+  `SessionManager::set_session_archived`, the `session` tool's
+  `include_archived` list filter / `SessionInfo.archived` field, and the
+  `resume` / `compact` archived-refusal guards. The flag had been a zombie
+  since Sprint 7 retired the `archive` / `unarchive` actions: one writer
+  left (branch overwrite), no restore path, and the model could not reach
+  archived sessions at all. Soft-delete remains an organizational workflow:
+  `move` into `sess:/trash`, purge later with `remove recursive:true`.
+  Legacy `sessions.json` entries carrying `archived: true` deserialize
+  normally (serde unknown-field tolerance) and resurface as ordinary,
+  removable sessions.
+- **Agent `branch` with `overwrite: true` now reseeds the target in place**
+  (ADR-053 amended) instead of archive-and-repoint: the target keeps its
+  id, slug, parent linkage, and whole descendant subtree (addresses below
+  it are byte-stable — previously the cleared slug shifted every
+  descendant's path). The source's cache-window snapshot is appended
+  behind a compaction boundary that closes the target's previous live
+  transcript, which is retained as an ADR-051 page (inspectable via
+  `list_pages` / `read_page`) — "history is never destroyed" now holds
+  literally. The target's own compaction sequence advances past the
+  appended boundary (`SessionManager::set_compaction_count`).
+
 ### Retired universal tools (ADR-062, 2026-09-25)
 
 - **Removed the universal tool system** — the JSON-RPC-over-stdio

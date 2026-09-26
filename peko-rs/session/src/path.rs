@@ -460,7 +460,6 @@ mod tests {
             trigger: "user".to_string(),
             peer_type: None,
             peer_id: None,
-            archived: false,
             slug: slug.map(String::from),
             compaction_count: 0,
             last_compaction_at: None,

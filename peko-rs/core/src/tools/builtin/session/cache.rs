@@ -191,7 +191,6 @@ impl SessionRuntime for SessionCache {
         agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
-        include_archived: bool,
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
@@ -206,7 +205,6 @@ impl SessionRuntime for SessionCache {
         let filtered: Vec<SessionInfo> = sessions
             .values()
             .filter(|s| {
-                let archived_match = include_archived || !s.archived;
                 let agent_match = agent_id.map_or(true, |a| s.agent_name.as_deref() == Some(a));
                 let active_match = cutoff_ms.map_or(true, |_| {
                     chrono::DateTime::parse_from_rfc3339(&s.last_activity)
@@ -216,8 +214,7 @@ impl SessionRuntime for SessionCache {
                 let subtree_match = root_path
                     .as_deref()
                     .map_or(true, |root| Self::in_subtree(s, root));
-                archived_match
-                    && Self::peer_matches(s, peer_filter.as_ref())
+                Self::peer_matches(s, peer_filter.as_ref())
                     && agent_match
                     && active_match
                     && subtree_match
@@ -292,7 +289,7 @@ impl SessionRuntime for SessionCache {
 
         let mut hits = Vec::new();
         'outer: for (key, info) in sessions.iter() {
-            if info.archived || !Self::peer_matches(info, peer_filter.as_ref()) {
+            if !Self::peer_matches(info, peer_filter.as_ref()) {
                 continue;
             }
             if !root_path
@@ -578,7 +575,6 @@ mod tests {
             message_count: 1,
             peer_type: None,
             peer_id: None,
-            archived: false,
             run_active: false,
             slug: None,
             path: format!("/{key}"),
@@ -637,7 +633,7 @@ mod tests {
         // SessionStatusResult) rather than from a `kind` enum. The
         // SessionInfo itself carries the inherited label.
         let branch_info = cache
-            .list_sessions(None, None, 10, None, true, None)
+            .list_sessions(None, None, 10, None, None)
             .await
             .unwrap()
             .into_iter()
@@ -679,7 +675,7 @@ mod tests {
             vec!["g1".to_string(), "c1".to_string(), "p".to_string()]
         );
         assert!(cache
-            .list_sessions(None, None, 10, None, true, None)
+            .list_sessions(None, None, 10, None, None)
             .await
             .unwrap()
             .is_empty());
@@ -726,7 +722,7 @@ mod tests {
 
         // Scoped list: the subtree root itself + descendants, never o1.
         let scoped = cache
-            .list_sessions(None, None, 10, None, true, Some("sess:/p"))
+            .list_sessions(None, None, 10, None, Some("sess:/p"))
             .await
             .unwrap();
         let mut keys: Vec<&str> = scoped.iter().map(|s| s.session_id.as_str()).collect();
@@ -735,14 +731,14 @@ mod tests {
 
         // Legacy bare form is the same address.
         let bare = cache
-            .list_sessions(None, None, 10, None, true, Some("/p"))
+            .list_sessions(None, None, 10, None, Some("/p"))
             .await
             .unwrap();
         assert_eq!(bare.len(), 3);
 
         // Unknown subtree path fails closed.
         let err = cache
-            .list_sessions(None, None, 10, None, true, Some("sess:/missing"))
+            .list_sessions(None, None, 10, None, Some("sess:/missing"))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no cached session"), "{err}");
@@ -757,7 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_skips_archived_and_matches_case_insensitively() {
+    async fn search_matches_case_insensitively() {
         let cache = SessionCache::new("main");
         let history = vec![HistoryMessage {
             role: "user".to_string(),
@@ -767,21 +763,6 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
         }];
         cache.add_session("s1".to_string(), info("s1"), history, status("s1", None));
-        let mut s2_info = info("s2");
-        s2_info.archived = true;
-        cache.add_session(
-            "s2".to_string(),
-            s2_info,
-            vec![HistoryMessage {
-                role: "assistant".to_string(),
-                content: "another needle here".to_string(),
-                tool_calls: None,
-                tool_results: None,
-                timestamp: "2024-01-01T00:00:01Z".to_string(),
-            }],
-            status("s2", None),
-        );
-        // s2 is seeded archived, so it must drop out of search results.
         let hits = cache.search_sessions("NEEDLE", None, 10, None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "s1");

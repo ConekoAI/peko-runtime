@@ -103,10 +103,6 @@ pub struct SessionEntry {
     pub peer_type: Option<String>,
     /// Subject ID - for session identity restoration
     pub peer_id: Option<String>,
-    /// Archived sessions are hidden from default listings and refuse
-    /// resume/compact until unarchived (agent-owned session management).
-    #[serde(default)]
-    pub archived: bool,
     /// Per-parent-unique path segment for `/slug/...` addressing
     /// (see `crate::path`). The trunk session (sprint 6:
     /// `parent_session_id == None`) carries no slug.
@@ -164,7 +160,6 @@ impl SessionEntry {
             trigger: "user".to_string(),
             peer_type: None,
             peer_id: None,
-            archived: false,
             slug: None,
             compaction_count: 0,
             last_compaction_at: None,
@@ -1211,7 +1206,9 @@ mod tests {
     }
 
     /// Backward compatibility: a `sessions.json` entry written before
-    /// the `archived` / `standing` / `privileged` flags and the
+    /// the `archived` / `standing` / `privileged` flags were retired
+    /// (the `archived` flag itself removed 2026-09-26 — serde's
+    /// unknown-field tolerance keeps old files readable) and the
     /// compaction-audit-fix-#4 quota fields (`compaction_count` /
     /// `last_compaction_at` / `consecutive_auto_compactions` /
     /// `consecutive_compaction_failures`) existed must deserialize
@@ -1244,8 +1241,6 @@ mod tests {
         });
 
         let entry: SessionEntry = serde_json::from_value(legacy).unwrap();
-        assert!(!entry.archived);
-        assert!(!entry.archived);
 
         assert_eq!(
             entry.compaction_limits_state(),
@@ -1253,9 +1248,8 @@ mod tests {
             "old index entries must hydrate as never-compacted"
         );
 
-        // And the flags round-trip through serialization once set.
+        // And the quota counters round-trip through serialization.
         let mut entry = entry;
-        entry.archived = true;
         entry.set_compaction_limits_state(crate::compaction::CompactionLimitsState {
             compaction_count: 2,
             last_compaction_at_ms: Some(42),
@@ -1264,7 +1258,6 @@ mod tests {
         });
         let json = serde_json::to_value(&entry).unwrap();
         let reloaded: SessionEntry = serde_json::from_value(json).unwrap();
-        assert!(reloaded.archived);
         assert_eq!(reloaded.compaction_count, 2);
         assert_eq!(reloaded.last_compaction_at, Some(42));
         assert_eq!(reloaded.consecutive_auto_compactions, 1);

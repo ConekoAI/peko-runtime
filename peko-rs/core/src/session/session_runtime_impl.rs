@@ -329,7 +329,6 @@ impl SessionRuntime for SessionManagerRuntime {
         agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
-        include_archived: bool,
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         let mut manager = self.session_manager.write().await;
@@ -378,7 +377,6 @@ impl SessionRuntime for SessionManagerRuntime {
                 // for every caller — no ownership scoping. An explicit
                 // `subtree` reference is an organizational query
                 // filter, applied like the other filters here.
-                let archived_match = include_archived || !m.archived;
                 let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
                 let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
@@ -394,7 +392,7 @@ impl SessionRuntime for SessionManagerRuntime {
                 let subtree_match = subtree_ids
                     .as_ref()
                     .map_or(true, |ids| ids.contains(&m.session_id.to_string()));
-                archived_match && peer_match && agent_match && active_match && subtree_match
+                peer_match && agent_match && active_match && subtree_match
             })
             .take(limit)
             .map(|m| {
@@ -413,7 +411,6 @@ impl SessionRuntime for SessionManagerRuntime {
                     message_count: m.message_count,
                     peer_type: m.peer_type.clone(),
                     peer_id: m.peer_id.clone(),
-                    archived: m.archived,
                     run_active: false, // filled below when a registry is bound
                     slug: m.slug.clone(),
                     // Computed display path (slug segments; slugless
@@ -678,7 +675,6 @@ impl SessionRuntime for SessionManagerRuntime {
                     // reach for every caller — no ownership scoping.
                     // An explicit `subtree` reference is an
                     // organizational query filter.
-                    let visible_match = !m.archived;
                     let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
                         let (have_kind, have_id) =
                             match (m.peer_type.as_deref(), m.peer_id.as_deref()) {
@@ -690,7 +686,7 @@ impl SessionRuntime for SessionManagerRuntime {
                     let subtree_match = subtree_ids
                         .as_ref()
                         .map_or(true, |ids| ids.contains(&m.session_id.to_string()));
-                    visible_match && peer_match && subtree_match
+                    peer_match && subtree_match
                 })
                 .map(|m| m.session_id.to_string())
                 .collect();
@@ -1326,7 +1322,7 @@ mod tests {
         // Full list view.
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false, None)
+            .list_sessions(None, None, 50, None, None)
             .await
             .unwrap();
         assert_eq!(all.len(), 4);
@@ -1375,7 +1371,7 @@ mod tests {
         // included); never spawn2 or the root.
         let scoped = h
             .runtime
-            .list_sessions(None, None, 50, None, false, Some("sess:/a"))
+            .list_sessions(None, None, 50, None, Some("sess:/a"))
             .await
             .unwrap();
         let ids: Vec<&str> = scoped.iter().map(|s| s.session_id.as_str()).collect();
@@ -1388,7 +1384,7 @@ mod tests {
         // Scoped to the leaf "b": child1 only.
         let leaf = h
             .runtime
-            .list_sessions(None, None, 50, None, false, Some("sess:/a/b"))
+            .list_sessions(None, None, 50, None, Some("sess:/a/b"))
             .await
             .unwrap();
         assert_eq!(leaf.len(), 1);
@@ -1397,7 +1393,7 @@ mod tests {
         // Legacy bare form (no `sess:` prefix) is the same address.
         let bare = h
             .runtime
-            .list_sessions(None, None, 50, None, false, Some("/a"))
+            .list_sessions(None, None, 50, None, Some("/a"))
             .await
             .unwrap();
         assert_eq!(bare.len(), 2);
@@ -1405,7 +1401,7 @@ mod tests {
         // Unknown subtree path fails closed with the resolver's hint.
         let err = h
             .runtime
-            .list_sessions(None, None, 50, None, false, Some("sess:/nope"))
+            .list_sessions(None, None, 50, None, Some("sess:/nope"))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no child"), "{err}");
@@ -1505,7 +1501,7 @@ mod tests {
         let guard = h.registry.try_acquire_run(&sid("child1")).await.unwrap();
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false, None)
+            .list_sessions(None, None, 50, None, None)
             .await
             .unwrap();
         let child = all.iter().find(|s| s.session_id == sid("child1")).unwrap();
@@ -1563,7 +1559,7 @@ mod tests {
 
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false, None)
+            .list_sessions(None, None, 50, None, None)
             .await
             .unwrap();
         let probe = all
@@ -1579,7 +1575,7 @@ mod tests {
             .update_status(&task_id, AsyncTaskStatus::Cancelled);
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false, None)
+            .list_sessions(None, None, 50, None, None)
             .await
             .unwrap();
         let probe = all
@@ -1992,7 +1988,7 @@ mod tests {
 
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false, None)
+            .list_sessions(None, None, 50, None, None)
             .await
             .unwrap();
         let by_id = |id: &str| {

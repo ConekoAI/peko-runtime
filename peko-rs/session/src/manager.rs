@@ -524,10 +524,6 @@ pub struct SessionManager {
     /// Metadata controller (single point of truth for metadata)
     /// Wrapped in Arc<`RwLock`<>> for sharing with `SessionHandles`.
     ///
-    /// B3 cleanup: previously private. The legacy `set_archived` write
-    /// path was retired end-to-end; the integration tests in
-    /// `peko::agents::subagent_integration_tests` now seed the
-    /// "archived target" precondition through this field instead.
     /// Public-by-accident — not a stable API.
     #[doc(hidden)]
     pub metadata_controller: Arc<RwLock<MetadataController>>,
@@ -1430,24 +1426,6 @@ impl SessionManager {
             .await
     }
 
-    /// Set the archived flag on a session's metadata (ADR-053 D3).
-    ///
-    /// Used by the Agent tool's `branch` overwrite path to retire the
-    /// displaced session: it loses its slug (cleared separately by the
-    /// caller) and can no longer attach/compact, but its JSONL history
-    /// stays fully inspectable — `overwrite` repurposes the address,
-    /// it never destroys history. Errors when the session does not
-    /// exist.
-    pub async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
-        let mut controller = self.metadata_controller.write().await;
-        let mut metadata = controller
-            .get_metadata(session_id, false)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
-        metadata.archived = archived;
-        controller.update_metadata(metadata).await
-    }
-
     /// Carry the source session's compaction counters onto the target
     /// session (ADR-053 D1). The branch child's transcript contains the
     /// source's compaction boundary events, so the per-session
@@ -1472,6 +1450,23 @@ impl SessionManager {
         to.consecutive_auto_compactions = from.consecutive_auto_compactions;
         to.consecutive_compaction_failures = from.consecutive_compaction_failures;
         controller.update_metadata(to).await
+    }
+
+    /// Advance a session's compaction counter to an explicit value.
+    ///
+    /// Used by the Agent tool's real-overwrite branch path, which
+    /// appends a compaction boundary renumbered into the TARGET's own
+    /// sequence — the metadata counter must follow it, or the next
+    /// derived `compaction_number` would collide with the appended
+    /// boundary. Errors when the session does not exist.
+    pub async fn set_compaction_count(&self, session_id: &str, count: u32) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        let mut meta = controller
+            .get_metadata(session_id, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        meta.compaction_count = count;
+        controller.update_metadata(meta).await
     }
 
     /// Reparent a session: set `parent_session_id` (passthrough to the

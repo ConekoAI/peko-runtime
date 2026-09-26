@@ -422,7 +422,7 @@ audit measured the current tool surface against that need:
 
 | Need | Status | Where |
 |---|---|---|
-| List children with timestamps, archived flag | ✅ | `SessionInfo.last_activity/archived`, `tools/builtin/session/mod.rs:40-68` |
+| List children with timestamps | ✅ | `SessionInfo.last_activity/created_at`, `tools/builtin/session/mod.rs` |
 | Live-run flag on `list` | ✅ | `run_active` ORs `InboxRegistry` permits with the `AsyncTaskRegistry` subagent-run check (`session/session_runtime_impl.rs`, Phase 0 sprint fix) |
 | Per-child token usage | ⚠️ partial | per-session `status` only (`UsageStats`, lifetime not windowed); not on `list` |
 | `compact_requested` visibility | ❌ | the flag is write-only from the tool surface; a supervisor cannot tell whether it already flagged a session |
@@ -470,9 +470,9 @@ Items 1–3 were **fixed in Phase 0 of the paradigm sprint**
 (branch `feat/agent-session-paradigm`, 2026-08-15).
 
 1. ~~**The 30-day prune deletes transcripts with no exemptions.**~~
-   **Fixed (Phase 0):** the prune filter now skips the `root:*` family,
-   `archived` sessions, and sessions with the new `standing` flag
-   (`peko-rs/session/src/index.rs`, `SessionIndex::maintenance`).
+   **Fixed (Phase 0):** the prune filter skipped the `root:*` family,
+   `archived` sessions, and `standing`-flagged sessions. (The
+   `archived` flag was retired entirely on 2026-09-26.)
    Remaining: `MaintenanceConfig.max_sessions = 500` is still declared
    but never enforced (`peko-rs/session/src/maintenance.rs`).
 2. ~~**`session list` under-reports liveness.**~~ **Fixed (Phase 0):**
@@ -504,8 +504,8 @@ Sprint 1 (2026-08-15) landed steps 0–4 on branch
 `feat/agent-session-paradigm` (one commit per phase):
 
 0. ✅ **Latent issues fixed** (§7.1–7.3): prune exemptions (`root:*` +
-   `archived` + `standing`), `run_active` correctness, cursor load at
-   boot.
+   `archived` + `standing`; the `archived` flag was retired
+   2026-09-26), `run_active` correctness, cursor load at boot.
 1. ✅ **Session `move` (reparent) + slug/path view** — Phase 1a (reparent
    with cycle guard) + Phase 1b (slug, `/user-a/task-b` → id resolver).
 2. ✅ **Standing children registry** — `[children]` declaration,

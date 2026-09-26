@@ -85,7 +85,8 @@ rather than a passive request handler.
 - State is JSONL on disk; pages auto-rotate when one exceeds
   `rotate_bytes` (e.g. `<id>.0.jsonl`, `<id>.1.jsonl`, …).
 - **Standing nodes are prune-exempt**: the idle-prune filter skips
-  `root:*`, `archived`, and `standing`-flagged sessions.
+  `root:*` and `standing`-flagged sessions (the `archived` flag was
+  retired 2026-09-26).
 
 ### E — Entity (one node, two views)
 
@@ -136,8 +137,8 @@ rather than a passive request handler.
   opaque UUIDs (sprint 6 commit 1) and peer identity lives at the
   channel layer, not in the session id.
 - `session list` enumerates the principal's **whole store** for every
-  caller (filters: `peer`, `agent_id`, `active_minutes`,
-  `include_archived`) — reads are not subtree-gated. The subtree rule
+  caller (filters: `path` subtree scope, `peer`, `agent_name`,
+  `active_minutes`) — reads are not subtree-gated. The subtree rule
   survives only in the ownership guards for destructive ops
   (delete/move/rename), per `session/ownership.rs`.
 - **Subtree scoping (destructive ops only)**: for delete/move/rename, a

@@ -33,7 +33,8 @@
 //! The tool layer is the only place that bridges between the two —
 //! see `tool.rs::SessionTool::execute` for the dispatch.
 //! `set_archived` + `request_compaction` were retired in B3 cleanup
-//! (no production caller).
+//! (no production caller); the `archived` flag itself was removed
+//! entirely on 2026-09-26 alongside the real-overwrite branch path.
 //!
 //! Sprint 7 Commit H (2026-08-22): `copy_session` now takes an
 //! explicit `target_parent` + `target_slug` (mirrors bash
@@ -82,13 +83,9 @@ pub struct SessionInfo {
     /// peer is recorded for the session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_id: Option<String>,
-    /// Archived sessions are hidden from `list` unless
-    /// `include_archived: true` and refuse resume/compact.
-    #[serde(default)]
-    pub archived: bool,
     /// Whether a run is currently in flight in this session (the
-    /// session — or one of its descendants — cannot be deleted,
-    /// archived, or re-attached while true).
+    /// session — or one of its descendants — cannot be deleted or
+    /// re-attached while true).
     #[serde(default)]
     pub run_active: bool,
     /// Per-parent-unique path segment (see `peko_session::path`).
@@ -380,7 +377,6 @@ pub trait SessionRuntime: Send + Sync {
     /// - `agent_id`: filter to a single agent name.
     /// - `limit`: cap on results returned.
     /// - `active_minutes`: only sessions updated within the last N minutes.
-    /// - `include_archived`: include archived sessions (hidden by default).
     /// - `subtree`: optional organizational scope — a session reference
     ///   (`sess:/a/b`, same addressing as every other action's `path`)
     ///   naming the subtree ROOT. When `Some`, results are limited to
@@ -400,7 +396,6 @@ pub trait SessionRuntime: Send + Sync {
         agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
-        include_archived: bool,
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>>;
 
@@ -547,7 +542,6 @@ mod tests {
             message_count: 5,
             peer_type: Some("user".into()),
             peer_id: Some("alice".into()),
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),
@@ -559,14 +553,12 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("session_key"));
         assert_eq!(json["peer_type"], "user");
         assert_eq!(json["agent_name"], "test-agent");
-        assert_eq!(json["archived"], false);
         assert_eq!(json["run_active"], false);
         // The old `kind` field is gone — the model now uses
         // `parent_session_id` (not in SessionInfo) to derive role.
         let back: SessionInfo = serde_json::from_value(json).unwrap();
         assert_eq!(back.session_id, info.session_id);
         assert_eq!(back.peer_type, info.peer_type);
-        assert!(!back.archived);
         assert!(!back.run_active);
     }
 
@@ -591,7 +583,6 @@ mod tests {
         assert_eq!(back.session_id, "k");
         assert_eq!(back.agent_name.as_deref(), Some("test-agent"));
         assert_eq!(back.title.as_deref(), Some("My Session"));
-        assert!(!back.archived);
         assert!(!back.run_active);
         assert_eq!(back.slug, None);
         assert_eq!(back.path, "");
@@ -608,7 +599,6 @@ mod tests {
             message_count: 0,
             peer_type: None,
             peer_id: None,
-            archived: false,
             run_active: false,
             slug: Some("task-b".into()),
             path: "sess:/memory/task-b".into(),
@@ -707,7 +697,6 @@ mod tests {
             message_count: 0,
             peer_type: None,
             peer_id: None,
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),

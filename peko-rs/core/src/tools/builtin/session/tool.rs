@@ -13,8 +13,8 @@
 //!
 //! Sprint 7 Commit F (2026-08-21): trimmed from 10 → 7 actions.
 //! `archive` / `unarchive` removed (sessions are monotonically visible
-//! until `remove`; the `include_archived` filter stays for legacy
-//! records). `rename` removed — its semantics folded into `move`
+//! until `remove`; the `archived` flag and the `include_archived`
+//! filter were removed entirely on 2026-09-26). `rename` removed — its semantics folded into `move`
 //! (slug without reparent = rename in place via `target`). `branch`
 //! renamed to `copy`, `search` to `find`, `delete` to `remove`.
 //!
@@ -222,7 +222,7 @@ impl Tool for SessionTool {
 
 Per-action semantics (the action you choose determines which other params apply):
 - status: one session's metadata + token usage (path optional, defaults to current)
-- list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes; archived hidden unless include_archived:true)
+- list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes)
 - history: messages of a session (path optional, defaults to current; include_tools)
 - find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
 - copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
@@ -238,7 +238,7 @@ The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the ro
 
 The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`sess:/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
-Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` (there is no archive/unarchive; if you want it gone, remove it).
+Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` — there is no archive: if you want a session out of the way but not gone, `move` it into `sess:/trash` and purge later.
 
 To RUN work in a session, use the Agent tool instead — its four actions (new / resume / compact / branch) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session` set (visible on status)."
             .to_string()
@@ -287,11 +287,6 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     "type": "boolean",
                     "default": false,
                     "description": "Optional for 'remove': also delete the session's descendants (children first)"
-                },
-                "include_archived": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Optional for 'list': include archived sessions (hidden by default). The archive/unarchive actions are retired; this filter remains for legacy records that already carry the flag."
                 },
                 "peer": {
                     "type": "string",
@@ -383,10 +378,6 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     .and_then(|v| v.as_str());
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
-                let include_archived = params
-                    .get("include_archived")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
                 let subtree = Self::optional_subtree(&params)?;
 
                 let sessions = self
@@ -396,7 +387,6 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                         agent_id,
                         limit,
                         active_minutes,
-                        include_archived,
                         subtree.as_deref(),
                     )
                     .await?;
@@ -687,7 +677,6 @@ mod tests {
             message_count: 10,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),
@@ -772,7 +761,6 @@ mod tests {
             message_count: 1,
             peer_type: None,
             peer_id: None,
-            archived: false,
             run_active: false,
             slug: None,
             path: path.to_string(),
@@ -965,7 +953,6 @@ mod tests {
             message_count: 5,
             peer_type: None,
             peer_id: None,
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),
@@ -1031,7 +1018,6 @@ mod tests {
             message_count: 5,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),
@@ -1045,7 +1031,6 @@ mod tests {
             message_count: 3,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),
@@ -1059,7 +1044,6 @@ mod tests {
             message_count: 7,
             peer_type: Some("user".to_string()),
             peer_id: Some("bob".to_string()),
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),
@@ -1236,7 +1220,6 @@ mod tests {
             message_count: 1,
             peer_type: None,
             peer_id: None,
-            archived: false,
             run_active: false,
             slug: None,
             path: String::new(),
@@ -1434,7 +1417,6 @@ mod tests {
                 message_count: 0,
                 peer_type: None,
                 peer_id: None,
-                archived: false,
                 run_active: false,
                 slug: None,
                 path: String::new(),

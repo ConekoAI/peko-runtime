@@ -1199,8 +1199,8 @@ impl SubagentExecutor {
         kind: AttachKind,
     ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
-            caller_context, err_compact_ancestor, err_compact_archived, err_resume_archived,
-            err_resume_into_own_run, err_resume_not_spawned, err_run_active,
+            caller_context, err_compact_ancestor, err_resume_into_own_run,
+            err_resume_not_spawned, err_run_active,
         };
 
         // Same spawn-time cost pre-flight as the spawn path — a resume
@@ -1271,15 +1271,9 @@ impl SubagentExecutor {
         // any other (a peer child can reach a sibling peer's session
         // directly, matching what cron fires could already do via the
         // trunk). The guards that remain are run-integrity guards:
-        // spawn-trigger, no self/ancestor re-entry, not archived, no
-        // active run, depth, and the cost pre-flight.
-        // Guard: archived sessions have no business running.
-        if target_meta.archived {
-            return Err(match kind {
-                AttachKind::Resume => err_resume_archived(&resume_session_id),
-                AttachKind::Compact => err_compact_archived(&resume_session_id),
-            });
-        }
+        // spawn-trigger, no self/ancestor re-entry, no active run,
+        // depth, and the cost pre-flight. (The archived-session guard
+        // was removed with the archive flag itself, 2026-09-26.)
         // Guard: refuse while a run is in flight for the target.
         // Mechanism: subagent runs do NOT hold `InboxRegistry` run
         // permits (those are only acquired for root sessions by the
@@ -1429,16 +1423,19 @@ impl SubagentExecutor {
     /// mints a child of the caller; a single-segment absolute path mints
     /// at the tree root; an absolute path that resolves to an existing
     /// session requires it to be spawn-created — refuse unless
-    /// `overwrite`, in which case the old session is archived and loses
-    /// its slug (the address repoints to the new session; the old
-    /// history stays inspectable, never truncated). A non-spawn
+    /// `overwrite`, in which case the target is OVERWRITTEN IN PLACE
+    /// (real overwrite, 2026-09-26): it keeps its id, slug, parent
+    /// linkage, and descendants (paths below it are byte-stable), and
+    /// its previous live transcript is closed off behind a compaction
+    /// boundary — retained as an ADR-051 page, never truncated — before
+    /// the source's snapshot becomes the new live context. A non-spawn
     /// collision (user-triggered / peer-bound session) is refused
     /// outright.
     ///
     /// Guards mirror the spawn stack: cost pre-flight, depth cap
     /// (`1 + depth(effective_parent)`), concurrency cap, and — on the
     /// overwrite path only — the caller/ancestor refusal and an
-    /// active-run check on the displaced target. The run registers
+    /// active-run check on the reused target. The run registers
     /// through the single [`Self::register_subagent_run`] gate, so
     /// announcements, async status, and quota attribution behave like a
     /// spawn.
@@ -1608,9 +1605,9 @@ impl SubagentExecutor {
             }
         }
 
-        // Overwrite guards (D3/D4): the displaced session must not have
-        // a run in flight. The caller/ancestor refusal above already
-        // covers self-lineage displacement.
+        // Overwrite guards (D3/D4): the reused target must not have a
+        // run in flight. The caller/ancestor refusal above already
+        // covers self-lineage overwrites.
         if let Some(ref found) = overwrite_target {
             let registry = self.registry().read().await;
             if registry.has_active_subagent_run_for_child(&found.session_id.to_string()) {
@@ -1647,11 +1644,9 @@ impl SubagentExecutor {
             }));
         }
 
-        // Slug uniqueness pre-flight (same as the spawn path). Skipped
-        // on the overwrite path: the displaced session still holds the
-        // slug at this point (it is cleared below, before the child
-        // stamps), and the child's own `set_session_slug` re-enforces
-        // uniqueness after the displacement.
+        // Slug uniqueness pre-flight (same as the spawn path). Only
+        // relevant on the fresh-mint path — a real overwrite reuses the
+        // target's own slug in place, so there is nothing to conflict.
         if let Some(ref slug) = effective_slug {
             if overwrite_target.is_none() {
                 let mut manager = self.session_manager.write().await;
@@ -1677,81 +1672,185 @@ impl SubagentExecutor {
             }
         }
 
-        // Displace the overwritten target: archive it and release its
-        // slug BEFORE minting the replacement (D3 — the address
-        // repoints; the old session id stays fully inspectable).
-        if let Some(ref found) = overwrite_target {
-            let old_id = found.session_id.to_string();
-            let manager = self.session_manager.read().await;
-            manager.set_session_slug(&old_id, None).await?;
-            manager.set_session_archived(&old_id, true).await?;
-        }
-
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
-        // Mint the child as an ISOLATED spawn overlay (D1: the shared-
-        // context copy path would flatten tool results away — the
-        // verbatim snapshot below is the fidelity path). The task is
-        // carried by the run registration, not seeded into the session.
-        let peer = Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
-        let (child_session_key, child_session_id, child_base) = {
-            let mut manager = self.session_manager.write().await;
-            let handle = manager
-                .create_spawn_overlay_with_config(
-                    &self.agent_name,
-                    &peer,
-                    task,
-                    true, // isolated: skip the lossy shared-context copy
-                    &effective_parent_key,
-                    Some(config.timeout_seconds),
-                    peko_session::types::SpawnCleanupPolicy::Keep,
-                    0,
-                )
-                .await
-                .context("Failed to create branch session")?;
-            let session_id = handle.session_id().to_string();
-            let full_key = handle.full_session_key().await;
-            let base = handle.base().clone();
-            (full_key, session_id, base)
-        };
+        // ── Real overwrite (in-place reseed, 2026-09-26) ──────────────
+        // When the target exists, it is REUSED, not displaced: the
+        // session keeps its id, slug, JSONL file family, parent
+        // linkage, and — critically — its whole descendant subtree
+        // (paths below it stay byte-stable). The source's cache-window
+        // snapshot is appended behind a compaction boundary that closes
+        // the target's previous live transcript (retained as an
+        // ADR-051 page — history is never destroyed), realigning the
+        // live context with the source's. The run then re-attaches
+        // resume-style (no spawn overlay — plain id in both slots).
+        let (child_session_key, child_session_id, child_base) = if overwrite_target.is_some() {
+            let found = overwrite_target
+                .as_ref()
+                .expect("overwrite_target checked above");
+            let target_id = found.session_id.to_string();
+            let (base, next_number) = {
+                let mut manager = self.session_manager.write().await;
+                let fresh = manager
+                    .get_session_metadata(&target_id)
+                    .await
+                    .context("Failed to load overwrite target metadata")?;
+                let next_number = fresh.compaction_count as usize + 1;
 
-        // Stamp the target slug onto the child.
-        if let Some(ref slug) = effective_slug {
+                // The snapshot leads with the source's newest compaction
+                // boundary when it has one (renumber it into the
+                // target's own sequence so embedded numbers stay
+                // strictly increasing); otherwise synthesize one so the
+                // target's previous live transcript is closed off
+                // regardless.
+                let mut seed = snapshot.clone();
+                match seed.first_mut() {
+                    Some(peko_session::events::SessionEvent::System(sys))
+                        if sys.event == "compaction" =>
+                    {
+                        if let Some(obj) = sys.detail.as_object_mut() {
+                            obj.insert(
+                                "compaction_number".to_string(),
+                                serde_json::json!(next_number),
+                            );
+                        }
+                    }
+                    _ => {
+                        seed.insert(
+                            0,
+                            peko_session::events::SessionEvent::System(
+                                peko_session::events::SystemEvent {
+                                    envelope: peko_session::events::EventEnvelope {
+                                        id: format!(
+                                            "compact_{}",
+                                            uuid::Uuid::new_v4().simple()
+                                        ),
+                                        ts: chrono::Utc::now(),
+                                    },
+                                    event: "compaction".to_string(),
+                                    detail: serde_json::json!({
+                                        "summary": format!(
+                                            "Branch overwrite from sess:/{source_id}: the \
+                                             target's previous live transcript is preserved as \
+                                             the preceding page; the source had no compaction \
+                                             summary, so its full transcript follows as the \
+                                             live context."
+                                        ),
+                                        "messages_compacted": 0,
+                                        "tokens_before": 0,
+                                        "tokens_after": 0,
+                                        "compaction_number": next_number,
+                                    }),
+                                },
+                            ),
+                        );
+                    }
+                }
+
+                let handle = manager
+                    .open_session(&target_id)
+                    .await?
+                    .expect("overwrite target existed in metadata but failed to open");
+                let base = handle.base().clone();
+                drop(handle);
+                {
+                    let mut inner = base.write().await;
+                    for event in &seed {
+                        inner
+                            .append_event(event)
+                            .await
+                            .context("Failed to append overwrite reseed event")?;
+                    }
+                }
+
+                // Advance the target's own compaction sequence past the
+                // appended boundary so the next derived
+                // `compaction_number` cannot collide with it.
+                manager
+                    .set_compaction_count(&target_id, next_number as u32)
+                    .await?;
+                (base, next_number)
+            };
+            info!(
+                "Branched (real overwrite): run_id={} source={} target={} depth={} events={} page={}",
+                run_id,
+                source_id,
+                target,
+                child_depth,
+                snapshot.len(),
+                next_number,
+            );
+            // No spawn overlay exists for the reused target — register
+            // with the plain session id in both slots (resume-path
+            // shape).
+            (target_id.clone(), target_id, base)
+        } else {
+            // Mint the child as an ISOLATED spawn overlay (D1: the shared-
+            // context copy path would flatten tool results away — the
+            // verbatim snapshot below is the fidelity path). The task is
+            // carried by the run registration, not seeded into the session.
+            let peer =
+                Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
+            let (child_session_key, child_session_id, child_base) = {
+                let mut manager = self.session_manager.write().await;
+                let handle = manager
+                    .create_spawn_overlay_with_config(
+                        &self.agent_name,
+                        &peer,
+                        task,
+                        true, // isolated: skip the lossy shared-context copy
+                        &effective_parent_key,
+                        Some(config.timeout_seconds),
+                        peko_session::types::SpawnCleanupPolicy::Keep,
+                        0,
+                    )
+                    .await
+                    .context("Failed to create branch session")?;
+                let session_id = handle.session_id().to_string();
+                let full_key = handle.full_session_key().await;
+                let base = handle.base().clone();
+                (full_key, session_id, base)
+            };
+
+            // Stamp the target slug onto the child.
+            if let Some(ref slug) = effective_slug {
+                self.session_manager
+                    .read()
+                    .await
+                    .set_session_slug(&child_session_id, Some(slug.clone()))
+                    .await?;
+            }
+
+            // Carry the source's compaction counters (D1): the copied
+            // transcript contains the source's boundary events, so the
+            // child's next boundary must not renumber from 1.
             self.session_manager
                 .read()
                 .await
-                .set_session_slug(&child_session_id, Some(slug.clone()))
+                .carry_compaction_state(&source_id, &child_session_id)
                 .await?;
-        }
 
-        // Carry the source's compaction counters (D1): the copied
-        // transcript contains the source's boundary events, so the
-        // child's next boundary must not renumber from 1.
-        self.session_manager
-            .read()
-            .await
-            .carry_compaction_state(&source_id, &child_session_id)
-            .await?;
-
-        // Seed the child's JSONL with the verbatim snapshot, in order.
-        {
-            let mut child = child_base.write().await;
-            for event in &snapshot {
-                child
-                    .append_event(event)
-                    .await
-                    .context("Failed to seed branch session with source events")?;
+            // Seed the child's JSONL with the verbatim snapshot, in order.
+            {
+                let mut child = child_base.write().await;
+                for event in &snapshot {
+                    child
+                        .append_event(event)
+                        .await
+                        .context("Failed to seed branch session with source events")?;
+                }
             }
-        }
 
-        info!(
-            "Branched session: run_id={} source={} target={} depth={} events={}",
-            run_id,
-            source_id,
-            target,
-            child_depth,
-            snapshot.len()
-        );
+            info!(
+                "Branched session: run_id={} source={} target={} depth={} events={}",
+                run_id,
+                source_id,
+                target,
+                child_depth,
+                snapshot.len()
+            );
+            (child_session_key, child_session_id, child_base)
+        };
 
         let run_id = self
             .register_subagent_run(SubagentRunSpec {

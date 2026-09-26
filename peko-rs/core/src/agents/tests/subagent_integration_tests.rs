@@ -1111,26 +1111,6 @@ async fn create_linked_session(
     }
 }
 
-/// B3 helper: stamp `archived = true` on a session's metadata via the
-/// shared `MetadataController`. The legacy `SessionManager::set_archived`
-/// write path was retired end-to-end; this helper exists so the
-/// archived-target refusal tests can still seed their precondition
-/// (legacy data on disk that arrives already-archived is exactly what
-/// the `err_resume_archived` / `err_compact_archived` guards exist to
-/// catch).
-async fn mark_archived(session_manager: &Arc<RwLock<SessionManager>>, id: &str) {
-    let canonical = sid(id);
-    let mgr_guard = session_manager.write().await;
-    let mut controller = mgr_guard.metadata_controller.write().await;
-    let mut metadata = controller
-        .get_metadata(&canonical, false)
-        .await
-        .unwrap()
-        .expect("session must exist to mark archived");
-    metadata.archived = true;
-    controller.update_metadata(metadata).await.unwrap();
-}
-
 #[tokio::test]
 async fn resume_refuses_nonexistent_target() {
     let (session_manager, registry, agent_name) = create_test_components().await;
@@ -1244,48 +1224,6 @@ async fn resume_refuses_self_and_ancestor() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
-}
-
-#[tokio::test]
-async fn resume_refuses_archived_target() {
-    let (session_manager, registry, agent_name) = create_test_components().await;
-    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
-    create_linked_session(
-        &session_manager,
-        &agent_name,
-        "spawn-a",
-        Some("root-sess"),
-        "spawn",
-    )
-    .await;
-    // B3: `set_archived` is gone; stamp the flag directly on the
-    // persisted metadata via the controller's update path. Sessions
-    // that arrive already-archived (legacy data) are exactly what
-    // this guard exists to refuse.
-    mark_archived(&session_manager, "spawn-a").await;
-
-    let executor = SubagentExecutor::with_registry(
-        registry,
-        session_manager,
-        agent_name,
-        5,
-        peko_subject::PrincipalId::generate(),
-    );
-    let err = executor
-        .resume_and_execute(
-            "task",
-            path!("spawn-a"),
-            &sid("root-sess"),
-            ExecutionConfig::default(),
-            None,
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("archived sessions are not currently restorable"),
-        "{err}"
-    );
 }
 
 #[tokio::test]
@@ -1747,45 +1685,6 @@ async fn compact_refuses_self_and_ancestor() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("running in"), "{err}");
-}
-
-#[tokio::test]
-async fn compact_refuses_archived_target() {
-    let (session_manager, registry, agent_name) = create_test_components().await;
-    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
-    create_linked_session(
-        &session_manager,
-        &agent_name,
-        "spawn-a",
-        Some("root-sess"),
-        "spawn",
-    )
-    .await;
-    // B3: see `mark_archived` helper — `set_archived` is gone.
-    mark_archived(&session_manager, "spawn-a").await;
-
-    let executor = SubagentExecutor::with_registry(
-        registry,
-        session_manager,
-        agent_name,
-        5,
-        peko_subject::PrincipalId::generate(),
-    );
-    let err = executor
-        .compact_and_execute(
-            path!("spawn-a"),
-            "task",
-            &sid("root-sess"),
-            ExecutionConfig::default(),
-            None,
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("archived sessions are not currently restorable"),
-        "{err}"
-    );
 }
 
 #[tokio::test]
@@ -2319,34 +2218,12 @@ async fn streaming_resume_enforces_guard_stack() {
         "user",
     )
     .await;
-    // B3: see `mark_archived` helper — `set_archived` is gone.
-    mark_archived(&session_manager, "spawn-a").await;
-
     let executor = SubagentExecutor::with_registry(
         registry.clone(),
         session_manager.clone(),
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
-    );
-
-    // Archived target.
-    let (sink, _e) = event_collector();
-    let err = executor
-        .resume_streaming(
-            "t",
-            path!("spawn-a"),
-            &sid("root-sess"),
-            ExecutionConfig::default(),
-            sink,
-            None,
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("archived sessions are not currently restorable"),
-        "{err}"
     );
 
     // Non-spawn target.
@@ -2926,11 +2803,15 @@ async fn test_e2e_branch_copies_source_context() {
     }
 }
 
-/// ADR-053 D3: an existing spawn-created target refuses without
-/// `overwrite`; with `overwrite: true` the old session is archived,
-/// loses its slug, and the address repoints to the fresh branch.
+/// ADR-053 D3 + real overwrite (2026-09-26): an existing spawn-created
+/// target refuses without `overwrite`; with `overwrite: true` the
+/// target is RESEEDED IN PLACE — it keeps its id, slug, and parent
+/// linkage (so descendants and their addresses are untouched), its
+/// previous live transcript is closed behind a compaction boundary
+/// (retained as an ADR-051 page, never truncated), and the source's
+/// cache-window snapshot becomes the new live context.
 #[tokio::test]
-async fn test_branch_overwrite_repoints_the_address() {
+async fn test_branch_overwrite_reseeds_in_place() {
     let (session_manager, registry, agent_name) = create_test_components().await;
     let peer = Subject::User("alice".to_string());
     let (_source_id, source_key) = seed_source_session(&session_manager, &peer).await;
@@ -2938,7 +2819,7 @@ async fn test_branch_overwrite_repoints_the_address() {
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
         session_manager.clone(),
-        agent_name,
+        agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
     ));
@@ -2970,6 +2851,29 @@ async fn test_branch_overwrite_repoints_the_address() {
         .expect("occupant must exist")
         .clone();
     let old_id = old.session_id.to_string();
+    drop(metas);
+
+    // A descendant under the target — the property real overwrite
+    // protects: the child's parent linkage and address survive the
+    // overwrite untouched.
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "briefing-child",
+        Some(&old_id),
+        "spawn",
+    )
+    .await;
+
+    let sessions_dir = session_manager
+        .read()
+        .await
+        .sessions_dir()
+        .cloned()
+        .expect("sessions dir set");
+    let storage = peko_session::jsonl::SessionStorage::new(sessions_dir.clone());
+    let before_count = storage.load_events(&old_id).await.unwrap().len();
+    assert!(before_count > 0, "fire #1 must have transcribed events");
 
     // Fire #2 without overwrite: refused (the address is taken).
     let err = executor
@@ -2989,8 +2893,7 @@ async fn test_branch_overwrite_repoints_the_address() {
         "refusal must name the conflicting target: {err}"
     );
 
-    // Fire #2 with overwrite: succeeds; the old session is archived and
-    // loses its slug; the new branch holds the address.
+    // Fire #2 with overwrite: succeeds IN PLACE.
     executor
         .branch_and_execute(
             None,
@@ -3010,30 +2913,79 @@ async fn test_branch_overwrite_repoints_the_address() {
         .list_all_sessions(false)
         .await
         .unwrap();
-    let retired = metas
+
+    // The address still resolves to the SAME session, slug intact.
+    let target = metas
         .iter()
         .find(|m| m.session_id.to_string() == old_id)
-        .expect("the displaced session must remain inspectable");
-    assert!(
-        retired.archived,
-        "the displaced session must be archived, never destroyed"
+        .expect("real overwrite keeps the session id");
+    assert_eq!(
+        target.slug.as_deref(),
+        Some("briefing"),
+        "real overwrite keeps the slug in place"
     );
-    assert!(
-        retired.slug.is_none(),
-        "the displaced session must lose its slug (address repointed)"
-    );
-    let fresh = metas
+    let holders = metas
         .iter()
         .filter(|m| m.slug.as_deref() == Some("briefing"))
         .count();
-    assert_eq!(fresh, 1, "exactly one session holds the address");
-    let fresh_meta = metas
+    assert_eq!(holders, 1, "exactly one session holds the address");
+
+    // The descendant is untouched: still listed, still parented to the
+    // target.
+    let child = metas
         .iter()
-        .find(|m| m.slug.as_deref() == Some("briefing"))
-        .unwrap();
-    assert_ne!(
-        fresh_meta.session_id.to_string(),
-        old_id,
-        "the address must resolve to a NEW session id"
+        .find(|m| m.session_id.to_string() == sid("briefing-child"))
+        .expect("the descendant must survive the overwrite");
+    assert_eq!(
+        child.parent_session_id.as_ref().map(|p| p.to_string()),
+        Some(old_id.clone()),
+        "descendant parent linkage is byte-stable"
+    );
+
+    // Transcript: the old live content is closed behind exactly ONE
+    // compaction boundary, renumbered into the target's own sequence
+    // (compaction_count advanced to match), and the source's snapshot
+    // follows as the new live context.
+    assert_eq!(
+        target.compaction_count, 1,
+        "the appended boundary advances the target's own sequence"
+    );
+    let events = storage.load_events(&old_id).await.unwrap();
+    assert!(
+        events.len() > before_count + 2,
+        "boundary + snapshot + run events must have been appended"
+    );
+    let boundary_positions: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| peko_session::pages::is_compaction_boundary(e))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        boundary_positions,
+        vec![before_count],
+        "exactly one boundary, appended after the old transcript"
+    );
+    match &events[before_count] {
+        peko_session::events::SessionEvent::System(sys) => {
+            assert_eq!(
+                sys.detail["compaction_number"],
+                serde_json::json!(1),
+                "the boundary is renumbered into the target's own sequence"
+            );
+        }
+        other => panic!("expected a compaction boundary, got {other:?}"),
+    }
+    // The live window after the boundary carries the source's snapshot
+    // (its genesis marker and the "main agent working context" turn).
+    let live_window = &events[before_count + 1..];
+    let live_str = live_window
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        live_str.contains("main agent working context"),
+        "the source's snapshot must be the new live context: {live_str}"
     );
 }

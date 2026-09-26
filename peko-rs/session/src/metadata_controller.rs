@@ -236,13 +236,8 @@ impl MetadataController {
 
     /// Set the parent session id on a session (reparent).
     ///
-    /// B3 cleanup: the legacy `set_archived` write path was retired
-    /// end-to-end (no live caller after the archived-write chain was
-    /// deleted). Use [`Self::update_metadata`] (or the test helper
-    /// `mark_archived` in `subagent_integration_tests.rs`) to stamp
-    /// the flag on legacy data. This is a raw write — the ownership /
-    /// cycle / live-run guards live in the caller (root's
-    /// `SessionManagerRuntime::move_session`).
+    /// This is a raw write — the ownership / cycle / live-run guards
+    /// live in the caller (root's `SessionManagerRuntime::move_session`).
     pub async fn set_parent(
         &mut self,
         session_id: &str,
