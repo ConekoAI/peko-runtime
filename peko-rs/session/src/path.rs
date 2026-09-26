@@ -461,6 +461,8 @@ mod tests {
             peer_type: None,
             peer_id: None,
             slug: slug.map(String::from),
+            page_limit: None,
+            pruned_pages: 0,
             compaction_count: 0,
             last_compaction_at: None,
             consecutive_auto_compactions: 0,

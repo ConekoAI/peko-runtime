@@ -226,9 +226,9 @@ Per-action semantics (the action you choose determines which other params apply)
 - history: messages of a session (path optional, defaults to current; include_tools)
 - find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
 - copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
-- move: reparent a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
+- move: reparent a session to a destination path (path + target required; optional title; optional page_limit — FIFO retention cap on closed compaction pages, 0 = unlimited, pruning is immediate and irreversible). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
 - remove: delete a session (path required; recursive:true also deletes its descendants, children first)
-- list_pages: compaction-page catalog of a session (path optional, defaults to current). Each compaction archives the preceding transcript as a numbered page; the segment after the newest compaction is the live page. Returns page numbers, token estimates, and title excerpts.
+- list_pages: compaction-page catalog of a session (path optional, defaults to current; page numbers are stable across page_limit rotation — first_available_page names the oldest surviving page). Each compaction archives the preceding transcript as a numbered page; the segment after the newest compaction is the live page. Returns page numbers, token estimates, and title excerpts.
 - read_page: render one page's messages as transcript text (path optional, defaults to current; page required — a page number from list_pages; offset/limit window the rendered lines like Read). Responses are hard-capped per call; a truncation marker tells you the next offset. Use it to audit pre-compaction history after a summary looks wrong.
 - search_pages: case-insensitive substring search across ALL pages of a session including the live one (path optional, defaults to current; query required; max_results optional). Hits are page-tagged — follow up with read_page on the hit's page.
 
@@ -282,6 +282,11 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 "title": {
                     "type": "string",
                     "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy — legacy `label` still accepted) and for `move` (new display title)."
+                },
+                "page_limit": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional for 'move': retention cap on the session's closed compaction pages (FIFO — the oldest page is PERMANENTLY deleted when the cap is exceeded; pruning is immediate). 0 = unlimited. Surviving page numbers never renumber (first_available_page in list_pages tracks the rotation)."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -470,9 +475,12 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     .get("title")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                if params.get("target").is_none() && title.is_none() {
+                if params.get("target").is_none()
+                    && title.is_none()
+                    && params.get("page_limit").is_none()
+                {
                     return Err(anyhow::anyhow!(
-                        "'move' requires at least one of 'target' or 'title'"
+                        "'move' requires at least one of 'target', 'title', or 'page_limit'"
                     ));
                 }
 
@@ -492,10 +500,34 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                         .rename_session(session_key, Some(t), None)
                         .await?;
                 }
-                Ok(json!({
+
+                // Retention (page_limit): 0 = unlimited; any other
+                // value caps the closed compaction pages — pruning is
+                // immediate and IRREVERSIBLE, so the pruned count is
+                // echoed.
+                let mut response = json!({
                     "path": session_key,
                     "modified": true,
-                }))
+                });
+                if let Some(raw) = params.get("page_limit").and_then(|v| v.as_u64()) {
+                    let limit = u32::try_from(raw)
+                        .ok()
+                        .filter(|l| *l <= 10_000)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("'page_limit' must be between 0 and 10000 (0 = unlimited)")
+                        })?;
+                    let pruned = self
+                        .runtime
+                        .set_page_limit(session_key, if limit == 0 { None } else { Some(limit) })
+                        .await?;
+                    response["page_limit"] = if limit == 0 {
+                        serde_json::json!(null)
+                    } else {
+                        serde_json::json!(limit)
+                    };
+                    response["pages_pruned"] = serde_json::json!(pruned);
+                }
+                Ok(response)
             }
             SessionAction::Remove => {
                 let session_key = Self::require_path(&params, "remove")?;
@@ -514,11 +546,13 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     .unwrap_or(&self.runtime.current_session_key())
                     .to_string();
 
-                let pages = self.runtime.list_pages(&session_key).await?;
+                let catalog = self.runtime.list_pages(&session_key).await?;
                 Ok(json!({
                     "path": session_key,
-                    "total": pages.len(),
-                    "pages": pages,
+                    "total": catalog.pages.len(),
+                    "first_available_page": catalog.first_available_page,
+                    "page_limit": catalog.page_limit,
+                    "pages": catalog.pages,
                 }))
             }
             SessionAction::ReadPage => {
@@ -965,6 +999,47 @@ mod tests {
         let result = tool.execute(json!({"action": "status"})).await.unwrap();
 
         assert_eq!(result["session_id"], "current123");
+    }
+
+    #[tokio::test]
+    async fn test_session_move_page_limit_sets_retention() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+
+        // Setting a cap echoes it (the cache double never prunes).
+        let result = tool
+            .execute(json!({
+                "action": "move",
+                "path": "test-session",
+                "title": "T",
+                "page_limit": 5,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["page_limit"], 5);
+        assert_eq!(result["pages_pruned"], 0);
+
+        // 0 resets to unlimited (null on the wire).
+        let result = tool
+            .execute(json!({
+                "action": "move",
+                "path": "test-session",
+                "page_limit": 0,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["page_limit"], serde_json::Value::Null);
+
+        // Out-of-range caps are a validation error.
+        let err = tool
+            .execute(json!({
+                "action": "move",
+                "path": "test-session",
+                "page_limit": 10001,
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("between 0 and 10000"), "{err}");
     }
 
     #[tokio::test]

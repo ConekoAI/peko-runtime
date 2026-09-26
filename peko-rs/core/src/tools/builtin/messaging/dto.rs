@@ -81,6 +81,10 @@ pub struct ExecutionConfig {
     /// (`messaging/agent.rs::execute_spawn_blocking`). `None`
     /// means "inherit the parent's model".
     pub model_override: Option<String>,
+    /// Retention cap on the session's closed compaction pages
+    /// (ADR-051 FIFO page limit). `None` = unlimited. Applied by the
+    /// executor to the session it creates or reseeds.
+    pub page_limit: Option<u32>,
 }
 
 impl Default for ExecutionConfig {
@@ -90,6 +94,7 @@ impl Default for ExecutionConfig {
             announce_completion: true,
             max_depth: 1,
             model_override: None,
+            page_limit: None,
         }
     }
 }

@@ -99,12 +99,19 @@ pub struct AgentArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// ADR-053 (`branch` only): when the target path already holds a
-    /// spawn-created session, `overwrite: true` archives it and
-    /// repoints the address to the newly minted session (history is
-    /// never truncated). Default `false` — the branch refuses when
-    /// the target exists.
+    /// spawn-created session, `overwrite: true` RESEEDS it in place —
+    /// the target keeps its id, slug, and descendants, its previous
+    /// live transcript is retained as a compaction page, and the
+    /// source's snapshot becomes the new live context. Default
+    /// `false` — the branch refuses when the target exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overwrite: Option<bool>,
+    /// Retention cap (`new` / `branch` only): the FIFO cap on the
+    /// session's closed compaction pages — the oldest page is
+    /// PERMANENTLY deleted when the cap is exceeded. Must be 1-10000;
+    /// omitted = unlimited. Surviving page numbers never renumber.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_limit: Option<u64>,
 }
 
 /// Serde default for [`AgentArgs::action`]: the historical behavior is
@@ -157,6 +164,21 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
         if args.overwrite.is_some() {
             return Err(anyhow::anyhow!(
                 "'overwrite' is only valid with action \"branch\""
+            ));
+        }
+    }
+    // Retention: `page_limit` applies to a session the caller creates
+    // or rewrites — resume/compact address existing sessions without
+    // ownership change.
+    if !matches!(action, AgentAction::New | AgentAction::Branch) && args.page_limit.is_some() {
+        return Err(anyhow::anyhow!(
+            "'page_limit' is only valid with actions \"new\" and \"branch\""
+        ));
+    }
+    if let Some(limit) = args.page_limit {
+        if limit == 0 || limit > 10_000 {
+            return Err(anyhow::anyhow!(
+                "'page_limit' must be between 1 and 10000 (omit for unlimited)"
             ));
         }
     }
@@ -350,6 +372,7 @@ impl AgentTool {
         model: Option<String>,
         resume_session: Option<String>,
         caller_session_key: Option<String>,
+        page_limit: Option<u32>,
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         let timeout_seconds: u64 = 300;
@@ -413,6 +436,7 @@ impl AgentTool {
                     announce_completion: true,
                     max_depth: self.runtime.max_depth(),
                     model_override: model.clone(),
+                    page_limit,
                 },
                 timeout_seconds,
                 parent_cancel,
@@ -694,6 +718,7 @@ impl AgentTool {
                 &task,
                 &args.agent,
                 args.overwrite.unwrap_or(false),
+                args.page_limit.map(|v| v as u32),
                 &caller,
                 parent_cancel,
             )
@@ -766,6 +791,7 @@ Parameters:
 - model: Optional model override for the subagent (matches Claude Code's Agent schema; ignored for compact — the continuation run keeps the session's model)
 - source: (branch only) Absolute slug path of the session to snapshot. Omit to branch from YOUR current session.
 - overwrite: (branch only) When true and the target path already holds a spawned session, reseed that session in place with the source's live context (it keeps its id, slug, and descendants; its previous transcript is retained as a compaction page). Default false (refuse when the target exists).
+- page_limit: (new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. 1-10000; omit for unlimited.
 
 Sessions you spawn have `parent_session_id` set to your session; the `session` tool's `list` action surfaces this. Use that field to find them. The session tool manages memory; this tool runs work.
 
@@ -832,6 +858,11 @@ Examples:
                 "overwrite": {
                     "type": "boolean",
                     "description": "(branch only) When true and the target path already holds a spawned session, reseed that session in place with the source's live context (it keeps its id, slug, and descendants; its previous transcript is retained as a compaction page). Default false."
+                },
+                "page_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "(new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. Surviving page numbers never renumber. Omit for unlimited."
                 }
             }
         })
@@ -881,6 +912,7 @@ Examples:
             args.model.clone(),
             resume_session,
             caller_session_key,
+            args.page_limit.map(|v| v as u32),
             None,
         )
         .await
@@ -936,6 +968,7 @@ Examples:
             args.model.clone(),
             resume_session,
             caller_session_key,
+            args.page_limit.map(|v| v as u32),
             Some(ctx),
         )
         .await
@@ -1327,6 +1360,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         prompt: &str,
         agent: &str,
         overwrite: bool,
+        _page_limit: Option<u32>,
         caller_session_key: &str,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<crate::tools::builtin::messaging::dto::SubagentRunView> {
@@ -1863,6 +1897,56 @@ mod tests {
 
     /// ADR-053: `branch` routes to `branch_and_execute` with the raw
     /// source/target/overwrite parameters, and composes the branch
+    /// Retention parameter scope: `page_limit` is refused on actions
+    /// that do not create or rewrite a session, and out-of-range
+    /// values are a validation error (ADR-051 FIFO page cap).
+    #[tokio::test]
+    async fn test_page_limit_param_scope_and_range() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime as SharedSubagentRuntime);
+
+        // `page_limit` is refused on actions that don't create/rewrite
+        // a session.
+        let err = tool
+            .execute(serde_json::json!({
+                "action": "resume",
+                "path": "sess:/a",
+                "prompt": "p",
+                "agent": "writer",
+                "page_limit": 5,
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("only valid with actions"), "{err}");
+
+        // 0 is meaningless at creation (unlimited = omit) — refused.
+        let err = tool
+            .execute(serde_json::json!({
+                "action": "new",
+                "path": "task-a",
+                "prompt": "p",
+                "agent": "writer",
+                "page_limit": 0,
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("between 1 and 10000"), "{err}");
+
+        // Above the hard cap — refused.
+        let err = tool
+            .execute(serde_json::json!({
+                "action": "branch",
+                "path": "briefing",
+                "prompt": "p",
+                "agent": "writer",
+                "page_limit": 10001,
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("between 1 and 10000"), "{err}");
+    }
+
     /// notice into the task prompt (the child must learn it is a branch
     /// and where it lives — D2's tail-notice design).
     #[tokio::test]
@@ -2026,6 +2110,7 @@ mod tests {
                 None, // model
                 None, // resume_session
                 Some("caller:sess".to_string()),
+                None, // page_limit
                 None,
             )
             .await
@@ -2065,6 +2150,7 @@ mod tests {
                 Some("haiku-4".to_string()),
                 None,
                 Some("caller:sess".to_string()),
+                None, // page_limit
                 None,
             )
             .await

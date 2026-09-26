@@ -1469,6 +1469,54 @@ impl SessionManager {
         controller.update_metadata(meta).await
     }
 
+    /// Set the session's page_limit retention cap (ADR-051). `None` =
+    /// unlimited. Metadata write only — pair with
+    /// [`Self::enforce_page_limit`] to rotate out pages immediately
+    /// when the new cap is below the current count. Errors when the
+    /// session does not exist.
+    pub async fn set_page_limit(&self, session_id: &str, limit: Option<u32>) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        let mut meta = controller
+            .get_metadata(session_id, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        meta.page_limit = limit;
+        controller.update_metadata(meta).await
+    }
+
+    /// Enforce the session's page_limit now: rotate out the oldest
+    /// closed compaction pages (permanently deleting their events)
+    /// until within the cap, advancing `pruned_pages` so page numbers
+    /// stay stable. Returns the number of pages pruned. No-op when no
+    /// limit is set or the session is within it. Errors when the
+    /// session does not exist.
+    pub async fn enforce_page_limit(&mut self, session_id: &str) -> Result<usize> {
+        let handle = self
+            .open_session(session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        let base = handle.base().clone();
+        drop(handle);
+        let pruned = {
+            let mut inner = base.write().await;
+            inner.prune_overflow().await?
+        };
+        if pruned > 0 {
+            // Persist the counter through THIS controller — each
+            // MetadataController instance carries its own in-memory
+            // index view, so the session's write would be invisible
+            // here for up to the index TTL.
+            let mut controller = self.metadata_controller.write().await;
+            let mut meta = controller
+                .get_metadata(session_id, false)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+            meta.pruned_pages += pruned as u32;
+            controller.update_metadata(meta).await?;
+        }
+        Ok(pruned)
+    }
+
     /// Reparent a session: set `parent_session_id` (passthrough to the
     /// `MetadataController`) and append a `System` audit event to the
     /// session's JSONL recording old → new parent. Errors when the
@@ -3307,6 +3355,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(branch_state, parent_state);
+    }
+
+    #[tokio::test]
+    async fn test_page_limit_fifo_prunes_oldest_pages() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let peer = Subject::User("alice".to_string());
+        let mut manager = SessionManager::new()
+            .with_sessions_dir_internal(temp.path())
+            .with_agent_name("test_agent");
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+        let id = handle.session_id().to_string();
+        let base = handle.base().clone();
+
+        // Three closed pages: a user turn, then a boundary closing it.
+        for i in 1..=3 {
+            let mut inner = base.write().await;
+            inner.add_user(&format!("page {i} content")).await.unwrap();
+            inner
+                .record_compaction(&format!("summary {i}"), 1, 100, 10, i, None)
+                .await
+                .unwrap();
+        }
+
+        // Cap at one: the two oldest pages rotate out permanently.
+        manager.set_page_limit(&id, Some(1)).await.unwrap();
+        let pruned = manager.enforce_page_limit(&id).await.unwrap();
+        assert_eq!(pruned, 2);
+
+        let meta = manager
+            .metadata_controller
+            .write()
+            .await
+            .get_metadata(&id, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.pruned_pages, 2, "pruned_pages feeds stable numbering");
+        assert_eq!(meta.page_limit, Some(1));
+
+        // The transcript keeps exactly one boundary (page 3's) and
+        // loses the first two pages' contents.
+        let events = crate::jsonl::SessionStorage::new(temp.path().to_path_buf())
+            .load_events(&id)
+            .await
+            .unwrap();
+        let boundaries = events
+            .iter()
+            .filter(|e| crate::pages::is_compaction_boundary(e))
+            .count();
+        assert_eq!(boundaries, 1);
+        let all = events
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("page 3 content"), "{all}");
+        assert!(!all.contains("page 1 content"), "{all}");
+        assert!(!all.contains("page 2 content"), "{all}");
+
+        // Re-enforcing is a no-op when within the cap.
+        let pruned_again = manager.enforce_page_limit(&id).await.unwrap();
+        assert_eq!(pruned_again, 0);
+
+        // Clearing the cap (None) never prunes.
+        manager.set_page_limit(&id, None).await.unwrap();
+        let pruned_none = manager.enforce_page_limit(&id).await.unwrap();
+        assert_eq!(pruned_none, 0);
     }
 
     #[tokio::test]

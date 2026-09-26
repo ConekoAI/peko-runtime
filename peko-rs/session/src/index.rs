@@ -108,6 +108,20 @@ pub struct SessionEntry {
     /// `parent_session_id == None`) carries no slug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
+    /// Retention cap on closed compaction pages (ADR-051): when the
+    /// session has more closed pages than this, the OLDEST pages are
+    /// rotated out (their events permanently deleted) until within the
+    /// cap. `None` = unlimited. Set via the `session` tool's `move`
+    /// action or the Agent tool's `page_limit` parameter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_limit: Option<u32>,
+    /// How many closed pages have been rotated out by the
+    /// `page_limit` retention policy. Page numbers reported by
+    /// `list_pages` are OFFSET by this count so they remain stable
+    /// addresses across pruning (page 7 is page 7 even after pages
+    /// 1-6 are gone); `first_available_page = pruned_pages + 1`.
+    #[serde(default)]
+    pub pruned_pages: u32,
     /// Successful compactions recorded for this session (compaction
     /// audit fix #4). This is the per-session sequence the JSONL
     /// boundary event's `compaction_number` derives from; the per-run
@@ -161,6 +175,8 @@ impl SessionEntry {
             peer_type: None,
             peer_id: None,
             slug: None,
+            page_limit: None,
+            pruned_pages: 0,
             compaction_count: 0,
             last_compaction_at: None,
             consecutive_auto_compactions: 0,

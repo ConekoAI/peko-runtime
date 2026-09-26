@@ -115,6 +115,11 @@ pub struct ExecutionConfig {
     /// session is created (the same index entry
     /// `stamp_spawn_parent_linkage` patches).
     pub slug: Option<String>,
+    /// Retention cap on the session's closed compaction pages
+    /// (ADR-051 FIFO page limit, Agent tool `page_limit` param).
+    /// `None` = unlimited. Applied by `spawn_and_execute` /
+    /// `branch_and_execute` to the session they create or reseed.
+    pub page_limit: Option<u32>,
     /// The requested agent template (Agent tool `agent` param),
     /// threaded by the runtime adapter for the standing-child
     /// attach check: when `slug` matches a standing session that
@@ -177,6 +182,7 @@ impl Default for ExecutionConfig {
             conversation_channel: None,
             conversation_peer: None,
             role_prompt: None,
+                    page_limit: None,
         }
     }
 }
@@ -990,6 +996,19 @@ impl SubagentExecutor {
         }
 
         info!("Spawned subagent: run_id={} depth={}", run_id, child_depth);
+
+        // Retention (page_limit): applies to the child session whether
+        // it was freshly minted or attached (create-or-resume).
+        if let Some(limit) = config.page_limit {
+            let pruned = {
+                let mut manager = self.session_manager.write().await;
+                manager.set_page_limit(&child_session_id, Some(limit)).await?;
+                manager.enforce_page_limit(&child_session_id).await?
+            };
+            if pruned > 0 {
+                info!("page_limit pruned {pruned} page(s) from {child_session_id}");
+            }
+        }
 
         self.register_subagent_run(SubagentRunSpec {
             run_id,
@@ -1851,6 +1870,21 @@ impl SubagentExecutor {
             );
             (child_session_key, child_session_id, child_base)
         };
+
+        // Retention (page_limit): applies to the final session whether
+        // it was reseeded (overwrite) or freshly minted. On the
+        // overwrite path the reseed boundary already closed a page, so
+        // enforcement runs here.
+        if let Some(limit) = config.page_limit {
+            let pruned = {
+                let mut manager = self.session_manager.write().await;
+                manager.set_page_limit(&child_session_id, Some(limit)).await?;
+                manager.enforce_page_limit(&child_session_id).await?
+            };
+            if pruned > 0 {
+                info!("page_limit pruned {pruned} page(s) from {child_session_id}");
+            }
+        }
 
         let run_id = self
             .register_subagent_run(SubagentRunSpec {

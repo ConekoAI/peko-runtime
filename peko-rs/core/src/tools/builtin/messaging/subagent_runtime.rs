@@ -153,10 +153,13 @@ pub trait SubagentRuntime: Send + Sync {
     /// the source, so archived sources are allowed). `target` follows
     /// the `new` action's addressing rules; when it resolves to an
     /// existing spawn-created session, `overwrite` must be `true` and
-    /// the old session is archived and loses its slug (the address
-    /// repoints to the newly minted session — history is never
-    /// truncated). Blocks until the run reaches a terminal state (or
-    /// the framework's auto-detach fires) and returns the run's view.
+    /// the target is RESEEDED IN PLACE — it keeps its id, slug, and
+    /// descendants, and its previous live transcript is retained as a
+    /// compaction page (history is never truncated). `page_limit`
+    /// sets the FIFO retention cap on the target's closed compaction
+    /// pages (`None` = unlimited). Blocks until the run reaches a
+    /// terminal state (or the framework's auto-detach fires) and
+    /// returns the run's view.
     async fn branch_and_execute(
         &self,
         source: Option<&str>,
@@ -164,6 +167,7 @@ pub trait SubagentRuntime: Send + Sync {
         prompt: &str,
         agent: &str,
         overwrite: bool,
+        page_limit: Option<u32>,
         caller_session_key: &str,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<SubagentRunView>;

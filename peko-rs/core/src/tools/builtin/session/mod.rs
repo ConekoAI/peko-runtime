@@ -346,6 +346,20 @@ pub struct BranchOutcome {
     pub parent_session_id: String,
 }
 
+/// Result of the `list_pages` action: the page catalog with STABLE
+/// page numbers (offset by the session's `pruned_pages`, so pages
+/// rotated out by the `page_limit` retention policy never renumber
+/// surviving ones) plus the retention state.
+#[derive(Debug, Clone, Serialize)]
+pub struct PageCatalog {
+    pub pages: Vec<peko_session::pages::SessionPage>,
+    /// Page number of the oldest surviving page (`pruned_pages + 1`).
+    pub first_available_page: usize,
+    /// The session's retention cap on closed pages (`None` =
+    /// unlimited).
+    pub page_limit: Option<u32>,
+}
+
 /// Result of the `delete` action: every session actually removed
 /// (the target plus, with `recursive: true`, its descendants) —
 /// by canonical id and by the slug path each had at deletion time.
@@ -437,11 +451,22 @@ pub trait SessionRuntime: Send + Sync {
     /// ADR-051: list the logical compaction-page catalog of a session
     /// (page 1 = genesis…first boundary; the live page — the segment
     /// after the newest boundary — is last). Same ownership gate as
-    /// `get_history`.
-    async fn list_pages(
+    /// `get_history`. Page numbers are STABLE addresses: they are
+    /// offset by the session's `pruned_pages` count, so pages rotated
+    /// out by the `page_limit` retention policy never renumber the
+    /// survivors (see [`PageCatalog`]).
+    async fn list_pages(&self, session_key: &str) -> anyhow::Result<PageCatalog>;
+
+    /// Set the session's page_limit retention cap (ADR-051) — the FIFO
+    /// cap on closed compaction pages. `None` = unlimited. Prunes
+    /// immediately when the new cap is below the current count and
+    /// returns the number of pages rotated out (permanently deleted).
+    /// Same ownership gate as `rename_session`.
+    async fn set_page_limit(
         &self,
         session_key: &str,
-    ) -> anyhow::Result<Vec<peko_session::pages::SessionPage>>;
+        limit: Option<u32>,
+    ) -> anyhow::Result<u64>;
 
     /// ADR-051: render one page's messages as transcript text
     /// (role-prefixed lines). `offset` / `limit` are Read-style line

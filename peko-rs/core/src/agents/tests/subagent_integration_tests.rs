@@ -2988,4 +2988,52 @@ async fn test_branch_overwrite_reseeds_in_place() {
         live_str.contains("main agent working context"),
         "the source's snapshot must be the new live context: {live_str}"
     );
+
+    // Fire #3 with a retention cap: the reseed boundary closes fire
+    // #2's live content (2 closed pages now), so the FIFO policy
+    // rotates the oldest closed page out — permanently — while the
+    // session keeps its id and slug.
+    executor
+        .branch_and_execute(
+            None,
+            "briefing",
+            "Write today's briefing",
+            &source_key,
+            true,
+            ExecutionConfig {
+                page_limit: Some(1),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let events = peko_session::jsonl::SessionStorage::new(sessions_dir.clone())
+        .load_events(&old_id)
+        .await
+        .unwrap();
+    let boundaries: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| peko_session::pages::is_compaction_boundary(e))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        boundaries.len(),
+        1,
+        "the page_limit rotates the oldest closed page out permanently"
+    );
+    let meta = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.session_id.to_string() == old_id)
+        .expect("target survives");
+    assert_eq!(meta.pruned_pages, 1, "rotation feeds stable numbering");
+    assert_eq!(meta.compaction_count, 2, "the target's own sequence advanced");
+    assert_eq!(meta.slug.as_deref(), Some("briefing"), "slug untouched");
 }
