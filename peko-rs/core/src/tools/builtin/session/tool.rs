@@ -240,7 +240,7 @@ The `target` parameter (used by `copy` / `move`) is the destination slug path. S
 
 Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` (there is no archive/unarchive; if you want it gone, remove it).
 
-To RUN work in a session, use the Agent tool instead — its three actions (new / resume / compact) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session_id` set (visible on status)."
+To RUN work in a session, use the Agent tool instead — its four actions (new / resume / compact / branch) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session` set (visible on status)."
             .to_string()
     }
 
@@ -251,11 +251,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 "action": {
                     "type": "string",
                     "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
-                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact)."
+                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact/branch)."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Session address: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`: subtree SCOPE — results are limited to the named session and its descendants; omit to span the whole store. Match the Agent tool's `path` parameter."
+                    "description": "Session address: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`: subtree SCOPE — results are limited to the named session and its descendants; omit to span the whole store. Addresses here are always ABSOLUTE; only the Agent tool's `new` / `branch` additionally accept a caller-relative slug segment (they mint a session under yours)."
                 },
                 "target": {
                     "type": "string",
