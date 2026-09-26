@@ -330,9 +330,33 @@ impl SessionRuntime for SessionManagerRuntime {
         limit: usize,
         active_minutes: Option<i64>,
         include_archived: bool,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         let mut manager = self.session_manager.write().await;
         let metadatas = manager.list_all_sessions(false).await?;
+
+        // Organizational subtree scope (query filter, not a privilege
+        // boundary — 2026-09-12 filesystem model): resolve the path
+        // reference to a canonical root id, then keep only sessions in
+        // that subtree (the root itself included). Resolved only when
+        // supplied, so the no-scope path keeps its previous
+        // no-caller-resolution behavior.
+        let subtree_root: Option<String> = match subtree {
+            Some(reference) => {
+                let caller = caller_context(&self.current_session_key(), &metadatas);
+                Some(self.resolve_ref(&caller, &metadatas, reference)?)
+            }
+            None => None,
+        };
+        // Root + descendants in one BFS (ownership::descendants_of).
+        let subtree_ids: Option<std::collections::HashSet<String>> = subtree_root.as_ref().map(
+            |root| {
+                descendants_of(root, &metadatas)
+                    .into_iter()
+                    .chain(std::iter::once(root.clone()))
+                    .collect()
+            },
+        );
 
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cutoff_ms = active_minutes.map(|m| now.saturating_sub(m as u64 * 60 * 1000));
@@ -351,7 +375,9 @@ impl SessionRuntime for SessionManagerRuntime {
             .iter()
             .filter(|m| {
                 // Filesystem model (2026-09-12): whole-store reach
-                // for every caller — no subtree scoping.
+                // for every caller — no ownership scoping. An explicit
+                // `subtree` reference is an organizational query
+                // filter, applied like the other filters here.
                 let archived_match = include_archived || !m.archived;
                 let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
@@ -365,17 +391,19 @@ impl SessionRuntime for SessionManagerRuntime {
                     };
                     have_kind == want_kind.as_str() && have_id == want_id.as_str()
                 });
-                archived_match && peer_match && agent_match && active_match
+                let subtree_match = subtree_ids
+                    .as_ref()
+                    .map_or(true, |ids| ids.contains(&m.session_id.to_string()));
+                archived_match && peer_match && agent_match && active_match && subtree_match
             })
             .take(limit)
             .map(|m| {
                 let id_str = m.session_id.to_string();
                 let path = peko_session::path::compute_path(&metadatas, m.session_id);
                 SessionInfo {
-                    session_key: id_str.clone(),
                     session_id: id_str,
-                    agent_id: Some(m.agent_name.clone()),
-                    label: m.title.clone(),
+                    agent_name: Some(m.agent_name.clone()),
+                    title: m.title.clone(),
                     created_at: chrono::DateTime::from_timestamp_millis(m.created_at as i64)
                         .map(|dt| dt.to_rfc3339())
                         .unwrap_or_default(),
@@ -420,14 +448,21 @@ impl SessionRuntime for SessionManagerRuntime {
         session_key: &str,
         limit: usize,
         include_tools: bool,
-    ) -> anyhow::Result<Vec<HistoryMessage>> {
-        // D5: subtree callers may not read out-of-tree sessions.
-        let session_key = {
+    ) -> anyhow::Result<(Vec<HistoryMessage>, String)> {
+        // D5: subtree callers may not read out-of-tree sessions. The
+        // resolved slug path is returned alongside the messages so the
+        // tool can echo an addressable `path` even when the caller
+        // defaulted to the current session.
+        let (session_key, resolved_path) = {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             let session_key = self.resolve_ref(&caller, &metas, session_key)?;
             self.guard_dangling(&caller)?;
-            session_key
+            let resolved_path = peko_session::path::compute_path(
+                &metas,
+                peko_session::SessionId::from(session_key.as_str()),
+            );
+            (session_key, resolved_path)
         };
         let session_key = session_key.as_str();
 
@@ -457,7 +492,7 @@ impl SessionRuntime for SessionManagerRuntime {
             .take(limit)
             .collect();
 
-        Ok(messages)
+        Ok((messages, resolved_path))
     }
 
     async fn list_pages(
@@ -503,17 +538,18 @@ impl SessionRuntime for SessionManagerRuntime {
         // manager write lock; the events scan (`load_guarded_events`
         // re-acquires the same lock) happens AFTER dropping it so we
         // don't deadlock against ourselves.
-        let (metadata, sessions_dir) = {
+        let (metadata, sessions_dir, path) = {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             let session_id = &self.resolve_ref(&caller, &metas, session_id)?;
             self.guard_dangling(&caller)?;
             let metadata = manager.get_session_metadata(session_id).await?;
+            let path = peko_session::path::compute_path(&metas, metadata.session_id);
             let sessions_dir = manager
                 .sessions_dir()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
-            (metadata, sessions_dir)
+            (metadata, sessions_dir, path)
         };
 
         // Per-turn token breakdown comes from the most recent assistant
@@ -561,6 +597,7 @@ impl SessionRuntime for SessionManagerRuntime {
 
         Ok(SessionStatusResult {
             session_id: metadata.session_id.to_string(),
+            path,
             agent_name: metadata.agent_name,
             created_at: chrono::DateTime::from_timestamp_millis(metadata.created_at as i64)
                 .map(|dt| dt.to_rfc3339())
@@ -595,7 +632,7 @@ impl SessionRuntime for SessionManagerRuntime {
             current_run_iterations,
             peer_type: metadata.peer_type,
             peer_id: metadata.peer_id,
-            label: metadata.title,
+            title: metadata.title,
             parent_session: metadata.parent_session_id.map(|id| id.to_string()),
         })
     }
@@ -613,16 +650,34 @@ impl SessionRuntime for SessionManagerRuntime {
         query: &str,
         peer: Option<&Subject>,
         limit: usize,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>> {
-        let (ids, sessions_dir) = {
+        let (ids, sessions_dir, path_by_id) = {
             let mut manager = self.session_manager.write().await;
-            let (_caller, metas) = self.caller_and_metas(&mut manager).await?;
+            let (caller, metas) = self.caller_and_metas(&mut manager).await?;
+            // Organizational subtree scope (same semantics as
+            // `list_sessions`): resolve the path reference to the
+            // subtree root, then keep only sessions inside it (root
+            // itself included, via one BFS).
+            let subtree_root: Option<String> = match subtree {
+                Some(reference) => Some(self.resolve_ref(&caller, &metas, reference)?),
+                None => None,
+            };
+            let subtree_ids: Option<std::collections::HashSet<String>> =
+                subtree_root.as_ref().map(|root| {
+                    descendants_of(root, &metas)
+                        .into_iter()
+                        .chain(std::iter::once(root.clone()))
+                        .collect()
+                });
             let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
             let ids: Vec<String> = metas
                 .iter()
                 .filter(|m| {
                     // Filesystem model (2026-09-12): whole-store
-                    // reach for every caller — no subtree scoping.
+                    // reach for every caller — no ownership scoping.
+                    // An explicit `subtree` reference is an
+                    // organizational query filter.
                     let visible_match = !m.archived;
                     let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
                         let (have_kind, have_id) =
@@ -632,7 +687,10 @@ impl SessionRuntime for SessionManagerRuntime {
                             };
                         have_kind == want_kind.as_str() && have_id == want_id.as_str()
                     });
-                    visible_match && peer_match
+                    let subtree_match = subtree_ids
+                        .as_ref()
+                        .map_or(true, |ids| ids.contains(&m.session_id.to_string()));
+                    visible_match && peer_match && subtree_match
                 })
                 .map(|m| m.session_id.to_string())
                 .collect();
@@ -640,7 +698,20 @@ impl SessionRuntime for SessionManagerRuntime {
                 .sessions_dir()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
-            (ids, sessions_dir)
+            // Addressable slug paths for the surviving sessions (the
+            // model follows up hits by `path`, never by raw id).
+            let mut path_by_id: std::collections::HashMap<String, String> =
+                std::collections::HashMap::with_capacity(ids.len());
+            for id in &ids {
+                path_by_id.insert(
+                    id.clone(),
+                    peko_session::path::compute_path(
+                        &metas,
+                        peko_session::SessionId::from(id.as_str()),
+                    ),
+                );
+            }
+            (ids, sessions_dir, path_by_id)
         };
 
         let storage = SessionStorage::new(sessions_dir);
@@ -648,7 +719,8 @@ impl SessionRuntime for SessionManagerRuntime {
         Ok(hits
             .into_iter()
             .map(|h| SessionSearchHit {
-                session_id: h.session_id,
+                session_id: h.session_id.clone(),
+                path: path_by_id.get(&h.session_id).cloned().unwrap_or_default(),
                 role: h.role,
                 timestamp: h.timestamp.to_rfc3339(),
                 snippet: h.snippet,
@@ -661,7 +733,7 @@ impl SessionRuntime for SessionManagerRuntime {
         session_key: &str,
         target_parent: String,
         target_slug: String,
-        label: Option<String>,
+        title: Option<String>,
     ) -> anyhow::Result<BranchOutcome> {
         let mut manager = self.session_manager.write().await;
         // Ownership guard on the source. Branching the caller's CURRENT
@@ -702,7 +774,7 @@ impl SessionRuntime for SessionManagerRuntime {
         // those guards operate on user-initiated mutations; for a
         // copy's internal reparenting, the parent-validity check above
         // is the right gate.
-        let new_session_id = manager.branch_session_by_id(&session_key, label).await?;
+        let new_session_id = manager.branch_session_by_id(&session_key, title).await?;
 
         if target_parent_id != session_key {
             manager
@@ -714,8 +786,15 @@ impl SessionRuntime for SessionManagerRuntime {
             .set_session_slug(&new_session_id.as_str(), Some(target_slug))
             .await?;
 
+        // Addressable path of the copy, computed over a FRESH metadata
+        // snapshot (the pre-branch `metas` don't contain the new
+        // session, and its ancestors may have been reparented above).
+        let fresh_metas = manager.list_all_sessions(false).await?;
+        let new_path = peko_session::path::compute_path(&fresh_metas, new_session_id);
+
         Ok(BranchOutcome {
             new_session_id: new_session_id.to_string(),
+            new_path,
             parent_session_id: session_key,
         })
     }
@@ -795,6 +874,21 @@ impl SessionRuntime for SessionManagerRuntime {
         }
         post_order.reverse();
 
+        // Slug paths each deleted session had at deletion time
+        // (computed over the pre-delete metadata snapshot — after
+        // removal they resolve to nothing).
+        let mut path_by_id: std::collections::HashMap<String, String> =
+            std::collections::HashMap::with_capacity(post_order.len());
+        for id in &post_order {
+            path_by_id.insert(
+                id.clone(),
+                peko_session::path::compute_path(
+                    &metas,
+                    peko_session::SessionId::from(id.as_str()),
+                ),
+            );
+        }
+
         // D3 run-permit protocol: acquire target + every descendant and
         // HOLD the permits across the deletes so no run can be in
         // flight — or start — mid-operation. `None` registry (stateless
@@ -832,12 +926,17 @@ impl SessionRuntime for SessionManagerRuntime {
         }
 
         let mut deleted = Vec::new();
+        let mut deleted_paths = Vec::new();
         for id in &post_order {
             if manager.delete_session_by_id(id).await? {
                 deleted.push(id.clone());
+                deleted_paths.push(path_by_id.get(id).cloned().unwrap_or_default());
             }
         }
-        Ok(DeleteOutcome { deleted })
+        Ok(DeleteOutcome {
+            deleted,
+            deleted_paths,
+        })
     }
 
     async fn move_session(
@@ -1227,7 +1326,7 @@ mod tests {
         // Full list view.
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false, None)
             .await
             .unwrap();
         assert_eq!(all.len(), 4);
@@ -1235,14 +1334,14 @@ mod tests {
 
         // Reads on any session.
         h.add_user_message("spawn2", "hello from spawn2").await;
-        let history = h.runtime.get_history("/c", 10, false).await.unwrap();
+        let history = h.runtime.get_history("/c", 10, false).await.unwrap().0;
         assert_eq!(history.len(), 1);
         let status = h.runtime.get_status("/c").await.unwrap();
         assert_eq!(status.session_id, sid("spawn2"));
 
         // Search spans the store.
         h.add_user_message("child1", "needle in child").await;
-        let hits = h.runtime.search_sessions("needle", None, 10).await.unwrap();
+        let hits = h.runtime.search_sessions("needle", None, 10, None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, sid("child1"));
 
@@ -1263,6 +1362,71 @@ mod tests {
             .copy_session("/", "/".into(), "root-copy".into(), None)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_and_find_subtree_scope_filters_by_ancestor_chain() {
+        // Tree: root ── spawn1("a") ── child1("b"), root ── spawn2("c").
+        let h = tree_harness("root:user:alice").await;
+        h.add_user_message("child1", "needle in child").await;
+        h.add_user_message("spawn2", "needle in spawn2").await;
+
+        // Scoped to "a": spawn1 + child1 (the scope root itself is
+        // included); never spawn2 or the root.
+        let scoped = h
+            .runtime
+            .list_sessions(None, None, 50, None, false, Some("sess:/a"))
+            .await
+            .unwrap();
+        let ids: Vec<&str> = scoped.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&sid("spawn1").as_str()));
+        assert!(ids.contains(&sid("child1").as_str()));
+        assert!(!ids.contains(&sid("spawn2").as_str()));
+        assert!(!ids.contains(&sid("root:user:alice").as_str()));
+
+        // Scoped to the leaf "b": child1 only.
+        let leaf = h
+            .runtime
+            .list_sessions(None, None, 50, None, false, Some("sess:/a/b"))
+            .await
+            .unwrap();
+        assert_eq!(leaf.len(), 1);
+        assert_eq!(leaf[0].session_id, sid("child1"));
+
+        // Legacy bare form (no `sess:` prefix) is the same address.
+        let bare = h
+            .runtime
+            .list_sessions(None, None, 50, None, false, Some("/a"))
+            .await
+            .unwrap();
+        assert_eq!(bare.len(), 2);
+
+        // Unknown subtree path fails closed with the resolver's hint.
+        let err = h
+            .runtime
+            .list_sessions(None, None, 50, None, false, Some("sess:/nope"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no child"), "{err}");
+
+        // Search honors the same scope: only child1's needle surfaces,
+        // spawn2's stays out even though it matches the query.
+        let hits = h
+            .runtime
+            .search_sessions("needle", None, 10, Some("sess:/a"))
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, sid("child1"));
+
+        // Unscoped search still spans the store (both needles).
+        let hits = h
+            .runtime
+            .search_sessions("needle", None, 10, None)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
     }
 
     #[tokio::test]
@@ -1341,7 +1505,7 @@ mod tests {
         let guard = h.registry.try_acquire_run(&sid("child1")).await.unwrap();
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false, None)
             .await
             .unwrap();
         let child = all.iter().find(|s| s.session_id == sid("child1")).unwrap();
@@ -1399,7 +1563,7 @@ mod tests {
 
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false, None)
             .await
             .unwrap();
         let probe = all
@@ -1415,7 +1579,7 @@ mod tests {
             .update_status(&task_id, AsyncTaskStatus::Cancelled);
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false, None)
             .await
             .unwrap();
         let probe = all
@@ -1692,7 +1856,7 @@ mod tests {
         let status = h.runtime.get_status("/a/b").await.unwrap();
         assert_eq!(status.session_id, sid("child1"));
         h.add_user_message("child1", "hello via path").await;
-        let history = h.runtime.get_history("/a/b", 10, false).await.unwrap();
+        let history = h.runtime.get_history("/a/b", 10, false).await.unwrap().0;
         assert_eq!(history.len(), 1);
 
         // "/" is the caller's topmost ancestor (the tree root).
@@ -1828,7 +1992,7 @@ mod tests {
 
         let all = h
             .runtime
-            .list_sessions(None, None, 50, None, false)
+            .list_sessions(None, None, 50, None, false, None)
             .await
             .unwrap();
         let by_id = |id: &str| {
@@ -1903,7 +2067,7 @@ mod tests {
         // is lenient (returns `Ok(vec![])` for missing sessions), but
         // `rename_session` / `delete_session` error on the existence guard.
         let raw_id = "550e8400-e29b-41d4-a716-446655440000";
-        let msgs = h.runtime.get_history(raw_id, 10, false).await.unwrap();
+        let msgs = h.runtime.get_history(raw_id, 10, false).await.unwrap().0;
         assert!(msgs.is_empty(), "missing session: empty history");
         let err = h
             .runtime

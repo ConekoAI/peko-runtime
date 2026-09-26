@@ -55,14 +55,21 @@ pub use tool::SessionTool;
 use serde::{Deserialize, Serialize};
 
 /// Session info
+///
+/// Identity model (2026-09-26 dedup): `session_id` (the canonical
+/// UUID) is the only storage key; `path` (`sess:/a/b`) is the
+/// addressable slug path and the field every consumer should use.
+/// The old `session_key` duplicate of `session_id` is gone from the
+/// wire (tolerated on read via serde's unknown-field behavior).
+/// `agent_name` / `title` were previously serialized as `agent_id` /
+/// `label` — the old names are accepted as read aliases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
-    pub session_key: String,
     pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    #[serde(alias = "agent_id", skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub created_at: String,
     pub last_activity: String,
     pub message_count: usize,
@@ -282,6 +289,9 @@ pub struct QuotaSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStatusResult {
     pub session_id: String,
+    /// Addressable slug path (`sess:/a/b`) of the session — the field
+    /// to use for follow-up calls.
+    pub path: String,
     pub agent_name: String,
     pub created_at: String,
     pub last_activity: String,
@@ -308,16 +318,20 @@ pub struct SessionStatusResult {
     pub peer_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<String>,
 }
 
-/// One match from a transcript search (`session` tool `search` action).
+/// One match from a transcript search (`session` tool `find` action).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSearchHit {
     pub session_id: String,
+    /// Addressable slug path (`sess:/a/b`) of the matching session —
+    /// the field to use for follow-up calls (raw session ids are
+    /// refused at the tool boundary).
+    pub path: String,
     /// Role of the matching message ("user" or "assistant").
     pub role: String,
     /// RFC 3339 timestamp of the matching message.
@@ -330,14 +344,21 @@ pub struct SessionSearchHit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchOutcome {
     pub new_session_id: String,
+    /// Addressable slug path of the new copy (`sess:/a/b`).
+    pub new_path: String,
     pub parent_session_id: String,
 }
 
-/// Result of the `delete` action: every session id actually removed
-/// (the target plus, with `recursive: true`, its descendants).
+/// Result of the `delete` action: every session actually removed
+/// (the target plus, with `recursive: true`, its descendants) —
+/// by canonical id and by the slug path each had at deletion time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteOutcome {
     pub deleted: Vec<String>,
+    /// Slug paths (`sess:/a/b`) of the deleted sessions, same order
+    /// as `deleted`. Computed before removal, so they name where the
+    /// sessions USED to live.
+    pub deleted_paths: Vec<String>,
 }
 
 // ─── SessionRuntime port trait ────────────────────────────────────
@@ -360,6 +381,13 @@ pub trait SessionRuntime: Send + Sync {
     /// - `limit`: cap on results returned.
     /// - `active_minutes`: only sessions updated within the last N minutes.
     /// - `include_archived`: include archived sessions (hidden by default).
+    /// - `subtree`: optional organizational scope — a session reference
+    ///   (`sess:/a/b`, same addressing as every other action's `path`)
+    ///   naming the subtree ROOT. When `Some`, results are limited to
+    ///   that session and its descendants (the hierarchy is purely
+    ///   organizational under the 2026-09-12 filesystem model — this is
+    ///   a query filter, not a privilege boundary). Unknown paths fail
+    ///   closed via `resolve_reference`. `None` spans the whole store.
     ///
     /// To find subagent sessions, the caller filters on
     /// `parent_session_id is not None` in its own reasoning.
@@ -373,15 +401,19 @@ pub trait SessionRuntime: Send + Sync {
         limit: usize,
         active_minutes: Option<i64>,
         include_archived: bool,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>>;
 
-    /// Get session history
+    /// Get session history. Returns the messages plus the RESOLVED
+    /// slug path (`sess:/a/b`) of the session they came from — the
+    /// tool echoes it so a defaulted (current-session) history response
+    /// still names an addressable path instead of a raw id.
     async fn get_history(
         &self,
         session_key: &str,
         limit: usize,
         include_tools: bool,
-    ) -> anyhow::Result<Vec<HistoryMessage>>;
+    ) -> anyhow::Result<(Vec<HistoryMessage>, String)>;
 
     /// Get session status
     async fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult>;
@@ -394,11 +426,17 @@ pub trait SessionRuntime: Send + Sync {
     /// - `query`: the needle.
     /// - `peer`: restrict to one peer's sessions (`None` = all peers).
     /// - `limit`: cap on hits returned.
+    /// - `subtree`: optional organizational scope — a session reference
+    ///   (`sess:/a/b`) naming the subtree ROOT; hits are limited to
+    ///   that session and its descendants (same semantics as
+    ///   [`SessionRuntime::list_sessions`]'s `subtree`). `None` spans
+    ///   the whole store.
     async fn search_sessions(
         &self,
         query: &str,
         peer: Option<&peko_subject::Subject>,
         limit: usize,
+        subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>>;
 
     /// ADR-051: list the logical compaction-page catalog of a session
@@ -438,7 +476,8 @@ pub trait SessionRuntime: Send + Sync {
     /// full destination path; the last segment is the new slug, the
     /// rest is the destination parent). The source is unchanged. The
     /// copy is NOT running — attach a run via `Agent(action:"resume")`.
-    /// Returns the new session's id alongside the source's. Sprint 7
+    /// Returns the new session's id and its addressable slug path
+    /// alongside the source's id. Sprint 7
     /// Commit H (2026-08-22) replaces the previous sibling-only
     /// `branch_session` shape with a free-form destination.
     async fn copy_session(
@@ -446,7 +485,7 @@ pub trait SessionRuntime: Send + Sync {
         session_key: &str,
         target_parent: String,
         target_slug: String,
-        label: Option<String>,
+        title: Option<String>,
     ) -> anyhow::Result<BranchOutcome>;
 
     /// Rename (retitle) a session and/or set its slug (the
@@ -500,10 +539,9 @@ mod tests {
     #[test]
     fn session_info_roundtrip() {
         let info = SessionInfo {
-            session_key: "alice-1".into(),
             session_id: "alice-1".into(),
-            agent_id: Some("test-agent".into()),
-            label: None,
+            agent_name: Some("test-agent".into()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             last_activity: "2024-01-01T01:00:00Z".into(),
             message_count: 5,
@@ -515,9 +553,12 @@ mod tests {
             path: String::new(),
         };
         let json = serde_json::to_value(&info).unwrap();
-        assert_eq!(json["session_key"], "alice-1");
+        assert_eq!(json["session_id"], "alice-1");
+        // The `session_key` duplicate of `session_id` is gone from the
+        // wire entirely.
+        assert!(!json.as_object().unwrap().contains_key("session_key"));
         assert_eq!(json["peer_type"], "user");
-        assert_eq!(json["agent_id"], "test-agent");
+        assert_eq!(json["agent_name"], "test-agent");
         assert_eq!(json["archived"], false);
         assert_eq!(json["run_active"], false);
         // The old `kind` field is gone — the model now uses
@@ -530,25 +571,28 @@ mod tests {
     }
 
     #[test]
-    fn session_info_legacy_json_without_new_fields_defaults_false() {
-        // A `SessionInfo` serialized before `archived` / `run_active`
-        // existed must still deserialize, with both flags = false.
-        // The pre-refactor wire also had `kind` and `is_active` fields;
-        // absent in new payloads but tolerated on read (ignored via
-        // the default serde unknown-field behavior).
+    fn session_info_legacy_json_aliases_still_deserialize() {
+        // Pre-rename wire shapes must still deserialize: `session_key`
+        // (duplicate of session_id) is ignored, `agent_id` / `label`
+        // alias into `agent_name` / `title`, and the pre-refactor
+        // `kind` / `is_active` fields are tolerated.
         let legacy = serde_json::json!({
             "session_key": "k",
             "session_id": "k",
             "kind": "main",
+            "agent_id": "test-agent",
+            "label": "My Session",
             "created_at": "2024-01-01T00:00:00Z",
             "last_activity": "2024-01-01T01:00:00Z",
             "message_count": 3,
             "is_active": true
         });
         let back: SessionInfo = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.session_id, "k");
+        assert_eq!(back.agent_name.as_deref(), Some("test-agent"));
+        assert_eq!(back.title.as_deref(), Some("My Session"));
         assert!(!back.archived);
         assert!(!back.run_active);
-        // slug/path were added later still; legacy payloads default them.
         assert_eq!(back.slug, None);
         assert_eq!(back.path, "");
     }
@@ -556,10 +600,9 @@ mod tests {
     #[test]
     fn session_info_slug_and_path_roundtrip() {
         let info = SessionInfo {
-            session_key: "s1".into(),
             session_id: "s1".into(),
-            agent_id: None,
-            label: None,
+            agent_name: None,
+            title: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             last_activity: "2024-01-01T01:00:00Z".into(),
             message_count: 0,
@@ -603,6 +646,7 @@ mod tests {
     fn session_status_roundtrip() {
         let status = SessionStatusResult {
             session_id: "s1".into(),
+            path: "sess:/a/s1".into(),
             agent_name: "agent1".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
             last_activity: "2024-01-01T01:00:00Z".into(),
@@ -637,11 +681,12 @@ mod tests {
             current_run_iterations: 3,
             peer_type: None,
             peer_id: None,
-            label: None,
+            title: None,
             parent_session: None,
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["path"], "sess:/a/s1");
         assert_eq!(json["usage"]["model_context_limit"], 128_000);
         let back: SessionStatusResult = serde_json::from_value(json).unwrap();
         assert_eq!(back.usage.model_context_limit, Some(128_000));
@@ -654,10 +699,9 @@ mod tests {
     #[test]
     fn serialisation_skips_none_optional_fields() {
         let info = SessionInfo {
-            session_key: "k".into(),
             session_id: "k".into(),
-            agent_id: None,
-            label: None,
+            agent_name: None,
+            title: None,
             created_at: String::new(),
             last_activity: String::new(),
             message_count: 0,
@@ -670,8 +714,8 @@ mod tests {
         };
         let json = serde_json::to_value(&info).unwrap();
         let obj = json.as_object().unwrap();
-        assert!(!obj.contains_key("agent_id"));
-        assert!(!obj.contains_key("label"));
+        assert!(!obj.contains_key("agent_name"));
+        assert!(!obj.contains_key("title"));
         assert!(!obj.contains_key("peer_type"));
         assert!(!obj.contains_key("peer_id"));
     }
@@ -680,12 +724,14 @@ mod tests {
     fn session_search_hit_roundtrip() {
         let hit = SessionSearchHit {
             session_id: "s1".into(),
+            path: "sess:/a/s1".into(),
             role: "user".into(),
             timestamp: "2024-01-01T00:00:00Z".into(),
             snippet: "…the needle is here…".into(),
         };
         let json = serde_json::to_value(&hit).unwrap();
         assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["path"], "sess:/a/s1");
         assert_eq!(json["role"], "user");
         let back: SessionSearchHit = serde_json::from_value(json).unwrap();
         assert_eq!(back.snippet, hit.snippet);
@@ -695,19 +741,24 @@ mod tests {
     fn outcome_dtos_roundtrip() {
         let branch = BranchOutcome {
             new_session_id: "b1".into(),
+            new_path: "sess:/a/b1".into(),
             parent_session_id: "p1".into(),
         };
         let json = serde_json::to_value(&branch).unwrap();
         assert_eq!(json["new_session_id"], "b1");
+        assert_eq!(json["new_path"], "sess:/a/b1");
         let back: BranchOutcome = serde_json::from_value(json).unwrap();
         assert_eq!(back.parent_session_id, "p1");
 
         let delete = DeleteOutcome {
             deleted: vec!["a".into(), "b".into()],
+            deleted_paths: vec!["sess:/a".into(), "sess:/a/b".into()],
         };
         let json = serde_json::to_value(&delete).unwrap();
         assert_eq!(json["deleted"].as_array().unwrap().len(), 2);
+        assert_eq!(json["deleted_paths"].as_array().unwrap().len(), 2);
         let back: DeleteOutcome = serde_json::from_value(json).unwrap();
         assert_eq!(back.deleted, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(back.deleted_paths, vec!["sess:/a", "sess:/a/b"]);
     }
 }

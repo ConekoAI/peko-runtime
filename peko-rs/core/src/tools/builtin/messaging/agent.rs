@@ -819,7 +819,7 @@ Examples:
                 },
                 "path": {
                     "type": "string",
-                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c') from the session tool's list (`path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions."
+                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c') from the session tool's list (`path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions. Note: the session tool's `path` only accepts the absolute form — relative slug segments (minting) are exclusive to `new` / `branch` here."
                 },
                 "model": {
                     "type": "string",

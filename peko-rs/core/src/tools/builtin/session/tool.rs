@@ -86,11 +86,11 @@ impl SessionTool {
     }
 
     fn build_history_response(
-        session_key: &str,
+        path: &str,
         messages: Vec<HistoryMessage>,
     ) -> serde_json::Value {
         json!({
-            "path": session_key,
+            "path": path,
             "total_messages": messages.len(),
             "messages": messages,
         })
@@ -115,6 +115,27 @@ impl SessionTool {
             ));
         }
         Ok(path)
+    }
+
+    /// Optional subtree scope for `list` / `find`: the `path` param
+    /// names the subtree ROOT (a session reference, `sess:/a/b` — same
+    /// addressing as every other action). Shape-validated here
+    /// (early-fail, mirrors `require_path`); resolved to a canonical
+    /// session id at the runtime layer. Absent / empty ⇒ `None` (the
+    /// whole store). Bare `/` is refused like everywhere else — to
+    /// span the whole store, omit the parameter.
+    fn optional_subtree(params: &serde_json::Value) -> anyhow::Result<Option<String>> {
+        match params.get("path").and_then(|v| v.as_str()) {
+            None | Some("") => Ok(None),
+            Some(path) => {
+                peko_session::path::validate_path(path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "'path' subtree scope is not a valid slug path: {e}"
+                    )
+                })?;
+                Ok(Some(path.to_string()))
+            }
+        }
     }
 
     /// Extract and parse the bash-style `target` param for `copy` and
@@ -201,9 +222,9 @@ impl Tool for SessionTool {
 
 Per-action semantics (the action you choose determines which other params apply):
 - status: one session's metadata + token usage (path optional, defaults to current)
-- list: query sessions (filters: peer, agent_id, active_minutes; archived hidden unless include_archived:true)
+- list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes; archived hidden unless include_archived:true)
 - history: messages of a session (path optional, defaults to current; include_tools)
-- find: case-insensitive text search across session transcripts (query required; optional peer filter)
+- find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
 - copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
 - move: reparent a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` (optional) is the new display label.
 - remove: delete a session (path required; recursive:true also deletes its descendants, children first)
@@ -213,13 +234,13 @@ Per-action semantics (the action you choose determines which other params apply)
 
 Default nodes: the principal is seeded with two ordinary standing sessions at creation — `sess:/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `sess:/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `sess:/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
 
-The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session).
+The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`, `path` is an organizational SCOPE: results are limited to the named session and its descendants (e.g. action `list` with path `sess:/agent-b` lists that subtree); omit `path` to span the whole store.
 
 The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`sess:/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required: `copy` / `move`.
 
 Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` (there is no archive/unarchive; if you want it gone, remove it).
 
-To RUN work in a session, use the Agent tool instead — its three actions (new / resume / compact) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session_id` set (visible on status)."
+To RUN work in a session, use the Agent tool instead — its four actions (new / resume / compact / branch) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session` set (visible on status)."
             .to_string()
     }
 
@@ -230,11 +251,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 "action": {
                     "type": "string",
                     "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
-                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact)."
+                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact/branch)."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Source session: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). Match the Agent tool's `path` parameter."
+                    "description": "Session address: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`: subtree SCOPE — results are limited to the named session and its descendants; omit to span the whole store. Addresses here are always ABSOLUTE; only the Agent tool's `new` / `branch` additionally accept a caller-relative slug segment (they mint a session under yours)."
                 },
                 "target": {
                     "type": "string",
@@ -260,11 +281,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 },
                 "title": {
                     "type": "string",
-                    "description": "Optional for 'move': new display title (free-form label; does not affect addressing)."
-                },
-                "label": {
-                    "type": "string",
-                    "description": "Optional for 'copy': label/title for the new copy"
+                    "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy — legacy `label` still accepted) and for `move` (new display title)."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -280,9 +297,9 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     "type": "string",
                     "description": "Optional filter for 'list' and 'find': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
                 },
-                "agent_id": {
+                "agent_name": {
                     "type": "string",
-                    "description": "Optional filter for 'list': single agent name"
+                    "description": "Optional filter for 'list': single agent template name (the `agent_name` field on list entries). The legacy `agent_id` spelling is still accepted."
                 },
                 "limit": {
                     "type": "integer",
@@ -357,13 +374,20 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     ),
                     None => None,
                 };
-                let agent_id = params.get("agent_id").and_then(|v| v.as_str());
+                // `agent_name` is the canonical filter (the value is
+                // the agent template's NAME); the legacy `agent_id`
+                // spelling is tolerated.
+                let agent_id = params
+                    .get("agent_name")
+                    .or_else(|| params.get("agent_id"))
+                    .and_then(|v| v.as_str());
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
                 let include_archived = params
                     .get("include_archived")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let subtree = Self::optional_subtree(&params)?;
 
                 let sessions = self
                     .runtime
@@ -373,6 +397,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                         limit,
                         active_minutes,
                         include_archived,
+                        subtree.as_deref(),
                     )
                     .await?;
                 Ok(Self::build_list_response(sessions))
@@ -393,7 +418,7 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     .runtime
                     .get_history(&session_key, limit, include_tools)
                     .await?;
-                Ok(Self::build_history_response(&session_key, messages))
+                Ok(Self::build_history_response(&messages.1, messages.0))
             }
             SessionAction::Find => {
                 let query = params
@@ -409,10 +434,11 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                     None => None,
                 };
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+                let subtree = Self::optional_subtree(&params)?;
 
                 let hits = self
                     .runtime
-                    .search_sessions(query, peer.as_ref(), limit)
+                    .search_sessions(query, peer.as_ref(), limit, subtree.as_deref())
                     .await?;
                 Ok(json!({
                     "total": hits.len(),
@@ -427,14 +453,17 @@ To RUN work in a session, use the Agent tool instead — its three actions (new 
                 } else {
                     parent_str.to_string()
                 };
-                let label = params
-                    .get("label")
+                // `title` is the canonical name for the copy's display
+                // title; the legacy `label` spelling is tolerated.
+                let title = params
+                    .get("title")
+                    .or_else(|| params.get("label"))
                     .and_then(|v| v.as_str())
                     .map(String::from);
 
                 let outcome = self
                     .runtime
-                    .copy_session(session_key, target_parent, slug.to_string(), label)
+                    .copy_session(session_key, target_parent, slug.to_string(), title)
                     .await?;
                 Ok(serde_json::to_value(outcome)?)
             }
@@ -650,10 +679,9 @@ mod tests {
         let cache = SessionCache::new("main");
 
         let session = SessionInfo {
-            session_key: "test-session".to_string(),
             session_id: "abc123".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            label: Some("Test Session".to_string()),
+            agent_name: Some("test-agent".to_string()),
+            title: Some("Test Session".to_string()),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 10,
@@ -684,6 +712,7 @@ mod tests {
 
         let status = SessionStatusResult {
             session_id: "abc123".to_string(),
+            path: String::new(),
             agent_name: "test-agent".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
@@ -707,7 +736,7 @@ mod tests {
             current_run_iterations: 0,
             peer_type: Some("user".to_string()),
             peer_id: Some("alice".to_string()),
-            label: Some("Test Session".to_string()),
+            title: Some("Test Session".to_string()),
             parent_session: Some("main".to_string()),
         };
 
@@ -726,7 +755,139 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["total"], 1);
-        assert_eq!(result["sessions"][0]["session_key"], "test-session");
+        assert_eq!(result["sessions"][0]["session_id"], "abc123");
+    }
+
+    #[tokio::test]
+    async fn test_session_list_and_find_accept_subtree_path_scope() {
+        let cache = Arc::new(SessionCache::new("main"));
+        // Tree: p ── c1 ── g1, plus unrelated o1 — paths as `list`
+        // would surface them to the model.
+        let scoped_info = |key: &str, path: &str| SessionInfo {
+            session_id: key.to_string(),
+            agent_name: Some("agent".to_string()),
+            title: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_activity: "2024-01-01T01:00:00Z".to_string(),
+            message_count: 1,
+            peer_type: None,
+            peer_id: None,
+            archived: false,
+            run_active: false,
+            slug: None,
+            path: path.to_string(),
+        };
+        let needle_msg = |text: &str| {
+            vec![HistoryMessage {
+                role: "user".to_string(),
+                content: text.to_string(),
+                tool_calls: None,
+                tool_results: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+            }]
+        };
+        let empty_status = SessionStatusResult {
+            session_id: String::new(),
+            path: String::new(),
+            agent_name: "agent".to_string(),
+            created_at: String::new(),
+            last_activity: String::new(),
+            timestamp_utc: String::new(),
+            timestamp: String::new(),
+            message_count: 0,
+            usage: UsageStats {
+                cumulative_input_tokens: 0,
+                cumulative_output_tokens: 0,
+                last_total_tokens: 0,
+                current_prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                reasoning_tokens: None,
+                model_context_limit: None,
+                cache_read_total: 0,
+                cache_creation_total: 0,
+                cache_hit_rate: None,
+            },
+            quota: None,
+            current_run_iterations: 0,
+            peer_type: None,
+            peer_id: None,
+            title: None,
+            parent_session: None,
+        };
+        cache.add_session(
+            "p".to_string(),
+            scoped_info("p", "sess:/p"),
+            needle_msg("needle in p"),
+            empty_status.clone(),
+        );
+        cache.add_session(
+            "g1".to_string(),
+            scoped_info("g1", "sess:/p/c1/g1"),
+            needle_msg("needle in g1"),
+            empty_status.clone(),
+        );
+        cache.add_session(
+            "o1".to_string(),
+            scoped_info("o1", "sess:/o1"),
+            needle_msg("needle in o1"),
+            empty_status,
+        );
+        let tool = SessionTool::new(cache.as_shared());
+
+        // `list` scoped to the subtree: p + g1, never o1.
+        let result = tool
+            .execute(json!({"action": "list", "path": "sess:/p"}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 2);
+        let keys: Vec<&str> = result["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["session_id"].as_str().unwrap())
+            .collect();
+        assert!(keys.contains(&"p"));
+        assert!(keys.contains(&"g1"));
+        assert!(!keys.contains(&"o1"));
+
+        // `find` honors the same scope.
+        let result = tool
+            .execute(json!({"action": "find", "query": "needle", "path": "sess:/p"}))
+            .await
+            .unwrap();
+        assert_eq!(result["total"], 2);
+        let ids: Vec<&str> = result["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["session_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"p"));
+        assert!(ids.contains(&"g1"));
+        assert!(!ids.contains(&"o1"));
+        // Every hit carries the addressable path to follow up with.
+        let paths: Vec<&str> = result["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&"sess:/p"));
+        assert!(paths.contains(&"sess:/p/c1/g1"));
+
+        // Malformed scope paths fail at the tool boundary (early-fail,
+        // same shape as the other actions' `path` validation).
+        let err = tool
+            .execute(json!({"action": "list", "path": "/"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not a valid slug path"), "{err}");
+        let err = tool
+            .execute(json!({"action": "find", "query": "x", "path": "a//b"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not a valid slug path"), "{err}");
     }
 
     #[tokio::test]
@@ -767,6 +928,7 @@ mod tests {
 
         let status = SessionStatusResult {
             session_id: "current123".to_string(),
+            path: String::new(),
             agent_name: "main".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
@@ -790,15 +952,14 @@ mod tests {
             current_run_iterations: 0,
             peer_type: None,
             peer_id: None,
-            label: None,
+            title: None,
             parent_session: None,
         };
 
         let session = SessionInfo {
-            session_key: "current-session".to_string(),
             session_id: "current123".to_string(),
-            agent_id: Some("main".to_string()),
-            label: None,
+            agent_name: Some("main".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 5,
@@ -862,10 +1023,9 @@ mod tests {
         let cache = SessionCache::new("main");
 
         let alice_main = SessionInfo {
-            session_key: "alice-1".to_string(),
             session_id: "alice-1".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            label: None,
+            agent_name: Some("test-agent".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 5,
@@ -877,10 +1037,9 @@ mod tests {
             path: String::new(),
         };
         let alice_other = SessionInfo {
-            session_key: "alice-2".to_string(),
             session_id: "alice-2".to_string(),
-            agent_id: Some("other-agent".to_string()),
-            label: None,
+            agent_name: Some("other-agent".to_string()),
+            title: None,
             created_at: "2024-01-02T00:00:00Z".to_string(),
             last_activity: "2024-01-02T01:00:00Z".to_string(),
             message_count: 3,
@@ -892,10 +1051,9 @@ mod tests {
             path: String::new(),
         };
         let bob_main = SessionInfo {
-            session_key: "bob-1".to_string(),
             session_id: "bob-1".to_string(),
-            agent_id: Some("test-agent".to_string()),
-            label: None,
+            agent_name: Some("test-agent".to_string()),
+            title: None,
             created_at: "2024-01-03T00:00:00Z".to_string(),
             last_activity: "2024-01-03T01:00:00Z".to_string(),
             message_count: 7,
@@ -926,6 +1084,7 @@ mod tests {
     fn dummy_status(session_id: &str) -> SessionStatusResult {
         SessionStatusResult {
             session_id: session_id.to_string(),
+            path: String::new(),
             agent_name: "any".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
@@ -949,7 +1108,7 @@ mod tests {
             current_run_iterations: 0,
             peer_type: None,
             peer_id: None,
-            label: None,
+            title: None,
             parent_session: None,
         }
     }
@@ -1069,10 +1228,9 @@ mod tests {
     async fn test_session_find_happy_path_and_missing_query() {
         let cache = SessionCache::new("main");
         let session = SessionInfo {
-            session_key: "s1".to_string(),
             session_id: "s1".to_string(),
-            agent_id: Some("main".to_string()),
-            label: None,
+            agent_name: Some("main".to_string()),
+            title: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 1,
@@ -1188,6 +1346,9 @@ mod tests {
         let new_id = result["new_session_id"].as_str().unwrap();
         assert_eq!(result["parent_session_id"], "test-session");
         assert_ne!(new_id, "test-session");
+        // The outcome echoes the copy's addressable path (the `label`
+        // input above is the tolerated legacy spelling of `title`).
+        assert_eq!(result["new_path"], "sess:/test-session-branch-1");
 
         // The copy is stored (listed) but NOT running, and carries the
         // copy label.
@@ -1196,10 +1357,10 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|s| s["session_key"] == new_id)
+            .find(|s| s["session_id"] == new_id)
             .expect("copy must appear in list");
         assert_eq!(copy["run_active"], false);
-        assert_eq!(copy["label"], "fork");
+        assert_eq!(copy["title"], "fork");
 
         // History is copied over.
         let history = tool
@@ -1265,10 +1426,9 @@ mod tests {
         cache.add_session(
             "parent-s".to_string(),
             SessionInfo {
-                session_key: "parent-s".to_string(),
                 session_id: "parent-s".to_string(),
-                agent_id: Some("test-agent".to_string()),
-                label: None,
+                agent_name: Some("test-agent".to_string()),
+                title: None,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 last_activity: "2024-01-01T01:00:00Z".to_string(),
                 message_count: 0,
@@ -1337,7 +1497,7 @@ mod tests {
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
         assert_eq!(list["sessions"][0]["slug"], "task-b");
         // Title untouched by a slug-only rename.
-        assert_eq!(list["sessions"][0]["label"], "Test Session");
+        assert_eq!(list["sessions"][0]["title"], "Test Session");
 
         // Title only (slug survives) — target must be present even
         // when only the display label changes.
@@ -1347,7 +1507,7 @@ mod tests {
         .await
         .unwrap();
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["sessions"][0]["label"], "New Title");
+        assert_eq!(list["sessions"][0]["title"], "New Title");
         assert_eq!(list["sessions"][0]["slug"], "task-b");
 
         // Both at once — different slug, new title.
@@ -1357,7 +1517,7 @@ mod tests {
         .await
         .unwrap();
         let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["sessions"][0]["label"], "T");
+        assert_eq!(list["sessions"][0]["title"], "T");
         assert_eq!(list["sessions"][0]["slug"], "s2");
     }
 
