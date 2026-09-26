@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Service-layer session DTOs aligned with the tool-side identity model (2026-09-26)
+
+- `session_info::SessionInfo`: the `id` field renamed to `session_id`
+  (wire shape unchanged — the serde rename was redundant); gains `slug`,
+  `page_limit`, and `pruned_pages` so CLI/desktop surfaces can show the
+  addressable path segment and the FIFO page-retention state (all
+  additive, `skip_serializing_if`/serde-defaulted).
+- `BranchResult`: `label` renamed to `title` (matching the tool-side
+  DTO family) and gains `new_path` — the addressable `sess:/a/b` of the
+  copy, mirroring the session tool's `copy` outcome. **Wire change**:
+  CLI JSON consumers reading `label` must read `title`.
+- `HistoryEvent` (the desktop wire contract) is untouched.
+
 ### Per-session FIFO page retention (`page_limit`, 2026-09-26)
 
 - **`SessionEntry.page_limit` + `pruned_pages`** — a per-session cap on

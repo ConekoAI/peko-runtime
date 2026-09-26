@@ -184,7 +184,7 @@ impl SessionService {
         &self,
         agent_name: &str,
         parent_session_id: &str,
-        label: Option<String>,
+        title: Option<String>,
     ) -> Result<BranchResult> {
         // Use SessionManager for branching
         let mut manager =
@@ -202,8 +202,13 @@ impl SessionService {
 
         // Perform branch
         let new_session_id = manager
-            .branch_session_by_id(parent_session_id, label.clone())
+            .branch_session_by_id(parent_session_id, title.clone())
             .await?;
+
+        // Addressable slug path of the copy (the tool-side BranchOutcome
+        // echoes the same field).
+        let metas = manager.list_all_sessions(false).await?;
+        let new_path = peko_session::path::compute_path(&metas, new_session_id);
 
         info!(
             "Branched session '{}' -> '{}' for agent '{}'",
@@ -212,8 +217,9 @@ impl SessionService {
 
         Ok(BranchResult {
             new_session_id: new_session_id.to_string(),
+            new_path,
             parent_session_id: parent_session_id.to_string(),
-            label,
+            title,
         })
     }
 

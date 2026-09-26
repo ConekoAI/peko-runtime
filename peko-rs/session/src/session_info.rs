@@ -40,10 +40,17 @@ use peko_message::MessageRole;
 /// output omits them (via `skip_serializing_if`). Pre-existing JSON
 /// consumers stay stable. A future follow-up populates these for
 /// non-a2a paths (out of scope for this PR).
+///
+/// Identity model (2026-09-26, aligned with the tool-side DTO family):
+/// `session_id` (the canonical UUID) is the storage key; `slug` is the
+/// per-parent-unique path segment and `slug`-chains are the
+/// addressable `sess:/a/b` form the Agent/session tools use. The
+/// `page_limit` / `pruned_pages` pair exposes the FIFO page-retention
+/// state (`pruned_pages` offsets page numbers so pruning never
+/// renumbers survivors).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
-    #[serde(rename = "session_id")]
-    pub id: String,
+    pub session_id: String,
     pub agent_name: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -64,6 +71,19 @@ pub struct SessionInfo {
     pub model_context_limit: Option<usize>,
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
+    /// Per-parent-unique path segment for `/slug/...` addressing
+    /// (`sess:/a/b` — see `crate::path`). `None` for slugless
+    /// sessions (the trunk, legacy entries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Retention cap on closed compaction pages (`None` = unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_limit: Option<u32>,
+    /// Closed pages rotated out by the retention policy — page
+    /// numbers reported by the page read primitives are offset by
+    /// this count so pruning never renumbers survivors.
+    #[serde(default)]
+    pub pruned_pages: u32,
     /// Subject type (`"user"`, `"agent"`, or `"public"`).
     ///
     /// Reflects the `Subject` kind on the session's peer after
@@ -84,7 +104,7 @@ pub struct SessionInfo {
 impl From<SessionEntry> for SessionInfo {
     fn from(entry: SessionEntry) -> Self {
         Self {
-            id: entry.session_id.to_string(),
+            session_id: entry.session_id.to_string(),
             agent_name: entry.agent_name,
             created_at: entry.created_at,
             updated_at: entry.updated_at,
@@ -96,6 +116,9 @@ impl From<SessionEntry> for SessionInfo {
             model_context_limit: entry.model_context_limit,
             parent_session_id: entry.parent_session_id.map(|id| id.to_string()),
             title: entry.title,
+            slug: entry.slug,
+            page_limit: entry.page_limit,
+            pruned_pages: entry.pruned_pages,
             peer_type: entry.peer_type,
             peer_id: entry.peer_id,
         }
@@ -202,8 +225,12 @@ pub struct HistoryResult {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BranchResult {
     pub new_session_id: String,
+    /// Addressable slug path of the new copy (`sess:/a/b`).
+    pub new_path: String,
     pub parent_session_id: String,
-    pub label: Option<String>,
+    /// Display title of the new copy (was `label` — renamed to match
+    /// the tool-side DTO family, 2026-09-26).
+    pub title: Option<String>,
 }
 
 /// Session details with full metadata
@@ -360,7 +387,12 @@ mod tests {
         );
 
         let info: SessionInfo = entry.into();
-        assert_eq!(info.id, crate::id::SessionId::from("sess_123").to_string());
+        assert_eq!(
+            info.session_id,
+            crate::id::SessionId::from("sess_123").to_string()
+        );
+        assert_eq!(info.slug, None);
+        assert_eq!(info.pruned_pages, 0);
         assert_eq!(info.agent_name, "myagent");
     }
 
