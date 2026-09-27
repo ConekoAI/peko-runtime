@@ -2,7 +2,10 @@
 
 use super::completion_queue::{CompletionEvent, InboxItem, SteeringMessage};
 use super::dispatch::ToolDispatchContext;
-use super::registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata};
+use super::registry::{
+    AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata,
+    PARTIAL_OUTPUT_PREVIEW_BYTES,
+};
 use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use super::wake::{notify_completion_wake, CompletionWakeNotice};
@@ -91,10 +94,16 @@ use tokio::sync::RwLock;
 /// semaphore) until a running task reaches a terminal state. This is
 /// the backpressure the bare `tokio::spawn` used to lack — a model
 /// looping `AsyncSpawn` can no longer spawn unbounded concurrent work.
-/// Process-global executors (the daemon router's, `BashTool`'s
-/// background executor) share one bound each; per-run executors
-/// created inside `Agent::build_agentic_loop` get their own.
-pub const DEFAULT_MAX_CONCURRENT_TASKS: usize = 8;
+///
+/// **The bound is per `AsyncExecutor`, not process-global.** Each
+/// executor instance carries its own semaphore, and a process has
+/// several: the daemon router's, `BashTool`'s background executor,
+/// one per agent run, one per subagent executor. The effective
+/// process-wide ceiling for *running* tasks is therefore
+/// `8 × executor instances`, with any number of additional tasks
+/// queued behind them. The name is explicit about that scope so the
+/// number is not mistaken for a global cap.
+pub const DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR: usize = 8;
 
 /// Internal outcome of executing an async task, distinguishing timeout from failure
 enum TaskOutcome {
@@ -113,7 +122,7 @@ enum TaskOutcome {
 /// - Automatic status updates
 /// - Completion delivery via the per-session inbox (and the optional
 ///   idle-session wake hook in [`super::wake`])
-/// - A semaphore bound ([`DEFAULT_MAX_CONCURRENT_TASKS`]) on
+/// - A semaphore bound ([`DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR`]) on
 ///   concurrently running tasks
 #[derive(Clone)]
 pub struct AsyncExecutor {
@@ -158,7 +167,9 @@ impl AsyncExecutor {
             registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
             inbox_registry,
-            permits: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_CONCURRENT_TASKS)),
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR,
+            )),
         }
     }
 
@@ -177,12 +188,14 @@ impl AsyncExecutor {
             registry,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
             inbox_registry,
-            permits: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_CONCURRENT_TASKS)),
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR,
+            )),
         }
     }
 
     /// Override the concurrent-task bound (default
-    /// [`DEFAULT_MAX_CONCURRENT_TASKS`]).
+    /// [`DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR`]).
     #[must_use]
     pub fn with_max_concurrent(mut self, max: usize) -> Self {
         self.permits = Arc::new(tokio::sync::Semaphore::new(max.max(1)));
@@ -220,19 +233,156 @@ impl AsyncExecutor {
     /// flips it here when the call detaches — the agent got a `queued`
     /// receipt, so the eventual completion must reach its inbox.
     ///
-    /// Returns `false` only when the task id is unknown. Flipping an
-    /// already-terminal entry is a harmless no-op — its terminal push
-    /// decision was already made; the result stays available through
-    /// `AsyncOutput` polling.
+    /// Returns `false` only when the task id is unknown.
+    ///
+    /// **Terminal race, closed here.** The flip happens *after* the
+    /// router's last status poll, so the task can reach a terminal state
+    /// inside the window between that poll and this call. If the spawned
+    /// task's own delivery pass then ran with `deliver_completion` still
+    /// `false`, the outcome would never be pushed and — with the wake
+    /// path in place — an idle agent would never learn the task finished
+    /// ("poll `AsyncOutput`" is precisely what an idle agent does not
+    /// do). So when this flip lands on an *already-terminal* entry that
+    /// has not been delivered yet, this method claims and delivers the
+    /// outcome itself. The `delivered` claim on the entry makes the two
+    /// racers (this flip and the spawned task's delivery pass) mutually
+    /// exclusive.
     pub async fn enable_completion_delivery(&self, task_id: &AsyncTaskId) -> bool {
-        let mut registry = self.registry.write().await;
-        match registry.get_mut(task_id) {
-            Some(entry) => {
-                entry.config.deliver_completion = true;
-                true
+        // Arm the flag; claim delivery atomically when the task is
+        // already terminal. A non-terminal task keeps the claim for its
+        // own delivery pass (which re-checks `deliver_completion` under
+        // the same write lock).
+        let already_terminal = {
+            let mut registry = self.registry.write().await;
+            let Some(entry) = registry.get_mut(task_id) else {
+                return false;
+            };
+            entry.config.deliver_completion = true;
+            if entry.is_delivered() {
+                // The spawned task's delivery pass already won the claim.
+                return true;
             }
-            None => false,
+            if !entry.status.is_terminal() {
+                // Will be delivered at terminal time.
+                return true;
+            }
+            entry.mark_delivered();
+            Some(entry.clone())
+        };
+
+        if let Some(claimed) = already_terminal {
+            self.deliver_claimed(claimed).await;
         }
+        true
+    }
+
+    /// Claim the right to deliver a task's terminal outcome, returning
+    /// the entry snapshot to deliver from.
+    ///
+    /// The claim is a check-and-set under the registry's write lock: the
+    /// first of `{spawned task's delivery pass, late
+    /// `enable_completion_delivery` flip}` to reach it wins, and the
+    /// loser observes `delivered == true` and stands down. Returns `None`
+    /// when the task is unknown, delivery is suppressed
+    /// (`deliver_completion == false`), or the outcome was already
+    /// delivered.
+    async fn claim_delivery(&self, task_id: &AsyncTaskId) -> Option<AsyncTaskEntry> {
+        let mut registry = self.registry.write().await;
+        let entry = registry.get_mut(task_id)?;
+        if !entry.config.deliver_completion || entry.is_delivered() {
+            return None;
+        }
+        entry.mark_delivered();
+        Some(entry.clone())
+    }
+
+    /// Deliver a claimed terminal outcome: push a `CompletionEvent` into
+    /// the parent session's inbox (or a cron `SteeringMessage` into the
+    /// principal's root inbox), then fire the process-global wake hook so
+    /// an idle session gets a successor turn (§6.1b).
+    ///
+    /// A caller that only claims and never calls this leaks the claim —
+    /// the two call sites below are exhaustive.
+    async fn deliver_claimed(&self, claimed: AsyncTaskEntry) {
+        let task_id = claimed.task_id.clone();
+        let tool_name = claimed.tool_name.clone();
+        let parent_session_key = claimed.parent_session_key.clone();
+
+        let status = claimed.status.clone();
+        let mut result = claimed.result.clone().unwrap_or(serde_json::Value::Null);
+
+        // §4.1: a cancelled or timed-out task has no real result — the
+        // closure was dropped mid-flight. Surface whatever the task
+        // recorded in its progress buffer so the agent sees what happened
+        // instead of an opaque error.
+        if !matches!(status, AsyncTaskStatus::Completed { .. }) {
+            if let Some(partial) = claimed.partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES) {
+                result = match result {
+                    Value::Object(mut map) => {
+                        map.insert("partial_output".to_string(), Value::String(partial));
+                        Value::Object(map)
+                    }
+                    Value::Null => serde_json::json!({ "partial_output": partial }),
+                    other => serde_json::json!({ "result": other, "partial_output": partial }),
+                };
+            }
+        }
+
+        let output_path = self
+            .task_file_writer
+            .as_ref()
+            .map(|w| w.task_file_path(&task_id))
+            .unwrap_or_else(std::path::PathBuf::new);
+
+        let steer_target = claimed
+            .config
+            .principal_root_session_key
+            .clone()
+            .filter(|_| claimed.config.wake_on_completion);
+        let (delivered_key, via_steering) = if let Some(target) = steer_target {
+            let label = claimed.config.label.clone().unwrap_or_default();
+            let text = crate::extensions::framework::async_exec::steer::format_cron_steer_message(
+                &label, &task_id, &tool_name, &status,
+            );
+            let inbox = self.inbox_registry.get_or_create(&target).await;
+            inbox
+                .push(InboxItem::Steering(SteeringMessage::new(text)).into())
+                .await;
+            (target, true)
+        } else {
+            let event = CompletionEvent {
+                task_id: task_id.clone(),
+                tool_name: tool_name.clone(),
+                result,
+                status,
+                completed_at: chrono::Utc::now(),
+                output_path,
+                parent_session_key: parent_session_key.clone(),
+            };
+            let inbox = self.inbox_registry.get_or_create(&parent_session_key).await;
+            inbox.push(InboxItem::Completion(event).into()).await;
+            (parent_session_key, false)
+        };
+
+        if claimed.config.wake_on_completion {
+            notify_completion_wake(CompletionWakeNotice {
+                session_key: delivered_key,
+                task_id,
+                tool_name,
+                principal_id: claimed.config.principal_id.clone(),
+                via_steering,
+            });
+        }
+    }
+
+    /// Claim and deliver a task's terminal outcome. The single delivery
+    /// entry point shared by the spawned task (at terminal write) and a
+    /// late `enable_completion_delivery` flip (terminal race, above).
+    async fn deliver_terminal_outcome(&self, task_id: &AsyncTaskId) {
+        let Some(claimed) = self.claim_delivery(task_id).await else {
+            return;
+        };
+        self.deliver_claimed(claimed).await;
     }
 
     /// Execute an async task with the unified executor (internal)
@@ -325,14 +475,12 @@ impl AsyncExecutor {
             .map(std::time::Duration::from_millis)
             .or(config.timeout_secs.map(std::time::Duration::from_secs));
         let params_for_spawn = params.clone();
-        let parent_session_key_for_completion = parent_session_key.clone();
-        let inbox_registry = self.inbox_registry.clone();
-        // Clone the full config so the spawned task can read
-        // `wake_on_completion`, `principal_root_session_key`,
-        // `deliver_completion`, and `principal_id` on terminal outcome
-        // delivery.
-        let config_for_spawn = config.clone();
         let permits = self.permits.clone();
+        // The delivery pass runs inside the spawned task but goes through
+        // a clone of the executor, so it shares this executor's registry,
+        // inbox registry, and task-file writer (see
+        // `deliver_terminal_outcome`).
+        let executor_for_delivery = self.clone();
 
         // Spawn the background execution
         tokio::spawn(async move {
@@ -470,93 +618,16 @@ impl AsyncExecutor {
                 }
             }
 
-            // Push a completion event to the per-session inbox so the
-            // agentic loop can drain it at the next iteration. The
-            // session's inbox is resolved via the daemon-global
-            // `InboxRegistry` keyed by `parent_session_key`.
-            //
-            // Skipped entirely when the task was spawned with
-            // `deliver_completion: false` (the `AsyncExecutionRouter`'s
-            // synchronous path — the caller already has the result) and
-            // never flipped on via `enable_completion_delivery`.
-            //
-            // When the spawn was set up by the cron engine with
-            // `wake_on_completion=true` and a `principal_root_session_key`,
-            // we instead push a human-readable `SteeringMessage` into
-            // the principal's root inbox — the agent picks it up at
-            // the next iteration start as a user-role turn and can call
-            // AsyncOutput for the full task detail. Without this branch,
-            // cron-scheduled runs would silently complete and never tell
-            // the principal they did.
-            //
-            // After either push, the process-global wake hook fires (when
-            // `wake_on_completion` is set) so an IDLE session gets a
-            // successor turn driven by the daemon; a session with a run
-            // in flight is left to the loop's per-iteration drain.
-            let entry_snapshot = {
-                let registry = registry_clone.read().await;
-                registry.get(&task_id_clone).cloned()
-            };
-            let Some(entry) = entry_snapshot else {
-                tracing::warn!(
-                    "executor: task {} not found in registry after completion; \
-                     completion event dropped",
-                    task_id_clone
-                );
-                return;
-            };
-            if !entry.config.deliver_completion {
-                return;
-            }
-            let status = entry.status.clone();
-            let result = entry.result.clone().unwrap_or(serde_json::Value::Null);
-            let output_path = task_file_writer_clone
-                .as_ref()
-                .map(|w| w.task_file_path(&task_id_clone))
-                .unwrap_or_else(|| std::path::PathBuf::from(""));
-            let steer_target = config_for_spawn
-                .principal_root_session_key
-                .clone()
-                .filter(|_| config_for_spawn.wake_on_completion);
-            let (delivered_key, via_steering) = if let Some(target) = steer_target {
-                let label = config_for_spawn.label.clone().unwrap_or_default();
-                let text =
-                    crate::extensions::framework::async_exec::steer::format_cron_steer_message(
-                        &label,
-                        &task_id_clone,
-                        &tool_name,
-                        &status,
-                    );
-                let inbox = inbox_registry.get_or_create(&target).await;
-                inbox
-                    .push(InboxItem::Steering(SteeringMessage::new(text)).into())
-                    .await;
-                (target, true)
-            } else {
-                let event = CompletionEvent {
-                    task_id: task_id_clone.clone(),
-                    tool_name: tool_name.clone(),
-                    result,
-                    status,
-                    completed_at: chrono::Utc::now(),
-                    output_path,
-                    parent_session_key: parent_session_key_for_completion.clone(),
-                };
-                let inbox = inbox_registry
-                    .get_or_create(&parent_session_key_for_completion)
-                    .await;
-                inbox.push(InboxItem::Completion(event).into()).await;
-                (parent_session_key_for_completion.clone(), false)
-            };
-            if config_for_spawn.wake_on_completion {
-                notify_completion_wake(CompletionWakeNotice {
-                    session_key: delivered_key,
-                    task_id: task_id_clone.clone(),
-                    tool_name: tool_name.clone(),
-                    principal_id: config_for_spawn.principal_id.clone(),
-                    via_steering,
-                });
-            }
+            // Deliver the terminal outcome: claim under the registry's
+            // write lock, then push a `CompletionEvent` into the parent
+            // session's inbox (or a cron `SteeringMessage` into the
+            // principal's root inbox) and fire the wake hook. The claim
+            // makes this racer-exclusive with a late
+            // `enable_completion_delivery` flip — see that method for the
+            // terminal race this closes.
+            executor_for_delivery
+                .deliver_terminal_outcome(&task_id_clone)
+                .await;
         });
 
         // Return receipt immediately
@@ -941,6 +1012,176 @@ mod consolidation_tests {
     /// result). Flipping it via `enable_completion_delivery` (the
     /// router's detach path) re-enables delivery for a task that
     /// terminates afterwards.
+    /// Terminal race (§7.1 of the review): `enable_completion_delivery`
+    /// must DELIVER — not no-op — when the flip lands on a task that
+    /// already reached a terminal state. Before the fix the terminal
+    /// push decision was made with `deliver_completion: false`, the
+    /// agent's `queued` receipt was never followed by a completion
+    /// event, and an idle agent (which never polls) never learned the
+    /// task finished.
+    #[tokio::test]
+    async fn enable_completion_delivery_delivers_already_terminal_task() {
+        let (exec, registry) = make_executor();
+
+        let id = "tool:late_flip".to_string();
+        let mut cfg = AsyncToolConfig::default();
+        cfg.deliver_completion = false;
+        exec.execute(
+            id.clone(),
+            "tool",
+            serde_json::json!({}),
+            "session_race",
+            cfg,
+            || async { Ok(serde_json::json!({"ok": true})) },
+        )
+        .await
+        .unwrap();
+        for _ in 0..100 {
+            if let Some(s) = exec.check_status(&id).await {
+                if s.is_terminal() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let inbox = registry.get_or_create("session_race").await;
+        assert!(
+            inbox.is_empty().await,
+            "precondition: delivery was suppressed"
+        );
+
+        // The flip lands AFTER the task is already terminal: it must
+        // deliver now, not report a harmless no-op.
+        assert!(exec.enable_completion_delivery(&id).await);
+        let items = inbox.drain_all().await;
+        assert_eq!(
+            items.len(),
+            1,
+            "flip on an already-terminal task must deliver the completion"
+        );
+        // And it must be idempotent: a second flip must not double-push.
+        assert!(exec.enable_completion_delivery(&id).await);
+        assert!(
+            inbox.drain_all().await.is_empty(),
+            "delivery claim must be one-shot"
+        );
+    }
+
+    /// §4.1: a task whose closure streamed into its progress buffer must
+    /// carry that partial output in its TimedOut delivery — the closure
+    /// was dropped mid-flight, so the progress buffer is all the agent
+    /// gets.
+    #[tokio::test]
+    async fn timed_out_delivery_carries_partial_output() {
+        let (exec, registry) = make_executor();
+
+        let progress: Arc<StdMutex<String>> = Arc::default();
+        let writer = Arc::clone(&progress);
+        let mut cfg = AsyncToolConfig::default();
+        cfg.timeout_secs = Some(1);
+        cfg.progress = Some(Arc::clone(&progress));
+        let id = "tool:partial".to_string();
+        exec.execute(
+            id.clone(),
+            "Bash",
+            serde_json::json!({}),
+            "session_partial",
+            cfg,
+            move || async move {
+                // Simulate a long-running tool producing output: write
+                // into the shared buffer, then hang past the timeout.
+                writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_str("step 1 done\nstep 2 done\n");
+                std::future::pending::<()>().await;
+                Ok(serde_json::json!({}))
+            },
+        )
+        .await
+        .unwrap();
+
+        // Wait for the executor timeout to fire and delivery to land.
+        let mut event = None;
+        let inbox = registry.get_or_create("session_partial").await;
+        for _ in 0..300 {
+            for item in inbox.drain_all().await {
+                if let peko_extension_api::AsyncInboxItem::Completion(e) = item {
+                    event = Some(e);
+                }
+            }
+            if event.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let event = event.expect("timed-out task must deliver a completion event");
+        assert!(event.result.get("partial_output").is_some());
+        let partial = event.result["partial_output"].as_str().unwrap();
+        assert!(
+            partial.contains("step 1 done") && partial.contains("step 2 done"),
+            "partial output must carry what the task produced; got {partial:?}"
+        );
+    }
+
+    /// §4.1: `AsyncOutput` on a still-running task surfaces the tail of
+    /// the live progress buffer.
+    #[tokio::test]
+    async fn taskview_carries_partial_output_while_running() {
+        let (exec, _registry) = make_executor();
+
+        let progress: Arc<StdMutex<String>> = Arc::default();
+        let writer = Arc::clone(&progress);
+        let mut cfg = AsyncToolConfig::default();
+        cfg.progress = Some(Arc::clone(&progress));
+        let id = "tool:progress".to_string();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        exec.execute(
+            id.clone(),
+            "Bash",
+            serde_json::json!({}),
+            "session_prog",
+            cfg,
+            move || async move {
+                writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_str("halfway there");
+                let _ = release_rx.await;
+                Ok(serde_json::json!({}))
+            },
+        )
+        .await
+        .unwrap();
+        // The entry is registered (and `check_status` answers) before
+        // the spawned task runs the closure, so wait for the closure to
+        // actually append rather than for mere registration.
+        for _ in 0..500 {
+            let has_progress = {
+                let registry = exec.registry.read().await;
+                registry
+                    .get(&id)
+                    .and_then(|e| e.partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES))
+                    .is_some()
+            };
+            if has_progress {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let entry = {
+            let registry = exec.registry.read().await;
+            registry.get(&id).cloned().expect("task must be registered")
+        };
+        let partial = entry
+            .partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES)
+            .expect("running task must expose progress");
+        assert!(partial.contains("halfway there"), "got {partial:?}");
+
+        let _ = release_tx.send(());
+    }
+
     #[tokio::test]
     async fn deliver_completion_gate_suppresses_and_enable_restores() {
         let (exec, registry) = make_executor();

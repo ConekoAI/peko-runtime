@@ -983,6 +983,7 @@ async fn test_executor_cancel() {
                     principal_root_session_key: None,
                     principal_id: None,
                     deliver_completion: true,
+                    progress: None,
                 },
             );
         registry_guard.register(entry);
@@ -3035,6 +3036,9 @@ async fn test_branch_overwrite_reseeds_in_place() {
         .find(|m| m.session_id.to_string() == old_id)
         .expect("target survives");
     assert_eq!(meta.pruned_pages, 1, "rotation feeds stable numbering");
-    assert_eq!(meta.compaction_count, 2, "the target's own sequence advanced");
+    assert_eq!(
+        meta.compaction_count, 2,
+        "the target's own sequence advanced"
+    );
     assert_eq!(meta.slug.as_deref(), Some("briefing"), "slug untouched");
 }

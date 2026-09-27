@@ -4,7 +4,7 @@
 //! `AsyncExecutionRouter` can work identically whether it is running inside the
 //! daemon (local execution) or inside a test harness.
 //!
-//! 2026-09-27 consolidation (ASYNC_TASK_REVIEW §3-D1): the IPC transports
+//! 2026-09-27 consolidation (ADR-063 (dead IPC path)): the IPC transports
 //! are deleted. ADR-021 made the daemon the central runtime — the CLI is a
 //! pure IPC client that never executes tools, so `DaemonIpcTransport` (and
 //! its `DaemonTransport` projection, the `UnavailableAsyncTransport`

@@ -128,6 +128,11 @@ impl AsyncExecutorRuntime {
             entry.config.label.clone(),
             metadata_type.to_string(),
         )
+        .with_partial_output(if entry.status.is_terminal() {
+            None
+        } else {
+            entry.partial_output(super::registry::PARTIAL_OUTPUT_PREVIEW_BYTES)
+        })
     }
 
     /// Per-principal isolation (P1-4): an entry is visible to this

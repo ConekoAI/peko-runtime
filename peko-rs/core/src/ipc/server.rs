@@ -1114,7 +1114,7 @@ impl IpcServer {
     }
 
     // (The `AsyncSpawn` / `AsyncCancel` IPC variants are deleted
-    // (2026-09-27, ASYNC_TASK_REVIEW §3-D1): the CLI never executes
+    // (2026-09-27, ADR-063 (dead IPC path)): the CLI never executes
     // tools, so the path had no producer. Async task control lives in
     // the per-principal `Async*` tool family.)
 

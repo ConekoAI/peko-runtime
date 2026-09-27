@@ -36,7 +36,7 @@ async fn main() {
     let paths = from_cli(&cli);
 
     // No global `ExtensionCore` is pre-installed here (2026-09-27,
-    // ASYNC_TASK_REVIEW P0-1 + D1): the CLI never executes tools
+    // ADR-063 (P0-1) + D1): the CLI never executes tools
     // (ADR-021), so the core's async router had no live consumer on
     // this side, and the pre-installed core actively *pre-empted* the
     // correctly-wired one `AppState::new` builds for in-process daemon

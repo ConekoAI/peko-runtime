@@ -1,5 +1,5 @@
 //! Completion-driven wake — the daemon side of the async delivery gap
-//! (ASYNC_TASK_REVIEW §1.1/§6.1b, 2026-09-27).
+//! (ADR-063 (delivery gap), 2026-09-27).
 //!
 //! A terminal async task pushes its outcome into the parent session's
 //! inbox. While a run is in flight that suffices (the loop drains at

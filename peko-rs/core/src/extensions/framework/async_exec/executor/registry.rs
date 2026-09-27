@@ -100,6 +100,19 @@ pub struct AsyncTaskEntry {
     /// the watch channel only short-circuits cancellations through
     /// the built-in `ToolContext` plumbing.
     cancel_signal: Option<tokio::sync::watch::Sender<bool>>,
+    /// Whether the terminal outcome has already been delivered (inbox
+    /// push / cron steer). Guards against double delivery now that
+    /// `enable_completion_delivery` can deliver a terminal outcome
+    /// itself when the flip races a fast-finishing task.
+    delivered: bool,
+    /// Live progress buffer (§4.1). Shared with the executing closure —
+    /// long-running tools append what they have produced so far, and the
+    /// buffer is surfaced through `AsyncOutput` on non-terminal tasks and
+    /// through the completion event on cancel/timeout, where the real
+    /// result never materializes. `Arc<Mutex<..>>` so the entry and the
+    /// executing closure share the same buffer across the registry's
+    /// clone-heavy read paths.
+    progress: Option<Arc<std::sync::Mutex<String>>>,
 }
 
 impl Clone for AsyncTaskEntry {
@@ -120,6 +133,13 @@ impl Clone for AsyncTaskEntry {
             // F38: cancel_signal is a per-task, per-instance channel —
             // cloning would split senders and is not safe. Drop on clone.
             cancel_signal: None,
+            // The progress buffer is `Arc`-shared by design: a clone of
+            // the entry must keep observing the *live* buffer, not a
+            // snapshot. `delivered` starts false on a clone — clones are
+            // read-path snapshots, and the delivery claim is made on the
+            // registry-owned entry.
+            delivered: false,
+            progress: self.progress.clone(),
         }
     }
 }
@@ -143,11 +163,13 @@ impl AsyncTaskEntry {
             parent_session_key,
             created_at: chrono::Utc::now(),
             completed_at: None,
+            progress: config.progress.clone(),
             config,
             formatted_result: None,
             metadata: TaskMetadata::None,
             completion_tx: None,
             cancel_signal: None,
+            delivered: false,
         }
     }
 
@@ -170,11 +192,13 @@ impl AsyncTaskEntry {
             parent_session_key,
             created_at: chrono::Utc::now(),
             completed_at: None,
+            progress: config.progress.clone(),
             config,
             formatted_result: None,
             metadata,
             completion_tx: None,
             cancel_signal: None,
+            delivered: false,
         }
     }
 
@@ -182,6 +206,72 @@ impl AsyncTaskEntry {
     pub fn set_result(&mut self, result: Value) {
         self.formatted_result = Some(self.format_result(&result));
         self.result = Some(result);
+    }
+
+    /// Append to the task's live progress buffer (§4.1).
+    ///
+    /// The buffer is capped: once it exceeds [`PROGRESS_BUFFER_MAX_BYTES`]
+    /// the oldest bytes are dropped, so a chatty tool cannot grow it
+    /// without bound (the same discipline the review's P2-3 applies to
+    /// task results). A caller-shared `Arc` means the executing closure
+    /// and this entry observe the same bytes.
+    pub fn append_progress(&self, chunk: &str) {
+        if let Some(buf) = self.progress.as_ref() {
+            let mut guard = buf
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.push_str(chunk);
+            let len = guard.len();
+            if len > PROGRESS_BUFFER_MAX_BYTES {
+                // Keep the tail: recent output is what matters when a
+                // caller inspects a long-running task.
+                let drain = len - PROGRESS_BUFFER_MAX_BYTES;
+                // Advance to a UTF-8 char boundary so we never split one.
+                let mut start = drain;
+                while start < len && !guard.is_char_boundary(start) {
+                    start += 1;
+                }
+                guard.drain(..start);
+            }
+        }
+    }
+
+    /// Snapshot the progress buffer, trimmed to `max_bytes` from the tail.
+    /// Returns `None` when the task has no progress buffer or nothing has
+    /// been appended yet.
+    #[must_use]
+    pub fn partial_output(&self, max_bytes: usize) -> Option<String> {
+        let buf = self.progress.as_ref()?;
+        let guard = buf
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_empty() {
+            return None;
+        }
+        let s = if guard.len() <= max_bytes {
+            guard.as_str()
+        } else {
+            let mut start = guard.len() - max_bytes;
+            while start < guard.len() && !guard.is_char_boundary(start) {
+                start += 1;
+            }
+            &guard[start..]
+        };
+        Some(s.to_string())
+    }
+
+    /// Whether the terminal outcome has already been delivered.
+    #[must_use]
+    pub fn is_delivered(&self) -> bool {
+        self.delivered
+    }
+
+    /// Mark the terminal outcome as delivered. Called under the
+    /// registry's write lock so the claim is atomic with the
+    /// `deliver_completion` check — two racers (the spawned task and a
+    /// late `enable_completion_delivery` flip) cannot both deliver.
+    pub fn mark_delivered(&mut self) {
+        self.delivered = true;
     }
 
     /// Format a result value using the formatter registry
@@ -231,6 +321,17 @@ impl AsyncTaskEntry {
 // ================================================================================
 // AsyncTaskRegistry
 // ================================================================================
+
+/// Cap on a task's live progress buffer (§4.1). Once exceeded, the
+/// oldest bytes are dropped so a chatty tool cannot grow the buffer
+/// without bound.
+const PROGRESS_BUFFER_MAX_BYTES: usize = 64 * 1024;
+
+/// Cap on the partial-output preview surfaced through the completion
+/// event and `AsyncOutput` — the agent gets a window into what the task
+/// produced, not the whole thing (the full tail stays in the task file
+/// for tools that stream there).
+pub const PARTIAL_OUTPUT_PREVIEW_BYTES: usize = 4 * 1024;
 
 /// Registry for tracking async tasks.
 ///
@@ -478,6 +579,10 @@ pub struct TaskView {
     pub result: Option<Value>,
     pub label: Option<String>,
     pub metadata_type: String,
+    /// Tail of the task's live progress buffer, for tasks that are still
+    /// running (§4.1). `None` for terminal tasks — by then the outcome
+    /// itself carries whatever partial output was captured.
+    pub partial_output: Option<String>,
 }
 
 impl TaskView {
@@ -499,6 +604,11 @@ impl TaskView {
             result: entry.result.clone(),
             label: entry.config.label.clone(),
             metadata_type: metadata_type.to_string(),
+            partial_output: if entry.status.is_terminal() {
+                None
+            } else {
+                entry.partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES)
+            },
         }
     }
 

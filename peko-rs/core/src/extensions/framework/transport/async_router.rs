@@ -230,6 +230,11 @@ impl AsyncExecutionRouter {
             principal_root_session_key: None,
             principal_id: tool_context.principal_id.clone(),
             deliver_completion: false,
+            // The router polls the registry for its result; the inbox
+            // event is suppressed until the call detaches (see the
+            // `deliver_on_completion` flip below), so no progress buffer
+            // is needed here.
+            progress: None,
         };
 
         // Build a boxed execution closure that captures params and runs the tool.

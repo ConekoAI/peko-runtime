@@ -6,8 +6,18 @@ All notable changes to Peko.
 
 ### Async task subsystem consolidation — delivery gap closed, dead IPC path deleted (2026-09-27)
 
-Fixes and consolidation from the async tool-calling review
-(`ASYNC_TASK_REVIEW.md`; ADR-020/ADR-040 baseline).
+Fixes and consolidation from the 2026-09-27 async tool-calling review
+(ADR-063; ADR-020/ADR-040 baseline). Follow-up pass, same day: closed the
+`deliver_completion` terminal race (a task going terminal between the
+router's last status poll and the detach flip is now delivered immediately);
+made the concurrency bound's per-executor scope explicit
+(`DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR`); added live partial/progress
+output — `AsyncToolConfig::progress`, surfaced through `AsyncOutput` on
+still-running tasks and folded into cancel/timeout completion events, fed by
+streaming background `Bash`; replaced the synthetic completion message's
+orphan `ToolResult` blocks with `Text` blocks carrying task id, tool, and
+terminal status (P2-6); and recorded durable-task-state-across-restarts as a
+non-goal — async tasks are ephemeral, unlike persisted cron jobs.
 
 **Correctness (user-visible):**
 

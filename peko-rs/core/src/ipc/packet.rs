@@ -49,7 +49,7 @@ pub enum RequestPacket {
     /// Execute a tool synchronously with the calling principal's
     /// capabilities (ADR-061 phase 1). The synchronous counterpart of
     /// the retired `AsyncSpawn` packet (removed 2026-09-27 with the
-    /// dead IPC async-spawn path, ASYNC_TASK_REVIEW §3-D1): same
+    /// dead IPC async-spawn path, ADR-063 (dead IPC path)): same
     /// server-side attribution (the principal is
     /// resolved from `session_key`, grants and active extensions are
     /// derived from it server-side — never carried on the wire), but

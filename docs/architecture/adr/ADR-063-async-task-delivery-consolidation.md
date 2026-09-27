@@ -8,8 +8,9 @@
 timeout & async refactor), [ADR-020](ADR-020-daemon-based-async-execution.md)
 (daemon-based async execution), ADR-021 (daemon as central runtime),
 [ADR-061](ADR-061-agent-authored-workflows.md) (per-call session stamping).
-**Driver:** `ASYNC_TASK_REVIEW.md` (2026-09-27 audit of the async
-tool-calling subsystem).
+**Driver:** a 2026-09-27 audit of the async tool-calling subsystem
+(`ASYNC_TASK_REVIEW.md`, since removed — its findings are restated here and in
+this ADR's §3 decisions).
 
 ---
 
@@ -129,9 +130,25 @@ it:
   is the point, but it means background tasks have a token cost on
   completion. `wake_on_completion: false` is the opt-out for bookkeeping
   spawns.
-- Follow-ups deliberately out of scope (review §6.3): durable task state
-  across daemon restarts (the in-memory registry still loses
-  `running`-at-shutdown tasks; task files remain write-only audit),
-  partial/progress output on cancel/timeout, and pairing the synthetic
-  `ToolResult` blocks with matching `ToolUse` blocks for strict
-  providers (P2-6).
+- Follow-ups **deliberately not planned** (2026-09-27): durable task state
+  across daemon restarts. Async tasks are ephemeral by design — a restart
+  loses `running`-at-shutdown tasks and their registry entries, and the
+  task files remain write-only audit artifacts reaped by the janitor at
+  24h. This is a considered non-goal, not deferred work: unlike cron jobs
+  (which are JSON-persisted on disk, reloaded at startup, and reconciled by
+  the janitor's `reconcile_running_runs`), an async task is an
+  *agent-initiated unit of work tied to a live conversation* — there is no
+  meaningful way to resume a half-executed tool call whose parent session
+  and LLM context are gone, and re-materializing the entry would only
+  produce a task that cannot be re-run. Callers that need restart-safe
+  work should use a cron job or an external workflow, not `AsyncSpawn`.
+
+- Shipped in this ADR (previously listed as out of scope): **partial /
+  progress output on cancel/timeout** (§4.1) — a per-task progress buffer
+  shared with the executing closure, surfaced through `AsyncOutput` on
+  still-running tasks and folded into the completion event when a task is
+  cancelled or times out; background `Bash` populates it by streaming
+  child output as it is produced. **P2-6** — the synthetic completion
+  message now uses `Text` blocks instead of orphan `ToolResult` blocks
+  (no `tool_use` to pair with, no provider 400 class), carrying the task
+  id, tool name, and terminal status inline.

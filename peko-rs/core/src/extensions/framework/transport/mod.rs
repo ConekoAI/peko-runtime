@@ -13,7 +13,7 @@
 //!   + the `BoxedExecutionFn` helper type and the `create_local_transport*`
 //!   factories.
 //!
-//! 2026-09-27 consolidation (ASYNC_TASK_REVIEW §3-D1): the
+//! 2026-09-27 consolidation (ADR-063 (dead IPC path)): the
 //! `DaemonTransport` IPC projection is deleted with the rest of the dead
 //! IPC async-spawn path — the CLI never executes tools (ADR-021), so no
 //! component hands background work to the daemon over IPC.

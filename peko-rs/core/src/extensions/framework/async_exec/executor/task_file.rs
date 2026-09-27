@@ -110,7 +110,7 @@ impl TaskFileWriter {
     // No `read`: task files are a write-only audit trail — nothing reads
     // them back (the registry is the in-memory source of truth). A reader
     // was carried for a durability story that never landed; dropped in the
-    // 2026-09-27 consolidation (ASYNC_TASK_REVIEW P2-2).
+    // 2026-09-27 consolidation (ADR-063 (P2-2)).
 
     pub async fn cleanup_old(&self, max_age: Duration) -> Result<usize> {
         if !self.base_dir.exists() {

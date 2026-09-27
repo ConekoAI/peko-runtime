@@ -3,7 +3,7 @@
 //! Owns the daemon-side tool execution IPC variant `ExecuteTool`
 //! (ADR-061 phase 1 — the synchronous workflow callback). The
 //! `AsyncSpawn`/`AsyncCancel` variants were retired 2026-09-27 with
-//! the rest of the dead IPC async-spawn path (ASYNC_TASK_REVIEW
+//! the rest of the dead IPC async-spawn path (ADR-063
 //! §3-D1): the CLI never executes tools (ADR-021), so nothing
 //! produced those packets. Async task control lives in the
 //! per-principal `Async*` tool family instead. The handler holds a

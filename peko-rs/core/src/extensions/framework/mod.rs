@@ -55,11 +55,10 @@ pub mod async_exec;
 /// funnel).
 pub mod core;
 
-// PR-A: the `integration` module was a 11-line doc-only stub with
+// PR-A: the `integration` module was an 11-line doc-only stub with
 // zero callers in the repo. Its sole purpose was to host the
-// `ExtensionAsyncTool` wrapper, which moved to
-// `tools::registry::extension_async_tool` in Issue 016 long before
-// the framework was being torn down. Pure removal.
+// `ExtensionAsyncTool` wrapper (itself deleted in ADR-063 as dead
+// code). Pure removal.
 
 /// Cross-boundary async-task inbox + the `InboxItem` / `SessionInbox`
 /// concrete types. The trait-port data types live in

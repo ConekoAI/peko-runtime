@@ -220,6 +220,13 @@ impl BashTool {
         ctx: Option<&ToolContext>,
     ) -> Result<serde_json::Value> {
         let task_id = format!("Bash:{}", uuid::Uuid::new_v4());
+        // §4.1: live progress buffer, shared three ways — into the task's
+        // config (so the registry entry carries it), into the streaming
+        // reader below (which appends child output as it is produced),
+        // and read back by `AsyncOutput` on a still-running task and by
+        // the executor's delivery pass when the task is cancelled or
+        // times out (where no real result ever materializes).
+        let progress: Arc<std::sync::Mutex<String>> = Arc::default();
         let config = AsyncToolConfig {
             // Preserve millisecond precision by using `timeout_millis` when set;
             // the executor will fall back to `timeout_secs` otherwise.
@@ -228,6 +235,7 @@ impl BashTool {
             // principals' `AsyncList`/`AsyncStop` can't see or cancel this
             // task (P1-4).
             principal_id: ctx.and_then(|c| c.principal_id.clone()),
+            progress: Some(Arc::clone(&progress)),
             ..Default::default()
         };
 
@@ -240,17 +248,21 @@ impl BashTool {
                 config,
                 move |abort_rx| async move {
                     // Background tasks stream their output through
-                    // AsyncOutput; the per-call cap is not applied here.
-                    // The abort receiver is the executor's cancel channel:
-                    // `AsyncStop` → `AsyncExecutor::cancel` flips it, the
-                    // `select!` in `execute_command_blocking` bails, and
-                    // dropping the `Command` output future kills the child
-                    // (`kill_on_drop(true)`), so a stopped background shell
-                    // command no longer leaves the process running (P1-2).
-                    let tool_ctx =
-                        ToolContext::new(task_id.clone(), task_id.clone(), "Bash", abort_rx);
-                    Self::execute_command_blocking(&command, working_dir, None, None, Some(&tool_ctx))
-                        .await
+                    // `AsyncOutput` (fed by the progress buffer) and the
+                    // per-call cap is not applied here. The abort receiver
+                    // is the executor's cancel channel: `AsyncStop` →
+                    // `AsyncExecutor::cancel` flips it, the `select!` in
+                    // the streaming path bails, and dropping the child
+                    // (`kill_on_drop(true)`) kills the process, so a
+                    // stopped background shell command no longer leaves
+                    // the process running (P1-2).
+                    Self::execute_command_streaming(
+                        &command,
+                        working_dir,
+                        abort_rx,
+                        Arc::clone(&progress),
+                    )
+                    .await
                 },
             )
             .await?;
@@ -260,6 +272,114 @@ impl BashTool {
             "status": "running",
             "tool": "Bash",
         }))
+    }
+
+    /// Background execution with live progress capture (§4.1).
+    ///
+    /// Unlike [`Self::execute_command_blocking`] — which buffers the whole
+    /// child output and only returns it at exit — this variant reads the
+    /// child's stdout/stderr incrementally and mirrors what it reads into
+    /// the task's shared progress buffer. On cancel/timeout the executor
+    /// therefore has something to deliver besides an opaque error, and
+    /// `AsyncOutput` on a still-running task shows live output.
+    ///
+    /// The returned JSON has the same shape as
+    /// [`Self::format_output`] so callers cannot tell the paths apart.
+    async fn execute_command_streaming(
+        command: &str,
+        working_dir: Option<std::path::PathBuf>,
+        abort_rx: tokio::sync::watch::Receiver<bool>,
+        progress: Arc<std::sync::Mutex<String>>,
+    ) -> Result<serde_json::Value> {
+        use tokio::io::AsyncReadExt;
+
+        let mut cmd = Command::new(SHELL);
+        cmd.arg(SHELL_ARG).arg(command);
+        // Kill the child when this future is dropped (executor timeout /
+        // executor shutdown) instead of letting it run detached.
+        cmd.kill_on_drop(true);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        if let Some(dir) = working_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd.spawn().context("Failed to execute Bash command")?;
+        let mut stdout_pipe = child.stdout.take().context("stdout not captured")?;
+        let mut stderr_pipe = child.stderr.take().context("stderr not captured")?;
+
+        // One reader task per stream, each mirroring into the shared
+        // progress buffer. `from_utf8_lossy` per chunk can emit a
+        // replacement char at a chunk boundary that splits a multi-byte
+        // character — acceptable for a progress display, and the final
+        // result below is built from the exact bytes.
+        let progress_for_stdout = Arc::clone(&progress);
+        let stdout_task = tokio::spawn(async move {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stdout_pipe.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        let mut guard = progress_for_stdout
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    }
+                }
+            }
+            buf
+        });
+        let progress_for_stderr = Arc::clone(&progress);
+        let stderr_task = tokio::spawn(async move {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stderr_pipe.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        let mut guard = progress_for_stderr
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    }
+                }
+            }
+            buf
+        });
+
+        // Race the child against the executor's cancel channel. On abort
+        // the child is killed explicitly (the reader tasks then see EOF
+        // and drain), and we bail exactly like the blocking path.
+        let mut abort_rx = abort_rx;
+        let (status, stdout_bytes, stderr_bytes) = tokio::select! {
+            res = child.wait() => {
+                let status = res.context("Failed to execute Bash command")?;
+                let stdout_bytes = stdout_task
+                    .await
+                    .unwrap_or_default();
+                let stderr_bytes = stderr_task
+                    .await
+                    .unwrap_or_default();
+                (status, stdout_bytes, stderr_bytes)
+            }
+            () = async {
+                let _ = abort_rx.changed().await;
+            } => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(anyhow::anyhow!("Bash command aborted"));
+            }
+        };
+
+        let output = std::process::Output {
+            status,
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
+        };
+        Self::format_output(&output, None)
     }
 
     /// Format command output

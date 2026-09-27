@@ -14,11 +14,13 @@
 //!   live in the framework host; Phase 8b moved the entire executor
 //!   to `peko-extension-host`.
 //!
-//! 2026-09-27 consolidation (ASYNC_TASK_REVIEW): the legacy delivery
+//! 2026-09-27 consolidation (ADR-063): the legacy delivery
 //! stack (`AsyncResultDeliveryMode`, `DeliveryTarget`,
 //! `SessionMessageType`, the queue/channel/callback deliveries) was
 //! deleted — completions are delivered exclusively via the
 //! per-session inbox push in `AsyncExecutor::execute_inner`.
+
+use std::sync::Arc;
 
 use peko_tools_core::ToolResult;
 use serde::{Deserialize, Serialize};
@@ -107,6 +109,18 @@ pub struct AsyncToolConfig {
     /// agent receives a `queued` receipt instead.
     #[serde(default = "default_deliver_completion")]
     pub deliver_completion: bool,
+    /// Live progress buffer shared with the executing closure (§4.1).
+    ///
+    /// `Some` only for spawn paths that can stream progress — today that
+    /// is background `Bash`, whose child-process output is appended as it
+    /// is produced. Surfaced through `AsyncOutput` while the task runs
+    /// and folded into the completion event when the task is cancelled or
+    /// times out, where no real result ever materializes.
+    ///
+    /// `serde(skip)`: an `Arc<Mutex<..>>` is process-local shared state,
+    /// not wire data, and the config is serialized into task files.
+    #[serde(skip, default)]
+    pub progress: Option<Arc<std::sync::Mutex<String>>>,
 }
 
 fn default_wake_on_completion() -> bool {
@@ -132,6 +146,7 @@ impl Default for AsyncToolConfig {
             principal_root_session_key: None,
             principal_id: None,
             deliver_completion: default_deliver_completion(),
+            progress: None,
         }
     }
 }

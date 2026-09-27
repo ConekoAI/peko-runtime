@@ -131,6 +131,9 @@ pub struct TaskView {
     pub result: Option<serde_json::Value>,
     pub label: Option<String>,
     pub metadata_type: String,
+    /// Tail of the task's live progress buffer, for tasks that are still
+    /// running (§4.1). `None` for terminal tasks.
+    pub partial_output: Option<String>,
 }
 
 impl TaskView {
@@ -162,7 +165,16 @@ impl TaskView {
             result,
             label,
             metadata_type,
+            partial_output: None,
         }
+    }
+
+    /// Attach the task's live progress tail (§4.1). Builder-style so the
+    /// existing `new` call sites stay untouched.
+    #[must_use]
+    pub fn with_partial_output(mut self, partial_output: Option<String>) -> Self {
+        self.partial_output = partial_output;
+        self
     }
 
     /// Get duration of the task

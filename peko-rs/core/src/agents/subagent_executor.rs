@@ -181,7 +181,7 @@ impl Default for ExecutionConfig {
             conversation_channel: None,
             conversation_peer: None,
             role_prompt: None,
-                    page_limit: None,
+            page_limit: None,
         }
     }
 }
@@ -989,7 +989,9 @@ impl SubagentExecutor {
         if let Some(limit) = config.page_limit {
             let pruned = {
                 let mut manager = self.session_manager.write().await;
-                manager.set_page_limit(&child_session_id, Some(limit)).await?;
+                manager
+                    .set_page_limit(&child_session_id, Some(limit))
+                    .await?;
                 manager.enforce_page_limit(&child_session_id).await?
             };
             if pruned > 0 {
@@ -1205,8 +1207,8 @@ impl SubagentExecutor {
         kind: AttachKind,
     ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
-            caller_context, err_compact_ancestor, err_resume_into_own_run,
-            err_resume_not_spawned, err_run_active,
+            caller_context, err_compact_ancestor, err_resume_into_own_run, err_resume_not_spawned,
+            err_run_active,
         };
 
         // Same spawn-time cost pre-flight as the spawn path — a resume
@@ -1727,10 +1729,7 @@ impl SubagentExecutor {
                             peko_session::events::SessionEvent::System(
                                 peko_session::events::SystemEvent {
                                     envelope: peko_session::events::EventEnvelope {
-                                        id: format!(
-                                            "compact_{}",
-                                            uuid::Uuid::new_v4().simple()
-                                        ),
+                                        id: format!("compact_{}", uuid::Uuid::new_v4().simple()),
                                         ts: chrono::Utc::now(),
                                     },
                                     event: "compaction".to_string(),
@@ -1865,7 +1864,9 @@ impl SubagentExecutor {
         if let Some(limit) = config.page_limit {
             let pruned = {
                 let mut manager = self.session_manager.write().await;
-                manager.set_page_limit(&child_session_id, Some(limit)).await?;
+                manager
+                    .set_page_limit(&child_session_id, Some(limit))
+                    .await?;
                 manager.enforce_page_limit(&child_session_id).await?
             };
             if pruned > 0 {
@@ -2010,6 +2011,7 @@ impl SubagentExecutor {
             // or cancel them (P1-4).
             principal_id: Some(self.principal_id.0.clone()),
             deliver_completion: true,
+            progress: None,
         };
 
         // Clone values for the execution closure
