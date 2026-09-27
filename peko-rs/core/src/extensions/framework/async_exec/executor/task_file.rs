@@ -107,12 +107,10 @@ impl TaskFileWriter {
         Ok(())
     }
 
-    pub async fn read(&self, task_id: &str) -> Result<TaskFileRecord> {
-        let path = self.task_file_path(task_id);
-        let content = tokio::fs::read_to_string(&path).await?;
-        let record = serde_json::from_str(&content)?;
-        Ok(record)
-    }
+    // No `read`: task files are a write-only audit trail — nothing reads
+    // them back (the registry is the in-memory source of truth). A reader
+    // was carried for a durability story that never landed; dropped in the
+    // 2026-09-27 consolidation (ASYNC_TASK_REVIEW P2-2).
 
     pub async fn cleanup_old(&self, max_age: Duration) -> Result<usize> {
         if !self.base_dir.exists() {

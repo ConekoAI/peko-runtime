@@ -32,8 +32,7 @@ use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::SubagentRunView;
 use crate::extensions::framework::async_exec::executor::SubagentResult;
 use crate::extensions::framework::async_exec::executor::{
-    get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
-    AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
+    get_or_create_registry_for_agent, AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
 use crate::extensions::framework::types::Capabilities;
@@ -374,10 +373,8 @@ impl SubagentExecutor {
     ) -> Self {
         let agent_name = agent_name.into();
         let async_registry = get_or_create_registry_for_agent(&agent_name);
-        let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
         let unified_executor = AsyncExecutor::with_registries(
             async_registry,
-            async_queue_manager,
             crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         );
 
@@ -422,9 +419,7 @@ impl SubagentExecutor {
             // Rebuild the AsyncExecutor against the shared registry so
             // completion pushes actually reach the loop's drain site.
             let async_registry = get_or_create_registry_for_agent(&self.agent_name);
-            let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-            self.unified_executor =
-                AsyncExecutor::with_registries(async_registry, async_queue_manager, reg);
+            self.unified_executor = AsyncExecutor::with_registries(async_registry, reg);
         }
         self
     }
@@ -587,10 +582,8 @@ impl SubagentExecutor {
         max_concurrent: usize,
         principal_id: PrincipalId,
     ) -> Self {
-        let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
         let unified_executor = AsyncExecutor::with_registries(
             async_registry,
-            async_queue_manager,
             crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
         );
 
@@ -703,12 +696,6 @@ impl SubagentExecutor {
             .read()
             .await
             .has_active_subagent_run_for_child(child_session_key)
-    }
-
-    /// Get a reference to the async queue manager
-    #[must_use]
-    pub fn async_queue_manager(&self) -> &SharedAsyncResultQueueManager {
-        self.unified_executor.queue_manager()
     }
 
     /// Get a reference to the unified executor
@@ -2009,8 +1996,6 @@ impl SubagentExecutor {
 
         // Execute using unified async executor — this is the ONLY registration point
         let async_config = AsyncToolConfig {
-            delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
-            delivery_target: None,
             // `ExecutionConfig::timeout_seconds == 0` means UNLIMITED,
             // but the AsyncExecutor treats `Some(0)` as an immediate
             // timeout — map 0 to `None` so unlimited survives the hop.
@@ -2020,6 +2005,11 @@ impl SubagentExecutor {
             label: config.label.clone(),
             wake_on_completion: true,
             principal_root_session_key: None,
+            // Subagent runs belong to the spawning principal — stamped so
+            // the `Async*` control surface of OTHER principals cannot see
+            // or cancel them (P1-4).
+            principal_id: Some(self.principal_id.0.clone()),
+            deliver_completion: true,
         };
 
         // Clone values for the execution closure

@@ -192,7 +192,7 @@ use peko_channel::{
     ChannelCursors, ChannelEvent, ChannelId, ChannelMeter, ChannelPort, ChannelResponder,
     ChannelSubscriber, NoopChannelResponder, PostMsg, RespondCtx, SubscriptionConfig,
 };
-use peko_extension_api::{AsyncInboxItem, SteeringMessage};
+use peko_extension_api::SteeringMessage;
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
 use peko_subject::{PrincipalId, Subject};
@@ -525,22 +525,18 @@ impl ResponderInner {
             tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
         }
 
-        // Atomic drain: IPC-queued and collision-queued steering share
-        // the inbox; whoever drains it drives the turn, so there is no
-        // double-driving. An empty drain is the common case — the
-        // active run consumed the steering at its own iteration
-        // boundary.
+        // Atomic drain of STEERING only: IPC-queued and collision-queued
+        // steering share the inbox; whoever drains it drives the turn, so
+        // there is no double-driving. Completion events stay queued
+        // (P0-2, 2026-09-27 — the previous `drain_all` silently destroyed
+        // them); they get their own successor turns below. An empty drain
+        // is the common case — the active run consumed the steering at its
+        // own iteration boundary.
         let Some(inbox) = inbox_registry.peek_inbox(session_id).await else {
             return;
         };
-        let leftovers = inbox.drain_all().await;
-        for item in leftovers {
-            // Completion envelopes are not ours to drive; the IPC
-            // drain (`drain_pending_steering`) filters them out the
-            // same way.
-            let AsyncInboxItem::Steering(envelope) = item else {
-                continue;
-            };
+        let leftovers = inbox.drain_steering().await;
+        for envelope in leftovers {
             match self.driver.drive_turn(session_id, &envelope.content).await {
                 Ok(reply) => {
                     let reply = reply.trim();
@@ -569,6 +565,56 @@ impl ResponderInner {
                         session = %session_id,
                         "channel binding: successor turn failed (posting nothing): {e:#}"
                     );
+                }
+            }
+        }
+
+        // §6.1b: completions that raced the predecessor's final
+        // iteration (or landed while the collision watch was waiting)
+        // are still queued. Drive chained wake turns — each drains the
+        // inbox at its first iteration — until it's empty, posting each
+        // reply to the channel like a steering successor. Bounded so a
+        // turn that keeps producing completions cannot chain forever.
+        let mut chained = 0u8;
+        const MAX_POST_RUN_WAKE_CHAIN: u8 = 4;
+        while chained < MAX_POST_RUN_WAKE_CHAIN {
+            if inbox.is_empty().await {
+                break;
+            }
+            chained += 1;
+            match self
+                .driver
+                .drive_turn(
+                    session_id,
+                    crate::extensions::framework::async_exec::executor::wake::WAKE_TURN_MARKER,
+                )
+                .await
+            {
+                Ok(reply) => {
+                    let reply = reply.trim();
+                    if reply.is_empty() {
+                        continue;
+                    }
+                    let mut msg = PostMsg::root(reply);
+                    msg.via = self.via.clone();
+                    if let Err(e) = self
+                        .port
+                        .post(&self.channel, &Subject::from(&self.principal), msg)
+                        .await
+                    {
+                        warn!(
+                            channel = %self.channel,
+                            "channel binding: completion-wake reply post failed: {e}"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: completion-wake turn failed (posting nothing): {e:#}"
+                    );
+                    break;
                 }
             }
         }

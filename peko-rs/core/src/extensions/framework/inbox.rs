@@ -39,7 +39,7 @@ use peko_extension_api::{
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify}; // `Mutex` is used by `InboxSinkRegistry` only; `SessionInbox` uses `std::sync::Mutex`.
 
 /// Minimum surface `AsyncExecutor` needs from a per-session inbox.
 ///
@@ -78,12 +78,16 @@ pub trait InboxSinkProvider: Send + Sync + 'static {
 /// next agentic loop iteration.
 ///
 /// Cloning shares the same underlying queue via the internal `Arc`.
-/// The executor's spawned-task path calls `push` from non-async
-/// contexts and uses `try_lock` for the common case (no contention),
-/// falling back to a `tokio::spawn` blocking push otherwise.
+///
+/// The queue sits behind a `std::sync::Mutex` whose critical sections
+/// are a single `push_back`/`drain` — never held across an `.await` —
+/// so `push` is genuinely synchronous and strictly ordered (2026-09-27,
+/// P2-3: the previous `tokio::Mutex` + `try_lock` + detached-spawn
+/// fallback both reordered items under contention and panicked outside
+/// a Tokio runtime).
 #[derive(Debug)]
 pub struct SessionInbox {
-    inner: Arc<Mutex<VecDeque<InboxItem>>>,
+    inner: Arc<std::sync::Mutex<VecDeque<InboxItem>>>,
     notify: Arc<Notify>,
 }
 
@@ -106,38 +110,37 @@ impl SessionInbox {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(VecDeque::new())),
+            inner: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             notify: Arc::new(Notify::new()),
         }
     }
 
-    /// Synchronous push. Uses `try_lock`; on contention, schedules a
-    /// blocking push via `tokio::spawn`.
+    /// Lock the queue, recovering from poisoning: a panic mid-`push_back`
+    /// cannot leave the `VecDeque` structurally inconsistent, so the
+    /// guarded data is still safe to use.
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<InboxItem>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Synchronous, ordered push. Takes the queue lock directly — the
+    /// critical section is one `push_back` — then nudges the
+    /// notification slot.
     pub fn push<E: Into<InboxItem>>(&self, item: E) {
-        let item = item.into();
-        if let Ok(mut guard) = self.inner.try_lock() {
-            guard.push_back(item);
-            self.notify.notify_one();
-        } else {
-            let this = self.clone();
-            tokio::spawn(async move {
-                let mut guard = this.inner.lock().await;
-                guard.push_back(item);
-                this.notify.notify_one();
-            });
-        }
+        self.lock().push_back(item.into());
+        self.notify.notify_one();
     }
 
     /// Drain all items in insertion order.
     pub async fn drain_all(&self) -> Vec<InboxItem> {
-        let mut guard = self.inner.lock().await;
-        guard.drain(..).collect()
+        self.lock().drain(..).collect()
     }
 
     /// Drain only completion events, leaving any pending steering
     /// messages in place.
     pub async fn drain_completions(&self) -> Vec<CompletionEvent> {
-        let mut guard = self.inner.lock().await;
+        let mut guard = self.lock();
         let mut out = Vec::new();
         let mut keep: VecDeque<InboxItem> = VecDeque::with_capacity(guard.len());
         for item in guard.drain(..) {
@@ -150,10 +153,27 @@ impl SessionInbox {
         out
     }
 
+    /// Drain only steering messages, leaving completion events queued —
+    /// the atomic counterpart of the default
+    /// `AsyncInboxLike::drain_steering`. The post-run steering drains use
+    /// this so completions are never destroyed (P0-2).
+    pub async fn drain_steering(&self) -> Vec<SteeringMessage> {
+        let mut guard = self.lock();
+        let mut out = Vec::new();
+        let mut keep: VecDeque<InboxItem> = VecDeque::with_capacity(guard.len());
+        for item in guard.drain(..) {
+            match item {
+                InboxItem::Steering(m) => out.push(m),
+                InboxItem::Completion(e) => keep.push_back(InboxItem::Completion(e)),
+            }
+        }
+        *guard = keep;
+        out
+    }
+
     /// Snapshot of pending steering messages.
     pub async fn pending_steering(&self) -> Vec<SteeringMessage> {
-        let guard = self.inner.lock().await;
-        guard
+        self.lock()
             .iter()
             .filter_map(|i| match i {
                 InboxItem::Steering(m) => Some(m.clone()),
@@ -164,8 +184,7 @@ impl SessionInbox {
 
     /// Number of pending steering messages (for client UX / metrics).
     pub async fn steering_len(&self) -> usize {
-        let guard = self.inner.lock().await;
-        guard
+        self.lock()
             .iter()
             .filter(|i| matches!(i, InboxItem::Steering(_)))
             .count()
@@ -174,7 +193,7 @@ impl SessionInbox {
     /// Remove a single pending steering message by id. Returns `true`
     /// if it was present.
     pub async fn cancel_steering(&self, id: uuid::Uuid) -> bool {
-        let mut guard = self.inner.lock().await;
+        let mut guard = self.lock();
         let before = guard.len();
         guard.retain(|i| !matches!(i, InboxItem::Steering(m) if m.id == id));
         guard.len() < before
@@ -182,13 +201,11 @@ impl SessionInbox {
 
     /// Total number of items in the inbox (for testing/metrics).
     pub async fn len(&self) -> usize {
-        let guard = self.inner.lock().await;
-        guard.len()
+        self.lock().len()
     }
 
     pub async fn is_empty(&self) -> bool {
-        let guard = self.inner.lock().await;
-        guard.is_empty()
+        self.lock().is_empty()
     }
 }
 
@@ -220,6 +237,14 @@ impl AsyncInboxLike for SessionInbox {
                 InboxItem::Completion(e) => AsyncInboxItem::Completion(e.into()),
                 InboxItem::Steering(m) => AsyncInboxItem::Steering(m.into()),
             })
+            .collect()
+    }
+
+    async fn drain_steering(&self) -> Vec<peko_extension_api::SteeringEnvelope> {
+        SessionInbox::drain_steering(self)
+            .await
+            .into_iter()
+            .map(Into::into)
             .collect()
     }
 
@@ -345,6 +370,26 @@ mod tests {
         let completions = inbox.drain_completions().await;
         assert_eq!(completions.len(), 2);
         assert_eq!(inbox.steering_len().await, 1);
+    }
+
+    /// P0-2: the steering drains must not destroy queued completions.
+    #[tokio::test]
+    async fn drain_steering_keeps_completions() {
+        let inbox = SessionInbox::new();
+        inbox.push(make_event("t1", "s"));
+        inbox.push(SteeringMessage::new("steer-1"));
+        inbox.push(make_event("t2", "s"));
+        inbox.push(SteeringMessage::new("steer-2"));
+        let steering = inbox.drain_steering().await;
+        assert_eq!(steering.len(), 2);
+        assert_eq!(steering[0].content, "steer-1");
+        assert_eq!(steering[1].content, "steer-2");
+        // Completions survive, in order.
+        let completions = inbox.drain_completions().await;
+        assert_eq!(completions.len(), 2);
+        assert_eq!(completions[0].task_id, "t1");
+        assert_eq!(completions[1].task_id, "t2");
+        assert!(inbox.is_empty().await);
     }
 
     #[tokio::test]

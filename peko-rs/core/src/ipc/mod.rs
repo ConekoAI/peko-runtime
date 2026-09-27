@@ -25,8 +25,6 @@
 
 pub mod client;
 pub mod connection;
-pub mod create_transport;
-pub mod daemon_transport_impl;
 pub mod errors;
 pub(crate) mod handlers;
 pub mod packet;

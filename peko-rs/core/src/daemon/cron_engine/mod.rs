@@ -896,6 +896,7 @@ impl CronEngine {
             wake_on_completion: wake,
             principal_root_session_key: Some(caller_session_key.clone()),
             label: Some(job.name.clone()),
+            principal_id: Some(snapshot_principal_id.clone()),
             ..Default::default()
         };
 
@@ -1051,9 +1052,7 @@ impl CronEngine {
             .with_sessions_dir_internal(principal.memory.sessions_dir());
         match manager.list_all_sessions(false).await {
             Ok(metas) => {
-                let live = metas
-                    .iter()
-                    .any(|m| m.session_id.to_string() == origin);
+                let live = metas.iter().any(|m| m.session_id.to_string() == origin);
                 if live {
                     origin
                 } else {

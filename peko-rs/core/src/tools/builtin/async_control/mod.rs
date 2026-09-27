@@ -10,12 +10,14 @@
 //!
 //! ## DTOs
 //!
-//! [`SpawnRequest`], [`SpawnReceipt`], [`AsyncToolConfig`],
-//! [`AsyncResultDeliveryMode`], [`DeliveryTarget`], [`WaitResult`],
-//! [`TaskView`], [`CancelResult`], and [`SessionMessageType`] are
-//! serialization-friendly types shared between the tool side and the
-//! framework-host side. peko-tools-builtin is the canonical home; the
-//! framework re-exports them for backward compatibility.
+//! [`SpawnRequest`], [`SpawnReceipt`], [`WaitResult`], [`TaskView`],
+//! and [`CancelResult`] are serialization-friendly types shared between
+//! the tool side and the framework-host side. peko-tools-builtin is the
+//! canonical home; the framework re-exports them for backward
+//! compatibility. (The `AsyncToolConfig` / `AsyncResultDeliveryMode` /
+//! `DeliveryTarget` / `SessionMessageType` mirrors were deleted
+//! 2026-09-27 — the canonical `AsyncToolConfig` lives in the framework
+//! executor's `types` module and the delivery stack is gone.)
 //!
 //! ## Port
 //!
@@ -64,11 +66,12 @@ pub struct SpawnRequest {
     /// Optional human-readable label for the spawned task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Whether completion should nudge the spawning session's next turn.
-    ///
-    /// `true` (default for natural agent spawns) prompts a
-    /// `SteeringMessage` into the principal's root inbox. Cron
-    /// schedules override to `false`.
+    /// Whether completion should wake the spawning session when it is
+    /// idle (no run in flight): the daemon drives a follow-up turn that
+    /// drains the queued completion. `false` delivers silently — the
+    /// completion waits in the inbox for the next run. Cron's spawn-tool
+    /// path routes delivery through `principal_root_session_key` steering
+    /// instead.
     #[serde(default = "default_true")]
     pub wake_on_completion: bool,
     /// Maximum lifetime of the spawned task (seconds). `None` uses the
@@ -96,69 +99,6 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpawnReceipt {
     pub task_id: String,
-}
-
-/// Result delivery modes
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum AsyncResultDeliveryMode {
-    /// Queue result and deliver when agent is idle (default)
-    #[default]
-    QueueWhenBusy,
-    /// Interrupt current agent execution with result
-    Interrupt,
-    /// Batch multiple results together
-    Collect,
-    /// Try to inject into running session (advanced)
-    Steer,
-}
-
-/// Delivery target types for async task results.
-///
-/// Mirror of the canonical `DeliveryTarget` in
-/// `peko_extension_api::async_exec::types`; same single-variant
-/// reduction. Three variants (`SessionAnnouncement`, `EventBroadcast`,
-/// `DirectChannel`) had no implementors and no consumers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryTarget {
-    /// Deliver to async result queue
-    #[default]
-    AsyncQueue,
-}
-
-/// Configuration for async tool execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AsyncToolConfig {
-    pub delivery_mode: AsyncResultDeliveryMode,
-    pub delivery_target: Option<DeliveryTarget>,
-    pub timeout_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_millis: Option<u64>,
-    pub cleanup_after_delivery: bool,
-    pub label: Option<String>,
-    #[serde(default = "default_wake_on_completion")]
-    pub wake_on_completion: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub principal_root_session_key: Option<String>,
-}
-
-fn default_wake_on_completion() -> bool {
-    true
-}
-
-impl Default for AsyncToolConfig {
-    fn default() -> Self {
-        Self {
-            delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
-            delivery_target: None,
-            timeout_secs: Some(7200),
-            timeout_millis: None,
-            cleanup_after_delivery: true,
-            label: None,
-            wake_on_completion: default_wake_on_completion(),
-            principal_root_session_key: None,
-        }
-    }
 }
 
 /// Result of waiting for an async task to complete
@@ -251,22 +191,6 @@ pub enum CancelResult {
     AlreadyTerminal { previous: String },
     /// Task was not found in the registry.
     NotFound,
-}
-
-/// Message types for principal-to-principal communication
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum SessionMessageType {
-    /// Initial request to another agent
-    #[default]
-    Request,
-    /// Response to a request
-    Response,
-    /// Fire-and-forget announcement
-    Announcement,
-    /// Subagent completion notification
-    Completion,
-    /// Error/timeout notification
-    Error,
 }
 
 // ─── Port trait ────────────────────────────────────────────────────

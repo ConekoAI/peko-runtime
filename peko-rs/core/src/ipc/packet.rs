@@ -46,19 +46,11 @@ pub enum RequestPacket {
     /// `PrincipalManager::receive` and produce principal-scoped
     /// sessions and audit trails.
 
-    /// Spawn an async background task
-    #[serde(rename = "async_spawn")]
-    AsyncSpawn {
-        request_id: u64,
-        tool_name: String,
-        params: serde_json::Value,
-        session_key: String,
-        workspace: PathBuf,
-    },
-
     /// Execute a tool synchronously with the calling principal's
     /// capabilities (ADR-061 phase 1). The synchronous counterpart of
-    /// `AsyncSpawn`: same server-side attribution (the principal is
+    /// the retired `AsyncSpawn` packet (removed 2026-09-27 with the
+    /// dead IPC async-spawn path, ASYNC_TASK_REVIEW §3-D1): same
+    /// server-side attribution (the principal is
     /// resolved from `session_key`, grants and active extensions are
     /// derived from it server-side — never carried on the wire), but
     /// the handler awaits the result and returns it as
@@ -84,10 +76,6 @@ pub enum RequestPacket {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_token: Option<String>,
     },
-
-    /// Cancel an async task
-    #[serde(rename = "async_cancel")]
-    AsyncCancel { request_id: u64, task_id: String },
 
     /// Health check / status ping
     #[serde(rename = "ping")]
@@ -905,9 +893,7 @@ impl RequestPacket {
     #[must_use]
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::AsyncSpawn { request_id, .. }
-            | Self::ExecuteTool { request_id, .. }
-            | Self::AsyncCancel { request_id, .. }
+            Self::ExecuteTool { request_id, .. }
             | Self::Ping { request_id }
             | Self::Shutdown { request_id, .. }
             | Self::PrincipalList { request_id }
@@ -1124,13 +1110,6 @@ pub enum ResponsePacket {
         /// Sequence number for ordering (per-request, monotonic)
         seq: u32,
         chunk: String,
-    },
-
-    /// Async task receipt
-    #[serde(rename = "async_receipt")]
-    AsyncReceipt {
-        request_id: u64,
-        receipt: crate::extensions::framework::async_exec::executor::AsyncTaskReceipt,
     },
 
     /// Synchronous tool-execution result (ADR-061 phase 1) — the reply
@@ -2401,7 +2380,6 @@ impl ResponsePacket {
     pub fn request_id(&self) -> u64 {
         match self {
             Self::Text { request_id, .. }
-            | Self::AsyncReceipt { request_id, .. }
             | Self::ToolExecuted { request_id, .. }
             | Self::Done { request_id, .. }
             | Self::Error { request_id, .. }
@@ -2481,7 +2459,6 @@ impl ResponsePacket {
     pub fn variant_name(&self) -> &'static str {
         match self {
             Self::Text { .. } => "Text",
-            Self::AsyncReceipt { .. } => "AsyncReceipt",
             Self::ToolExecuted { .. } => "ToolExecuted",
             Self::Done { .. } => "Done",
             Self::Error { .. } => "Error",

@@ -69,7 +69,7 @@ Returns: { task_id, status, tool_name }"
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "If true (default), push a CompletionEvent into the spawning session's inbox when the task finishes. Set false for background bookkeeping that does not need to nudge the agent's next turn (cron schedules use this)."
+                    "description": "If true (default), the completion is pushed into the spawning session's inbox AND, when the session is idle (no run in flight), a follow-up turn is started so the agent reacts to the result. If false, the completion is pushed silently for the next run to drain (background bookkeeping). Cron schedules steer to the principal's root session instead."
                 },
                 "timeout_secs": {
                     "type": "integer",

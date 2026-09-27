@@ -2485,8 +2485,9 @@ The daemon's IPC protocol is one JSON datagram per message over a unix socket
 `PEKO_DAEMON_SOCK`), Windows named pipe, or loopback-UDP fallback; packets are
 capped at `MAX_PACKET_SIZE = 60 000` bytes. `ExecuteTool` is the synchronous
 tool-execution variant — the callback surface for agent-authored workflow
-processes (`sdks/python/peko_workflow`), mirroring `async_spawn`'s
-server-side attribution.
+processes (`sdks/python/peko_workflow`), with server-side attribution
+(the retired `async_spawn`/`async_cancel`/`async_receipt` variants were
+removed 2026-09-27; the CLI never executed tools, ADR-021).
 
 **Request** (`RequestPacket::ExecuteTool`):
 

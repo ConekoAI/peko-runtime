@@ -17,10 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::RwLock;
 
 use crate::extensions::framework::async_exec::executor::{
-    get_or_create_registry_for_agent, AsyncExecutor, AsyncResultQueueManager,
+    get_or_create_registry_for_agent, shared_inbox_registry, AsyncExecutor,
 };
 use crate::extensions::framework::async_exec::AsyncToolConfig;
 use peko_tools_core::{Tool, ToolContext};
@@ -118,34 +117,35 @@ impl BashTool {
     /// the async-task-control family can find background shell tasks through
     /// the `AsyncExecutorRuntime` global-registry fallback (which consults
     /// `find_task_across_all_registries` when the per-call registry misses).
+    ///
+    /// The inbox registry is the process-shared one
+    /// ([`shared_inbox_registry`]) — the daemon installs it at `AppState`
+    /// construction — so completion events land in the same per-session
+    /// inboxes the agentic loop drains (P0-4, 2026-09-27; previously this
+    /// was a standalone registry nobody read).
     fn background_executor() -> Arc<AsyncExecutor> {
         use std::sync::OnceLock;
         static EXECUTOR: OnceLock<Arc<AsyncExecutor>> = OnceLock::new();
         EXECUTOR
             .get_or_init(|| {
                 let registry = get_or_create_registry_for_agent("Bash");
-                let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
                 Arc::new(AsyncExecutor::with_registries(
                     registry,
-                    queue_manager,
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                    shared_inbox_registry(),
                 ))
             })
             .clone()
     }
 
-    /// Parent session key derived from execution context.
+    /// Parent session key for a background task: the plain session id
+    /// from the tool context — the same key the agentic loop drains its
+    /// inbox under (`Agent::build_agentic_loop`'s `async_inbox_key`).
+    /// The previous `{agent_id}_{session_id}` composite landed in an
+    /// inbox nobody drains (P0-4).
     fn parent_session_key(ctx: Option<&ToolContext>) -> String {
-        match ctx {
-            Some(c) => format!(
-                "{}_{}",
-                c.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                c.session_id
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string())
-            ),
-            None => "unknown".to_string(),
-        }
+        ctx.and_then(|c| c.session_id.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
     /// Execute a shell command with an optional per-call timeout.
@@ -166,6 +166,11 @@ impl BashTool {
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
         cmd.arg(SHELL_ARG).arg(command);
+        // Kill the child when the output future is dropped (timeout /
+        // abort / executor shutdown) instead of letting it run detached.
+        // The blocking path's early returns rely on this to actually reap
+        // the subprocess.
+        cmd.kill_on_drop(true);
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
@@ -212,32 +217,40 @@ impl BashTool {
         command: String,
         working_dir: Option<std::path::PathBuf>,
         timeout_ms: Option<u64>,
-        parent_session_key: String,
+        ctx: Option<&ToolContext>,
     ) -> Result<serde_json::Value> {
         let task_id = format!("Bash:{}", uuid::Uuid::new_v4());
         let config = AsyncToolConfig {
             // Preserve millisecond precision by using `timeout_millis` when set;
             // the executor will fall back to `timeout_secs` otherwise.
             timeout_millis: timeout_ms,
+            // Per-principal isolation: stamp the calling principal so other
+            // principals' `AsyncList`/`AsyncStop` can't see or cancel this
+            // task (P1-4).
+            principal_id: ctx.and_then(|c| c.principal_id.clone()),
             ..Default::default()
         };
 
         let receipt = Self::background_executor()
-            .execute(
+            .execute_cancellable(
                 task_id.clone(),
                 "Bash",
                 json!({ "command": &command, "cwd": working_dir.as_ref().map(|p| p.to_string_lossy().to_string()) }),
-                parent_session_key,
+                Self::parent_session_key(ctx),
                 config,
-                move || async move {
+                move |abort_rx| async move {
                     // Background tasks stream their output through
                     // AsyncOutput; the per-call cap is not applied here.
-                    // No context is threaded in because the closure runs
-                    // in the async-executor task, outside the
-                    // soft-interrupt path. Cancellation for background
-                    // tasks goes through `AsyncStop` (which uses the
-                    // registry's `cancel` slot — tracked separately).
-                    Self::execute_command_blocking(&command, working_dir, None, None, None).await
+                    // The abort receiver is the executor's cancel channel:
+                    // `AsyncStop` → `AsyncExecutor::cancel` flips it, the
+                    // `select!` in `execute_command_blocking` bails, and
+                    // dropping the `Command` output future kills the child
+                    // (`kill_on_drop(true)`), so a stopped background shell
+                    // command no longer leaves the process running (P1-2).
+                    let tool_ctx =
+                        ToolContext::new(task_id.clone(), task_id.clone(), "Bash", abort_rx);
+                    Self::execute_command_blocking(&command, working_dir, None, None, Some(&tool_ctx))
+                        .await
                 },
             )
             .await?;
@@ -285,13 +298,7 @@ impl BashTool {
         let cwd = self.resolve_cwd(args.cwd.as_deref());
 
         if args.run_in_background {
-            Self::execute_command_background(
-                args.command,
-                cwd,
-                args.timeout,
-                Self::parent_session_key(ctx),
-            )
-            .await
+            Self::execute_command_background(args.command, cwd, args.timeout, ctx).await
         } else {
             Self::execute_command_blocking(
                 &args.command,

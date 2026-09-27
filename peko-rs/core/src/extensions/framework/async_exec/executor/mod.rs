@@ -10,17 +10,25 @@
 //! into `peko-extension-host`. Intra-crate paths use `crate::*`; the
 //! previously-fractured `crate::extensions::framework::*` paths now
 //! resolve through root re-export shims until Phase 16 deletes them.
+//!
+//! 2026-09-27 consolidation (ASYNC_TASK_REVIEW): the legacy delivery
+//! stack is deleted — `queue.rs` (`AsyncResultQueueManager`), `delivery.rs`
+//! (`QueueDelivery`/`ChannelDelivery`/`CallbackDelivery` + the formatter
+//! registry), and `event_bus.rs` (`AsyncTaskEventBus`) had no live
+//! consumers; completion delivery is exclusively the per-session inbox
+//! push in `AsyncExecutor::execute_inner`, plus the idle-session wake
+//! hook in [`wake`]. Task attribution (`AsyncToolConfig::principal_id`)
+//! and a per-executor concurrency bound
+//! ([`executor::DEFAULT_MAX_CONCURRENT_TASKS`]) landed in the same pass.
 
 pub mod async_runtime_impl;
 pub mod completion_queue;
-pub mod delivery;
 pub mod dispatch;
-pub mod event_bus;
 pub mod executor;
-pub mod queue;
 pub mod registry;
 pub mod task_file;
 pub mod types;
+pub mod wake;
 
 pub use async_runtime_impl::AsyncExecutorRuntime;
 // Phase 8c.1.A: gated on `test-utils` feature so external root tests
@@ -31,23 +39,23 @@ pub use async_runtime_impl::{TestAsyncRuntime, TestTaskEntry};
 pub use completion_queue::{
     CompletionEvent, InboxItem, SessionInbox, SharedSessionInbox, SteeringMessage,
 };
-pub use delivery::{
-    build_completion_event, CallbackDelivery, ChannelDelivery, DefaultResultFormatter,
-    FormatterRegistry, QueueDelivery, ResultDelivery, ResultFormatter,
-};
 pub use dispatch::ToolDispatchContext;
-pub use event_bus::{AsyncTaskCompletionEvent, AsyncTaskEventBus};
-pub use executor::{standalone_inbox_registry, AsyncExecutor};
-pub use queue::{AsyncResultQueue, AsyncResultQueueManager, SharedAsyncResultQueueManager};
+pub use executor::{
+    default_inbox_factory, install_shared_inbox_registry, shared_inbox_registry,
+    standalone_inbox_registry, AsyncExecutor, DEFAULT_MAX_CONCURRENT_TASKS,
+};
 pub use registry::{
-    cancel_task_across_all_registries, find_run_across_all_registries,
-    find_task_across_all_registries, get_or_create_registry_for_agent,
-    list_all_runs_across_all_registries, list_all_tasks_across_all_registries, AsyncTaskEntry,
-    AsyncTaskRegistry, CancelResult, SharedAsyncTaskRegistry, SubagentMetadata, SubagentResult,
-    TaskMetadata, TaskView,
+    cancel_task_across_all_registries, find_owning_registry_for_task,
+    find_run_across_all_registries, find_task_across_all_registries,
+    get_or_create_registry_for_agent, list_all_runs_across_all_registries,
+    list_all_tasks_across_all_registries, AsyncTaskEntry, AsyncTaskRegistry, CancelResult,
+    SharedAsyncTaskRegistry, SubagentMetadata, SubagentResult, TaskMetadata, TaskView,
 };
 pub use task_file::{TaskFileRecord, TaskFileWriter};
 pub use types::{
-    AsyncResultDeliveryMode, AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus,
-    AsyncToolConfig, DeliveryTarget, SessionMessageType, WaitResult,
+    AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, WaitResult,
+};
+pub use wake::{
+    install_completion_wake_handler, uninstall_completion_wake_handler, CompletionWakeHandler,
+    CompletionWakeNotice,
 };

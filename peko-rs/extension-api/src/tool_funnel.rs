@@ -11,7 +11,7 @@
 //! trait abstracts the engine-facing surface of `ExtensionCore`. It
 //! follows the existing `peko-extension-host` pattern of narrow,
 //! real-consumer view traits (`PathResolver`, `SessionInboxSink`,
-//! `InboxSinkProvider`, `DaemonTransport`, `VaultAccess`,
+//! `InboxSinkProvider`, `VaultAccess`,
 //! `PrincipalMessageService`).
 //!
 //! **Transient scaffolding.** When the Phase 8 bulk move eventually

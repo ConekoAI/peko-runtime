@@ -1,6 +1,5 @@
 //! Registry for tracking async tasks
 
-use super::event_bus::AsyncTaskCompletionEvent;
 use super::types::{AsyncTaskId, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use crate::extensions::framework::registry::SimpleRegistry;
 use chrono::{DateTime, Utc};
@@ -235,13 +234,10 @@ impl AsyncTaskEntry {
 
 /// Registry for tracking async tasks.
 ///
-/// Wraps a [`SimpleRegistry`] for task storage while keeping the
-/// `pending_announcements` queue as a separate field.
+/// Wraps a [`SimpleRegistry`] for task storage.
 #[derive(Debug, Default)]
 pub struct AsyncTaskRegistry {
     tasks: SimpleRegistry<AsyncTaskId, AsyncTaskEntry>,
-    /// Queue of completed tasks waiting to be announced to parent sessions
-    pending_announcements: std::collections::HashMap<String, Vec<AsyncTaskId>>, // session_key -> task_ids
 }
 
 impl AsyncTaskRegistry {
@@ -249,7 +245,6 @@ impl AsyncTaskRegistry {
     pub fn new() -> Self {
         Self {
             tasks: SimpleRegistry::new(),
-            pending_announcements: std::collections::HashMap::new(),
         }
     }
 
@@ -353,44 +348,6 @@ impl AsyncTaskRegistry {
         } else {
             Err(anyhow::anyhow!("Task {task_id} not found in registry"))
         }
-    }
-
-    /// Queue a completed task for announcement to parent
-    pub fn queue_announcement(&mut self, task_id: AsyncTaskId, session_key: &str) {
-        self.pending_announcements
-            .entry(session_key.to_string())
-            .or_default()
-            .push(task_id);
-    }
-
-    /// Get pending announcements for a session
-    pub fn get_pending_for_session(&mut self, session_key: &str) -> Vec<AsyncTaskCompletionEvent> {
-        let task_ids = self
-            .pending_announcements
-            .remove(session_key)
-            .unwrap_or_default();
-
-        task_ids
-            .into_iter()
-            .filter_map(|task_id| {
-                let entry = self.tasks.get(&task_id)?;
-                Some(AsyncTaskCompletionEvent {
-                    task_id: task_id.clone(),
-                    tool_name: entry.tool_name.clone(),
-                    result_message: entry.formatted_result.clone()?,
-                    parent_session_key: entry.parent_session_key.clone(),
-                    label: entry.config.label.clone(),
-                })
-            })
-            .collect()
-    }
-
-    /// Get count of pending announcements for a session
-    #[must_use]
-    pub fn pending_count(&self, session_key: &str) -> usize {
-        self.pending_announcements
-            .get(session_key)
-            .map_or(0, std::vec::Vec::len)
     }
 
     /// List all tasks, optionally filtered by session_key
@@ -503,32 +460,6 @@ impl AsyncTaskRegistry {
             None => CancelResult::NotFound,
         }
     }
-
-    /// Clean up terminal subagent runs older than a given duration
-    pub fn cleanup_old_subagents(&mut self, max_age: chrono::Duration) -> usize {
-        let now = chrono::Utc::now();
-        let to_remove: Vec<String> = self
-            .tasks
-            .values()
-            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
-            .filter(|e| {
-                e.status.is_terminal()
-                    && e.completed_at
-                        .is_some_and(|t| now.signed_duration_since(t) > max_age)
-            })
-            .map(|e| e.task_id.clone())
-            .collect();
-
-        let count = to_remove.len();
-        for task_id in to_remove {
-            self.tasks.remove(&task_id);
-        }
-
-        if count > 0 {
-            tracing::info!("Cleaned up {} old subagent runs from registry", count);
-        }
-        count
-    }
 }
 
 /// A generic, serializable view of any async task entry.
@@ -610,13 +541,25 @@ fn global_registries() -> &'static std::sync::Mutex<HashMap<String, SharedAsyncT
     GLOBAL_ASYNC_TASK_REGISTRIES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+/// Lock the global registry map, recovering from poisoning instead of
+/// panicking: a panicked writer can only have left a *map* (insert-only
+/// key → `Arc` entries) in a consistent-enough state, and a panic here
+/// would take down whatever unrelated async task happened to look up a
+/// registry next.
+fn lock_global_registries(
+) -> std::sync::MutexGuard<'static, HashMap<String, SharedAsyncTaskRegistry>> {
+    global_registries()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Get or create a shared async task registry for a given agent name.
 ///
 /// This ensures that all `Agent` instances for the same agent name share
 /// the same registry, making status queries and result delivery work
 /// across stateless requests.
 pub fn get_or_create_registry_for_agent(agent_name: &str) -> SharedAsyncTaskRegistry {
-    let mut map = global_registries().lock().unwrap();
+    let mut map = lock_global_registries();
     map.entry(agent_name.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(AsyncTaskRegistry::new())))
         .clone()
@@ -626,7 +569,7 @@ pub fn get_or_create_registry_for_agent(agent_name: &str) -> SharedAsyncTaskRegi
 pub async fn find_task_across_all_registries(task_id: &str) -> Option<AsyncTaskEntry> {
     let task_id = task_id.to_string();
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {
@@ -641,7 +584,7 @@ pub async fn find_task_across_all_registries(task_id: &str) -> Option<AsyncTaskE
 /// List all tasks across all agent registries.
 pub async fn list_all_tasks_across_all_registries() -> Vec<AsyncTaskEntry> {
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     let mut all = Vec::new();
@@ -665,7 +608,7 @@ pub async fn find_run_across_all_registries(run_id: &str) -> Option<AsyncTaskEnt
 pub async fn cancel_task_across_all_registries(task_id: &str) -> CancelResult {
     let task_id = task_id.to_string();
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {
@@ -697,7 +640,7 @@ pub async fn list_all_runs_across_all_registries() -> Vec<AsyncTaskEntry> {
 /// AsyncTaskRegistry is the source of truth for subagent runs.
 pub async fn has_active_subagent_run_across_all_registries(child: &str) -> bool {
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {
@@ -718,7 +661,7 @@ pub async fn has_active_subagent_run_across_all_registries(child: &str) -> bool 
 pub async fn find_owning_registry_for_task(task_id: &str) -> Option<SharedAsyncTaskRegistry> {
     let task_id = task_id.to_string();
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {

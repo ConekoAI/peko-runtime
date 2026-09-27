@@ -2618,6 +2618,46 @@ async fn run_principal_send(
                 )
                 .await?;
             }
+
+            // P0-2/§6.1b: async-task completions that raced the
+            // predecessor's final iteration are still queued (the drain
+            // above now leaves them in place). Drive chained successor
+            // turns until the inbox is empty — each successor's
+            // first-iteration drain injects the queued completions — so
+            // a completed background task gets its follow-up turn even
+            // though no user message is coming. Bounded so a successor
+            // that keeps producing completions cannot chain forever;
+            // anything left after the bound waits for the idle wake
+            // hook or the next ingress.
+            let mut chained = 0u8;
+            const MAX_POST_RUN_WAKE_CHAIN: u8 = 4;
+            loop {
+                let inbox_nonempty = match host.inbox_registry().peek_inbox(&session_id).await {
+                    Some(inbox) => !inbox.is_empty().await,
+                    None => false,
+                };
+                if !inbox_nonempty || chained >= MAX_POST_RUN_WAKE_CHAIN {
+                    break;
+                }
+                chained += 1;
+                run_steering_successor(
+                    host,
+                    sink,
+                    request_id,
+                    &principal,
+                    Arc::clone(&turns),
+                    &session_id,
+                    peer.clone(),
+                    caller.subject(),
+                    SteeringMessage::new(
+                        crate::extensions::framework::async_exec::executor::wake::WAKE_TURN_MARKER,
+                    ),
+                    override_model.clone(),
+                    channel_port.clone(),
+                    dm_channel.clone(),
+                )
+                .await?;
+            }
         }
         Err(e) => {
             // Distinguish a user stop from a real failure: when the
@@ -2691,27 +2731,25 @@ async fn post_dm_reply(
 }
 
 /// Drain any steering messages queued in the session's inbox. Only
-/// `AsyncInboxItem::Steering` items are returned; completion envelopes
-/// are filtered out (the IPC path never enqueues them, but the inbox
-/// is shared with the async-task executor).
+/// `AsyncInboxItem::Steering` items are taken; completion envelopes
+/// stay queued (P0-2, 2026-09-27 — the inbox is shared with the
+/// async-task executor, and the previous `drain_all` + filter silently
+/// destroyed any completion that raced the final iteration).
 async fn drain_pending_steering(
     host: &dyn PrincipalHost,
     session_id: &str,
 ) -> Vec<SteeringMessage> {
-    use peko_extension_api::AsyncInboxItem;
     let Some(inbox) = host.inbox_registry().peek_inbox(session_id).await else {
         return Vec::new();
     };
-    let items = inbox.drain_all().await;
-    items
+    inbox
+        .drain_steering()
+        .await
         .into_iter()
-        .filter_map(|item| match item {
-            AsyncInboxItem::Steering(env) => Some(SteeringMessage {
-                id: env.id,
-                content: env.content,
-                queued_at: env.queued_at,
-            }),
-            _ => None,
+        .map(|env| SteeringMessage {
+            id: env.id,
+            content: env.content,
+            queued_at: env.queued_at,
         })
         .collect()
 }

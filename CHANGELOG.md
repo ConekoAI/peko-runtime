@@ -4,6 +4,90 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Async task subsystem consolidation — delivery gap closed, dead IPC path deleted (2026-09-27)
+
+Fixes and consolidation from the async tool-calling review
+(`ASYNC_TASK_REVIEW.md`; ADR-020/ADR-040 baseline).
+
+**Correctness (user-visible):**
+
+- **Idle sessions now wake on background-task completion.** The executor
+  fires a process-global wake hook (`async_exec::executor::wake`) after
+  each delivered completion; the daemon's handler
+  (`daemon::completion_wake`) acquires the session's run permit (a run in
+  flight drains the inbox itself) and drives a successor turn via the
+  shared `PeerChildTurns` recipe, posting to the peer DM channel for
+  peer-bound sessions. The two post-run steering drains (IPC principal
+  handler, channel binding) no longer destroy queued completions and now
+  chain wake turns for them (`AsyncInboxLike::drain_steering`,
+  `WAKE_TURN_MARKER`). `wake_on_completion` (default `true`) is now
+  honest: it controls the idle-wake hook.
+- **Daemon router inbox wiring (P0-1):** the CLI no longer pre-installs
+  a global `ExtensionCore` for `peko daemon start --foreground` (it
+  pre-empted the correctly-wired core `AppState::new` builds, misrouting
+  router-dispatched completions into a registry nothing drains).
+  `AppState::new` installs its hoisted `InboxRegistry` as the
+  process-global default (`install_shared_inbox_registry`), which
+  `create_local_transport()` and `BashTool`'s background executor defer
+  to.
+- **Background `Bash` results reach the agent (P0-4):** the shared
+  background executor uses the daemon-shared inbox registry, and the
+  completion key is the plain session id — the key the agentic loop
+  drains — instead of a `{agent}_{session}` composite nobody read.
+- **The documented 2-hour default timeout now exists (P0-3):** an
+  `AsyncSpawn` that omits `timeout_secs` inherits `Some(7200)` instead
+  of running without any timeout.
+- **Router-spawned calls no longer flood the inbox:** the
+  `AsyncExecutionRouter` spawns with `deliver_completion: false` (a call
+  completing inside the router timeout already returned synchronously)
+  and flips it on via `deliver_on_completion` only when the call
+  detaches and the agent gets a `queued` receipt. Detached completions
+  are keyed by plain session id, so they actually reach the loop.
+- **`AsyncStop` on a background shell command now kills the process**
+  (P1-2 edge): background `Bash` tasks run through
+  `AsyncExecutor::execute_cancellable` (watch-channel abort), and
+  `Command::kill_on_drop(true)` reaps the child on abort/timeout.
+- **Cancel no longer races the completion write** (P1-5): the terminal
+  status update and the cancellation check share one registry write-lock
+  acquisition, so a cancel landing mid-run is never clobbered by
+  `Completed`/`Failed`.
+
+**Isolation + resource control:**
+
+- **Per-principal task ownership (P1-4):** `AsyncToolConfig.principal_id`
+  is stamped at every spawn path (`AsyncSpawn`, cron, subagent runs,
+  router-detached calls, background `Bash`), and `AsyncExecutorRuntime`
+  filters `lookup`/`list`/`cancel`/`wait_for_completion` by it —
+  find-then-authorize, cross-principal tasks are indistinguishable from
+  missing. Unattributed (`None`) tasks stay visible to all.
+- **Concurrency bound (P1-1):** `AsyncExecutor` acquires a semaphore
+  permit before running (`DEFAULT_MAX_CONCURRENT_TASKS = 8`,
+  `with_max_concurrent` to override); queued tasks stay `Pending` and
+  cancellable.
+
+**Deletions (dead code — no live producer/consumer):**
+
+- The IPC async-spawn path (§3-D1): `RequestPacket::AsyncSpawn` /
+  `AsyncCancel`, `ResponsePacket::AsyncReceipt` (**wire change**),
+  `DaemonClient::spawn_async_task` / `cancel_async_task`,
+  `handle_async_spawn` / `handle_async_cancel`, `DaemonIpcTransport`,
+  `UnavailableAsyncTransport`, the `DaemonTransport` projection trait,
+  `ipc::create_transport`, and `cli/main.rs`'s `init_extension_core`.
+  The CLI never executed tools (ADR-021), so the path was unreachable —
+  and would have registered every task under the empty-string id had it
+  ever fired.
+- The legacy delivery stack (P2-1/P2-2): `AsyncResultQueueManager` /
+  `QueueDelivery` / `ChannelDelivery` / `CallbackDelivery` /
+  `AsyncTaskEventBus` / `pending_announcements` / `ExtensionAsyncTool` /
+  `TaskFileWriter::read`, plus the `delivery_mode` / `delivery_target` /
+  `DeliveryTarget` / `AsyncResultDeliveryMode` / `SessionMessageType`
+  config surface (both the executor's and the `async_control` mirror).
+- `SessionInbox::push` is now synchronous and strictly ordered
+  (`std::sync::Mutex`; the `try_lock` + detached-spawn fallback that
+  reordered items under contention is gone), and the cron steer-message
+  text names the real `AsyncOutput` tool instead of the nonexistent
+  `TaskOutput` (P2-7).
+
 ### Service-layer session DTOs aligned with the tool-side identity model (2026-09-26)
 
 - `session_info::SessionInfo`: the `id` field renamed to `session_id`

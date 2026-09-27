@@ -8,6 +8,7 @@
 
 pub(crate) mod background_runtime;
 pub(crate) mod channel_binding;
+pub(crate) mod completion_wake;
 pub(crate) mod config_drift;
 pub(crate) mod cron_engine;
 pub(crate) mod cron_runtime;
@@ -419,6 +420,18 @@ impl Daemon {
             ));
             info!("📨 Peer messenger port installed (PrincipalPeerMessenger)");
         }
+
+        // §6.1b: install the completion-driven wake handler so a
+        // terminal async task whose session is idle gets a successor
+        // turn (previously completions waited for the next unrelated
+        // user message — "background" was effectively fire-and-forget).
+        completion_wake::install_completion_wake(
+            app_state.principal_manager().clone(),
+            app_state.inbox_registry.clone(),
+            app_state.observability(),
+            app_state.channel_port(),
+        );
+        info!("⏰ Completion wake handler installed (idle sessions wake on task completion)");
 
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);

@@ -35,13 +35,15 @@ async fn main() {
     // Set up global paths
     let paths = from_cli(&cli);
 
-    // Initialize global ExtensionCore with the appropriate async transport
-    // BEFORE running any command that might create agents.
-    // - Daemon commands use LocalAsyncTransport (daemon owns task execution)
-    // - CLI commands use DaemonHttpTransport if daemon is reachable;
-    //   otherwise UnavailableAsyncTransport so async tools fail fast with a clear error.
-    //   ADR-020: No in-process fallback. The old tokio::spawn path is removed from CLI.
-    init_extension_core(&cli.command).await;
+    // No global `ExtensionCore` is pre-installed here (2026-09-27,
+    // ASYNC_TASK_REVIEW P0-1 + D1): the CLI never executes tools
+    // (ADR-021), so the core's async router had no live consumer on
+    // this side, and the pre-installed core actively *pre-empted* the
+    // correctly-wired one `AppState::new` builds for in-process daemon
+    // runs (`peko daemon start --foreground`) — the daemon then reused
+    // a router whose executor pushed completions into a standalone
+    // inbox registry nothing drains. `AppState::new` installs the
+    // daemon's own global core with the shared inbox registry.
 
     // Run the command and handle results/exit codes
     let cli_registry = cli.registry.as_deref();
@@ -69,50 +71,6 @@ async fn main() {
             std::process::exit(1);
         }
     }
-}
-
-/// Initialize the global ExtensionCore with the appropriate transport
-///
-/// - Daemon commands: LocalAsyncTransport (daemon executes tasks locally)
-/// - CLI commands: DaemonHttpTransport if daemon is reachable, else UnavailableAsyncTransport
-///   so that async tools fail fast with a clear error instead of falling back to
-///   in-process execution that would be dropped on CLI exit (ADR-020).
-async fn init_extension_core(command: &Commands) {
-    use peko_core::extensions::framework::core::{
-        init_global_core, ExtensionCore, ExtensionServices,
-    };
-    use peko_core::extensions::framework::transport::async_router::AsyncExecutionRouter;
-    use peko_core::extensions::framework::transport::async_transport::{
-        create_local_transport, UnavailableAsyncTransport,
-    };
-    use std::sync::Arc;
-
-    let is_daemon_cmd = matches!(command, Commands::Daemon(_));
-
-    let router = if is_daemon_cmd {
-        tracing::info!("Initializing ExtensionCore with LocalAsyncTransport (daemon mode)");
-        AsyncExecutionRouter::with_transport(create_local_transport())
-    } else {
-        tracing::info!("Auto-detecting async transport for CLI mode");
-        match peko_core::ipc::create_transport::create_transport().await {
-            Ok(transport) => AsyncExecutionRouter::with_transport(transport),
-            Err(_) => {
-                // Daemon does not auto-start; user must start it manually.
-                AsyncExecutionRouter::with_transport(std::sync::Arc::new(
-                    UnavailableAsyncTransport::new(
-                        "peko daemon is not running. Async tool execution requires the daemon.\n\
-                         Start it with: peko daemon start\n\
-                         Or wait for the task to complete via AsyncOutput.",
-                    ),
-                ))
-            }
-        }
-    };
-
-    let services = ExtensionServices::with_async_router(Arc::new(router));
-    let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
-    init_global_core(core);
-    tracing::debug!("Initialized global ExtensionCore with async transport");
 }
 
 async fn run_command(
