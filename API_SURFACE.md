@@ -1114,6 +1114,24 @@ injected; callbacks authenticate with a per-spawn run token. Wire shapes in
 | `DaemonClient::execute_tool_with_token` | `ipc::client` | ✅ New | `execute_tool` + `run_token`; the old method delegates with `None` |
 | `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `session_id` (the handler threads the packet's `session_key` into `ToolContext`) |
 
+### ADR-063 — async task delivery consolidation (2026-09-27)
+
+Branch `fix/async-task-review`. Closes the async delivery gap (idle
+sessions wake on task completion), adds per-principal task ownership and a
+concurrency bound, and deletes the dead IPC async-spawn path + legacy
+delivery stack. New/changed public items:
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `AsyncToolConfig.principal_id` / `.deliver_completion` | `async_exec::executor::types` | ✅ Extended | Per-principal ownership stamp (filtered by `AsyncExecutorRuntime`); `deliver_completion: false` suppresses the inbox push until `enable_completion_delivery` flips it (router detach). `delivery_mode`/`delivery_target` removed |
+| `wake::{install_completion_wake_handler, uninstall_completion_wake_handler, notify_completion_wake, CompletionWakeNotice, CompletionWakeHandler, WAKE_TURN_MARKER}` | `async_exec::executor::wake` | ✅ New | Process-global idle-session wake hook; daemon handler in `daemon::completion_wake` drives the successor turn |
+| `executor::{install_shared_inbox_registry, shared_inbox_registry, DEFAULT_MAX_CONCURRENT_TASKS}` | `async_exec::executor` | ✅ New | Process-global daemon inbox registry slot (installed by `AppState::new`); default task concurrency bound |
+| `AsyncExecutor::{execute_cancellable, enable_completion_delivery, with_max_concurrent}` | `async_exec::executor` | ✅ New | Watch-channel cancel wiring for non-dispatch spawns (background `Bash`); detach-time delivery flip; bound override |
+| `AsyncExecutor::with_registries` | `async_exec::executor` | ⚠️ Signature | The `queue_manager` parameter is gone with the queue delivery stack |
+| `AsyncInboxLike::drain_steering` | `peko_extension_api::async_inbox` | ✅ Extended | Defaulted trait method; `SessionInbox` overrides atomically. Post-run drains no longer destroy completions |
+| `AsyncTaskTransport::deliver_on_completion` | `framework::transport::async_transport` | ✅ Extended | Defaulted; `LocalAsyncTransport` delegates to the executor |
+| **Removed** | — | ❌ Deleted | `RequestPacket::AsyncSpawn`/`AsyncCancel`, `ResponsePacket::AsyncReceipt` (wire change), `DaemonClient::{spawn_async_task,cancel_async_task}`, `DaemonIpcTransport`, `UnavailableAsyncTransport`, `DaemonTransport`, `ipc::create_transport`, `AsyncResultQueue{,Manager}`, `QueueDelivery`/`ChannelDelivery`/`CallbackDelivery`, `AsyncTaskEventBus`, `ExtensionAsyncTool`, `TaskFileWriter::read`, `AsyncResultDeliveryMode`/`DeliveryTarget`/`SessionMessageType` (+ `async_control` mirrors) |
+
 ---
 
 ## Test Coverage Requirements

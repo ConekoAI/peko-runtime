@@ -17,9 +17,7 @@
 //! ).await?;
 //! ```
 
-use crate::extensions::framework::async_exec::executor::{
-    AsyncResultDeliveryMode, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget,
-};
+use crate::extensions::framework::async_exec::executor::{AsyncTaskStatus, AsyncToolConfig};
 use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::services::tool_execution::{
     ToolExecutionConfig, ToolExecutionService,
@@ -50,11 +48,13 @@ fn strip_legacy_reserved_params(params: Value) -> Value {
 /// Routes tool execution with a constant 5-minute timeout
 /// ([`DEFAULT_TOOL_TIMEOUT_SECS`]). Tools exceeding the timeout are
 /// auto-detached to background tasks; the agent retrieves the result
-/// via the `task` tool's `output` action.
+/// via the `Async*` tool family (`AsyncOutput`/`AsyncStatus`).
 ///
 /// This is the unified router for ALL tool types in ADR-018a.
 ///
-/// In daemon mode, use `LocalAsyncTransport`. In CLI mode, use `DaemonHttpTransport`.
+/// The single production transport is `LocalAsyncTransport` (in-process,
+/// daemon). The CLI never executes tools (ADR-021), so there is no IPC
+/// transport anymore.
 #[derive(Clone)]
 pub struct AsyncExecutionRouter {
     /// Default tool execution timeout (5 min default).
@@ -181,6 +181,14 @@ impl AsyncExecutionRouter {
     /// then polled for completion up to the timeout. If the timeout fires
     /// before the task completes, a receipt is returned and the work
     /// continues running in the background.
+    ///
+    /// The spawned task carries `deliver_completion: false`: a call that
+    /// completes inside the timeout returned its result synchronously, so
+    /// an inbox completion event would be pure noise. Only when the call
+    /// detaches (timeout fired, receipt returned) is delivery flipped on
+    /// via `deliver_on_completion`, so the eventual result reaches the
+    /// session inbox the agentic loop drains — keyed by the plain
+    /// `session_id`, the same key the loop drains.
     #[instrument(skip(self, params, sync_executor), level = "debug")]
     async fn execute_with_timeout<F, Fut>(
         &self,
@@ -203,21 +211,30 @@ impl AsyncExecutionRouter {
         );
 
         let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
-        let session_key = format!("{}_{}", tool_context.agent_id, tool_context.session_id);
+        // The completion-inbox key must equal the key the agentic loop
+        // drains — the plain session id (`Agent::build_agentic_loop`'s
+        // `async_inbox_key`). A composite `{agent}_{session}` key lands
+        // in an inbox nobody drains (P0-4 had the same bug for Bash).
+        let session_key = tool_context.session_id.clone();
 
         // The background task's hard timeout is the default 300s regardless of
         // the router's polling timeout (which may be shorter in tests).
         let task_hard_timeout_secs = DEFAULT_TOOL_TIMEOUT_SECS;
 
         let config = AsyncToolConfig {
-            delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
-            delivery_target: Some(DeliveryTarget::AsyncQueue),
             timeout_secs: Some(task_hard_timeout_secs),
             timeout_millis: None,
             cleanup_after_delivery: true,
             label: Some(tool_name.to_string()),
             wake_on_completion: true,
             principal_root_session_key: None,
+            principal_id: tool_context.principal_id.clone(),
+            deliver_completion: false,
+            // The router polls the registry for its result; the inbox
+            // event is suppressed until the call detaches (see the
+            // `deliver_on_completion` flip below), so no progress buffer
+            // is needed here.
+            progress: None,
         };
 
         // Build a boxed execution closure that captures params and runs the tool.
@@ -262,13 +279,10 @@ impl AsyncExecutionRouter {
                 }
                 Some(AsyncTaskStatus::Pending | AsyncTaskStatus::Running) | None => {
                     // Pending/Running: the task is still in flight.
-                    // None: the transport cannot report a status. This is the
-                    // CLI `DaemonIpcTransport` path, which has no IPC status
-                    // channel and intentionally returns `None` to trigger this
-                    // fallback (see `async_transport.rs`). Treat `None` as
-                    // "still running": keep polling until the deadline, then
-                    // return an honest queued receipt (ADR-020). Never fatal,
-                    // and never fabricate completion.
+                    // None: the transport cannot report a status. Treat
+                    // `None` as "still running": keep polling until the
+                    // deadline, then return an honest queued receipt.
+                    // Never fatal, and never fabricate completion.
                     let now = tokio::time::Instant::now();
                     if now >= deadline {
                         break;
@@ -283,7 +297,19 @@ impl AsyncExecutionRouter {
         }
 
         // Timeout fired — the task is still running in the background.
-        // Return an honest receipt.
+        // The agent is getting a `queued` receipt instead of the result,
+        // so the eventual completion MUST reach its inbox: flip
+        // `deliver_completion` on. A task that raced past terminal before
+        // the flip landed reports `false` — its result stays available
+        // via `AsyncOutput` polling.
+        if let Err(e) = self.transport.deliver_on_completion(&task_id).await {
+            warn!(
+                tool_name = tool_name,
+                task_id = task_id,
+                "Failed to enable completion delivery for detached task: {e}"
+            );
+        }
+
         tracing::warn!(
             tool_name = tool_name,
             timeout_secs = timeout_secs,
@@ -475,7 +501,8 @@ impl AsyncExecutionRouter {
                     .unwrap_or_else(|| "unknown".to_string()),
                 tc.run_id.clone().unwrap_or_else(|| "unknown".to_string()),
             )
-            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string()))
+            .with_principal_id(tc.principal_id.clone()),
             None => {
                 let ctx = ToolExecutionContext::new("unknown", "unknown", "unknown");
                 match workspace {
@@ -512,11 +539,9 @@ impl AsyncExecutionRouter {
     /// Wait for all async tasks to complete
     ///
     /// For `LocalAsyncTransport`, this waits until all tasks reach a terminal
-    /// state or the timeout expires. For `DaemonHttpTransport`, this returns
-    /// immediately because tasks live in the daemon and survive CLI exit.
+    /// state or the timeout expires.
     pub async fn wait_for_all_tasks(&self, timeout: std::time::Duration) {
-        // For HTTP transport, tasks live in the daemon — no need to wait.
-        // For local transport, poll the executor directly.
+        // Local transport: poll the executor directly.
         tokio::time::sleep(timeout).await;
     }
 }
@@ -534,6 +559,10 @@ pub struct ToolExecutionContext {
     pub run_id: String,
     /// Workspace path
     pub workspace: String,
+    /// Owning principal (string form), stamped onto spawned tasks so
+    /// per-principal `AsyncList`/`AsyncStatus`/`AsyncStop` isolation
+    /// holds for router-detached work too.
+    pub principal_id: Option<String>,
 }
 
 impl ToolExecutionContext {
@@ -548,6 +577,7 @@ impl ToolExecutionContext {
             session_id: session_id.into(),
             run_id: run_id.into(),
             workspace: ".".to_string(),
+            principal_id: None,
         }
     }
 
@@ -555,6 +585,13 @@ impl ToolExecutionContext {
     #[must_use]
     pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
         self.workspace = workspace.into();
+        self
+    }
+
+    /// Set the owning principal
+    #[must_use]
+    pub fn with_principal_id(mut self, principal_id: Option<String>) -> Self {
+        self.principal_id = principal_id;
         self
     }
 }
@@ -838,8 +875,9 @@ mod tests {
         assert_eq!(value["reason"], "timeout");
     }
 
-    /// Mimics the CLI `DaemonIpcTransport`: `spawn_task` succeeds (returns a
-    /// receipt) but `get_status` has no IPC status channel and returns `None`.
+    /// A transport whose `get_status` always returns `None` (no status
+    /// channel): `spawn_task` succeeds (returns a receipt) but the router
+    /// can never observe completion.
     #[derive(Debug)]
     struct NullStatusTransport;
 

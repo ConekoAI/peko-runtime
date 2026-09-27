@@ -1,8 +1,13 @@
 //! `tool` domain request handler (F6 step 3 / F8 completion).
 //!
-//! Owns the daemon-side tool execution IPC variants: `AsyncSpawn`,
-//! `AsyncCancel`, and `ExecuteTool` (ADR-061 phase 1 — the synchronous
-//! workflow callback). The handler holds a narrow [`ToolHost`]
+//! Owns the daemon-side tool execution IPC variant `ExecuteTool`
+//! (ADR-061 phase 1 — the synchronous workflow callback). The
+//! `AsyncSpawn`/`AsyncCancel` variants were retired 2026-09-27 with
+//! the rest of the dead IPC async-spawn path (ADR-063
+//! §3-D1): the CLI never executes tools (ADR-021), so nothing
+//! produced those packets. Async task control lives in the
+//! per-principal `Async*` tool family instead. The handler holds a
+//! narrow [`ToolHost`]
 //! port; the daemon-side implementation (`AppState`) is reached only
 //! through the trait, so this module never imports
 //! `crate::daemon::state::AppState` directly.
@@ -39,9 +44,6 @@ use async_trait::async_trait;
 use tracing::warn;
 
 use crate::engine::tool_runtime::ToolRuntime;
-use crate::extensions::framework::async_exec::executor::{
-    AsyncExecutor, AsyncTaskId, AsyncToolConfig,
-};
 use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
@@ -68,12 +70,8 @@ pub(crate) trait ToolHost: Send + Sync {
     /// IDs for capability-gated tools.
     fn extension_store(&self) -> &Arc<ExtensionStore>;
 
-    /// Async tool runtime used to actually execute the spawned task.
+    /// Async tool runtime used to execute the requested tool.
     fn tool_runtime(&self) -> Arc<ToolRuntime>;
-
-    /// Async task executor that owns the spawned task's lifecycle
-    /// (cancellation, completion delivery).
-    fn async_task_executor(&self) -> Arc<AsyncExecutor>;
 
     /// Run-token registry (ADR-061 phase 2b, D6) that authenticates
     /// `ExecuteTool` requests carrying a `PEKO_RUN_TOKEN`.
@@ -99,12 +97,7 @@ impl RequestHandler for ToolHandler {
     }
 
     fn matches(&self, request: &RequestPacket) -> bool {
-        matches!(
-            request,
-            RequestPacket::AsyncSpawn { .. }
-                | RequestPacket::AsyncCancel { .. }
-                | RequestPacket::ExecuteTool { .. }
-        )
+        matches!(request, RequestPacket::ExecuteTool { .. })
     }
 
     async fn handle(
@@ -115,24 +108,6 @@ impl RequestHandler for ToolHandler {
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         match request {
-            RequestPacket::AsyncSpawn {
-                request_id,
-                tool_name,
-                params,
-                session_key,
-                workspace,
-            } => {
-                self.handle_async_spawn(
-                    request_id,
-                    tool_name,
-                    params,
-                    session_key,
-                    workspace,
-                    sink,
-                )
-                .await?;
-            }
-
             RequestPacket::ExecuteTool {
                 request_id,
                 tool_name,
@@ -151,13 +126,6 @@ impl RequestHandler for ToolHandler {
                     sink,
                 )
                 .await?;
-            }
-
-            RequestPacket::AsyncCancel {
-                request_id,
-                task_id,
-            } => {
-                self.handle_async_cancel(request_id, task_id, sink).await?;
             }
 
             // `matches()` returned true, so the exhaustive list above
@@ -185,8 +153,8 @@ struct SessionAttribution {
 impl ToolHandler {
     /// Resolve the owning principal's capability grants and active
     /// extension set server-side from a session key (ADR-042 + F8 —
-    /// see the module-level doc for the full chain). Both `AsyncSpawn`
-    /// and `ExecuteTool` share this attribution path (ADR-061).
+    /// see the module-level doc for the full chain). `ExecuteTool`
+    /// uses this attribution path (ADR-061).
     ///
     /// The principal name is the session's `agent` segment per ADR-042;
     /// `principal_manager` never returns a stale entry — it holds
@@ -204,7 +172,7 @@ impl ToolHandler {
     /// Fail-closed: any resolution failure returns all-`None` fields —
     /// deny-all downstream — and warns so the mismatch is visible in
     /// tracing without leaking data to the caller. `caller` labels the
-    /// warn line with the owning variant ("AsyncSpawn" / "ExecuteTool").
+    /// warn line with the owning variant ("ExecuteTool").
     async fn resolve_session_grants(
         &self,
         session_key: &str,
@@ -251,75 +219,8 @@ impl ToolHandler {
         }
     }
 
-    /// Spawn an async tool task.
-    ///
-    /// Capability grants are derived server-side from the session's
-    /// owning Principal (ADR-042). See the module-level doc for the
-    /// resolution chain. If the principal cannot be resolved, we fall
-    /// back to `None, None` (fail-closed) and log a warning so the
-    /// mismatch is visible in tracing without leaking data to the
-    /// caller.
-    async fn handle_async_spawn(
-        &self,
-        request_id: u64,
-        tool_name: String,
-        params: serde_json::Value,
-        session_key: String,
-        workspace: PathBuf,
-        sink: &dyn ResponseSink,
-    ) -> anyhow::Result<()> {
-        let attribution = self
-            .resolve_session_grants(&session_key, "AsyncSpawn")
-            .await;
-        let resolved_capabilities = attribution.capabilities;
-        let resolved_active_extensions = attribution.active_extensions;
-
-        let tool_runtime = self.host.tool_runtime();
-        let executor = self.host.async_task_executor();
-
-        let config = AsyncToolConfig::default();
-        let task_id = AsyncTaskId::new();
-
-        let receipt = executor
-            .execute(
-                task_id,
-                tool_name.clone(),
-                params.clone(),
-                session_key,
-                config,
-                move || {
-                    let runtime = tool_runtime.clone();
-                    let ws = workspace.clone();
-                    let name = tool_name.clone();
-                    let p = params.clone();
-                    // Move the resolved grants into the closure so the
-                    // executor owns the only copy (`'static` + `Send`).
-                    let grants = resolved_capabilities;
-                    let exts = resolved_active_extensions;
-                    Box::pin(async move {
-                        // `grants`/`exts` are `Option<Vec<String>>` —
-                        // server-derived, never packet-supplied. On
-                        // resolution failure they are `None`, which the
-                        // tool runtime treats as deny-all (fail-closed).
-                        runtime
-                            .execute_tool_with_workspace(&name, p, &ws, grants, exts)
-                            .await
-                    })
-                },
-            )
-            .await?;
-
-        let response = ResponsePacket::AsyncReceipt {
-            request_id,
-            receipt,
-        };
-        send_response(sink, response).await?;
-
-        Ok(())
-    }
-
     /// Execute a tool synchronously and return the result (ADR-061
-    /// phase 1). Unlike `AsyncSpawn` there is no executor handoff: the
+    /// phase 1). There is no executor handoff: the
     /// call awaits the tool inline (the tool's own context timeout
     /// applies, same as the agentic-loop path) and replies with a
     /// `ToolExecuted` packet carrying the funnel's
@@ -435,30 +336,6 @@ impl ToolHandler {
 
         Ok(())
     }
-
-    /// Cancel a running async task by id.
-    async fn handle_async_cancel(
-        &self,
-        request_id: u64,
-        task_id: String,
-        sink: &dyn ResponseSink,
-    ) -> anyhow::Result<()> {
-        let executor = self.host.async_task_executor();
-        let cancelled = executor.cancel(&task_id).await.unwrap_or(false);
-
-        let response = ResponsePacket::Done {
-            request_id,
-            success: cancelled,
-            error: if cancelled {
-                None
-            } else {
-                Some(format!("Task {task_id} not found or already completed"))
-            },
-        };
-        send_response(sink, response).await?;
-
-        Ok(())
-    }
 }
 
 /// Marker appended to `ToolExecuted::content` when the payload had to
@@ -514,6 +391,7 @@ fn tool_executed_packet(
 mod tests {
     use super::*;
     use crate::common::paths::PathResolver;
+    use crate::extensions::framework::async_exec::executor::AsyncExecutor;
     use crate::principal::config::{
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
@@ -534,7 +412,6 @@ mod tests {
         manager: Arc<PrincipalManager>,
         extension_store: Arc<ExtensionStore>,
         tool_runtime: Arc<ToolRuntime>,
-        executor: Arc<AsyncExecutor>,
         run_tokens: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
     }
 
@@ -547,9 +424,6 @@ mod tests {
         }
         fn tool_runtime(&self) -> Arc<ToolRuntime> {
             self.tool_runtime.clone()
-        }
-        fn async_task_executor(&self) -> Arc<AsyncExecutor> {
-            self.executor.clone()
         }
         fn run_token_registry(&self) -> Arc<crate::ipc::run_tokens::RunTokenRegistry> {
             self.run_tokens.clone()
@@ -638,9 +512,6 @@ mod tests {
             manager: Arc::clone(&manager),
             extension_store: Arc::new(ExtensionStore::new()),
             tool_runtime: Arc::clone(&tool_runtime),
-            executor: Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-            )),
             run_tokens: Arc::clone(&run_tokens),
         };
         Fixture {

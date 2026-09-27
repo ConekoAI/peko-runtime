@@ -1113,11 +1113,10 @@ impl IpcServer {
         crate::ipc::handlers::RequestDispatcher::dispatch(state, request, &caller, sink, peer).await
     }
 
-    // (handle_async_spawn / handle_async_cancel retired to
-    // `ipc::handlers::tool::ToolHandler` under F6 step 3. The async
-    // tool execution path now lives behind a narrow `ToolHost` port
-    // and resolves capability grants server-side from the session's
-    // owning Principal — see F8 / ADR-042.)
+    // (The `AsyncSpawn` / `AsyncCancel` IPC variants are deleted
+    // (2026-09-27, ADR-063 (dead IPC path)): the CLI never executes
+    // tools, so the path had no producer. Async task control lives in
+    // the per-principal `Async*` tool family.)
 
     // (handle_session_steer / handle_session_steer_list /
     // handle_session_steer_cancel retired under ADR-042 along with

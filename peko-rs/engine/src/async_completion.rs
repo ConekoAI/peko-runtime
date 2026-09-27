@@ -120,10 +120,19 @@ pub fn truncate_for_preview(text: &str) -> String {
 ///
 /// The synthetic message contains:
 /// - One `Text` header summarizing how many tasks completed.
-/// - One `ToolResult` block per event, with `tool_call_id` of the
-///   form `synthetic:<task_id>` so the model can reference a specific
-///   completed task in its next tool call.
+/// - One `Text` block per event, carrying the task id, the tool name, and
+///   the terminal status so the model can reference a specific completed
+///   task in its next tool call.
 /// - Large results are truncated via [`truncate_for_preview`].
+///
+/// **Why `Text` and not `ToolResult` (P2-6):** a `ToolResult` block is only
+/// well-defined as the reply to a matching `tool_use` the *assistant*
+/// emitted. A synthetic completion has no such `tool_use` anywhere in the
+/// history, and the loop's `repair_history` pass runs on session load —
+/// *before* this message is constructed — so the orphan would reach the
+/// provider unrepaired and 400 on the providers that validate
+/// tool_use/tool_result pairing. Text blocks carry the same information
+/// with no pairing requirement, so the orphan class simply does not exist.
 ///
 /// Generic over [`AsyncCompletionLike`] so the function works against
 /// `peko_extension_api::CompletionEvent` (used directly in
@@ -148,19 +157,22 @@ pub fn build_async_completion_message<E: AsyncCompletionLike>(
         text: format!("[Async task results — {n} completed since last turn]"),
     }];
     for event in for_session {
-        let is_error = matches!(
-            event.status(),
-            AsyncTaskStatus::Failed { .. }
-                | AsyncTaskStatus::TimedOut { .. }
-                | AsyncTaskStatus::Cancelled
-        );
-        content.push(ContentBlock::ToolResult {
-            tool_call_id: format!("synthetic:{}", event.task_id()),
-            name: event.tool_name().to_string(),
-            content: vec![ContentBlock::Text {
-                text: truncate_for_preview(&event.result().to_string()),
-            }],
-            is_error,
+        let status_word = match event.status() {
+            AsyncTaskStatus::Completed { .. } => "completed",
+            AsyncTaskStatus::Failed { .. } => "failed",
+            AsyncTaskStatus::Cancelled => "cancelled",
+            AsyncTaskStatus::TimedOut { .. } => "timed out",
+            AsyncTaskStatus::Pending => "pending",
+            AsyncTaskStatus::Running => "running",
+        };
+        content.push(ContentBlock::Text {
+            text: format!(
+                "[Async task result — task_id: {} — tool: {} — status: {}]\n{}",
+                event.task_id(),
+                event.tool_name(),
+                status_word,
+                truncate_for_preview(&event.result().to_string()),
+            ),
         });
     }
 
@@ -280,27 +292,17 @@ mod tests {
             other => panic!("expected Text header, got {other:?}"),
         }
 
-        // Second block must be a ToolResult with synthetic:<task_id>.
+        // Second block must be a Text block carrying the task id, the
+        // tool name, and the status (P2-6: no orphan ToolResult).
         match &msg.content[1] {
-            ContentBlock::ToolResult {
-                tool_call_id,
-                name,
-                content,
-                is_error,
-            } => {
-                assert_eq!(tool_call_id, "synthetic:shell:x");
-                assert_eq!(name, "shell");
-                assert!(!(*is_error));
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    ContentBlock::Text { text } => {
-                        // Full raw result JSON, not truncated.
-                        assert!(text.contains("exit_code"));
-                    }
-                    other => panic!("expected Text inside ToolResult, got {other:?}"),
-                }
+            ContentBlock::Text { text } => {
+                assert!(text.contains("task_id: shell:x"), "got {text}");
+                assert!(text.contains("tool: shell"), "got {text}");
+                assert!(text.contains("status: completed"), "got {text}");
+                // Full raw result JSON, not truncated.
+                assert!(text.contains("exit_code"));
             }
-            other => panic!("expected ToolResult block, got {other:?}"),
+            other => panic!("expected Text block, got {other:?}"),
         }
 
         assert_eq!(msg.content.len(), 2);
@@ -322,17 +324,22 @@ mod tests {
             other => panic!("expected Text header, got {other:?}"),
         }
 
-        assert_eq!(msg.content.len(), 3, "header + 2 tool result blocks");
-        // Sanity-check the two tool_call_id values.
+        assert_eq!(msg.content.len(), 3, "header + 2 result blocks");
+        // Sanity-check the two task ids carried by the Text blocks.
         let mut ids: Vec<String> = Vec::new();
         for block in &msg.content[1..] {
-            if let ContentBlock::ToolResult { tool_call_id, .. } = block {
-                ids.push(tool_call_id.clone());
+            if let ContentBlock::Text { text } = block {
+                let id = text
+                    .split("task_id: ")
+                    .nth(1)
+                    .and_then(|rest| rest.split(" — ").next())
+                    .expect("task id marker");
+                ids.push(id.to_string());
             } else {
-                panic!("expected only ToolResult blocks after header, got {block:?}");
+                panic!("expected only Text blocks after header, got {block:?}");
             }
         }
-        assert_eq!(ids, vec!["synthetic:shell:x", "synthetic:shell:y"]);
+        assert_eq!(ids, vec!["shell:x", "shell:y"]);
     }
 
     #[test]
@@ -349,10 +356,10 @@ mod tests {
         let msg = build_async_completion_message(&events, "session_a");
         let msg = msg.expect("failed event should produce Some(msg)");
         match &msg.content[1] {
-            ContentBlock::ToolResult { is_error, .. } => {
-                assert!(*is_error, "Failed status should set is_error=true");
+            ContentBlock::Text { text } => {
+                assert!(text.contains("status: failed"), "got {text}");
             }
-            other => panic!("expected ToolResult block, got {other:?}"),
+            other => panic!("expected Text block, got {other:?}"),
         }
 
         // TimedOut
@@ -367,10 +374,10 @@ mod tests {
         let msg = build_async_completion_message(&events, "session_a");
         let msg = msg.expect("timed-out event should produce Some(msg)");
         match &msg.content[1] {
-            ContentBlock::ToolResult { is_error, .. } => {
-                assert!(*is_error, "TimedOut status should set is_error=true");
+            ContentBlock::Text { text } => {
+                assert!(text.contains("status: timed out"), "got {text}");
             }
-            other => panic!("expected ToolResult block, got {other:?}"),
+            other => panic!("expected Text block, got {other:?}"),
         }
 
         // Cancelled
@@ -383,10 +390,10 @@ mod tests {
         let msg = build_async_completion_message(&events, "session_a");
         let msg = msg.expect("cancelled event should produce Some(msg)");
         match &msg.content[1] {
-            ContentBlock::ToolResult { is_error, .. } => {
-                assert!(*is_error, "Cancelled status should set is_error=true");
+            ContentBlock::Text { text } => {
+                assert!(text.contains("status: cancelled"), "got {text}");
             }
-            other => panic!("expected ToolResult block, got {other:?}"),
+            other => panic!("expected Text block, got {other:?}"),
         }
 
         // Completed
@@ -401,10 +408,10 @@ mod tests {
         let msg = build_async_completion_message(&events, "session_a");
         let msg = msg.expect("completed event should produce Some(msg)");
         match &msg.content[1] {
-            ContentBlock::ToolResult { is_error, .. } => {
-                assert!(!(*is_error), "Completed status should set is_error=false");
+            ContentBlock::Text { text } => {
+                assert!(text.contains("status: completed"), "got {text}");
             }
-            other => panic!("expected ToolResult block, got {other:?}"),
+            other => panic!("expected Text block, got {other:?}"),
         }
     }
 
@@ -462,17 +469,14 @@ mod tests {
         let msg = build_async_completion_message(&events, "session_a")
             .expect("event should produce Some(msg)");
         match &msg.content[1] {
-            ContentBlock::ToolResult { content, .. } => match &content[0] {
-                ContentBlock::Text { text } => {
-                    assert!(
-                        text.ends_with(TRUNCATION_SUFFIX),
-                        "large result should be truncated with suffix; got len {}",
-                        text.len()
-                    );
-                }
-                other => panic!("expected Text, got {other:?}"),
-            },
-            other => panic!("expected ToolResult, got {other:?}"),
+            ContentBlock::Text { text } => {
+                assert!(
+                    text.ends_with(TRUNCATION_SUFFIX),
+                    "large result should be truncated with suffix; got len {}",
+                    text.len()
+                );
+            }
+            other => panic!("expected Text block, got {other:?}"),
         }
     }
 

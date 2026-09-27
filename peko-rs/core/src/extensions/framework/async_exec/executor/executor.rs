@@ -1,14 +1,14 @@
 //! Unified executor for all async tool operations
 
 use super::completion_queue::{CompletionEvent, InboxItem, SteeringMessage};
-use super::delivery::{QueueDelivery, ResultDelivery};
 use super::dispatch::ToolDispatchContext;
-use super::queue::{AsyncResultQueueManager, SharedAsyncResultQueueManager};
-use super::registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata};
-use super::task_file::{TaskFileRecord, TaskFileWriter};
-use super::types::{
-    AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget, WaitResult,
+use super::registry::{
+    AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata,
+    PARTIAL_OUTPUT_PREVIEW_BYTES,
 };
+use super::task_file::{TaskFileRecord, TaskFileWriter};
+use super::types::{AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult};
+use super::wake::{notify_completion_wake, CompletionWakeNotice};
 use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::inbox::SessionInbox;
 use crate::extensions::framework::transport::async_transport::BoxedExecutionFn;
@@ -30,24 +30,88 @@ pub fn default_inbox_factory() -> peko_session::InboxFactory {
 /// `PrincipalManager`, `AsyncExecutor`, and cron engine so the
 /// per-session run permit lives in a single permit space (splitting
 /// it let two turns run concurrently on one session JSONL — finding
-/// N1, 2026-08-07 field test).
+/// N1, 2026-08-07 field test). Production fallbacks should prefer
+/// [`shared_inbox_registry`], which defers to the daemon-installed
+/// registry once `AppState` installs it.
 #[must_use]
 pub fn standalone_inbox_registry() -> Arc<InboxRegistry> {
     Arc::new(InboxRegistry::new(default_inbox_factory()))
 }
+
+/// Process-global slot for the daemon-shared `InboxRegistry`.
+///
+/// `AppState::new` installs the daemon's registry here
+/// ([`install_shared_inbox_registry`]). Components that are constructed
+/// outside the composition root but still produce completion events —
+/// `BashTool`'s process-global background executor, the CLI daemon
+/// command's pre-installed `ExtensionCore` — resolve their registry
+/// through [`shared_inbox_registry`] so their completions land in the
+/// same inboxes the agentic loop drains, regardless of construction
+/// order (the daemon's global `ExtensionCore` can be installed by
+/// `cli/main.rs` before `AppState` exists).
+static SHARED_INBOX_REGISTRY: std::sync::OnceLock<std::sync::RwLock<Option<Arc<InboxRegistry>>>> =
+    std::sync::OnceLock::new();
+
+fn shared_slot() -> &'static std::sync::RwLock<Option<Arc<InboxRegistry>>> {
+    SHARED_INBOX_REGISTRY.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Install the daemon-shared `InboxRegistry` as the process-global
+/// default. Idempotent-safe: a later install replaces the earlier one
+/// (daemon restart in-process, tests). Called by `AppState::new`.
+pub fn install_shared_inbox_registry(registry: Arc<InboxRegistry>) {
+    let mut guard = shared_slot().write().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(registry);
+}
+
+/// Resolve the daemon-shared `InboxRegistry`, falling back to a
+/// process-wide standalone registry when no daemon has installed one
+/// (CLI one-shots, unit tests). The fallback is itself cached so every
+/// fallback caller shares one registry rather than fragmenting per call.
+#[must_use]
+pub fn shared_inbox_registry() -> Arc<InboxRegistry> {
+    if let Some(reg) = shared_slot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return reg;
+    }
+    static FALLBACK: std::sync::OnceLock<Arc<InboxRegistry>> = std::sync::OnceLock::new();
+    FALLBACK
+        .get_or_init(|| Arc::new(InboxRegistry::new(default_inbox_factory())))
+        .clone()
+}
 use anyhow::Result;
 use peko_tools_core::ToolResult;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
+
+/// Default bound on concurrently *running* tasks per executor
+/// instance. Additional spawns stay `Pending` (queued on the
+/// semaphore) until a running task reaches a terminal state. This is
+/// the backpressure the bare `tokio::spawn` used to lack — a model
+/// looping `AsyncSpawn` can no longer spawn unbounded concurrent work.
+///
+/// **The bound is per `AsyncExecutor`, not process-global.** Each
+/// executor instance carries its own semaphore, and a process has
+/// several: the daemon router's, `BashTool`'s background executor,
+/// one per agent run, one per subagent executor. The effective
+/// process-wide ceiling for *running* tasks is therefore
+/// `8 × executor instances`, with any number of additional tasks
+/// queued behind them. The name is explicit about that scope so the
+/// number is not mistaken for a global cap.
+pub const DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR: usize = 8;
 
 /// Internal outcome of executing an async task, distinguishing timeout from failure
 enum TaskOutcome {
     Success(Value),
     Failure(anyhow::Error),
-    Timeout,
+    /// Carries the timeout seconds so the terminal record doesn't have
+    /// to re-derive (and `expect`) them from the config.
+    Timeout(u64),
 }
 
 /// Unified executor for all async tool operations
@@ -56,17 +120,14 @@ enum TaskOutcome {
 /// - Task registration and tracking
 /// - Task file writing for agent polling
 /// - Automatic status updates
-/// - Result formatting and caching
+/// - Completion delivery via the per-session inbox (and the optional
+///   idle-session wake hook in [`super::wake`])
+/// - A semaphore bound ([`DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR`]) on
+///   concurrently running tasks
 #[derive(Clone)]
 pub struct AsyncExecutor {
     /// Task registry for tracking all async operations
     registry: SharedAsyncTaskRegistry,
-    /// Queue manager for queue-based delivery (deprecated, kept for compatibility)
-    queue_manager: SharedAsyncResultQueueManager,
-    /// Registered delivery mechanisms by target type
-    deliveries: Arc<RwLock<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>>,
-    /// Default delivery target
-    default_delivery: DeliveryTarget,
     /// Task file writer for disk-based polling
     task_file_writer: Option<TaskFileWriter>,
     /// Per-session inbox registry. The executor looks up the
@@ -75,6 +136,10 @@ pub struct AsyncExecutor {
     /// per-call `SessionInbox` plumbing; completion
     /// delivery is now session-keyed and daemon-global.
     inbox_registry: Arc<InboxRegistry>,
+    /// Bound on concurrently running tasks. Acquired inside the spawned
+    /// future before the status flips to `Running`; queued tasks remain
+    /// `Pending` and cancellable while they wait.
+    permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl AsyncExecutor {
@@ -100,20 +165,20 @@ impl AsyncExecutor {
             .into();
         Self {
             registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
-            queue_manager: Arc::new(RwLock::new(AsyncResultQueueManager::new())),
-            deliveries: Arc::new(RwLock::new(HashMap::new())),
-            default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
             inbox_registry,
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR,
+            )),
         }
     }
 
-    /// Create with existing registries (for sharing with other components).
-    /// `inbox_registry` is required for the same reason as in [`Self::new`].
+    /// Create with an existing task registry (for sharing with other
+    /// components). `inbox_registry` is required for the same reason as
+    /// in [`Self::new`].
     #[must_use]
     pub fn with_registries(
         registry: SharedAsyncTaskRegistry,
-        queue_manager: SharedAsyncResultQueueManager,
         inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
         let task_file_writer = crate::extensions::framework::paths::default_data_dir()
@@ -121,28 +186,19 @@ impl AsyncExecutor {
             .into();
         Self {
             registry,
-            queue_manager,
-            deliveries: Arc::new(RwLock::new(HashMap::new())),
-            default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
             inbox_registry,
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR,
+            )),
         }
     }
 
-    /// Register a delivery mechanism for a target type
-    pub async fn register_delivery(
-        &self,
-        target: DeliveryTarget,
-        delivery: Box<dyn ResultDelivery>,
-    ) {
-        let mut deliveries = self.deliveries.write().await;
-        deliveries.insert(target, delivery);
-    }
-
-    /// Set the default delivery target
+    /// Override the concurrent-task bound (default
+    /// [`DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR`]).
     #[must_use]
-    pub fn with_default_delivery(mut self, target: DeliveryTarget) -> Self {
-        self.default_delivery = target;
+    pub fn with_max_concurrent(mut self, max: usize) -> Self {
+        self.permits = Arc::new(tokio::sync::Semaphore::new(max.max(1)));
         self
     }
 
@@ -170,10 +226,163 @@ impl AsyncExecutor {
         &self.registry
     }
 
-    /// Get a reference to the queue manager
-    #[must_use]
-    pub fn queue_manager(&self) -> &SharedAsyncResultQueueManager {
-        &self.queue_manager
+    /// Flip a spawned task's `deliver_completion` flag on. The
+    /// `AsyncExecutionRouter` spawns every routed call with
+    /// `deliver_completion: false` (a call that finishes inside the
+    /// router timeout already returned its result synchronously) and
+    /// flips it here when the call detaches — the agent got a `queued`
+    /// receipt, so the eventual completion must reach its inbox.
+    ///
+    /// Returns `false` only when the task id is unknown.
+    ///
+    /// **Terminal race, closed here.** The flip happens *after* the
+    /// router's last status poll, so the task can reach a terminal state
+    /// inside the window between that poll and this call. If the spawned
+    /// task's own delivery pass then ran with `deliver_completion` still
+    /// `false`, the outcome would never be pushed and — with the wake
+    /// path in place — an idle agent would never learn the task finished
+    /// ("poll `AsyncOutput`" is precisely what an idle agent does not
+    /// do). So when this flip lands on an *already-terminal* entry that
+    /// has not been delivered yet, this method claims and delivers the
+    /// outcome itself. The `delivered` claim on the entry makes the two
+    /// racers (this flip and the spawned task's delivery pass) mutually
+    /// exclusive.
+    pub async fn enable_completion_delivery(&self, task_id: &AsyncTaskId) -> bool {
+        // Arm the flag; claim delivery atomically when the task is
+        // already terminal. A non-terminal task keeps the claim for its
+        // own delivery pass (which re-checks `deliver_completion` under
+        // the same write lock).
+        let already_terminal = {
+            let mut registry = self.registry.write().await;
+            let Some(entry) = registry.get_mut(task_id) else {
+                return false;
+            };
+            entry.config.deliver_completion = true;
+            if entry.is_delivered() {
+                // The spawned task's delivery pass already won the claim.
+                return true;
+            }
+            if !entry.status.is_terminal() {
+                // Will be delivered at terminal time.
+                return true;
+            }
+            entry.mark_delivered();
+            Some(entry.clone())
+        };
+
+        if let Some(claimed) = already_terminal {
+            self.deliver_claimed(claimed).await;
+        }
+        true
+    }
+
+    /// Claim the right to deliver a task's terminal outcome, returning
+    /// the entry snapshot to deliver from.
+    ///
+    /// The claim is a check-and-set under the registry's write lock: the
+    /// first of `{spawned task's delivery pass, late
+    /// `enable_completion_delivery` flip}` to reach it wins, and the
+    /// loser observes `delivered == true` and stands down. Returns `None`
+    /// when the task is unknown, delivery is suppressed
+    /// (`deliver_completion == false`), or the outcome was already
+    /// delivered.
+    async fn claim_delivery(&self, task_id: &AsyncTaskId) -> Option<AsyncTaskEntry> {
+        let mut registry = self.registry.write().await;
+        let entry = registry.get_mut(task_id)?;
+        if !entry.config.deliver_completion || entry.is_delivered() {
+            return None;
+        }
+        entry.mark_delivered();
+        Some(entry.clone())
+    }
+
+    /// Deliver a claimed terminal outcome: push a `CompletionEvent` into
+    /// the parent session's inbox (or a cron `SteeringMessage` into the
+    /// principal's root inbox), then fire the process-global wake hook so
+    /// an idle session gets a successor turn (§6.1b).
+    ///
+    /// A caller that only claims and never calls this leaks the claim —
+    /// the two call sites below are exhaustive.
+    async fn deliver_claimed(&self, claimed: AsyncTaskEntry) {
+        let task_id = claimed.task_id.clone();
+        let tool_name = claimed.tool_name.clone();
+        let parent_session_key = claimed.parent_session_key.clone();
+
+        let status = claimed.status.clone();
+        let mut result = claimed.result.clone().unwrap_or(serde_json::Value::Null);
+
+        // §4.1: a cancelled or timed-out task has no real result — the
+        // closure was dropped mid-flight. Surface whatever the task
+        // recorded in its progress buffer so the agent sees what happened
+        // instead of an opaque error.
+        if !matches!(status, AsyncTaskStatus::Completed { .. }) {
+            if let Some(partial) = claimed.partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES) {
+                result = match result {
+                    Value::Object(mut map) => {
+                        map.insert("partial_output".to_string(), Value::String(partial));
+                        Value::Object(map)
+                    }
+                    Value::Null => serde_json::json!({ "partial_output": partial }),
+                    other => serde_json::json!({ "result": other, "partial_output": partial }),
+                };
+            }
+        }
+
+        let output_path = self
+            .task_file_writer
+            .as_ref()
+            .map(|w| w.task_file_path(&task_id))
+            .unwrap_or_else(std::path::PathBuf::new);
+
+        let steer_target = claimed
+            .config
+            .principal_root_session_key
+            .clone()
+            .filter(|_| claimed.config.wake_on_completion);
+        let (delivered_key, via_steering) = if let Some(target) = steer_target {
+            let label = claimed.config.label.clone().unwrap_or_default();
+            let text = crate::extensions::framework::async_exec::steer::format_cron_steer_message(
+                &label, &task_id, &tool_name, &status,
+            );
+            let inbox = self.inbox_registry.get_or_create(&target).await;
+            inbox
+                .push(InboxItem::Steering(SteeringMessage::new(text)).into())
+                .await;
+            (target, true)
+        } else {
+            let event = CompletionEvent {
+                task_id: task_id.clone(),
+                tool_name: tool_name.clone(),
+                result,
+                status,
+                completed_at: chrono::Utc::now(),
+                output_path,
+                parent_session_key: parent_session_key.clone(),
+            };
+            let inbox = self.inbox_registry.get_or_create(&parent_session_key).await;
+            inbox.push(InboxItem::Completion(event).into()).await;
+            (parent_session_key, false)
+        };
+
+        if claimed.config.wake_on_completion {
+            notify_completion_wake(CompletionWakeNotice {
+                session_key: delivered_key,
+                task_id,
+                tool_name,
+                principal_id: claimed.config.principal_id.clone(),
+                via_steering,
+            });
+        }
+    }
+
+    /// Claim and deliver a task's terminal outcome. The single delivery
+    /// entry point shared by the spawned task (at terminal write) and a
+    /// late `enable_completion_delivery` flip (terminal race, above).
+    async fn deliver_terminal_outcome(&self, task_id: &AsyncTaskId) {
+        let Some(claimed) = self.claim_delivery(task_id).await else {
+            return;
+        };
+        self.deliver_claimed(claimed).await;
     }
 
     /// Execute an async task with the unified executor (internal)
@@ -213,9 +422,9 @@ impl AsyncExecutor {
                 .timeout_millis
                 .map(|ms| ms.div_ceil(1000))
                 .or(config.timeout_secs);
-            record.callback_mode = config
-                .delivery_target
-                .map(|dt| format!("{:?}", dt).to_lowercase());
+            // `callback_mode` was the legacy delivery-target audit field;
+            // the delivery stack is gone, so it stays unset.
+            record.callback_mode = None;
             if let Err(e) = writer.write(&record).await {
                 tracing::warn!("Failed to write initial task file for {}: {}", task_id, e);
             }
@@ -250,19 +459,6 @@ impl AsyncExecutor {
             registry.register(entry);
         }
 
-        // Determine delivery target and mechanism
-        let delivery_target = config.delivery_target.unwrap_or(self.default_delivery);
-        let delivery = {
-            let deliveries = self.deliveries.read().await;
-            deliveries.get(&delivery_target).cloned()
-        };
-
-        // Fall back to queue delivery if no specific mechanism registered
-        let delivery: Box<dyn ResultDelivery> = match delivery {
-            Some(d) => d,
-            None => Box::new(QueueDelivery::new(self.queue_manager.clone())),
-        };
-
         // Clone what we need for the spawned task
         let registry_clone = self.registry.clone();
         let task_id_clone = task_id.clone();
@@ -278,19 +474,43 @@ impl AsyncExecutor {
             .timeout_millis
             .map(std::time::Duration::from_millis)
             .or(config.timeout_secs.map(std::time::Duration::from_secs));
-        let callback_mode = config
-            .delivery_target
-            .map(|dt| format!("{:?}", dt).to_lowercase());
         let params_for_spawn = params.clone();
-        let parent_session_key_for_completion = parent_session_key.clone();
-        let inbox_registry = self.inbox_registry.clone();
-        // Clone the full config so the spawned task can read
-        // `wake_on_completion` and `principal_root_session_key` on
-        // terminal outcome delivery.
-        let config_for_spawn = config.clone();
+        let permits = self.permits.clone();
+        // The delivery pass runs inside the spawned task but goes through
+        // a clone of the executor, so it shares this executor's registry,
+        // inbox registry, and task-file writer (see
+        // `deliver_terminal_outcome`).
+        let executor_for_delivery = self.clone();
 
         // Spawn the background execution
         tokio::spawn(async move {
+            // Concurrency bound: wait for a running slot before doing
+            // any work. The task stays `Pending` while queued here, so
+            // `AsyncList`/`AsyncStatus` honestly report it as not yet
+            // running, and `cancel` still flips it to `Cancelled`
+            // (checked again after acquisition below).
+            let Ok(_permit) = permits.acquire_owned().await else {
+                // Semaphore closed — executor dropped. Nothing to do.
+                return;
+            };
+
+            // A cancel that landed while this task was queued on the
+            // semaphore must not run the closure.
+            let cancelled_while_queued = {
+                let registry = registry_clone.read().await;
+                registry
+                    .get(&task_id_clone)
+                    .map(|e| matches!(e.status, AsyncTaskStatus::Cancelled))
+                    .unwrap_or(false)
+            };
+            if cancelled_while_queued {
+                tracing::debug!(
+                    "Task {} was cancelled while queued; skipping execution",
+                    task_id_clone
+                );
+                return;
+            }
+
             // Update status to running
             {
                 let mut registry = registry_clone.write().await;
@@ -300,7 +520,7 @@ impl AsyncExecutor {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
                 record.params = Some(params_for_spawn.clone());
                 record.timeout_requested = timeout_secs;
-                record.callback_mode = callback_mode.clone();
+                record.callback_mode = None;
                 record.set_running();
                 if let Err(e) = writer.write(&record).await {
                     tracing::warn!(
@@ -316,7 +536,7 @@ impl AsyncExecutor {
                 Some(duration) => match tokio::time::timeout(duration, execution_fn()).await {
                     Ok(Ok(value)) => TaskOutcome::Success(value),
                     Ok(Err(e)) => TaskOutcome::Failure(e),
-                    Err(_) => TaskOutcome::Timeout,
+                    Err(_) => TaskOutcome::Timeout(timeout_secs.unwrap_or(0)),
                 },
                 None => match execution_fn().await {
                     Ok(value) => TaskOutcome::Success(value),
@@ -324,68 +544,48 @@ impl AsyncExecutor {
                 },
             };
 
-            // Check if task was cancelled before updating
-            let was_cancelled = {
-                let registry = registry_clone.read().await;
-                registry
-                    .get(&task_id_clone)
-                    .map(|e| matches!(e.status, AsyncTaskStatus::Cancelled))
-                    .unwrap_or(false)
-            };
-
-            if was_cancelled {
-                tracing::warn!(
-                    "Task {} was cancelled, skipping result update + inbox push",
-                    task_id_clone
-                );
-                return;
-            }
-
-            // The task body may have already recorded a terminal status
-            // itself (the subagent closure writes `Failed` with the
-            // `SubagentResult` metadata before returning its opaque
-            // JSON). Don't clobber that with `Completed` just because the
-            // closure returned `Ok` — `wait_for_run` readers key on the
-            // status.
-            let already_terminal = {
-                let registry = registry_clone.read().await;
-                registry
-                    .get(&task_id_clone)
-                    .map(|e| {
-                        matches!(
-                            e.status,
-                            AsyncTaskStatus::Failed { .. } | AsyncTaskStatus::TimedOut { .. }
-                        )
-                    })
-                    .unwrap_or(false)
-            };
-
-            // Map outcome to status and update registry
-            let status = match &outcome {
-                TaskOutcome::Success(value) => AsyncTaskStatus::Completed {
-                    result: ToolResult::success(value.clone()),
-                },
-                TaskOutcome::Failure(e) => AsyncTaskStatus::Failed {
-                    error: e.to_string(),
-                },
-                TaskOutcome::Timeout => AsyncTaskStatus::TimedOut {
-                    // `Timeout` is only produced by the `Some(duration)` branch above,
-                    // so `timeout_secs` is guaranteed to be `Some` here.
-                    error: format!(
-                        "Task timed out after {}s",
-                        timeout_secs.expect("Timeout implies Some timeout_secs")
-                    ),
-                },
-            };
-
+            // Terminal-status bookkeeping runs under ONE write-lock
+            // acquisition: a `cancel` that lands between the check and
+            // the write (the old read-lock/write-lock gap, P1-5) can no
+            // longer be clobbered by a `Completed`/`Failed` overwrite —
+            // `cancel` takes the same write lock, so the two interleave
+            // atomically per task.
             {
                 let mut registry = registry_clone.write().await;
-                if !already_terminal {
-                    registry.update_status(&task_id_clone, status.clone());
-
-                    // Store the result
-                    if let TaskOutcome::Success(ref value) = outcome {
-                        if let Some(entry) = registry.get_mut(&task_id_clone) {
+                if let Some(entry) = registry.get_mut(&task_id_clone) {
+                    if matches!(entry.status, AsyncTaskStatus::Cancelled) {
+                        tracing::warn!(
+                            "Task {} was cancelled, skipping result update + inbox push",
+                            task_id_clone
+                        );
+                        return;
+                    }
+                    // The task body may have already recorded a terminal
+                    // status itself (the subagent closure writes `Failed`
+                    // with the `SubagentResult` metadata before returning
+                    // its opaque JSON). Don't clobber that with
+                    // `Completed` just because the closure returned `Ok`
+                    // — `wait_for_run` readers key on the status.
+                    if !entry.status.is_terminal() {
+                        let status = match &outcome {
+                            TaskOutcome::Success(value) => AsyncTaskStatus::Completed {
+                                result: ToolResult::success(value.clone()),
+                            },
+                            TaskOutcome::Failure(e) => AsyncTaskStatus::Failed {
+                                error: e.to_string(),
+                            },
+                            TaskOutcome::Timeout(secs) => AsyncTaskStatus::TimedOut {
+                                error: format!("Task timed out after {secs}s"),
+                            },
+                        };
+                        let terminal = status.is_terminal();
+                        entry.status = status;
+                        if terminal {
+                            entry.completed_at = Some(chrono::Utc::now());
+                            entry.notify_completion();
+                        }
+                        // Store the result
+                        if let TaskOutcome::Success(ref value) = outcome {
                             entry.set_result(value.clone());
                         }
                     }
@@ -397,7 +597,7 @@ impl AsyncExecutor {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
                 record.params = Some(params_for_spawn.clone());
                 record.timeout_requested = timeout_secs;
-                record.callback_mode = callback_mode.clone();
+                record.callback_mode = None;
                 match outcome {
                     TaskOutcome::Success(value) => {
                         record.set_completed(value);
@@ -405,11 +605,8 @@ impl AsyncExecutor {
                     TaskOutcome::Failure(e) => {
                         record.set_failed(e.to_string());
                     }
-                    TaskOutcome::Timeout => {
-                        record.set_timed_out(format!(
-                            "Task timed out after {}s",
-                            timeout_secs.expect("Timeout implies Some timeout_secs")
-                        ));
+                    TaskOutcome::Timeout(secs) => {
+                        record.set_timed_out(format!("Task timed out after {secs}s"));
                     }
                 }
                 if let Err(e) = writer.write(&record).await {
@@ -421,71 +618,16 @@ impl AsyncExecutor {
                 }
             }
 
-            // Deliver the result
-            if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
-                if let Err(e) = delivery.deliver(entry).await {
-                    tracing::debug!("Delivery result for task {}: {}", task_id_clone, e);
-                }
-            } else {
-                tracing::warn!(
-                    "executor: task {} not found in registry after completion",
-                    task_id_clone
-                );
-            }
-
-            // NEW: push a completion event to the per-session inbox
-            // so the agentic loop can drain it at the next iteration.
-            // The session's inbox is resolved via the daemon-global
-            // `InboxRegistry` keyed by `parent_session_key`.
-            //
-            // When the spawn was set up by the cron engine with
-            // `wake_on_completion=true` and a `principal_root_session_key`,
-            // we instead push a human-readable `SteeringMessage` into
-            // the principal's root inbox — the agent picks it up at
-            // the next iteration start as a user-role turn and can call
-            // TaskOutput/AsyncOutput for the full task detail. Without
-            // this branch, cron-scheduled runs would silently complete
-            // and never tell the principal they did.
-            let steer_target = config_for_spawn
-                .principal_root_session_key
-                .clone()
-                .filter(|_| config_for_spawn.wake_on_completion);
-            if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
-                let status = entry.status.clone();
-                let result = entry.result.clone().unwrap_or(serde_json::Value::Null);
-                let output_path = task_file_writer_clone
-                    .as_ref()
-                    .map(|w| w.task_file_path(&task_id_clone))
-                    .unwrap_or_else(|| std::path::PathBuf::from(""));
-                if let Some(target) = steer_target {
-                    let label = config_for_spawn.label.clone().unwrap_or_default();
-                    let text =
-                        crate::extensions::framework::async_exec::steer::format_cron_steer_message(
-                            &label,
-                            &task_id_clone,
-                            &tool_name,
-                            &status,
-                        );
-                    let inbox = inbox_registry.get_or_create(&target).await;
-                    inbox
-                        .push(InboxItem::Steering(SteeringMessage::new(text)).into())
-                        .await;
-                } else {
-                    let event = CompletionEvent {
-                        task_id: task_id_clone.clone(),
-                        tool_name: tool_name.clone(),
-                        result,
-                        status,
-                        completed_at: chrono::Utc::now(),
-                        output_path,
-                        parent_session_key: parent_session_key_for_completion.clone(),
-                    };
-                    let inbox = inbox_registry
-                        .get_or_create(&parent_session_key_for_completion)
-                        .await;
-                    inbox.push(InboxItem::Completion(event).into()).await;
-                }
-            }
+            // Deliver the terminal outcome: claim under the registry's
+            // write lock, then push a `CompletionEvent` into the parent
+            // session's inbox (or a cron `SteeringMessage` into the
+            // principal's root inbox) and fire the wake hook. The claim
+            // makes this racer-exclusive with a late
+            // `enable_completion_delivery` flip — see that method for the
+            // terminal race this closes.
+            executor_for_delivery
+                .deliver_terminal_outcome(&task_id_clone)
+                .await;
         });
 
         // Return receipt immediately
@@ -526,6 +668,44 @@ impl AsyncExecutor {
             config,
             TaskMetadata::None,
             None,
+            boxed_fn,
+        )
+        .await
+    }
+
+    /// Like [`Self::execute`], but wires a `watch` abort channel into the
+    /// task: the sender is attached to the `AsyncTaskEntry` so
+    /// [`Self::cancel`] flips it, and the receiver is handed to the
+    /// execution closure so cooperative bodies (e.g. background `Bash`)
+    /// can short-circuit instead of running to natural completion after
+    /// an `AsyncStop`. Returns the receipt plus the receiver.
+    pub async fn execute_cancellable<F, Fut>(
+        &self,
+        task_id: AsyncTaskId,
+        tool_name: impl Into<String>,
+        params: Value,
+        parent_session_key: impl Into<String>,
+        config: AsyncToolConfig,
+        execution_fn: F,
+    ) -> Result<AsyncTaskReceipt>
+    where
+        F: FnOnce(tokio::sync::watch::Receiver<bool>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
+    {
+        let tool_name = tool_name.into();
+        let parent_session_key = parent_session_key.into();
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let boxed_fn: BoxedExecutionFn = Box::new(move || Box::pin(execution_fn(rx)));
+
+        self.execute_inner(
+            task_id,
+            tool_name,
+            params,
+            parent_session_key,
+            config,
+            TaskMetadata::None,
+            Some(tx),
             boxed_fn,
         )
         .await
@@ -810,18 +990,553 @@ impl AsyncExecutor {
     }
 }
 
+/// 2026-09-27 consolidation tests: the deliver-completion gate, the
+/// idle-wake hook, the concurrency bound, and the cancel/complete
+/// race (P1-5).
+#[cfg(test)]
+mod consolidation_tests {
+    use super::*;
+    use crate::extensions::framework::async_exec::executor::wake::{
+        install_completion_wake_handler, uninstall_completion_wake_handler, CompletionWakeNotice,
+    };
+    use std::sync::Mutex as StdMutex;
+
+    fn make_executor() -> (AsyncExecutor, Arc<InboxRegistry>) {
+        let registry = standalone_inbox_registry();
+        let exec = AsyncExecutor::new(registry.clone());
+        (exec, registry)
+    }
+
+    /// `deliver_completion: false` suppresses the inbox push entirely
+    /// (the router's synchronous path — the caller already has the
+    /// result). Flipping it via `enable_completion_delivery` (the
+    /// router's detach path) re-enables delivery for a task that
+    /// terminates afterwards.
+    /// Terminal race (§7.1 of the review): `enable_completion_delivery`
+    /// must DELIVER — not no-op — when the flip lands on a task that
+    /// already reached a terminal state. Before the fix the terminal
+    /// push decision was made with `deliver_completion: false`, the
+    /// agent's `queued` receipt was never followed by a completion
+    /// event, and an idle agent (which never polls) never learned the
+    /// task finished.
+    #[tokio::test]
+    async fn enable_completion_delivery_delivers_already_terminal_task() {
+        let (exec, registry) = make_executor();
+
+        let id = "tool:late_flip".to_string();
+        let mut cfg = AsyncToolConfig::default();
+        cfg.deliver_completion = false;
+        exec.execute(
+            id.clone(),
+            "tool",
+            serde_json::json!({}),
+            "session_race",
+            cfg,
+            || async { Ok(serde_json::json!({"ok": true})) },
+        )
+        .await
+        .unwrap();
+        for _ in 0..100 {
+            if let Some(s) = exec.check_status(&id).await {
+                if s.is_terminal() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let inbox = registry.get_or_create("session_race").await;
+        assert!(
+            inbox.is_empty().await,
+            "precondition: delivery was suppressed"
+        );
+
+        // The flip lands AFTER the task is already terminal: it must
+        // deliver now, not report a harmless no-op.
+        assert!(exec.enable_completion_delivery(&id).await);
+        let items = inbox.drain_all().await;
+        assert_eq!(
+            items.len(),
+            1,
+            "flip on an already-terminal task must deliver the completion"
+        );
+        // And it must be idempotent: a second flip must not double-push.
+        assert!(exec.enable_completion_delivery(&id).await);
+        assert!(
+            inbox.drain_all().await.is_empty(),
+            "delivery claim must be one-shot"
+        );
+    }
+
+    /// §4.1: a task whose closure streamed into its progress buffer must
+    /// carry that partial output in its TimedOut delivery — the closure
+    /// was dropped mid-flight, so the progress buffer is all the agent
+    /// gets.
+    #[tokio::test]
+    async fn timed_out_delivery_carries_partial_output() {
+        let (exec, registry) = make_executor();
+
+        let progress: Arc<StdMutex<String>> = Arc::default();
+        let writer = Arc::clone(&progress);
+        let mut cfg = AsyncToolConfig::default();
+        cfg.timeout_secs = Some(1);
+        cfg.progress = Some(Arc::clone(&progress));
+        let id = "tool:partial".to_string();
+        exec.execute(
+            id.clone(),
+            "Bash",
+            serde_json::json!({}),
+            "session_partial",
+            cfg,
+            move || async move {
+                // Simulate a long-running tool producing output: write
+                // into the shared buffer, then hang past the timeout.
+                writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_str("step 1 done\nstep 2 done\n");
+                std::future::pending::<()>().await;
+                Ok(serde_json::json!({}))
+            },
+        )
+        .await
+        .unwrap();
+
+        // Wait for the executor timeout to fire and delivery to land.
+        let mut event = None;
+        let inbox = registry.get_or_create("session_partial").await;
+        for _ in 0..300 {
+            for item in inbox.drain_all().await {
+                if let peko_extension_api::AsyncInboxItem::Completion(e) = item {
+                    event = Some(e);
+                }
+            }
+            if event.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let event = event.expect("timed-out task must deliver a completion event");
+        assert!(event.result.get("partial_output").is_some());
+        let partial = event.result["partial_output"].as_str().unwrap();
+        assert!(
+            partial.contains("step 1 done") && partial.contains("step 2 done"),
+            "partial output must carry what the task produced; got {partial:?}"
+        );
+    }
+
+    /// §4.1: `AsyncOutput` on a still-running task surfaces the tail of
+    /// the live progress buffer.
+    #[tokio::test]
+    async fn taskview_carries_partial_output_while_running() {
+        let (exec, _registry) = make_executor();
+
+        let progress: Arc<StdMutex<String>> = Arc::default();
+        let writer = Arc::clone(&progress);
+        let mut cfg = AsyncToolConfig::default();
+        cfg.progress = Some(Arc::clone(&progress));
+        let id = "tool:progress".to_string();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        exec.execute(
+            id.clone(),
+            "Bash",
+            serde_json::json!({}),
+            "session_prog",
+            cfg,
+            move || async move {
+                writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_str("halfway there");
+                let _ = release_rx.await;
+                Ok(serde_json::json!({}))
+            },
+        )
+        .await
+        .unwrap();
+        // The entry is registered (and `check_status` answers) before
+        // the spawned task runs the closure, so wait for the closure to
+        // actually append rather than for mere registration.
+        for _ in 0..500 {
+            let has_progress = {
+                let registry = exec.registry.read().await;
+                registry
+                    .get(&id)
+                    .and_then(|e| e.partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES))
+                    .is_some()
+            };
+            if has_progress {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let entry = {
+            let registry = exec.registry.read().await;
+            registry.get(&id).cloned().expect("task must be registered")
+        };
+        let partial = entry
+            .partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES)
+            .expect("running task must expose progress");
+        assert!(partial.contains("halfway there"), "got {partial:?}");
+
+        let _ = release_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn deliver_completion_gate_suppresses_and_enable_restores() {
+        let (exec, registry) = make_executor();
+
+        // Suppressed: no inbox event, task still completes.
+        let suppressed_id = "tool:suppressed".to_string();
+        let mut cfg = AsyncToolConfig::default();
+        cfg.deliver_completion = false;
+        exec.execute(
+            suppressed_id.clone(),
+            "tool",
+            serde_json::json!({}),
+            "session_supp",
+            cfg,
+            || async { Ok(serde_json::json!({"ok": true})) },
+        )
+        .await
+        .unwrap();
+        for _ in 0..100 {
+            if let Some(s) = exec.check_status(&suppressed_id).await {
+                if s.is_terminal() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let inbox = registry.get_or_create("session_supp").await;
+        assert!(
+            inbox.is_empty().await,
+            "deliver_completion=false must not push to the inbox"
+        );
+
+        // Restored via enable_completion_delivery before termination.
+        let restored_id = "tool:restored".to_string();
+        let (block_tx, block_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut cfg = AsyncToolConfig::default();
+        cfg.deliver_completion = false;
+        exec.execute(
+            restored_id.clone(),
+            "tool",
+            serde_json::json!({}),
+            "session_restore",
+            cfg,
+            || async move {
+                let _ = block_rx.await;
+                Ok(serde_json::json!({"ok": true}))
+            },
+        )
+        .await
+        .unwrap();
+        // The detach flip: enable delivery, then let the task finish.
+        assert!(exec.enable_completion_delivery(&restored_id).await);
+        block_tx.send(()).unwrap();
+        for _ in 0..100 {
+            let inbox = registry.get_or_create("session_restore").await;
+            if !inbox.is_empty().await {
+                let items = inbox.drain_all().await;
+                assert!(matches!(
+                    items[0],
+                    peko_extension_api::AsyncInboxItem::Completion(_)
+                ));
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("detached task completion never reached the inbox after enable_completion_delivery");
+    }
+
+    /// The wake hook fires once per delivered completion with the
+    /// session key + principal stamp, and does NOT fire when
+    /// `wake_on_completion` is false or delivery is suppressed.
+    /// Serialized: the hook is process-global.
+    #[tokio::test]
+    #[serial_test::serial(wake_hook)]
+    async fn wake_hook_fires_on_completion_only_when_enabled() {
+        let hits = Arc::new(StdMutex::new(Vec::<CompletionWakeNotice>::new()));
+        let hits_w = Arc::clone(&hits);
+        install_completion_wake_handler(Arc::new(move |n| {
+            hits_w.lock().unwrap().push(n);
+        }));
+
+        let (exec, _registry) = make_executor();
+        let mut cfg = AsyncToolConfig::default();
+        cfg.principal_id = Some("prin_a".to_string());
+        exec.execute(
+            "tool:wake-me".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_wake",
+            cfg,
+            || async { Ok(serde_json::json!(null)) },
+        )
+        .await
+        .unwrap();
+        // wake_on_completion = false: no hook fire.
+        let mut cfg = AsyncToolConfig::default();
+        cfg.wake_on_completion = false;
+        exec.execute(
+            "tool:no-wake".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_no_wake",
+            cfg,
+            || async { Ok(serde_json::json!(null)) },
+        )
+        .await
+        .unwrap();
+        // deliver_completion = false: no push, no wake.
+        let mut cfg = AsyncToolConfig::default();
+        cfg.deliver_completion = false;
+        exec.execute(
+            "tool:no-deliver".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_no_deliver",
+            cfg,
+            || async { Ok(serde_json::json!(null)) },
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..100 {
+            let got = {
+                let guard = hits.lock().unwrap();
+                guard.iter().any(|n| n.task_id == "tool:wake-me")
+            };
+            if got {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Let the two suppressed tasks settle, then assert exactly one hit
+        // among THIS test's tasks (sibling tests share the process-global
+        // hook while it is installed — filter them out by id).
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let hits = hits.lock().unwrap();
+        let mine: Vec<_> = hits
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.task_id.as_str(),
+                    "tool:wake-me" | "tool:no-wake" | "tool:no-deliver"
+                )
+            })
+            .collect();
+        assert_eq!(mine.len(), 1, "exactly the default task wakes: {mine:?}");
+        assert_eq!(mine[0].session_key, "session_wake");
+        assert_eq!(mine[0].task_id, "tool:wake-me");
+        assert_eq!(mine[0].principal_id.as_deref(), Some("prin_a"));
+        assert!(!mine[0].via_steering);
+        uninstall_completion_wake_handler();
+    }
+
+    /// The cron steer branch fires the hook keyed at the ROOT session
+    /// with `via_steering: true`. Serialized: the hook is process-global.
+    #[tokio::test]
+    #[serial_test::serial(wake_hook)]
+    async fn wake_hook_fires_for_cron_steer_branch() {
+        let hits = Arc::new(StdMutex::new(Vec::<CompletionWakeNotice>::new()));
+        let hits_w = Arc::clone(&hits);
+        install_completion_wake_handler(Arc::new(move |n| {
+            hits_w.lock().unwrap().push(n);
+        }));
+
+        let (exec, _registry) = make_executor();
+        let mut cfg = AsyncToolConfig::default();
+        cfg.principal_root_session_key = Some("root:alice".to_string());
+        cfg.principal_id = Some("prin_a".to_string());
+        exec.execute(
+            "tool:cron-wake".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_worker",
+            cfg,
+            || async { Ok(serde_json::json!(null)) },
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..100 {
+            let got = {
+                let guard = hits.lock().unwrap();
+                guard.iter().any(|n| n.task_id == "tool:cron-wake")
+            };
+            if got {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let hits = hits.lock().unwrap();
+        let mine: Vec<_> = hits
+            .iter()
+            .filter(|n| n.task_id == "tool:cron-wake")
+            .collect();
+        assert_eq!(mine.len(), 1, "{mine:?}");
+        assert_eq!(mine[0].session_key, "root:alice");
+        assert!(mine[0].via_steering);
+        uninstall_completion_wake_handler();
+    }
+
+    /// Concurrency bound: with max 1, a second task stays `Pending`
+    /// while the first holds the permit, then runs after it finishes.
+    #[tokio::test]
+    async fn concurrency_bound_queues_overflow_tasks() {
+        let registry = standalone_inbox_registry();
+        let exec = AsyncExecutor::new(registry).with_max_concurrent(1);
+
+        let (block_tx, block_rx) = tokio::sync::oneshot::channel::<()>();
+        exec.execute(
+            "tool:first".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_c",
+            AsyncToolConfig::default(),
+            || async move {
+                let _ = block_rx.await;
+                Ok(serde_json::json!(null))
+            },
+        )
+        .await
+        .unwrap();
+        exec.execute(
+            "tool:second".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_c",
+            AsyncToolConfig::default(),
+            || async { Ok(serde_json::json!(null)) },
+        )
+        .await
+        .unwrap();
+
+        // Give the scheduler a beat: first is Running, second Pending.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(matches!(
+            exec.check_status(&"tool:first".to_string()).await,
+            Some(AsyncTaskStatus::Running)
+        ));
+        assert!(matches!(
+            exec.check_status(&"tool:second".to_string()).await,
+            Some(AsyncTaskStatus::Pending),
+        ));
+
+        block_tx.send(()).unwrap();
+        for _ in 0..100 {
+            if let Some(s) = exec.check_status(&"tool:second".to_string()).await {
+                if s.is_terminal() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(matches!(
+            exec.check_status(&"tool:second".to_string()).await,
+            Some(AsyncTaskStatus::Completed { .. })
+        ));
+    }
+
+    /// A task cancelled while queued on the semaphore never runs its
+    /// closure (the pre-execution cancel check after acquisition).
+    #[tokio::test]
+    async fn cancel_while_queued_skips_execution() {
+        let registry = standalone_inbox_registry();
+        let exec = AsyncExecutor::new(registry).with_max_concurrent(1);
+
+        let (block_tx, block_rx) = tokio::sync::oneshot::channel::<()>();
+        exec.execute(
+            "tool:blocker".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_q",
+            AsyncToolConfig::default(),
+            || async move {
+                let _ = block_rx.await;
+                Ok(serde_json::json!(null))
+            },
+        )
+        .await
+        .unwrap();
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_w = Arc::clone(&ran);
+        exec.execute(
+            "tool:queued".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_q",
+            AsyncToolConfig::default(),
+            move || async move {
+                ran_w.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(serde_json::json!(null))
+            },
+        )
+        .await
+        .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(exec.cancel(&"tool:queued".to_string()).await.unwrap());
+        block_tx.send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "cancelled-while-queued task must not execute"
+        );
+        assert!(matches!(
+            exec.check_status(&"tool:queued".to_string()).await,
+            Some(AsyncTaskStatus::Cancelled)
+        ));
+    }
+
+    /// P1-5: a cancel that lands while the closure runs is not
+    /// overwritten by the closure's completion — the terminal write
+    /// and the cancel share one write-lock acquisition.
+    #[tokio::test]
+    async fn cancel_during_execution_is_not_clobbered() {
+        let registry = standalone_inbox_registry();
+        let exec = AsyncExecutor::new(registry);
+        let (block_tx, block_rx) = tokio::sync::oneshot::channel::<()>();
+        exec.execute(
+            "tool:race".to_string(),
+            "tool",
+            serde_json::json!({}),
+            "session_race",
+            AsyncToolConfig::default(),
+            || async move {
+                let _ = block_rx.await;
+                Ok(serde_json::json!(null))
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(exec.cancel(&"tool:race".to_string()).await.unwrap());
+        block_tx.send(()).unwrap();
+        // Give the spawned task time to attempt its terminal write.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            matches!(
+                exec.check_status(&"tool:race".to_string()).await,
+                Some(AsyncTaskStatus::Cancelled)
+            ),
+            "cancelled status must survive the racing completion write"
+        );
+        // And nothing is delivered for a cancelled task.
+        let inbox = exec.inbox_registry().get_or_create("session_race").await;
+        assert!(inbox.is_empty().await);
+    }
+}
+
 impl std::fmt::Debug for AsyncExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AsyncExecutor")
             .field("registry", &"<AsyncTaskRegistry>")
-            .field("queue_manager", &"<AsyncResultQueueManager>")
-            .field(
-                "deliveries",
-                &"<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>",
-            )
-            .field("default_delivery", &self.default_delivery)
             .field("task_file_writer", &self.task_file_writer)
             .field("inbox_registry", &"<InboxRegistry>")
+            .field("available_permits", &self.permits.available_permits())
             .finish()
     }
 }
@@ -1013,7 +1728,7 @@ mod completion_queue_fan_out_tests {
                 match &root_items[0] {
                     peko_extension_api::AsyncInboxItem::Steering(s) => {
                         assert!(s.content.contains("daily-summary"));
-                        assert!(s.content.contains("TaskOutput"));
+                        assert!(s.content.contains("AsyncOutput"));
                         assert!(s.content.contains(&task_id));
                     }
                     other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),

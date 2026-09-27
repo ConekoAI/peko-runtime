@@ -128,6 +128,25 @@ impl AsyncExecutorRuntime {
             entry.config.label.clone(),
             metadata_type.to_string(),
         )
+        .with_partial_output(if entry.status.is_terminal() {
+            None
+        } else {
+            entry.partial_output(super::registry::PARTIAL_OUTPUT_PREVIEW_BYTES)
+        })
+    }
+
+    /// Per-principal isolation (P1-4): an entry is visible to this
+    /// runtime iff it was stamped with this principal's id, or is
+    /// unattributed (`None` — process-level/test tasks). A task stamped
+    /// with a DIFFERENT principal is treated as nonexistent — same
+    /// `NotFound` the caller would get for a genuinely unknown id, so
+    /// the cross-registry fallback no longer leaks other principals'
+    /// tasks into `AsyncList`/`AsyncStatus`/`AsyncStop`.
+    fn is_visible(&self, entry: &super::registry::AsyncTaskEntry) -> bool {
+        match entry.config.principal_id.as_deref() {
+            None => true,
+            Some(owner) => owner == self.principal_id.0,
+        }
     }
 }
 
@@ -162,9 +181,18 @@ impl AsyncRuntime for AsyncExecutorRuntime {
             .unwrap_or_else(|| "unknown".to_string());
 
         let config = AsyncToolConfig {
-            timeout_secs: request.timeout_secs,
+            // `None` (model omitted `timeout_secs`) must fall back to the
+            // documented 7200s default — the struct-update syntax below would
+            // otherwise overwrite `AsyncToolConfig::default().timeout_secs`
+            // with `None`, giving the task no timeout at all.
+            timeout_secs: request
+                .timeout_secs
+                .or_else(|| AsyncToolConfig::default().timeout_secs),
             label: request.label,
             wake_on_completion: request.wake_on_completion,
+            // Ownership stamping (P1-4): the task belongs to the spawning
+            // principal so other principals' Async* surfaces can't see it.
+            principal_id: Some(self.principal_id.0.clone()),
             ..Default::default()
         };
 
@@ -192,14 +220,20 @@ impl AsyncRuntime for AsyncExecutorRuntime {
             let registry = self.executor.registry();
             let reg = registry.read().await;
             if let Some(entry) = reg.get(&task_id.to_string()) {
-                return Some(Self::project_taskview(entry));
+                if self.is_visible(entry) {
+                    return Some(Self::project_taskview(entry));
+                }
+                return None; // owned by another principal — indistinguishable from missing
             }
         }
         // Fallback: the task may live in a process-global per-agent
         // registry (background `Bash` tasks, subagent runs, tasks from
         // an earlier run of this agent) — see the module doc.
+        // Find-then-authorize: the fallback locates the entry, then the
+        // ownership check decides visibility (P1-4).
         super::registry::find_task_across_all_registries(task_id)
             .await
+            .filter(|entry| self.is_visible(entry))
             .map(|entry| Self::project_taskview(&entry))
     }
 
@@ -208,20 +242,21 @@ impl AsyncRuntime for AsyncExecutorRuntime {
         // per-agent registries (deduped by task_id, own wins). The
         // own registry is per-call in production, so without the
         // global merge `AsyncList` would never show background `Bash`
-        // tasks or previous runs' spawns.
+        // tasks or previous runs' spawns. Every entry passes the
+        // per-principal ownership filter (P1-4).
         let mut seen = std::collections::HashSet::new();
         let mut tasks: Vec<TaskView> = Vec::new();
         {
             let registry = self.executor.registry();
             let reg = registry.read().await;
             for entry in reg.list_tasks(None) {
-                if seen.insert(entry.task_id.clone()) {
+                if self.is_visible(&entry) && seen.insert(entry.task_id.clone()) {
                     tasks.push(Self::project_taskview(&entry));
                 }
             }
         }
         for entry in super::registry::list_all_tasks_across_all_registries().await {
-            if seen.insert(entry.task_id.clone()) {
+            if self.is_visible(&entry) && seen.insert(entry.task_id.clone()) {
                 tasks.push(Self::project_taskview(&entry));
             }
         }
@@ -238,6 +273,11 @@ impl AsyncRuntime for AsyncExecutorRuntime {
         {
             let registry = self.executor.registry();
             let mut reg = registry.write().await;
+            if let Some(entry) = reg.get(&task_id.to_string()) {
+                if !self.is_visible(entry) {
+                    return PortCancelResult::NotFound;
+                }
+            }
             match reg.cancel(&task_id.to_string()) {
                 super::registry::CancelResult::Success { previous } => {
                     return PortCancelResult::Success { previous };
@@ -247,6 +287,13 @@ impl AsyncRuntime for AsyncExecutorRuntime {
                 }
                 super::registry::CancelResult::NotFound => {} // fall through to global registries
             }
+        }
+        // Find-then-authorize before cancelling across registries
+        // (P1-4): never flip another principal's task.
+        match super::registry::find_task_across_all_registries(task_id).await {
+            Some(entry) if self.is_visible(&entry) => {}
+            Some(_) => return PortCancelResult::NotFound,
+            None => return PortCancelResult::NotFound,
         }
         match super::registry::cancel_task_across_all_registries(task_id).await {
             super::registry::CancelResult::Success { previous } => {
@@ -261,10 +308,23 @@ impl AsyncRuntime for AsyncExecutorRuntime {
 
     async fn wait_for_completion(&self, task_id: &str, timeout: Duration) -> Result<WaitResult> {
         let task_id_string = task_id.to_string();
-        let in_own_registry = {
+        // Ownership pre-check (P1-4): waiting on another principal's
+        // task would leak its result into `AsyncOutput`. Find-then-
+        // authorize — invisible tasks behave as not-found.
+        let own_entry = {
             let reg = self.executor.registry().read().await;
-            reg.get(&task_id_string).is_some()
+            reg.get(&task_id_string).cloned()
         };
+        let in_own_registry = own_entry.is_some();
+        let entry = match own_entry {
+            Some(e) => Some(e),
+            None => super::registry::find_task_across_all_registries(task_id).await,
+        };
+        if let Some(entry) = &entry {
+            if !self.is_visible(entry) {
+                return Err(anyhow!("Task {task_id} not found"));
+            }
+        }
         // When the task lives in a global per-agent registry (see
         // `lookup`), wait on THAT registry — the own executor's
         // registry would immediately error with "not found".
@@ -574,5 +634,118 @@ mod tests {
             "wait starved the registry writer until the timeout: {:?}",
             start.elapsed()
         );
+    }
+
+    /// P0-3: an `AsyncSpawn` that omits `timeout_secs` must inherit the
+    /// documented 7200s default — the spawned task must not run
+    /// timeout-free.
+    #[tokio::test]
+    async fn spawn_without_timeout_gets_default_7200() {
+        let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
+        let core = Arc::new(ExtensionCore::new());
+        let runtime = Arc::new(AsyncExecutorRuntime::new(
+            Arc::clone(&executor),
+            Arc::downgrade(&core),
+            None,
+            PrincipalId::system().clone(),
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+        ));
+        let receipt = runtime
+            .spawn(crate::tools::builtin::async_control::SpawnRequest {
+                tool_name: "whatever".to_string(),
+                params: serde_json::json!({}),
+                label: None,
+                wake_on_completion: false,
+                timeout_secs: None,
+                parent_session_id: Some("session_t".to_string()),
+            })
+            .await
+            .unwrap();
+        let entry = {
+            let reg = executor.registry().read().await;
+            reg.get(&receipt.task_id).cloned()
+        }
+        .expect("spawned task must be registered");
+        assert_eq!(
+            entry.config.timeout_secs,
+            Some(7200),
+            "omitted timeout_secs must inherit the documented 7200s default"
+        );
+    }
+
+    /// P1-4: a task stamped with principal A is invisible to principal
+    /// B's runtime across lookup / list / cancel / wait — and visible
+    /// to A's own runtime through the global-registry fallback.
+    #[tokio::test]
+    async fn cross_principal_tasks_are_invisible() {
+        let agent_key = format!("test-isolation-{}", uuid::Uuid::new_v4());
+        let registry = super::super::registry::get_or_create_registry_for_agent(&agent_key);
+        {
+            let mut reg = registry.write().await;
+            reg.register(super::super::registry::AsyncTaskEntry::new(
+                "tool:a-task".to_string(),
+                "tool".to_string(),
+                serde_json::json!({}),
+                "session_a".to_string(),
+                super::super::types::AsyncToolConfig {
+                    principal_id: Some("prin_a".to_string()),
+                    ..Default::default()
+                },
+            ));
+        }
+
+        let make_runtime_for = |pid: &str| {
+            let core = Arc::new(ExtensionCore::new());
+            Arc::new(AsyncExecutorRuntime::new(
+                Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
+                Arc::downgrade(&core),
+                None,
+                PrincipalId(pid.to_string()),
+                Arc::new(Vec::new()),
+                Arc::new(Vec::new()),
+            ))
+        };
+        let runtime_a = make_runtime_for("prin_a");
+        let runtime_b = make_runtime_for("prin_b");
+
+        assert!(
+            runtime_a.lookup("tool:a-task").await.is_some(),
+            "owner must see its own task via the global fallback"
+        );
+        assert!(
+            runtime_b.lookup("tool:a-task").await.is_none(),
+            "other principal must NOT see the task"
+        );
+        assert!(
+            runtime_b
+                .list(None, None)
+                .await
+                .iter()
+                .all(|t| t.task_id != "tool:a-task"),
+            "other principal's AsyncList must filter the task out"
+        );
+        assert!(
+            matches!(
+                runtime_b.cancel("tool:a-task").await,
+                PortCancelResult::NotFound
+            ),
+            "other principal's AsyncStop must report NotFound"
+        );
+        assert!(
+            runtime_b
+                .wait_for_completion("tool:a-task", Duration::from_millis(50))
+                .await
+                .is_err(),
+            "other principal's blocking wait must error as not-found"
+        );
+
+        // The task itself is untouched (cancel was refused).
+        let reg = registry.read().await;
+        assert!(!reg
+            .get(&"tool:a-task".to_string())
+            .unwrap()
+            .status
+            .is_terminal());
     }
 }

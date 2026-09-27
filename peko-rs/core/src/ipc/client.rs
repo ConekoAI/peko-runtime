@@ -88,34 +88,6 @@ impl DaemonClient {
         Ok(stream)
     }
 
-    /// Execute an agent message — retired in audit C4.
-    ///
-    /// The legacy `Execute` path went through `StatelessAgentService`
-    /// directly, bypassing `PrincipalManager` permission checks,
-    /// session creation, and root-agent routing. All chat traffic is
-    /// Spawn an async background task
-    ///
-    /// # Errors
-    /// Returns error if the request cannot be sent
-    pub async fn spawn_async_task(
-        &self,
-        tool_name: impl Into<String>,
-        params: serde_json::Value,
-        session_key: impl Into<String>,
-        workspace: std::path::PathBuf,
-    ) -> anyhow::Result<PacketStream> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::AsyncSpawn {
-            request_id,
-            tool_name: tool_name.into(),
-            params,
-            session_key: session_key.into(),
-            workspace,
-        };
-
-        self.send_request(packet).await
-    }
-
     /// Execute a tool synchronously through the daemon, attributed to
     /// the principal that owns `session_key` (ADR-061 phase 1). The
     /// daemon resolves the principal server-side and derives grants and
@@ -166,23 +138,6 @@ impl DaemonClient {
             run_token,
         };
         self.request_response(packet).await
-    }
-
-    /// Cancel an async task
-    ///
-    /// # Errors
-    /// Returns error if the request cannot be sent
-    pub async fn cancel_async_task(
-        &self,
-        task_id: impl Into<String>,
-    ) -> anyhow::Result<PacketStream> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::AsyncCancel {
-            request_id,
-            task_id: task_id.into(),
-        };
-
-        self.send_request(packet).await
     }
 
     /// Ping the daemon to check if it's alive

@@ -3097,7 +3097,6 @@ mod tests {
     /// via `peek`.
     #[tokio::test]
     async fn inbound_tunnel_channel_event_appends_to_local_mirror() {
-        use crate::ipc::handlers::channel::ChannelHost;
         use peko_channel::ChannelPort;
         let app_state = create_test_app_state().await;
         let local_runtime_id = app_state.runtime_did();
@@ -3230,7 +3229,6 @@ mod tests {
     /// passes.
     #[tokio::test]
     async fn inbound_did_key_author_requires_author_signature_and_membership() {
-        use crate::ipc::handlers::channel::ChannelHost;
         use peko_channel::ChannelPort;
         let app_state = create_test_app_state().await;
         let local_runtime_id = app_state.runtime_did();

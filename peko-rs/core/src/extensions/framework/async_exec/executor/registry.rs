@@ -1,6 +1,5 @@
 //! Registry for tracking async tasks
 
-use super::event_bus::AsyncTaskCompletionEvent;
 use super::types::{AsyncTaskId, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use crate::extensions::framework::registry::SimpleRegistry;
 use chrono::{DateTime, Utc};
@@ -101,6 +100,19 @@ pub struct AsyncTaskEntry {
     /// the watch channel only short-circuits cancellations through
     /// the built-in `ToolContext` plumbing.
     cancel_signal: Option<tokio::sync::watch::Sender<bool>>,
+    /// Whether the terminal outcome has already been delivered (inbox
+    /// push / cron steer). Guards against double delivery now that
+    /// `enable_completion_delivery` can deliver a terminal outcome
+    /// itself when the flip races a fast-finishing task.
+    delivered: bool,
+    /// Live progress buffer (§4.1). Shared with the executing closure —
+    /// long-running tools append what they have produced so far, and the
+    /// buffer is surfaced through `AsyncOutput` on non-terminal tasks and
+    /// through the completion event on cancel/timeout, where the real
+    /// result never materializes. `Arc<Mutex<..>>` so the entry and the
+    /// executing closure share the same buffer across the registry's
+    /// clone-heavy read paths.
+    progress: Option<Arc<std::sync::Mutex<String>>>,
 }
 
 impl Clone for AsyncTaskEntry {
@@ -121,6 +133,13 @@ impl Clone for AsyncTaskEntry {
             // F38: cancel_signal is a per-task, per-instance channel —
             // cloning would split senders and is not safe. Drop on clone.
             cancel_signal: None,
+            // The progress buffer is `Arc`-shared by design: a clone of
+            // the entry must keep observing the *live* buffer, not a
+            // snapshot. `delivered` starts false on a clone — clones are
+            // read-path snapshots, and the delivery claim is made on the
+            // registry-owned entry.
+            delivered: false,
+            progress: self.progress.clone(),
         }
     }
 }
@@ -144,11 +163,13 @@ impl AsyncTaskEntry {
             parent_session_key,
             created_at: chrono::Utc::now(),
             completed_at: None,
+            progress: config.progress.clone(),
             config,
             formatted_result: None,
             metadata: TaskMetadata::None,
             completion_tx: None,
             cancel_signal: None,
+            delivered: false,
         }
     }
 
@@ -171,11 +192,13 @@ impl AsyncTaskEntry {
             parent_session_key,
             created_at: chrono::Utc::now(),
             completed_at: None,
+            progress: config.progress.clone(),
             config,
             formatted_result: None,
             metadata,
             completion_tx: None,
             cancel_signal: None,
+            delivered: false,
         }
     }
 
@@ -183,6 +206,72 @@ impl AsyncTaskEntry {
     pub fn set_result(&mut self, result: Value) {
         self.formatted_result = Some(self.format_result(&result));
         self.result = Some(result);
+    }
+
+    /// Append to the task's live progress buffer (§4.1).
+    ///
+    /// The buffer is capped: once it exceeds [`PROGRESS_BUFFER_MAX_BYTES`]
+    /// the oldest bytes are dropped, so a chatty tool cannot grow it
+    /// without bound (the same discipline the review's P2-3 applies to
+    /// task results). A caller-shared `Arc` means the executing closure
+    /// and this entry observe the same bytes.
+    pub fn append_progress(&self, chunk: &str) {
+        if let Some(buf) = self.progress.as_ref() {
+            let mut guard = buf
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.push_str(chunk);
+            let len = guard.len();
+            if len > PROGRESS_BUFFER_MAX_BYTES {
+                // Keep the tail: recent output is what matters when a
+                // caller inspects a long-running task.
+                let drain = len - PROGRESS_BUFFER_MAX_BYTES;
+                // Advance to a UTF-8 char boundary so we never split one.
+                let mut start = drain;
+                while start < len && !guard.is_char_boundary(start) {
+                    start += 1;
+                }
+                guard.drain(..start);
+            }
+        }
+    }
+
+    /// Snapshot the progress buffer, trimmed to `max_bytes` from the tail.
+    /// Returns `None` when the task has no progress buffer or nothing has
+    /// been appended yet.
+    #[must_use]
+    pub fn partial_output(&self, max_bytes: usize) -> Option<String> {
+        let buf = self.progress.as_ref()?;
+        let guard = buf
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_empty() {
+            return None;
+        }
+        let s = if guard.len() <= max_bytes {
+            guard.as_str()
+        } else {
+            let mut start = guard.len() - max_bytes;
+            while start < guard.len() && !guard.is_char_boundary(start) {
+                start += 1;
+            }
+            &guard[start..]
+        };
+        Some(s.to_string())
+    }
+
+    /// Whether the terminal outcome has already been delivered.
+    #[must_use]
+    pub fn is_delivered(&self) -> bool {
+        self.delivered
+    }
+
+    /// Mark the terminal outcome as delivered. Called under the
+    /// registry's write lock so the claim is atomic with the
+    /// `deliver_completion` check — two racers (the spawned task and a
+    /// late `enable_completion_delivery` flip) cannot both deliver.
+    pub fn mark_delivered(&mut self) {
+        self.delivered = true;
     }
 
     /// Format a result value using the formatter registry
@@ -233,15 +322,23 @@ impl AsyncTaskEntry {
 // AsyncTaskRegistry
 // ================================================================================
 
+/// Cap on a task's live progress buffer (§4.1). Once exceeded, the
+/// oldest bytes are dropped so a chatty tool cannot grow the buffer
+/// without bound.
+const PROGRESS_BUFFER_MAX_BYTES: usize = 64 * 1024;
+
+/// Cap on the partial-output preview surfaced through the completion
+/// event and `AsyncOutput` — the agent gets a window into what the task
+/// produced, not the whole thing (the full tail stays in the task file
+/// for tools that stream there).
+pub const PARTIAL_OUTPUT_PREVIEW_BYTES: usize = 4 * 1024;
+
 /// Registry for tracking async tasks.
 ///
-/// Wraps a [`SimpleRegistry`] for task storage while keeping the
-/// `pending_announcements` queue as a separate field.
+/// Wraps a [`SimpleRegistry`] for task storage.
 #[derive(Debug, Default)]
 pub struct AsyncTaskRegistry {
     tasks: SimpleRegistry<AsyncTaskId, AsyncTaskEntry>,
-    /// Queue of completed tasks waiting to be announced to parent sessions
-    pending_announcements: std::collections::HashMap<String, Vec<AsyncTaskId>>, // session_key -> task_ids
 }
 
 impl AsyncTaskRegistry {
@@ -249,7 +346,6 @@ impl AsyncTaskRegistry {
     pub fn new() -> Self {
         Self {
             tasks: SimpleRegistry::new(),
-            pending_announcements: std::collections::HashMap::new(),
         }
     }
 
@@ -353,44 +449,6 @@ impl AsyncTaskRegistry {
         } else {
             Err(anyhow::anyhow!("Task {task_id} not found in registry"))
         }
-    }
-
-    /// Queue a completed task for announcement to parent
-    pub fn queue_announcement(&mut self, task_id: AsyncTaskId, session_key: &str) {
-        self.pending_announcements
-            .entry(session_key.to_string())
-            .or_default()
-            .push(task_id);
-    }
-
-    /// Get pending announcements for a session
-    pub fn get_pending_for_session(&mut self, session_key: &str) -> Vec<AsyncTaskCompletionEvent> {
-        let task_ids = self
-            .pending_announcements
-            .remove(session_key)
-            .unwrap_or_default();
-
-        task_ids
-            .into_iter()
-            .filter_map(|task_id| {
-                let entry = self.tasks.get(&task_id)?;
-                Some(AsyncTaskCompletionEvent {
-                    task_id: task_id.clone(),
-                    tool_name: entry.tool_name.clone(),
-                    result_message: entry.formatted_result.clone()?,
-                    parent_session_key: entry.parent_session_key.clone(),
-                    label: entry.config.label.clone(),
-                })
-            })
-            .collect()
-    }
-
-    /// Get count of pending announcements for a session
-    #[must_use]
-    pub fn pending_count(&self, session_key: &str) -> usize {
-        self.pending_announcements
-            .get(session_key)
-            .map_or(0, std::vec::Vec::len)
     }
 
     /// List all tasks, optionally filtered by session_key
@@ -503,32 +561,6 @@ impl AsyncTaskRegistry {
             None => CancelResult::NotFound,
         }
     }
-
-    /// Clean up terminal subagent runs older than a given duration
-    pub fn cleanup_old_subagents(&mut self, max_age: chrono::Duration) -> usize {
-        let now = chrono::Utc::now();
-        let to_remove: Vec<String> = self
-            .tasks
-            .values()
-            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
-            .filter(|e| {
-                e.status.is_terminal()
-                    && e.completed_at
-                        .is_some_and(|t| now.signed_duration_since(t) > max_age)
-            })
-            .map(|e| e.task_id.clone())
-            .collect();
-
-        let count = to_remove.len();
-        for task_id in to_remove {
-            self.tasks.remove(&task_id);
-        }
-
-        if count > 0 {
-            tracing::info!("Cleaned up {} old subagent runs from registry", count);
-        }
-        count
-    }
 }
 
 /// A generic, serializable view of any async task entry.
@@ -547,6 +579,10 @@ pub struct TaskView {
     pub result: Option<Value>,
     pub label: Option<String>,
     pub metadata_type: String,
+    /// Tail of the task's live progress buffer, for tasks that are still
+    /// running (§4.1). `None` for terminal tasks — by then the outcome
+    /// itself carries whatever partial output was captured.
+    pub partial_output: Option<String>,
 }
 
 impl TaskView {
@@ -568,6 +604,11 @@ impl TaskView {
             result: entry.result.clone(),
             label: entry.config.label.clone(),
             metadata_type: metadata_type.to_string(),
+            partial_output: if entry.status.is_terminal() {
+                None
+            } else {
+                entry.partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES)
+            },
         }
     }
 
@@ -610,13 +651,25 @@ fn global_registries() -> &'static std::sync::Mutex<HashMap<String, SharedAsyncT
     GLOBAL_ASYNC_TASK_REGISTRIES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+/// Lock the global registry map, recovering from poisoning instead of
+/// panicking: a panicked writer can only have left a *map* (insert-only
+/// key → `Arc` entries) in a consistent-enough state, and a panic here
+/// would take down whatever unrelated async task happened to look up a
+/// registry next.
+fn lock_global_registries(
+) -> std::sync::MutexGuard<'static, HashMap<String, SharedAsyncTaskRegistry>> {
+    global_registries()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Get or create a shared async task registry for a given agent name.
 ///
 /// This ensures that all `Agent` instances for the same agent name share
 /// the same registry, making status queries and result delivery work
 /// across stateless requests.
 pub fn get_or_create_registry_for_agent(agent_name: &str) -> SharedAsyncTaskRegistry {
-    let mut map = global_registries().lock().unwrap();
+    let mut map = lock_global_registries();
     map.entry(agent_name.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(AsyncTaskRegistry::new())))
         .clone()
@@ -626,7 +679,7 @@ pub fn get_or_create_registry_for_agent(agent_name: &str) -> SharedAsyncTaskRegi
 pub async fn find_task_across_all_registries(task_id: &str) -> Option<AsyncTaskEntry> {
     let task_id = task_id.to_string();
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {
@@ -641,7 +694,7 @@ pub async fn find_task_across_all_registries(task_id: &str) -> Option<AsyncTaskE
 /// List all tasks across all agent registries.
 pub async fn list_all_tasks_across_all_registries() -> Vec<AsyncTaskEntry> {
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     let mut all = Vec::new();
@@ -665,7 +718,7 @@ pub async fn find_run_across_all_registries(run_id: &str) -> Option<AsyncTaskEnt
 pub async fn cancel_task_across_all_registries(task_id: &str) -> CancelResult {
     let task_id = task_id.to_string();
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {
@@ -697,7 +750,7 @@ pub async fn list_all_runs_across_all_registries() -> Vec<AsyncTaskEntry> {
 /// AsyncTaskRegistry is the source of truth for subagent runs.
 pub async fn has_active_subagent_run_across_all_registries(child: &str) -> bool {
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {
@@ -718,7 +771,7 @@ pub async fn has_active_subagent_run_across_all_registries(child: &str) -> bool 
 pub async fn find_owning_registry_for_task(task_id: &str) -> Option<SharedAsyncTaskRegistry> {
     let task_id = task_id.to_string();
     let registries: Vec<SharedAsyncTaskRegistry> = {
-        let map = global_registries().lock().unwrap();
+        let map = lock_global_registries();
         map.values().cloned().collect()
     };
     for registry in registries {

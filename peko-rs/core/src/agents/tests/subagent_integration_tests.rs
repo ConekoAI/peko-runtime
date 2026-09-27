@@ -968,22 +968,24 @@ async fn test_executor_cancel() {
     let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
     {
         let mut registry_guard = registry.write().await;
-        let entry = crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
-            run_id.clone(),
-            "Agent".to_string(),
-            serde_json::json!({"task": "Long task"}),
-            "agent:test:peer:user:alice".to_string(),
-            crate::extensions::framework::async_exec::executor::types::AsyncToolConfig {
-                delivery_mode: crate::extensions::framework::async_exec::executor::types::AsyncResultDeliveryMode::QueueWhenBusy,
-                delivery_target: None,
-                timeout_secs: Some(3600),
-                timeout_millis: None,
-                cleanup_after_delivery: false,
-                label: None,
-                wake_on_completion: true,
-                principal_root_session_key: None,
-            },
-        );
+        let entry =
+            crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
+                run_id.clone(),
+                "Agent".to_string(),
+                serde_json::json!({"task": "Long task"}),
+                "agent:test:peer:user:alice".to_string(),
+                crate::extensions::framework::async_exec::executor::types::AsyncToolConfig {
+                    timeout_secs: Some(3600),
+                    timeout_millis: None,
+                    cleanup_after_delivery: false,
+                    label: None,
+                    wake_on_completion: true,
+                    principal_root_session_key: None,
+                    principal_id: None,
+                    deliver_completion: true,
+                    progress: None,
+                },
+            );
         registry_guard.register(entry);
     }
 
@@ -3034,6 +3036,9 @@ async fn test_branch_overwrite_reseeds_in_place() {
         .find(|m| m.session_id.to_string() == old_id)
         .expect("target survives");
     assert_eq!(meta.pruned_pages, 1, "rotation feeds stable numbering");
-    assert_eq!(meta.compaction_count, 2, "the target's own sequence advanced");
+    assert_eq!(
+        meta.compaction_count, 2,
+        "the target's own sequence advanced"
+    );
     assert_eq!(meta.slug.as_deref(), Some("briefing"), "slug untouched");
 }

@@ -113,11 +113,15 @@ Returns: { task_id, status, is_terminal, result?, completed_at?, elapsed_seconds
 
         if !task.is_terminal() {
             if !block {
+                // §4.1: a still-running task reports the tail of its live
+                // progress buffer, so a polling agent sees what the task
+                // has produced instead of a bare status string.
                 return Ok(json!({
                     "task_id": task_id,
                     "status": task.status,
                     "is_terminal": false,
                     "result": null,
+                    "partial_output": task.partial_output,
                 }));
             }
             // Block via the runtime's wait_for_completion — the runtime

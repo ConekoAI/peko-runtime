@@ -622,6 +622,15 @@ impl AppState {
         let inbox_registry = Arc::new(InboxRegistry::new(Arc::new(
             || -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) },
         )));
+        // Install as the process-global default BEFORE the core wiring
+        // below, so components constructed outside this composition root
+        // — `BashTool`'s process-global background executor (P0-4),
+        // `Services::new`'s default router — resolve THIS registry via
+        // `shared_inbox_registry()` and their completions land in the
+        // inboxes the agentic loop drains. (P0-1, 2026-09-27)
+        crate::extensions::framework::async_exec::executor::install_shared_inbox_registry(
+            Arc::clone(&inbox_registry),
+        );
         let global_core = if for_test {
             use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
             use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
@@ -1286,6 +1295,14 @@ impl AppState {
     #[must_use]
     pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
         &self.principal_manager
+    }
+
+    /// The daemon's channel port (also exposed through the
+    /// `ipc::handlers::channel::ChannelHost` impl). The completion-wake
+    /// handler posts peer-DM replies through it.
+    #[must_use]
+    pub fn channel_port(&self) -> Arc<dyn peko_channel::ChannelPort> {
+        self.channel_port.clone()
     }
 
     // Sprint 9 Commit 4: `principal_service()` getter retired along
@@ -2389,10 +2406,6 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
 
     fn run_token_registry(&self) -> Arc<crate::ipc::run_tokens::RunTokenRegistry> {
         self.run_token_registry.clone()
-    }
-
-    fn async_task_executor(&self) -> Arc<AsyncExecutor> {
-        self.async_task_executor.clone()
     }
 }
 

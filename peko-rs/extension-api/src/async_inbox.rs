@@ -80,6 +80,26 @@ pub trait AsyncInboxLike: Send + Sync + 'static {
     /// one.
     async fn drain_all(&self) -> Vec<AsyncInboxItem>;
 
+    /// Drain only the steering messages, leaving completion events
+    /// queued. Used by the post-run steering drains so async-task
+    /// completions are not silently destroyed (2026-09-27, P0-2).
+    ///
+    /// The default implementation drains everything and re-pushes
+    /// completions — NOT atomic, and lossy for test stubs whose
+    /// `push` is a no-op. The production `SessionInbox` overrides
+    /// this with an atomic partition.
+    async fn drain_steering(&self) -> Vec<SteeringEnvelope> {
+        let items = self.drain_all().await;
+        let mut steering = Vec::new();
+        for item in items {
+            match item {
+                AsyncInboxItem::Steering(m) => steering.push(m),
+                completion @ AsyncInboxItem::Completion(_) => self.push(completion).await,
+            }
+        }
+        steering
+    }
+
     /// Push an item into the inbox. Default is a no-op (test stubs
     /// don't need to retain pushed items). Real implementations
     /// (peko-extension-host's `SessionInbox`) override to append to

@@ -1682,22 +1682,26 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // The synthetic message should also carry a ToolResult block
-        // whose tool_call_id is `synthetic:<task_id>`.
+        // The synthetic message must also carry a Text block naming the
+        // task id, tool, and terminal status (P2-6: the old
+        // `ToolResult` block had no matching `tool_use` anywhere in the
+        // history, which 400s on providers that validate pairing — the
+        // repair pass runs on load, *before* this message exists, so the
+        // orphan could never be repaired. Text blocks have no pairing
+        // requirement).
         let synthetic = synthetic_msg.unwrap();
-        let has_tool_result = synthetic.content.iter().any(|b| {
-            if let CB::ToolResult {
-                tool_call_id, name, ..
-            } = b
-            {
-                tool_call_id == "synthetic:shell:e2e-test" && name == "shell"
+        let has_result_text = synthetic.content.iter().any(|b| {
+            if let CB::Text { text } = b {
+                text.contains("task_id: shell:e2e-test")
+                    && text.contains("tool: shell")
+                    && text.contains("status: completed")
             } else {
                 false
             }
         });
         assert!(
-            has_tool_result,
-            "synthetic message must carry a ToolResult with tool_call_id=synthetic:shell:e2e-test"
+            has_result_text,
+            "synthetic message must carry a Text block naming task shell:e2e-test"
         );
 
         // Session-key flow fix: once `run_inner` is past its bootstrap,
