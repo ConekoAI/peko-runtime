@@ -7,12 +7,16 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PekoConfig {
     /// Application name
+    #[serde(default = "default_app_name")]
     pub app_name: String,
     /// Storage configuration
+    #[serde(default)]
     pub storage: StorageConfig,
     /// Network configuration
+    #[serde(default)]
     pub network: NetworkConfig,
     /// Logging configuration
+    #[serde(default)]
     pub logging: LogConfig,
     /// Session compaction configuration
     #[serde(default)]
@@ -25,6 +29,10 @@ pub struct PekoConfig {
     /// `retry_jitter`).
     #[serde(default)]
     pub provider: ProviderConfig,
+}
+
+fn default_app_name() -> String {
+    "peko".to_string()
 }
 
 impl Default for PekoConfig {
@@ -422,6 +430,18 @@ mod tests {
         let serialized = toml::to_string(&original).unwrap();
         let parsed: peko_provider_api::ProviderRetryConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    /// A minimal `peko.toml` carrying only `[provider.retry]` parses
+    /// (all other fields are serde-defaulted) instead of falling back
+    /// with a warning.
+    #[test]
+    fn test_peko_config_minimal_file_parses() {
+        let cfg: PekoConfig = toml::from_str("[provider.retry]\nmax_retries = 7\n")
+            .expect("minimal peko.toml must parse");
+        assert_eq!(cfg.provider.retry.max_retries, 7);
+        assert_eq!(cfg.app_name, "peko");
+        assert_eq!(cfg.network.port, 8080);
     }
 
     #[test]

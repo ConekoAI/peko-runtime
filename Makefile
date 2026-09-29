@@ -1,4 +1,4 @@
-# Peko Test Targets — see docs/integration/TESTING.md
+# Peko Test Targets — see docs/testing/MANUAL_TEST_PLAN.md
 #
 # Four canonical targets:
 #   test                  — fast unit tests, no Docker, no LLM

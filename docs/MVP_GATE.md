@@ -41,18 +41,16 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **First release cut.** `git tag v<version>` triggers
       `.github/workflows/release.yml`; all four artifacts (linux x64/arm64,
       darwin x64/arm64) build and publish successfully.
-- [ ] **`install.sh` fixed.** Remove retired concepts from the default config
-      it writes (`[memory] type = "sqlite"`, `[tools] on_demand = [...]`,
-      `[agent] name/provider/model`) and from its quick-start text
-      (`peko agent create` — retired by ADR-041/050). Config written matches
-      `config.example.toml` after that file is fixed (next item).
-- [ ] **`config.example.toml` fixed.** Delete sqlite-memory and
-      Discord/Telegram/Slack channel blocks (chat-platform adapters were
-      retired in sprint 9); what remains parses against the current
-      `PekoConfig` (verify: point `PEKO_HOME` at a temp dir, copy the example
-      as `config.toml`, boot the daemon).
-- [ ] **`release.yml` release notes fixed** — the generated quick-start
-      currently teaches the retired `peko agent create` flow.
+- [x] **`install.sh` fixed** (2026-09-29). No longer writes a config full of
+      retired concepts to `~/.config/peko/` (a path nothing reads);
+      quick start teaches `peko model add --key` / `peko daemon start` /
+      `peko create` / `peko send`; `--version` flag now honored.
+- [x] **`config.example.toml` fixed** (2026-09-29). Rewritten to document the
+      two real config files (`~/.peko/peko.toml` `[provider.retry]`,
+      `~/.peko/config.toml` `[compaction]`); all retired blocks removed.
+      Verified parse-clean via `PekoConfig`'s new serde defaults.
+- [x] **`release.yml` release notes fixed** (2026-09-29) — quick start no
+      longer teaches the retired `peko agent create` flow.
 - [ ] **Clean-machine install verified.** On a fresh macOS and a fresh Linux
       box (or container): run `install.sh`, follow the printed quick start,
       create a principal, send it a message, get a reply. No repo checkout,
@@ -63,10 +61,10 @@ Currently the primary install path is dead: no release has ever been cut, and
 
 ## 2. Version bookkeeping — the version means something
 
-- [ ] **One version number.** `peko-rs/core/Cargo.toml` (0.1.0) and
-      `CHANGELOG.md` (last release header: 1.0.0-rc1, 2026-05-14) disagree.
-      Pick the MVP version, set both, and note the rule in AGENTS.md §1
-      (which names core's Cargo.toml as the source of truth).
+- [x] **One version number** (2026-09-29). All workspace crates are `0.1.0`
+      (source of truth: `peko-rs/core/Cargo.toml`, per AGENTS.md §1). The
+      CHANGELOG's `1.0.0-rc1` header is annotated as a never-tagged
+      pre-rename label; the MVP release version is picked at release time.
 - [ ] **`[Unreleased]` folded.** Four months of entries (2026-05-14 →
       2026-09-27), including breaking wire changes (ADR-058), are cut into a
       named release section with the breaking changes called out at the top.
@@ -74,12 +72,12 @@ Currently the primary install path is dead: no release has ever been cut, and
 
 ## 3. Docs tell the truth
 
-- [ ] **`README.md` architecture tree updated** — it still shows the
-      pre-`peko-rs/` flat `src/` layout and claims "SQLite Memory", "22 Hook
-      Points", "ADR-001 through ADR-050" (064 exists). Delete the blocks
-      marked "deprecated… retained for historical reference".
-- [ ] **`Makefile` doc reference fixed** — `Makefile:1` points at
-      `docs/integration/TESTING.md`, which does not exist.
+- [x] **`README.md` architecture tree updated** (2026-09-29) — now shows the
+      `peko-rs/` workspace layout; "SQLite Memory", "22 Hook Points",
+      `.env.example`, AES/Argon2 package claims, and the two
+      "retained for historical reference" blocks removed.
+- [x] **`Makefile` doc reference fixed** (2026-09-29) — points at
+      `docs/testing/MANUAL_TEST_PLAN.md`.
 - [ ] **Getting-started + tutorial walk end-to-end** against the release
       artifact (not a repo build): `docs/getting-started/` both files, every
       command pasted from real output per docs/README.md's contribution rule.

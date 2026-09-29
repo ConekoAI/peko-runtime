@@ -311,9 +311,6 @@ impl McpClient {
 
         debug!("Initializing MCP client");
 
-        // Start the receive loop
-        self.start_receive_loop();
-
         // Send initialize request
         let request = InitializeRequest {
             protocol_version: MCP_PROTOCOL_VERSION.to_string(),
@@ -614,14 +611,6 @@ impl McpClient {
             return Err(ClientError::UnsupportedCapability(capability.to_string()));
         }
         Ok(())
-    }
-
-    /// Start the receive loop.
-    ///
-    /// The loop is now started automatically when the client is created, so this
-    /// method is kept for backwards compatibility and is a no-op.
-    fn start_receive_loop(&mut self) {
-        // Background receive loop is spawned in `with_handler_and_capabilities`.
     }
 
     /// Shutdown the client gracefully

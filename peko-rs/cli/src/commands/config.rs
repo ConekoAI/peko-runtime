@@ -25,7 +25,7 @@ pub enum ConfigCommands {
         /// Output file
         #[arg(short, long, default_value = "peko.toml")]
         output: String,
-        /// Template to use (minimal, full, agent)
+        /// Template to use (minimal, full)
         #[arg(short, long, default_value = "minimal")]
         template: String,
     },
@@ -38,7 +38,7 @@ pub enum ConfigCommands {
 
     /// Get a configuration value
     Get {
-        /// Key path (e.g., "daemon.log_level" or "defaults.provider")
+        /// Key path (e.g., "provider.retry.max_retries")
         key: String,
         /// Config file to read from
         #[arg(short, long)]
@@ -114,13 +114,17 @@ pub async fn handle_config(
                 anyhow::bail!("File already exists: {}", path.display());
             }
 
-            let default_config = match template.as_str() {
-                "full" => full_config_template(),
-                "agent" => agent_config_template(),
-                _ => minimal_config_template(),
+            let Some(contents) = config_template(&template) else {
+                anyhow::bail!("Unknown template '{template}' (available: minimal, full)");
             };
 
-            write_config(&path, &default_config)?;
+            // Atomic write (tmp + rename), same discipline as write_config.
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let tmp = path.with_extension("toml.tmp");
+            std::fs::write(&tmp, contents)?;
+            std::fs::rename(&tmp, &path)?;
 
             if json {
                 println!(
@@ -136,12 +140,13 @@ pub async fn handle_config(
             Ok(())
         }
         ConfigCommands::Defaults => {
-            let defaults = minimal_config_template();
+            let defaults = MINIMAL_CONFIG_TEMPLATE;
             if json {
-                println!("{}", serde_json::json!(defaults));
+                let value: toml::Value = toml::from_str(defaults)?;
+                println!("{}", serde_json::to_string(&value)?);
             } else {
                 println!("📋 Default Configuration:\n");
-                println!("{}", toml::to_string_pretty(&defaults)?);
+                println!("{defaults}");
             }
             Ok(())
         }
@@ -212,55 +217,70 @@ pub async fn handle_config(
 // ---------------------------------------------------------------------------
 // Config templates
 // ---------------------------------------------------------------------------
+//
+// The daemon reads `peko.toml` from the config dir (`$PEKO_HOME` or
+// `~/.peko`); the only block it consumes today is `[provider.retry]`.
+// Models and API keys live in the catalog + vault (`peko model add
+// --key ...`), per-peko settings in each peko's `principal.toml`, and
+// session-compaction tuning in the `[compaction]` block of
+// `~/.peko/config.toml`. Templates carry comments, so they are string
+// constants rather than `toml::Value` builders.
 
-fn minimal_config_template() -> toml::Value {
-    toml::toml! {
-        [daemon]
-        log_level = "info"
+const MINIMAL_CONFIG_TEMPLATE: &str = r#"# Peko daemon configuration (peko.toml)
+# Everything here is optional — the daemon boots with built-in defaults.
+# Models/keys: `peko model add --template <id> --model <wire-id> --key "$KEY"`.
+# Per-peko settings: the peko's own principal.toml.
 
-        [defaults]
-        provider = "minimax"
-        model = "gpt-4o-mini"
-        temperature = 0.7
-        max_tokens = 2048
+[provider.retry]
+max_retries = 5          # transport-level retries for transient errors
+retry_delay_ms = 1000    # initial backoff (doubles per attempt)
+retry_max_delay_ms = 30000
+retry_jitter = 0.1       # ±10% uniform spread; 0 disables jitter
+max_attempts = 8         # total transport+engine attempts (shared budget)
+"#;
+
+const FULL_CONFIG_TEMPLATE: &str = r#"# Peko configuration — two files, two jobs:
+#
+#   ~/.peko/peko.toml     — daemon config; only [provider.retry] is consumed
+#   ~/.peko/config.toml   — session compaction tuning ([compaction] block)
+#                           and `peko config get/set` scratch space
+#
+# Everything else lives outside both files:
+#   models + API keys ... `peko model add` (catalog: ~/.peko/models.toml;
+#                         keys: OS keychain vault via `peko credential set`)
+#   per-peko settings ... the peko's principal.toml (quota, capabilities,
+#                         routing) — edit directly or via `peko quota set`
+
+# ── peko.toml ─────────────────────────────────────────────────────────
+
+[provider.retry]
+max_retries = 5
+retry_delay_ms = 1000
+retry_max_delay_ms = 30000
+retry_jitter = 0.1
+max_attempts = 8
+
+# ── config.toml (move this block into ~/.peko/config.toml to activate) ──
+#
+# [compaction]
+# enabled = true
+# auto_threshold_percent = 85       # trigger at 85% of model context limit
+# reserve_tokens = 16384            # tokens reserved for the LLM response
+# keep_recent_tokens = 20000        # minimum recent conversation preserved
+# max_compactions_per_session = 100
+# cooldown_seconds = 60
+#
+# [compaction.model_limits]         # optional context-window overrides
+# openai.gpt-4o = 128000
+# kimi.K2.6 = 262144
+"#;
+
+fn config_template(template: &str) -> Option<&'static str> {
+    match template {
+        "minimal" => Some(MINIMAL_CONFIG_TEMPLATE),
+        "full" => Some(FULL_CONFIG_TEMPLATE),
+        _ => None,
     }
-    .into()
-}
-
-fn full_config_template() -> toml::Value {
-    toml::toml! {
-        [daemon]
-        log_level = "info"
-
-        [defaults]
-        provider = "minimax"
-        model = "gpt-4o-mini"
-        temperature = 0.7
-        max_tokens = 2048
-
-        [paths]
-        sessions = "~/.peko/sessions"
-        registry = "~/.peko/registry"
-
-        [security]
-        strip_env_vars = ["*_API_KEY", "*_SECRET", "*_TOKEN", "*_PASSWORD"]
-    }
-    .into()
-}
-
-fn agent_config_template() -> toml::Value {
-    toml::toml! {
-        [agent]
-        name = "my-agent"
-        description = "A helpful assistant"
-
-        [agent.provider]
-        type = "openai"
-        model = "gpt-4o-mini"
-        temperature = 0.7
-        max_tokens = 2048
-    }
-    .into()
 }
 
 #[cfg(test)]

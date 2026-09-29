@@ -36,7 +36,6 @@ pub struct SubagentRunView {
     pub label: Option<String>,
     pub result: Option<SubagentResult>,
     pub depth: u32,
-    pub announce_completion: bool,
 }
 
 impl SubagentRunView {
@@ -70,7 +69,6 @@ impl SubagentRunView {
             label: entry.config.label.clone(),
             result: meta.subagent_result.clone(),
             depth: meta.depth,
-            announce_completion: meta.announce_completion,
         })
     }
 

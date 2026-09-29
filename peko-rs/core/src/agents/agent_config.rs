@@ -9,9 +9,6 @@
 //! - `name` / `description` — identity for serialization/routing
 //! - `prompt` — the agent's authored system prompt body (Markdown)
 //! - `agent_did` — the per-agent DID issued by the runtime (issue #28)
-//! - `enable_task_tools` / `enable_async_tools` — per-agent toggles that
-//!   control whether the planning-todo and async-execution tool families
-//!   are wired in
 
 use serde::{Deserialize, Serialize};
 
@@ -42,49 +39,6 @@ pub struct AgentConfig {
     ///   (`<workspace>/agents/<name>.md`) — same path; the agent
     ///   runner loads the markdown and the body ends up here.
     pub prompt: Option<String>,
-
-    /// Whether the planning-todo family (`TaskCreate`/`TaskGet`/
-    /// `TaskList`/`TaskUpdate`) is enabled for this agent. Defaults to
-    /// `true`. The factory- and registrar-level `enable_task_tools`
-    /// flag is a separate global default that propagates here.
-    ///
-    /// Sprint 8 Commit 3: the spawn-path read of this field was
-    /// dropped (every reachable Agent defaults it to `true` and the
-    /// gate was unconditional in practice). The field stays so the
-    /// gateway loop (`StatelessAgentService`) can keep authoring
-    /// `AgentConfig` literals without churn — Sprint 8b removes both
-    /// the field and the gateway-loop reference.
-    #[serde(default = "default_true")]
-    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
-    pub enable_task_tools: bool,
-
-    /// Whether the peko_plan DAG family (`PlanCreate`/`PlanList`/
-    /// `PlanGet`/`PlanMarkStep`/`PlanRecordEvidence`/
-    /// `PlanAddStep`/`PlanClose`) is enabled for this agent.
-    ///
-    /// Defaults to `true`. Only takes effect when the agent has been
-    /// bound to a principal whose `Arc<dyn PlanPort>` was wired in via
-    /// `Agent::with_principal_plan_port` — without that binding the
-    /// plan tools are intentionally not registered regardless of this
-    /// flag (test-only `Agent::new` callers hit this path).
-    ///
-    /// Sprint 8 Commit 3: the spawn-path read of this field was
-    /// dropped for the same reason as `enable_task_tools` /
-    /// `enable_async_tools`. Retained for Sprint 8b.
-    #[serde(default = "default_true")]
-    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
-    pub enable_plan_tools: bool,
-
-    /// Whether the async execution family (`AsyncSpawn`/`AsyncOutput`/
-    /// `AsyncStatus`/`AsyncList`/`AsyncStop`) is enabled for this agent.
-    /// Defaults to `true`.
-    ///
-    /// Sprint 8 Commit 3: the spawn-path read of this field was
-    /// dropped for the same reason as `enable_task_tools`. Retained
-    /// for Sprint 8b.
-    #[serde(default = "default_true")]
-    #[allow(dead_code)] // retained for Sprint 8b; spawn path no longer reads it
-    pub enable_async_tools: bool,
 
     /// F35 — whether the synthetic `__tool_search` stub is registered
     /// for this agent. Defaults to `false` so a fresh runtime does not
@@ -192,9 +146,6 @@ impl Default for AgentConfig {
             name: "unnamed-agent".to_string(),
             description: None,
             prompt: None,
-            enable_task_tools: true,
-            enable_plan_tools: true,
-            enable_async_tools: true,
             // F35 — opt-in deferred-tool discovery stub. Off by default
             // so a fresh runtime doesn't pay the prompt-token cost.
             enable_tool_search: false,
@@ -226,12 +177,6 @@ mod tests {
     fn test_agent_config_default() {
         let config = super::AgentConfig::default();
         assert_eq!(config.name, "unnamed-agent");
-        // Per-agent toggles default to on. The numeric/timeout fields
-        // they replaced have moved to principal-level config; their
-        // round-trip coverage lives on `PrincipalRoutingConfig`.
-        assert!(config.enable_task_tools);
-        assert!(config.enable_plan_tools);
-        assert!(config.enable_async_tools);
         // F35 — opt-in deferred-tool discovery stub defaults off.
         assert!(!config.enable_tool_search);
         // Phase 2 — `model_list` defaults on so the parent agent can

@@ -22,10 +22,6 @@ peko-message = { path = "../message" }
 # (in `peko-engine`) charges via the active `QuotaScope` stack.
 peko-quota = { path = "../quota" }
 
-# Workspace member — agentic events the unified `Provider` emits
-# during a streaming call (AgenticEvent::ProviderLifecycle et al).
-peko-events = { path = "../events" }
-
 # Wire-shape + serialization.
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

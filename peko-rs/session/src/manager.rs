@@ -905,8 +905,10 @@ impl SessionManager {
 
     /// Create a fresh session (internal helper for resolution)
     ///
-    /// This is different from the public `create_new_session` which is deprecated.
-    /// This method handles the full context creation for the resolution flow.
+    /// Clears any cached base session for the peer, creates a new base
+    /// session via [`Self::create_session`], and attaches a channel
+    /// overlay for `(channel, channel_id)` on top of it. Returns the
+    /// session context, the overlay-aware handle, and the session id.
     async fn create_fresh_session(
         &mut self,
         agent_name: &str,
@@ -2354,28 +2356,6 @@ impl SessionManager {
             .keys()
             .filter(|(session_agent, _)| session_agent == agent_id)
             .count()
-    }
-
-    // Helper to clone manager for SessionHandle (DEPRECATED: use shared controller instead)
-    #[allow(dead_code)]
-    fn clone_manager(&self) -> Self {
-        // Create a new manager with same state
-        // Shares the metadata controller Arc for cache consistency
-        let _sessions_dir = self.sessions_dir.clone().unwrap_or_else(std::env::temp_dir);
-        Self {
-            base_sessions: self.base_sessions.clone(),
-            channel_overlays: self.channel_overlays.clone(),
-            spawn_overlays: self.spawn_overlays.clone(),
-            // Clone the Arc to share the same controller (cache consistency)
-            metadata_controller: self.metadata_controller.clone(),
-            // Share the same index (since MetadataController owns it, we keep our reference)
-            index: self.index.clone(),
-            sessions_dir: self.sessions_dir.clone(),
-            agent_name: self.agent_name.clone(),
-            path_resolver: self.path_resolver.clone(),
-            user: self.user.clone(),
-            peer_principal: self.peer_principal.clone(),
-        }
     }
 }
 

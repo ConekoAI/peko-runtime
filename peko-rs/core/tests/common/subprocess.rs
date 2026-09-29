@@ -80,7 +80,7 @@ where
 /// stdin, and wait up to `timeout` for the process to exit.
 ///
 /// This is the interactive variant of [`run_with_timeout`] for commands that
-/// prompt `stdin` (e.g. capability toggles during `peko principal import`).
+/// prompt `stdin` (e.g. capability toggles during `peko import`).
 /// On timeout it kills the child and panics with captured output.
 pub fn run_with_stdin<F>(
     make_cmd: F,

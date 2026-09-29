@@ -2551,12 +2551,9 @@ dependencies = [
 name = "peko-message"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
  "chrono",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2622,7 +2619,6 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
- "peko-events",
  "peko-message",
  "peko-provider-api",
  "peko-quota",

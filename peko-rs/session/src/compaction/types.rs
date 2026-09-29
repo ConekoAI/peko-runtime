@@ -6,15 +6,13 @@
 //! `CompactionRequest`, `CompactionResponse`, `CompactionQuota`,
 //! `CompactionConfig`), so they live alongside the persistence impl
 //! that produces and consumes them. `peko-engine` re-exports them
-//! via `peko_engine::compaction::{CompactionConfig, ...}` so the
-//! pre-Phase-7 import paths keep compiling.
+//! at its crate root (`peko_engine::{CompactionConfig, ...}`).
 //!
 //! Phase 9b.N.4 lifted these out of `src/session/compaction.rs` and
 //! `src/session/compaction/background.rs` so the `CompactionDriver`
 //! could build them without a root dependency. Phase 7 moves them one
 //! step further — into the crate that owns the persistence impl
-//! itself — so the driver's re-export is the only thing left in
-//! `peko-engine` for the data layout.
+//! itself.
 
 use anyhow::Result;
 use peko_message::{LlmMessage, TokenUsage};

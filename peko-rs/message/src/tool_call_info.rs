@@ -2,19 +2,15 @@
 //!
 //! `ToolCallInfo` is the lightweight, serializable summary of a tool
 //! call that flows between the extension framework, the engine, and
-//! the principal-to-principal messaging path. It carries just enough
+//! the channel messaging path. It carries just enough
 //! shape (`id`, `name`, `parameters`, and an optional textual `result`)
 //! for callers to render a call record without needing the full
 //! `ContentBlock::ToolCall` machinery or the `tools::builtin` impl
 //! types.
 //!
-//! **Phase 9b.1 lift:** this type moved from
-//! `peko_extension_host::principal_message::ToolCallInfo` (where it
-//! lived after the Phase 8 commit 2 move) so that `peko-engine` can
-//! hold `Vec<ToolCallInfo>` on `ChannelOutput` without taking a
-//! host-crate dep just for a 4-field DTO. The extension-host crate
-//! keeps a one-line `pub use peko_message::ToolCallInfo;` so every
-//! existing principal_message call site keeps compiling unchanged.
+//! This type lives in the message crate so `peko-engine` can hold
+//! `Vec<ToolCallInfo>` on its event types without taking a heavier
+//! dependency just for a 4-field DTO.
 //!
 //! This is **distinct** from `tools::builtin::session::ToolCallInfo`,
 //! which is a session-persistence-only shape with three fields

@@ -45,7 +45,6 @@ pub struct SubagentMetadata {
     pub child_session_id: Option<String>,
     pub cleanup: peko_session::types::SpawnCleanupPolicy,
     pub depth: u32,
-    pub announce_completion: bool,
     /// The subagent result (output, error, token_usage) —
     /// distinct from the generic `AsyncTaskEntry.result` which is
     /// the raw JSON returned by the execution closure.

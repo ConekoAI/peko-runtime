@@ -865,7 +865,6 @@ impl BoundTurnDriver for SubagentResumeDriver {
         // Everything else defaults (cleanup: Keep — bound sessions
         // outlive their runs; timeout 300s).
         let config = ExecutionConfig {
-            announce_completion: false,
             conversation: true,
             max_depth: 3,
             ..ExecutionConfig::default()

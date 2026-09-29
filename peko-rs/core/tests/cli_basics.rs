@@ -87,7 +87,6 @@ fn principal_create_list_show() {
             c
         },
         &[
-            "principal",
             "create",
             "test-principal",
             "--model",
@@ -107,7 +106,7 @@ fn principal_create_list_show() {
     );
 
     // List Principals.
-    let (out, err, status) = run(&cli, &["principal", "list"]);
+    let (out, err, status) = run(&cli, &["list"]);
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("test-principal"),
@@ -115,7 +114,7 @@ fn principal_create_list_show() {
     );
 
     // Show Principal.
-    let (out, err, status) = run(&cli, &["principal", "show", "test-principal"]);
+    let (out, err, status) = run(&cli, &["show", "test-principal"]);
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("test-principal"),
@@ -131,7 +130,7 @@ fn principal_create_list_show() {
 #[test]
 fn principal_show_nonexistent_fails() {
     let cli = PekoCli::new();
-    let (out, err, status) = run(&cli, &["principal", "show", "no-such-principal"]);
+    let (out, err, status) = run(&cli, &["show", "no-such-principal"]);
     assert_err(&out, &err, &status);
 }
 

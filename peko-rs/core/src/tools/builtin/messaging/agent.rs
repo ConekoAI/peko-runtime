@@ -434,7 +434,6 @@ impl AgentTool {
                 parent_session_key: caller_session_key.clone().unwrap_or_default(),
                 config: crate::tools::builtin::messaging::dto::ExecutionConfig {
                     timeout_seconds,
-                    announce_completion: true,
                     max_depth: self.runtime.max_depth(),
                     model_override: model.clone(),
                     page_limit,
@@ -1299,7 +1298,6 @@ impl SubagentRuntime for TestSubagentRuntime {
             label: None,
             result: None,
             depth: request.config.max_depth,
-            announce_completion: request.config.announce_completion,
         })
     }
 
@@ -1344,7 +1342,6 @@ impl SubagentRuntime for TestSubagentRuntime {
                 completed_at: chrono::Utc::now(),
             }),
             depth: 1,
-            announce_completion: true,
         })
     }
 
@@ -1394,7 +1391,6 @@ impl SubagentRuntime for TestSubagentRuntime {
                 completed_at: chrono::Utc::now(),
             }),
             depth: 1,
-            announce_completion: true,
         })
     }
 }

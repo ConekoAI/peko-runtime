@@ -379,10 +379,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
 /// `agents::subagent_executor::ExecutionConfig` shared by the spawn
 /// and resume branches of `execute_and_wait`.
 ///
-/// Sprint 7 Commit 3 collapsed the built-in `ExecutionConfig`'s
-/// `cleanup` / `label` fields — root-side always sees `Keep` /
-/// `None`. The remaining fields (timeout, announce_completion,
-/// max_depth, model_override) project verbatim.
+/// The fields (timeout, max_depth, model_override, …) project verbatim.
 ///
 /// ADR-052 D3: the resolved role body (`request.subagent_config.body`)
 /// rides `role_prompt` so the spawned child runs the named agent's
@@ -408,9 +405,6 @@ fn build_root_execution_config(
 
     crate::agents::subagent_executor::ExecutionConfig {
         timeout_seconds: request.config.timeout_seconds,
-        cleanup: SpawnCleanupPolicy::Keep,
-        label: None,
-        announce_completion: request.config.announce_completion,
         max_depth: request.config.max_depth,
         model_override,
         page_limit: request.config.page_limit,
@@ -463,7 +457,6 @@ fn project_run_view(view: crate::agents::subagent_types::SubagentRunView) -> Sub
                 completed_at: r.completed_at,
             }),
         depth: view.depth,
-        announce_completion: view.announce_completion,
     }
 }
 

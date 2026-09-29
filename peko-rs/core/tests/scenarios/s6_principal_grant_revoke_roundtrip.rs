@@ -51,7 +51,7 @@ use peko_core::ipc::DaemonClient;
 // ---------------------------------------------------------------------------
 
 /// Create a Principal under the test's isolated `<HOME>/.peko` by invoking
-/// the real `peko principal create` command. This produces the workspace,
+/// the real `peko create` command. This produces the workspace,
 /// identity, default `agents/primary.md` prompt, and `principal.toml` that
 /// the daemon's `load_principal` requires — `owner = { kind = "user", id =
 /// "local" }`, which satisfies the local-socket caller owner check in the
@@ -69,17 +69,17 @@ fn create_principal(cli: &PekoCli, name: &str) {
     common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
     let output = cli
         .cmd()
-        .args(["principal", "create", name, "--model", "mock-llm"])
+        .args(["create", name, "--model", "mock-llm"])
         .output()
-        .expect("run `peko principal create`");
+        .expect("run `peko create`");
     assert!(
         output.status.success(),
-        "`peko principal create {name}` failed: stdout={} stderr={}",
+        "`peko create {name}` failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
 
-    // `peko principal create` defaults the owner to `user:default`, but the
+    // `peko create` defaults the owner to `user:default`, but the
     // local-socket caller in this test is `user:local`. Rewrite the owner so
     // the `ManageSettings` owner-check in the grant/revoke handlers passes —
     // mirroring the `owner = { kind = "user", id = "local" }` the old agent

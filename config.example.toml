@@ -1,152 +1,57 @@
-[agent]
-name = "default"
-description = "Default Peko agent"
-
-# ============================================
-# DAEMON BOOTSTRAP PROVIDER (optional)
-# ============================================
-# PR 6 / `feature/model-first-config`: the runtime is now catalog-
-# driven. Add model entries with `peko model add --template <id>
-# --model <wire-id> --key "$YOUR_KEY"` and the daemon will pick
-# one up from `~/.peko/models.toml`. The `[provider]` block below
-# is only consulted as a FALLBACK bootstrap when the catalog is
-# empty — comment in the block AND fill in the wire ids if you
-# want the daemon to start without a populated catalog.
-
-# [provider]
-# type = "anthropic"           # anthropic | openai | ollama | ...
-# model = "claude-3-5-haiku-latest"
+# Peko configuration reference
 #
-# NOTE: API keys are NEVER stored in this file. Use
-#       `peko credential set llm <model-id> --kind api_key --material "$YOUR_KEY"`
-#       to store the key in the encrypted vault.
+# Peko keeps very little in config files. Before editing anything by hand,
+# know where state actually lives:
+#
+#   models + API keys ..... `peko model add --template <id> --model <wire-id>
+#                           --key "$KEY"` — catalog in ~/.peko/models.toml,
+#                           key material in the OS keychain vault
+#                           (`peko credential set` for manual management)
+#   per-peko settings ..... the peko's own principal.toml (identity, quota,
+#                           capabilities, routing) — edit directly, or use
+#                           `peko quota set` / `peko model` where a CLI exists
+#   workspace capabilities  plain files under the peko's workspace
+#                           (roles/, skills/, mcp/, hooks/, workflows/)
+#
+# Only two TOML files are read by the runtime, and every block in both is
+# optional (missing file = built-in defaults):
 
-# ============================================
-# PROVIDER RETRY BEHAVIOR (F40b / PR #3)
-# ============================================
-# Override the per-call retry knobs. Defaults shown below match the
-# factory constants; remove the `[provider.retry]` block entirely to
-# inherit those defaults. Every field is independently optional,
-# so a partial block (e.g. bumping only `max_retries`) is accepted.
+# ════════════════════════════════════════════════════════════════════
+# ~/.peko/peko.toml — daemon configuration
+# ($PEKO_HOME/peko.toml when PEKO_HOME is set)
+# ════════════════════════════════════════════════════════════════════
+#
+# The only block the daemon consumes today is [provider.retry] — overrides
+# for the LLM transport retry defaults. Values shown are the defaults.
 
 # [provider.retry]
-# max_retries = 5              # Transport-level retries for transient errors
-# retry_delay_ms = 1000        # Initial backoff (doubles per attempt)
-# retry_max_delay_ms = 30000   # Cap on the exponential backoff
-# retry_jitter = 0.1           # ±10% uniform spread; omit or set to 0 to disable
-# max_attempts = 8             # Total transport+engine attempts (shared budget)
-
-[memory]
-type = "sqlite"
-path = "~/.local/share/peko/memory.db"
-
-# ============================================
-# TOOL REGISTRY CONFIGURATION
-# ============================================
-# Choose your registry backend:
-# - "pekohub": Cloud registry (default, easiest)
-# - "local": Filesystem registry (air-gapped)
-# - "source": Build from source (developers)
-# - Multi-registry: Multiple fallbacks
-
-[tools.registry]
-# DEFAULT: Use public Pekohub (no setup required)
-# Tools downloaded from https://tools.coneko.ai
-type = "pekohub"
-url = "https://tools.coneko.ai"
-
-# UNCOMMENT FOR SELF-HOSTED:
-# type = "pekohub"
-# url = "https://tools.mycompany.com"
-# api_key = "${secret:PEKOHUB_API_KEY}"
-
-# UNCOMMENT FOR OFFLINE MODE:
-# type = "local"
-# path = "~/.local/share/peko/tools"
-
-# UNCOMMENT FOR SOURCE BUILDS:
-# type = "source"
-# source_path = "~/src/pekohub-tools"
-# build_cache = "~/.cache/peko/tool-builds"
-
-# Advanced: Multi-registry with fallback
-# [[tools.registry.fallbacks]]
-# type = "pekohub"
-# url = "https://tools.coneko.ai"
+# max_retries = 5              # transport-level retries for transient errors
+# retry_delay_ms = 1000        # initial backoff in ms (doubles per attempt)
+# retry_max_delay_ms = 30000   # cap on the exponential backoff
+# retry_jitter = 0.1           # ±10% uniform spread; omit or 0 to disable
+# max_attempts = 8             # total transport+engine attempts (shared budget)
 #
-# [[tools.registry.fallbacks]]
-# type = "local"
-# path = "~/.local/share/peko/tools"
+# Constraints (validated at daemon boot; invalid values fall back to
+# defaults with a warning):
+#   max_retries <= max_attempts
+#   retry_delay_ms > 0
+#   retry_max_delay_ms >= retry_delay_ms
+#   0.0 <= retry_jitter < 1.0
 
-[tools]
-# Core tools (always bundled)
-core = ["http", "filesystem", "cron", "memory"]
+# ════════════════════════════════════════════════════════════════════
+# ~/.peko/config.toml — session compaction tuning
+# ════════════════════════════════════════════════════════════════════
+#
+# Read by the compaction subsystem (ADR-022). Values shown are the
+# defaults; copy the block into ~/.peko/config.toml to change them.
 
-# On-demand tools (downloaded from registry when needed)
-# Remove tools you don't need to save space
-on_demand = [
-    "social_media",
-    "calendar",
-    "email",
-    "document",
-    "expense",
-    "inventory",
-    "research",
-]
-
-# Cache settings
-cache_dir = "~/.cache/peko/tools"
-cache_ttl_hours = 168  # 1 week
-
-# Security
-verify_signatures = true
-allow_source_builds = true
-
-[channels]
-# Enable/disable communication channels
-# discord = { enabled = true, token = "${secret:DISCORD_TOKEN}" }
-# telegram = { enabled = true, token = "${secret:TELEGRAM_TOKEN}" }
-# slack = { enabled = true, token = "${secret:SLACK_TOKEN}" }
-# smtp = { enabled = true, host = "smtp.gmail.com", port = 587 }
-
-[security]
-# Sandboxing level for external tools
-# - "strict": Maximum isolation (recommended)
-# - "standard": Balanced security/performance
-# - "permissive": Minimal restrictions (development only)
-sandbox_level = "standard"
-
-# ============================================
-# CONEKO NETWORK (Optional)
-# ============================================
-# Connect to Coneko multi-agent network
-
-# [coneko]
-# enabled = false
-# server_url = "https://coneko.example.com"
-# agent_did = "did:key:z6Mk..."
-
-# ============================================
-# LOGGING & DEBUG
-# ============================================
-
-[log]
-level = "info"  # error, warn, info, debug, trace
-format = "pretty"  # pretty, json, compact
-
-# ============================================
-# SESSION COMPACTION (ADR-022)
-# ============================================
-# Automatically summarize conversation history when approaching
-# the LLM's context window limit.
-
-[compaction]
-enabled = true
-auto_threshold_percent = 85       # trigger at 85% of model limit
-reserve_tokens = 16384            # tokens to reserve for LLM response
-keep_recent_tokens = 20000        # minimum recent conversation to preserve
-max_compactions_per_session = 100 # quota limit
-cooldown_seconds = 60             # minimum seconds between compactions
+# [compaction]
+# enabled = true
+# auto_threshold_percent = 85       # trigger at 85% of model context limit
+# reserve_tokens = 16384            # tokens reserved for the LLM response
+# keep_recent_tokens = 20000        # minimum recent conversation preserved
+# max_compactions_per_session = 100 # quota limit
+# cooldown_seconds = 60             # minimum seconds between compactions
 
 # Optional: override model context window limits
 # [compaction.model_limits]
@@ -154,7 +59,15 @@ cooldown_seconds = 60             # minimum seconds between compactions
 # kimi.K2.6 = 262144
 # minimax.M2.7 = 204800
 
-[debug]
-# Enable for troubleshooting
-show_tool_calls = false
-show_memory_operations = false
+# ════════════════════════════════════════════════════════════════════
+# Notes
+# ════════════════════════════════════════════════════════════════════
+#
+# - The daemon's IPC/HTTP bind is a loopback constant (127.0.0.1:11435);
+#   there is no bind-address knob (ADR-058 D6).
+# - Logging verbosity is controlled by the RUST_LOG environment variable,
+#   not a config key.
+# - There are no [agent], [memory], [tools], [channels], [security], or
+#   [debug] blocks — those belonged to retired subsystems (agent CRUD,
+#   sqlite memory, registry-downloaded tools, chat-platform adapters).
+#   Unknown keys are ignored, so old config files keep parsing.

@@ -4,6 +4,89 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Legacy cleanup pass — retired surfaces, aliases, and doc drift (2026-09-29)
+
+Pre-launch sweep removing dead code left over from retired features,
+deleting the last deprecated CLI aliases, and bringing user-facing docs
+back in line with the code.
+
+**Dead code removed (zero production callers, verified):**
+
+- `Provider::model()` / `Provider::complete()` / `Provider::complete_stream()`
+  legacy aliases (`peko-rs/providers/src/core.rs`); the `peko-events`
+  dependency of `peko-providers` went with them.
+- `peko_engine::compaction` re-export facade + `peko_engine::ToolCall`
+  re-export; intra-engine users re-pointed at `peko_session::compaction`.
+- `peko-message` legacy cluster: `MessageId`, `AgentMessage`,
+  `CustomMessage`, `NotificationLevel`, `MessageConverter` /
+  `JsonMessageConverter`, `MessageContext`, `SteeringProvider` /
+  `NoOpSteeringProvider`, `ContextWindowConfig`, `ContextTransformer` /
+  `DefaultContextTransformer` (+ the crate's now-unused `async-trait` /
+  `anyhow` deps).
+- `SessionManager::clone_manager` (deprecated), `ServiceRegistry` type
+  alias, MCP `start_receive_loop` no-op, `write_v3_mock_agent` test
+  helper.
+- `AgentConfig.enable_task_tools` / `enable_plan_tools` /
+  `enable_async_tools` — Sprint-8b holdovers the spawn path no longer
+  read (old TOML still parses; unknown keys are ignored).
+- Root `ExecutionConfig.cleanup` / `label` (writer hardcoded the
+  defaults) and the `announce_completion` field chain
+  (`SubagentRunView`, `SubagentMetadata`) — written everywhere, read by
+  nothing.
+
+**Retired CLI aliases removed (pre-launch, no compat shim):**
+
+- `peko principal <sub>` hidden alias (ADR-059) — the flattened
+  top-level verbs (`peko create` / `list` / `show` / ...) are the only
+  path; `peko principal ...` now errors as an unknown subcommand.
+- `peko create --seed`'s hidden `-f` / `--file` aliases (ADR-060) —
+  `-s` / `--seed` remain.
+- `peko config init --template agent` — the template described the
+  retired agent-CRUD config shape.
+
+**Config truthfulness (docs + small code fixes):**
+
+- `config.example.toml` rewritten: it previously consisted almost
+  entirely of blocks nothing reads (`[agent]`, `[memory]` sqlite,
+  `[tools.registry]`, `[channels]` Discord/Telegram/Slack, `[security]`,
+  `[coneko]`, `[debug]`, and a `[provider]` "fallback bootstrap" whose
+  `type`/`model` fields are parsed but never consulted). The new file
+  documents the two real config files: `~/.peko/peko.toml` (daemon;
+  `[provider.retry]` only) and `~/.peko/config.toml` (`[compaction]`).
+- `peko config init` templates rewritten to match reality (the old
+  `minimal` template wrote an unread `[daemon] log_level` and a
+  `[defaults]` block naming provider `minimax` with model
+  `gpt-4o-mini`).
+- `PekoConfig` gains `#[serde(default)]` on `app_name` / `storage` /
+  `network` / `logging`, so a minimal `peko.toml` containing only
+  `[provider.retry]` parses instead of falling back with a warning.
+- `load_compaction_config()` now honors `PEKO_HOME` instead of reading
+  `~/.peko/config.toml` unconditionally (matches the run-dir isolation
+  fix for IPC socket/PID).
+
+**Install & release drift:**
+
+- `install.sh` / `install-from-source.sh` no longer write a default
+  `config.toml` full of retired concepts to `~/.config/peko/` (a path
+  nothing reads); quick-start text now uses `peko model add --key`,
+  `peko daemon start`, `peko create`, `peko send`. `install.sh
+  --version` is now honored (previously parsed but ignored).
+- `.github/workflows/release.yml` generated release notes no longer
+  teach the retired `peko agent create` flow.
+
+**Docs:**
+
+- `README.md`: source tree updated to the `peko-rs/` workspace layout;
+  removed "SQLite Memory", "22 Hook Points" (now 18, listing the real
+  variants), "Event Triggers", the AES-256-GCM/Argon2id package claims
+  (packages are ed25519-signed; keys never leave the vault), the
+  `.env.example` pointer (no such file), and both "retained for
+  historical reference" blocks of deleted `peko ext *` commands.
+- `Makefile` header no longer points at the nonexistent
+  `docs/integration/TESTING.md`.
+- CHANGELOG `1.0.0-rc1` header annotated: the label was never tagged or
+  released; the workspace version has remained `0.1.0` throughout.
+
 ### Async task subsystem consolidation — delivery gap closed, dead IPC path deleted (2026-09-27)
 
 Fixes and consolidation from the 2026-09-27 async tool-calling review
@@ -3186,6 +3269,13 @@ no operator signal that the relay was down.
   `stop_tunnel()` clears the degraded flag and per-attempt state.
 
 ## [1.0.0-rc1] - Phase 1 Completion - 2026-05-14
+
+> **Version note (2026-09-29):** this section documents the pre-rename
+> *pekobot* Phase 1 milestone. The `1.0.0-rc1` label was never tagged or
+> released — no git tag or GitHub release exists for it — and the
+> workspace version has remained `0.1.0` throughout (source of truth:
+> `peko-rs/core/Cargo.toml`). Treat this section as part of the 0.1.0
+> development line.
 
 Phase 1 of the Pekobot runtime is complete. All P0 success criteria for the agent runtime, unified packaging, registry integration, and CLI have been implemented and verified.
 

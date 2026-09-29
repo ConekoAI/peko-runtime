@@ -82,7 +82,7 @@
 //!    discover the instance via `GET /v1/instances?runtime_id=<did>`
 //!    and look it up by runtime_id (one instance per runtime, since
 //!    the test only creates one principal).
-//! 5. **`peko principal permit` propagates to PekoHub within ~1s.** As
+//! 5. **`peko permit` propagates to PekoHub within ~1s.** As
 //!    of the fix for [issue #16](https://github.com/ConekoAI/peko-runtime/issues/16),
 //!    the `PrincipalGrantPermission` and `PrincipalRevokePermission`
 //!    IPC handlers call
@@ -170,7 +170,7 @@ async fn mint_api_key(
 /// [`src/tunnel/dispatcher.rs:297-323`](../../src/tunnel/dispatcher.rs#L297-L323)).
 ///
 /// Mirrors the pattern in `tests/scenarios/s6_principal_grant_revoke_roundtrip.rs` —
-/// `peko principal create` scaffolds the workspace + identity, then we
+/// `peko create` scaffolds the workspace + identity, then we
 /// patch `principal.toml` for the per-test exposure + grant.
 ///
 /// `owner_did` is the runtime's own DID — pekohub's `resolveRuntimeOwner`
@@ -200,7 +200,7 @@ fn write_principal_with_perm(
     // to the seeded `mock-llm` model (model-first: create requires
     // `--model` and validates it against the catalog).
     //
-    // ADR-054: `principal create` is a BLOCKING command — the bare form
+    // ADR-054: `peko create` is a BLOCKING command — the bare form
     // spawns a daemon sidecar and waits for the genesis turn. Use
     // `--detach` (provisioning is still synchronous), then stop the
     // sidecar: it was started BEFORE `pekohub.toml` exists, so it can
@@ -209,19 +209,12 @@ fn write_principal_with_perm(
     // tunnel connect + `instance_announce` come from daemon start).
     let output = cli
         .cmd()
-        .args([
-            "principal",
-            "create",
-            principal_name,
-            "--model",
-            "mock-llm",
-            "--detach",
-        ])
+        .args(["create", principal_name, "--model", "mock-llm", "--detach"])
         .output()
-        .expect("run `peko principal create`");
+        .expect("run `peko create`");
     assert!(
         output.status.success(),
-        "`peko principal create {principal_name}` failed: stdout={} stderr={}",
+        "`peko create {principal_name}` failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -238,7 +231,7 @@ fn write_principal_with_perm(
     //
     // TOML key-order trap: root-level scalar keys (`exposure`, `owner`)
     // MUST come BEFORE any `[section]` header. After the v3 principal
-    // migration `peko principal create` writes a well-formed file
+    // migration `peko create` writes a well-formed file
     // (exposure/owner/description at the top), and `to_string_pretty`
     // preserves the field order of `PrincipalConfig`, so reading +
     // re-serializing keeps the correct order. We then re-read the

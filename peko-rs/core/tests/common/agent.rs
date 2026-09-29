@@ -1,70 +1,29 @@
 //! Agent-config helpers for CLI tests.
 //!
-//! Writes a v3 agent config (no `[provider]` block) that references
-//! the catalog entry `mock-llm` (seeded by `seed_mock_provider_in_catalog`
-//! below). The catalog entry holds the actual base_url and api_key.
-//! Lives in the `~/.peko/agents/<name>/` layout the CLI expects.
+//! Lives in the `~/.peko/` layout the CLI expects.
 #![allow(dead_code)]
 
 use super::cli::PekoCli;
 use std::path::Path;
 
-/// Write a minimal agent config that points at the catalog entry
-/// `mock-llm` (which `seed_mock_provider_in_catalog` writes to
-/// `~/.peko/providers.toml`). The agent itself only carries the
-/// soft hints — no `[provider]` block.
-///
-/// Layout produced under `home/.peko/`:
-///   agents/<name>/config.toml          v3 agent config with soft hints
-///   agents/<name>/SYSTEM.md            empty system prompt
-///
-/// **Note**: as of the Track-B `AgentConfig` tidy, this helper
-/// writes only the fields that survived the cleanup. The
-/// previously-emitted `auto_accept_trusted`, `default_timeout_seconds`,
-/// `[channels]`, `[extensions]`, and inline `[prompt]` blocks are
-/// gone from `AgentConfig`; the catalog holds the provider/model
-/// wiring, `PrincipalConfig` carries the principal-mirrored fields,
-/// and `principal.toml`'s `[capabilities]` list is the source of
-/// truth for tool visibility. This helper is kept for any test that
-/// still needs a raw v3 agent TOML on disk.
-#[allow(dead_code)]
-pub fn write_v3_mock_agent(home: &Path, name: &str, _mock_llm_url: &str) -> std::io::Result<()> {
-    let agent_dir = home.join(".peko").join("roles").join(name);
-    std::fs::create_dir_all(&agent_dir)?;
-
-    let config_toml = format!(
-        r#"name = "{name}"
-description = "CLI integration test agent"
-
-enable_task_tools = true
-enable_async_tools = true
-"#
-    );
-
-    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
-    std::fs::write(agent_dir.join("SYSTEM.md"), "")?;
-    Ok(())
-}
-
 /// Create a Principal wired to the mock LLM provider and ready to receive
 /// `peko send` from the CLI caller (`user:default`).
 ///
-/// This is the Principal-era replacement for `write_v3_mock_agent`: after
-/// the "Principal as the single actor" migration, `peko send <name>` targets
-/// a Principal (`PrincipalSend` → `PrincipalManager::receive`), not a legacy
-/// `~/.peko/agents/<name>/` config. Tests that drive the LLM call path must
-/// therefore create a Principal, not an agent.
+/// Since the "Principal as the single actor" migration, `peko send <name>`
+/// targets a Principal (`PrincipalSend` → `PrincipalManager::receive`), not
+/// a legacy `~/.peko/agents/<name>/` config. Tests that drive the LLM call
+/// path must therefore create a Principal, not an agent.
 ///
 /// Steps:
 ///  1. Seed `mock-llm` as the sole catalog entry and pin the Principal
-///     to it via `peko principal create --model mock-llm` (model-first:
+///     to it via `peko create --model mock-llm` (model-first:
 ///     there is no resolver fallback — an unpinned principal fails every
 ///     send with "no model configured").
-///  2. Run the real `peko principal create <name>` command, exercising the
+///  2. Run the real `peko create <name>` command, exercising the
 ///     actual framework: it writes the workspace, `agents/root/AGENT.md`
 ///     prompt, identity, and `principal.toml`.
 ///
-/// No owner rewrite is needed: `peko principal create` stamps the
+/// No owner rewrite is needed: `peko create` stamps the
 /// owner from the real caller (`caller.subject()` — ADR-057), which
 /// for the local CLI is `user:local`, and the caller `peko send`
 /// presents is the same derived identity (`user:local`, or the hub
@@ -72,8 +31,8 @@ enable_async_tools = true
 /// `Permission::Chat` owner-check in `PrincipalManager::receive`
 /// passes.
 ///
-/// Must be called BEFORE `DaemonGuard::spawn` (like `write_v3_mock_agent`):
-/// `peko principal create` writes files directly and needs no daemon.
+/// Must be called BEFORE `DaemonGuard::spawn`:
+/// `peko create` writes files directly and needs no daemon.
 pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     create_mock_principal_with_tools(cli, name, mock_llm_url, &[]);
 }
@@ -91,7 +50,7 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
 /// already-typed capability strings (e.g. `"mcp:memory_server"`).
 /// Bare names are written as `tool:<name>`; strings that already contain a
 /// `:` are passed through verbatim into `principals/<name>/principal.toml`
-/// under `[capabilities] grants` after `peko principal create`.
+/// under `[capabilities] grants` after `peko create`.
 pub fn create_mock_principal_with_tools(
     cli: &PekoCli,
     name: &str,
@@ -102,12 +61,12 @@ pub fn create_mock_principal_with_tools(
 
     let output = cli
         .cmd()
-        .args(["principal", "create", name, "--model", "mock-llm"])
+        .args(["create", name, "--model", "mock-llm"])
         .output()
-        .expect("run `peko principal create`");
+        .expect("run `peko create`");
     assert!(
         output.status.success(),
-        "`peko principal create {name} --model mock-llm` failed: stdout={} stderr={}",
+        "`peko create {name} --model mock-llm` failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );

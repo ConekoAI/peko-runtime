@@ -43,7 +43,7 @@
 //!   - `identity/did.json` + `identity/keys.enc` — the principal's
 //!     DID + private key (the same shape the agent-era package used).
 //!   - `agents/<prompt>.md` — one or more AGENT.md prompts that
-//!     `peko principal import` restores into the principal's
+//!     `peko import` restores into the principal's
 //!     workspace.
 
 use peko_core::principal::config::PrincipalConfig;

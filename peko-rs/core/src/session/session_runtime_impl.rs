@@ -1668,7 +1668,6 @@ mod tests {
                     child_session_id: Some(sid("subrun_probe")),
                     cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
                     depth: 1,
-                    announce_completion: false,
                     subagent_result: None,
                 }),
             ));

@@ -275,10 +275,8 @@ impl Agent {
         // adapter is constructed here so the built-in crate stays free of
         // root-only deps.
         //
-        // Sprint 8 Commit 3: the per-agent `enable_task_tools` gate was
-        // dropped — every reachable Agent defaults it to `true` and the
-        // read only added noise. Without a session-storage dir we still
-        // warn and skip (defensive).
+        // The family is registered unconditionally; without a
+        // session-storage dir we still warn and skip (defensive).
         if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
             let todo_storage = Arc::new(peko_session::todos::TodoStorage::new(sessions_dir));
             let runtime = std::sync::Arc::new(
@@ -315,13 +313,6 @@ impl Agent {
         // tools are intentionally not registered — test-only
         // `Agent::new` callers hit this path. Mirrors the Task* shape:
         // runtime-handle-gated, otherwise warn-level skip.
-        //
-        // Sprint 8 Commit 3: the per-agent `enable_plan_tools` gate was
-        // dropped — every reachable Agent defaults it to `true` and the
-        // read only added noise. Sprint 9 Commit 4 retired the gateway
-        // loop's `StatelessAgentService` (which used to construct
-        // `AgentConfig` literals), so the lockstep-update reason is
-        // gone.
         if let Some(plan_port) = self.principal_plan_port.clone() {
             use crate::tools::builtin::{
                 PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool,
@@ -456,10 +447,10 @@ impl Agent {
     ///
     /// The resolver is consulted in `init_provider` to build a
     /// one-shot `Provider` from the agent's `preferred_*` hints (or
-    /// the runtime default). If the resolver has no matching entry
-    /// (e.g. the catalog hasn't been seeded yet), the constructor
-    /// falls back to the deprecated `config.provider` field so
-    /// pre-v3 fixtures still work.
+    /// the runtime default). The resolver is the only source of truth —
+    /// when it has no matching entry (or is absent), the agent is
+    /// constructed without an LLM provider (a warning is logged at
+    /// build time).
     pub async fn new_with_resolver(
         config: AgentConfig,
         resolver: Arc<peko_providers::LlmResolver>,
@@ -799,9 +790,8 @@ impl Agent {
     /// `Plan*` built-in tools (`PlanCreate` / `PlanList` /
     /// `PlanGet` / `PlanMarkStep` / `PlanRecordEvidence` /
     /// `PlanAddStep` / `PlanClose`) are registered by
-    /// `init_builtins_async`; when `None` they are skipped even if
-    /// `AgentConfig::enable_plan_tools` is `true` (the typical test
-    /// path).
+    /// `init_builtins_async`; when `None` they are skipped (the
+    /// typical test path).
     ///
     /// The handle is propagated to the subagent executor so depth-1
     /// children inherit the same per-Principal port and `init_builtins_async`
@@ -1623,13 +1613,6 @@ impl Agent {
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
         //    core. Uses Weak so the tools do not extend the core's lifetime
         //    past the core itself.
-        //
-        // Sprint 8 Commit 3: the per-agent `enable_async_tools` gate was
-        // dropped — every reachable Agent defaults it to `true` and the
-        // read only added noise. Sprint 9 Commit 4 retired the gateway
-        // loop's `StatelessAgentService` (which used to construct
-        // `AgentConfig` literals), so the lockstep-update reason is
-        // gone.
         let core_weak = Arc::downgrade(&extension_core);
         // F37: snapshot the spawning principal's capability grants.
         // `AsyncExecutorRuntime::spawn` builds the F37 canonical
