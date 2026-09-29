@@ -364,21 +364,8 @@ impl PrincipalManager {
         // path (CLI provision, package import, tests) satisfies the
         // workspace-file contract before the router factory resolves
         // the root prompt and fails loudly on absence.
-        let root_role = layout.shared.roles_dir.join("root.md");
-        if !root_role.exists()
-            && !layout
-                .shared
-                .roles_dir
-                .join("root")
-                .join("ROLE.md")
-                .exists()
-        {
-            std::fs::create_dir_all(&layout.shared.roles_dir)?;
-            std::fs::write(
-                &root_role,
-                crate::principal::routers::root_role_seed_content(),
-            )?;
-        }
+        crate::principal::genesis::seed_default_root_role(&layout.shared.root)
+            .map_err(|e| PrincipalManagerError::Config(format!("root role seed failed: {e:#}")))?;
 
         // Generate and persist a real DID identity for this Principal.
         let mut config = config;
@@ -526,6 +513,14 @@ impl PrincipalManager {
         // lives in the Local tier under
         // `<data_dir>/principals/{name}/local/cron/`.
         let layout = self.path_resolver.principal_layout(&name);
+
+        // ADR-064 follow-up: principals loaded from disk (daemon boot,
+        // e2e workspaces assembled by hand) get the same default-start
+        // stamp as created ones — the root role prompt has no
+        // render-time fallback, so `roles/root.md` must exist before
+        // the router factory resolves the root prompt.
+        crate::principal::genesis::seed_default_root_role(&workspace_path)
+            .map_err(|e| PrincipalManagerError::Config(format!("root role seed failed: {e:#}")))?;
 
         // Stable principal id: use the persisted one when present. For
         // pre-existing `principal.toml` files without an `id` field,
