@@ -172,6 +172,10 @@ peko-cron = { path = "../cron" }
 # (see peko-rs/session/Cargo.toml).
 peko-session = { path = "../session" }
 peko-channel = { path = "../channel" }
+# ADR-065 — Write/Edit tools acquire `WorkspaceFileLock` so concurrent
+# agents sharing this runtime cannot silently clobber same-file edits
+# (the F33 ParallelGate only serializes within one agent's runtime).
+peko-fs-persistence = { path = "../fs-persistence" }
 # Async runtime
 # `full` enables `net`, but listing `net` explicitly documents the
 # dependency on `tokio::net::windows::named_pipe` (ADR-038).
