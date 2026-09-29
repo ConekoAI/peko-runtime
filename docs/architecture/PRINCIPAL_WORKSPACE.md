@@ -30,15 +30,16 @@ For the trust-and-audit posture that makes this safe, see
 ```
 ~/.peko/principals/<name>/
 ├── principal.toml
-├── agents/<name>.md
+├── roles/<name>.md
 ├── kb/                              # persistent knowledge base (ADR-055)
 │   ├── MEMORY.md                    # hot long-term memory (rendered every turn)
 │   ├── index.md                     # hot map of the tree (rendered every turn)
+│   ├── CONVENTIONS.md               # hot shared behavioral rulebook (rendered every turn)
 │   ├── people/<who>.md              # cold — per-person notes, looked up via index
 │   ├── groups/<channel>.md          # cold — per-group notes; the file matching a
 │   │                                #   run's channel binding is injected (D8)
-│   ├── agents/<name>.md             # cold — per-agent notes; a named agent's
-│   │                                #   note rides with that agent (D8)
+│   ├── roles/<name>.md              # cold — per-role notes; a named role's
+│   │                                #   note rides with that role (D8)
 │   └── …                            # cold: refs/, journal/, imports/, datasets…
 ├── memory/sessions/<session_id>.jsonl
 ├── skills/<skill-id>/SKILL.md       # skills
@@ -51,8 +52,8 @@ For the trust-and-audit posture that makes this safe, see
 | Path                       | Contents                                                                  |
 |----------------------------|---------------------------------------------------------------------------|
 | `principal.toml`           | Owner, permissions, exposure, capabilities, root prompt                    |
-| `agents/<name>.md`         | Agent prompts (per-peko)                                             |
-| `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `agents/<name>.md` for the named agent |
+| `roles/<name>.md`         | Role prompts (per-peko) — T1 role bodies (ADR-064)                   |
+| `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` + `CONVENTIONS.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `roles/<name>.md` for the named role |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
@@ -81,7 +82,7 @@ rm -r ~/.peko/principals/<name>/skills/<id>                      # remove
 peko show                  # includes catalog summary
 ```
 
-The workspace `agents/` and `skills/` catalogs render **per turn** into
+The workspace `roles/` and `skills/` catalogs render **per turn** into
 the tail `<runtime-context>` user message (mtime-keyed scan, re-injected
 only when the rendered catalog changes), so a file added to either
 directory is visible to the model on the next iteration — no restart.
@@ -116,7 +117,7 @@ my-principal.peko (tar.gz)          # cryogenic transport
 ├── manifest.toml
 ├── identity/                       # did.json + keys.enc
 ├── config/
-├── agents/
+├── roles/
 ├── sessions/                       # incl. peers.json
 ├── cron/
 ├── plans/
@@ -185,7 +186,7 @@ retired in ADR-062; move that logic to an MCP server or a
 `workflows/*.py` workflow (ADR-061) instead of copying the manifest.
 
 The catalog rebuild on the next boot picks them up automatically, and
-`agents/` / `skills/` additions are visible in the system prompt on the
+`roles/` / `skills/` additions are visible in the system prompt on the
 next iteration (ADR-050).
 
 The legacy `peko ext *` CLI surface is gone. There is no compatibility

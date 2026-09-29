@@ -1,6 +1,7 @@
-# ADR-052: Tiered System Prompt (T0 Principal / T1 Role / T2 Instance)
+# ADR-052: Tiered System Prompt (T0 Principal / T1 Role / T2 Agent)
 
-**Status:** Proposed
+**Status:** Accepted (implemented — D2–D6 verified by the
+`tiered_prompt.rs` mock-LLM e2e suite)
 **Date:** 2026-09-11
 **Author:** rlsn
 **Related:** [ADR-050](ADR-050-capabilities-as-workspace-files.md)
@@ -83,7 +84,7 @@ byte-capped):
   channel-bound agents by their binding, Agent-tool spawns by the
   `agent` parameter). A role customizes the agent within the
   principal's authority; it never replaces T0.
-- **T2 — Instance.** Where this agent sits: its own session slug path,
+- **T2 — Agent.** Where this live agent sits: its own session slug path,
   its specific purpose/task, and project context (project path,
   AGENTS.md notes, caveats, rules) for the work it is doing.
 
@@ -141,7 +142,7 @@ tail section:
   compact section (name, description, goals, values, preferences);
 - MEMORY.md (existing section, unchanged).
 
-### D5 — T2 instance section
+### D5 — T2 agent section
 
 A `## Your position` tail section renders: the agent's own session
 slug path, its purpose (spawn task summary for subagents; binding
@@ -222,3 +223,34 @@ instead of the canonicalized form. One remains open:
   `RuntimeContextState` from the last persisted `<runtime-context>`
   message at run start. Deliberately deferred: the failure mode is
   cosmetic (missing notice), never stale content.
+
+---
+
+## 5. Amendment (2026-09-29) — as-built tiers, T2 renamed Agent
+
+With [ADR-064](ADR-064-agents-to-roles-terminology.md) settling the
+vocabulary (agent = live session actor; role = the template a session
+is initiated from), the tier names are finalized:
+
+- **T0 — Principal.** Who this principal is; applies to every agent in
+  the tree. As-built tail sections: Identity (`[identity]`/`[intent]`
+  from `principal.toml`), Memory (`kb/MEMORY.md`), Conventions
+  (`kb/CONVENTIONS.md` — the shared behavioral rulebook, added by
+  [ADR-055 rev 2](ADR-055-principal-kb.md), closing the
+  prose-conventions gap this ADR's D4 originally envisioned),
+  KB index (`kb/index.md`), plus the targeted scope notes
+  (`kb/groups/<channel>.md` binding note, `kb/roles/<name>.md` role
+  note).
+- **T1 — Role.** The body of the role file the session was initiated
+  from — `roles/<name>.md` or `roles/<name>/ROLE.md` (ADR-064;
+  previously `agents/<name>/AGENT.md`). Frozen prefix, composed once
+  per run. The compiled-in default is the root role's body.
+- **T2 — Agent.** Where this live agent sits: its own session slug
+  path, its purpose/task, and the project context of its focus
+  directory (nearest `AGENTS.md`). Rendered as tail sections with
+  change detection. The former name "instance" was vague; "agent" is
+  now precise and non-colliding, since T1 owns "role".
+
+The catalog sections (roles / skills / workflows) and custom
+workspace-hook sections remain tier-neutral tail content, as built.
+

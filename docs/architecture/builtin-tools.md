@@ -287,12 +287,12 @@ caller's tree compacts (but never the caller's own session or an
 ancestor; the engine compacts those automatically).
 
 `agent` resolves to a Markdown file at
-`<workspace>/agents/<agent>/AGENT.md` (directory layout) or
-`<workspace>/agents/<agent>.md` (flat layout). The Markdown supplies the
+`<workspace>/roles/<role>/ROLE.md` (directory layout) or
+`<workspace>/roles/<role>.md` (flat layout). The Markdown supplies the
 spawned subagent's system prompt body; the frontmatter supplies name +
 description. **Sprint 8** renamed the LLM-facing field from
 `subagent_type` to `agent` to match its semantic and retired the legacy
-global TOML fallback (`{PEKO_HOME}/agents/<name>/config.toml`).
+global TOML fallback (`{PEKO_HOME}/agents/<name>/config.toml` — legacy).
 
 ## Inference
 

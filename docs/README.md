@@ -22,9 +22,10 @@ Complete documentation for the Peko multi-agent runtime.
 ### 🏗️ Architecture
 
 - **[Principal Workspace](architecture/PRINCIPAL_WORKSPACE.md)** — Per-principal tooling, layout, plugin packaging (ADR-047)
+- **[Prompt Model](architecture/PROMPT_MODEL.md)** — How every prompt is assembled: tiers, frozen prefix, `<runtime-context>` tail sections, placeholder contract (ADR-050/052/055/064)
 - **[Skills](architecture/SKILLS.md)** — Skills as workspace files: SKILL.md format, per-turn catalog, invocation, authoring
 - **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-062
+- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-064
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
@@ -109,6 +110,8 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-051](architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md) | Compaction pages as an addressable archive: logical page chain over compaction boundary events, agent retrieval via read/search tools, page catalog in the summary message |
 | [ADR-058](architecture/adr/ADR-058-origin-signed-messaging.md) | Origin-signed messaging *(Draft)*: per-principal keys, author-signed envelopes (JWS), proof-of-possession registration, typed bridge claims, local peer credentials |
 | [ADR-062](architecture/adr/ADR-062-retire-universal-tools.md) | Universal tools retired: stdio protocol + `<workspace>/tools/` scanner deleted; migration to MCP or `Workflow` (ADR-061) |
+| [ADR-063](architecture/adr/ADR-063-async-task-delivery-consolidation.md) | Async task delivery consolidation |
+| [ADR-064](architecture/adr/ADR-064-agents-to-roles-terminology.md) | `agents/` → `roles/` terminology unification: agent = live session actor, role = the initiating template; `role_catalog`, `role` param, `role:*` capabilities, packaging layer rename |
 
 ---
 
