@@ -21,6 +21,7 @@ Complete documentation for the Peko multi-agent runtime.
 
 ### 🏗️ Architecture
 
+- **[MVP Launch Gate](MVP_GATE.md)** — Draft: the verifiable checklist that flips the project out of "pre-launch"
 - **[Principal Workspace](architecture/PRINCIPAL_WORKSPACE.md)** — Per-principal tooling, layout, plugin packaging (ADR-047)
 - **[Prompt Model](architecture/PROMPT_MODEL.md)** — How every prompt is assembled: tiers, frozen prefix, `<runtime-context>` tail sections, placeholder contract (ADR-050/052/055/064)
 - **[Skills](architecture/SKILLS.md)** — Skills as workspace files: SKILL.md format, per-turn catalog, invocation, authoring
@@ -46,6 +47,7 @@ Complete documentation for the Peko multi-agent runtime.
 ```
 docs/
 ├── README.md                        # This file
+├── MVP_GATE.md                      # Draft: MVP launch gate checklist
 ├── getting-started/
 │   ├── GETTING_STARTED.md
 │   └── TUTORIAL_BUILDING_FIRST_AGENT.md
