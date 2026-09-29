@@ -129,9 +129,7 @@ impl SessionCache {
             .map(|s| Self::normalize_path(&s.path))
             .find(|p| *p == want)
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Session not found: {subtree} (no cached session has this path)"
-                )
+                anyhow::anyhow!("Session not found: {subtree} (no cached session has this path)")
             })
     }
 
@@ -710,7 +708,12 @@ mod tests {
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
             }]
         };
-        cache.add_session("p".to_string(), p, needle_msg("needle in p"), status("p", None));
+        cache.add_session(
+            "p".to_string(),
+            p,
+            needle_msg("needle in p"),
+            status("p", None),
+        );
         cache.add_session("c1".to_string(), c1, vec![], status("c1", Some("p")));
         cache.add_session(
             "g1".to_string(),
@@ -768,7 +771,10 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
         }];
         cache.add_session("s1".to_string(), info("s1"), history, status("s1", None));
-        let hits = cache.search_sessions("NEEDLE", None, 10, None).await.unwrap();
+        let hits = cache
+            .search_sessions("NEEDLE", None, 10, None)
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "s1");
         assert!(hits[0].snippet.contains("Needle"));

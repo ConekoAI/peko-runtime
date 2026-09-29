@@ -66,9 +66,12 @@ impl PrincipalMemoryFactory for DefaultPrincipalMemoryFactory {
 ///
 ///   1. `config.routing.root_prompt` — explicit absolute path to a
 ///      Markdown file (legacy knob, retained for now).
-///   2. `<workspace>/agents/<name>.md` — workspace-relative Markdown
-///      file matching the principal's configured root agent name.
-///   3. Compiled-in default (`builtin:agent:root`).
+///   2. `<workspace>/roles/root/ROLE.md` or `<workspace>/roles/root.md`
+///      — the seeded root role file (stamped at provision; the genesis
+///      boot pass backfills pre-stamping workspaces).
+///   3. **No fallback.** Authored prompts are a default start, not a
+///      default value: a missing root role file fails loudly with
+///      remediation.
 pub struct DefaultPrincipalRouterFactory;
 
 #[async_trait]
@@ -84,8 +87,8 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         // Phase A: derive the typed agents dir from the Shared
         // tier root (the `workspace_path` parameter is the
         // Shared root under Phase A).
-        let agents_dir = workspace_path.join("agents");
-        let prompt = Self::resolve_root_agent_prompt(config, &agents_dir);
+        let roles_dir = workspace_path.join("roles");
+        let prompt = Self::resolve_root_agent_prompt(config, &roles_dir);
         // Phase 4b: copy the principal's stable DID into the router
         // so `send_peer` is registered on this Principal's
         // agents. The runtime_id is left as `None`; the daemon-state
@@ -112,45 +115,56 @@ impl DefaultPrincipalRouterFactory {
     ///
     /// See [`DefaultPrincipalRouterFactory`] for the resolution order.
     ///
-    /// **Phase A.** Callers pass the typed `SharedLayout::agents_dir`
+    /// **Phase A.** Callers pass the typed `SharedLayout::roles_dir`
     /// directly rather than the Shared root + a hand-rolled
     /// `"agents"` suffix.
     pub fn resolve_root_agent_prompt(
         config: &PrincipalConfig,
-        agents_dir: &std::path::Path,
+        roles_dir: &std::path::Path,
     ) -> crate::principal::agent_prompt::AgentPrompt {
         // 1. Explicit override from principal.toml.
         if let Some(ref path) = config.routing.root_prompt {
             match crate::principal::agent_prompt::load_agent_prompt(path) {
                 Ok(prompt) => return prompt,
-                Err(e) => tracing::warn!(
-                    "Failed to load root prompt from {}: {e}. Falling back to defaults.",
+                Err(e) => panic!(
+                    "[routing].root_prompt is set but unreadable: {}: {e}. \
+                     Fix or remove the override — there is no hidden fallback.",
                     path.display()
                 ),
             }
         }
 
         // 2. Workspace-relative Markdown. Check both layouts so users
-        //    can put the file at either `agents/root/AGENT.md` or flat
-        //    `agents/root.md`.
+        //    can put the file at either `roles/root/ROLE.md` or flat
+        //    `roles/root.md`. Provision and the genesis boot pass stamp
+        //    the compiled-in default here — authored prompts are a
+        //    default START (a seeded file), never a hidden default
+        //    VALUE: when the file is absent, resolution fails loudly.
         let workspace_candidates = [
-            agents_dir.join("root").join("AGENT.md"),
-            agents_dir.join("root.md"),
+            roles_dir.join("root").join("ROLE.md"),
+            roles_dir.join("root.md"),
         ];
         for candidate in &workspace_candidates {
             if candidate.exists() {
-                match crate::principal::agent_prompt::load_agent_prompt(candidate) {
-                    Ok(prompt) => return prompt,
-                    Err(e) => tracing::warn!(
-                        "Failed to load workspace root agent prompt from {}: {e}. \
-                         Falling back to built-in default.",
-                        candidate.display()
-                    ),
-                }
+                return crate::principal::agent_prompt::load_agent_prompt(candidate)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "workspace root role file {} is unreadable: {e}. \
+                             Fix or remove it — there is no hidden fallback.",
+                            candidate.display()
+                        )
+                    });
             }
         }
 
-        // 3. Compiled-in default.
-        super::routers::default_root_prompt()
+        // 3. No root role file — fail loudly with remediation.
+        panic!(
+            "No root role prompt found for this principal: expected {} or {} \
+             (or set `[routing].root_prompt` in principal.toml). Seed one with \
+             `peko create` / restart the daemon (the boot pass stamps the \
+             compiled-in default), or write roles/root.md by hand.",
+            workspace_candidates[0].display(),
+            workspace_candidates[1].display(),
+        )
     }
 }

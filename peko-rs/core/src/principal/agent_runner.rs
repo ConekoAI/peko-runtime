@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
-use crate::principal::context::{install_agent_catalog, PrincipalContext};
+use crate::principal::context::{install_role_catalog, PrincipalContext};
 use crate::principal::router::AgentPromptSummary;
 use peko_auth::Subject;
 use peko_engine::AgenticEvent;
@@ -228,7 +228,7 @@ where
     // snapshot can change between messages if the principal's
     // `capabilities` was edited. We re-register it on the
     // shared core, which is idempotent on tool name.
-    install_agent_catalog(&core, available_agents, ctx.principal_id()).await?;
+    install_role_catalog(&core, available_agents, ctx.principal_id()).await?;
 
     // Register the principal-scoped `Agent` tool after `Agent::new*` but
     // before execution so it is available on the principal's shared
@@ -333,7 +333,7 @@ where
     )
     .await?
     // Scope the agent's `Agent` tool to this principal's workspace so
-    // subagents resolve from `<workspace>/agents/<name>/AGENT.md`. Without this,
+    // subagents resolve from `<workspace>/roles/<name>/ROLE.md`. Without this,
     // `Agent::init_builtins_async` (run lazily at execution time, inside
     // `prepare_execution`) re-registers a globally-scoped `Agent` tool that
     // clobbers the principal-scoped one registered below — making every

@@ -7,7 +7,7 @@
 //!
 //!    a. **Canonical implementations that need root-only deps** —
 //!       `bash.rs`, `agent.rs` (`Agent`), `skill/` (the skill tool wrapper),
-//!       `agent_catalog.rs`, `tool_search.rs`. These can't lift into
+//!       `role_catalog.rs`, `tool_search.rs`. These can't lift into
 //!       `peko-tools-builtin` because they reach into `ExtensionCore` or
 //!       other root types.
 //!    b. **Compat shims with hosted tests** — `async_list.rs`,

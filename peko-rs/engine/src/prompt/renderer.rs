@@ -40,7 +40,7 @@
 //!   `crate::agentic_loop::build_tool_definitions` and the
 //!   `list_tool_definitions_with_allowlist` filter in
 //!   `peko_core::extensions::framework::core::registry`).
-//! - **`skills` / `agents` / `workflows` ride the tail.** These sections render
+//! - **`skills` / `roles` / `workflows` ride the tail.** These sections render
 //!   in the runtime-context message ([`PromptRenderer::render_runtime_context`]),
 //!   not the frozen system prompt, so agents/skills/workflows added to the
 //!   workspace appear on the very next iteration while `messages[0]`
@@ -173,13 +173,13 @@ impl PromptRenderer {
     /// Dispatches the three hook-driven sections plus `SessionContextBuild`
     /// in parallel (each with a 2s timeout) and assembles the final body
     /// via [`replace_placeholders`] with `remove_missing=true`.
-    #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
+    #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.role_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
     pub async fn render_for_iteration(&self, ctx: &TurnPromptContext) -> String {
         // Empty body short-circuits to the one-line identity fallback so
         // callers that author agents without a body still get a
         // well-formed message.
         if ctx.body.trim().is_empty() {
-            return format!("You are {}.", ctx.agent_name);
+            return format!("You are {}.", ctx.role_name);
         }
 
         // Parallel hook dispatch. Each task is independent — a slow
@@ -195,7 +195,7 @@ impl PromptRenderer {
         // the renderer is the canonical source.
         let (skills, agents, mcp, session_ctx) = tokio::join!(
             self.dispatch_text("skills", ctx),
-            self.dispatch_text("agents", ctx),
+            self.dispatch_text("roles", ctx),
             self.mcp_context_provider.render_mcp_context(),
             self.dispatch_session_context(ctx),
         );
@@ -230,7 +230,7 @@ impl PromptRenderer {
     /// rebuilt mid-run. Adapter cache markers on this fully-static
     /// prompt give the provider byte-identical prefix matching
     /// turn-over-turn.
-    #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.agent_name))]
+    #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.role_name))]
     pub async fn render_cache_stable(&self, ctx: &TurnPromptContext) -> String {
         // `mcp_context` is the only hook-driven section left in the
         // prefix — `skills` / `agents` moved to the volatile suffix
@@ -291,7 +291,7 @@ impl PromptRenderer {
     /// (`QuotaSnapshot`). `{{quota_tripped}}` stays as a single-shot
     /// rising-edge banner (mirrors `{{soft_cancel}}`) so the agent
     /// still sees an advisory the moment the principal trips.
-    #[tracing::instrument(skip(self, ctx, state), fields(agent = %ctx.agent_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
+    #[tracing::instrument(skip(self, ctx, state), fields(agent = %ctx.role_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
     pub async fn render_runtime_context(
         &self,
         ctx: &TurnPromptContext,
@@ -308,7 +308,7 @@ impl PromptRenderer {
         // section then simply doesn't ride.
         let (identity, agents, skills, workflows, session_ctx) = tokio::join!(
             self.dispatch_text("identity", ctx),
-            self.dispatch_text("agents", ctx),
+            self.dispatch_text("roles", ctx),
             self.dispatch_text("skills", ctx),
             self.dispatch_text("workflows", ctx),
             self.dispatch_session_context(ctx),
@@ -333,9 +333,19 @@ impl PromptRenderer {
         if let Some(section) = state.take_changed(SectionSlot::Memory, format_memory_section(ctx)) {
             sections.push(section);
         }
+        // ADR-052 T0 prose-conventions layer: the principal's shared
+        // behavioral rulebook (`kb/CONVENTIONS.md`) — rides to EVERY
+        // agent in the tree, on-change like memory. Absence renders
+        // empty (presence = visibility); genesis seeds it for new
+        // principals.
+        if let Some(section) =
+            state.take_changed(SectionSlot::Conventions, format_conventions_section(ctx))
+        {
+            sections.push(section);
+        }
         // ADR-055 D2/D8: the kb map plus the two targeted scope notes
-        // (binding note for the run's triggering channel, agent note
-        // for the named agent). On-change tail sections like memory;
+        // (binding note for the run's triggering channel, role note
+        // for the named role). On-change tail sections like memory;
         // absence renders empty, which the tracker retracts.
         if let Some(section) =
             state.take_changed(SectionSlot::KbIndex, format_kb_index_section(ctx))
@@ -348,7 +358,7 @@ impl PromptRenderer {
             sections.push(section);
         }
         if let Some(section) =
-            state.take_changed(SectionSlot::AgentNote, format_agent_note_section(ctx))
+            state.take_changed(SectionSlot::RoleNote, format_role_note_section(ctx))
         {
             sections.push(section);
         }
@@ -364,8 +374,7 @@ impl PromptRenderer {
         ) {
             sections.push(section);
         }
-        if let Some(section) =
-            state.take_changed(SectionSlot::Agents, format_agents_section(&agents))
+        if let Some(section) = state.take_changed(SectionSlot::Roles, format_roles_section(&agents))
         {
             sections.push(section);
         }
@@ -384,7 +393,7 @@ impl PromptRenderer {
         // hooks (`PromptSection` binds in `<workspace>/hooks/<id>/hook.toml`).
         // Enumerate the section names registered for this principal,
         // drop names already dispatched as built-ins (a hook augmenting
-        // "agents" rides the built-in dispatch above — no double
+        // "roles" rides the built-in dispatch above — no double
         // dispatch), sort for byte-stable ordering, and dispatch each
         // with the same 2s soft-fail budget as the built-ins. Each
         // result rides the custom-section change tracker, so unchanged
@@ -542,22 +551,23 @@ enum SectionSlot {
     Identity,
     CurrentTime,
     Memory,
+    Conventions,
     KbIndex,
     BindingNote,
-    AgentNote,
+    RoleNote,
     ProjectContext,
     SessionContext,
-    Agents,
+    Roles,
     Skills,
     Workflows,
 }
 
 /// ADR-052 D6: prompt-section names the renderer dispatches as
 /// built-ins. `registered_prompt_sections` names matching one of these
-/// are deduped away — a workspace hook binding e.g. "agents" augments
+/// are deduped away — a workspace hook binding e.g. "roles" augments
 /// the built-in catalog via registry aggregation and must not cause a
 /// second dispatch under the custom-section path.
-const BUILTIN_PROMPT_SECTIONS: [&str; 4] = ["identity", "agents", "skills", "workflows"];
+const BUILTIN_PROMPT_SECTIONS: [&str; 4] = ["identity", "roles", "skills", "workflows"];
 
 impl SectionSlot {
     /// Human-readable section name used in the update/retraction
@@ -567,12 +577,13 @@ impl SectionSlot {
             SectionSlot::Identity => "principal identity",
             SectionSlot::CurrentTime => "current time",
             SectionSlot::Memory => "memory",
+            SectionSlot::Conventions => "conventions",
             SectionSlot::KbIndex => "kb index",
             SectionSlot::BindingNote => "binding note",
-            SectionSlot::AgentNote => "agent note",
+            SectionSlot::RoleNote => "role note",
             SectionSlot::ProjectContext => "project instructions",
             SectionSlot::SessionContext => "session context",
-            SectionSlot::Agents => "agents",
+            SectionSlot::Roles => "roles",
             SectionSlot::Skills => "skills",
             SectionSlot::Workflows => "workflows",
         }
@@ -608,12 +619,13 @@ pub struct RuntimeContextState {
     identity: Option<String>,
     current_time: Option<String>,
     memory: Option<String>,
+    conventions: Option<String>,
     kb_index: Option<String>,
     binding_note: Option<String>,
-    agent_note: Option<String>,
+    role_note: Option<String>,
     project_context: Option<String>,
     session_context: Option<String>,
-    agents: Option<String>,
+    roles: Option<String>,
     skills: Option<String>,
     workflows: Option<String>,
     /// ADR-052 D6: last injected raw render per custom (workspace-hook)
@@ -646,12 +658,13 @@ impl RuntimeContextState {
             SectionSlot::Identity => &mut self.identity,
             SectionSlot::CurrentTime => &mut self.current_time,
             SectionSlot::Memory => &mut self.memory,
+            SectionSlot::Conventions => &mut self.conventions,
             SectionSlot::KbIndex => &mut self.kb_index,
             SectionSlot::BindingNote => &mut self.binding_note,
-            SectionSlot::AgentNote => &mut self.agent_note,
+            SectionSlot::RoleNote => &mut self.role_note,
             SectionSlot::ProjectContext => &mut self.project_context,
             SectionSlot::SessionContext => &mut self.session_context,
-            SectionSlot::Agents => &mut self.agents,
+            SectionSlot::Roles => &mut self.roles,
             SectionSlot::Skills => &mut self.skills,
             SectionSlot::Workflows => &mut self.workflows,
         };
@@ -740,7 +753,9 @@ fn build_placeholder_values(
     let mut values = HashMap::new();
 
     // Inline placeholders
-    values.insert(Placeholder::AgentName, ctx.agent_name.clone());
+    values.insert(Placeholder::RoleName, ctx.role_name.clone());
+    // Deprecated legacy alias — same value, {{agent_name}} marker.
+    values.insert(Placeholder::AgentName, ctx.role_name.clone());
     values.insert(Placeholder::Workspace, ctx.workspace.display().to_string());
     values.insert(Placeholder::Channel, ctx.channel.clone());
     values.insert(Placeholder::ThinkingLevel, ctx.thinking_level.clone());
@@ -752,7 +767,7 @@ fn build_placeholder_values(
     // Section placeholders (hook-driven). Tools are wire-only — see
     // `crate::agentic_loop::build_tool_definitions`.
     values.insert(Placeholder::Skills, format_skills_section(skills));
-    values.insert(Placeholder::Agents, format_agents_section(agents));
+    values.insert(Placeholder::Roles, format_roles_section(agents));
     values.insert(Placeholder::Runtime, format_runtime_section(ctx));
     values.insert(Placeholder::Sandbox, format_sandbox_section(ctx));
     values.insert(Placeholder::ModelAliases, format_model_aliases_section(ctx));
@@ -821,7 +836,9 @@ fn build_stable_placeholder_values(
     let mut values = HashMap::new();
 
     // Inline identity / runtime (no volatile clock).
-    values.insert(Placeholder::AgentName, ctx.agent_name.clone());
+    values.insert(Placeholder::RoleName, ctx.role_name.clone());
+    // Deprecated legacy alias — same value, {{agent_name}} marker.
+    values.insert(Placeholder::AgentName, ctx.role_name.clone());
     values.insert(Placeholder::Workspace, ctx.workspace.display().to_string());
     values.insert(Placeholder::Channel, ctx.channel.clone());
     values.insert(Placeholder::ThinkingLevel, ctx.thinking_level.clone());
@@ -905,17 +922,17 @@ Constraints: never invoke more than one skill up front; only invoke after select
     )
 }
 
-fn format_agents_section(text: &str) -> String {
+fn format_roles_section(text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
     format!(
-        r"## Available Agents
-When delegating, choose the most appropriate agent from the list below. Each agent has a name you can pass to the `Agent` tool as the `agent` argument.
+        r"## Available Roles
+When delegating, choose the most appropriate role from the list below. Each role has an id you can pass to the `Agent` tool as the `role` argument.
 
-<available_agents>
+<available_roles>
 {text}
-</available_agents>"
+</available_roles>"
     )
 }
 
@@ -974,7 +991,7 @@ fn format_runtime_section(ctx: &TurnPromptContext) -> String {
         .unwrap_or_else(|_| "unknown".to_string());
     format!(
         "## Runtime\nAgent: {}\nHost: {hostname}\nOS: {}\nModel: {}\nChannel: {}",
-        ctx.agent_name,
+        ctx.role_name,
         std::env::consts::OS,
         ctx.resolved_model,
         ctx.channel,
@@ -1028,6 +1045,27 @@ fn format_memory_section(ctx: &TurnPromptContext) -> String {
     format!("## Your long-term memory (MEMORY.md)\n\n{trimmed}\n")
 }
 
+/// ADR-052 T0 prose-conventions layer: the principal's shared
+/// behavioral rulebook (`kb/CONVENTIONS.md`) — journaling habits,
+/// external-project conventions, memory discipline. Rendered to every
+/// agent in the tree; empty when the file is absent.
+fn format_conventions_section(ctx: &TurnPromptContext) -> String {
+    let Some(conventions) = crate::prompt::memory::load_principal_conventions(&ctx.workspace)
+    else {
+        return String::new();
+    };
+    let trimmed = conventions.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    format!(
+        "## Principal conventions (kb/CONVENTIONS.md)\n\n\
+         The shared behavioral rulebook for every agent in this \
+         principal — yours to revise in place.\n\n\
+         {trimmed}\n"
+    )
+}
+
 /// ADR-055 D2: the second hot file — the map of the principal's `kb/`
 /// tree, pointing the agent at the cold areas (people/, groups/,
 /// refs/, …) it should look up via Read/Glob instead of having them
@@ -1068,11 +1106,11 @@ fn format_binding_note_section(ctx: &TurnPromptContext) -> String {
     )
 }
 
-/// ADR-055 D8 (agent note): the named agent has a durable per-agent
-/// memory file (`kb/agents/<name>.md`) — the persistent layer
+/// ADR-055 D8 (role note): the named role has a durable per-role
+/// memory file (`kb/roles/<name>.md`) — the persistent layer
 /// ADR-052's T1/T2 lacked. Unnamed/ephemeral spawns render empty.
-fn format_agent_note_section(ctx: &TurnPromptContext) -> String {
-    let Some(note) = crate::prompt::memory::load_agent_note(&ctx.workspace, &ctx.agent_name) else {
+fn format_role_note_section(ctx: &TurnPromptContext) -> String {
+    let Some(note) = crate::prompt::memory::load_role_note(&ctx.workspace, &ctx.role_name) else {
         return String::new();
     };
     let trimmed = note.trim();
@@ -1081,10 +1119,10 @@ fn format_agent_note_section(ctx: &TurnPromptContext) -> String {
     }
     format!(
         "## Your standing notes ({})\n\n\
-         Durable per-agent memory from the principal's knowledge base \
-         (`kb/agents/{}.md`) — yours to keep current.\n\n\
+         Durable per-role memory from the principal's knowledge base \
+         (`kb/roles/{}.md`) — yours to keep current.\n\n\
          {trimmed}\n",
-        ctx.agent_name, ctx.agent_name
+        ctx.role_name, ctx.role_name
     )
 }
 
@@ -1308,8 +1346,8 @@ mod tests {
         {
             let mut texts = core.section_texts.lock().expect("section_texts poisoned");
             texts.insert(
-                "agents".to_string(),
-                "- Reviewer (id: reviewer): reviews code (location: /w/agents/reviewer/AGENT.md)"
+                "roles".to_string(),
+                "- Reviewer (id: reviewer): reviews code (location: /w/roles/reviewer/ROLE.md)"
                     .to_string(),
             );
             texts.insert(
@@ -1324,7 +1362,7 @@ mod tests {
         TurnPromptContext {
             principal_id: "test-principal".to_string(),
             session_id: "test-session".to_string(),
-            agent_name: "test-agent".to_string(),
+            role_name: "test-agent".to_string(),
             body: "You are {{agent_name}} on {{workspace}}.".to_string(),
             capabilities: None,
             active_extensions: None,
@@ -1563,7 +1601,7 @@ mod tests {
             "prefix was: {prefix}"
         );
         assert!(
-            !prefix.contains("## Available Agents"),
+            !prefix.contains("## Available Roles"),
             "prefix was: {prefix}"
         );
         assert!(
@@ -1679,7 +1717,7 @@ mod tests {
             first.contains("conversation channel: chan_abc123"),
             "got: {first}"
         );
-        assert!(first.contains("## Available Agents"), "got: {first}");
+        assert!(first.contains("## Available Roles"), "got: {first}");
         assert!(first.contains("## Skills (mandatory)"), "got: {first}");
 
         // Iteration 2: unchanged inputs → the heavy sections are NOT
@@ -1695,7 +1733,7 @@ mod tests {
         assert!(second.contains("Iteration 2 of 10"), "got: {second}");
         assert!(!second.contains("Current time:"), "got: {second}");
         assert!(!second.contains("remember this"), "got: {second}");
-        assert!(!second.contains("## Available Agents"), "got: {second}");
+        assert!(!second.contains("## Available Roles"), "got: {second}");
         assert!(!second.contains("## Skills (mandatory)"), "got: {second}");
 
         // Iteration 3: memory changed → only memory is re-injected.
@@ -1709,7 +1747,7 @@ mod tests {
             .await
             .expect("iteration budget is always due");
         assert!(third.contains("remember this AND that"), "got: {third}");
-        assert!(!third.contains("## Available Agents"), "got: {third}");
+        assert!(!third.contains("## Available Roles"), "got: {third}");
         assert!(!third.contains("Current time:"), "got: {third}");
     }
 
@@ -1834,8 +1872,8 @@ mod tests {
             .render_runtime_context(&ctx, &mut state)
             .await
             .expect("sections due on first render");
-        assert!(body.contains("## Available Agents"), "got: {body}");
-        assert!(body.contains("<available_agents>"), "got: {body}");
+        assert!(body.contains("## Available Roles"), "got: {body}");
+        assert!(body.contains("<available_roles>"), "got: {body}");
         assert!(
             body.contains("- Reviewer (id: reviewer): reviews code"),
             "got: {body}"
@@ -1859,7 +1897,7 @@ mod tests {
         ctx.body = "{{agents}}\n{{skills}}\nYou are {{agent_name}}.".to_string();
         let prefix = renderer.render_cache_stable(&ctx).await;
         assert!(
-            !prefix.contains("## Available Agents"),
+            !prefix.contains("## Available Roles"),
             "prefix was: {prefix}"
         );
         assert!(
@@ -1889,7 +1927,7 @@ mod tests {
             .render_runtime_context(&ctx, &mut state)
             .await
             .expect("iteration budget is always due");
-        assert!(!body.contains("## Available Agents"), "got: {body}");
+        assert!(!body.contains("## Available Roles"), "got: {body}");
         assert!(!body.contains("## Skills (mandatory)"), "got: {body}");
     }
 
@@ -1921,28 +1959,28 @@ mod tests {
     fn take_changed_first_injection_carries_no_notice() {
         let mut state = RuntimeContextState::default();
         let injected = state
-            .take_changed(SectionSlot::Agents, "## Available Agents\n- a".to_string())
+            .take_changed(SectionSlot::Roles, "## Available Roles\n- a".to_string())
             .expect("first render injects");
-        assert_eq!(injected, "## Available Agents\n- a");
+        assert_eq!(injected, "## Available Roles\n- a");
         assert!(!injected.contains("Updated — replaces"));
     }
 
     #[test]
     fn take_changed_first_empty_render_injects_nothing() {
         let mut state = RuntimeContextState::default();
-        assert_eq!(state.take_changed(SectionSlot::Agents, String::new()), None);
+        assert_eq!(state.take_changed(SectionSlot::Roles, String::new()), None);
     }
 
     #[test]
     fn take_changed_update_carries_notice() {
         let mut state = RuntimeContextState::default();
-        state.take_changed(SectionSlot::Agents, "v1".to_string());
+        state.take_changed(SectionSlot::Roles, "v1".to_string());
         let injected = state
-            .take_changed(SectionSlot::Agents, "v2".to_string())
+            .take_changed(SectionSlot::Roles, "v2".to_string())
             .expect("changed section re-injects");
         assert!(injected.starts_with("v2"), "got: {injected}");
         assert!(
-            injected.contains("_Updated — replaces the previous \"agents\" section._"),
+            injected.contains("_Updated — replaces the previous \"roles\" section._"),
             "got: {injected}"
         );
     }
@@ -1968,10 +2006,10 @@ mod tests {
     #[test]
     fn take_changed_reappearance_after_retraction_is_plain() {
         let mut state = RuntimeContextState::default();
-        state.take_changed(SectionSlot::Agents, "v1".to_string());
-        state.take_changed(SectionSlot::Agents, String::new());
+        state.take_changed(SectionSlot::Roles, "v1".to_string());
+        state.take_changed(SectionSlot::Roles, String::new());
         let injected = state
-            .take_changed(SectionSlot::Agents, "v2".to_string())
+            .take_changed(SectionSlot::Roles, "v2".to_string())
             .expect("reappearing section re-injects");
         // The retraction already told the model the section was gone;
         // the reappearance is a plain injection, not an "Updated" one.
@@ -2210,7 +2248,7 @@ mod tests {
     }
 
     /// A workspace hook binding a built-in section name (e.g.
-    /// "agents") must NOT cause a second dispatch under the
+    /// "roles") must NOT cause a second dispatch under the
     /// custom-section path — registry aggregation already folds its
     /// output into the built-in dispatch.
     #[tokio::test]
@@ -2220,7 +2258,7 @@ mod tests {
             let mut registered = core.registered_sections.lock().expect("poisoned");
             registered.push("agents".to_string());
             let mut texts = core.section_texts.lock().expect("poisoned");
-            texts.insert("agents".to_string(), "- Reviewer: reviews code".to_string());
+            texts.insert("roles".to_string(), "- Reviewer: reviews code".to_string());
         }
         let renderer = PromptRenderer::new(Arc::new(core));
         let mut state = RuntimeContextState::default();
@@ -2230,14 +2268,10 @@ mod tests {
             .render_runtime_context(&ctx, &mut state)
             .await
             .expect("agents catalog is due on first render");
-        // Exactly one dispatch: the built-in "## Available Agents"
-        // rendering, and no custom "## agents" header.
-        assert_eq!(
-            body.matches("## Available Agents").count(),
-            1,
-            "got: {body}"
-        );
-        assert!(!body.contains("## agents\n"), "got: {body}");
+        // Exactly one dispatch: the built-in "## Available Roles"
+        // rendering, and no custom "## roles" header.
+        assert_eq!(body.matches("## Available Roles").count(), 1, "got: {body}");
+        assert!(!body.contains("## roles\n"), "got: {body}");
         assert!(body.contains("- Reviewer: reviews code"), "got: {body}");
     }
 
@@ -2355,27 +2389,52 @@ mod tests {
     }
 
     #[test]
-    fn agent_note_section_renders_named_agent_note() {
+    fn role_note_section_renders_named_role_note() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("kb").join("agents")).unwrap();
+        std::fs::create_dir_all(dir.path().join("kb").join("roles")).unwrap();
         std::fs::write(
-            dir.path().join("kb").join("agents").join("test-agent.md"),
+            dir.path().join("kb").join("roles").join("test-agent.md"),
             "You own the release checklist.",
         )
         .unwrap();
         let mut ctx = empty_ctx(); // agent_name: "test-agent"
         ctx.workspace = dir.path().to_path_buf();
-        let rendered = format_agent_note_section(&ctx);
+        let rendered = format_role_note_section(&ctx);
         assert!(rendered.starts_with("## Your standing notes (test-agent)"));
         assert!(rendered.contains("release checklist"));
+        assert!(rendered.contains("kb/roles/test-agent.md"));
     }
 
     #[test]
-    fn agent_note_section_empty_when_absent() {
+    fn role_note_section_empty_when_absent() {
         let dir = tempfile::tempdir().unwrap();
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
-        assert_eq!(format_agent_note_section(&ctx), String::new());
+        assert_eq!(format_role_note_section(&ctx), String::new());
+    }
+
+    #[test]
+    fn conventions_section_renders_rulebook_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("kb")).unwrap();
+        std::fs::write(
+            dir.path().join("kb").join("CONVENTIONS.md"),
+            "Journal in kb/journal/YYYY-MM-DD.md.",
+        )
+        .unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = dir.path().to_path_buf();
+        let rendered = format_conventions_section(&ctx);
+        assert!(rendered.starts_with("## Principal conventions (kb/CONVENTIONS.md)"));
+        assert!(rendered.contains("Journal"));
+    }
+
+    #[test]
+    fn conventions_section_empty_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = dir.path().to_path_buf();
+        assert_eq!(format_conventions_section(&ctx), String::new());
     }
 
     #[test]
@@ -2395,9 +2454,9 @@ mod tests {
             retraction, "_The \"binding note\" section no longer applies._",
             "got: {retraction}"
         );
-        // Agent note slot is independent of both.
+        // Role note slot is independent of both.
         assert!(state
-            .take_changed(SectionSlot::AgentNote, "agent note".to_string())
+            .take_changed(SectionSlot::RoleNote, "role note".to_string())
             .is_some());
         // Unchanged kb index dedupes.
         assert_eq!(

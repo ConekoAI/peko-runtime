@@ -29,7 +29,7 @@ use std::path::Path;
 /// still needs a raw v3 agent TOML on disk.
 #[allow(dead_code)]
 pub fn write_v3_mock_agent(home: &Path, name: &str, _mock_llm_url: &str) -> std::io::Result<()> {
-    let agent_dir = home.join(".peko").join("agents").join(name);
+    let agent_dir = home.join(".peko").join("roles").join(name);
     std::fs::create_dir_all(&agent_dir)?;
 
     let config_toml = format!(

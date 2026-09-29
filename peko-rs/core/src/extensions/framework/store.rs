@@ -162,9 +162,15 @@ impl ExtensionStore {
             return Some("skill".to_string());
         }
 
+        if path.join("ROLE.md").exists() {
+            tracing::debug!("Detected ecosystem standard: ROLE.md -> role");
+            return Some("role".to_string());
+        }
+
+        // ADR-064 legacy: pre-rename role packages use AGENT.md.
         if path.join("AGENT.md").exists() {
-            tracing::debug!("Detected Tier 1 ecosystem standard: AGENT.md -> agent");
-            return Some("agent".to_string());
+            tracing::debug!("Detected legacy ecosystem standard: AGENT.md -> role");
+            return Some("role".to_string());
         }
 
         if path.join("server.json").exists() {
@@ -303,7 +309,7 @@ impl ExtensionStore {
             all_paths.push(storage_dir.to_path_buf());
         }
         let path_resolver = crate::common::paths::PathResolver::new();
-        all_paths.push(path_resolver.agents_dir());
+        all_paths.push(path_resolver.roles_dir());
 
         for base_path in all_paths {
             if !base_path.exists() {
@@ -737,7 +743,7 @@ mod tests {
         let store = ExtensionStore::new();
         assert_eq!(
             store.detect_extension_type_string(&ext_dir),
-            Some("agent".to_string())
+            Some("role".to_string())
         );
     }
 

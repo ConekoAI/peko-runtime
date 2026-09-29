@@ -314,7 +314,7 @@ impl PrincipalUnpackager {
             config.boot_state = None;
         }
 
-        self.import_agents(&files, &name, &options, &authority)
+        self.import_roles(&files, &name, &options, &authority)
             .await?;
         // Phase A: the legacy `import_memory` is gone. The memory
         // index (`local/memory_index.json`) is derived state — never
@@ -457,33 +457,42 @@ impl PrincipalUnpackager {
         Ok(config)
     }
 
-    async fn import_agents(
+    async fn import_roles(
         &self,
         files: &HashMap<String, Vec<u8>>,
         principal_name: &str,
         options: &PrincipalImportOptions,
         authority: &RuntimeAuthority,
     ) -> anyhow::Result<()> {
-        // Phase A: agents live under the Shared tier
-        // (`{config_dir}/principals/{name}/agents/`) so they ship in
-        // the principal bundle.
+        // Phase A: role files live under the Shared tier
+        // (`{config_dir}/principals/{name}/roles/`) so they ship in
+        // the principal bundle. ADR-064 renamed the layer from
+        // `agents/` to `roles/`; legacy packages shipping the
+        // `agents/` prefix are restored into `roles/` with their
+        // directory-layout `AGENT.md` files renamed to `ROLE.md`.
         //
         // Phase C: gate the directory on `principal:write_agents` via
         // the caller-projected authority. Matches the
-        // `PrincipalCreate` agent-prompt write gate.
-        let agents_dir = authority
-            .shared_agents_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
+        // `PrincipalCreate` role-prompt write gate.
+        let roles_dir = authority
+            .shared_roles_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
             .to_path_buf();
 
         for (path, content) in files {
-            if path.starts_with("agents/") {
-                let file_name = path.strip_prefix("agents/").unwrap_or(path);
-                let dest_path = safe_join(&agents_dir, file_name)?;
-                if let Some(parent) = dest_path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-                tokio::fs::write(dest_path, content).await?;
+            let rel = if let Some(rest) = path.strip_prefix("roles/") {
+                rest
+            } else if let Some(rest) = path.strip_prefix("agents/") {
+                rest
+            } else {
+                continue;
+            };
+            // Legacy directory-layout role file: AGENT.md → ROLE.md.
+            let rel = rel.replace("/AGENT.md", "/ROLE.md");
+            let dest_path = safe_join(&roles_dir, &rel)?;
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
             }
+            tokio::fs::write(dest_path, content).await?;
         }
         Ok(())
     }
@@ -1126,12 +1135,12 @@ mod tests {
         let config = sample_config("importme", &original_did);
 
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("src-agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("planner.md"), b"# Planner").unwrap();
+        let roles_dir = tmp.path().join("src-agents");
+        std::fs::create_dir_all(&roles_dir).unwrap();
+        std::fs::write(roles_dir.join("planner.md"), b"# Planner").unwrap();
 
         let out = tmp.path().join("importme.peko");
-        let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
+        let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
         packager
             .export(PrincipalExportOptions {
                 output_path: Some(out.display().to_string()),
@@ -1153,13 +1162,13 @@ mod tests {
         assert_eq!(result.did, original_did);
         assert!(result.config_path.exists());
 
-        // Agent prompt restored (Shared tier).
-        let agent_path = config_dir
+        // Role file restored (Shared tier).
+        let role_path = config_dir
             .join("principals")
             .join("importme")
-            .join("agents")
+            .join("roles")
             .join("planner.md");
-        assert!(agent_path.exists(), "agent prompt restored");
+        assert!(role_path.exists(), "role prompt restored");
 
         // Identity persisted (Shared tier — Phase A moved it out of
         // `data_dir/principals/{name}/identity/` so it ships in the
@@ -1253,7 +1262,7 @@ mod tests {
 
         let out = tmp.path().join("live.peko");
         let packager = PrincipalPackager::new(config, identity)
-            .with_agents_dir(shared_root.join("agents"))
+            .with_roles_dir(shared_root.join("agents"))
             .with_sessions_dir(local_root.join("sessions"))
             .with_workspace_dir(&shared_root)
             .with_local_root(&local_root);
@@ -1726,12 +1735,12 @@ principal_id = "prin_old"
         let config = sample_config("denied", &identity.did);
 
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("src-agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("planner.md"), b"# Planner").unwrap();
+        let roles_dir = tmp.path().join("src-agents");
+        std::fs::create_dir_all(&roles_dir).unwrap();
+        std::fs::write(roles_dir.join("planner.md"), b"# Planner").unwrap();
 
         let out = tmp.path().join("denied.peko");
-        let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
+        let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
         packager
             .export(PrincipalExportOptions {
                 output_path: Some(out.display().to_string()),

@@ -82,13 +82,14 @@ pub struct AgentArgs {
     /// with after compacting).
     #[serde(default)]
     pub prompt: String,
-    /// Agent template: name of the agent definition under
-    /// `<workspace>/agents/<agent>/AGENT.md` (directory layout) or
-    /// `<workspace>/agents/<agent>.md` (flat layout). The agent
+    /// Role template: name of the role definition under
+    /// `<workspace>/roles/<role>.md` (flat layout) or
+    /// `<workspace>/roles/<role>/ROLE.md` (directory layout). The role
     /// template supplies the spawned subagent's system prompt.
-    /// (Required for all actions.)
-    #[serde(default)]
-    pub agent: String,
+    /// (Required for all actions.) `agent` accepted as a legacy alias
+    /// (ADR-064 renamed the parameter to `role`).
+    #[serde(default, alias = "agent")]
+    pub role: String,
     /// Optional model override for the subagent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -184,9 +185,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
     }
     match action {
         AgentAction::New => {
-            if args.prompt.is_empty() || args.agent.is_empty() {
+            if args.prompt.is_empty() || args.role.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"new\" requires 'prompt' and 'agent'"
+                    "action \"new\" requires 'prompt' and 'role'"
                 ));
             }
             // `path` is a uniform address (2026-09-08): a RELATIVE
@@ -226,9 +227,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"resume\" 'path' is not a valid slug path: {e}"
                 ));
             }
-            if args.prompt.is_empty() || args.agent.is_empty() {
+            if args.prompt.is_empty() || args.role.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"resume\" requires 'prompt' and 'agent'"
+                    "action \"resume\" requires 'prompt' and 'role'"
                 ));
             }
         }
@@ -244,9 +245,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"compact\" 'path' is not a valid slug path: {e}"
                 ));
             }
-            if args.prompt.is_empty() || args.agent.is_empty() {
+            if args.prompt.is_empty() || args.role.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"compact\" requires 'prompt' and 'agent' — the target compacts \
+                    "action \"compact\" requires 'prompt' and 'role' — the target compacts \
                      first, then continues with the prompt in the same run"
                 ));
             }
@@ -273,9 +274,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"branch\" 'path' is not a valid slug: {e}"
                 ));
             }
-            if args.prompt.is_empty() || args.agent.is_empty() {
+            if args.prompt.is_empty() || args.role.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"branch\" requires 'prompt' and 'agent' — the branch runs the \
+                    "action \"branch\" requires 'prompt' and 'role' — the branch runs the \
                      prompt against a snapshot of the source session's live context"
                 ));
             }
@@ -460,7 +461,7 @@ impl AgentTool {
                     "run_id": run.run_id,
                     "child_session_key": run.child_session_key,
                     "success": success,
-                    "agent": agent,
+                    "role": agent,
                     "timeout_seconds": timeout_seconds,
                 });
 
@@ -624,13 +625,7 @@ impl AgentTool {
 
         match self
             .runtime
-            .compact_and_execute(
-                &args.path,
-                &args.prompt,
-                &args.agent,
-                &caller,
-                parent_cancel,
-            )
+            .compact_and_execute(&args.path, &args.prompt, &args.role, &caller, parent_cancel)
             .await
         {
             Ok(run) => {
@@ -645,7 +640,7 @@ impl AgentTool {
                     "run_id": run.run_id,
                     "child_session_key": run.child_session_key,
                     "success": success,
-                    "agent": args.agent,
+                    "role": args.role,
                 });
 
                 // Include output or error if available
@@ -716,7 +711,7 @@ impl AgentTool {
                 args.source.as_deref(),
                 &args.path,
                 &task,
-                &args.agent,
+                &args.role,
                 args.overwrite.unwrap_or(false),
                 args.page_limit.map(|v| v as u32),
                 &caller,
@@ -736,7 +731,7 @@ impl AgentTool {
                     "run_id": run.run_id,
                     "child_session_key": run.child_session_key,
                     "success": success,
-                    "agent": args.agent,
+                    "role": args.role,
                 });
 
                 // Include output or error if available
@@ -778,15 +773,15 @@ impl Tool for AgentTool {
 The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Actions:
-- new (default): Spawn a sub-agent run. Requires prompt + agent + path. `path` is a uniform address: a RELATIVE slug segment (no `/`s) mints/attaches a session under YOUR current session (`<you>/<slug>`); an ABSOLUTE path (`/user-bob`) addresses a top-level session from the tree root. Raw UUIDs and caller-relative slugs are REFUSED. Create-or-resume: if the addressed spawn-created session already exists, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session. You may address ANY session in the principal's store (e.g. a peer's `/user-bob`); multi-segment absolute paths can only attach, not mint.
-- resume: Re-attach this run to an existing spawned session. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + agent.
-- compact: Compact the session NOW and continue it with `prompt` in one run — the continuation run summarizes older messages first (phase `standalone_turn`), then processes the prompt against the compacted history. `path` is an absolute slug path (`/a/b/c`). Requires path + prompt + agent. Returns the run's outcome like resume does. Works on any session in your tree (unlike resume, the target need not be a spawned session).
-- branch: Copy a session's live context into a session at `path` and run `prompt` there, WITHOUT touching the source session (ADR-053). `source` names the session to snapshot (absolute slug path; omit for YOUR current session). The branch sees the source's live context — the compaction summary plus everything since — verbatim, as of the last completed turn. Ideal for recurring sideline tasks (e.g. a scheduled briefing) that depend on a main session's context but must not pollute it. With `overwrite: true`, an existing spawn-created session at `path` is OVERWRITTEN IN PLACE: it keeps its id, slug, and whole descendant subtree (addresses below it are unaffected), its previous live transcript is closed behind a compaction boundary (retained as a page — history is never destroyed), and the source's snapshot becomes the new live context. Requires path + prompt + agent. The branch never writes to the source; each run is a pure function of the source's context at fire time.
+- new (default): Spawn a sub-agent run. Requires prompt + role + path. `path` is a uniform address: a RELATIVE slug segment (no `/`s) mints/attaches a session under YOUR current session (`<you>/<slug>`); an ABSOLUTE path (`/user-bob`) addresses a top-level session from the tree root. Raw UUIDs and caller-relative slugs are REFUSED. Create-or-resume: if the addressed spawn-created session already exists, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session. You may address ANY session in the principal's store (e.g. a peer's `/user-bob`); multi-segment absolute paths can only attach, not mint.
+- resume: Re-attach this run to an existing spawned session. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + role.
+- compact: Compact the session NOW and continue it with `prompt` in one run — the continuation run summarizes older messages first (phase `standalone_turn`), then processes the prompt against the compacted history. `path` is an absolute slug path (`/a/b/c`). Requires path + prompt + role. Returns the run's outcome like resume does. Works on any session in your tree (unlike resume, the target need not be a spawned session).
+- branch: Copy a session's live context into a session at `path` and run `prompt` there, WITHOUT touching the source session (ADR-053). `source` names the session to snapshot (absolute slug path; omit for YOUR current session). The branch sees the source's live context — the compaction summary plus everything since — verbatim, as of the last completed turn. Ideal for recurring sideline tasks (e.g. a scheduled briefing) that depend on a main session's context but must not pollute it. With `overwrite: true`, an existing spawn-created session at `path` is OVERWRITTEN IN PLACE: it keeps its id, slug, and whole descendant subtree (addresses below it are unaffected), its previous live transcript is closed behind a compaction boundary (retained as a page — history is never destroyed), and the source's snapshot becomes the new live context. Requires path + prompt + role. The branch never writes to the source; each run is a pure function of the source's context at fire time.
 
 Parameters:
 - action: "new" | "resume" | "compact" | "branch" (default: "new")
 - prompt: Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)
-- agent: Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for all actions)
+- role: Name of the role template. Loads the system prompt from `<workspace>/roles/<role>.md` (flat layout) or `<workspace>/roles/<role>/ROLE.md` (directory layout). (required for all actions)
 - path: Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c' from the session tool's list `path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and caller-relative slugs are refused. Required for all actions.
 - model: Optional model override for the subagent (matches Claude Code's Agent schema; ignored for compact — the continuation run keeps the session's model)
 - source: (branch only) Absolute slug path of the session to snapshot. Omit to branch from YOUR current session.
@@ -809,19 +804,19 @@ Limits:
 
 Examples:
 // Blocking spawn - parent waits for result (auto-detaches on timeout)
-{"prompt": "Use Write to create report.txt with a summary", "agent": "writer", "path": "writer-1"}
+{"prompt": "Use Write to create report.txt with a summary", "role": "writer", "path": "writer-1"}
 
 // Persistent worker - continue a previous spawned session with its history
-{"action": "resume", "path": "sess:/writer-1", "prompt": "Now update report.txt with the new numbers", "agent": "writer"}
+{"action": "resume", "path": "sess:/writer-1", "prompt": "Now update report.txt with the new numbers", "role": "writer"}
 
 // Compact a long transcript now and continue with a follow-up task in the same run
-{"action": "compact", "path": "sess:/writer-1", "prompt": "Now draft the final report from our work so far", "agent": "writer"}
+{"action": "compact", "path": "sess:/writer-1", "prompt": "Now draft the final report from our work so far", "role": "writer"}
 
 // Branch from THIS session into a sideline briefing (does not touch this session)
-{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above and send it to the user's channel", "agent": "writer"}
+{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above and send it to the user's channel", "role": "writer"}
 
 // Recurring cron pattern: overwrite the previous briefing branch each fire
-{"action": "branch", "path": "briefing", "prompt": "Write today's briefing", "agent": "writer", "overwrite": true}"#
+{"action": "branch", "path": "briefing", "prompt": "Write today's briefing", "role": "writer", "overwrite": true}"#
             .to_string()
     }
 
@@ -839,9 +834,9 @@ Examples:
                     "type": "string",
                     "description": "Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)"
                 },
-                "agent": {
+                "role": {
                     "type": "string",
-                    "description": "Name of the agent template. Loads the system prompt from `<workspace>/agents/<agent>/AGENT.md` (directory layout) or `<workspace>/agents/<agent>.md` (flat layout). (required for all actions)"
+                    "description": "Name of the role template. Loads the system prompt from `<workspace>/roles/<role>.md` (flat layout) or `<workspace>/roles/<role>/ROLE.md` (directory layout). (required for all actions)"
                 },
                 "path": {
                     "type": "string",
@@ -892,7 +887,7 @@ Examples:
         // shape (capability grant, on-disk config presence) so the
         // runtime can't be reached with a bad config.
         let _subagent_config = self
-            .resolve_subagent_config(&args.agent, args.model.as_deref())
+            .resolve_subagent_config(&args.role, args.model.as_deref())
             .await?;
 
         // For `new`, `path` is the new session's slug path (the last
@@ -907,7 +902,7 @@ Examples:
 
         self.execute_spawn_blocking(
             &args.prompt,
-            &args.agent,
+            &args.role,
             &args.path,
             args.model.clone(),
             resume_session,
@@ -953,7 +948,7 @@ Examples:
         }
 
         let _subagent_config = self
-            .resolve_subagent_config(&args.agent, args.model.as_deref())
+            .resolve_subagent_config(&args.role, args.model.as_deref())
             .await?;
 
         let resume_session = match action {
@@ -963,7 +958,7 @@ Examples:
 
         self.execute_spawn_blocking(
             &args.prompt,
-            &args.agent,
+            &args.role,
             &args.path,
             args.model.clone(),
             resume_session,
@@ -1639,14 +1634,14 @@ mod tests {
         // Sprint 8: `subagent_type` renamed to `agent`.
         let json = r#"{
             "prompt": "Do something",
-            "agent": "writer",
+            "role": "writer",
             "path": "task-b"
         }"#;
 
         let args: AgentArgs = serde_json::from_str(json).unwrap();
         assert_eq!(args.action, "new");
         assert_eq!(args.prompt, "Do something");
-        assert_eq!(args.agent, "writer");
+        assert_eq!(args.role, "writer");
         assert_eq!(args.path, "task-b");
         assert_eq!(args.model, None);
     }
@@ -1656,7 +1651,7 @@ mod tests {
         // The parent-driven `model` field round-trips through AgentArgs.
         let json = r#"{
             "prompt": "Do something",
-            "agent": "writer",
+            "role": "writer",
             "path": "task-b",
             "model": "claude-haiku-4-5"
         }"#;
@@ -1725,8 +1720,7 @@ mod tests {
     #[test]
     fn test_action_defaults_to_new_when_omitted() {
         let args: AgentArgs =
-            serde_json::from_str(r#"{"prompt": "x", "agent": "writer", "path": "task-b"}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"prompt": "x", "role": "writer", "path": "task-b"}"#).unwrap();
         assert_eq!(args.action, "new");
     }
 
@@ -1738,7 +1732,7 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "purge",
                 "prompt": "x",
-                "agent": "writer",
+                "role": "writer",
                 "path": "task-b",
             }))
             .await
@@ -1759,7 +1753,7 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "new",
                 "prompt": "x",
-                "agent": "writer",
+                "role": "writer",
             }))
             .await
             .expect_err("new without path must refuse");
@@ -1774,7 +1768,7 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "resume",
                 "prompt": "x",
-                "agent": "writer",
+                "role": "writer",
             }))
             .await
             .expect_err("resume without path must refuse");
@@ -1786,7 +1780,7 @@ mod tests {
         let runtime = Arc::new(TestSubagentRuntime::new());
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         let err = tool
-            .execute(serde_json::json!({ "path": "task-b", "agent": "writer" }))
+            .execute(serde_json::json!({ "path": "task-b", "role": "writer" }))
             .await
             .expect_err("new without prompt must refuse");
         assert!(err.to_string().contains("prompt"), "{err}");
@@ -1804,7 +1798,7 @@ mod tests {
         let err = tool
             .execute(serde_json::json!({
                 "prompt": "x",
-                "agent": "writer",
+                "role": "writer",
                 "path": "agent:writer:peer:user:alice",
             }))
             .await
@@ -1824,7 +1818,7 @@ mod tests {
                 "action": "compact",
                 "path": "target-sess",
                 "prompt": "summarize and continue",
-                "agent": "writer",
+                "role": "writer",
             }))
             .await
             .expect("compact should succeed against the test runtime");
@@ -1872,7 +1866,7 @@ mod tests {
             .execute(serde_json::json!({
                 "action": "compact",
                 "path": "/target-sess",
-                "agent": "writer",
+                "role": "writer",
             }))
             .await
             .expect_err("compact without prompt must refuse");
@@ -1887,7 +1881,7 @@ mod tests {
             }))
             .await
             .expect_err("compact without agent must refuse");
-        assert!(err.to_string().contains("agent"), "{err}");
+        assert!(err.to_string().contains("role"), "{err}");
 
         assert!(
             runtime.compaction_requests().is_empty(),
@@ -1913,7 +1907,7 @@ mod tests {
                 "action": "resume",
                 "path": "sess:/a",
                 "prompt": "p",
-                "agent": "writer",
+                "role": "writer",
                 "page_limit": 5,
             }))
             .await
@@ -1926,7 +1920,7 @@ mod tests {
                 "action": "new",
                 "path": "task-a",
                 "prompt": "p",
-                "agent": "writer",
+                "role": "writer",
                 "page_limit": 0,
             }))
             .await
@@ -1939,7 +1933,7 @@ mod tests {
                 "action": "branch",
                 "path": "briefing",
                 "prompt": "p",
-                "agent": "writer",
+                "role": "writer",
                 "page_limit": 10001,
             }))
             .await
@@ -1960,7 +1954,7 @@ mod tests {
                 "action": "branch",
                 "path": "briefing",
                 "prompt": "Write today's briefing",
-                "agent": "writer",
+                "role": "writer",
                 "source": "/main",
                 "overwrite": true,
             }))
@@ -2006,7 +2000,7 @@ mod tests {
             "action": "branch",
             "path": "briefing",
             "prompt": "Write today's briefing",
-            "agent": "writer",
+            "role": "writer",
         }))
         .await
         .expect("branch without source should default to the caller");
@@ -2028,7 +2022,7 @@ mod tests {
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         let err = tool
-            .execute(serde_json::json!({ "action": "branch", "prompt": "x", "agent": "writer" }))
+            .execute(serde_json::json!({ "action": "branch", "prompt": "x", "role": "writer" }))
             .await
             .expect_err("branch without path must refuse");
         assert!(err.to_string().contains("path"), "{err}");
@@ -2042,7 +2036,7 @@ mod tests {
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let err = tool
-            .execute(serde_json::json!({ "action": "branch", "path": "briefing", "agent": "w" }))
+            .execute(serde_json::json!({ "action": "branch", "path": "briefing", "role": "w" }))
             .await
             .expect_err("branch without prompt must refuse");
         assert!(err.to_string().contains("prompt"), "{err}");
@@ -2051,7 +2045,7 @@ mod tests {
             .execute(serde_json::json!({ "action": "branch", "path": "briefing", "prompt": "x" }))
             .await
             .expect_err("branch without agent must refuse");
-        assert!(err.to_string().contains("agent"), "{err}");
+        assert!(err.to_string().contains("role"), "{err}");
 
         assert!(runtime.branch_requests().is_empty());
     }
@@ -2071,7 +2065,7 @@ mod tests {
                     "action": action,
                     "path": "/target",
                     "prompt": "x",
-                    "agent": "writer",
+                    "role": "writer",
                     "source": "/main",
                 }))
                 .await
@@ -2083,7 +2077,7 @@ mod tests {
                     "action": action,
                     "path": "/target",
                     "prompt": "x",
-                    "agent": "writer",
+                    "role": "writer",
                     "overwrite": true,
                 }))
                 .await
@@ -2117,7 +2111,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["status"], "completed");
-        assert_eq!(result["agent"], "writer");
+        assert_eq!(result["role"], "writer");
 
         let audits = runtime.audits();
         assert_eq!(audits.len(), 1);
@@ -2192,7 +2186,7 @@ mod tests {
         let result = tool
             .execute(serde_json::json!({
                 "prompt": "x",
-                "agent": "writer",
+                "role": "writer",
                 "path": "task-b",
             }))
             .await
@@ -2224,7 +2218,7 @@ mod tests {
                 "action": "resume",
                 "path": "/writer-1",
                 "prompt": "x",
-                "agent": "writer",
+                "role": "writer",
             }))
             .await
             .expect("resume with path should succeed against the test runtime");

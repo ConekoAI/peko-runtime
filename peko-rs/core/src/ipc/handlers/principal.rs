@@ -1401,7 +1401,7 @@ impl RequestHandler for PrincipalHandler {
 
                 // 2. Materialize the workspace + default agent prompt
                 //    BEFORE invoking `manager.create`. The manager
-                //    scans `agents/` on load (`discover_agent_prompts`),
+                //    scans `agents/` on load (`discover_role_prompts`),
                 //    so the prompt file must exist first. Mirrors
                 //    `peko principal new` in commands/principal.rs.
                 //
@@ -1414,11 +1414,11 @@ impl RequestHandler for PrincipalHandler {
                 // Shared-layout path. Use the resolver so we agree
                 // with `PrincipalManager::create` and the IPC
                 // `load_principal` helper on the exact same path.
-                let agents_dir = host
+                let roles_dir = host
                     .path_resolver()
                     .principal_layout(&name)
                     .shared
-                    .agents_dir;
+                    .roles_dir;
                 // Phase C: WriteSide gate. The fresh principal's
                 // `starter_bundle()` capabilities already include
                 // `principal:write_agents` (see
@@ -1427,14 +1427,14 @@ impl RequestHandler for PrincipalHandler {
                 // entitlement (User or Principal) when the bundle
                 // hasn't been mutated. The principal doesn't exist
                 // yet — we use the name-keyed variant
-                // `shared_agents_dir_write_for_name` because the
+                // `shared_roles_dir_write_for_name` because the
                 // `PrincipalId` is generated inside
                 // `PrincipalManager::create`.
                 let capabilities =
                     crate::extensions::framework::types::Capabilities::starter_bundle();
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_agents_dir_write_for_name(&name, Some(&capabilities))
+                    .shared_roles_dir_write_for_name(&name, Some(&capabilities))
                 {
                     warn!("PrincipalCreate capability denied: {e}");
                     let response = ResponsePacket::Error {
@@ -1444,7 +1444,7 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                if let Err(e) = tokio::fs::create_dir_all(&agents_dir).await {
+                if let Err(e) = tokio::fs::create_dir_all(&roles_dir).await {
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("create agents dir: {e}"),
@@ -1457,7 +1457,7 @@ impl RequestHandler for PrincipalHandler {
                      You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
                      {{{{memory}}}}\n"
                 );
-                if let Err(e) = tokio::fs::write(agents_dir.join("primary.md"), prompt_body).await {
+                if let Err(e) = tokio::fs::write(roles_dir.join("primary.md"), prompt_body).await {
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("write prompt: {e}"),
@@ -3035,7 +3035,7 @@ async fn build_principal_packager(
         .ok_or_else(|| anyhow::anyhow!("Principal '{}' has no identity DID", name))?;
 
     // Phase A: every packager path is read from the typed layout.
-    // `agents_dir` is the Shared tier; `sessions_dir` is the Local
+    // `roles_dir` is the Shared tier; `sessions_dir` is the Local
     // tier. The legacy `memory_dir` knob is gone — sessions are
     // exported from `local.sessions_dir` directly, and the principal's
     // memory index (`local.memory_index`) is not part of the
@@ -3050,7 +3050,7 @@ async fn build_principal_packager(
 
     Ok(
         crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
-            .with_agents_dir(&layout.shared.agents_dir)
+            .with_roles_dir(&layout.shared.roles_dir)
             .with_sessions_dir(&layout.local.sessions_dir)
             .with_workspace_dir(&layout.shared.root)
             .with_local_root(&layout.local.root),
@@ -3078,22 +3078,31 @@ fn extract_agent_names_from_package(
 ) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for path in files.keys() {
-        let Some(rest) = path.strip_prefix("agents/") else {
-            continue;
+        // ADR-064: the role layer is `roles/`; legacy packages ship
+        // `agents/` — both are recognized.
+        let rest = match path
+            .strip_prefix("roles/")
+            .or_else(|| path.strip_prefix("agents/"))
+        {
+            Some(rest) => rest,
+            None => continue,
         };
         if rest.is_empty() {
             continue;
         }
-        // `agents/<name>.md`  -> `<name>`
-        // `agents/<name>/AGENT.md` -> `<name>`
-        let name = if rest.eq_ignore_ascii_case("AGENT.md") {
+        // `roles/<name>.md`       -> `<name>`
+        // `roles/<name>/ROLE.md`  -> `<name>`
+        let name = if rest.eq_ignore_ascii_case("ROLE.md") || rest.eq_ignore_ascii_case("AGENT.md")
+        {
             continue;
         } else if let Some(parent) = std::path::Path::new(rest).parent() {
             let file_name = std::path::Path::new(rest)
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or(rest);
-            if file_name.eq_ignore_ascii_case("AGENT.md") {
+            if file_name.eq_ignore_ascii_case("ROLE.md")
+                || file_name.eq_ignore_ascii_case("AGENT.md")
+            {
                 parent
                     .file_name()
                     .and_then(|s| s.to_str())

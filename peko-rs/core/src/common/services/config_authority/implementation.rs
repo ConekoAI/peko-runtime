@@ -151,12 +151,12 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         let mut all_agents = Vec::new();
 
         // In the new layout, list all agents from the top-level agents directory
-        let agents_dir = self.path_resolver.agents_root_dir();
-        if !agents_dir.exists() {
+        let roles_dir = self.path_resolver.agents_root_dir();
+        if !roles_dir.exists() {
             return Ok(all_agents);
         }
 
-        let mut entries = match tokio::fs::read_dir(&agents_dir).await {
+        let mut entries = match tokio::fs::read_dir(&roles_dir).await {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(all_agents),
             Err(e) => return Err(ConfigError::Io(e)),

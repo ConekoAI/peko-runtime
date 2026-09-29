@@ -510,10 +510,10 @@ mod tests {
 
         let workspace = tmp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
-        let agents_dir = workspace.join("boss").join("agents");
-        tokio::fs::create_dir_all(&agents_dir).await.unwrap();
+        let roles_dir = workspace.join("boss").join("roles");
+        tokio::fs::create_dir_all(&roles_dir).await.unwrap();
         tokio::fs::write(
-            agents_dir.join("primary.md"),
+            roles_dir.join("primary.md"),
             "---\ndescription: \"Boss\"\n---\n\nYou are boss, a test assistant.\n",
         )
         .await

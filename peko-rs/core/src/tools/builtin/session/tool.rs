@@ -85,10 +85,7 @@ impl SessionTool {
         })
     }
 
-    fn build_history_response(
-        path: &str,
-        messages: Vec<HistoryMessage>,
-    ) -> serde_json::Value {
+    fn build_history_response(path: &str, messages: Vec<HistoryMessage>) -> serde_json::Value {
         json!({
             "path": path,
             "total_messages": messages.len(),
@@ -129,9 +126,7 @@ impl SessionTool {
             None | Some("") => Ok(None),
             Some(path) => {
                 peko_session::path::validate_path(path).map_err(|e| {
-                    anyhow::anyhow!(
-                        "'path' subtree scope is not a valid slug path: {e}"
-                    )
+                    anyhow::anyhow!("'path' subtree scope is not a valid slug path: {e}")
                 })?;
                 Ok(Some(path.to_string()))
             }
@@ -514,7 +509,9 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                         .ok()
                         .filter(|l| *l <= 10_000)
                         .ok_or_else(|| {
-                            anyhow::anyhow!("'page_limit' must be between 0 and 10000 (0 = unlimited)")
+                            anyhow::anyhow!(
+                                "'page_limit' must be between 0 and 10000 (0 = unlimited)"
+                            )
                         })?;
                     let pruned = self
                         .runtime

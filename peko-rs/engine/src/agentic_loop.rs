@@ -891,7 +891,7 @@ impl AgenticLoop {
     /// output. The `payload` object is forwarded via `HookInput::Json`
     /// so handlers can pattern-match on `reason` (`"end"`,
     /// `"interrupted"`, `"max_iterations"`) and the iteration count.
-    /// `agent_name` + `agent_did` are folded into the same payload
+    /// `role_name` + `agent_did` are folded into the same payload
     /// so the `AfterAgent` handler sees the agent identity.
     ///
     /// Wrapped in `tokio::time::timeout(HOOK_TIMEOUT, ...)`; soft-fails
@@ -899,13 +899,13 @@ impl AgenticLoop {
     /// shape — handlers cannot stall the loop).
     async fn fire_stop_hook(&self, run_id: &str, payload: serde_json::Value) {
         // Merge agent identity into the payload so both `Stop` and
-        // `AfterAgent` handlers see `agent_name` + `agent_did`
+        // `AfterAgent` handlers see `role_name` + `agent_did`
         // alongside the per-exit-reason fields. Pre-existing Stop
         // handlers that only read `reason` / `iterations` keep
         // working — the new fields are additive.
         let mut merged = payload;
         if let serde_json::Value::Object(ref mut map) = merged {
-            map.insert("agent_name".to_string(), self.agent.name().into());
+            map.insert("role_name".to_string(), self.agent.name().into());
             map.insert(
                 "agent_did".to_string(),
                 self.agent.identity_did().to_string().into(),
@@ -2439,7 +2439,7 @@ impl AgenticLoop {
         TurnPromptContext {
             principal_id: self.agent_principal_id.clone(),
             session_id: session_id.to_string(),
-            agent_name: self.agent.name().to_string(),
+            role_name: self.agent.name().to_string(),
             body,
             capabilities: self.agent.principal_capabilities().cloned(),
             active_extensions: self.agent.principal_active_extensions().cloned(),

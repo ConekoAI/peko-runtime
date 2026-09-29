@@ -84,7 +84,7 @@ pub enum PrincipalCommands {
         /// history from a one-keystroke wipe (see Bug 2 in
         /// scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md).
         /// With `--force`, the existing peko is removed first —
-        /// its workspace, agents/, memory/, and session history are
+        /// its workspace, roles/, memory/, and session history are
         /// all wiped before the new peko is written. There is
         /// no undo. Combine with `--yes` to skip the confirmation
         /// prompt in non-interactive shells.
@@ -627,7 +627,7 @@ async fn provision_principal(
     // without any prompt.
     //
     // `--force` is the explicit destructive override: the existing
-    // principal is removed (wiping workspace, agents/, memory/, and
+    // principal is removed (wiping workspace, roles/, memory/, and
     // session history) before the new one is written. The user is
     // prompted to confirm interactively unless `--yes` is set or
     // stdin is not a TTY. There is no undo.
@@ -648,7 +648,7 @@ async fn provision_principal(
         if !yes && std::io::stdin().is_terminal() {
             let prompt = format!(
                 "DESTRUCTIVE: re-create principal '{name}'? This wipes its workspace, \
-                 agents/, memory/, and session history. There is no undo. Proceed?"
+                 roles/, memory/, and session history. There is no undo. Proceed?"
             );
             if !confirm_prompt(&prompt)? {
                 println!("Create cancelled.");
@@ -731,15 +731,15 @@ async fn provision_principal(
     // agent prompts immediately.
     //
     // Phase B: agents live in the Shared tier
-    // (`{config_dir}/principals/{name}/agents/`). The CLI resolves
+    // (`{config_dir}/principals/{name}/roles/`). The CLI resolves
     // via the typed `SharedLayout` — the `RuntimeAuthority` accessor
     // requires a `PrincipalId`, but at create time the principal
     // doesn't exist yet, so we use the resolver directly. The CLI
     // operates from `Subject::User`, which is entitled to write its
     // own principal's shared state.
-    let agents_dir = paths.resolver().principal_layout(name).shared.agents_dir;
-    tokio::fs::create_dir_all(&agents_dir).await?;
-    let prompt_path = agents_dir.join("primary.md");
+    let roles_dir = paths.resolver().principal_layout(name).shared.roles_dir;
+    tokio::fs::create_dir_all(&roles_dir).await?;
+    let prompt_path = roles_dir.join("primary.md");
     let prompt_body = match &persona {
         Some(body) => persona_agent_prompt(name, config.identity.description.as_deref(), body),
         None => default_agent_prompt(name),
@@ -748,10 +748,34 @@ async fn provision_principal(
 
     // ── P0 provision: seed the kb scaffold (ADR-055) ────────────────
     // The persistent-knowledge floor: `kb/` with the pinned hot set
-    // (`MEMORY.md`, `index.md`) and the people/groups/agents
-    // conventions. Create-if-missing only — for a `--force` re-create
-    // the fresh workspace is empty, so this lays down the full floor.
+    // (`MEMORY.md`, `index.md`, `CONVENTIONS.md`) and the
+    // people/groups/roles conventions. Create-if-missing only — for a
+    // `--force` re-create the fresh workspace is empty, so this lays
+    // down the full floor.
     let kb_created = peko_core::principal::kb::seed_kb_scaffold(&shared_layout.root)?;
+
+    // ── P0 provision: stamp the root role + journal birth entry ─────
+    // The root role prompt has NO render-time fallback: the trunk
+    // resolves `roles/root.md` and fails loudly when absent, so
+    // provision stamps the compiled-in default as the starting file
+    // (create-if-missing). The journal's first entry records the birth.
+    let root_role_path = shared_layout.root.join("roles").join("root.md");
+    let root_role_seeded = if root_role_path.exists() {
+        false
+    } else {
+        tokio::fs::create_dir_all(root_role_path.parent().expect("roles dir parent")).await?;
+        tokio::fs::write(
+            &root_role_path,
+            peko_core::principal::routers::root_role_seed_content(),
+        )
+        .await?;
+        true
+    };
+    let journal_entry = peko_core::principal::kb::seed_journal_birth_entry(
+        &shared_layout.root,
+        name,
+        chrono::Utc::now(),
+    )?;
 
     // ── P0 provision ────────────────────────────────────────────────
     let principal = manager.create(config).await?;
@@ -762,6 +786,12 @@ async fn provision_principal(
     );
     if !kb_created.is_empty() {
         println!("  kb scaffold: {} files seeded", kb_created.len());
+    }
+    if root_role_seeded {
+        println!("  root role: roles/root.md seeded");
+    }
+    if journal_entry.is_some() {
+        println!("  kb journal: birth entry seeded");
     }
 
     Ok(Some(manager))
@@ -2431,9 +2461,9 @@ updated_at = "2026-01-01T00:00:00Z"
         // overwrite (if it happened) would destroy. This proves the
         // refusal is real and not a "succeeded silently" trap.
         let shared = paths.resolver().principal_layout("scout").shared;
-        std::fs::write(shared.agents_dir.join("sentinel.md"), "do-not-delete")
+        std::fs::write(shared.roles_dir.join("sentinel.md"), "do-not-delete")
             .expect("write sentinel");
-        assert!(shared.agents_dir.join("sentinel.md").exists());
+        assert!(shared.roles_dir.join("sentinel.md").exists());
 
         // Second create without --force: must refuse.
         let err = match provision_principal("scout", Some("demo-model"), None, false, false, &paths)
@@ -2450,7 +2480,7 @@ updated_at = "2026-01-01T00:00:00Z"
 
         // Sentinel must still exist — nothing was overwritten.
         assert!(
-            shared.agents_dir.join("sentinel.md").exists(),
+            shared.roles_dir.join("sentinel.md").exists(),
             "overwrite guard must not destroy workspace data"
         );
 
@@ -2466,7 +2496,7 @@ updated_at = "2026-01-01T00:00:00Z"
 
         // Sentinel must be gone — the destructive re-create wiped it.
         assert!(
-            !shared.agents_dir.join("sentinel.md").exists(),
+            !shared.roles_dir.join("sentinel.md").exists(),
             "destructive --force must remove the prior peko's on-disk state"
         );
 

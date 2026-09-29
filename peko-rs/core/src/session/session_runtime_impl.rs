@@ -216,10 +216,7 @@ impl SessionManagerRuntime {
 
     /// `pruned_pages` + `page_limit` for a resolved session id — the
     /// stable-numbering inputs for the page read primitives.
-    async fn page_retention_state(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<(u32, Option<u32>)> {
+    async fn page_retention_state(&self, session_id: &str) -> anyhow::Result<(u32, Option<u32>)> {
         let manager = self.session_manager.read().await;
         let meta = manager
             .get_session_metadata(session_id)
@@ -365,14 +362,13 @@ impl SessionRuntime for SessionManagerRuntime {
             None => None,
         };
         // Root + descendants in one BFS (ownership::descendants_of).
-        let subtree_ids: Option<std::collections::HashSet<String>> = subtree_root.as_ref().map(
-            |root| {
+        let subtree_ids: Option<std::collections::HashSet<String>> =
+            subtree_root.as_ref().map(|root| {
                 descendants_of(root, &metadatas)
                     .into_iter()
                     .chain(std::iter::once(root.clone()))
                     .collect()
-            },
-        );
+            });
 
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cutoff_ms = active_minutes.map(|m| now.saturating_sub(m as u64 * 60 * 1000));
@@ -545,10 +541,7 @@ impl SessionRuntime for SessionManagerRuntime {
         // event list.
         let positional = page - pruned as usize;
         Ok(peko_session::pages::read_page(
-            &events,
-            positional,
-            offset,
-            limit,
+            &events, positional, offset, limit,
         ))
     }
 
@@ -560,24 +553,18 @@ impl SessionRuntime for SessionManagerRuntime {
     ) -> anyhow::Result<Vec<peko_session::pages::SearchHit>> {
         let (events, session_id) = self.load_guarded_events(session_key).await?;
         let (pruned, _page_limit) = self.page_retention_state(&session_id).await?;
-        Ok(peko_session::pages::search_pages(
-            &events,
-            query,
-            max_results,
+        Ok(
+            peko_session::pages::search_pages(&events, query, max_results)
+                .into_iter()
+                .map(|hit| peko_session::pages::SearchHit {
+                    page_number: hit.page_number + pruned as usize,
+                    ..hit
+                })
+                .collect(),
         )
-        .into_iter()
-        .map(|hit| peko_session::pages::SearchHit {
-            page_number: hit.page_number + pruned as usize,
-            ..hit
-        })
-        .collect())
     }
 
-    async fn set_page_limit(
-        &self,
-        session_key: &str,
-        limit: Option<u32>,
-    ) -> anyhow::Result<u64> {
+    async fn set_page_limit(&self, session_key: &str, limit: Option<u32>) -> anyhow::Result<u64> {
         let mut manager = self.session_manager.write().await;
         let (caller, metas) = self.caller_and_metas(&mut manager).await?;
         let session_id = self.resolve_ref(&caller, &metas, session_key)?;
@@ -1400,7 +1387,11 @@ mod tests {
 
         // Search spans the store.
         h.add_user_message("child1", "needle in child").await;
-        let hits = h.runtime.search_sessions("needle", None, 10, None).await.unwrap();
+        let hits = h
+            .runtime
+            .search_sessions("needle", None, 10, None)
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, sid("child1"));
 
@@ -1474,7 +1465,10 @@ mod tests {
         let err = h.runtime.read_page("/c", 2, 0, 100).await.unwrap_err();
         assert!(err.to_string().contains("rotated out"), "{err}");
         let page3 = h.runtime.read_page("/c", 3, 0, 100).await.unwrap();
-        assert!(page3.contains("page 2"), "absolute 3 = original page 2: {page3}");
+        assert!(
+            page3.contains("page 2"),
+            "absolute 3 = original page 2: {page3}"
+        );
 
         // search_pages hits carry absolute page numbers too.
         let hits = h.runtime.search_pages("/c", "page 3", 10).await.unwrap();

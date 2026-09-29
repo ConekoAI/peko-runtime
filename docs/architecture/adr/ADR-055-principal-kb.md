@@ -61,7 +61,7 @@ Review of the v0.1.0 hot-set design surfaced two problems, both about
    channel-bound agent needs "who is in this room, what did I commit
    to here" at turn start, and a named agent has durable context of
    its own — neither had a home. There was also no per-agent
-   *persistent* surface at all: T1 (role) and T2 (instance) from
+   *persistent* surface at all: T1 (role) and T2 (agent) from
    ADR-052 are per-agent, but everything durable belonged to the
    principal.
 
@@ -93,12 +93,15 @@ separate concept is **deleted** — including the never-used
 └── kb/                                    # THE persistent tree
     ├── MEMORY.md                          # HOT — curated long-term memory
     ├── index.md                           # HOT — the map of the tree
+    ├── CONVENTIONS.md                     # HOT — shared behavioral rulebook
+    │                                      #   (rev 2 amendment, below)
     ├── people/<who>.md                    # cold — per-person notes, via index
     ├── groups/<channel>.md                # cold — per-group notes; the file
     │                                      #   matching a binding is injected
     │                                      #   into that binding's agents (D8)
-    ├── agents/<name>.md                   # cold — per-agent notes; a named
-    │                                      #   agent's note rides with it (D8)
+    ├── roles/<name>.md                    # cold — per-role notes; a named
+    │                                      #   role's note rides with it (D8;
+    │                                      #   renamed from agents/ — rev 2)
     └── …everything else…                  # COLD — refs/, journal/, imports/,
                                            #        projects/, datasets, any shape
 ```
@@ -321,4 +324,34 @@ the principal can retire.
 
 ---
 
-*Version 0.2.0 · Principal Knowledge Base · 2026-09-13 (rev 1 2026-09-14)*
+## 7. Amendment (rev 2, 2026-09-28) — `kb/roles/` rename + `CONVENTIONS.md` hot file
+
+Two contract changes, shipped together:
+
+1. **D8 agent notes → role notes: `kb/agents/<name>.md` → `kb/roles/<name>.md`.**
+   After ADR-052 D3, the `<name>` key selects a *role* (the T1 file
+   `agents/<name>/AGENT.md`); the durable note pairs with that role
+   body, so the directory follows the role terminology instead of
+   colliding with the workspace's `agents/` role-file directory.
+   Loaders renamed (`load_agent_note` → `load_role_note`,
+   `KB_AGENTS_DIR` → `KB_ROLES_DIR`, `SectionSlot::AgentNote` →
+   `RoleNote`). A one-time, idempotent boot migration
+   (`migrate_legacy_roles_dir`, run in the ADR-054 boot pass next to
+   the D4 memory migration) MOVES a pre-rename `kb/agents/` to
+   `kb/roles/`; an existing `kb/roles/` wins and the legacy directory
+   is left untouched.
+
+2. **`kb/CONVENTIONS.md` joins the hot set (third hot file).** Closes
+   the ADR-052 gap where T0 carried only identity metadata + memory
+   content and no prose-conventions layer: behavioral guidance
+   (journaling habits, memory discipline, the harness-neutral
+   `.agents/` external-project convention, AGENTS.md authoring) now
+   lives in a principal-owned rulebook rendered as a tail section to
+   EVERY agent in the tree — on-change, byte-capped at 16 KiB
+   (`PRINCIPAL_CONVENTIONS_MAX_BYTES`), absence renders absent.
+   Genesis seeds it (create-once) with a default rulebook; the root
+   AGENT.md keeps only a pointer. Convention prose no longer lives in
+   T1 role bodies, where it was either duplicated per role or missing
+   for the named workers.
+
+*Version 0.3.0 · Principal Knowledge Base · 2026-09-28 (rev 2)*

@@ -350,8 +350,7 @@ pub struct PrincipalRoutingConfig {
     #[serde(default)]
     pub root_prompt: Option<PathBuf>,
 
-    /// Optional name of a workspace agent role (`agents/<name>.md` or
-    /// `agents/<name>/AGENT.md`) whose prompt body peer-facing turns
+    /// Optional name of a workspace agent role (    /// `roles/<name>/ROLE.md`) whose prompt body peer-facing turns
     /// (peer-DM ingress children, passive channel bindings, group
     /// wakes) run as their T1 role instead of the root persona
     /// (ADR-052 D3). Omitted = persona inheritance from the root

@@ -105,10 +105,12 @@ This is your first self-turn — the trunk of a new principal.\n\n",
 prompts live in `agents/`. Scratch and removal staging sessions `/tmp` \
 and `/trash` already exist under you. Your persistent knowledge base \
 lives in `kb/` — `kb/MEMORY.md` (hot memory, rides in every prompt), \
-`kb/index.md` (its map, also hot), `kb/people/`, `kb/groups/` and \
-`kb/agents/` (per-person, per-group and per-agent notes — cold, looked \
+`kb/index.md` (its map, also hot), `kb/CONVENTIONS.md` (the shared \
+behavioral rulebook for every agent you run, also hot), `kb/people/`, \
+`kb/groups/` and `kb/roles/` (per-person, per-group and per-role \
+notes — cold, looked \
 up through the index, except that a group note matching a channel \
-binding and a named agent's note are injected into that context's \
+binding and a named role's note are injected into that context's \
 prompts). It is yours: revise in place, keep the index honest, \
 restructure freely.\n\n\
 On this turn:\n\
@@ -147,6 +149,63 @@ and workspace, check channels (`channel read`), and continue or adjust \
 your standing work. If this cadence is wrong for you, retune or replace \
 this job with the cron tools — you own your rhythm."
     )
+}
+
+/// One-time migration of a pre-ADR-064 principal (genesis boot pass):
+/// MOVE the legacy `<workspace>/agents/` role directory to
+/// `<workspace>/roles/`, renaming directory-layout `AGENT.md` files to
+/// `ROLE.md` inside it. Idempotent: no legacy dir, or an existing
+/// `roles/`, means no-op — an existing `roles/` wins and the legacy
+/// directory is left untouched (matching the kb migration stance).
+///
+/// Returns `true` when the migration moved the directory.
+pub fn migrate_legacy_workspace_agents_dir(workspace: &std::path::Path) -> Result<bool> {
+    let legacy = workspace.join("agents");
+    let target = workspace.join("roles");
+    if !legacy.is_dir() || target.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(&legacy, &target)?;
+    // Directory-layout role files: AGENT.md → ROLE.md (flat `<id>.md`
+    // files are already canonical).
+    for entry in std::fs::read_dir(&target)?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let legacy_md = path.join("AGENT.md");
+            let role_md = path.join("ROLE.md");
+            if legacy_md.exists() && !role_md.exists() {
+                std::fs::rename(&legacy_md, &role_md)?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Stamp the compiled-in default root role body into
+/// `<workspace>/roles/root.md` when the workspace has no root role
+/// file (neither flat `root.md` nor directory `root/ROLE.md`).
+///
+/// The root role prompt has **no render-time fallback**: resolution is
+/// `[routing].root_prompt` → workspace file → error. This default-start
+/// seeding (provision stamps it too; this boot pass catches
+/// pre-stamping workspaces) is what keeps that contract from breaking
+/// existing principals. Create-if-missing only: an explicit
+/// `roles/root/ROLE.md` or an existing `root.md` is never touched.
+///
+/// Returns `true` when the file was written.
+pub fn seed_default_root_role(workspace: &std::path::Path) -> Result<bool> {
+    let roles_dir = workspace.join("roles");
+    let flat = roles_dir.join("root.md");
+    let dir_layout = roles_dir.join("root").join("ROLE.md");
+    if flat.exists() || dir_layout.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(&roles_dir)?;
+    std::fs::write(
+        &flat,
+        crate::principal::routers::root::root_role_seed_content(),
+    )?;
+    Ok(true)
 }
 
 /// Build the one-shot genesis cron job (P2). Fires
@@ -339,6 +398,46 @@ pub async fn seed_boot_defaults(
             }
             Ok(false) => {}
             Err(e) => tracing::warn!("genesis: memory migration failed for '{name}': {e}"),
+        }
+
+        // 2026-09-28 rename: move a pre-rename `kb/agents/` directory
+        // to `kb/roles/` so the D8 note directory pairs with the
+        // ADR-052 D3 role-file terminology. Runs for EVERY principal,
+        // idempotent, no-op once performed.
+        match crate::principal::kb::migrate_legacy_roles_dir(&shared_root) {
+            Ok(true) => {
+                tracing::info!(
+                    "genesis: migrated legacy kb/agents/ into kb/roles/ for principal '{name}'"
+                );
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("genesis: roles-dir migration failed for '{name}': {e}"),
+        }
+
+        // ADR-064 rename: move the pre-rename workspace `agents/` role
+        // directory to `roles/`, renaming directory-layout `AGENT.md`
+        // files to `ROLE.md` as they land. Runs for EVERY principal,
+        // idempotent, no-op once performed.
+        match migrate_legacy_workspace_agents_dir(&shared_root) {
+            Ok(true) => {
+                tracing::info!(
+                    "genesis: migrated legacy agents/ into roles/ for principal '{name}'"
+                );
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("genesis: agents-dir migration failed for '{name}': {e}"),
+        }
+
+        // ADR-064 follow-up: the root role body has NO render-time
+        // fallback — it must exist as a file. Stamp the compiled-in
+        // default into `roles/root.md` for principals that lack one
+        // (pre-stamping workspaces). Create-if-missing only.
+        match seed_default_root_role(&shared_root) {
+            Ok(true) => {
+                tracing::info!("genesis: seeded roles/root.md for principal '{name}'");
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("genesis: root-role seeding failed for '{name}': {e}"),
         }
 
         let state = principal.config.read().await.boot_state();
@@ -550,6 +649,35 @@ mod tests {
         assert!(text.contains("memory migrated for [c]"), "got: {text}");
         assert!(!report.is_empty());
         assert!(SeedReport::default().is_empty());
+    }
+
+    /// ADR-064 follow-up: the root role body has no render-time
+    /// fallback — the boot pass stamps `roles/root.md` (create-once)
+    /// for workspaces that lack one, and leaves existing root role
+    /// files (either layout) untouched.
+    #[test]
+    fn default_root_role_is_stamped_once() {
+        let ws = tempfile::tempdir().unwrap();
+
+        // Absent → stamped from the compiled-in seed source.
+        assert!(seed_default_root_role(ws.path()).unwrap());
+        let stamped = ws.path().join("roles").join("root.md");
+        assert!(stamped.exists());
+        assert_eq!(
+            std::fs::read_to_string(&stamped).unwrap(),
+            crate::principal::routers::root_role_seed_content()
+        );
+
+        // Present (flat) → no-op.
+        assert!(!seed_default_root_role(ws.path()).unwrap());
+
+        // Present (directory layout) → no-op, dir file wins.
+        let ws2 = tempfile::tempdir().unwrap();
+        let dir_role = ws2.path().join("roles").join("root").join("ROLE.md");
+        std::fs::create_dir_all(dir_role.parent().unwrap()).unwrap();
+        std::fs::write(&dir_role, b"custom").unwrap();
+        assert!(!seed_default_root_role(ws2.path()).unwrap());
+        assert_eq!(std::fs::read_to_string(&dir_role).unwrap(), "custom");
     }
 
     // ─── boot-pass integration (daemon boot shape) ──────────────────

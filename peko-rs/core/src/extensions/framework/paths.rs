@@ -49,7 +49,7 @@ pub fn default_async_tasks_dir() -> PathBuf {
 /// `src/common::paths::PathResolver::agent_workspace`.
 #[must_use]
 pub fn default_agent_workspace(agent_name: &str) -> PathBuf {
-    default_data_dir().join("agents").join(agent_name)
+    default_data_dir().join("roles").join(agent_name)
 }
 
 /// Cross-boundary view of `crate::common::paths::PathResolver`.
@@ -62,5 +62,5 @@ pub fn default_agent_workspace(agent_name: &str) -> PathBuf {
 pub trait PathResolver: Send + Sync {
     /// Path to the agents directory (`{data_dir}/agents`).
     /// Discovery walks this directory for agent manifests.
-    fn agents_dir(&self) -> PathBuf;
+    fn roles_dir(&self) -> PathBuf;
 }

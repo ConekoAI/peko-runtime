@@ -19,9 +19,9 @@ pub struct PrincipalLayers {
     /// Identity layer digest (`identity/did.json`, `identity/keys.enc`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
-    /// Agent prompt layer digest (`agents/*.md`)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agents: Option<String>,
+    /// Role prompt layer digest (`roles/*.md`; legacy `agents/`)
+    #[serde(skip_serializing_if = "Option::is_none", alias = "agents")]
+    pub roles: Option<String>,
     /// Memory layer digest (`memory/`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<String>,
@@ -216,7 +216,7 @@ mod tests {
         let layers = PrincipalLayers {
             config: Some("sha256:abc".to_string()),
             identity: Some("sha256:def".to_string()),
-            agents: Some("sha256:ghi".to_string()),
+            roles: Some("sha256:ghi".to_string()),
             memory: None,
             sessions: None,
             cron: None,
@@ -231,12 +231,12 @@ mod tests {
         };
 
         let toml = toml::to_string(&layers).unwrap();
-        assert!(toml.contains("agents"));
+        assert!(toml.contains("roles"));
         assert!(toml.contains("plugins"));
         assert!(!toml.contains("memory"));
 
         let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
-        assert_eq!(parsed.agents, Some("sha256:ghi".to_string()));
+        assert_eq!(parsed.roles, Some("sha256:ghi".to_string()));
         assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));
         assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
     }
@@ -249,11 +249,11 @@ mod tests {
         let legacy_toml = r#"
 config = "sha256:abc"
 identity = "sha256:def"
-agents = "sha256:ghi"
+roles = "sha256:ghi"
 extensions = "sha256:jkl"
 "#;
         let parsed: PrincipalLayers = toml::from_str(legacy_toml).unwrap();
-        assert_eq!(parsed.agents, Some("sha256:ghi".to_string()));
+        assert_eq!(parsed.roles, Some("sha256:ghi".to_string()));
         assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
         assert!(parsed.plugins.is_none());
         assert!(parsed.memory.is_none());
@@ -268,7 +268,7 @@ extensions = "sha256:jkl"
         let layers = PrincipalLayers {
             config: Some("sha256:abc".to_string()),
             identity: Some("sha256:def".to_string()),
-            agents: Some("sha256:ghi".to_string()),
+            roles: Some("sha256:ghi".to_string()),
             memory: None,
             sessions: None,
             cron: None,

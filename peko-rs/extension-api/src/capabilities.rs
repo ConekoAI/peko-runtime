@@ -34,11 +34,11 @@
 //! | `network`        | Retired with `Authority` envelope (PR-E #1)                  |
 //! | `filesystem.*`   | Retired with `Authority` envelope (PR-E #1)                  |
 //! | `tunnel:*`       | Retired with `Authority` envelope (PR-E #1)                  |
-//! | `agent:*`        | Subagent dispatch lives on `subagent_capabilities` snapshot  |
+//! | `role:*` (legacy `agent:*`) | Subagent dispatch lives on `subagent_capabilities` snapshot  |
 //! | `skill:*`        | Workspace-resident; visible by default                       |
 //! | `tool:<name>`    | F37 funnel gate; checked in agentic-loop per tool call       |
 //!
-//! `tool:<name>` and `agent:*` strings **DO still appear** in the
+//! `tool:<name>` and `role:*` strings **DO still appear** in the
 //! `[capabilities]` table of `principal.toml` — they are checked by
 //! the F37 agentic-loop funnel / subagent dispatch snapshot, not by
 //! this type. They round-trip through `Capabilities` only because
@@ -71,7 +71,7 @@
 //! - the grant ends in `*` and the requirement starts with the
 //!   prefix before the wildcard.
 //!
-//! In practice the wildcards in production are `tool:*`, `agent:*`,
+//! In practice the wildcards in production are `tool:*`, `role:*`,
 //! and `skill:*` (all shipped by [`Capabilities::starter_bundle`] and
 //! matched through [`Capabilities::is_granted`] — e.g. the F37 tool
 //! gate's `is_tool_enabled` — or, for the `Skill` tool's string-slice
@@ -130,6 +130,23 @@ impl Capability {
             let prefix = &grant[..grant.len() - 1];
             if req.starts_with(prefix) {
                 return true;
+            }
+        }
+
+        // ADR-064 legacy mapping: the pre-rename `agent:*` namespace
+        // (workspace role templates) keeps matching `role:*` strings in
+        // both directions — old bundles granting `agent:*` / `agent:<n>`
+        // authorize the renamed `role:*` requirements.
+        if let Some(legacy_grant) = grant.strip_prefix("agent:") {
+            let normalized_grant = format!("role:{legacy_grant}");
+            if normalized_grant == req {
+                return true;
+            }
+            if self.is_wildcard() {
+                let prefix = &normalized_grant[..normalized_grant.len() - 1];
+                if req.starts_with(prefix) {
+                    return true;
+                }
             }
         }
 
@@ -244,8 +261,9 @@ impl Capabilities {
     /// - `tool:*` — every tool in the catalog (built-in, workspace, MCP)
     ///   is visible and callable. Wildcards match by prefix via
     ///   [`Capability::matches`].
-    /// - `agent:*` — any workspace agent template (`agents/<name>/AGENT.md`)
-    ///   passes the `Agent` tool's `is_subagent_enabled` check.
+    /// - `role:*` — any workspace role template (`roles/<name>.md` or
+    ///   `roles/<name>/ROLE.md`) passes the `Agent` tool's `is_subagent_enabled`
+    ///   check (legacy `agent:*` grants still match — ADR-064).
     /// - `skill:*` — any workspace skill passes the `Skill` tool's gate
     ///   (that gate does its own prefix-wildcard match over the
     ///   `Vec<String>` projection, same `tool:*` semantics).
@@ -275,7 +293,7 @@ impl Capabilities {
             // Fail-closed tool catalog gate: without these wildcards a
             // fresh Principal sees `tools: []` on the wire.
             "tool:*",
-            "agent:*",
+            "role:*",
             "skill:*",
         ])
     }
@@ -319,7 +337,7 @@ mod tests {
             "tool:Read",
             "tool:Write",
             "tool:Bash",
-            "agent:researcher",
+            "role:researcher",
             "skill:docker",
         ] {
             assert!(

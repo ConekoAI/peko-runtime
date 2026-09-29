@@ -15,8 +15,8 @@
 //!   grants `agent:<name>`; missing authorization context is denied.
 //! - [`resolve_agent_config`](SubagentRuntime::resolve_agent_config) —
 //!   workspace Markdown lookup. Two layouts supported:
-//!   `<workspace>/agents/<name>/AGENT.md` (directory) or
-//!   `<workspace>/agents/<name>.md` (flat). The legacy global TOML
+//!   `<workspace>/roles/<name>/ROLE.md` (directory) or
+//!   `<workspace>/roles/<name>.md` (flat). The legacy global TOML
 //!   fallback (`{PEKO_HOME}/agents/<name>/config.toml`) was retired in
 //!   Sprint 8 Commit 2 — the workspace is the single source of truth.
 //!   Adapter owns the `PathResolver` and `principal::agent_prompt`
@@ -72,8 +72,8 @@ pub trait SubagentRuntime: Send + Sync {
     /// `workspace` is required — the legacy global TOML fallback
     /// (`{PEKO_HOME}/agents/<name>/config.toml`) was retired. Two layouts
     /// are supported:
-    /// - `<workspace>/agents/<name>/AGENT.md` (directory)
-    /// - `<workspace>/agents/<name>.md` (flat)
+    /// - `<workspace>/roles/<name>/ROLE.md` (directory)
+    /// - `<workspace>/roles/<name>.md` (flat)
     ///
     /// Sprint 8 Commit 4: returns `Arc<AgentPrompt>` — the workspace
     /// Markdown IS the agent template (frontmatter name/description

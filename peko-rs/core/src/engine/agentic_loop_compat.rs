@@ -69,14 +69,14 @@ mod tests {
     }
 
     /// Create a temporary session for testing
-    async fn test_session(agent_name: &str, temp_dir: &std::path::Path) -> Arc<RwLock<Session>> {
+    async fn test_session(role_name: &str, temp_dir: &std::path::Path) -> Arc<RwLock<Session>> {
         let mut manager = SessionManager::new()
             .with_sessions_dir_internal(temp_dir.join("data").join("sessions"))
-            .with_agent_name(agent_name);
+            .with_agent_name(role_name);
         let peer = Subject::User("default".to_string());
         let handle = manager
             .create_session(
-                agent_name,
+                role_name,
                 &peer,
                 peko_session::manager::SessionCreateOptions::new(),
             )
@@ -2429,7 +2429,7 @@ mod tests {
             }
         }
 
-        for section in ["tools", "skills", "agents"] {
+        for section in ["tools", "skills", "roles"] {
             core.register_hook(
                 crate::extensions::framework::core::HookPoint::PromptSystemSection {
                     section: section.to_string(),
@@ -2462,8 +2462,8 @@ mod tests {
         let ctx = TurnPromptContext {
             principal_id: "test".into(),
             session_id: "test-session".into(),
-            agent_name: "test-agent".into(),
-            body: "{{tools}} {{skills}} {{agents}} {{mcp_context}}".into(),
+            role_name: "test-agent".into(),
+            body: "{{tools}} {{skills}} {{roles}} {{mcp_context}}".into(),
             capabilities: None,
             active_extensions: None,
             principal_memory: None,
@@ -2492,17 +2492,17 @@ mod tests {
             elapsed < std::time::Duration::from_millis(150),
             "parallel render took {elapsed:?} — should be ~50ms with fan-out, not ~200ms serial"
         );
-        // F36: tool catalogs are wire-only. {{tools}} is preserved as a
-        // marker but resolved to empty (no `Placeholder::Tools` value is
-        // inserted) and stripped via `remove_missing=true`. The other
-        // three sections still flow through the wire, so their markers
-        // must be substituted with the hook output.
+        // F36: tool catalogs are wire-only. `{{tools}}` has no enum
+        // variant (retired) and no value is inserted, so it is stripped
+        // via `remove_missing=true`. The other three sections still
+        // flow through the wire, so their markers must be substituted
+        // with the hook output.
         assert!(!rendered.contains("{{tools}}"));
         assert!(!rendered.contains("{{skills}}"));
         assert!(!rendered.contains("{{agents}}"));
         assert!(!rendered.contains("{{mcp_context}}"));
         assert!(rendered.contains("skills"));
-        assert!(rendered.contains("agents"));
+        assert!(rendered.contains("roles"));
         assert!(rendered.contains("mcp_context"));
     }
 
@@ -2562,7 +2562,7 @@ mod tests {
         let ctx = TurnPromptContext {
             principal_id: "test".into(),
             session_id: "test-session".into(),
-            agent_name: "test-agent".into(),
+            role_name: "test-agent".into(),
             body: "before {{skills}} after".into(),
             capabilities: None,
             active_extensions: None,
@@ -2617,7 +2617,7 @@ mod tests {
         TurnPromptContext {
         principal_id: "test-principal".into(),
         session_id: "test-session".into(),
-        agent_name: "test-agent".into(),
+        role_name: "test-agent".into(),
         body: "channel={{channel}} thinking={{thinking_level}} runtime={{runtime}} sandbox={{sandbox}} aliases={{model_aliases}}".into(),
         capabilities: None,
         active_extensions: None,
@@ -3066,7 +3066,7 @@ mod tests {
         let ctx2 = TurnPromptContext {
             principal_id: agent.principal_id().to_string(),
             session_id: "test-session".into(),
-            agent_name: agent.name().to_string(),
+            role_name: agent.name().to_string(),
             body: "{{capability_diff}}".into(),
             capabilities: Some(expanded_caps),
             active_extensions: None,
@@ -3145,7 +3145,7 @@ mod tests {
         let ctx = TurnPromptContext {
             principal_id: agent.principal_id().to_string(),
             session_id: "test-session".into(),
-            agent_name: agent.name().to_string(),
+            role_name: agent.name().to_string(),
             body: "{{capability_diff}}".into(),
             capabilities: Some(shrunk_caps),
             active_extensions: None,
@@ -3510,7 +3510,7 @@ mod tests {
         // before counting (same pattern as the AfterAgent tests).
         let own_events: Vec<&serde_json::Value> = log_snapshot
             .iter()
-            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-end-agent"))
+            .filter(|v| v.get("role_name").and_then(|n| n.as_str()) == Some("f31x-stop-end-agent"))
             .collect();
         assert_eq!(
             own_events.len(),
@@ -3612,7 +3612,7 @@ mod tests {
         // the clean-End Stop test above).
         let own_events: Vec<&serde_json::Value> = log_snapshot
             .iter()
-            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-cap-agent"))
+            .filter(|v| v.get("role_name").and_then(|n| n.as_str()) == Some("f31x-stop-cap-agent"))
             .collect();
         assert_eq!(
             own_events.len(),
@@ -3721,7 +3721,7 @@ mod tests {
         let own_events: Vec<&serde_json::Value> = log_snapshot
             .iter()
             .filter(|v| {
-                v.get("agent_name").and_then(|n| n.as_str()) == Some("f31x-stop-interrupt-agent")
+                v.get("role_name").and_then(|n| n.as_str()) == Some("f31x-stop-interrupt-agent")
             })
             .collect();
         assert_eq!(
@@ -3810,7 +3810,7 @@ mod tests {
         // events tagged with this test's agent_name before counting.
         let own_events: Vec<_> = log_snapshot
             .iter()
-            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some(agent_name.as_str()))
+            .filter(|v| v.get("role_name").and_then(|n| n.as_str()) == Some(agent_name.as_str()))
             .cloned()
             .collect();
         assert_eq!(
@@ -3819,7 +3819,7 @@ mod tests {
         "AfterAgent must fire exactly once from Agent::stop() for {agent_name}; got: {own_events:?}"
     );
         assert_eq!(
-            own_events[0].get("agent_name").and_then(|v| v.as_str()),
+            own_events[0].get("role_name").and_then(|v| v.as_str()),
             Some(agent_name.as_str()),
             "AfterAgent payload must carry the agent's name; got: {}",
             own_events[0]
@@ -4068,7 +4068,7 @@ mod tests {
         // the uuid-unique agent name before asserting cardinality.
         let mine: Vec<&serde_json::Value> = log_snapshot
             .iter()
-            .filter(|v| v.get("agent_name").and_then(|n| n.as_str()) == Some(agent_name.as_str()))
+            .filter(|v| v.get("role_name").and_then(|n| n.as_str()) == Some(agent_name.as_str()))
             .collect();
         assert_eq!(
             mine.len(),

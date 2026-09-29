@@ -309,10 +309,10 @@ impl RuntimeAuthority {
     }
 
     /// Hand out a `SharedPath` for the principal's agents directory.
-    pub fn shared_agents_dir(&self, principal: &PrincipalId) -> Result<SharedPath, AuthorityError> {
+    pub fn shared_roles_dir(&self, principal: &PrincipalId) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
         let layout = self.principal_layout(principal)?;
-        Ok(SharedPath(layout.shared.agents_dir))
+        Ok(SharedPath(layout.shared.roles_dir))
     }
 
     /// Hand out a `SharedPath` for the principal's identity directory
@@ -426,7 +426,7 @@ impl RuntimeAuthority {
     /// Hand out a `SharedPath` for the agents directory IF the principal
     /// carries `principal:write_agents`. Gates `agents/` + the
     /// `agents/primary.md` write done by `PrincipalCreate`.
-    pub fn shared_agents_dir_write(
+    pub fn shared_roles_dir_write(
         &self,
         principal: &PrincipalId,
         caps: Option<&Capabilities>,
@@ -434,15 +434,15 @@ impl RuntimeAuthority {
         self.assert_shared_read_entitled()?;
         let layout = self.principal_layout(principal)?;
         self.assert_capability_granted(caps, CAP_WRITE_AGENTS, Tier::Shared)?;
-        Ok(SharedPath(layout.shared.agents_dir))
+        Ok(SharedPath(layout.shared.roles_dir))
     }
 
-    /// Name-keyed variant of [`shared_agents_dir_write`] for
+    /// Name-keyed variant of [`shared_roles_dir_write`] for
     /// `PrincipalCreate`, where the principal's `PrincipalId` has
     /// not yet been generated (`PrincipalManager::create` assigns
     /// it). The actor + capability gate is identical; the layout is
     /// resolved directly from the validated name.
-    pub fn shared_agents_dir_write_for_name(
+    pub fn shared_roles_dir_write_for_name(
         &self,
         principal_name: &str,
         caps: Option<&Capabilities>,
@@ -450,7 +450,7 @@ impl RuntimeAuthority {
         self.assert_shared_read_entitled()?;
         let layout = self.resolver.principal_layout(principal_name);
         self.assert_capability_granted(caps, CAP_WRITE_AGENTS, Tier::Shared)?;
-        Ok(SharedPath(layout.shared.agents_dir))
+        Ok(SharedPath(layout.shared.roles_dir))
     }
 
     /// Hand out a `SharedPath` for the identity directory IF the principal
@@ -931,23 +931,23 @@ mod tests {
     }
 
     #[test]
-    fn write_gate_shared_agents_dir_with_grant_succeeds() {
+    fn write_gate_shared_roles_dir_with_grant_succeeds() {
         let (_tmp, resolver, pid) = with_real_principal();
         let did = peko_subject::PrincipalDID("prin_alice".to_string());
         let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
         let caps = Capabilities::with_grants(["principal:write_agents"]);
-        let result = authority.shared_agents_dir_write(&pid, Some(&caps));
+        let result = authority.shared_roles_dir_write(&pid, Some(&caps));
         assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/agents"));
+        assert!(result.unwrap().as_path().ends_with("alice/roles"));
     }
 
     #[test]
-    fn write_gate_shared_agents_dir_without_grant_is_capability_denied() {
+    fn write_gate_shared_roles_dir_without_grant_is_capability_denied() {
         let (_tmp, resolver, pid) = with_real_principal();
         let did = peko_subject::PrincipalDID("prin_alice".to_string());
         let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
         let caps = Capabilities::new();
-        let result = authority.shared_agents_dir_write(&pid, Some(&caps));
+        let result = authority.shared_roles_dir_write(&pid, Some(&caps));
         assert!(matches!(
             result,
             Err(AuthorityError::CapabilityDenied {
@@ -1041,14 +1041,14 @@ mod tests {
     }
 
     #[test]
-    fn write_gate_shared_agents_dir_for_name_with_grant_succeeds() {
+    fn write_gate_shared_roles_dir_for_name_with_grant_succeeds() {
         let (_tmp, resolver, _pid) = with_real_principal();
         let did = peko_subject::PrincipalDID("prin_alice".to_string());
         let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
         let caps = Capabilities::with_grants(["principal:write_agents"]);
-        let result = authority.shared_agents_dir_write_for_name("alice", Some(&caps));
+        let result = authority.shared_roles_dir_write_for_name("alice", Some(&caps));
         assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/agents"));
+        assert!(result.unwrap().as_path().ends_with("alice/roles"));
     }
 
     #[test]
@@ -1057,7 +1057,7 @@ mod tests {
         let did = peko_subject::PrincipalDID("prin_alice".to_string());
         let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
         let caps = Capabilities::new();
-        let result = authority.shared_agents_dir_write_for_name("alice", Some(&caps));
+        let result = authority.shared_roles_dir_write_for_name("alice", Some(&caps));
         assert!(matches!(
             result,
             Err(AuthorityError::CapabilityDenied {
@@ -1113,9 +1113,9 @@ mod tests {
         // "ghost" is not on disk and the resolver has no layout for
         // it — but the gate fires only on the actor and capability
         // tier; the path is constructed regardless.
-        let result = authority.shared_agents_dir_write_for_name("ghost", Some(&caps));
+        let result = authority.shared_roles_dir_write_for_name("ghost", Some(&caps));
         assert!(result.is_ok());
         let path = result.unwrap().into_path_buf();
-        assert!(path.ends_with("ghost/agents"));
+        assert!(path.ends_with("ghost/roles"));
     }
 }

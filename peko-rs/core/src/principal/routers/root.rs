@@ -40,9 +40,21 @@ use peko_engine::AgenticEvent;
 // longer carries a quota meter field.
 use peko_providers::LlmResolver;
 
-/// Load the compiled-in root agent prompt.
+/// Raw content of the compiled-in default root role body.
+///
+/// **Seed source, not a render-time fallback** (ADR-064 follow-up):
+/// provision and the genesis boot pass stamp this into
+/// `<workspace>/roles/root.md`; prompt resolution reads the workspace
+/// file and ERRORS when it is absent. Authored prompts are a default
+/// start (a seeded file), never a hidden default value.
+pub fn root_role_seed_content() -> &'static str {
+    include_str!("../../resources/roles/root/ROLE.md")
+}
+
+/// Parse the compiled-in default root role body (test/inspection
+/// helper — the runtime resolves the workspace file).
 pub fn default_root_prompt() -> AgentPrompt {
-    let content = include_str!("../../resources/agents/root/AGENT.md");
+    let content = root_role_seed_content();
     parse_agent_prompt("root", PathBuf::from("builtin:root"), content)
 }
 
@@ -356,8 +368,8 @@ mod tests {
         let prompt = default_root_prompt();
         assert_eq!(prompt.name, "root");
         assert!(
-            prompt.body.contains("agent_catalog"),
-            "root agent prompt should mention agent_catalog"
+            prompt.body.contains("role_catalog"),
+            "root agent prompt should mention role_catalog"
         );
     }
 

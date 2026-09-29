@@ -1,6 +1,6 @@
 //! Agent catalog tool
 //!
-//! Provides `agent_catalog` so the root agent can discover the specialist
+//! Provides `role_catalog` so the root agent can discover the specialist
 //! agents available inside the current Principal.
 
 use async_trait::async_trait;
@@ -25,7 +25,7 @@ impl AgentCatalogTool {
 #[async_trait]
 impl Tool for AgentCatalogTool {
     fn name(&self) -> &'static str {
-        "agent_catalog"
+        "role_catalog"
     }
 
     fn description(&self) -> String {

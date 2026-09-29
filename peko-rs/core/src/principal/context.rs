@@ -23,10 +23,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::extensions::agent::{WorkspaceAgentsPromptHandler, AGENT_HOOK_PRIORITY};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{global_core, ExtensionCore, HookHandler, HookPoint};
 use crate::extensions::framework::types::ExtensionId;
+use crate::extensions::role::{WorkspaceRolesPromptHandler, ROLE_HOOK_PRIORITY};
 use crate::extensions::skill::{WorkspaceSkillsPromptHandler, SKILL_CATALOG_HOOK_PRIORITY};
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
@@ -519,14 +519,14 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 /// Built-ins (Read, Bash, glob, grep, Cron*, Task*, Async*, …) are
 /// registered, along with the workspace-scanning prompt handlers that
 /// render the `agents` / `skills` / `workflows` system-prompt sections
-/// ([`WorkspaceAgentsPromptHandler`] / [`WorkspaceSkillsPromptHandler`] /
+/// ([`WorkspaceRolesPromptHandler`] / [`WorkspaceSkillsPromptHandler`] /
 /// `tools::builtin::WorkspaceWorkflowsPromptHandler`).
 /// The handlers resolve the workspace from the hook context at invoke
 /// time and re-scan `<workspace>/agents/` / `<workspace>/skills/` /
 /// `<workspace>/workflows/` whenever the scanned files' mtimes change,
-/// so one registration on this daemon-global core serves all principals. The `agent_catalog` tool
+/// so one registration on this daemon-global core serves all principals. The `role_catalog` tool
 /// is *not* installed here — it is the only per-call tool and the
-/// runner installs it via [`install_agent_catalog`] on each message.
+/// runner installs it via [`install_role_catalog`] on each message.
 ///
 /// Phase 2 PR 2 (ADR-047 §2.3) also takes the typed `mcp_dir` and
 /// scans `<workspace>/mcp/<id>/server.json` (or `manifest.yaml`) for
@@ -605,11 +605,11 @@ async fn install_principal_tool_bag(
         ),
         (
             HookPoint::PromptSystemSection {
-                section: "agents".to_string(),
-                priority: AGENT_HOOK_PRIORITY,
+                section: "roles".to_string(),
+                priority: ROLE_HOOK_PRIORITY,
             },
-            Arc::new(WorkspaceAgentsPromptHandler::new()),
-            ExtensionId::new("agent:workspace-catalog"),
+            Arc::new(WorkspaceRolesPromptHandler::new()),
+            ExtensionId::new("role:workspace-catalog"),
         ),
         (
             HookPoint::PromptSystemSection {
@@ -791,7 +791,7 @@ async fn install_principal_tool_bag(
     Ok(())
 }
 
-/// Install the per-call `agent_catalog` tool on the principal's core.
+/// Install the per-call `role_catalog` tool on the principal's core.
 ///
 /// The catalog is the *only* per-call tool — its contents are the
 /// currently-available `AgentPromptSummary` list, which can change
@@ -800,7 +800,7 @@ async fn install_principal_tool_bag(
 /// owning principal_id so the catalog lives under each principal's
 /// row in the registry and re-registration on each call idempotently
 /// replaces the prior entry.
-pub(crate) async fn install_agent_catalog(
+pub(crate) async fn install_role_catalog(
     core: &ExtensionCore,
     available_agents: Vec<AgentPromptSummary>,
     principal_id: &peko_subject::PrincipalId,

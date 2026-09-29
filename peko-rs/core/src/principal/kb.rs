@@ -9,15 +9,19 @@
 //! This module owns two create-once primitives:
 //!
 //! - [`seed_kb_scaffold`] — the P0 floor: `kb/` plus its pinned hot
-//!   set (`MEMORY.md`, `index.md`) and the three cold conventions
-//!   (`people/`, `groups/`, `agents/`), each seeded as a small
-//!   README/convention doc. Create-if-missing ONLY — an existing file
-//!   is never touched; the principal owns its kb from the moment it
-//!   exists.
+//!   set (`MEMORY.md`, `index.md`, `CONVENTIONS.md`) and the three
+//!   cold conventions (`people/`, `groups/`, `roles/`), each seeded as
+//!   a small README/convention doc. Create-if-missing ONLY — an
+//!   existing file is never touched; the principal owns its kb from
+//!   the moment it exists.
 //! - [`migrate_legacy_memory`] — the one-time ADR-054-boot-pass move:
 //!   a pre-ADR-055 `<workspace>/MEMORY.md` is MOVED to
 //!   `<workspace>/kb/MEMORY.md` so the contract change never orphans a
 //!   principal's memory. Idempotent; no-op when nothing to move.
+//! - [`migrate_legacy_roles_dir`] — the one-time rename move:
+//!   a pre-rename `kb/agents/` directory is MOVED to `kb/roles/` so
+//!   the D8 note directory pairs with the role-file terminology
+//!   (ADR-052 D3). Idempotent; no-op when nothing to move.
 //!
 //! ## What the runtime does NOT do
 //!
@@ -25,11 +29,11 @@
 //!   absent (ADR-050 presence = visibility); deleting `kb/index.md`
 //!   removes the hot map section, and that is a valid state.
 //! - It never reads cold kb content wholesale. Only the pinned hot
-//!   set (`kb/MEMORY.md`, `kb/index.md`) and the two targeted scope
-//!   notes reach the prompt (ADR-055 D2/D8: `kb/groups/<channel>.md`
-//!   for the run's triggering channel, `kb/agents/<name>.md` for the
-//!   named agent); everything else is read-on-demand via tools,
-//!   discovered through the hot index.
+//!   set (`kb/MEMORY.md`, `kb/index.md`, `kb/CONVENTIONS.md`) and the
+//!   two targeted scope notes reach the prompt (ADR-055 D2/D8:
+//!   `kb/groups/<channel>.md` for the run's triggering channel,
+//!   `kb/roles/<name>.md` for the named role); everything else is
+//!   read-on-demand via tools, discovered through the hot index.
 //! - It never seeds framework manuals into `kb/` (ADR-055 D6 —
 //!   runtime truth stays with the runtime; pointer, not copy).
 
@@ -46,109 +50,28 @@ pub const KB_DIR: &str = "kb";
 /// absent — see [`seed_kb_scaffold`].
 pub const MEMORY_MD: &str = "MEMORY.md";
 pub const INDEX_MD: &str = "index.md";
+pub const CONVENTIONS_MD: &str = "CONVENTIONS.md";
 pub const KB_README_MD: &str = "README.md";
 pub const PEOPLE_README_MD: &str = "people/README.md";
 pub const GROUPS_README_MD: &str = "groups/README.md";
-pub const AGENTS_README_MD: &str = "agents/README.md";
+pub const ROLES_README_MD: &str = "roles/README.md";
 
-const MEMORY_BODY: &str = r#"# Long-term memory
-
-This file is your hot memory: it rides in every prompt, every turn,
-for every agent you run. Keep it curated — beliefs, commitments,
-preferences, standing decisions. It is NOT a log and NOT a dump:
-everything here costs tokens on every turn.
-
-Rules of the house (ADR-055):
-
-- Revise in place. Never append history; update the statement.
-- Anything that ages out of relevance gets deleted, not archived —
-  your sessions hold the raw history, not this file.
-- Everything else you want to persist lives in this `kb/` tree; keep
-  `index.md` pointing at it.
-"#;
-
-const INDEX_BODY: &str = r#"# Knowledge base index
-
-This file is the map of your `kb/` tree — and like `MEMORY.md`, it
-rides in every prompt. One line per area: where it lives and what it
-holds. When you add, move, or retire a subtree, update this map in
-the same breath.
-
-Revision rules for the whole tree (ADR-055):
-
-- Principal-authored files: revise in place, no append-only history.
-- Imported material: replace on refresh; your notes ABOUT an import
-  are revised, the import itself is swapped.
-- Nothing here is compacted away — that word belongs to sessions.
-- Every opaque artifact (image, xlsx, db, …) gets a one-paragraph
-  `.md` shadow next to it saying what it is and how to use it.
-
-You own this tree. Restructure it as you see fit — just keep this
-index honest, or delete it if you outgrow it.
-"#;
-
-const KB_README_BODY: &str = r#"# kb/ — the persistent tree
-
-Everything you know durably lives here: this directory is packaged
-with you (Shared tier) and travels when you move. Sessions are your
-raw history (Local tier, never packaged); this tree is what you chose
-to keep.
-
-Layout at creation: `MEMORY.md` (hot memory), `index.md` (the map),
-`people/`, `groups/`, `agents/`. Everything beyond that is yours to
-shape — `refs/`, `journal/`, `projects/`, `imports/`, datasets,
-whatever your work needs. Only the two hot files ride in every
-prompt; the rest is looked up through the index, except the
-targeted scope notes (ADR-055 D8).
-"#;
-
-const PEOPLE_README_BODY: &str = r#"# people/
-
-One file per person you relate to: `<handle>.md` or `<did>.md`.
-Notes, preferences, standing context — anything you'd want to know
-at the start of a conversation with them. Revise in place.
-
-This directory is COLD (ADR-055 D2): nothing here is injected
-automatically. Your `index.md` — which rides in every prompt — is
-what tells your future self this directory exists; look files up
-with Read/Glob when a conversation calls for them. Name files after
-the person's recognizable handle so lookups are obvious.
-"#;
-
-const GROUPS_README_BODY: &str = r#"# groups/
-
-One file per group you participate in: `<channel-or-group-id>.md`.
-Conventions of the room, who's in it, what it's about, what you
-committed to there. Revise in place.
-
-Mostly cold (ADR-055 D2): files here are NOT cataloged into every
-prompt. One targeted exception (D8): when a run's triggering channel
-matches a file name here, that file is injected into the bound
-agent's prompt for that run. Name files after the channel/group id
-as the runtime knows it, so the match happens.
-"#;
-
-const AGENTS_README_BODY: &str = r#"# agents/
-
-One file per NAMED agent that deserves durable memory of its own:
-`<agent-name>.md`. Standing context for that agent — its remit,
-what it has learned across runs, commitments it holds. Revise in
-place.
-
-Cold for everyone else, hot for its owner (ADR-055 D8): when a run
-starts for agent `<name>` and this directory holds `<name>.md`,
-that file is injected into that agent's prompt. Ephemeral, unnamed
-spawns get no note — their learnings flow back into the principal's
-kb through the spawn result.
-"#;
+const MEMORY_BODY: &str = include_str!("../resources/kb/MEMORY.md");
+const INDEX_BODY: &str = include_str!("../resources/kb/index.md");
+const CONVENTIONS_BODY: &str = include_str!("../resources/kb/CONVENTIONS.md");
+const KB_README_BODY: &str = include_str!("../resources/kb/README.md");
+const PEOPLE_README_BODY: &str = include_str!("../resources/kb/people/README.md");
+const GROUPS_README_BODY: &str = include_str!("../resources/kb/groups/README.md");
+const ROLES_README_BODY: &str = include_str!("../resources/kb/roles/README.md");
 
 /// Seed the ADR-055 kb scaffold under `workspace`.
 ///
-/// Creates `kb/`, `kb/people/`, `kb/groups/`, `kb/agents/` and writes
-/// the six convention files — each ONLY when the file does not
-/// already exist (an existing file is never overwritten; create-once
+/// Creates `kb/`, `kb/people/`, `kb/groups/`, `kb/roles/`, `kb/journal/`
+/// and writes the seven convention files — each ONLY when the file does
+/// not already exist (an existing file is never overwritten; create-once
 /// semantics, matching `/tmp` + `/trash` seeding). Safe to call
-/// repeatedly.
+/// repeatedly. Default bodies live in `resources/kb/` (not inline) —
+/// they are a starting floor, not a render-time fallback.
 ///
 /// Returns the relative paths (from `workspace`) of files actually
 /// created, sorted — empty when the scaffold already existed.
@@ -156,16 +79,18 @@ pub fn seed_kb_scaffold(workspace: &Path) -> Result<Vec<String>> {
     let kb = workspace.join(KB_DIR);
     std::fs::create_dir_all(kb.join("people"))?;
     std::fs::create_dir_all(kb.join("groups"))?;
-    std::fs::create_dir_all(kb.join("agents"))?;
+    std::fs::create_dir_all(kb.join("roles"))?;
+    std::fs::create_dir_all(kb.join("journal"))?;
 
     let mut created = Vec::new();
     for (relative, body) in [
         (MEMORY_MD, MEMORY_BODY),
         (INDEX_MD, INDEX_BODY),
+        (CONVENTIONS_MD, CONVENTIONS_BODY),
         (KB_README_MD, KB_README_BODY),
         (PEOPLE_README_MD, PEOPLE_README_BODY),
         (GROUPS_README_MD, GROUPS_README_BODY),
-        (AGENTS_README_MD, AGENTS_README_BODY),
+        (ROLES_README_MD, ROLES_README_BODY),
     ] {
         let path = kb.join(relative);
         if path.exists() {
@@ -176,6 +101,37 @@ pub fn seed_kb_scaffold(workspace: &Path) -> Result<Vec<String>> {
     }
     created.sort();
     Ok(created)
+}
+
+/// Seed the birth entry in the principal's journal (provision-time).
+///
+/// Writes `kb/journal/YYYY-MM-DD.md` (UTC date) with a first line
+/// noting the peko's birth — the first entry of the append-only daily
+/// journal. Create-if-missing: if the day's file somehow already
+/// exists it is left untouched. Returns the relative path of the file
+/// when created, `None` when it already existed.
+pub fn seed_journal_birth_entry(
+    workspace: &Path,
+    principal_name: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<String>> {
+    let journal_dir = workspace.join(KB_DIR).join("journal");
+    std::fs::create_dir_all(&journal_dir)?;
+    let date = now.format("%Y-%m-%d");
+    let relative = format!("{KB_DIR}/journal/{date}.md");
+    let path = workspace.join(&relative);
+    if path.exists() {
+        return Ok(None);
+    }
+    let time = now.format("%Y-%m-%d %H:%M UTC");
+    let body = format!(
+        "# {date}\n\n\
+         - Born: provisioned as principal `{principal_name}` at {time}. \
+         This journal is append-only — one file per day, newest entries \
+         at the end; never rewrite past entries.\n"
+    );
+    std::fs::write(&path, body)?;
+    Ok(Some(relative))
 }
 
 /// One-time migration of a pre-ADR-055 principal: move the legacy
@@ -200,6 +156,25 @@ pub fn migrate_legacy_memory(workspace: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// One-time migration of a pre-rename principal: MOVE the legacy
+/// `kb/agents/` directory to `kb/roles/` (2026-09-28 rename — the
+/// D8 note pairs with the T1 role file, so the directory name follows
+/// the role terminology). Idempotent: no legacy dir, or an existing
+/// `kb/roles/`, means no-op — an existing `kb/roles/` wins and the
+/// legacy dir is left in place (a silent destructive merge is worse
+/// than a visible leftover, matching `migrate_legacy_memory`).
+///
+/// Returns `true` when the migration moved the directory.
+pub fn migrate_legacy_roles_dir(workspace: &Path) -> Result<bool> {
+    let legacy = workspace.join(KB_DIR).join("agents");
+    let target = workspace.join(KB_DIR).join("roles");
+    if !legacy.is_dir() || target.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(&legacy, &target)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,31 +184,33 @@ mod tests {
     }
 
     #[test]
-    fn seeds_all_six_files_and_directories() {
+    fn seeds_all_seven_files_and_directories() {
         let ws = temp_workspace();
         let created = seed_kb_scaffold(ws.path()).unwrap();
         assert_eq!(
             created,
             vec![
+                "kb/CONVENTIONS.md",
                 "kb/MEMORY.md",
                 "kb/README.md",
-                "kb/agents/README.md",
                 "kb/groups/README.md",
                 "kb/index.md",
                 "kb/people/README.md",
+                "kb/roles/README.md",
             ]
         );
         for relative in [
             "kb",
             "kb/people",
             "kb/groups",
-            "kb/agents",
+            "kb/roles",
             "kb/MEMORY.md",
             "kb/index.md",
+            "kb/CONVENTIONS.md",
             "kb/README.md",
             "kb/people/README.md",
             "kb/groups/README.md",
-            "kb/agents/README.md",
+            "kb/roles/README.md",
         ] {
             assert!(ws.path().join(relative).exists(), "{relative} must exist");
         }
@@ -256,7 +233,7 @@ mod tests {
         std::fs::write(ws.path().join("kb").join("MEMORY.md"), "curated").unwrap();
 
         let created = seed_kb_scaffold(ws.path()).unwrap();
-        assert_eq!(created.len(), 5, "only the five missing files seed");
+        assert_eq!(created.len(), 6, "only the six missing files seed");
         assert!(!created.contains(&"kb/MEMORY.md".to_string()));
         assert_eq!(
             std::fs::read_to_string(ws.path().join("kb").join("MEMORY.md")).unwrap(),
@@ -294,5 +271,59 @@ mod tests {
             "new beliefs"
         );
         assert!(ws.path().join("MEMORY.md").exists());
+    }
+
+    #[test]
+    fn migrates_legacy_agents_dir_into_roles() {
+        let ws = temp_workspace();
+        let agents = ws.path().join("kb").join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("coder.md"), "remit notes").unwrap();
+
+        assert!(migrate_legacy_roles_dir(ws.path()).unwrap());
+        assert!(!agents.exists(), "move, not copy");
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("kb").join("roles").join("coder.md")).unwrap(),
+            "remit notes"
+        );
+    }
+
+    #[test]
+    fn roles_dir_migration_is_idempotent_and_noop_without_legacy() {
+        let ws = temp_workspace();
+        assert!(!migrate_legacy_roles_dir(ws.path()).unwrap());
+
+        // Existing kb/roles/ wins; the legacy dir is NOT deleted.
+        let agents = ws.path().join("kb").join("agents");
+        let roles = ws.path().join("kb").join("roles");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::create_dir_all(&roles).unwrap();
+
+        assert!(!migrate_legacy_roles_dir(ws.path()).unwrap());
+        assert!(agents.exists());
+        assert!(roles.exists());
+    }
+
+    /// Provision-time journal birth entry: written once, in the UTC
+    /// day file, noting the peko's birth.
+    #[test]
+    fn journal_birth_entry_seeds_once() {
+        let ws = temp_workspace();
+        let now = chrono::Utc::now();
+
+        let created = seed_journal_birth_entry(ws.path(), "nova", now).unwrap();
+        let rel = created.expect("birth entry created");
+        assert_eq!(rel, format!("kb/journal/{}.md", now.format("%Y-%m-%d")));
+
+        let body = std::fs::read_to_string(ws.path().join(&rel)).unwrap();
+        assert!(body.contains("Born: provisioned as principal `nova`"));
+        assert!(body.contains("append-only"));
+
+        // Idempotent: the day's file already exists → untouched.
+        assert!(seed_journal_birth_entry(ws.path(), "nova", now)
+            .unwrap()
+            .is_none());
+        let body2 = std::fs::read_to_string(ws.path().join(&rel)).unwrap();
+        assert_eq!(body, body2, "no duplicate birth line");
     }
 }

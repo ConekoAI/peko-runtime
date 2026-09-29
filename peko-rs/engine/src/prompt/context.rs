@@ -112,8 +112,9 @@ pub struct TurnPromptContext {
     /// Real session id for this run — stamped onto the
     /// `SessionSnapshot` the `SessionContextBuild` hook receives.
     pub session_id: String,
-    /// Agent name (for `{{agent_name}}`).
-    pub agent_name: String,
+    /// Role name (for `{{role_name}}`; `{{agent_name}}` is a legacy
+    /// alias rendered with the same value).
+    pub role_name: String,
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).
     pub body: String,
     /// Per-agent capability snapshot (None ⇒ fail-closed empty set).

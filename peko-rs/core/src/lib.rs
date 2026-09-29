@@ -290,7 +290,7 @@ pub mod ipc;
 // Tools
 // ============================================================================
 
-// [extract:phase-10+phase-18] peko-tools-builtin; bash/tool_search/agent_catalog
+// [extract:phase-10+phase-18] peko-tools-builtin; bash/tool_search/role_catalog
 // are deferred to Phase 18, src/tools/ tree deleted in Phase 18.
 pub mod tools;
 

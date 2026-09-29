@@ -1,28 +1,28 @@
 //! Placeholder replacement for system prompt templates
 //!
-//! Supports dynamic content injection via placeholders like {{runtime}}, {{skills}}, etc.
-//! Tool catalogs are wire-only and are no longer rendered into the
-//! system prompt; `{{tools}}` is preserved as a marker for back-compat
-//! with existing AGENT.md templates but resolves to an empty string at
-//! render time (see [`Placeholder::Tools`]).
+//! The placeholder surface is **inline variables only** — identity,
+//! workspace, channel, thinking level, clock. Section-shaped content
+//! never rides a placeholder from the production renderer: sections
+//! either render as `<runtime-context>` tail sections (change-detected)
+//! or are appended to the frozen prefix as generated stable sections
+//! when the template didn't place them. Templates may still *place* a
+//! section via its placeholder token, but the token is not a required
+//! contract.
+//!
+//! Unknown `{{...}}` tokens are stripped by
+//! [`replace_placeholders`] with `remove_missing=true`, which is what
+//! retires retired markers (e.g. `{{tools}}`, `{{quota_state}}`):
+//! old templates keep rendering cleanly with no dead enum variants.
 
 use std::collections::HashMap;
 
 /// Available placeholders for system prompt templates
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Placeholder {
-    /// `{{tools}}` — preserved for back-compat with existing AGENT.md
-    /// templates. Wire-only in this build: no value is inserted at
-    /// render time, and `replace_placeholders` with `remove_missing=true`
-    /// strips the marker entirely. Tool catalogs travel on the wire as
-    /// the `tools[]` JSON-schema array; see
-    /// `peko_core::extensions::framework::core::registry::list_tool_definitions_with_allowlist`
-    /// and the engine's `build_tool_definitions`.
-    Tools,
     /// Skills section - {{skills}}
     Skills,
-    /// Agents section - {{agents}}
-    Agents,
+    /// Roles section - {{roles}} (ADR-064 renamed the catalog section).
+    Roles,
     /// Runtime info (agent, host, OS, model, channel) - {{runtime}}
     Runtime,
     /// Sandbox status - {{sandbox}}
@@ -39,7 +39,11 @@ pub enum Placeholder {
     /// relative-time requests ("remind me in 2 minutes") can be
     /// resolved to absolute timestamps (2026-08-07 field test, N2a).
     CurrentTime,
-    /// Agent name inline - {{`agent_name`}}
+    /// Role name inline - {{`role_name`}} (ADR-064: the name is the
+    /// role the session was initiated from).
+    RoleName,
+    /// Deprecated legacy alias for [`Placeholder::RoleName`] — same
+    /// value, legacy marker {{`agent_name`}}.
     AgentName,
     /// Workspace path inline - {{workspace}}
     Workspace,
@@ -55,16 +59,6 @@ pub enum Placeholder {
     SessionContext,
     /// Iteration budget state - {{iteration_budget}}
     IterationBudget,
-    /// Quota state snapshot - {{quota_state}}
-    ///
-    /// **Retired from the renderer (2026-09-09).** The marker string is
-    /// preserved for back-compat with existing AGENT.md templates; the
-    /// renderer no longer inserts a value, so templates that still
-    /// reference `{{quota_state}}` get the marker stripped by
-    /// `remove_missing=true`. Quota state now lives on the `session`
-    /// tool's `status` action (see `QuotaSnapshot` in
-    /// `peko_core::tools::builtin::session`).
-    QuotaState,
     /// Quota-tripped tripwire - {{quota_tripped}}
     ///
     /// Volatile, per-turn, but only on the rising edge: rendered as a
@@ -83,15 +77,15 @@ impl Placeholder {
     /// Get the placeholder marker for this variant
     pub fn marker(&self) -> &'static str {
         match self {
-            Self::Tools => "{{tools}}",
             Self::Skills => "{{skills}}",
-            Self::Agents => "{{agents}}",
+            Self::Roles => "{{roles}}",
             Self::Runtime => "{{runtime}}",
             Self::Sandbox => "{{sandbox}}",
             Self::ModelAliases => "{{model_aliases}}",
             Self::SelfUpdate => "{{self_update}}",
             Self::Timezone => "{{timezone}}",
             Self::CurrentTime => "{{current_time}}",
+            Self::RoleName => "{{role_name}}",
             Self::AgentName => "{{agent_name}}",
             Self::Workspace => "{{workspace}}",
             Self::Channel => "{{channel}}",
@@ -100,7 +94,6 @@ impl Placeholder {
             Self::Memory => "{{memory}}",
             Self::SessionContext => "{{session_context}}",
             Self::IterationBudget => "{{iteration_budget}}",
-            Self::QuotaState => "{{quota_state}}",
             Self::QuotaTripped => "{{quota_tripped}}",
             Self::SoftCancel => "{{soft_cancel}}",
             Self::CapabilityDiff => "{{capability_diff}}",
@@ -138,7 +131,6 @@ mod tests {
 
     #[test]
     fn test_placeholder_markers() {
-        assert_eq!(Placeholder::Tools.marker(), "{{tools}}");
         assert_eq!(Placeholder::Runtime.marker(), "{{runtime}}");
         assert_eq!(Placeholder::Memory.marker(), "{{memory}}");
         assert_eq!(Placeholder::SessionContext.marker(), "{{session_context}}");
@@ -146,21 +138,34 @@ mod tests {
             Placeholder::IterationBudget.marker(),
             "{{iteration_budget}}"
         );
-        assert_eq!(Placeholder::QuotaState.marker(), "{{quota_state}}");
         assert_eq!(Placeholder::QuotaTripped.marker(), "{{quota_tripped}}");
         assert_eq!(Placeholder::SoftCancel.marker(), "{{soft_cancel}}");
         assert_eq!(Placeholder::CapabilityDiff.marker(), "{{capability_diff}}");
     }
 
+    /// Retired markers (`{{tools}}`, `{{quota_state}}`) have no enum
+    /// variant any more — but old templates containing them still
+    /// render cleanly: with a value map lacking those keys and
+    /// `remove_missing=true`, the unknown-token regex strips them.
+    /// (Without `remove_missing`, unknown markers pass through
+    /// untouched — the caller decides.)
+    #[test]
+    fn retired_markers_are_stripped_by_remove_missing() {
+        let template = "body {{tools}} {{quota_state}} tail";
+        let values = HashMap::new();
+        let rendered = replace_placeholders(template, &values, true);
+        assert_eq!(rendered, "body   tail");
+    }
+
     #[test]
     fn test_replace_placeholders() {
-        let template = "Hello {{agent_name}}, tools: {{tools}}";
+        let template = "Hello {{agent_name}}, model: {{runtime}}";
         let mut values = HashMap::new();
         values.insert(Placeholder::AgentName, "test-agent".to_string());
-        values.insert(Placeholder::Tools, "tool list".to_string());
+        values.insert(Placeholder::Runtime, "## Runtime\nModel: m".to_string());
 
         let result = replace_placeholders(template, &values, false);
-        assert_eq!(result, "Hello test-agent, tools: tool list");
+        assert_eq!(result, "Hello test-agent, model: ## Runtime\nModel: m");
     }
 
     #[test]
