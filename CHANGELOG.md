@@ -4,6 +4,26 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Per-file workspace locks for cross-agent Write/Edit (ADR-065) (2026-09-29)
+
+Multiple agents sharing one runtime could concurrently `Write`/`Edit`
+the same workspace file — the F33 `ParallelGate` only serializes within
+one agent's runtime, so cross-agent races silently lost updates
+(last writer wins).
+
+- New `peko_fs_persistence::WorkspaceFileLock`: fail-fast (5s) advisory
+  lock keyed on `sha256(canonical_path)` under `<data_dir>/locks/`;
+  contention returns a structured `file busy` error the calling model
+  can retry. Built on a new `FileLock::acquire_at` entry point.
+- `WriteTool` / `EditTool` gained `with_lock_dir()`; the daemon wiring
+  (`register_builtins`, tool factory) enables locking against
+  `<default_data_dir>/locks`. `Edit` takes the lock before the read,
+  so a loser's stale view is never applied.
+- Removed the dead and broken `LockManager` (its refcount branch
+  re-acquired the on-disk lock against the holder's own lock file).
+- Known limit, documented in ADR-065: `Bash` mutations bypass
+  workspace locks.
+
 ### Legacy cleanup pass — retired surfaces, aliases, and doc drift (2026-09-29)
 
 Pre-launch sweep removing dead code left over from retired features,
