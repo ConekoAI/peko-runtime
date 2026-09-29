@@ -22,7 +22,7 @@ pub mod subprocess;
 
 pub use agent::{
     create_mock_principal, create_mock_principal_with_tools, seed_kimi_provider_in_catalog,
-    seed_minimax_provider_in_catalog, seed_mock_provider_in_catalog, write_v3_mock_agent,
+    seed_minimax_provider_in_catalog, seed_mock_provider_in_catalog,
 };
 pub use auth::{create_test_user, generate_jwt};
 pub use cli::PekoCli;

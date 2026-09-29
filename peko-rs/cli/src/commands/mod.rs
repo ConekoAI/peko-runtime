@@ -4,8 +4,7 @@
 //! Each submodule handles a specific command category:
 //!
 //! - `principal`: peko (top-level AI actor) lifecycle management.
-//!   The verbs are flattened to the top level (`peko create`, ...);
-//!   `peko principal <sub>` remains as a hidden alias (ADR-059).
+//!   The verbs are flattened to the top level (`peko create`, ...).
 //! - `config`: Configuration management
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Long-running daemon mode (cron engine + IPC server)
@@ -102,13 +101,6 @@ pub enum Commands {
     /// without a namespace.
     #[command(flatten)]
     Peko(principal::PrincipalCommands),
-
-    /// Deprecated hidden alias for the peko lifecycle commands
-    /// (ADR-059): `peko principal <sub>` still dispatches to the
-    /// same handlers, but is no longer shown in help. Migrate to
-    /// the top-level forms.
-    #[command(subcommand, hide = true)]
-    Principal(principal::PrincipalCommands),
 
     /// Send a message to a peko (unified command)
     ///

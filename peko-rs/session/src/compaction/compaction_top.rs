@@ -132,8 +132,8 @@ Use this EXACT format:
 Keep each section concise. Preserve exact file paths, function names, and error messages.";
 
 // Phase 9b.N.4: the data structs (`CompactionConfig`, `CompactionEntry`,
-// `CompactionState`, `ContextUsageEstimate`, `CompactionResult`) now
-// live in `peko_engine::compaction` and are re-exported above.
+// `CompactionState`, `ContextUsageEstimate`, `CompactionResult`) live in
+// `crate::compaction::types` and are re-exported above.
 // The constants below (`CHARS_PER_TOKEN`, prompts) and the `Compactor`
 // struct / impl that uses them stay here because the LLM summarization
 // depends on root-only types (`peko_providers::Provider`,
@@ -276,9 +276,13 @@ fn collect_preserved_user_messages(region: &[LlmMessage]) -> Vec<String> {
 /// `CompactionDriver` accepts the loaded `CompactionConfig` as a
 /// constructor argument.
 pub fn load_compaction_config() -> CompactionConfig {
-    let config_path = dirs::home_dir()
-        .map(|h| h.join(".peko").join("config.toml"))
-        .filter(|p| p.exists());
+    // Honors PEKO_HOME like the rest of the runtime (run-dir isolation);
+    // peko-session cannot import core's `common::paths` (dep direction),
+    // so the env var name is duplicated here as a literal.
+    let home = std::env::var_os("PEKO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".peko")));
+    let config_path = home.map(|h| h.join("config.toml")).filter(|p| p.exists());
 
     if let Some(path) = config_path {
         if let Ok(contents) = std::fs::read_to_string(&path) {
@@ -740,8 +744,8 @@ impl Compactor {
             // so the resulting entry can be told apart from a
             // mid-turn entry.
             phase,
-            // Phase 9b.N.4: `CompactionEntry::details` is now
-            // `Option<serde_json::Value>` in `peko_engine::compaction`.
+            // Phase 9b.N.4: `CompactionEntry::details` is
+            // `Option<serde_json::Value>` in `crate::compaction::types`.
             // Serialize the root-owned `crate::compaction::summary_format::CompactionDetails`
             // into a JSON value so the wire shape is preserved. Hooks
             // see `serde_json::Value` blobs and degrade gracefully if

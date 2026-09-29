@@ -20,7 +20,8 @@
 //! # Trait port rationale
 //!
 //! `BackgroundCompactorFactory` (defined at
-//! `peko_engine::compaction::factory`) takes the loop's stored meter
+//! `peko_session::compaction::factory`, re-exported by `peko-engine`)
+//! takes the loop's stored meter
 //! (F19 principal) and returns `Box<dyn CompactorBackend>`. The trait's
 //! parameter is a workspace type (`peko_quota::QuotaMeter`), not
 //! root-only — so the trait definition in `peko-engine` doesn't depend

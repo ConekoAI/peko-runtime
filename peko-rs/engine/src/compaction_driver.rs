@@ -17,7 +17,7 @@
 //! - **`SessionView`** (`peko-engine`) — extended in 9b.N.4 with
 //!   `record_compaction`, `load_previous_compaction_summary`, and
 //!   `update_context_cache` for the driver's session writes.
-//! - **`CompactorBackend`** (`peko-engine::compaction`) — new in 9b.N.4,
+//! - **`CompactorBackend`** (`peko-session::compaction`) — new in 9b.N.4,
 //!   abstracts `BackgroundCompactor` so the driver holds a
 //!   `Box<dyn CompactorBackend>` instead of a concrete impl.
 //!
@@ -28,10 +28,6 @@
 //! passes it as a concrete `usize` — see `AgenticLoop::run_inner`
 //! where the driver is built.
 
-use crate::compaction::{
-    CompactionConfig, CompactionPhase, CompactionRequest, CompactionResponse, CompactionResult,
-    CompactorBackend,
-};
 use crate::events::AgenticEvent;
 use crate::SessionView;
 use anyhow::Result;
@@ -39,6 +35,10 @@ use peko_extension_api::hook_io::{CompactionPreparationPayload, CompactionResult
 use peko_extension_api::session::SessionSnapshot;
 use peko_extension_api::ToolFunnel;
 use peko_message::LlmMessage;
+use peko_session::compaction::{
+    CompactionConfig, CompactionPhase, CompactionRequest, CompactionResponse, CompactionResult,
+    CompactorBackend,
+};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -756,12 +756,12 @@ fn find_last_assistant_usage(messages: &[LlmMessage]) -> Option<(peko_message::T
 
 /// Detailed token usage estimate with breakdown (F21 hybrid estimator).
 ///
-/// Mirrors `crate::compaction::ContextUsageEstimate` (lifted from
+/// Mirrors `peko_session::compaction::ContextUsageEstimate` (lifted from
 /// root's `src/session/compaction.rs:207` in 9b.N.4). The local
 /// type here is `pub(crate)` so the agentic loop's mid-turn
 /// trigger can call [`estimate_context_tokens_for_agentic`] and
 /// read the same `tokens` field. Callers outside this crate should
-/// use the public `crate::compaction::ContextUsageEstimate`
+/// use the public `peko_session::compaction::ContextUsageEstimate`
 /// re-export.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // written for F17 inspection; readers added in F30+
@@ -901,8 +901,8 @@ mod tests {
         last_total: AtomicUsize,
         /// Fix #4: the persisted compaction quota state this session
         /// would return, plus a log of every state the driver stored.
-        limits: Mutex<crate::compaction::CompactionLimitsState>,
-        stored_states: Mutex<Vec<crate::compaction::CompactionLimitsState>>,
+        limits: Mutex<peko_session::compaction::CompactionLimitsState>,
+        stored_states: Mutex<Vec<peko_session::compaction::CompactionLimitsState>>,
         /// ADR-051 D4: the archived-pages catalog footer this session
         /// would render from its stored events (`None` = boundary-less).
         footer: Mutex<Option<String>>,
@@ -912,7 +912,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 last_total: AtomicUsize::new(0),
-                limits: Mutex::new(crate::compaction::CompactionLimitsState::default()),
+                limits: Mutex::new(peko_session::compaction::CompactionLimitsState::default()),
                 stored_states: Mutex::new(vec![]),
                 footer: Mutex::new(None),
             }
@@ -988,12 +988,12 @@ mod tests {
         async fn load_history(&self) -> Result<Vec<LlmMessage>> {
             Ok(vec![])
         }
-        async fn compaction_limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        async fn compaction_limits_state(&self) -> peko_session::compaction::CompactionLimitsState {
             *self.limits.lock().expect("limits mutex poisoned")
         }
         async fn store_compaction_limits_state(
             &self,
-            state: crate::compaction::CompactionLimitsState,
+            state: peko_session::compaction::CompactionLimitsState,
         ) -> Result<()> {
             self.stored_states
                 .lock()
@@ -1019,8 +1019,8 @@ mod tests {
         senders: Mutex<Vec<oneshot::Sender<CompactionResponse>>>,
         /// Fix #4: states the driver hydrated us with, plus the worker
         /// state `limits_state` reports.
-        hydrated: Mutex<Vec<crate::compaction::CompactionLimitsState>>,
-        worker_state: Mutex<crate::compaction::CompactionLimitsState>,
+        hydrated: Mutex<Vec<peko_session::compaction::CompactionLimitsState>>,
+        worker_state: Mutex<peko_session::compaction::CompactionLimitsState>,
     }
 
     impl StubBackend {
@@ -1031,7 +1031,7 @@ mod tests {
                 phases: Mutex::new(vec![]),
                 senders: Mutex::new(vec![]),
                 hydrated: Mutex::new(vec![]),
-                worker_state: Mutex::new(crate::compaction::CompactionLimitsState::default()),
+                worker_state: Mutex::new(peko_session::compaction::CompactionLimitsState::default()),
             }
         }
     }
@@ -1062,13 +1062,16 @@ mod tests {
                 .push(tx);
             Ok(rx)
         }
-        async fn hydrate_limits_state(&self, state: crate::compaction::CompactionLimitsState) {
+        async fn hydrate_limits_state(
+            &self,
+            state: peko_session::compaction::CompactionLimitsState,
+        ) {
             self.hydrated
                 .lock()
                 .expect("hydrated mutex poisoned")
                 .push(state);
         }
-        async fn limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        async fn limits_state(&self) -> peko_session::compaction::CompactionLimitsState {
             *self
                 .worker_state
                 .lock()
@@ -1229,10 +1232,13 @@ mod tests {
         ) -> Result<oneshot::Receiver<CompactionResponse>> {
             self.0.request(request).await
         }
-        async fn hydrate_limits_state(&self, state: crate::compaction::CompactionLimitsState) {
+        async fn hydrate_limits_state(
+            &self,
+            state: peko_session::compaction::CompactionLimitsState,
+        ) {
             self.0.hydrate_limits_state(state).await;
         }
-        async fn limits_state(&self) -> crate::compaction::CompactionLimitsState {
+        async fn limits_state(&self) -> peko_session::compaction::CompactionLimitsState {
             self.0.limits_state().await
         }
     }
@@ -1441,7 +1447,7 @@ mod tests {
     ) -> CompactionResponse {
         CompactionResponse::Completed(CompactionResult {
             messages: compacted,
-            entry: crate::compaction::CompactionEntry {
+            entry: peko_session::compaction::CompactionEntry {
                 timestamp: chrono::Utc::now(),
                 summary: "summary text".to_string(),
                 first_kept_entry_id: "kept_1".to_string(),
@@ -1452,7 +1458,7 @@ mod tests {
                 phase: CompactionPhase::MidTurn,
                 details: None,
             },
-            state: crate::compaction::CompactionState::default(),
+            state: peko_session::compaction::CompactionState::default(),
             usage: peko_message::TokenUsage::default(),
         })
     }
@@ -1628,7 +1634,7 @@ mod tests {
     #[tokio::test]
     async fn driver_hydrates_backend_from_session_state_once_per_run() {
         let mut f = fixture(false, false);
-        let persisted = crate::compaction::CompactionLimitsState {
+        let persisted = peko_session::compaction::CompactionLimitsState {
             compaction_count: 7,
             last_compaction_at_ms: Some(123),
             consecutive_auto: 2,
@@ -1658,7 +1664,7 @@ mod tests {
     #[tokio::test]
     async fn driver_persists_worker_state_after_completed_compaction() {
         let mut f = fixture(false, false);
-        let worker_state = crate::compaction::CompactionLimitsState {
+        let worker_state = peko_session::compaction::CompactionLimitsState {
             compaction_count: 3,
             last_compaction_at_ms: Some(42),
             consecutive_auto: 3,
@@ -1809,7 +1815,7 @@ mod tests {
     #[tokio::test]
     async fn driver_persists_worker_state_after_failed_compaction() {
         let mut f = fixture(false, false);
-        let worker_state = crate::compaction::CompactionLimitsState {
+        let worker_state = peko_session::compaction::CompactionLimitsState {
             compaction_count: 1,
             last_compaction_at_ms: Some(42),
             consecutive_auto: 1,

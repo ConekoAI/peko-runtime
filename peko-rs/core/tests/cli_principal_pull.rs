@@ -1,4 +1,4 @@
-//! CLI integration tests for `peko principal pull` capability selection.
+//! CLI integration tests for `peko pull` capability selection.
 //!
 //! These tests require the PekoHub backend fixture. Mark them `#[ignore]`
 //! so the default `cargo test` run stays local and fast.
@@ -46,7 +46,7 @@ fn test_registry_config(url: &str) -> RegistryConfig {
 }
 
 /// Write a registry source pointing at the test backend into the isolated
-/// `.peko/data/config.toml` (the daemon's workspace) so `peko principal pull`
+/// `.peko/data/config.toml` (the daemon's workspace) so `peko pull`
 /// resolves against the fixture rather than the production default.
 fn write_registry_config(cli: &PekoCli, url: &str) {
     let toml = format!(
@@ -223,7 +223,7 @@ async fn pull_yes_selects_no_required_capabilities() {
     assert_success(
         run_with_timeout(
             || cli.cmd(),
-            &["principal", "pull", &remote_ref, "--name", &name, "--yes"],
+            &["pull", &remote_ref, "--name", &name, "--yes"],
             Duration::from_secs(60),
         )
         .expect("pull --yes should succeed"),
@@ -294,7 +294,7 @@ async fn pull_interactive_partial_capability_selection() {
     assert_success(
         run_with_stdin(
             || cli.cmd(),
-            &["principal", "pull", &remote_ref, "--name", &name],
+            &["pull", &remote_ref, "--name", &name],
             stdin,
             Duration::from_secs(60),
         )
@@ -362,7 +362,6 @@ async fn pull_unsigned_with_allow_unsigned_yes_selects_none() {
         run_with_timeout(
             || cli.cmd(),
             &[
-                "principal",
                 "pull",
                 &remote_ref,
                 "--name",

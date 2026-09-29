@@ -1,4 +1,4 @@
-//! CLI integration tests for `peko principal import` capability selection.
+//! CLI integration tests for `peko import` capability selection.
 //!
 //! These tests run by default: they are fully local and use a mocked
 //! daemon environment.
@@ -34,7 +34,6 @@ async fn import_yes_selects_no_required_capabilities() {
     run_with_timeout(
         || cli.cmd(),
         &[
-            "principal",
             "import",
             package.to_str().unwrap(),
             "--name",
@@ -99,7 +98,6 @@ async fn import_unsigned_with_allow_unsigned_yes_selects_none() {
     run_with_timeout(
         || cli.cmd(),
         &[
-            "principal",
             "import",
             package.to_str().unwrap(),
             "--name",

@@ -214,12 +214,14 @@ jobs:
           ### Quick Start
           
           \`\`\`bash
-          # Set API key
-          export OPENAI_API_KEY='your-key-here'
+          # Add a model to the catalog and store its API key in the vault
+          peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
           
-          # Create and run an agent
-          peko agent create my-agent
-          peko send my-agent "Hello"
+          # Start the daemon, create a peko, talk to it
+          peko daemon start
+          peko create my-peko
+          peko send my-peko "Hello"
+          peko log my-peko
           \`\`\`
           
           ### Assets

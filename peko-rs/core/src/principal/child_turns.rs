@@ -495,7 +495,6 @@ impl PeerChildTurns {
     ) -> Result<StreamingResumeOutcome> {
         let (conversation_peer, conversation_channel) = self.conversation_context(session_id).await;
         let config = ExecutionConfig {
-            announce_completion: false,
             timeout_seconds: 0,
             model_override: override_model,
             // Peer ingress is a CONVERSATION, not a delegated task:

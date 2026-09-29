@@ -640,10 +640,9 @@ async fn test_cleanup_policy_tracking() {
         ..Default::default()
     };
 
-    // B4 cleanup: the executor always stamps `Keep` regardless of
-    // `config.cleanup` (the Delete branch was unreachable). Verify
-    // the view reflects that — the keep entry is the only assertion
-    // left.
+    // B4 cleanup: the executor always stamps `Keep` (the Delete
+    // branch was unreachable). Verify the view reflects that — the
+    // keep entry is the only assertion left.
     let keep_run_id = executor
         .spawn_and_execute("Keep task", &parent_key, config.clone(), None)
         .await
@@ -1958,12 +1957,10 @@ fn event_collector() -> (
 }
 
 /// Short-turn config for streaming tests: a real timeout (so a wedged
-/// run can't hang the suite for the 300s default) with depth/cleanup
-/// defaults.
+/// run can't hang the suite for the 300s default) with depth defaults.
 fn streaming_test_config() -> ExecutionConfig {
     ExecutionConfig {
         timeout_seconds: 30,
-        announce_completion: false,
         ..Default::default()
     }
 }
@@ -2305,7 +2302,6 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
             child_session_id: Some(sid("spawn-a")),
             cleanup: SpawnCleanupPolicy::Keep,
             depth: 1,
-            announce_completion: false,
             subagent_result: None,
         }),
     );

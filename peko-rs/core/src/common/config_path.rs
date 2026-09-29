@@ -271,11 +271,10 @@ mod tests {
 
     #[test]
     fn test_get_bool() {
-        // `enable_task_tools` is a per-agent toggle that defaults to
-        // `true`. Use it instead of the removed `auto_accept_trusted`
-        // field as the round-trip "get bool" target.
+        // `enable_model_list` is a per-agent toggle that defaults to
+        // `true`; use it as the round-trip "get bool" target.
         let config = AgentConfig::default();
-        let value = get_config_value(&config, "enable_task_tools").unwrap();
+        let value = get_config_value(&config, "enable_model_list").unwrap();
         assert_eq!(value, serde_json::json!(true));
     }
 
@@ -336,8 +335,8 @@ mod tests {
     #[test]
     fn test_set_bool_value() {
         let mut config = AgentConfig::default();
-        set_config_value(&mut config, "enable_task_tools", "false").unwrap();
-        assert!(!config.enable_task_tools);
+        set_config_value(&mut config, "enable_model_list", "false").unwrap();
+        assert!(!config.enable_model_list);
     }
 
     #[test]
@@ -352,11 +351,9 @@ mod tests {
 
     #[test]
     fn test_set_invalid_type_fails() {
-        // Cast a non-numeric value into a numeric field by reusing
-        // the optional-string path: send a number where a bool is
-        // expected.
+        // Cast a non-bool value into a bool field.
         let mut config = AgentConfig::default();
-        let err = set_config_value(&mut config, "enable_task_tools", "not-a-bool").unwrap_err();
+        let err = set_config_value(&mut config, "enable_model_list", "not-a-bool").unwrap_err();
         assert!(err.to_string().contains("Invalid value"));
     }
 

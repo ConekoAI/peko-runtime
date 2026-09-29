@@ -80,7 +80,7 @@ pub struct AgenticLoop {
     /// for every `run_inner_with_meter` invocation. Replaces the line-892
     /// direct construction of `crate::session::compaction::background::BackgroundCompactor::new(...)`.
     /// The factory trait lives at
-    /// `peko_engine::compaction::factory`; the root impl captures the
+    /// `peko_session::compaction::factory`; the root impl captures the
     /// inner `Arc<Provider>` at factory construction time. Default value
     /// is built inside `new` from the concrete `Provider` parameter via
     /// `BackgroundCompactorFactoryAdapter`.
@@ -187,10 +187,10 @@ pub struct AgenticLoop {
     /// prompt-cache markers (Anthropic `cache_control`, OpenAI
     /// `prompt_cache_key`) rely on for cache hits.
     cache_stable_prompt: std::sync::Mutex<Option<Arc<String>>>,
-    /// Phase 9b.N.5b.9c: compaction config (thresholds, model
+    /// Compaction config (thresholds, model
     /// override, retention policy). Passed in by the caller — root
-    /// loads it from `~/.peko/config.toml` via
-    /// `crate::session::compaction::load_compaction_config()` and
+    /// loads it from `$PEKO_HOME/config.toml` via
+    /// `peko_session::compaction::load_compaction_config()` and
     /// the loop never imports `dirs` / `toml`. `peko_engine` can't
     /// own the loader because it doesn't depend on those crates.
     /// Cloned into `CompactionDriver::new` at the start of
@@ -1101,10 +1101,10 @@ impl AgenticLoop {
         // `Arc<Provider>` and rebuilds a fresh `BackgroundCompactor`
         // here with the loop's stored meters.
         let compactor_backend = self.compactor_factory.build(Arc::clone(&self.quota_meter));
-        // Phase 9b.N.5b.9c: compaction config comes from the loop's
+        // Compaction config comes from the loop's
         // stored field (loaded by root at construction time and passed
-        // in via the new `compaction_config` parameter). The loop no
-        // longer calls `crate::session::compaction::load_compaction_config()`
+        // in via the `compaction_config` parameter). The loop no
+        // longer calls `peko_session::compaction::load_compaction_config()`
         // directly — that loader depends on `dirs` + `toml`, which
         // aren't in `peko-engine`'s dep graph.
         let mut compaction_driver = crate::CompactionDriver::new(
@@ -2476,7 +2476,7 @@ impl AgenticLoop {
     /// stream for non-native-streaming providers). If the call returns
     /// `ContextWindowExceeded` and `messages.len() > 1`, drops the oldest
     /// message(s) from the front — preserving tool-call/result pair boundaries
-    /// via [`peko_engine::compaction::drop_oldest_respecting_pairs`]
+    /// via `peko_session::compaction::drop_oldest_respecting_pairs`
     /// — and retries. The loop is bounded by history size, not by a retry
     /// budget (matches codex `compact.rs:286`).
     ///
@@ -2497,7 +2497,7 @@ impl AgenticLoop {
             Box<dyn futures::Stream<Item = Result<peko_provider_api::StreamEvent>> + Send>,
         >,
     > {
-        use crate::compaction::drop_oldest_respecting_pairs;
+        use crate::drop_oldest_respecting_pairs;
         use crate::spec_gate::check as check_spec;
         use peko_provider_api::is_context_window_exceeded;
 

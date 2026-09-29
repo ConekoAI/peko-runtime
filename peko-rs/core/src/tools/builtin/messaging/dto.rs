@@ -60,19 +60,14 @@ pub use peko_extension_api::SpawnCleanupPolicy;
 
 /// Configuration for subagent execution.
 ///
-/// Sprint 7 Commit 3: `cleanup` and `label` were dropped — every
-/// caller always passed the default (`Keep` / `None`). The
-/// projection onto root-side `subagent_executor::ExecutionConfig`
-/// in `agents/subagent_runtime_impl.rs` now hardcodes the default
-/// for those two. B4 cleanup: `format_announcement` was deleted —
-/// `cleanup` / `label` are now dead in the root-side type too, but
-/// retained for backward-compat reads of legacy JSON config.
+/// The historical `cleanup` / `label` knobs were dropped — every
+/// caller always passed the default (`Keep` / `None`), and the
+/// root-side `subagent_executor::ExecutionConfig` no longer carries
+/// them either.
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
     /// Maximum execution time in seconds (0 = unlimited)
     pub timeout_seconds: u64,
-    /// Whether to announce completion to parent
-    pub announce_completion: bool,
     /// Maximum spawn depth (0 = unlimited)
     pub max_depth: u32,
     /// Phase 1 of `feature/multi-model-subagents`: optional
@@ -91,7 +86,6 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             timeout_seconds: 300,
-            announce_completion: true,
             max_depth: 1,
             model_override: None,
             page_limit: None,
@@ -136,5 +130,4 @@ pub struct SubagentRunView {
     pub label: Option<String>,
     pub result: Option<SubagentResult>,
     pub depth: u32,
-    pub announce_completion: bool,
 }

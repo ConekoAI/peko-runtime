@@ -35,7 +35,7 @@
 //! After the "Principal as the single actor" migration, `peko send <name>`
 //! targets a **Principal** (`PrincipalSend` → `PrincipalManager::receive`),
 //! not a legacy `~/.peko/agents/<name>/` config. These tests therefore
-//! create a Principal via the real `peko principal create` command, then
+//! create a Principal via the real `peko create` command, then
 //! drive `peko send` against it.
 //!
 //! ## v3 provider catalog setup
@@ -52,7 +52,7 @@
 //! 2. Seeds `providers.toml` with the minimax or kimi catalog entry as the
 //!    SOLE entry, so the root agent's provider resolution falls through to
 //!    it (last-resort "first enabled catalog entry" rule in `LlmResolver`).
-//! 3. Creates the Principal with `peko principal create`.
+//! 3. Creates the Principal with `peko create`.
 //!
 //! This bypasses `peko auth set` + `peko provider add`, both of which
 //! are exercised by other test paths.
@@ -107,17 +107,17 @@ fn minimax_api_key() -> Option<String> {
 /// longer required for built-in tools — it remains for tests that want an
 /// explicit grant list recorded in `principal.toml`.
 ///
-/// Must be called BEFORE `DaemonGuard::spawn`: `peko principal create`
+/// Must be called BEFORE `DaemonGuard::spawn`: `peko create`
 /// writes files directly and needs no daemon.
 fn create_provider_principal(cli: &PekoCli, name: &str, model_id: &str) {
     let output = cli
         .cmd()
-        .args(["principal", "create", name, "--model", model_id])
+        .args(["create", name, "--model", model_id])
         .output()
-        .expect("run `peko principal create`");
+        .expect("run `peko create`");
     assert!(
         output.status.success(),
-        "`peko principal create {name} --model {model_id}` failed: stdout={} stderr={}",
+        "`peko create {name} --model {model_id}` failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );

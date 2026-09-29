@@ -17,7 +17,7 @@
 //! These tests run without a daemon or registry — they call the
 //! [`peko_core::registry::packaging::PrincipalUnpackager`] directly against an
 //! in-memory file map, which is exactly the path the CLI's
-//! `peko principal import` command eventually reaches through the daemon
+//! `peko import` command eventually reaches through the daemon
 //! IPC.
 //!
 //! ## Principal-era translation

@@ -163,7 +163,7 @@ fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
 /// name to `<workspace>/agents/<type>/AGENT.md` (the directory form)
 /// or `<workspace>/agents/<type>.md` (the flat-file form), when a
 /// principal workspace is bound to the `Agent` tool. The root
-/// prompt `agents/root.md` created by `peko principal create` is a *file*
+/// prompt `agents/root.md` created by `peko create` is a *file*
 /// and is NOT a valid `agent` template, so each test creates an explicit
 /// `worker` subagent here. The subagent's tool whitelist comes from
 /// `ExtensionConfig::default()` (Agent/Write/Read/Bash/…), so the prompt body

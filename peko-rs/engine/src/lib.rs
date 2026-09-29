@@ -31,7 +31,6 @@
 //! | [`agentic_loop`]    | Phase 9b.N.5b.9 — the lifted agentic loop (`AgenticLoop`, `AgenticResult`). |
 //! | [`async_completion`] | Phase 9b.N.1 — synthetic user-role `LlmMessage` builder for completed async tasks. |
 //! | [`chunker`]         | Block-level text chunking (`BlockChunker`, `CoalescingChunker`). |
-//! | [`compaction`]      | Phase 9b.N.4 — `CompactorBackend` trait port + data types lifted from `src/session/compaction.rs`. |
 //! | [`event_processor`] | Channel-action state machine (`EventProcessor`, `ProcessorConfig`). |
 //! | [`events`]          | Re-export of `peko_events` (`AgenticEvent`, `LifecyclePhase`). |
 //! | [`execution`]       | Tool-execution primitives (`TaskId`, `ExecutionMode`, `TaskStatus`, `TaskSummary`). |
@@ -63,7 +62,6 @@ pub mod async_completion;
 pub mod async_inbox;
 pub mod audit_sink;
 pub mod chunker;
-pub mod compaction;
 pub mod compaction_driver;
 pub mod error;
 pub mod event_processor;
@@ -89,23 +87,13 @@ pub mod tool_stream;
 // `pub use peko_engine::*` preserves every downstream import path.
 pub use agent_view::AgentView;
 pub use agentic_loop::{AgenticLoop, AgenticResult};
-// Phase 7.4: `ToolCall` lifted into `peko-session` (the session-storage
-// compatibility layer). peko-engine re-exports from there so the
-// `peko_engine::ToolCall` path keeps compiling; the local definition
-// is removed in Phase 16.
 pub use async_completion::build_async_completion_message;
 pub use async_inbox::{AsyncInboxItem, AsyncInboxLike};
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use compaction_driver::CompactionDriver;
-pub use peko_session::ToolCall;
 // Phase 7 — the compaction data types + trait ports + eviction
-// helper live in `peko-session` (the persistence-side owner).
-// Re-export through `peko_engine::compaction::{...}` so the
-// pre-Phase-7 import paths (`peko_engine::compaction::CompactionConfig`,
-// etc.) keep compiling. The legacy
-// `crates/engine/src/compaction/types.rs` / `backend.rs` / `factory.rs`
-// / `eviction.rs` are deleted in Phase 7.2 once their last consumers
-// migrate.
+// helper live in `peko-session` (the persistence-side owner) and
+// are re-exported at this crate's root below.
 pub use error::AgenticError;
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};

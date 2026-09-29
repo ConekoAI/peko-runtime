@@ -37,19 +37,9 @@ use crate::extensions::framework::async_exec::executor::{
 };
 use crate::extensions::framework::types::Capabilities;
 use peko_auth::Subject;
-use peko_extension_api::SpawnCleanupPolicy;
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
 use peko_subject::PrincipalId;
-
-// B4 cleanup: the announcement cluster (`CompletedRun`,
-// `with_announcement_channel`, `create_announcement_channel`,
-// `get_completed_for_announcement`, `announcement_sender`,
-// `send_announcement`, `subagent_announce::format_announcement`)
-// was retired end-to-end. The `announce_completion` field on
-// `SubagentRunView` is kept for backward-compat reads but no
-// longer has any writer; remove it in a follow-up once the
-// index-of-views migrates to a typed "delivery" channel.
 
 /// Shared streaming event sink for child turns (agent-session
 /// paradigm, sprint 2 Phase 6).
@@ -87,12 +77,6 @@ pub struct StreamingResumeOutcome {
 pub struct ExecutionConfig {
     /// Maximum execution time in seconds (0 = unlimited)
     pub timeout_seconds: u64,
-    /// Cleanup policy for the session
-    pub cleanup: SpawnCleanupPolicy,
-    /// Optional label for the run
-    pub label: Option<String>,
-    /// Whether to announce completion to parent
-    pub announce_completion: bool,
     /// Maximum spawn depth (0 = unlimited)
     pub max_depth: u32,
     /// Phase 1 of `feature/multi-model-subagents`: optional
@@ -169,10 +153,7 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             timeout_seconds: 300, // 5 minutes default
-            cleanup: SpawnCleanupPolicy::Keep,
-            label: None,
-            announce_completion: true,
-            max_depth: 1, // Default: no nested spawns
+            max_depth: 1,         // Default: no nested spawns
             model_override: None,
             slug: None,
             agent: None,
@@ -193,8 +174,8 @@ impl Default for ExecutionConfig {
 struct SubagentRunSpec {
     run_id: String,
     task: String,
-    /// The caller's current session (announcement target + ownership
-    /// anchor for the guarded cleanup delete).
+    /// The caller's current session (ownership anchor for the
+    /// guarded cleanup delete).
     parent_session_key: String,
     /// Registry-facing child key: the spawn overlay key for spawned
     /// runs, the plain session id for resumed runs.
@@ -1981,17 +1962,8 @@ impl SubagentExecutor {
         let metadata = TaskMetadata::Subagent(SubagentMetadata {
             child_session_key: child_session_key.clone(),
             child_session_id: Some(child_session_id.clone()),
-            // B4 cleanup: the `Delete` variant of `SpawnCleanupPolicy`
-            // was unreachable in production — `config.cleanup` always
-            // deserializes as `Keep` (the default). The variant is
-            // kept for backward-compat reads of legacy JSON config,
-            // but the executor always stamps `Keep` here. The dead
-            // Delete cleanup branch (lines below `if
-            // cleanup_policy_clone == SpawnCleanupPolicy::Delete`)
-            // was removed.
             cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
             depth: child_depth,
-            announce_completion: config.announce_completion,
             subagent_result: None,
         });
 
@@ -2002,8 +1974,8 @@ impl SubagentExecutor {
             // timeout — map 0 to `None` so unlimited survives the hop.
             timeout_secs: (config.timeout_seconds > 0).then_some(config.timeout_seconds),
             timeout_millis: None,
-            cleanup_after_delivery: false, // B4: Delete branch removed — see comment above
-            label: config.label.clone(),
+            cleanup_after_delivery: false,
+            label: None,
             wake_on_completion: true,
             principal_root_session_key: None,
             // Subagent runs belong to the spawning principal — stamped so
@@ -2020,7 +1992,6 @@ impl SubagentExecutor {
         let child_session_key_clone = child_session_key.clone();
         let parent_session_key_clone = parent_session_key.clone();
         let task_clone = task.clone();
-        let label_clone = config.label.clone();
         let run_id_clone = run_id.clone();
         let timeout = config.timeout_seconds;
         let agent_name = self.agent_name.clone();
@@ -2109,7 +2080,6 @@ impl SubagentExecutor {
                 "Agent",
                 serde_json::json!({
                     "task": task,
-                    "label": &config.label,
                     "child_session_key": &child_session_key,
                     "child_session_id": &child_session_id,
                 }),
@@ -2136,7 +2106,7 @@ impl SubagentExecutor {
                                 &parent_session_key_clone,
                                 &child_session_key_clone,
                                 &task_clone,
-                                label_clone.as_deref(),
+                                None,
                                 child_depth,
                                 config.max_depth,
                             ),
@@ -3487,9 +3457,6 @@ mod tests {
     async fn test_execution_config_defaults() {
         let config = ExecutionConfig::default();
         assert_eq!(config.timeout_seconds, 300);
-        assert!(matches!(config.cleanup, SpawnCleanupPolicy::Keep));
-        assert!(config.label.is_none());
-        assert!(config.announce_completion);
         assert_eq!(config.max_depth, 1);
         // Conversation mode is opt-in (peer ingress); Agent-tool
         // spawns keep the task framing + fresh context.

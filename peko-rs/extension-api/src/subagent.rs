@@ -1,14 +1,12 @@
 //! `SpawnCleanupPolicy` — cleanup policy for spawn overlays.
 //!
 //! Lives in `peko_extension_api` because it sits on the cross-boundary
-//! `SubagentMetadata` payload — both `peko_extension_host` (which
-//! produces it) and `peko_tools_builtin::messaging` (which consumes it
-//! via `AgentTool`) need to reference the same enum. Keeping it in
-//! `peko_extension_api` breaks the cycle that arose when both crates
-//! tried to depend on each other.
-//!
-//! `peko_extension_host::SpawnCleanupPolicy` is preserved as a
-//! backwards-compat re-export.
+//! `SubagentMetadata` payload — both the extension framework
+//! (`peko-rs/core/src/extensions/framework/`, which produces it) and
+//! the built-in messaging tools (`peko-rs/core/src/tools/builtin/`,
+//! which consume it via `AgentTool`) need to reference the same enum.
+//! Keeping it in the contract crate breaks the dependency cycle that
+//! would otherwise arise between the two.
 
 use serde::{Deserialize, Serialize};
 

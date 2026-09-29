@@ -2,7 +2,7 @@
 
 **Lightweight Multi-Peko Runtime**
 
-Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, A2A protocol messaging, per-peer long-running memory, and a unified extension architecture. Peko is the only top-level runtime actor (ADR-041); agent prompts are thin Markdown files inside a peko. Sessions are an internal storage noun (ADR-042) and are not surfaced in the CLI.
+Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, peko-to-peko messaging over channels, per-peer long-running threads, and a unified extension architecture. Peko is the only top-level runtime actor (ADR-041); roles are thin Markdown templates inside a peko. Sessions are an internal storage noun (ADR-042) and are not surfaced in the CLI.
 
 > **Version:** 0.1.0 | **License:** MIT
 >
@@ -20,9 +20,9 @@ Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, A2A p
 
 ### Core Architecture
 - ✅ **DID Identity System** — ed25519-based decentralized identifiers
-- ✅ **A2A Protocol** — Agent-to-Agent messaging between pekos
+- ✅ **Peko-to-Peko Messaging** — DM and group channels, mirrored across runtimes over the pekohub tunnel
 - ✅ **Peko Orchestration** — Top-level AI actors that own memory, intent, and governance
-- ✅ **Per-Peer Long-Running Memory** — Each `(Principal, peer)` pair keeps a long-running thread; the runtime owns lifecycle (no CLI surface)
+- ✅ **Per-Peer Long-Running Threads** — Each `(peko, peer)` pair keeps a long-running thread; the runtime owns lifecycle (no CLI surface)
 - ✅ **Event Router** — Central event routing and subscription system
 
 ### LLM & Providers
@@ -36,15 +36,15 @@ Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, A2A p
 - ✅ **Unified Extension Architecture** — Hook-based extension points for maximum composability
 
 ### Memory & Persistence
-- ✅ **SQLite Memory** — Persistent memory with semantic search
-- ✅ **Per-Peer JSONL Memory** — Threaded conversation history partitioned by `(Principal, peer)`. Internal storage; read via `peko log`.
+- ✅ **Workspace Knowledge Base** — Each peko keeps a `kb/` workspace (MEMORY.md + topic files) it reads and curates itself
+- ✅ **JSONL Conversation Store** — Per-session paged event logs; peer threads are read via `peko log`
 
 ### Scheduling & Execution
 - ✅ **Cron/Daemon** — Scheduled task execution with daemon mode
-- ✅ **Event Triggers** — React to file changes, webhooks, and system events
+- ✅ **Workspace Hooks** — Shell commands wired into prompt/session lifecycle points (ADR-047 §5)
 
 ### Security & Portability
-- ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
+- ✅ **Capability Gating** — Fail-closed per-peko tool/skill grants (ADR-046/047)
 - ✅ **Portable pekos** — Export/import pekos as `.peko` packages
 
 ---
@@ -58,8 +58,6 @@ Set your LLM provider API key:
 ```bash
 export OPENAI_API_KEY="your-key"  # or ANTHROPIC_API_KEY, KIMI_API_KEY, etc.
 ```
-
-See `.env.example` for all available options.
 
 ### Build
 
@@ -130,7 +128,7 @@ peko permit <NAME> <SUBJECT> <PERMISSION> # Grant permission
 peko revoke <NAME> <SUBJECT> <PERMISSION> # Revoke permission
 ```
 
-> **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a peko's workspace (`agents/<name>.md`); teams were removed in favor of peko-to-peko interaction. Agent prompts are listed via `peko show <NAME>` and managed as files (ADR-050).
+> **Note:** There is no top-level `peko agent` or `peko team` command tree. Roles are thin Markdown templates in a peko's workspace (`roles/<name>.md`); teams were removed in favor of peko-to-peko interaction. Roles are listed via `peko show <NAME>` and managed as files (ADR-050, ADR-064).
 
 #### Talk to a Peko (Primary Interaction)
 ```bash
@@ -178,25 +176,12 @@ peko logout
 > workspace — manage it with your editor and the filesystem:
 >
 > ```bash
-> ls ~/.peko/principals/<name>/{tools,skills,mcp,hooks}/   # list
-> cp -r ./my-skill ~/.peko/principals/<name>/skills/       # install
-> rm -r ~/.peko/principals/<name>/skills/my-skill          # remove
+> ls ~/.peko/principals/<name>/{roles,skills,mcp,hooks,workflows}/   # list
+> cp -r ./my-skill ~/.peko/principals/<name>/skills/                 # install
+> rm -r ~/.peko/principals/<name>/skills/my-skill                    # remove
 > ```
 >
 > See [Peko Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md).
-> The lines below are retained for historical reference.
-
-```bash
-peko ext install <PATH|URL>                       # Install an extension (deprecated)
-peko ext list                                     # List installed extensions (deprecated)
-peko ext enable <ID>                              # Enable an extension (deprecated)
-peko ext disable <ID>                             # Disable an extension (deprecated)
-peko ext uninstall <ID>                           # Uninstall an extension (deprecated)
-peko ext info <ID>                                # Show extension info (deprecated)
-peko ext bundle <PATH> [--output <PATH>]          # Bundle extension (deprecated)
-peko ext config <ID>                              # Configure extension (deprecated)
-peko ext validate <PATH>                          # Validate extension manifest (deprecated)
-```
 
 #### System
 ```bash
@@ -273,63 +258,36 @@ peko completions powershell                       # PowerShell completions
 
 ---
 
-## Unified Extension Architecture
+## Capabilities as Workspace Files
 
-All capabilities — tools, skills, MCP servers, and channels — are implemented through a single, consistent hook-based system.
+A peko's capabilities are plain files in its workspace — presence in the
+directory is what makes them visible to the model (ADR-050); no install
+step, no restart:
 
-### Extension Types
-
-| Extension | Type | Purpose |
+| Capability | Form | Purpose |
 |-----------|------|---------|
-| **Skills** | `SKILL.md` | Documentation-driven agent capabilities |
-| **MCP Servers** | `config.json` | External tool server integration |
-| **Built-in Tools** | Native code | Core runtime tools |
-| **Channels** | `CHANNEL.toml` | I/O adapters (CLI, HTTP, etc.) |
-| **General Extensions** | `extension.yaml` | Multi-hook custom extensions |
+| **Roles** | `roles/<name>.md` | Thin Markdown persona templates for subagents (ADR-064) |
+| **Skills** | `skills/<name>/SKILL.md` | Documentation-driven agent capabilities |
+| **MCP Servers** | `mcp/` | External tool server integration |
+| **Hooks** | `hooks/<id>/hook.toml` | Shell commands bound to lifecycle hook points |
+| **Workflows** | `workflows/*.py` | Agent-authored Python automation (ADR-061) |
+| **Built-in Tools** | Native code | Core runtime tools (fs, shell, cron, channels, …) |
 
 > **Sprint 9** retired the `gateway` extension type (chat-platform
-> adapters like Discord/Slack). External ingress now lands in per-peer
-> standing children via the agent-session paradigm; `peko ext install`
-> no longer accepts gateway manifests. **ADR-062** retired the
-> `universal-tool` type (executable manifest tools) — external code
-> reaches the catalog via MCP servers or `workflows/*.py` (ADR-061).
+> adapters like Discord/Slack); **ADR-062** retired the
+> `universal-tool` type — external code reaches the catalog via MCP
+> servers or `workflows/*.py`.
 
-### Managing Extensions
+### Hook Points
 
-> **Retired.** The `peko ext *` flow (ADR-047) and the per-category
-> install CLI (ADR-050) are both gone. Tooling lives directly in the
-> peko's workspace — copy files into
-> `~/.peko/principals/<name>/{tools,skills,mcp,hooks}/` and edit them
-> there.
->
-> The block below is retained for historical reference.
+Extensions and workspace hooks bind into the agentic loop at these points
+(see `peko-rs/core/src/extensions/framework/core/hook_points.rs`):
 
-```bash
-# Install any extension type (auto-detected) — deprecated
-peko ext install ./my-skill
-peko ext install ./mcp-server.json
-
-# List all extensions — deprecated
-peko ext list
-# ID           TYPE      STATUS   HOOKS
-# docker       skill     enabled  prompt:skills
-# filesystem   mcp       enabled  prompt:tools, tool:*
-
-# Enable/disable — deprecated
-peko ext enable docker
-peko ext disable docker
-```
-
-### The 22 Hook Points
-
-Extensions hook into the agentic loop at 22 different points:
-
-- **Prompt Hooks**: `PromptSystemSection` (deprecated for `section: "tools"` — F36 wire-only catalogs; supported sections: `skills`, `agents`, `mcp_context`), `PromptPreProcess`, `PromptPostProcess`
-- **Tool Hooks**: `ToolRegister`, `ToolExecute`, `ToolExecuteAsync`, `ToolCheckStatus`, `ToolCancel`
-- **Session Hooks**: `SessionStateChange`, `SessionCompaction`, `SessionContextBuild`
-- **I/O Hooks**: `ChannelInput`, `ChannelOutput`, `MessagePreSend`, `MessagePostReceive`
-- **Event Hooks**: `EventSubscribe`, `EventEmit`
-- **Lifecycle Hooks**: `AgentShutdown`, `AgentIteration`
+- **Prompt**: `PromptSystemSection`, `SessionContextBuild`
+- **Tool**: `ToolRegister`, `PreToolUse`, `ToolExecute`, `ToolExecuteAsync`, `ToolCheckStatus`, `ToolCancel`, `PostToolUse`
+- **Session**: `SessionStart`, `SessionStateChange`, `SessionCompaction`, `SessionCompactionPost`
+- **Lifecycle**: `AgentInit`, `Stop`, `AfterAgent`, `AgentShutdown`
+- **Events**: `EventSubscribe`
 
 Learn more: [peko Workspace Documentation](docs/architecture/PRINCIPAL_WORKSPACE.md) (ADR-047 — replaces the extension framework)
 
@@ -348,15 +306,13 @@ peko import ./my-principal.peko --name imported-principal
 ```
 
 **Package Contents:**
-- Identity (DID document + encrypted keys)
-- Configuration (allowed extensions, governance)
-- Memory (SQLite database)
-- Skills (bundled SKILL.md files)
+- Definition (the `principal.toml` seed — the only part sent to a registry)
+- Identity-bearing local state (private keys never leave the vault)
+- Workspace snapshot (roles, skills, mcp, hooks, workflows, kb) and session/cron state
 
 **Security:**
-- AES-256-GCM encryption with Argon2id key derivation
-- Ed25519 signatures for package integrity
-- Optional key rotation on import
+- Ed25519-signed manifest for package integrity
+- Importers are warned when a package carries unencrypted key material
 
 ---
 
@@ -388,21 +344,23 @@ message to the peko that owns them.
 
 ## Configuration
 
-Most users never need to edit `~/.peko/config.toml` directly — `peko model`
-and `peko principal` write the required state. Operators who need low-level
-can use the hidden `peko config` commands or edit the file by hand.
+Most users never edit a config file — `peko model add --key ...` writes
+the model catalog and vault, and the peko lifecycle verbs write the rest.
+The two files that exist, and what actually reads them:
 
-```toml
-[daemon]
-log_level = "info"
-```
+- `~/.peko/peko.toml` — daemon config; only the `[provider.retry]` block
+  is consumed (LLM transport retry knobs).
+- `~/.peko/config.toml` — the `[compaction]` block (session compaction
+  tuning) plus scratch space for the hidden `peko config get/set` CLI.
 
-The daemon's IPC/HTTP bind is a loopback constant (`127.0.0.1`) — there is
+See [`config.example.toml`](config.example.toml) for the annotated
+reference.
+
+The daemon's IPC/HTTP bind is a loopback constant (`127.0.0.1:11435`) — there is
 no `bind_address` knob (ADR-058 D6 removed the inert one); remote daemon
 access is not a supported feature.
 
-Model selection is now catalog-driven (PR 1 of `feature/model-first-config`).
-The `[defaults]` block no longer exists — pick the default model via the
+Model selection is catalog-driven — pick the default model via the
 catalog (`peko model list` to see what's wired). Per-send overrides use
 `peko send --model <id>`.
 
@@ -412,39 +370,41 @@ catalog (`peko model list` to see what's wired). Per-send overrides use
 
 ### Source Structure
 
+Cargo workspace; all implementations live under `peko-rs/`.
+
 ```
-src/
-├── agents/             # Agent management (stateless manager, config, lifecycle, prompts)
-├── auth/               # Authentication, authorization, principal, ownership, JWT, API keys
-├── commands/           # CLI command implementations (clap-based)
-├── common/             # Shared services and core types (AgentService, vault, KV, types)
-├── cron/               # Cron job scheduling and persistence
-├── daemon/             # HTTP daemon (Axum-based), health, info endpoints
-├── engine/             # Core agentic loop execution engine
-├── extensions/         # Extension framework + type implementations
-│   ├── framework/      # Generic extension framework (ADR-017)
-│   ├── builtin/        # Built-in tool adapter
-│   ├── general/        # General extension adapter
-│   ├── mcp/            # MCP adapter
-│   └── skill/          # Skill adapter
-├── identity/           # DID identity system, ed25519 keys, key storage, runtime identity
-├── ipc/                # Inter-process communication
-├── observability/      # Audit logging (pub(crate))
-├── providers/          # LLM provider integrations (v3 catalog + resolver)
-├── registry/           # `.peko` packaging/export/import and remote registry client
-├── session/            # JSONL persistence, branching, indexing, compaction
-├── tools/              # Tool framework (core, builtin, registry, factory)
-├── tunnel/             # Pekohub tunnel protocol, A2A dispatcher, runtime discovery
-├── main.rs             # CLI entry point
-└── lib.rs              # Library surface (public domains + re-exports)
+peko-rs/
+├── core/               # The peko facade crate: principal/agent/daemon/IPC/
+│   │                   # registry/tunnel/extensions/tools/observability
+│   ├── src/principal/  # Runtime-coupled principal layer
+│   ├── src/extensions/ # Extension framework + role/skill/mcp adapters
+│   ├── src/daemon/     # Axum HTTP + WS daemon, cron runtime
+│   └── src/tools/      # Built-in tool implementations
+├── cli/                # peko bin — clap parser + service delegates
+├── engine/             # Agentic loop core + prompt renderer + compaction driver
+├── session/            # JSONL session storage, ownership, paths, compaction
+├── channel/            # Multi-party channels (store, subscribers, cursors)
+├── cron/               # Cron scheduler + Cron* tools
+├── providers/          # LLM provider catalog, resolver, adapters
+├── message/            # Neutral message contract (leaf)
+├── subject/            # Subject/PrincipalId types (leaf)
+├── tools-core/         # Tool API traits (leaf)
+├── events/             # Neutral agentic event contract (leaf)
+├── protocol/           # IPC + tunnel wire contracts (serde only)
+├── auth/  identity/  quota/  plan/  observability/  fs-persistence/
+├── extension-api/      # Framework contracts (no impl deps)
+├── provider-api/       # Provider contract types
+└── peko-daemon/        # peko-daemon binary
 ```
+
+See [AGENTS.md](AGENTS.md) §3 for the full member table and the module
+boundary rules enforced in CI.
 
 ### Key Architectural Decisions
 
 - **Thin CLI (ADR-021)**: The CLI is a thin client — all execution happens in the daemon
-- **Unified Extensions**: Single architecture for all capabilities (tools, skills, MCP, etc.)
-- **Hook-Based Registration**: 22 extension points for maximum composability
-- **Filesystem-First**: All state stored on disk for easy backup and migration
+- **Capabilities as workspace files (ADR-050)**: presence = visibility; no install step
+- **Filesystem-First**: JSONL event logs are the conversation source of truth; all state on disk
 
 ---
 
@@ -455,7 +415,7 @@ src/
 cargo test
 
 # Run with logging
-RUST_LOG=debug cargo run -- principal list
+RUST_LOG=debug cargo run -- list
 
 # Format code
 cargo fmt
@@ -486,14 +446,14 @@ MIT
 
 ## Documentation
 
-- [Getting Started](docs/getting-started/GETTING_STARTED.md) — Build and run your first agent
-- [Tutorial: Building Your First Agent](docs/getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md) — Step-by-step walkthrough
+- [Getting Started](docs/getting-started/GETTING_STARTED.md) — Build and run your first peko
+- [Tutorial: Building Your First Peko](docs/getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md) — Step-by-step walkthrough
 - [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, principals, workspace tooling
 - [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Every `peko` command and flag
 - [peko Workspace](docs/architecture/PRINCIPAL_WORKSPACE.md) — Per-peko tooling layout (ADR-047)
 - [PEKO Primitive](docs/architecture/PEKO.md) — Canonical term: Persistent Entity with Keepalive Orchestration
 - [Agent–Session Paradigm](docs/architecture/AGENT_SESSION_PARADIGM.md) — Full design rationale, gap audit, build order
-- [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-050
+- [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-064
 - [MCP Overview](docs/mcp/MCP.md) — Model Context Protocol integration
 - [Agent Guide](AGENTS.md) — Build, test, code-style rules for contributors
 - [API Surface](API_SURFACE.md) — Public Rust API contracts

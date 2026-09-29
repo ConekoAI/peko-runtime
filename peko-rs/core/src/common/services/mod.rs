@@ -24,12 +24,7 @@ pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
 // `pub use peko_*::*` shims.
 pub use session_service::SessionService;
 
-/// Backward-compatible alias for `ServiceContainer`.
-#[deprecated(since = "0.2.0", note = "Use ServiceContainer instead")]
-pub type ServiceRegistry = ServiceContainer;
-
-// Note: ConfigSource is now exported from config_authority module above
-// For backward compatibility, config_registry::ConfigSource is re-exported via agent::mod.rs
+// Note: ConfigSource is exported from the config_authority module above.
 
 use crate::common::paths::PathResolver;
 

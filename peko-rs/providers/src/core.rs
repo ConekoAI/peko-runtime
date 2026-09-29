@@ -6,7 +6,6 @@
 use crate::adapters::{AnyAdapter, ApiAdapter};
 use crate::transport::HttpClient;
 use futures::StreamExt;
-use peko_events::{AgenticEvent, LifecyclePhase};
 use peko_provider_api::clamp_openai_prompt_cache_key;
 use peko_provider_api::CacheRetention;
 use peko_provider_api::{
@@ -15,7 +14,7 @@ use peko_provider_api::{
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{error, info};
+use tracing::info;
 
 /// Slim options carried alongside the HTTP client.
 ///
@@ -308,12 +307,6 @@ impl Provider {
         self.adapter.supports_prompt_cache_control()
     }
 
-    /// Complete a prompt (legacy/simple interface)
-    pub async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
-        let m = self.model_id();
-        self.chat(prompt, &m, 0.7).await
-    }
-
     /// Simple chat interface
     pub async fn chat(
         &self,
@@ -596,149 +589,6 @@ impl Provider {
             }
         })
         .await
-    }
-
-    /// Stream completion with events (legacy interface)
-    pub async fn complete_stream(
-        &self,
-        prompt: &str,
-        event_tx: mpsc::Sender<AgenticEvent>,
-        run_id: String,
-    ) -> anyhow::Result<()> {
-        self.with_auth_rotation(|provider| {
-            let provider = provider.clone();
-            let event_tx = event_tx.clone();
-            let run_id = run_id.clone();
-            async move {
-                let model_id_owned = provider.model_id();
-                // Emit start event
-                let _ = event_tx
-                    .send(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Start,
-                        error: None,
-                    })
-                    .await;
-
-                // Build simple completion request
-                let messages = vec![LlmMessage::user(prompt)];
-
-                let (cache_retention, prompt_cache_key) =
-                    project_cache_options(&provider.adapter, &provider.options);
-                let options = ChatOptions {
-                    temperature: Some(0.7),
-                    cache_retention,
-                    prompt_cache_key,
-                    ..Default::default()
-                };
-
-                let (path, body) = provider.adapter.build_request(
-                    &model_id_owned,
-                    &messages,
-                    None,
-                    &options,
-                    true,
-                )?;
-                let per_request_headers = provider
-                    .adapter
-                    .extra_request_headers(&model_id_owned, &options);
-
-                // Emit running event
-                let _ = event_tx
-                    .send(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Running,
-                        error: None,
-                    })
-                    .await;
-
-                let stream = provider
-                    .client
-                    .post_stream(&path, &body, &per_request_headers)
-                    .await?;
-                let mut accumulated_text = String::new();
-                let mut sequence = 0usize;
-
-                use futures::StreamExt;
-                let mut parser = crate::transport::sse::SseParser::parse_stream(stream);
-
-                while let Some(result) = parser.next().await {
-                    match result {
-                        Ok(event) => match provider
-                            .adapter
-                            .parse_sse_event(&model_id_owned, &event.data)
-                        {
-                            Ok(Some(StreamEvent::TextDelta { delta, .. })) => {
-                                accumulated_text.push_str(&delta);
-                                sequence += 1;
-                                let _ = event_tx
-                                    .send(AgenticEvent::AssistantDelta {
-                                        run_id: run_id.clone(),
-                                        text: delta,
-                                        sequence,
-                                        is_interstitial: false,
-                                    })
-                                    .await;
-                            }
-                            Ok(Some(StreamEvent::Done { .. })) => break,
-                            Ok(Some(StreamEvent::Error { message })) => {
-                                error!("Stream error: {}", message);
-                                let _ = event_tx
-                                    .send(AgenticEvent::Lifecycle {
-                                        run_id: run_id.clone(),
-                                        phase: LifecyclePhase::Error,
-                                        error: Some(message.clone()),
-                                    })
-                                    .await;
-                                return Err(anyhow::anyhow!("Stream error: {message}"));
-                            }
-                            _ => {}
-                        },
-                        Err(e) => {
-                            let err_msg = e.to_string();
-                            error!("Stream error: {}", err_msg);
-                            let _ = event_tx
-                                .send(AgenticEvent::Lifecycle {
-                                    run_id: run_id.clone(),
-                                    phase: LifecyclePhase::Error,
-                                    error: Some(err_msg),
-                                })
-                                .await;
-                            return Err(e);
-                        }
-                    }
-                }
-
-                // Emit final assistant event using new event type
-                let _ = event_tx
-                    .send(AgenticEvent::AssistantText {
-                        run_id: run_id.clone(),
-                        text: accumulated_text,
-                        sequence: sequence.saturating_add(1),
-                        is_interstitial: false, // Final answer
-                    })
-                    .await;
-
-                // Emit end event
-                let _ = event_tx
-                    .send(AgenticEvent::Lifecycle {
-                        run_id,
-                        phase: LifecyclePhase::End,
-                        error: None,
-                    })
-                    .await;
-
-                Ok(())
-            }
-        })
-        .await
-    }
-
-    /// Legacy alias for `model_id`. Kept so older internal call sites
-    /// that referenced `self.model()` continue to compile.
-    #[must_use]
-    pub fn model(&self) -> String {
-        self.model_id()
     }
 }
 

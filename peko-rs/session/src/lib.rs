@@ -182,9 +182,7 @@ mod tests {
 // into `peko-session` so the session manager can hold tool-call
 // metadata without depending on `peko-engine`. The struct exists purely
 // for session-storage compatibility (its fields are a small subset of
-// `peko_message::ContentBlock::ToolCall`). peko-engine re-exports this
-// type under `peko_engine::ToolCall` for pre-Phase-7.4 callers; the
-// engine-local definition is removed in Phase 16.
+// `peko_message::ContentBlock::ToolCall`).
 // ============================================================================
 
 /// A tool call for session storage compatibility.

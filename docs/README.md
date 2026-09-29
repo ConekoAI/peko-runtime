@@ -60,7 +60,7 @@ docs/
 │   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
 │   ├── SKILLS.md                   # skills as workspace files (SKILL.md format + catalog)
 │   ├── builtin-tools.md
-│   └── adr/                         # ADR-001 through ADR-062
+│   └── adr/                         # ADR-001 through ADR-064
 └── mcp/
     ├── MCP.md
     ├── QUICK_START.md

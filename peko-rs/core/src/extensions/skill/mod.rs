@@ -14,7 +14,7 @@
 pub mod prompt;
 pub mod reader;
 
-// Canonical DTOs and parser re-exports — `peko_tools_builtin::skill`
+// Canonical DTOs and parser re-exports — `crate::tools::builtin::skill`
 // is the source of truth.
 pub use crate::tools::builtin::skill::{
     parse_yaml_frontmatter, parse_yaml_frontmatter_typed, SkillFrontmatter,

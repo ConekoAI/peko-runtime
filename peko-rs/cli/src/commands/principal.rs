@@ -3,8 +3,7 @@
 //! A peko (ADR-059 user-facing term; internal type: `Principal`) is a
 //! top-level AI actor that owns identity, memory, intent, governance,
 //! capabilities, and thin Markdown agent prompts. The verbs here are
-//! flattened to the top level (`peko create`, `peko list`, ...);
-//! `peko principal <sub>` remains as a hidden compat alias.
+//! flattened to the top level (`peko create`, `peko list`, ...).
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -27,8 +26,7 @@ use peko_core::principal::{
 };
 
 /// Subcommands for peko lifecycle management. Flattened to the top
-/// level (`peko create`, ...) since ADR-059; `peko principal <sub>`
-/// still parses via the hidden alias.
+/// level (`peko create`, ...) since ADR-059.
 #[derive(Subcommand)]
 pub enum PrincipalCommands {
     /// Create a new peko and block until it is alive (ADR-054)
@@ -67,15 +65,7 @@ pub enum PrincipalCommands {
         ///
         /// A seed is DNA, not a template: the peko that grows from it
         /// is never a copy of its source (ADR-060).
-        ///
-        /// `-f` / `--file` remains a hidden compat alias (ADR-060).
-        #[arg(
-            short = 's',
-            long = "seed",
-            short_alias = 'f',
-            alias = "file",
-            value_name = "SEED_TOML"
-        )]
+        #[arg(short = 's', long = "seed", value_name = "SEED_TOML")]
         seed: Option<String>,
 
         /// Force a destructive re-create. Without `--force`,
@@ -285,7 +275,8 @@ pub enum PrincipalCommands {
     },
 }
 
-/// Dispatch `peko principal` commands.
+/// Dispatch the peko lifecycle commands (the flattened top-level
+/// verbs: `peko create`, `peko list`, ...).
 pub async fn handle_principal(
     cmd: PrincipalCommands,
     paths: &GlobalPaths,
@@ -372,7 +363,7 @@ pub async fn handle_principal(
     }
 }
 
-/// ADR-046: `peko principal diff` — show principals whose
+/// ADR-046: `peko diff` — show principals whose
 /// `principal.toml` has drifted since the last daemon boot.
 ///
 /// Reads the baseline at `<data_dir>/runtime/principal-hashes.json`,
@@ -583,7 +574,7 @@ fn persona_agent_prompt(name: &str, description: Option<&str>, persona: &str) ->
     )
 }
 
-/// `peko principal create` — the full genesis pipeline (ADR-054):
+/// `peko create` — the full genesis pipeline (ADR-054):
 /// provision (P0) + definition (P1) + boot (P2 seeding, daemon ensure,
 /// blocking genesis wait unless `--detach`).
 async fn create_principal(
@@ -622,7 +613,7 @@ async fn provision_principal(
     // Refuse to silently overwrite an existing principal — see Bug 2 in
     // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
     // Without this guard, a non-technical user running
-    //   peko principal create scout --model …
+    //   peko create scout --model …
     // a second time wipes identity, agents, memory, and session history
     // without any prompt.
     //
@@ -638,8 +629,8 @@ async fn provision_principal(
                 "principal '{name}' already exists at {}.\n\
                  Refusing to overwrite an existing principal.\n\
                  To replace it, pass --force (destructive; see --help) or remove it first:\n  \
-                 peko principal remove {name}\n  \
-                 peko principal create {name} --model <MODEL_ID>",
+                 peko remove {name}\n  \
+                 peko create {name} --model <MODEL_ID>",
                 shared_layout.root.display()
             );
         }
@@ -996,8 +987,8 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     };
 
     // Build a catalog summary for the show output. Phase 5
-    // (ADR-047 §5.3) adds the catalog block to the `peko principal
-    // show` payload. The catalog is the per-message view of what the
+    // (ADR-047 §5.3) adds the catalog block to the `peko show`
+    // payload. The catalog is the per-message view of what the
     // principal has installed — built-in tools + agents + workspace
     // entries. Empty workspaces render as an empty `catalog` object so
     // downstream tooling doesn't have to special-case missing.
@@ -1654,7 +1645,7 @@ async fn list_permissions(name: &str) -> Result<()> {
 }
 
 /// Parse a human-friendly duration string (`30m`, `24h`, `7d`) into
-/// seconds. Used by `peko principal invite --ttl <value>`. Bare
+/// seconds. Used by `peko invite --ttl <value>`. Bare
 /// integers are treated as seconds.
 fn parse_ttl_duration(s: &str) -> Result<u64> {
     let s = s.trim();
@@ -1693,7 +1684,7 @@ fn parse_ttl_duration(s: &str) -> Result<u64> {
 
 async fn mint_invite(name: &str, scope: Vec<String>, ttl: &str) -> Result<()> {
     // Default to `chat` when the caller doesn't pass `--scope` so a
-    // bare `peko principal invite alice` still produces a usable link.
+    // bare `peko invite alice` still produces a usable link.
     let scope_strs: Vec<String> = if scope.is_empty() {
         vec!["chat".to_string()]
     } else {
@@ -1822,10 +1813,9 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         id: None,
         did: None,
         owner: Subject::User("local".to_string()),
-        // ADR-054: leave `[identity]` empty. A bare `peko principal
-        // create` is P0-only — the boot state stamps `provisioned` and
-        // the Definition phase (P1) fills these in later via
-        // `peko principal define` (or a package import). No
+        // ADR-054: leave `[identity]` empty on the bare-create
+        // defaults path — the genesis turn adopts a working
+        // self-description (the brief tells it to). No
         // placeholder description: an absent definition is the honest
         // on-disk state, and the identity prompt section renders
         // nothing until there is one.
@@ -1840,7 +1830,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         boot_state: None,
         permissions: Vec::new(),
         // Principals must be created with a configured model. The CLI
-        // `peko principal create` path will require `--model` and set
+        // `peko create` path requires `--model` and sets
         // this field; a default of `None` is only used by legacy tests.
         preferred_model_id: None,
         quota: None,
@@ -1861,7 +1851,7 @@ fn default_agent_prompt(name: &str) -> String {
     )
 }
 
-/// JSON envelope for `peko principal list --json`. Empty list is `[]`
+/// JSON envelope for `peko list --json`. Empty list is `[]`
 /// (never "No pekos found."), matching `log --json` / `show --json`.
 fn render_list_principals_json(names: &[String]) -> serde_json::Result<String> {
     #[derive(serde::Serialize)]
@@ -1873,7 +1863,7 @@ fn render_list_principals_json(names: &[String]) -> serde_json::Result<String> {
     serde_json::to_string_pretty(&items)
 }
 
-/// JSON envelope for `peko principal remove <name> --json`. The
+/// JSON envelope for `peko remove <name> --json`. The
 /// `removed` boolean lets scripts distinguish success from a future
 /// cancellation-with-nonzero-exit without parsing prose.
 fn render_remove_principal_json(name: &str) -> serde_json::Result<String> {
@@ -1915,18 +1905,11 @@ mod tests {
 
     #[test]
     fn principal_permit_parses_positional_args() {
-        let cli = Cli::try_parse_from([
-            "peko",
-            "principal",
-            "permit",
-            "myprincipal",
-            "user:alice",
-            "chat",
-        ])
-        .expect("should parse principal permit");
+        let cli = Cli::try_parse_from(["peko", "permit", "myprincipal", "user:alice", "chat"])
+            .expect("should parse permit");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Permit {
+            Commands::Peko(PrincipalCommands::Permit {
                 name,
                 subject,
                 permission,
@@ -1935,7 +1918,7 @@ mod tests {
                 assert_eq!(subject, "user:alice");
                 assert_eq!(permission, "chat");
             }
-            _other => panic!("expected Principal permit command"),
+            _other => panic!("expected flattened top-level permit command"),
         }
     }
 
@@ -1943,7 +1926,6 @@ mod tests {
     fn principal_import_parses_yes_flag() {
         let cli = Cli::try_parse_from([
             "peko",
-            "principal",
             "import",
             "/tmp/pkg.peko",
             "--name",
@@ -1952,10 +1934,10 @@ mod tests {
             "--force",
             "--yes",
         ])
-        .expect("should parse principal import with --yes");
+        .expect("should parse import with --yes");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Import {
+            Commands::Peko(PrincipalCommands::Import {
                 file_path,
                 name,
                 allow_unsigned,
@@ -1968,20 +1950,20 @@ mod tests {
                 assert!(force);
                 assert!(yes);
             }
-            _other => panic!("expected Principal import command"),
+            _other => panic!("expected flattened top-level import command"),
         }
     }
 
     #[test]
     fn principal_import_without_yes_defaults() {
-        let cli = Cli::try_parse_from(["peko", "principal", "import", "/tmp/pkg.peko"])
-            .expect("should parse principal import without --yes");
+        let cli = Cli::try_parse_from(["peko", "import", "/tmp/pkg.peko"])
+            .expect("should parse import without --yes");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Import { yes, .. }) => {
+            Commands::Peko(PrincipalCommands::Import { yes, .. }) => {
                 assert!(!yes);
             }
-            _other => panic!("expected Principal import command"),
+            _other => panic!("expected flattened top-level import command"),
         }
     }
 
@@ -1989,7 +1971,6 @@ mod tests {
     fn principal_pull_parses_yes_flag() {
         let cli = Cli::try_parse_from([
             "peko",
-            "principal",
             "pull",
             "owner/principal:1.0.0",
             "--name",
@@ -1997,10 +1978,10 @@ mod tests {
             "--force",
             "--yes",
         ])
-        .expect("should parse principal pull with --yes");
+        .expect("should parse pull with --yes");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Pull {
+            Commands::Peko(PrincipalCommands::Pull {
                 registry_ref,
                 name,
                 force,
@@ -2012,40 +1993,39 @@ mod tests {
                 assert!(force);
                 assert!(yes);
             }
-            _other => panic!("expected Principal pull command"),
+            _other => panic!("expected flattened top-level pull command"),
         }
     }
 
     #[test]
     fn principal_pull_without_yes_defaults() {
-        let cli = Cli::try_parse_from(["peko", "principal", "pull", "owner/principal:1.0.0"])
-            .expect("should parse principal pull without --yes");
+        let cli = Cli::try_parse_from(["peko", "pull", "owner/principal:1.0.0"])
+            .expect("should parse pull without --yes");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Pull { yes, .. }) => {
+            Commands::Peko(PrincipalCommands::Pull { yes, .. }) => {
                 assert!(!yes);
             }
-            _other => panic!("expected Principal pull command"),
+            _other => panic!("expected flattened top-level pull command"),
         }
     }
 
     #[test]
     fn principal_remove_parses() {
-        let cli = Cli::try_parse_from(["peko", "principal", "remove", "myprincipal", "--yes"])
-            .expect("should parse principal remove with --yes");
+        let cli = Cli::try_parse_from(["peko", "remove", "myprincipal", "--yes"])
+            .expect("should parse remove with --yes");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Remove { name, yes }) => {
+            Commands::Peko(PrincipalCommands::Remove { name, yes }) => {
                 assert_eq!(name, "myprincipal");
                 assert!(yes);
             }
-            _other => panic!("expected Principal remove command"),
+            _other => panic!("expected flattened top-level remove command"),
         }
     }
 
     /// ADR-059: the lifecycle verbs are flattened to the top level.
-    /// `peko create <name>` parses into the same `PrincipalCommands::Create`
-    /// payload as the legacy nested form.
+    /// `peko create <name>` parses into `PrincipalCommands::Create`.
     #[test]
     fn top_level_create_parses_adr059() {
         let cli = Cli::try_parse_from([
@@ -2068,7 +2048,8 @@ mod tests {
         }
     }
 
-    /// ADR-059: `peko list` reaches the same handler as `peko principal list`.
+    /// ADR-059: `peko list` reaches the same handler as the retired
+    /// nested `peko principal list` form.
     #[test]
     fn top_level_list_parses_adr059() {
         let cli =
@@ -2079,32 +2060,14 @@ mod tests {
         }
     }
 
-    /// ADR-059 compatibility: the legacy `peko principal <sub>` namespace
-    /// still parses (hidden alias) so existing scripts keep working.
+    /// ADR-059 cleanup: the legacy `peko principal <sub>` namespace is
+    /// retired — clap rejects it as an unknown subcommand.
     #[test]
-    fn principal_namespace_alias_still_parses() {
-        let cli = Cli::try_parse_from(["peko", "principal", "list"])
-            .expect("hidden `peko principal` alias must keep parsing (ADR-059)");
-        match cli.command {
-            Commands::Principal(PrincipalCommands::List) => {}
-            _other => panic!("expected hidden alias to dispatch Principal(List)"),
-        }
-    }
-
-    /// `principal send` was a duplicate of the top-level `send` command.
-    /// Removed in 2026-08-01 v2 fixes. Migration: `principal send foo bar`
-    /// becomes `send foo bar`. The top-level `send` is the canonical
-    /// command and supports `--file`, `--stdin`, `--model`.
-    #[test]
-    fn principal_no_send_subcommand() {
-        let result = Cli::try_parse_from(["peko", "principal", "send", "x", "y"]);
-        let err = match result {
-            Ok(_) => panic!("'principal send' must no longer parse — clap accepted it"),
-            Err(e) => e.to_string(),
-        };
+    fn principal_namespace_alias_no_longer_parses() {
+        let result = Cli::try_parse_from(["peko", "principal", "list"]);
         assert!(
-            err.contains("unrecognized subcommand") || err.contains("unexpected argument"),
-            "expected clap to reject 'principal send' as unrecognized; got: {err}"
+            result.is_err(),
+            "the retired `peko principal` namespace must not parse"
         );
     }
 
@@ -2256,17 +2219,10 @@ mod tests {
         // `preferred_model_id`; the flag overrides the seed value.
         // Parse-level: no model and no seed is fine at parse time —
         // the requirement is enforced in `create_principal`.
-        let cli = Cli::try_parse_from([
-            "peko",
-            "principal",
-            "create",
-            "alice",
-            "--model",
-            "anthropic-haiku",
-        ])
-        .expect("should parse principal create with --model");
+        let cli = Cli::try_parse_from(["peko", "create", "alice", "--model", "anthropic-haiku"])
+            .expect("should parse create with --model");
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create {
+            Commands::Peko(PrincipalCommands::Create {
                 name,
                 model,
                 force,
@@ -2283,7 +2239,7 @@ mod tests {
                 assert!(!detach);
                 assert_eq!(wait_timeout, 300);
             }
-            _other => panic!("expected Principal create command"),
+            _other => panic!("expected flattened top-level create command"),
         }
     }
 
@@ -2291,50 +2247,52 @@ mod tests {
     fn principal_create_parses_seed() {
         let cli = Cli::try_parse_from([
             "peko",
-            "principal",
             "create",
             "scout",
             "-s",
             "/tmp/scout.principal.toml",
             "--detach",
         ])
-        .expect("should parse principal create with -s seed");
+        .expect("should parse create with -s seed");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create { name, seed, .. }) => {
+            Commands::Peko(PrincipalCommands::Create { name, seed, .. }) => {
                 assert_eq!(name, "scout");
                 assert_eq!(seed.as_deref(), Some("/tmp/scout.principal.toml"));
             }
-            _other => panic!("expected Principal create command"),
+            _other => panic!("expected flattened top-level create command"),
         }
     }
 
-    /// ADR-060: `-f` / `--file` stay as hidden compat aliases for
-    /// `--seed`, so scripts and the command the hub publishes keep
-    /// working unchanged.
+    /// ADR-060 cleanup: the retired `-f` / `--file` compat aliases for
+    /// `--seed` no longer parse; only `-s` / `--seed` remain.
     #[test]
-    fn principal_create_accepts_hidden_file_seed_aliases() {
-        for flag in ["-f", "--file", "-s", "--seed"] {
-            let cli = Cli::try_parse_from([
-                "peko",
-                "principal",
-                "create",
-                "scout",
-                flag,
-                "/tmp/scout.principal.toml",
-            ])
-            .unwrap_or_else(|e| panic!("`{flag}` should parse as a seed alias: {e}"));
+    fn principal_create_seed_aliases_removed() {
+        for flag in ["-s", "--seed"] {
+            let cli =
+                Cli::try_parse_from(["peko", "create", "scout", flag, "/tmp/scout.principal.toml"])
+                    .unwrap_or_else(|e| panic!("`{flag}` should parse as the seed flag: {e}"));
 
             match cli.command {
-                Commands::Principal(PrincipalCommands::Create { seed, .. }) => {
+                Commands::Peko(PrincipalCommands::Create { seed, .. }) => {
                     assert_eq!(
                         seed.as_deref(),
                         Some("/tmp/scout.principal.toml"),
                         "`{flag}` must bind the seed field"
                     );
                 }
-                _other => panic!("expected Principal create command"),
+                _other => panic!("expected flattened top-level create command"),
             }
+        }
+
+        for flag in ["-f", "--file"] {
+            assert!(
+                Cli::try_parse_from(
+                    ["peko", "create", "scout", flag, "/tmp/scout.principal.toml",]
+                )
+                .is_err(),
+                "retired alias `{flag}` must no longer parse"
+            );
         }
     }
 
@@ -2350,7 +2308,6 @@ mod tests {
             dir.path().join("data").to_str().unwrap(),
             "--cache-dir",
             dir.path().join("cache").to_str().unwrap(),
-            "principal",
             "list",
         ]);
         let paths = from_cli(&cli);
@@ -2374,21 +2331,20 @@ mod tests {
     fn principal_create_parses_force_flag() {
         // `--force` is the explicit override for the overwrite guard —
         // see Bug 2 in scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
-        // (Long-form only: `-s` selects the seed, and `-f` is its
-        // hidden compat alias — neither is free for `--force`.)
+        // (Long-form only: `-s` already selects the seed, so no short
+        // flag is free for `--force`.)
         let cli = Cli::try_parse_from([
             "peko",
-            "principal",
             "create",
             "scout",
             "--model",
             "anthropic-haiku",
             "--force",
         ])
-        .expect("should parse principal create with --force");
+        .expect("should parse create with --force");
 
         match cli.command {
-            Commands::Principal(PrincipalCommands::Create {
+            Commands::Peko(PrincipalCommands::Create {
                 name,
                 model,
                 force,
@@ -2400,7 +2356,7 @@ mod tests {
                 assert!(force);
                 assert!(!yes);
             }
-            _other => panic!("expected Principal create command"),
+            _other => panic!("expected flattened top-level create command"),
         }
     }
 
@@ -2420,7 +2376,6 @@ mod tests {
             dir.path().join("data").to_str().unwrap(),
             "--cache-dir",
             dir.path().join("cache").to_str().unwrap(),
-            "principal",
             "list",
         ]);
         let paths = from_cli(&cli);

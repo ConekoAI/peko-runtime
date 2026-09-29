@@ -79,23 +79,12 @@ pub struct CompactionRequest {
 
 /// Response from background compaction.
 ///
-/// Phase 9b.N.4: type alias of
-/// `peko_engine::compaction::CompactionResponse` so the
-/// `CompactorBackend` trait port (defined in `peko-engine`) and
-/// the root-owned `BackgroundCompactor` agree on the response
-/// type. The variants match exactly:
-///
-/// - `Completed(CompactionResult)`
-/// - `NotNeeded`
-/// - `Skipped(String)`
-/// - `Failed(String)`
-///
-/// The historical import path
-/// `use crate::compaction::background::CompactionResponse`
-/// keeps compiling for any pre-9b.N.4 caller. The canonical path is
-/// `peko_engine::compaction::CompactionResponse` (re-exported as
-/// `crate::session::compaction::CompactionResponse` via the root
-/// `compaction.rs` shim).
+/// The canonical definition lives in `crate::compaction::types`;
+/// re-exported here so the historical
+/// `crate::compaction::background::CompactionResponse` import path
+/// keeps compiling. `peko-engine` also re-exports the type at its
+/// crate root so the `CompactorBackend` trait port and this
+/// root-owned `BackgroundCompactor` agree on the response type.
 pub use crate::compaction::types::CompactionResponse;
 
 /// Background compaction worker handle
