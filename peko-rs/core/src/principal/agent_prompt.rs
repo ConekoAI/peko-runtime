@@ -37,16 +37,16 @@ pub fn load_agent_prompt(path: &PathBuf) -> anyhow::Result<AgentPrompt> {
 ///
 /// Two on-disk shapes are supported, matching the Agent tool's lookup
 /// order (`SubagentExecutorRuntime::resolve_principal_agent`):
-/// - directory layout: `<agents_dir>/<name>/AGENT.md`
-/// - flat layout: `<agents_dir>/<name>.md`
+/// - directory layout: `<roles_dir>/<name>/AGENT.md`
+/// - flat layout: `<roles_dir>/<name>.md`
 ///
 /// Errors if neither exists.
 pub fn resolve_agent_prompt(
     name: &str,
-    agents_dir: &std::path::Path,
+    roles_dir: &std::path::Path,
 ) -> anyhow::Result<AgentPrompt> {
-    let dir_layout = agents_dir.join(name).join("AGENT.md");
-    let flat_layout = agents_dir.join(format!("{name}.md"));
+    let dir_layout = roles_dir.join(name).join("ROLE.md");
+    let flat_layout = roles_dir.join(format!("{name}.md"));
 
     let agent_md = if dir_layout.exists() {
         dir_layout

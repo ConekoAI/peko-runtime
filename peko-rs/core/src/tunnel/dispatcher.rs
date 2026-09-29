@@ -2004,10 +2004,10 @@ mod tests {
         exposure: peko_auth::Exposure,
     ) -> std::sync::Arc<crate::principal::Principal> {
         let workspace = app_state.config.data_dir.join("principals").join(name);
-        let agents_dir = workspace.join("agents");
-        tokio::fs::create_dir_all(&agents_dir).await.unwrap();
+        let roles_dir = workspace.join("roles");
+        tokio::fs::create_dir_all(&roles_dir).await.unwrap();
         tokio::fs::write(
-            agents_dir.join("primary.md"),
+            roles_dir.join("primary.md"),
             format!("---\ndescription: \"Test agent for {name}\"\n---\n\nYou are {name}.\n"),
         )
         .await

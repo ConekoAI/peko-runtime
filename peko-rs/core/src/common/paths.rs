@@ -121,7 +121,7 @@ pub struct SharedLayout {
     /// `…/identity.json` (public DID). Private keys stay in keychain.
     pub identity_file: PathBuf,
     /// `…/agents/` — agent definitions.
-    pub agents_dir: PathBuf,
+    pub roles_dir: PathBuf,
     /// `…/mcps/` — principal-owned MCP server configs.
     pub mcps_dir: PathBuf,
     /// `…/channels/` — `pin_to_shared`'d channel dirs (PR-3d).
@@ -329,7 +329,7 @@ impl PathResolver {
     // Config Directory Paths (configuration, metadata)
     // ====================================================================================
 
-    /// Get the top-level agents directory
+    /// Get the top-level agents directory (legacy global agent-config layout)
     ///
     /// Path: `{config_dir}/agents`
     #[must_use]
@@ -444,7 +444,7 @@ impl PathResolver {
                 root: shared_root.clone(),
                 config_file: shared_root.join("principal.toml"),
                 identity_file: shared_root.join("identity.json"),
-                agents_dir: shared_root.join("agents"),
+                roles_dir: shared_root.join("roles"),
                 mcps_dir: shared_root.join("mcps"),
                 channels_dir: shared_root.join("channels"),
             },
@@ -722,8 +722,8 @@ impl PathResolver {
     ///
     /// Path: `{data_dir}/agents`
     #[must_use]
-    pub fn agents_dir(&self) -> PathBuf {
-        self.data_dir.join("agents")
+    pub fn roles_dir(&self) -> PathBuf {
+        self.data_dir.join("roles")
     }
 
     // ====================================================================================
@@ -832,7 +832,7 @@ impl PathResolver {
         let layout = self.principal_layout(principal);
         // Shared tier.
         std::fs::create_dir_all(&layout.shared.root)?;
-        std::fs::create_dir_all(&layout.shared.agents_dir)?;
+        std::fs::create_dir_all(&layout.shared.roles_dir)?;
         std::fs::create_dir_all(&layout.shared.mcps_dir)?;
         // Local tier.
         std::fs::create_dir_all(&layout.local.root)?;
@@ -863,8 +863,8 @@ impl PathResolver {
 // =============================================================================
 
 impl crate::extensions::framework::paths::PathResolver for PathResolver {
-    fn agents_dir(&self) -> PathBuf {
-        PathResolver::agents_dir(self)
+    fn roles_dir(&self) -> PathBuf {
+        PathResolver::roles_dir(self)
     }
 }
 
@@ -920,7 +920,7 @@ mod tests {
     // ====================================================================================
 
     #[test]
-    fn test_new_layout_agent_paths() {
+    fn test_new_layout_role_paths() {
         let resolver = PathResolver::with_dirs(
             PathBuf::from("/config"),
             PathBuf::from("/data"),
@@ -1017,7 +1017,7 @@ mod tests {
         assert!(shared
             .config_file
             .ends_with("principals/alice/principal.toml"));
-        assert!(shared.agents_dir.ends_with("principals/alice/agents"));
+        assert!(shared.roles_dir.ends_with("principals/alice/roles"));
         assert!(shared
             .identity_file
             .ends_with("principals/alice/identity.json"));

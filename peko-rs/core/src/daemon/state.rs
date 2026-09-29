@@ -3262,7 +3262,7 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 
     fn path_resolver(&self) -> crate::common::paths::PathResolver {
         // Phase A: hand the typed resolver through so the IPC
-        // handlers can reach `principal_layout(name).shared.agents_dir`
+        // handlers can reach `principal_layout(name).shared.roles_dir`
         // and friends without re-deriving them from
         // `config_dir()` / `data_dir()`.
         self.path_resolver.clone()

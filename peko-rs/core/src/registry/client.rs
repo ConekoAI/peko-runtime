@@ -568,7 +568,7 @@ impl RegistryClient {
         let prefixed = [
             ("config", layers.config.as_ref()),
             ("identity", layers.identity.as_ref()),
-            ("agents", layers.agents.as_ref()),
+            ("roles", layers.roles.as_ref()),
             ("memory", layers.memory.as_ref()),
             ("sessions", layers.sessions.as_ref()),
             ("extensions", layers.extensions.as_ref()),

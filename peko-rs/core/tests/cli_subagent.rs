@@ -144,7 +144,7 @@ fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
         .peko_dir()
         .join("principals")
         .join(principal)
-        .join("agents");
+        .join("roles");
     std::fs::create_dir_all(&dir).expect("create agents dir");
     let agent_md = format!(
         "---\n\
@@ -173,7 +173,7 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
         .peko_dir()
         .join("principals")
         .join(principal)
-        .join("agents")
+        .join("roles")
         .join(worker);
     std::fs::create_dir_all(&dir).expect("create worker subagent dir");
     let agent_md = format!(
@@ -184,7 +184,7 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
          You are a test subagent. Follow the task instructions exactly, \
          using the Write/Read/Agent tools as directed.\n"
     );
-    std::fs::write(dir.join("AGENT.md"), agent_md).expect("write worker AGENT.md");
+    std::fs::write(dir.join("ROLE.md"), agent_md).expect("write worker ROLE.md");
 }
 
 /// Create the Principal under test and its `worker` subagent.

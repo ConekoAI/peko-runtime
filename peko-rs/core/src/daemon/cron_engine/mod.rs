@@ -1328,9 +1328,9 @@ mod tests {
         // (`{config_dir}/principals/{name}/agents`). In tests the
         // `workspace` passed in is the Shared principal root
         // (`{tmp}/principals`), so `agents` is just one join below.
-        let agents_dir = workspace.join(name).join("agents");
-        tokio::fs::create_dir_all(&agents_dir).await.unwrap();
-        let prompt_path = agents_dir.join("primary.md");
+        let roles_dir = workspace.join(name).join("roles");
+        tokio::fs::create_dir_all(&roles_dir).await.unwrap();
+        let prompt_path = roles_dir.join("primary.md");
         let prompt_body = format!(
             "---\ndescription: \"Test assistant for {name}\"\n---\n\n\
              You are {name}, a test assistant. Reply concisely.\n"

@@ -125,6 +125,7 @@ impl SystemPromptBuilder {
         let mut values = HashMap::new();
 
         // Inline placeholders
+        values.insert(Placeholder::RoleName, self.agent_name.clone());
         values.insert(Placeholder::AgentName, self.agent_name.clone());
         values.insert(Placeholder::Workspace, self.workspace.display().to_string());
         values.insert(Placeholder::Channel, self.channel.clone());
@@ -137,9 +138,8 @@ impl SystemPromptBuilder {
         // Hook-driven sections render empty in the static builder; tests
         // exercise these by inspecting placeholder text directly, not
         // by checking section headers.
-        values.insert(Placeholder::Tools, String::new());
         values.insert(Placeholder::Skills, String::new());
-        values.insert(Placeholder::Agents, String::new());
+        values.insert(Placeholder::Roles, String::new());
         values.insert(Placeholder::Runtime, self.render_runtime_section());
         values.insert(Placeholder::Sandbox, self.render_sandbox_section());
         values.insert(
@@ -157,7 +157,6 @@ impl SystemPromptBuilder {
         // Control surfaces — Phase 1 static builder always emits empty;
         // the renderer populates these from `TurnPromptContext`.
         values.insert(Placeholder::IterationBudget, String::new());
-        values.insert(Placeholder::QuotaState, String::new());
         values.insert(Placeholder::SoftCancel, String::new());
         values.insert(Placeholder::CapabilityDiff, String::new());
 

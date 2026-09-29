@@ -10,9 +10,10 @@
 //!   the `{{memory}}` placeholder when the template opts in. The
 //!   principal owns this file and may update it via `Write`. The
 //!   second hot file, `kb/index.md` (the kb map), and the targeted
-//!   scope notes (`kb/groups/<channel>.md`, `kb/agents/<name>.md` —
+//!   scope notes (`kb/groups/<channel>.md`, `kb/roles/<name>.md` —
 //!   ADR-055 D8) render as `<runtime-context>` tail sections via
-//!   [`load_kb_index`] / [`load_binding_note`] / [`load_agent_note`].
+//!   [`load_kb_index`] / [`load_binding_note`] / [`load_role_note`],
+//!   alongside the shared behavioral rulebook (`kb/CONVENTIONS.md`).
 //!
 //! - **AGENTS.md** lives at arbitrary directories the principal
 //!   touches during a session. The framework no longer auto-injects
@@ -27,14 +28,18 @@ use std::path::{Path, PathBuf};
 
 /// Directory (relative to the principal workspace) holding the
 /// principal's persistent knowledge base (ADR-055). The pinned hot
-/// set (`MEMORY.md`, `index.md`) lives here, as do the cold
-/// conventions (`people/`, `groups/`, `agents/`) that feed the
-/// targeted scope injections (`load_binding_note`, `load_agent_note`).
+/// set (`MEMORY.md`, `index.md`, `CONVENTIONS.md`) lives here, as do
+/// the cold conventions (`people/`, `groups/`, `roles/`) that feed the
+/// targeted scope injections (`load_binding_note`, `load_role_note`).
 pub const KB_DIR: &str = "kb";
 
 /// Filename peko uses for per-principal long-term memory. Resolved
 /// under [`KB_DIR`] — `<principal_workspace>/kb/MEMORY.md`.
 pub const PRINCIPAL_MEMORY_FILE: &str = "MEMORY.md";
+
+/// Filename peko uses for the shared behavioral rulebook rendered to
+/// every agent in the principal — `<principal_workspace>/kb/CONVENTIONS.md`.
+pub const PRINCIPAL_CONVENTIONS_FILE: &str = "CONVENTIONS.md";
 
 /// Filename peko uses for the kb map (ADR-055 D2: the second hot
 /// file). Resolved under [`KB_DIR`] —
@@ -45,9 +50,12 @@ pub const KB_INDEX_FILE: &str = "index.md";
 /// channel/group id (ADR-055 D8 binding-note injection).
 pub const KB_GROUPS_DIR: &str = "groups";
 
-/// Subdirectory (under [`KB_DIR`]) of per-agent notes keyed by agent
-/// name (ADR-055 D8 agent-note injection).
-pub const KB_AGENTS_DIR: &str = "agents";
+/// Subdirectory (under [`KB_DIR`]) of per-role notes keyed by role
+/// name (ADR-055 D8 role-note injection). Named `roles/` (not
+/// `agents/`) to pair with the T1 role files `agents/<name>/AGENT.md`
+/// (ADR-052 D3): the name selects a role, and both its body and its
+/// durable note key on that role.
+pub const KB_ROLES_DIR: &str = "roles";
 
 /// Filename peko uses for directory-scoped shared notes.
 pub const SHARED_CONTEXT_FILE: &str = "AGENTS.md";
@@ -57,12 +65,17 @@ pub const SHARED_CONTEXT_FILE: &str = "AGENTS.md";
 /// context window.
 pub const PRINCIPAL_MEMORY_MAX_BYTES: u64 = 256 * 1024; // 256 KiB
 
+/// Maximum total bytes of the shared conventions file
+/// (`kb/CONVENTIONS.md`) to load. Smaller than MEMORY.md: this is a
+/// curated rulebook, not a memory dump.
+pub const PRINCIPAL_CONVENTIONS_MAX_BYTES: u64 = 16 * 1024; // 16 KiB
+
 /// Maximum total bytes of the kb index (`kb/index.md`) to load
 /// (ADR-055 D2 per-section cap — a runaway map cannot starve memory).
 pub const KB_INDEX_MAX_BYTES: u64 = 8 * 1024; // 8 KiB
 
 /// Maximum total bytes of a targeted scope note (`kb/groups/<channel>.md`
-/// or `kb/agents/<name>.md`, ADR-055 D8).
+/// or `kb/roles/<name>.md`, ADR-055 D8).
 pub const KB_NOTE_MAX_BYTES: u64 = 8 * 1024; // 8 KiB
 
 /// Maximum total bytes of AGENTS.md to load per directory.
@@ -110,6 +123,27 @@ pub fn load_kb_index(workspace: &Path) -> Option<String> {
     Some(truncate_with_notice(raw, path, KB_INDEX_MAX_BYTES))
 }
 
+/// Load the principal's shared behavioral rulebook from
+/// `<workspace>/kb/CONVENTIONS.md`. Rendered as a tail section to
+/// EVERY agent in the principal (ADR-052 T0 prose-conventions layer:
+/// how memory/journaling/external projects are treated). Returns
+/// `None` if the file does not exist, is empty, or cannot be read —
+/// absence renders absent (presence = visibility). Truncates to
+/// [`PRINCIPAL_CONVENTIONS_MAX_BYTES`] with a notice when oversized.
+#[must_use]
+pub fn load_principal_conventions(workspace: &Path) -> Option<String> {
+    let path = workspace.join(KB_DIR).join(PRINCIPAL_CONVENTIONS_FILE);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    Some(truncate_with_notice(
+        raw,
+        path,
+        PRINCIPAL_CONVENTIONS_MAX_BYTES,
+    ))
+}
+
 /// Load the binding note for a run's triggering channel:
 /// `<workspace>/kb/groups/<channel>.md` (ADR-055 D8). Channel-bound
 /// agents see their room's conventions at turn start; agents with no
@@ -132,21 +166,22 @@ pub fn load_binding_note(workspace: &Path, channel: &str) -> Option<String> {
     Some(truncate_with_notice(raw, path, KB_NOTE_MAX_BYTES))
 }
 
-/// Load the per-agent note for a named agent:
-/// `<workspace>/kb/agents/<name>.md` (ADR-055 D8 — the durable
-/// per-agent layer ADR-052's T1/T2 lacked). Ephemeral, unnamed spawns
-/// get no note. Truncates to [`KB_NOTE_MAX_BYTES`] with a notice when
-/// oversized. Returns `None` for unsafe segments or
-/// missing/empty/unreadable files.
+/// Load the per-role note for a named role:
+/// `<workspace>/kb/roles/<name>.md` (ADR-055 D8 — the durable
+/// per-role layer ADR-052's T1/T2 lacked; renamed from `kb/agents/`
+/// so the note pairs with the role file `agents/<name>/AGENT.md`).
+/// Ephemeral, unnamed spawns get no note. Truncates to
+/// [`KB_NOTE_MAX_BYTES`] with a notice when oversized. Returns `None`
+/// for unsafe segments or missing/empty/unreadable files.
 #[must_use]
-pub fn load_agent_note(workspace: &Path, agent_name: &str) -> Option<String> {
-    if !is_safe_segment(agent_name) {
+pub fn load_role_note(workspace: &Path, role_name: &str) -> Option<String> {
+    if !is_safe_segment(role_name) {
         return None;
     }
     let path = workspace
         .join(KB_DIR)
-        .join(KB_AGENTS_DIR)
-        .join(format!("{agent_name}.md"));
+        .join(KB_ROLES_DIR)
+        .join(format!("{role_name}.md"));
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => return None,
@@ -391,40 +426,70 @@ mod tests {
                 load_binding_note(tmp.path(), bad).is_none(),
                 "segment: {bad}"
             );
-            assert!(load_agent_note(tmp.path(), bad).is_none(), "segment: {bad}");
+            assert!(load_role_note(tmp.path(), bad).is_none(), "segment: {bad}");
         }
         // Nothing escaped: no stray file was read or written.
         assert!(!tmp.path().join("groups").exists());
     }
 
     #[test]
-    fn load_agent_note_reads_matching_agent_file() {
+    fn load_role_note_reads_matching_role_file() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("agents")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("roles")).unwrap();
         std::fs::write(
-            tmp.path().join("kb").join("agents").join("channel-comm.md"),
+            tmp.path().join("kb").join("roles").join("channel-comm.md"),
             "You greet new members.",
         )
         .unwrap();
-        let s = load_agent_note(tmp.path(), "channel-comm").unwrap();
+        let s = load_role_note(tmp.path(), "channel-comm").unwrap();
         assert!(s.contains("greet new members"));
     }
 
     #[test]
-    fn load_agent_note_returns_none_when_no_match() {
+    fn load_role_note_returns_none_when_no_match() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("agents")).unwrap();
-        assert!(load_agent_note(tmp.path(), "unnamed").is_none());
+        std::fs::create_dir_all(tmp.path().join("kb").join("roles")).unwrap();
+        assert!(load_role_note(tmp.path(), "unnamed").is_none());
     }
 
     #[test]
-    fn load_agent_note_truncates_oversized_note() {
+    fn load_role_note_truncates_oversized_note() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("agents")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb").join("roles")).unwrap();
         let big = "y".repeat((KB_NOTE_MAX_BYTES as usize) * 2);
-        std::fs::write(tmp.path().join("kb").join("agents").join("big.md"), big).unwrap();
-        let s = load_agent_note(tmp.path(), "big").unwrap();
+        std::fs::write(tmp.path().join("kb").join("roles").join("big.md"), big).unwrap();
+        let s = load_role_note(tmp.path(), "big").unwrap();
         assert!(s.len() < KB_NOTE_MAX_BYTES as usize * 2);
+        assert!(s.contains("truncated:"));
+    }
+
+    #[test]
+    fn load_conventions_returns_contents_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
+        std::fs::write(
+            tmp.path().join("kb").join("CONVENTIONS.md"),
+            "Journal in kb/journal/YYYY-MM-DD.md.",
+        )
+        .unwrap();
+        let s = load_principal_conventions(tmp.path()).unwrap();
+        assert!(s.contains("Journal"));
+    }
+
+    #[test]
+    fn load_conventions_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load_principal_conventions(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn load_conventions_truncates_oversized_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
+        let big = "z".repeat((PRINCIPAL_CONVENTIONS_MAX_BYTES as usize) * 2);
+        std::fs::write(tmp.path().join("kb").join("CONVENTIONS.md"), big).unwrap();
+        let s = load_principal_conventions(tmp.path()).unwrap();
+        assert!(s.len() < PRINCIPAL_CONVENTIONS_MAX_BYTES as usize * 2);
         assert!(s.contains("truncated:"));
     }
 

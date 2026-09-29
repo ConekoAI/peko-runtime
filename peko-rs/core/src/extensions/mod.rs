@@ -75,7 +75,7 @@ pub mod mcp;
 pub mod skill;
 
 /// Agent extension adapter — AGENT.md-based prompt extensions with YAML frontmatter.
-pub mod agent;
+pub mod role;
 
 // Slash dispatch retired entirely (post-slash-removal): both the
 // framework `SlashAdapter` (Phase 2 PR 4) and the daemon-side
@@ -119,7 +119,7 @@ pub mod workspace_hooks;
 
 // PR-C: `BuiltInAdapters` (the `Vec<Box<dyn ExtensionTypeAdapter>>`
 // provider) deleted. After Phase 2 PR 1/2/3/4 stripped skill/mcp/
-// slash/universal adapters, only `AgentAdapter` + `GeneralExtensionAdapter`
+// slash/universal adapters, only `RoleAdapter` + `GeneralExtensionAdapter`
 // remained; both are now registered directly at their single call
 // sites (`agents/agent.rs:443-451` for the runtime scan,
 // `daemon/state.rs:791-793` for daemon startup) instead of through a
@@ -129,8 +129,8 @@ pub mod workspace_hooks;
 //
 // PR-C.5 follow-up: both single call sites were deleted once their
 // adapters were gutted. The `agent/adapter.rs` shell still hosts
-// `discover_agents`; the "agents" prompt section is now emitted by
-// `WorkspaceAgentsPromptHandler` (Part B — registered once in
+// `discover_roles`; the "agents" prompt section is now emitted by
+// `WorkspaceRolesPromptHandler` (Part B — registered once in
 // `principal/context.rs`, scanning `<workspace>/agents/` at invoke
 // time); the `general/` directory was deleted entirely.
 

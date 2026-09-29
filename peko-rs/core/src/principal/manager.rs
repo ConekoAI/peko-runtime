@@ -10,8 +10,8 @@ use super::{
     Principal, PrincipalId,
 };
 use crate::common::paths::PathResolver;
-use crate::extensions::agent::AgentAdapter;
 use crate::extensions::framework::store::ExtensionStore;
+use crate::extensions::role::RoleAdapter;
 use crate::principal::agent_prompt::load_agent_prompt;
 use crate::principal::child_turns::PeerChildIngress;
 use crate::principal::peer_dm::{post_peer_dm_inbound, post_peer_dm_reply};
@@ -358,6 +358,28 @@ impl PrincipalManager {
         let layout = self.path_resolver.principal_layout(&name);
         self.path_resolver.ensure_principal_dirs(&name)?;
 
+        // ADR-064 follow-up: the root role prompt has no render-time
+        // fallback — stamp the compiled-in default into
+        // `roles/root.md` here (create-if-missing) so EVERY create
+        // path (CLI provision, package import, tests) satisfies the
+        // workspace-file contract before the router factory resolves
+        // the root prompt and fails loudly on absence.
+        let root_role = layout.shared.roles_dir.join("root.md");
+        if !root_role.exists()
+            && !layout
+                .shared
+                .roles_dir
+                .join("root")
+                .join("ROLE.md")
+                .exists()
+        {
+            std::fs::create_dir_all(&layout.shared.roles_dir)?;
+            std::fs::write(
+                &root_role,
+                crate::principal::routers::root_role_seed_content(),
+            )?;
+        }
+
         // Generate and persist a real DID identity for this Principal.
         let mut config = config;
         let did = self.generate_identity(&name).await?;
@@ -446,7 +468,7 @@ impl PrincipalManager {
             )
             .await;
 
-        let agent_prompts = discover_agent_prompts(&layout.shared.agents_dir).await?;
+        let agent_prompts = discover_role_prompts(&layout.shared.roles_dir).await?;
 
         let principal = Arc::new(Principal {
             id: id.clone(),
@@ -562,7 +584,7 @@ impl PrincipalManager {
                 plan_port.clone(),
             )
             .await;
-        let agent_prompts = discover_agent_prompts(&layout.shared.agents_dir).await?;
+        let agent_prompts = discover_role_prompts(&layout.shared.roles_dir).await?;
 
         let principal = Arc::new(Principal {
             id: id.clone(),
@@ -1433,19 +1455,19 @@ impl PrincipalResponse {
 
 /// Discover agent prompts for a principal.
 ///
-/// **Phase A.** The caller passes the typed `agents_dir` directly
-/// (i.e. `PathResolver::principal_layout(name).shared.agents_dir`)
+/// **Phase A.** The caller passes the typed `roles_dir` directly
+/// (i.e. `PathResolver::principal_layout(name).shared.roles_dir`)
 /// rather than the Shared tier root + a hand-rolled `"agents"`
 /// suffix. The legacy `workspace_path.join("agents")` join is gone
 /// from this function.
-async fn discover_agent_prompts(
-    agents_dir: &Path,
+async fn discover_role_prompts(
+    roles_dir: &Path,
 ) -> Result<HashMap<String, AgentPrompt>, PrincipalManagerError> {
     let mut prompts = HashMap::new();
 
-    if agents_dir.exists() {
-        let adapter = AgentAdapter::new();
-        let discovered = adapter.discover_agents(agents_dir);
+    if roles_dir.exists() {
+        let adapter = RoleAdapter::new();
+        let discovered = adapter.discover_roles(roles_dir);
         for d in discovered {
             let canonical_id = d.manifest.id.0.clone();
             let prompt = load_agent_prompt(&d.file_path)
@@ -1681,18 +1703,18 @@ mod tests {
         name: &str,
         extra_agents: &[&str],
     ) -> Arc<Principal> {
-        let agents_dir = manager
+        let roles_dir = manager
             .path_resolver
             .principal_layout(name)
             .shared
-            .agents_dir;
-        tokio::fs::create_dir_all(&agents_dir).await.unwrap();
+            .roles_dir;
+        tokio::fs::create_dir_all(&roles_dir).await.unwrap();
 
         let primary_body = format!(
             "---\ndescription: \"Test assistant for {name}\"\n---\n\n\
              You are {name}, a test assistant. Reply concisely.\n"
         );
-        tokio::fs::write(agents_dir.join("primary.md"), primary_body)
+        tokio::fs::write(roles_dir.join("primary.md"), primary_body)
             .await
             .unwrap();
 
@@ -1701,7 +1723,7 @@ mod tests {
                 "---\nname: {agent}\ndescription: \"Agent {agent}\"\n---\n\n\
                  You are {agent}.\n"
             );
-            tokio::fs::write(agents_dir.join(format!("{agent}.md")), body)
+            tokio::fs::write(roles_dir.join(format!("{agent}.md")), body)
                 .await
                 .unwrap();
         }

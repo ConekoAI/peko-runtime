@@ -179,18 +179,17 @@ grants = [{grants_toml}]
         .await?;
 
         // ── Agent prompt ─────────────────────────────────────────────────
-        let agents_dir = base.join("agents");
-        tokio::fs::create_dir_all(&agents_dir).await?;
+        let roles_dir = base.join("roles");
+        tokio::fs::create_dir_all(&roles_dir).await?;
         tokio::fs::write(
-            agents_dir.join("primary.md"),
+            roles_dir.join("primary.md"),
             "---\nname: primary\ndescription: Fixture agent\n---\n\n# Primary\n",
         )
         .await?;
 
         // ── Packager ─────────────────────────────────────────────────────
         let package_path = base.join(format!("{}.peko", self.name));
-        let packager =
-            PrincipalPackager::new(config.clone(), identity).with_agents_dir(&agents_dir);
+        let packager = PrincipalPackager::new(config.clone(), identity).with_roles_dir(&roles_dir);
         // Phase 5 (ADR-047 §2.1): `with_extensions_from_store` was
         // deleted. Skills are workspace-resident and are not part of
         // the portable bundle.

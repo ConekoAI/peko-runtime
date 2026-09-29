@@ -1,5 +1,5 @@
 //! CLI integration tests for ADR-052 (tiered system prompt:
-//! T0 principal / T1 role / T2 instance), driven end-to-end against the
+//! T0 principal / T1 role / T2 agent), driven end-to-end against the
 //! real daemon + CLI + mock LLM. Model on `cli_subagent.rs`.
 //!
 //! | Test                                   | ADR-052 slice                                          |
@@ -118,10 +118,10 @@ fn patch_principal_config(
     .expect("write principal.toml");
 }
 
-/// Overwrite the principal's root persona (`agents/root.md`) with a
+/// Overwrite the principal's root persona (`roles/root.md`) with a
 /// custom body containing `marker`.
 fn write_root_persona(cli: &PekoCli, principal: &str, marker: &str) {
-    let path = workspace(cli, principal).join("agents").join("root.md");
+    let path = workspace(cli, principal).join("roles").join("root.md");
     let body = format!(
         "---\n\
          name: root\n\
@@ -129,12 +129,12 @@ fn write_root_persona(cli: &PekoCli, principal: &str, marker: &str) {
          ---\n\n\
          You are the root agent of a test principal. Persona marker: {marker}.\n"
     );
-    std::fs::write(&path, body).expect("write agents/root.md");
+    std::fs::write(&path, body).expect("write roles/root.md");
 }
 
 /// Write a named role file (`agents/<role>.md`) whose body contains `marker`.
 fn write_role(cli: &PekoCli, principal: &str, role: &str, marker: &str) {
-    let dir = workspace(cli, principal).join("agents");
+    let dir = workspace(cli, principal).join("roles");
     std::fs::create_dir_all(&dir).expect("create agents dir");
     let body = format!(
         "---\n\

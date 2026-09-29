@@ -107,7 +107,7 @@ fn create_test_manifest(name: &str) -> (PrincipalManifest, Vec<Layer>) {
     manifest.layers = Some(PrincipalLayers {
         config: Some(config_digest),
         identity: Some(identity_digest),
-        agents: Some(agents_digest),
+        roles: Some(agents_digest),
         memory: None,
         sessions: None,
         cron: None,

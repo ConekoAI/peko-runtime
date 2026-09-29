@@ -29,5 +29,5 @@ pub fn default_data_dir() -> PathBuf {
 /// bypass the principal setup).
 #[must_use]
 pub fn default_agent_workspace(agent_name: &str) -> PathBuf {
-    default_data_dir().join("agents").join(agent_name)
+    default_data_dir().join("roles").join(agent_name)
 }

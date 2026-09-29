@@ -96,10 +96,10 @@ grants = []
     tokio::fs::write(identity_dir.join("keys.enc"), key_json).await?;
 
     // agents/primary.md — the Principal's default agent prompt.
-    let agents_dir = base.join("agents");
-    tokio::fs::create_dir_all(&agents_dir).await?;
+    let roles_dir = base.join("roles");
+    tokio::fs::create_dir_all(&roles_dir).await?;
     tokio::fs::write(
-        agents_dir.join("primary.md"),
+        roles_dir.join("primary.md"),
         "---\n\
          name: primary\n\
          description: Integration test primary agent\n\
@@ -129,9 +129,9 @@ async fn build_principal_package_from_dir(
     let key_export: peko_identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
 
-    let agents_dir = principal_dir.join("agents");
+    let roles_dir = principal_dir.join("roles");
 
-    let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
+    let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
 
     let export_opts = PrincipalExportOptions {
         output_path: Some(output_path.to_string_lossy().to_string()),
@@ -251,9 +251,9 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
     let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
     let key_export: peko_identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
-    let agents_dir = principal_dir.join("agents");
+    let roles_dir = principal_dir.join("roles");
 
-    let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
+    let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
 
     let export_opts = PrincipalExportOptions {
         output_path: Some(package_path.to_string_lossy().to_string()),

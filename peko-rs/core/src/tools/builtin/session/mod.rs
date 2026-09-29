@@ -242,9 +242,10 @@ pub struct UsageStats {
 ///
 /// Source of truth is `peko_quota::QuotaMeter::snapshot()` +
 /// `QuotaMeter::config()`, both owned by the principal. The session
-/// tool reports this snapshot read-only; the LLM never sees the
-/// `{{quota_state}}` system-prompt section any more (retired
-/// 2026-09-09 — see `Placeholder::QuotaState`).
+/// tool reports this snapshot read-only; the LLM never sees a
+/// `{{quota_state}}` system-prompt section (that placeholder was
+/// retired 2026-09-09 and its dead enum variant removed 2026-09-28 —
+/// unknown markers are stripped by `remove_missing=true`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuotaSnapshot {
     /// Input tokens consumed in the current window.
@@ -462,11 +463,7 @@ pub trait SessionRuntime: Send + Sync {
     /// immediately when the new cap is below the current count and
     /// returns the number of pages rotated out (permanently deleted).
     /// Same ownership gate as `rename_session`.
-    async fn set_page_limit(
-        &self,
-        session_key: &str,
-        limit: Option<u32>,
-    ) -> anyhow::Result<u64>;
+    async fn set_page_limit(&self, session_key: &str, limit: Option<u32>) -> anyhow::Result<u64>;
 
     /// ADR-051: render one page's messages as transcript text
     /// (role-prefixed lines). `offset` / `limit` are Read-style line

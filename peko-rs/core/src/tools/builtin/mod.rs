@@ -38,16 +38,15 @@ pub mod skill;
 pub mod tasks;
 
 // Root-only impls that didn't have a sat counterpart:
-pub mod agent_catalog;
 pub mod model_call;
 pub mod model_list;
+pub mod role_catalog;
 pub mod tool_search;
 pub mod workflow;
 
 // Re-exports of every tool *struct* at the canonical namespace so
 // `crate::tools::builtin::X` matches what existed in the
 // `peko_tools_builtin::X` path before the foldback.
-pub use agent_catalog::AgentCatalogTool;
 pub use async_control::{
     AsyncListTool, AsyncOutputTool, AsyncRuntime, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
     SharedAsyncRuntime,
@@ -64,6 +63,7 @@ pub use plan::{
     PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool, PlanMarkStepTool,
     PlanRecordEvidenceTool,
 };
+pub use role_catalog::AgentCatalogTool;
 pub use session::caller_aware::CallerAwareSessionTool;
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};

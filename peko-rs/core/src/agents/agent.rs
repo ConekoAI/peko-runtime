@@ -67,7 +67,7 @@ pub struct Agent {
     force_compact: bool,
     /// Optional principal workspace. When set, `init_builtins_async` builds the
     /// `Agent` tool with `with_workspace(Some(workspace), …)`, so the root
-    /// agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
+    /// agent resolves subagents from `<workspace>/roles/<name>/ROLE.md`
     /// before falling back to the global `<home>/agents/<name>/config.toml`.
     /// Without this, `init_builtins_async` (run lazily at execution time)
     /// would clobber any principal-scoped `Agent` tool registered on the
@@ -635,7 +635,7 @@ impl Agent {
     ///
     /// When set, `init_builtins_async` builds the `Agent` tool with
     /// `with_workspace(Some(workspace), …)`, so the root agent resolves
-    /// subagents from `<workspace>/agents/<name>/AGENT.md` before falling
+    /// subagents from `<workspace>/roles/<name>/ROLE.md` before falling
     /// back to the global `~/.peko/agents/<name>/config.toml` layout. This
     /// must be set before the agent executes: `init_builtins_async` runs
     /// lazily inside `prepare_execution`, so a principal-scoped `Agent`
@@ -1124,7 +1124,7 @@ impl Agent {
         // caller invokes `Agent::stop()`); wiring it into the
         // daemon's teardown path is deferred to a follow-up PR.
         let after_agent_payload = serde_json::json!({
-            "agent_name": self.config.name,
+            "role_name": self.config.name,
             "agent_did": self.identity.did,
         });
         let _ = self

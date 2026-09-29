@@ -331,7 +331,7 @@ const WORKSPACE_KIND_DIRS: &[(&str, &str)] = &[
 pub fn capability_kind_for_extension_type(ext_type: &str) -> String {
     match ext_type {
         "builtin" | "tool" => "tool".to_string(),
-        "agent" => "agent".to_string(),
+        "role" | "agent" => "role".to_string(),
         "skill" => "skill".to_string(),
         "mcp" => "mcp".to_string(),
         "hook" => "hook".to_string(),
@@ -347,7 +347,7 @@ mod tests {
     fn agent(name: &str) -> AgentPrompt {
         AgentPrompt {
             name: name.to_string(),
-            path: PathBuf::from(format!("agents/{name}/AGENT.md")),
+            path: PathBuf::from(format!("roles/{name}.md")),
             body: "body".to_string(),
             frontmatter: Default::default(),
         }

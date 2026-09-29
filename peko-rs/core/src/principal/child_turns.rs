@@ -29,7 +29,7 @@
 //! `.with_agent_config` and child turns fell back to a blank default
 //! prompt. ADR-052 D3 makes the persona an explicit policy: when
 //! `routing.peer_agent` names a workspace role file
-//! (`agents/<name>.md` / `agents/<name>/AGENT.md`), that role's
+//! (`roles/<name>.md` / `roles/<name>/ROLE.md`), that role's
 //! prompt body replaces the root persona for all peer-facing turns;
 //! unresolvable roles warn and fall back to the root persona.
 //!
@@ -71,7 +71,7 @@ use crate::principal::Principal;
 ///
 /// Default is **persona inheritance**: resolution order is the router
 /// factory's — `principal.toml` `routing.root_prompt` file →
-/// `<workspace>/agents/root.md` (or `agents/root/AGENT.md`) →
+/// `<workspace>/roles/root.md` (or `roles/root/ROLE.md`) →
 /// compiled-in default. When `routing.peer_agent` names a workspace
 /// role (ADR-052 D3), that role's prompt BODY replaces the root
 /// prompt's body; any resolution failure logs a warning and falls
@@ -86,11 +86,11 @@ pub(crate) fn peer_child_agent_config(
     config: &PrincipalConfig,
     workspace_path: &std::path::Path,
 ) -> AgentConfig {
-    let agents_dir = workspace_path.join("agents");
-    let mut prompt = DefaultPrincipalRouterFactory::resolve_root_agent_prompt(config, &agents_dir);
+    let roles_dir = workspace_path.join("roles");
+    let mut prompt = DefaultPrincipalRouterFactory::resolve_root_agent_prompt(config, &roles_dir);
     // ADR-052 D3: opt-in T1 role for peer-facing turns.
     if let Some(role) = config.routing.peer_agent.as_deref() {
-        match crate::principal::agent_prompt::resolve_agent_prompt(role, &agents_dir) {
+        match crate::principal::agent_prompt::resolve_agent_prompt(role, &roles_dir) {
             Ok(role_prompt) => prompt.body = role_prompt.body,
             Err(e) => tracing::warn!(
                 "Failed to resolve routing.peer_agent role '{role}': {e:#}. \
@@ -198,7 +198,7 @@ impl PeerChildTurns {
             let config = principal.config.read().await;
             // Same `available_agents` projection
             // `PrincipalManager::build_router_context` computes for
-            // the root-agent path — the `agent_catalog` tool's
+            // the root-agent path — the `role_catalog` tool's
             // contents.
             let available_agents: Vec<AgentPromptSummary> =
                 principal
@@ -283,8 +283,8 @@ impl PeerChildTurns {
         // (`PrincipalContext::core` + `agent_runner`): the peer-ingress
         // path builds no `PrincipalContext`, so without this the peer
         // turn ran with built-ins only — no `Skill` tool, no workspace
-        // MCP tools, no `{{agents}}`/`{{skills}}` prompt
-        // sections, and no `agent_catalog` (the tool the root prompt
+        // MCP tools, no `{{roles}}`/`{{skills}}` prompt
+        // sections, and no `role_catalog` (the tool the root prompt
         // advertises). Both installs are idempotent; the tool-bag
         // install honors the core's once-gate.
         let core = crate::principal::context::ensure_principal_tool_bag(
@@ -293,10 +293,10 @@ impl PeerChildTurns {
         )
         .await;
         if let Err(e) =
-            crate::principal::context::install_agent_catalog(&core, available_agents, &principal.id)
+            crate::principal::context::install_role_catalog(&core, available_agents, &principal.id)
                 .await
         {
-            tracing::warn!("agent_catalog install failed for peer-child turns: {e}");
+            tracing::warn!("role_catalog install failed for peer-child turns: {e}");
         }
 
         Ok(Self {
@@ -601,7 +601,7 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
 /// of guessing the `user-<id>` slug convention. Registered once on the
 /// daemon-global core (per-principal state is resolved per invoke from
 /// the hook context's workspace + principal id, like the workspace
-/// `{{agents}}` / `{{skills}}` catalog handlers). Renders nothing when
+/// `{{roles}}` / `{{skills}}` catalog handlers). Renders nothing when
 /// the principal has no peer sessions yet.
 ///
 /// The agent's OWN position in the session tree is rendered by the
@@ -630,7 +630,7 @@ pub(crate) fn sessions_dir_for_workspace(workspace: &str) -> Option<std::path::P
 }
 
 /// Render the agent's own position in the session tree (ADR-052 D5 —
-/// T2 instance context): its slug path plus a role line derived from
+/// T2 agent context): its slug path plus a role line derived from
 /// the session metadata. `None` when the session has no metadata in
 /// the store (e.g. a bare unit-test run).
 ///
@@ -663,7 +663,7 @@ fn render_self_position(
 
 /// Prompt-section handler rendering the agent's OWN position in the
 /// session tree into the `{{session_context}}` section (ADR-052 D5 —
-/// T2 instance context, 2026-09-11).
+/// T2 agent context, 2026-09-11).
 ///
 /// Until now the section only listed OTHER peers' `/slug` paths (see
 /// [`PeersSessionContextHandler`]); the agent had no rendering of
@@ -837,15 +837,15 @@ mod tests {
         }
     }
 
-    /// Persona: a workspace `agents/root.md` prompt body lands on the
+    /// Persona: a workspace `roles/root.md` prompt body lands on the
     /// child agent config's `prompt`.
     #[test]
     fn persona_comes_from_workspace_root_prompt() {
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::create_dir_all(&roles_dir).unwrap();
         std::fs::write(
-            agents_dir.join("root.md"),
+            roles_dir.join("root.md"),
             "---\ndescription: \"Persona fixture\"\n---\n\nYou are PERSONA_MARKER, the principal's voice.\n",
         )
         .unwrap();
@@ -860,19 +860,16 @@ mod tests {
         );
     }
 
-    /// Persona fallback: with no workspace file and no `root_prompt`
-    /// override, the compiled-in default root prompt is inherited.
+    /// Persona: with no workspace `root.md` and no `root_prompt`
+    /// override, resolution FAILS loudly (ADR-064 follow-up: authored
+    /// prompts are a default start, not a hidden default value —
+    /// `manager.create` and the boot pass stamp `roles/root.md`).
     #[test]
-    fn persona_falls_back_to_compiled_default() {
+    #[should_panic(expected = "No root role prompt found")]
+    fn persona_without_root_role_file_fails_loudly() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config("persona-test", PrincipalRoutingConfig::default());
-        let agent_config = peer_child_agent_config(&config, tmp.path());
-        let prompt = agent_config.prompt.expect("persona prompt must be set");
-        assert_eq!(
-            prompt,
-            default_root_prompt().body,
-            "no workspace file ⇒ compiled-in default root prompt"
-        );
+        let _ = peer_child_agent_config(&config, tmp.path());
     }
 
     /// Persona: an explicit `routing.root_prompt` file wins over both
@@ -886,9 +883,9 @@ mod tests {
             "---\ndescription: \"Override\"\n---\n\nOVERRIDE_MARKER persona.\n",
         )
         .unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("root.md"), "workspace persona\n").unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::create_dir_all(&roles_dir).unwrap();
+        std::fs::write(roles_dir.join("root.md"), "workspace persona\n").unwrap();
 
         let config = test_config(
             "persona-test",
@@ -914,14 +911,14 @@ mod tests {
     #[test]
     fn peer_agent_role_body_replaces_persona_prompt() {
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::create_dir_all(&roles_dir).unwrap();
         std::fs::write(
-            agents_dir.join("channel-comm.md"),
+            roles_dir.join("channel-comm.md"),
             "---\ndescription: \"Channel voice\"\n---\n\nYou are CHANNEL_ROLE_MARKER, the peer-facing voice.\n",
         )
         .unwrap();
-        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+        std::fs::write(roles_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
 
         let config = test_config(
             "persona-test",
@@ -946,14 +943,17 @@ mod tests {
         );
     }
 
-    /// Directory layout (`agents/<name>/AGENT.md`) resolves too —
+    /// Directory layout (`roles/<name>/ROLE.md`) resolves too —
     /// same lookup order as the Agent tool.
     #[test]
     fn peer_agent_role_resolves_directory_layout() {
         let tmp = tempfile::tempdir().unwrap();
-        let role_dir = tmp.path().join("agents").join("channel-comm");
+        let roles_dir = tmp.path().join("roles");
+        let role_dir = roles_dir.join("channel-comm");
         std::fs::create_dir_all(&role_dir).unwrap();
-        std::fs::write(role_dir.join("AGENT.md"), "DIR_LAYOUT_ROLE_MARKER\n").unwrap();
+        std::fs::write(role_dir.join("ROLE.md"), "DIR_LAYOUT_ROLE_MARKER\n").unwrap();
+        // The trunk's root role must exist (no render-time fallback).
+        std::fs::write(roles_dir.join("root.md"), "ROOT_PERSONA\n").unwrap();
 
         let config = test_config(
             "persona-test",
@@ -975,9 +975,9 @@ mod tests {
     #[test]
     fn peer_agent_missing_role_falls_back_to_root_persona() {
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::create_dir_all(&roles_dir).unwrap();
+        std::fs::write(roles_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
 
         let config = test_config(
             "persona-test",
@@ -999,10 +999,10 @@ mod tests {
     #[test]
     fn peer_agent_none_inherits_root_persona() {
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
-        std::fs::write(agents_dir.join("channel-comm.md"), "role body\n").unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::create_dir_all(&roles_dir).unwrap();
+        std::fs::write(roles_dir.join("root.md"), "PERSONA_MARKER persona\n").unwrap();
+        std::fs::write(roles_dir.join("channel-comm.md"), "role body\n").unwrap();
 
         let config = test_config(
             "persona-test",

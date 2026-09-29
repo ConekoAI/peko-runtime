@@ -15,7 +15,7 @@
 //!
 //! | Port method                                | Executor entry point                                                                                              |
 //! |--------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
-//! | [`is_subagent_enabled`]                    | `principal_capabilities` snapshot → `Capability::is_granted("agent:<name>")`; fail-closed when no snapshot is registered |
+//! | [`is_subagent_enabled`]                    | `principal_capabilities` snapshot → `Capability::is_granted("role:<name>")`; fail-closed when no snapshot is registered |
 //! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat). Workspace is required: the global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`) was retired in Sprint 8 Commit 2 |
 //! | [`audit_spawn`]                            | `observability.audit("SubagentSpawn", ...)` — no-op when no hub is attached                                        |
 //! | [`execute_and_wait`]                       | `SubagentExecutor::execute_and_wait` — returns the projected `SubagentRunView`                                     |
@@ -67,11 +67,11 @@ impl SubagentExecutorRuntime {
     /// Resolve an agent prompt from the principal's agents directory.
     ///
     /// Two on-disk shapes are supported:
-    /// - directory layout: `<agents_dir>/<name>/AGENT.md`
-    /// - flat layout: `<agents_dir>/<name>.md`
+    /// - directory layout: `<roles_dir>/<name>/AGENT.md`
+    /// - flat layout: `<roles_dir>/<name>.md`
     ///
     /// **Phase A.** Caller passes the typed
-    /// `SharedLayout::agents_dir` directly rather than the
+    /// `SharedLayout::roles_dir` directly rather than the
     /// workspace root + a hand-rolled `"agents"` join.
     ///
     /// Errors if neither exists.
@@ -82,9 +82,9 @@ impl SubagentExecutorRuntime {
     /// body, are surfaced through the `AgentPrompt` struct; the
     /// spawn path constructs the child `Agent`'s `AgentConfig`
     /// from them as needed.
-    fn resolve_principal_agent(name: &str, agents_dir: &Path) -> anyhow::Result<Arc<AgentPrompt>> {
-        let dir_layout = agents_dir.join(name).join("AGENT.md");
-        let flat_layout = agents_dir.join(format!("{name}.md"));
+    fn resolve_principal_agent(name: &str, roles_dir: &Path) -> anyhow::Result<Arc<AgentPrompt>> {
+        let dir_layout = roles_dir.join(name).join("ROLE.md");
+        let flat_layout = roles_dir.join(format!("{name}.md"));
 
         let agent_md = if dir_layout.exists() {
             dir_layout
@@ -117,12 +117,12 @@ impl SubagentExecutorRuntime {
 #[async_trait]
 impl SubagentRuntime for SubagentExecutorRuntime {
     fn is_subagent_enabled(&self, agent: &str) -> bool {
-        // ADR-019/Track B: enforce the per-principal agent capability
+        // ADR-019/Track B: enforce the per-principal role capability
         // before loading any on-disk config. Missing authorization context
         // is denied, matching the canonical tool-execution funnel.
         self.executor.principal_capabilities().is_some_and(|caps| {
             let required =
-                crate::extensions::framework::types::Capability::new(format!("agent:{agent}"));
+                crate::extensions::framework::types::Capability::new(format!("role:{agent}"));
             caps.is_granted(&required)
         })
     }
@@ -157,11 +157,11 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             )
         })?;
 
-        let agents_dir = workspace.join("agents");
-        Self::resolve_principal_agent(name, &agents_dir).with_context(|| {
+        let roles_dir = workspace.join("roles");
+        Self::resolve_principal_agent(name, &roles_dir).with_context(|| {
             format!(
-                "Agent '{name}' not found under {agents_dir:?} \
-                 (looked for <agents>/<name>/AGENT.md and <agents>/<name>.md)"
+                "Agent '{name}' not found under {roles_dir:?} \
+                 (looked for <roles>/<name>/ROLE.md and <roles>/<name>.md)"
             )
         })
     }

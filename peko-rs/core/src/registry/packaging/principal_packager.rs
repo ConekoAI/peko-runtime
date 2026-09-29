@@ -90,7 +90,7 @@ pub struct PrincipalRegistryDescriptor {
 pub struct PrincipalPackager {
     config: PrincipalConfig,
     identity: Identity,
-    agents_dir: Option<PathBuf>,
+    roles_dir: Option<PathBuf>,
     sessions_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,
     local_root: Option<PathBuf>,
@@ -102,16 +102,16 @@ impl PrincipalPackager {
         Self {
             config,
             identity,
-            agents_dir: None,
+            roles_dir: None,
             sessions_dir: None,
             workspace_dir: None,
             local_root: None,
         }
     }
 
-    /// Set the agents (prompts) directory.
-    pub fn with_agents_dir(mut self, dir: impl AsRef<Path>) -> Self {
-        self.agents_dir = Some(dir.as_ref().to_path_buf());
+    /// Set the roles (prompts) directory.
+    pub fn with_roles_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.roles_dir = Some(dir.as_ref().to_path_buf());
         self
     }
 
@@ -239,9 +239,9 @@ impl PrincipalPackager {
         // and the legacy `extensions/` prefix is dropped entirely
         // from packager output.
 
-        self.export_agents(&mut files, &mut manifest)
+        self.export_roles(&mut files, &mut manifest)
             .await
-            .context("Failed to export agents")?;
+            .context("Failed to export roles")?;
 
         // Identity-bearing Local-tier state (ADR-056): the experiential
         // record (`sessions/`), the trunk's self-authored cadence
@@ -278,7 +278,7 @@ impl PrincipalPackager {
         // `skills`, `mcp`, `hooks`, `kb`) are computed from whatever
         // the collector packed.
         let layer_prefixes = [
-            "config", "identity", "agents", "memory", "sessions", "cron", "plans", "tools",
+            "config", "identity", "roles", "memory", "sessions", "cron", "plans", "tools",
             "skills", "mcp", "hooks", "kb", "plugins",
         ];
 
@@ -296,7 +296,7 @@ impl PrincipalPackager {
                 match prefix {
                     "config" => layers.config = Some(digest),
                     "identity" => layers.identity = Some(digest),
-                    "agents" => layers.agents = Some(digest),
+                    "roles" => layers.roles = Some(digest),
                     "memory" => layers.memory = Some(digest),
                     "sessions" => layers.sessions = Some(digest),
                     "cron" => layers.cron = Some(digest),
@@ -379,14 +379,14 @@ impl PrincipalPackager {
         Ok(())
     }
 
-    async fn export_agents(
+    async fn export_roles(
         &self,
         files: &mut HashMap<String, Vec<u8>>,
         manifest: &mut PrincipalManifest,
     ) -> anyhow::Result<()> {
-        if let Some(dir) = &self.agents_dir {
+        if let Some(dir) = &self.roles_dir {
             if dir.exists() {
-                self.export_dir_recursive(dir, "agents", files, manifest)
+                self.export_dir_recursive(dir, "roles", files, manifest)
                     .await?;
             }
         }
@@ -611,16 +611,16 @@ mod tests {
         let config = sample_config("roundtrip", &identity.did);
 
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::create_dir_all(&roles_dir).unwrap();
         std::fs::write(
-            agents_dir.join("researcher.md"),
+            roles_dir.join("researcher.md"),
             b"# Researcher\nPrompt body",
         )
         .unwrap();
 
         let out = tmp.path().join("roundtrip.peko");
-        let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
+        let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
         let path = packager
             .export(PrincipalExportOptions {
                 output_path: Some(out.display().to_string()),
@@ -641,11 +641,11 @@ mod tests {
         let config = sample_config("layers", &identity.did);
 
         let tmp = tempfile::tempdir().unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("a.md"), b"prompt").unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::create_dir_all(&roles_dir).unwrap();
+        std::fs::write(roles_dir.join("a.md"), b"prompt").unwrap();
 
-        let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
+        let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
         let (_files, manifest) = packager
             .collect_files(PrincipalExportOptions::default())
             .await
@@ -654,19 +654,19 @@ mod tests {
         let layers = manifest.layers.expect("layers computed");
         assert!(layers.config.is_some(), "config layer present");
         assert!(layers.identity.is_some(), "identity layer present");
-        assert!(layers.agents.is_some(), "agents layer present");
+        assert!(layers.roles.is_some(), "roles layer present");
         assert!(!manifest.signatures.manifest.is_empty(), "manifest signed");
     }
 
-    /// Build a realistic tier layout for snapshot tests: agents in the
+    /// Build a realistic tier layout for snapshot tests: roles in the
     /// shared root, tooling dirs under the workspace root, sessions +
     /// cron + plans under the local root.
     fn seed_layout(tmp: &tempfile::TempDir, name: &str) -> (PathBuf, PathBuf, PathBuf) {
         let shared_root = tmp.path().join("shared").join(name);
         let local_root = tmp.path().join("data").join(name).join("local");
 
-        std::fs::create_dir_all(shared_root.join("agents")).unwrap();
-        std::fs::write(shared_root.join("agents").join("root.md"), b"# root").unwrap();
+        std::fs::create_dir_all(shared_root.join("roles")).unwrap();
+        std::fs::write(shared_root.join("roles").join("root.md"), b"# root").unwrap();
 
         let tooling = [
             (
@@ -714,7 +714,7 @@ mod tests {
         let (shared_root, local_root, _tmp_path) = seed_layout(&tmp, "snapshot");
 
         let packager = PrincipalPackager::new(config, identity)
-            .with_agents_dir(shared_root.join("agents"))
+            .with_roles_dir(shared_root.join("roles"))
             .with_sessions_dir(local_root.join("sessions"))
             .with_workspace_dir(&shared_root)
             .with_local_root(&local_root);
