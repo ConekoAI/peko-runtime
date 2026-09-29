@@ -198,10 +198,26 @@ impl ToolRuntime {
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(BashTool::new().with_workspace(workspace.clone())),
             Arc::new(ReadTool::new().with_workspace(workspace.clone())),
-            Arc::new(WriteTool::new().with_workspace(workspace.clone())),
+            // ADR-065: Write/Edit acquire a fail-fast per-file lock
+            // keyed on the canonical target path, so agents sharing
+            // this runtime cannot silently clobber each other's edits
+            // (the F33 ParallelGate only serializes within one agent).
+            Arc::new(
+                WriteTool::new()
+                    .with_workspace(workspace.clone())
+                    .with_lock_dir(
+                        crate::extensions::framework::paths::default_data_dir().join("locks"),
+                    ),
+            ),
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
-            Arc::new(EditTool::new().with_workspace(workspace.clone())),
+            Arc::new(
+                EditTool::new()
+                    .with_workspace(workspace.clone())
+                    .with_lock_dir(
+                        crate::extensions::framework::paths::default_data_dir().join("locks"),
+                    ),
+            ),
             Arc::new(CronCreateTool::new()),
             Arc::new(CronDeleteTool::new()),
             Arc::new(CronListTool::new()),

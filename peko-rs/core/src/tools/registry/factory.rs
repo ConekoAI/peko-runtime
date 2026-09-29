@@ -315,7 +315,16 @@ impl ToolFactory {
         registry.register(
             "Write",
             config.enable_granular_fs && config.enable_granular_write,
-            || Arc::new(WriteTool::new().with_workspace(config.workspace_dir.clone())),
+            || {
+                Arc::new(
+                    WriteTool::new()
+                        .with_workspace(config.workspace_dir.clone())
+                        // ADR-065 cross-agent per-file locking
+                        .with_lock_dir(
+                            crate::extensions::framework::paths::default_data_dir().join("locks"),
+                        ),
+                )
+            },
         );
 
         registry.register("Glob", config.enable_granular_fs, || {
@@ -329,7 +338,16 @@ impl ToolFactory {
         registry.register(
             "Edit",
             config.enable_granular_fs && config.enable_granular_write,
-            || Arc::new(EditTool::new().with_workspace(config.workspace_dir.clone())),
+            || {
+                Arc::new(
+                    EditTool::new()
+                        .with_workspace(config.workspace_dir.clone())
+                        // ADR-065 cross-agent per-file locking
+                        .with_lock_dir(
+                            crate::extensions::framework::paths::default_data_dir().join("locks"),
+                        ),
+                )
+            },
         );
 
         // Shell tool (Bash)

@@ -7,9 +7,7 @@
 //! - Cross-platform support (Unix-style advisory locks)
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -45,7 +43,24 @@ impl FileLock {
     /// * `Ok(FileLock)` - Lock acquired successfully
     /// * `Err` - Timeout or other error
     pub async fn acquire(session_path: impl AsRef<Path>, timeout_ms: u64) -> Result<Self> {
-        let lock_path = Self::lock_path(&session_path);
+        Self::acquire_at(Self::lock_path(&session_path), timeout_ms).await
+    }
+
+    /// Acquire a lock at an explicit lock-file path
+    ///
+    /// Unlike [`FileLock::acquire`], the caller supplies the lock file
+    /// location directly. This is the entry point for lock schemes whose
+    /// lock path cannot be derived from the data path by a fixed rule —
+    /// e.g. [`crate::WorkspaceFileLock`], which hashes the canonical
+    /// target path into a runtime-owned lock directory (deriving
+    /// `<data>.lock` beside the data file would collide for `foo.txt`
+    /// vs `foo.md`).
+    ///
+    /// # Arguments
+    /// * `lock_path` - Full path of the lock file to create
+    /// * `timeout_ms` - Maximum time to wait for the lock
+    pub async fn acquire_at(lock_path: impl AsRef<Path>, timeout_ms: u64) -> Result<Self> {
+        let lock_path = lock_path.as_ref().to_path_buf();
         let start = SystemTime::now();
         let timeout = Duration::from_millis(timeout_ms);
 
@@ -245,76 +260,16 @@ impl Drop for FileLock {
     }
 }
 
-/// Lock manager for coordinating access to multiple session files.
-///
-/// Uses an internal reference-counted map of held locks to avoid
-/// double-locking the same path in the same process.
-pub struct LockManager {
-    // Track held locks to prevent double-locking in the same process.
-    // The previous implementation reused `peko_extension_host::registry::SimpleRegistry`
-    // (≈35k-line dep tree); `peko-fs-persistence` is a leaf utility crate
-    // so we keep a plain `HashMap` here.
-    held: Mutex<HashMap<PathBuf, u32>>,
-}
-
-impl LockManager {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            held: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Acquire a lock, tracking it in the manager
-    pub async fn acquire(
-        &self,
-        session_path: impl AsRef<Path>,
-        timeout_ms: u64,
-    ) -> Result<FileLock> {
-        let path = session_path.as_ref().to_path_buf();
-
-        // Check if we already hold this lock
-        {
-            let held = self.held.lock().unwrap();
-            if held.contains_key(&path) {
-                // Increment reference count
-                drop(held);
-                let mut held = self.held.lock().unwrap();
-                *held.entry(path.clone()).or_insert(0) += 1;
-            }
-        }
-
-        let lock = FileLock::acquire(&path, timeout_ms).await?;
-
-        // Track the lock
-        let mut held = self.held.lock().unwrap();
-        *held.entry(path).or_insert(0) += 1;
-
-        Ok(lock)
-    }
-
-    /// Release a lock through the manager
-    pub async fn release(&self, lock: FileLock) -> Result<()> {
-        let path = lock.lock_path.clone();
-        lock.release().await?;
-
-        let mut held = self.held.lock().unwrap();
-        if let Some(count) = held.get_mut(&path) {
-            *count -= 1;
-            if *count == 0 {
-                held.remove(&path);
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Default for LockManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Lock manager for coordinating access to multiple session files.
+//
+// **Removed (ADR-065).** `LockManager` was dead code — nothing in the
+// workspace constructed it — and its refcount branch was broken: when
+// a lock was already held in-process it incremented the refcount but
+// then *still* called `FileLock::acquire`, which fails against the
+// holder's own lock file. Cross-process locking now goes through
+// `FileLock` directly (session stores) or `WorkspaceFileLock`
+// (workspace files); in-process serialization for tool dispatch is
+// the engine's `ParallelGate`, which is the correct layer for it.
 
 #[cfg(test)]
 mod tests {

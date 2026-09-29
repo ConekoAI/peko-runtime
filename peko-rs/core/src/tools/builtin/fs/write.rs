@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use peko_fs_persistence::{WorkspaceFileLock, DEFAULT_WORKSPACE_LOCK_TIMEOUT_MS};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
@@ -44,6 +45,10 @@ fn default_encoding() -> String {
 pub struct WriteTool {
     /// Default workspace directory (for relative paths)
     workspace_dir: Option<PathBuf>,
+    /// Directory holding cross-agent workspace lock files (ADR-065).
+    /// `None` disables locking (legacy/test construction sites); the
+    /// daemon wiring passes `<data_dir>/locks`.
+    lock_dir: Option<PathBuf>,
 }
 
 impl WriteTool {
@@ -52,6 +57,7 @@ impl WriteTool {
     pub fn new() -> Self {
         Self {
             workspace_dir: None,
+            lock_dir: None,
         }
     }
 
@@ -59,6 +65,17 @@ impl WriteTool {
     #[must_use]
     pub fn with_workspace(mut self, path: impl Into<PathBuf>) -> Self {
         self.workspace_dir = Some(path.into());
+        self
+    }
+
+    /// Configure the workspace lock directory (ADR-065).
+    ///
+    /// When set, every write acquires a fail-fast per-file lock keyed
+    /// on the canonical target path so concurrent agents on the same
+    /// runtime cannot silently clobber each other's edits.
+    #[must_use]
+    pub fn with_lock_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.lock_dir = Some(path.into());
         self
     }
 
@@ -84,6 +101,16 @@ impl WriteTool {
         encoding: &str,
     ) -> Result<serde_json::Value> {
         let resolved = self.resolve_path(file_path);
+
+        // ADR-065: fail-fast cross-agent lock keyed on the canonical
+        // target path. Held until the end of this function (Drop).
+        let _lock = match &self.lock_dir {
+            Some(dir) => Some(
+                WorkspaceFileLock::acquire_in(dir, &resolved, DEFAULT_WORKSPACE_LOCK_TIMEOUT_MS)
+                    .await?,
+            ),
+            None => None,
+        };
 
         // Decode content if base64 encoded
         let decoded_content = if encoding == "base64" {
@@ -246,6 +273,8 @@ Write binary data:
     /// F33: filesystem-mutating tool — opt out of parallel dispatch.
     /// Two concurrent `Write` calls could clobber each other; a `Read`
     /// racing with `Write` can observe a half-written file.
+    /// (ADR-065 covers *cross-agent* contention via `WorkspaceFileLock`;
+    /// this flag covers contention within one agent's runtime.)
     fn parallelizable(&self) -> bool {
         false
     }
@@ -418,5 +447,60 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).await.unwrap();
         assert_eq!(content, "absolute content");
+    }
+
+    #[tokio::test]
+    async fn test_write_lock_dir_busy_error_on_contended_file() {
+        // ADR-065: with a lock dir configured, a Write targeting a file
+        // whose workspace lock is already held must fail fast with a
+        // "file busy" error instead of silently clobbering.
+        let temp_dir = TempDir::new().unwrap();
+        let lock_dir = temp_dir.path().join("locks");
+        let target = temp_dir.path().join("shared.txt");
+        fs::write(&target, "original").await.unwrap();
+
+        let tool = WriteTool::new()
+            .with_workspace(temp_dir.path())
+            .with_lock_dir(&lock_dir);
+
+        let held = WorkspaceFileLock::acquire_in(&lock_dir, &target, 1_000)
+            .await
+            .unwrap();
+
+        let params = json!({
+            "file_path": "shared.txt",
+            "content": "clobber attempt"
+        });
+        let result = tool.execute(params.clone()).await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("file busy"), "unexpected error: {err}");
+
+        // The failed write must not have touched the file.
+        let content = fs::read_to_string(&target).await.unwrap();
+        assert_eq!(content, "original");
+
+        // After the holder releases, the write goes through.
+        held.release().await.unwrap();
+        let result = tool.execute(params).await.unwrap();
+        assert_eq!(result["bytes_written"], 15);
+    }
+
+    #[tokio::test]
+    async fn test_write_without_lock_dir_skips_locking() {
+        // Legacy construction (no lock dir) must not require any lock
+        // infrastructure — the pre-ADR-065 behavior.
+        let temp_dir = TempDir::new().unwrap();
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
+
+        let params = json!({
+            "file_path": "plain.txt",
+            "content": "no locks here"
+        });
+        tool.execute(params).await.unwrap();
+
+        let content = fs::read_to_string(temp_dir.path().join("plain.txt"))
+            .await
+            .unwrap();
+        assert_eq!(content, "no locks here");
     }
 }
