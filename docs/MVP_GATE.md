@@ -102,15 +102,22 @@ Currently the primary install path is dead: no release has ever been cut, and
 
 ## 5. Fresh field test on the current surface
 
-The last human e2e field report is 2026-08-13
-(`scripts/e2e/reports/`); workflows, kb/, genesis, the tiered prompt, and the
-role terminology all landed after it.
+The last human e2e field report is 2026-08-13 (historical reports moved to
+`peko-benchmark/reports/field-history/` when the `scripts/e2e/` harness was
+retired on 2026-09-30); workflows, kb/, genesis, the tiered prompt, and the
+role terminology all landed after it. Field/capability testing now lives in
+the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
 
 - [ ] **One non-technical-user session** against the release artifact:
       install → create peko → chat → set a reminder (cron) → receive it →
-      install a skill → use it. Report filed under `scripts/e2e/reports/`.
+      install a skill → use it. Report filed under
+      `peko-benchmark/reports/` (this repo no longer carries a field-test
+      harness).
 - [ ] **Zero P0 findings open** from that report (P0 = blocks the core loop:
       can't install, can't converse, loses messages, crashes the daemon).
+- [ ] **peko-benchmark suite run** against the release artifact: all tasks
+      in the repo's `tasks/` pass (or failures are classified and waived
+      in writing), per its README methodology (pinned model, n ≥ 3 reps).
 
 ## 6. Security baseline is the shipped state
 

@@ -4,6 +4,38 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Iteration cap removed from the agentic loop (2026-09-30)
+
+The agentic loop's hard-coded `max_iterations = 10` ceiling
+(`peko_engine::AgenticLoop`) is gone. A live benchmark run (peko-benchmark,
+first-contact suite) showed the cap binding on every non-trivial task —
+agents diagnosed the work correctly and were then cut off mid-fix with
+`Max iterations reached (10)`. The loop now terminates only on natural
+completion, abort/interrupt, quota trip, or provider error. The iteration
+*counter* stays for telemetry (`AgenticResult.iterations`, the CLI summary
+footer's `iterations=N`).
+
+- Removed `AgenticLoop::with_max_iterations` and the cap-check branch
+  (including its `LifecyclePhase::MaxIterations` emit and
+  `fire_stop_hook("max_iterations")` call).
+- Removed `LifecyclePhase::MaxIterations` from `peko-events` — source-
+  breaking for downstream matchers (the phase can no longer occur); not
+  serde-wire-breaking (`LifecyclePhase` is not serialized). `Stop` hook
+  payloads no longer carry `reason: "max_iterations"`.
+- Removed `AgenticError::MaxIterationsReached` / `max_iterations_cap()`
+  and the now-meaningless `From<LifecyclePhase> for AgenticError` lift.
+- `{{iteration_budget}}` is now a bare iteration counter
+  (`Iteration N.` — no "of max", no wrap-up warnings); the placeholder
+  itself is retained so existing templates keep rendering.
+
+### `scripts/e2e/` retired — field testing moved to peko-benchmark (2026-09-30)
+
+The manual shell field-test harness (`scripts/e2e/flows|lib|run-case.sh`)
+is removed; curated, graded capability testing now lives in the sibling
+`peko-benchmark` repo. The historical field-test reports (2026-08-01 →
+2026-08-13) moved with it to `peko-benchmark/reports/field-history/`.
+`docs/MVP_GATE.md` gate 5 updated accordingly.
+
 ### Per-file workspace locks for cross-agent Write/Edit (ADR-065) (2026-09-29)
 
 Multiple agents sharing one runtime could concurrently `Write`/`Edit`

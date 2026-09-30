@@ -218,16 +218,15 @@ pub enum HookPoint {
     AgentShutdown,
 
     /// F31x: post-agent-run notification. Fires *after* the agent
-    /// loop exits (success / cap-hit / soft-interrupt / error),
+    /// loop exits (success / soft-interrupt / error),
     /// once per `run_with_resume` call. Differs from
     /// `AgentShutdown` in that `AgentShutdown` fires once per
     /// process teardown (from `Agent::stop()`); `Stop` fires once
     /// per run. Observe-only in v1.
     ///
     /// Handlers receive: `HookInput::Json(serde_json::Value)`
-    /// carrying `{ "reason": "end"|"max_iterations"|"interrupted"|"error",
-    /// "iterations": N, "max_iterations": N, "interrupted": bool,
-    /// "success": bool }`.
+    /// carrying `{ "reason": "end"|"interrupted"|"error",
+    /// "iterations": N, "interrupted": bool, "success": bool }`.
     /// Handlers return: `HookResult::PassThrough` or
     /// `HookResult::Continue(HookOutput::Unit)`.
     Stop,

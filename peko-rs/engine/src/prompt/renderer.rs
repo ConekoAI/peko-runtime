@@ -1455,29 +1455,13 @@ mod tests {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{iteration_budget}}".to_string();
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 3,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 3 });
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Iteration budget"));
-        assert!(rendered.contains("Iteration 3 of 10"));
+        assert!(rendered.contains("Iteration 3."));
+        // Bare counter: no ceiling language.
+        assert!(!rendered.contains(" of "));
         assert!(!rendered.contains("Approaching limit"));
-    }
-
-    #[tokio::test]
-    async fn render_includes_iteration_budget_approaching_limit() {
-        let renderer = PromptRenderer::new(empty_funnel());
-        let mut ctx = empty_ctx();
-        ctx.body = "{{iteration_budget}}".to_string();
-        // iter 9 of 10 triggers "Approaching limit" but not "Stop and finalize"
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 9,
-            max_iterations: 10,
-        });
-        let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(rendered.contains("Approaching limit"));
-        assert!(!rendered.contains("Stop and finalize"));
     }
 
     #[tokio::test]
@@ -1565,10 +1549,7 @@ mod tests {
 
         let prefix_first = renderer.render_cache_stable(&ctx).await;
         // Mutate only volatile fields; prefix must not change.
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 5,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 5 });
         ctx.soft_cancel_pending = true;
         let prefix_second = renderer.render_cache_stable(&ctx).await;
 
@@ -1587,10 +1568,7 @@ mod tests {
                     {{iteration_budget}}\n{{agents}}\n{{skills}}\n{{session_context}}"
             .to_string();
         ctx.principal_memory = Some("remember this".to_string());
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 1,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
 
         let prefix = renderer.render_cache_stable(&ctx).await;
         assert!(!prefix.contains("{{"), "prefix was: {prefix}");
@@ -1656,7 +1634,7 @@ mod tests {
     }
 
     /// The runtime-context message is wrapped in the
-    /// `<runtime-context>` envelope; the iteration-budget line rides
+    /// `<runtime-context>` envelope; the iteration-counter line rides
     /// every render (it is the always-on section), and mutating it
     /// between renders changes the message (proves the tail isn't
     /// accidentally stable).
@@ -1665,10 +1643,7 @@ mod tests {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut state = RuntimeContextState::default();
         let mut ctx = empty_ctx();
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 1,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
 
         let first = renderer
             .render_runtime_context(&ctx, &mut state)
@@ -1676,18 +1651,16 @@ mod tests {
             .expect("iteration budget is always due");
         assert!(first.starts_with("<runtime-context>\n"), "got: {first}");
         assert!(first.ends_with("\n</runtime-context>"), "got: {first}");
-        assert!(first.contains("Iteration 1 of 10"), "got: {first}");
+        assert!(first.contains("Iteration 1."), "got: {first}");
 
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 9,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 9 });
         let second = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
             .expect("iteration budget is always due");
-        assert!(second.contains("Iteration 9 of 10"), "got: {second}");
-        assert!(second.contains("Approaching limit"), "got: {second}");
+        assert!(second.contains("Iteration 9."), "got: {second}");
+        // No ceiling language — the loop has no iteration cap.
+        assert!(!second.contains("Approaching limit"), "got: {second}");
     }
 
     /// Change detection: the second render with unchanged inputs
@@ -1701,10 +1674,7 @@ mod tests {
         let mut ctx = empty_ctx();
         ctx.principal_memory = Some("remember this".to_string());
         ctx.conversation_channel = Some("chan_abc123".to_string());
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 1,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
 
         // Iteration 1: every non-empty section is due (state is cold).
         let first = renderer
@@ -1722,15 +1692,12 @@ mod tests {
 
         // Iteration 2: unchanged inputs → the heavy sections are NOT
         // re-injected; only the fresh iteration-budget line rides.
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 2,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 2 });
         let second = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
             .expect("iteration budget is always due");
-        assert!(second.contains("Iteration 2 of 10"), "got: {second}");
+        assert!(second.contains("Iteration 2."), "got: {second}");
         assert!(!second.contains("Current time:"), "got: {second}");
         assert!(!second.contains("remember this"), "got: {second}");
         assert!(!second.contains("## Available Roles"), "got: {second}");
@@ -1738,10 +1705,7 @@ mod tests {
 
         // Iteration 3: memory changed → only memory is re-injected.
         ctx.principal_memory = Some("remember this AND that".to_string());
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 3,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 3 });
         let third = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
@@ -1760,10 +1724,7 @@ mod tests {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut state = RuntimeContextState::default();
         let mut ctx = empty_ctx();
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 1,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
 
         let first = renderer
             .render_runtime_context(&ctx, &mut state)
@@ -1783,10 +1744,7 @@ mod tests {
 
         // A second render in the same minute must NOT re-inject the
         // clock (change detection sees the identical minute string).
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 2,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 2 });
         let second = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
@@ -1802,10 +1760,7 @@ mod tests {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut state = RuntimeContextState::default();
         let mut ctx = empty_ctx();
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 1,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
         let body = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
@@ -1864,10 +1819,7 @@ mod tests {
         let renderer = PromptRenderer::new(catalog_funnel());
         let mut state = RuntimeContextState::default();
         let mut ctx = empty_ctx();
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 1,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
         let body = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
@@ -1919,10 +1871,7 @@ mod tests {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut state = RuntimeContextState::default();
         let mut ctx = empty_ctx();
-        ctx.iteration_budget = Some(IterationBudgetState {
-            iteration: 1,
-            max_iterations: 10,
-        });
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
         let body = renderer
             .render_runtime_context(&ctx, &mut state)
             .await

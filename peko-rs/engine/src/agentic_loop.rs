@@ -85,7 +85,6 @@ pub struct AgenticLoop {
     /// is built inside `new` from the concrete `Provider` parameter via
     /// `BackgroundCompactorFactoryAdapter`.
     compactor_factory: Arc<dyn BackgroundCompactorFactory>,
-    max_iterations: usize,
     system_prompt: String,
     /// Extension core for skill loading, tool registration, and hook
     /// firing. Phase 9b.N.5b.4 switched the field from the concrete
@@ -300,7 +299,6 @@ impl AgenticLoop {
             agent,
             provider,
             compactor_factory,
-            max_iterations: 10,
             system_prompt: placeholder_prompt,
             extension_core,
             caller_id: None,
@@ -413,13 +411,6 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_async_completion_queue(mut self, queue: Arc<dyn AsyncInboxLike>) -> Self {
         self.async_completion_queue = Some(queue);
-        self
-    }
-
-    /// Set maximum iterations
-    #[must_use]
-    pub fn with_max_iterations(mut self, max: usize) -> Self {
-        self.max_iterations = max;
         self
     }
 
@@ -890,7 +881,7 @@ impl AgenticLoop {
     /// Observe-only — the loop's return value is unaffected by handler
     /// output. The `payload` object is forwarded via `HookInput::Json`
     /// so handlers can pattern-match on `reason` (`"end"`,
-    /// `"interrupted"`, `"max_iterations"`) and the iteration count.
+    /// `"interrupted"`) and the iteration count.
     /// `role_name` + `agent_did` are folded into the same payload
     /// so the `AfterAgent` handler sees the agent identity.
     ///
@@ -1367,43 +1358,6 @@ impl AgenticLoop {
                     compaction_usage.input, compaction_usage.output
                 );
                 total_usage.accumulate(&compaction_usage);
-            }
-
-            if iteration > self.max_iterations {
-                warn!("Max iterations ({}) reached", self.max_iterations);
-                // F31a: emit a dedicated phase so IPC consumers can
-                // distinguish cap-hit from a clean End. `success: false`
-                // surfaces the failure to the caller; the configured
-                // ceiling travels on the Lifecycle event's error field
-                // and is also folded into the final_answer so the IPC
-                // `principal_log` stream-renderer can show it.
-                on_event(AgenticEvent::Lifecycle {
-                    run_id: run_id.clone(),
-                    phase: LifecyclePhase::MaxIterations {
-                        iterations: self.max_iterations,
-                    },
-                    error: Some(format!("max_iterations ({})", self.max_iterations)),
-                });
-                // F31x: Stop hook observe-only — cap-hit signal
-                // carries the configured ceiling so handlers can
-                // distinguish "user asked for N turns" from other
-                // exit reasons.
-                self.fire_stop_hook(
-                    &run_id,
-                    serde_json::json!({
-                        "reason": "max_iterations",
-                        "iterations": self.max_iterations,
-                    }),
-                )
-                .await;
-                return Ok(AgenticResult {
-                    success: false,
-                    final_answer: format!("Max iterations reached ({})", self.max_iterations),
-                    tool_calls: vec![],
-                    iterations: iteration,
-                    usage: total_usage,
-                    interrupted: false,
-                });
             }
 
             // Emit running event
@@ -2243,7 +2197,7 @@ impl AgenticLoop {
 
             // F31x: Stop hook observe-only — clean End carries
             // `reason: "end"` and the iteration count so handlers
-            // can distinguish a normal completion from cap-hit /
+            // can distinguish a normal completion from a
             // soft-interrupt.
             self.fire_stop_hook(
                 &run_id,
@@ -2381,9 +2335,9 @@ impl AgenticLoop {
         // `remove_missing=true` in `PromptRenderer::render_for_iteration`).
         //
         // - `iteration_budget`: drawn from the per-iteration counter
-        //   passed in by `run_inner_with_meter` plus the loop's
-        //   `max_iterations` ceiling. Always populated so a template
-        //   that opts in sees progress even on iteration 1.
+        //   passed in by `run_inner_with_meter` (a bare counter — the
+        //   loop has no iteration ceiling). Always populated so a
+        //   template that opts in sees progress even on iteration 1.
         // - `quota_tripped`: rising-edge flag. Read the live
         //   `QuotaMeter::is_exhausted()` from the loop's principal
         //   meter (not via `QuotaScope::current()` — the inner
@@ -2407,10 +2361,7 @@ impl AgenticLoop {
         //   arrives. Surfaced verbatim at `{{soft_cancel}}`.
         // - `capability_diff`: already wired in Phase 1 via the
         //   tracker's `observe` call above.
-        let iteration_budget = Some(crate::IterationBudgetState {
-            iteration,
-            max_iterations: self.max_iterations,
-        });
+        let iteration_budget = Some(crate::IterationBudgetState { iteration });
 
         // Rising-edge trip detection: only surface the banner on the
         // iteration the meter first goes not-exhausted → exhausted.
