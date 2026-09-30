@@ -11,10 +11,6 @@
 //!   which already carries `used` / `limit` / `window_end` for
 //!   user-facing "what did I exceed?" UX. `#[from]` lets `?`
 //!   propagate without an explicit wrapper.
-//! - **Max-iteration cap-hit** — F31a's `LifecyclePhase::MaxIterations
-//!   { iterations }` signal is lifted into `MaxIterationsReached
-//!   { iterations }` for callers that branch on the typed error
-//!   rather than the lifecycle event.
 //!
 //! Other paths (tool errors, transport errors, subagent spawn
 //! failures) remain `anyhow::Error` at the seam today; their
@@ -38,18 +34,6 @@ pub enum AgenticError {
     /// at Z)" without re-parsing.
     #[error(transparent)]
     Quota(#[from] QuotaError),
-
-    /// F31a lift: `LifecyclePhase::MaxIterations { iterations }` carried
-    /// into the typed-error surface. `AgenticResult.success` will be
-    /// `false` on this path (the existing cap-hit still returns
-    /// `Ok(AgenticResult { success: false, ... })` — this variant is
-    /// for callers that branch on the error stream rather than the
-    /// result struct, e.g. tests asserting on `result.unwrap_err()`).
-    #[error("max iterations reached ({iterations})")]
-    MaxIterationsReached {
-        /// Configured iteration ceiling.
-        iterations: usize,
-    },
 
     /// F31b lift: `stream_max_retries` exhausted on a transient
     /// mid-stream or start-stream error. Carries the original error
@@ -93,18 +77,6 @@ impl AgenticError {
         }
     }
 
-    /// If this is a max-iterations cap-hit, return the configured
-    /// ceiling. Lets callers check `err.max_iterations_cap()` to
-    /// render "extend by N more rounds?" UX without matching
-    /// `LifecyclePhase::MaxIterations` separately.
-    #[must_use]
-    pub fn max_iterations_cap(&self) -> Option<usize> {
-        match self {
-            AgenticError::MaxIterationsReached { iterations } => Some(*iterations),
-            _ => None,
-        }
-    }
-
     /// If this is a streaming-retry exhaustion, return
     /// `(attempts, max_attempts, cause)`. Lets callers render
     /// "retried N/M times before giving up: <reason>" UX.
@@ -133,45 +105,9 @@ impl AgenticError {
     }
 }
 
-/// F31a → F31c lift: let callers turn a `LifecyclePhase::MaxIterations`
-/// straight into `AgenticError::MaxIterationsReached` so the typed
-/// error and the lifecycle event can flow from the same source.
-impl From<crate::LifecyclePhase> for AgenticError {
-    fn from(phase: crate::LifecyclePhase) -> Self {
-        match phase {
-            crate::LifecyclePhase::MaxIterations { iterations } => {
-                AgenticError::MaxIterationsReached { iterations }
-            }
-            // Other phases don't represent typed errors. Map them to
-            // a generic `RetryLimit`-style fallback isn't right — let
-            // the caller decide. An `unimplemented!()` here would be
-            // loud; logging via `tracing` is silent but at least
-            // observable in production.
-            other => {
-                tracing::warn!(
-                    "AgenticError::from(LifecyclePhase): unmapped phase {other:?}, \
-                     callers should only convert MaxIterations variants"
-                );
-                // Fall back to a `RetryLimit` with `cause: "..."` —
-                // there's no good answer for "what's an arbitrary
-                // lifecycle phase as an error?" Returning the phase
-                // name as a `String` debug-formatted message is the
-                // least bad option. Production callers should not hit
-                // this path.
-                AgenticError::RetryLimit {
-                    attempts: 0,
-                    max_attempts: 0,
-                    cause: format!("unmapped lifecycle phase: {other:?}"),
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::LifecyclePhase;
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -196,17 +132,13 @@ mod tests {
     }
 
     #[test]
-    fn test_max_iterations_from_lifecycle_phase() {
-        let phase = LifecyclePhase::MaxIterations { iterations: 7 };
-        let ae: AgenticError = phase.into();
-        assert_eq!(ae.max_iterations_cap(), Some(7));
-    }
-
-    #[test]
     fn test_as_quota_returns_none_for_other_variants() {
-        let ae = AgenticError::MaxIterationsReached { iterations: 5 };
+        let ae = AgenticError::RetryLimit {
+            attempts: 5,
+            max_attempts: 5,
+            cause: "connection reset".to_string(),
+        };
         assert!(ae.as_quota().is_none());
-        assert_eq!(ae.max_iterations_cap(), Some(5));
     }
 
     #[test]

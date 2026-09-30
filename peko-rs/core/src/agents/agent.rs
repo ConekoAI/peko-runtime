@@ -1106,8 +1106,8 @@ impl Agent {
         // F31x: fire AfterAgent (per-turn completion notification).
         // Distinct from AgentShutdown (process-level teardown): a
         // single agent process can run many turns, but each
-        // `run_with_resume` that ends (success, cap-hit, or
-        // soft-interrupt) gets its own AfterAgent signal. Observe-only
+        // `run_with_resume` that ends (success or soft-interrupt)
+        // gets its own AfterAgent signal. Observe-only
         // — loop continues regardless of handler output.
         //
         // Note: this site is currently dead code (no production

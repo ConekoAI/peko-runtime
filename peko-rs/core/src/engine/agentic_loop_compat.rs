@@ -806,143 +806,6 @@ mod tests {
     }
 
     // ===================================================================
-    // RT-006: Engine MUST support up to 10 iterations per turn
-    // ===================================================================
-    #[tokio::test]
-    #[serial_test::serial(core)]
-    async fn test_rt006_max_iterations_enforced() {
-        // Force the encrypted-file identity fallback — see
-        // `peko_identity::init_test_env` for the rationale.
-        peko_identity::init_test_env();
-        ensure_global_core();
-        let temp_dir = TempDir::new().unwrap();
-        let (provider, mock) = mock_provider();
-
-        // Queue 12 tool-call responses to try to exceed the default max of 10
-        for i in 0..12 {
-            mock.queue_tool_call(
-                format!("tc_{i}"),
-                "test_tool",
-                serde_json::json!({"value": i}),
-            );
-        }
-
-        let config = test_agent_config("rt006-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
-        let loop_ = AgenticLoop::new(
-        agent.clone(),
-        provider.clone(),
-        extension_core,
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-        .await
-        .with_max_iterations(5); // Use a smaller max for faster test
-
-        let session = test_session("rt006-agent", temp_dir.path()).await;
-
-        // F31a: capture the Lifecycle phase stream so we can assert
-        // the dedicated `MaxIterations` variant fires (vs. the
-        // pre-F31a generic `End`).
-        use std::sync::{Arc, Mutex};
-        let phases: Arc<Mutex<Vec<LifecyclePhase>>> = Arc::new(Mutex::new(Vec::new()));
-        let phases_for_cb = phases.clone();
-        let result = loop_
-            .run_with_resume(
-                "Trigger tool loop",
-                Vec::new(),
-                move |event| {
-                    if let AgenticEvent::Lifecycle { phase, .. } = event {
-                        phases_for_cb.lock().unwrap().push(phase);
-                    }
-                },
-                &session,
-                None,
-            )
-            .await;
-
-        assert!(result.is_ok(), "Loop should complete without panic");
-        let result = result.unwrap();
-
-        // Should have hit max iterations (iteration starts at 0, increments at top,
-        // check is `iteration > max_iterations`. With max=5: runs 1..=5, then on 6 triggers.)
-        assert!(
-            result.iterations > 5,
-            "Should exceed max_iterations threshold before stopping, got {}",
-            result.iterations
-        );
-
-        // F31a: cap-hit is now a failure surface, not a success.
-        assert!(
-            !result.success,
-            "Cap-hit should surface as success=false so callers can distinguish from a clean End"
-        );
-        assert!(
-            !result.interrupted,
-            "Cap-hit is not a soft-interrupt; interrupted must be false"
-        );
-        // final_answer is still human-readable but the contract is now
-        // "look at the Lifecycle event for the structured signal" — the
-        // string only needs to mention the cap-hit.
-        assert!(
-            result.final_answer.contains("Max iterations"),
-            "final_answer should describe cap-hit, got: {:?}",
-            result.final_answer
-        );
-
-        // The dedicated `LifecyclePhase::MaxIterations` variant must fire.
-        let phases = phases.lock().unwrap();
-        assert!(
-        phases.iter().any(|p| matches!(
-            p,
-            LifecyclePhase::MaxIterations { iterations: 5 }
-        )),
-        "expected LifecyclePhase::MaxIterations {{ iterations: 5 }} to fire; got phases: {phases:?}"
-    );
-    }
-
-    // ===================================================================
-    // RT-006 variant: Verify default max_iterations is 10
-    // ===================================================================
-    #[tokio::test]
-    #[serial_test::serial(core)]
-    async fn test_rt006_default_max_iterations_is_10() {
-        // Force the encrypted-file identity fallback — see
-        // `peko_identity::init_test_env` for the rationale.
-        peko_identity::init_test_env();
-        ensure_global_core();
-        let temp_dir = TempDir::new().unwrap();
-        let (provider, mock) = mock_provider();
-        mock.queue_text("Done");
-
-        let config = test_agent_config("rt006-default-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
-        let _loop_ = AgenticLoop::new(
-        agent.clone(),
-        provider.clone(),
-        extension_core,
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-    .await;
-
-        // The struct should default to 10 max iterations; verified via the
-        // public builder (`with_max_iterations` would override) rather than
-        // poking the private field directly. The downstream tests below
-        // exercise the loop with enough iterations to hit MaxIterations.
-    }
-
-    // ===================================================================
     // RT-007: F31b — retryable mid-stream errors must consume the
     // streaming retry budget and re-issue with the same `messages`
     // checkpoint (codex `run_sampling_request`'s `stream_max_retries`
@@ -2322,7 +2185,7 @@ mod tests {
         );
 
         // (2) Iteration 1: the tail message is a `<runtime-context>`
-        // user message carrying memory + the iteration-budget line.
+        // user message carrying memory + the iteration-counter line.
         let tail1 = recorded[0]
             .messages
             .last()
@@ -2334,7 +2197,7 @@ mod tests {
             "iteration 1 tail was: {tail1_text}"
         );
         assert!(
-            tail1_text.contains("Iteration 1 of 10"),
+            tail1_text.contains("Iteration 1."),
             "iteration 1 tail was: {tail1_text}"
         );
         assert!(
@@ -2343,7 +2206,7 @@ mod tests {
         );
 
         // (3) Iteration 2: the tail rides again with the fresh
-        // iteration-budget line, but memory is NOT re-injected
+        // iteration-counter line, but memory is NOT re-injected
         // (unchanged since iteration 1).
         let tail2 = recorded[1]
             .messages
@@ -2356,7 +2219,7 @@ mod tests {
             "iteration 2 tail was: {tail2_text}"
         );
         assert!(
-            tail2_text.contains("Iteration 2 of 10"),
+            tail2_text.contains("Iteration 2."),
             "iteration 2 tail was: {tail2_text}"
         );
         assert!(
@@ -2806,13 +2669,13 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial(core)]
-    async fn loop_renders_iteration_budget_in_prompt_at_max() {
+    async fn loop_renders_iteration_counter_in_prompt() {
         // Phase 3: `build_turn_context` must populate
         // `iteration_budget: Some(...)` from the per-iteration counter
-        // and the loop's `max_iterations` ceiling. We pin the value
-        // directly on `ctx` (Phase 1 renders it; the integration is
-        // the field population) and also verify the rendered prompt
-        // contains the rendered body.
+        // (a bare counter — the loop has no iteration ceiling). We pin
+        // the value directly on `ctx` (Phase 1 renders it; the
+        // integration is the field population) and also verify the
+        // rendered prompt contains the rendered body.
         peko_identity::init_test_env();
         ensure_global_core();
 
@@ -2838,21 +2701,20 @@ mod tests {
     )
     .await;
 
-        // Pin the field: `iteration=3, max=10` → Some(state { 3, 10 }).
+        // Pin the field: `iteration=3` → Some(state { iteration: 3 }).
         let ctx = loop_.build_turn_context(3, &[], "test-session", None);
         let ib = ctx
             .iteration_budget
             .expect("iteration_budget must be populated each iteration");
         assert_eq!(ib.iteration, 3);
-        assert_eq!(ib.max_iterations, 10);
 
-        // Pin the render: `## Iteration budget` + `Iteration 3 of 10`
+        // Pin the render: `## Iteration budget` + `Iteration 3.`
         // shows up in the Markdown body the loop would pass to the
         // LLM.
         let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Iteration budget"));
-        assert!(rendered.contains("Iteration 3 of 10"));
+        assert!(rendered.contains("Iteration 3."));
     }
 
     #[tokio::test]
@@ -3521,114 +3383,6 @@ mod tests {
             own_events[0].get("reason").and_then(|v| v.as_str()),
             Some("end"),
             "Stop payload must carry reason: \"end\"; got: {}",
-            own_events[0]
-        );
-    }
-
-    /// F31x test #3: Stop hook fires on cap-hit with
-    /// `reason: "max_iterations"`. Mirrors `test_rt006_*` shape but
-    /// asserts on the Stop payload instead of the Lifecycle phase.
-    #[tokio::test]
-    #[serial_test::serial(core)]
-    async fn stop_hook_fires_on_cap_hit_with_reason_max_iterations() {
-        use crate::extensions::framework::types::ExtensionId;
-
-        peko_identity::init_test_env();
-        ensure_global_core();
-        let temp_dir = TempDir::new().unwrap();
-        let (provider, mock) = mock_provider();
-        for i in 0..12 {
-            mock.queue_tool_call(format!("tc_{i}"), "echo", serde_json::json!({"value": i}));
-        }
-
-        let core = global_core().unwrap();
-        let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-
-        #[derive(Debug)]
-        struct StopRecorder {
-            log: Arc<Mutex<Vec<serde_json::Value>>>,
-        }
-        #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for StopRecorder {
-            async fn handle(
-                &self,
-                ctx: crate::extensions::framework::core::HookContext,
-            ) -> crate::extensions::framework::types::HookResult {
-                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
-                    self.log.lock().unwrap().push(v.clone());
-                }
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Unit,
-                )
-            }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::Stop
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                "StopRecorderCap".to_string()
-            }
-        }
-
-        let hook_id = core
-            .register_hook(
-                crate::extensions::framework::core::HookPoint::Stop,
-                Arc::new(StopRecorder { log: log.clone() }),
-                &ExtensionId::new("f31x-stop-cap"),
-            )
-            .await
-            .unwrap()
-            .id;
-
-        let config = test_agent_config("f31x-stop-cap-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let loop_ = AgenticLoop::new(
-        agent.clone(),
-        provider.clone(),
-        core.clone(),
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-        .await
-        .with_max_iterations(2);
-
-        let session = test_session("f31x-stop-cap-agent", temp_dir.path()).await;
-        let result = loop_
-            .run_with_resume("Trigger tool loop", Vec::new(), |_| {}, &session, None)
-            .await
-            .unwrap();
-
-        let _ = core.unregister_hook(&hook_id).await;
-
-        assert!(!result.success, "cap-hit must be success=false");
-        let log_snapshot = log.lock().unwrap().clone();
-        // Shared-global-core guard: filter to this test's agent (see
-        // the clean-End Stop test above).
-        let own_events: Vec<&serde_json::Value> = log_snapshot
-            .iter()
-            .filter(|v| v.get("role_name").and_then(|n| n.as_str()) == Some("f31x-stop-cap-agent"))
-            .collect();
-        assert_eq!(
-            own_events.len(),
-            1,
-            "Stop must fire exactly once on cap-hit; got: {log_snapshot:?}"
-        );
-        assert_eq!(
-            own_events[0].get("reason").and_then(|v| v.as_str()),
-            Some("max_iterations"),
-            "Stop payload must carry reason: \"max_iterations\"; got: {}",
-            own_events[0]
-        );
-        assert_eq!(
-            own_events[0].get("iterations").and_then(|v| v.as_u64()),
-            Some(2),
-            "Stop payload must carry the configured cap; got: {}",
             own_events[0]
         );
     }

@@ -51,35 +51,24 @@ pub use crate::iteration_state::{
     CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
 };
 
-/// Iteration-budget state for the `{{iteration_budget}}` control surface.
+/// Iteration counter state for the `{{iteration_budget}}` control surface.
+///
+/// This is a bare counter, not a budget: the loop has no iteration
+/// ceiling and runs until natural completion (the model stops calling
+/// tools), abort/interrupt, quota trip, or provider error. The section
+/// doubles as the always-on heartbeat line of the runtime-context tail.
 #[derive(Debug, Clone, Copy)]
 pub struct IterationBudgetState {
     /// Current iteration number (1-indexed; the loop increments at top).
     pub iteration: usize,
-    /// Maximum iterations the loop will run.
-    pub max_iterations: usize,
 }
 
 impl IterationBudgetState {
-    /// Render the section body. Returns `None` when the template does
-    /// not need a section this iteration (we always render when
-    /// `iteration_budget` is requested, even at iteration 1).
+    /// Render the section body (section header + counter line). Always
+    /// rendered when `iteration_budget` is requested, even at iteration 1.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut lines = vec![
-            "## Iteration budget".to_string(),
-            format!(
-                "Iteration {} of {}. Plan remaining steps accordingly.",
-                self.iteration, self.max_iterations
-            ),
-        ];
-        if self.iteration >= self.max_iterations.saturating_sub(2) {
-            lines.push("Approaching limit — wrap up.".to_string());
-        }
-        if self.iteration >= self.max_iterations {
-            lines.push("Stop and finalize.".to_string());
-        }
-        lines.join("\n") + "\n"
+        format!("## Iteration budget\nIteration {}.\n", self.iteration)
     }
 }
 
@@ -158,7 +147,7 @@ pub struct TurnPromptContext {
     pub conversation_peer: Option<String>,
 
     // ---- Control surfaces ----
-    /// Iteration-budget state (`None` ⇒ `{{iteration_budget}}` not rendered).
+    /// Iteration counter state (`None` ⇒ `{{iteration_budget}}` not rendered).
     pub iteration_budget: Option<IterationBudgetState>,
     /// Quota-tripped rising-edge flag (`false` ⇒ `{{quota_tripped}}` not
     /// rendered). Set by `build_turn_context` on the iteration the
@@ -267,39 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn iteration_budget_render_mentions_iteration_and_max() {
-        let s = IterationBudgetState {
-            iteration: 3,
-            max_iterations: 10,
-        };
+    fn iteration_budget_render_is_bare_counter() {
+        let s = IterationBudgetState { iteration: 3 };
         let rendered = s.render();
-        assert!(rendered.contains("Iteration 3 of 10"));
+        assert!(rendered.contains("## Iteration budget"));
+        assert!(rendered.contains("Iteration 3."));
+        // No ceiling language — the loop has no iteration cap.
+        assert!(!rendered.contains(" of "));
         assert!(!rendered.contains("Approaching limit"));
-    }
-
-    #[test]
-    fn iteration_budget_render_warns_when_close_to_limit() {
-        // At iteration 9 of 10: `9 >= max(10) - 2 = 8` so "Approaching
-        // limit" is appended, but `9 < 10` so "Stop and finalize" is
-        // not yet appended (that lands on iteration 10).
-        let s = IterationBudgetState {
-            iteration: 9,
-            max_iterations: 10,
-        };
-        let rendered = s.render();
-        assert!(rendered.contains("Approaching limit"));
         assert!(!rendered.contains("Stop and finalize"));
-    }
-
-    #[test]
-    fn iteration_budget_render_emits_stop_at_max() {
-        let s = IterationBudgetState {
-            iteration: 10,
-            max_iterations: 10,
-        };
-        let rendered = s.render();
-        assert!(rendered.contains("Approaching limit"));
-        assert!(rendered.contains("Stop and finalize"));
     }
 
     #[test]

@@ -57,7 +57,7 @@ pub enum Placeholder {
     Memory,
     /// Extension bootstrap context from per-turn SessionContextBuild hooks - {{session_context}}
     SessionContext,
-    /// Iteration budget state - {{iteration_budget}}
+    /// Iteration counter (no ceiling) - {{iteration_budget}}
     IterationBudget,
     /// Quota-tripped tripwire - {{quota_tripped}}
     ///

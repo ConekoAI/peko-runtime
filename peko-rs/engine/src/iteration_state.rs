@@ -15,7 +15,7 @@
 //! The loop holds the [`CapabilityDiffTracker`]; the renderer reads
 //! the returned diff each iteration. The tracker is the only state
 //! that's loop-owned — `IterationBudgetState` is constructed
-//! per-iteration from the loop's read-only fields, so it stays in
+//! per-iteration from the loop's iteration counter, so it stays in
 //! `src/agents/prompt/context.rs` until that file lifts.
 
 use peko_extension_api::Capabilities;
