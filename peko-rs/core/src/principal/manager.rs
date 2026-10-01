@@ -10,7 +10,6 @@ use super::{
     Principal, PrincipalId,
 };
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::role::RoleAdapter;
 use crate::principal::agent_prompt::load_agent_prompt;
 use crate::principal::child_turns::PeerChildIngress;
@@ -138,10 +137,6 @@ pub struct PrincipalManager {
     /// Per-principal lock guarding first-time session creation/open so
     /// concurrent peers do not race on shared metadata/index writes.
     session_creation_locks: tokio::sync::RwLock<HashMap<PrincipalId, Arc<tokio::sync::Mutex<()>>>>,
-    /// Optional daemon extension store. When present, the per-message
-    /// `PrincipalCatalog` includes installed extensions as well as built-ins
-    /// and principal-scoped agents.
-    extension_store: Option<Arc<ExtensionStore>>,
     /// Optional observability hub. Threaded into `RouterContext` so the root
     /// agent and subagent spawns can emit audit events.
     observability: Option<Arc<Observability>>,
@@ -211,7 +206,6 @@ impl PrincipalManager {
             resolver: None,
             inbox_registry,
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
-            extension_store: None,
             observability: None,
             peer_registry: None,
             peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
@@ -231,15 +225,6 @@ impl PrincipalManager {
     /// that need model resolution outside a live turn.
     pub fn llm_resolver(&self) -> Option<Arc<LlmResolver>> {
         self.resolver.clone()
-    }
-
-    /// Attach a daemon extension store. When present, the per-message
-    /// `PrincipalCatalog` includes installed extensions alongside built-ins
-    /// and principal-scoped agents.
-    #[must_use]
-    pub fn with_extension_store(mut self, extension_store: Arc<ExtensionStore>) -> Self {
-        self.extension_store = Some(extension_store);
-        self
     }
 
     /// Attach an observability hub. When present, it is threaded into every
@@ -996,21 +981,19 @@ impl PrincipalManager {
     }
 
     /// Recompute the principal's active extension set for a capability
-    /// snapshot against the current global extension inventory.
+    /// snapshot. (The global extension inventory is empty — ADR-066 P1
+    /// deleted the process-wide store; the catalog is built-ins +
+    /// agents + workspace entries.)
     pub(crate) async fn active_extensions_for(
         &self,
         principal: &Principal,
         capabilities: &peko_extension_api::Capabilities,
     ) -> peko_extension_api::ActiveExtensionSet {
-        let global_items = match self.extension_store.as_ref() {
-            Some(store) => store.global_items().await,
-            None => Vec::new(),
-        };
         crate::principal::catalog::PrincipalCatalog::build(
             &principal.workspace_path,
             capabilities,
             &principal.agent_prompts,
-            &global_items,
+            &[],
         )
         .active_extensions()
     }
@@ -1156,15 +1139,11 @@ impl PrincipalManager {
                 })
                 .collect();
 
-            let global_items = match self.extension_store.as_ref() {
-                Some(store) => store.global_items().await,
-                None => Vec::new(),
-            };
             let catalog_local = crate::principal::catalog::PrincipalCatalog::build(
                 &principal.workspace_path,
                 allowed,
                 &principal.agent_prompts,
-                &global_items,
+                &[],
             );
             let active_extensions = catalog_local.active_extensions();
 
@@ -1585,7 +1564,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         );
@@ -1634,7 +1613,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver)
             .with_channel_port(store.clone()),
@@ -2054,7 +2033,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         )
@@ -2189,7 +2168,7 @@ mod tests {
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         )
         .with_resolver(resolver)
         .with_identity_vault(Arc::clone(&vault));
@@ -3275,7 +3254,7 @@ mod tests {
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         )
         .with_resolver(resolver);
         let principal = create_test_principal(&manager, "stressy").await;

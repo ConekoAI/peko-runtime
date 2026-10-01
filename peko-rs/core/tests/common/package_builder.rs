@@ -1,14 +1,13 @@
 //! Shared fixture builder for `.peko` integration tests.
 //!
-//! Builds signed (or unsigned) `.peko` packages with embedded skill
-//! extensions that declare `requires`/`provides` capabilities. Reuses the
+//! Builds signed (or unsigned) `.peko` packages whose principal config
+//! declares `requires`/`provides` capability grants. Reuses the
 //! canonical `PrincipalPackager`/`PrincipalUnpackager` paths so the fixture
 //! shape matches production packages.
 
 #![allow(dead_code)]
 
 use anyhow::Context;
-use peko_core::extensions::framework::store::ExtensionStore;
 use peko_core::principal::config::PrincipalConfig;
 use peko_core::registry::packaging::{
     compute_digest, PrincipalExportOptions, PrincipalManifest, PrincipalPackager,
@@ -107,25 +106,10 @@ impl PrincipalPackageBuilder {
         let temp = tempfile::tempdir()?;
         let base = temp.path();
 
-        // ── Skill extensions ─────────────────────────────────────────────
-        let extensions_dir = base.join("extensions");
-        for skill in &self.skills {
-            create_skill_extension(&extensions_dir, skill).await?;
-        }
-
-        let store = ExtensionStore::new();
-        // Phase 2 PR 1 (ADR-047 §2.4): SkillAdapter removed. Skills
-        // are workspace-resident; the package builder doesn't need
-        // to register an adapter for them any more.
-        if !self.skills.is_empty() {
-            store
-                .load_from_directory(&extensions_dir)
-                .await
-                .context("load skill fixtures into ExtensionStore")?;
-        }
-
-        // Reference each embedded skill by `skill:<id>` so the packager
-        // resolves and exports it into the extensions layer.
+        // Reference each fixture skill by `skill:<id>` in the principal's
+        // capability grants. (ADR-066 P1: the `ExtensionStore` fixture load
+        // was deleted with the store — the grants are what the tests
+        // assert on; no adapter ever resolved the fixture manifests.)
         let mut grants: Vec<String> = self
             .skills
             .iter()
@@ -204,41 +188,6 @@ grants = [{grants_toml}]
         let _ = temp.keep();
         Ok(descriptor)
     }
-}
-
-async fn create_skill_extension(base: &Path, skill: &SkillFixture) -> anyhow::Result<()> {
-    let ext_dir = base.join(&skill.id);
-    tokio::fs::create_dir_all(&ext_dir).await?;
-
-    let requires = serde_yaml::to_string(&skill.requires)?;
-    let provides = serde_yaml::to_string(&skill.provides)?;
-    let manifest = format!(
-        "id: {id}\nname: {id}\nextension_type: skill\nversion: 1.0.0\ndescription: Fixture skill\nrequires:\n{requires}provides:\n{provides}",
-        id = skill.id,
-        requires = indent_yaml_list(&requires),
-        provides = indent_yaml_list(&provides),
-    );
-    tokio::fs::write(ext_dir.join("manifest.yaml"), manifest).await?;
-
-    let skill_md = format!(
-        "---\nname: {id}\ndescription: Fixture skill\n---\n\n# {id}\n",
-        id = skill.id
-    );
-    tokio::fs::write(ext_dir.join("SKILL.md"), skill_md).await?;
-
-    Ok(())
-}
-
-fn indent_yaml_list(yaml: &str) -> String {
-    yaml.lines()
-        .map(|line| {
-            if line.is_empty() {
-                String::new()
-            } else {
-                format!("  {line}\n")
-            }
-        })
-        .collect()
 }
 
 /// Read a tar.gz archive, clear the manifest signature, and write a new

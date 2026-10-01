@@ -29,7 +29,6 @@
 //! [`RoleAdapter::discover_roles`] (also called from
 //! `principal/manager.rs`) + the data types it produces.
 
-use crate::extensions::framework::adapters::parsing;
 use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
 use crate::extensions::framework::types::{ExtensionManifest, HookOutput, HookResult};
 use anyhow::{Context, Result};
@@ -131,9 +130,8 @@ impl RoleAdapter {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
 
-        let (meta, _body): (RoleFrontmatter, _) =
-            parsing::parse_yaml_frontmatter_typed(&content)
-                .with_context(|| format!("Failed to parse frontmatter in {path:?}"))?;
+        let (meta, _body): (RoleFrontmatter, _) = parse_yaml_frontmatter_typed(&content)
+            .with_context(|| format!("Failed to parse frontmatter in {path:?}"))?;
 
         if meta.name.is_empty() {
             anyhow::bail!("Role name cannot be empty");
@@ -188,6 +186,39 @@ fn canonical_id_from_path(path: &Path) -> String {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default()
     }
+}
+
+/// Split a `---`-fenced YAML frontmatter block from its markdown body.
+fn parse_yaml_frontmatter(content: &str) -> Result<(String, String)> {
+    let mut lines = content.lines().peekable();
+    match lines.next() {
+        Some("---") => {}
+        _ => anyhow::bail!("YAML frontmatter must start with ---"),
+    }
+    let mut frontmatter_lines = Vec::new();
+    let mut found_end = false;
+    for line in lines.by_ref() {
+        if line == "---" {
+            found_end = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+    if !found_end {
+        anyhow::bail!("YAML frontmatter must end with ---");
+    }
+    let body = lines.collect::<Vec<_>>().join("\n");
+    Ok((frontmatter_lines.join("\n"), body))
+}
+
+/// Parse the YAML frontmatter into `T`, returning `(metadata, body)`.
+fn parse_yaml_frontmatter_typed<T: serde::de::DeserializeOwned>(
+    content: &str,
+) -> Result<(T, String)> {
+    let (frontmatter, body) = parse_yaml_frontmatter(content)?;
+    let metadata: T =
+        serde_yaml::from_str(&frontmatter).context("Failed to parse YAML frontmatter")?;
+    Ok((metadata, body))
 }
 
 impl Default for RoleAdapter {

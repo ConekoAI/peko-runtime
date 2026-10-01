@@ -499,9 +499,7 @@ impl AsyncRuntime for TestAsyncRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::async_exec::executor::{
-        standalone_inbox_registry, AsyncExecutor,
-    };
+    use crate::async_exec::executor::{standalone_inbox_registry, AsyncExecutor};
     use peko_tools_core::Tool;
 
     /// Build a runtime whose own executor registry is empty — any

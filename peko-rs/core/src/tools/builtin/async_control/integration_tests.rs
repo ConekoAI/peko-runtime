@@ -16,18 +16,18 @@
 //!    that poll `is_aborted()`.
 //!
 //! Layered unit-test coverage lives in
-//! `extensions::framework::async_exec::executor::dispatch_tool_tests`
+//! `async_exec::executor::dispatch_tool_tests`
 //! (gate) and
-//! `extensions::framework::async_exec::executor::async_runtime_impl::TestAsyncRuntime`
+//! `async_exec::executor::async_runtime_impl::TestAsyncRuntime`
 //! (adapter). This file is the only place all five `Async*Tool` objects
 //! run through their own `.execute()` chains.
 
 #[cfg(test)]
 mod tests {
-    use crate::extensions::builtin::BuiltinToolAdapter;
-    use crate::extensions::framework::async_exec::executor::{
+    use crate::async_exec::executor::{
         standalone_inbox_registry, AsyncExecutor, AsyncExecutorRuntime,
     };
+    use crate::extensions::builtin::BuiltinToolAdapter;
     use crate::extensions::framework::core::ExtensionCore;
     use crate::tools::builtin::{
         AsyncListTool, AsyncOutputTool, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
@@ -41,7 +41,7 @@ mod tests {
     /// Tool stub that returns `{"ok": true}` immediately.
     ///
     /// Mirrors the `StubTool` in
-    /// `extensions::framework::async_exec::executor::dispatch_tool_tests`.
+    /// `async_exec::executor::dispatch_tool_tests`.
     /// Distinct type so the registry sees two separate tools.
     struct StubTool;
 

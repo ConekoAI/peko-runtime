@@ -40,7 +40,7 @@
 //! let cancelled = adapter.cancel("my_tool", &receipt.task_id).await?;
 //! ```
 
-use crate::extensions::framework::async_exec::executor::{
+use crate::async_exec::executor::{
     AsyncExecutor, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult,
 };
 use crate::extensions::framework::core::{ExtensionCore, HookPointBuilder};
@@ -456,9 +456,7 @@ mod tests {
         let core = Arc::new(ExtensionCore::new());
         let adapter = ExtensionAsyncAdapter::new(
             core,
-            AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-            ),
+            AsyncExecutor::new(crate::async_exec::executor::standalone_inbox_registry()),
         );
 
         assert!(!(adapter.supports_native_async("unknown_tool").await));
@@ -482,9 +480,7 @@ mod tests {
 
         let adapter = ExtensionAsyncAdapter::new(
             core,
-            AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-            ),
+            AsyncExecutor::new(crate::async_exec::executor::standalone_inbox_registry()),
         );
 
         // Execute async
@@ -528,9 +524,7 @@ mod tests {
 
         let adapter = ExtensionAsyncAdapter::new(
             core,
-            AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-            ),
+            AsyncExecutor::new(crate::async_exec::executor::standalone_inbox_registry()),
         );
 
         // Execute async - should use fallback

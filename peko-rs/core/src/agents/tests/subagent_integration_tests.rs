@@ -8,11 +8,9 @@
 //! - List functionality
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
+use crate::async_exec::executor::AsyncTaskStatus;
+use crate::async_exec::executor::{get_or_create_registry_for_agent, SharedAsyncTaskRegistry};
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
-use crate::extensions::framework::async_exec::executor::{
-    get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
-};
 use peko_auth::Subject;
 use peko_session::manager::SessionManager;
 use peko_session::types::SpawnCleanupPolicy;
@@ -243,7 +241,7 @@ async fn subagent_inherits_parent_cancel() {
         if let Some(entry) = registry_guard.get(&run_id) {
             if matches!(
                 entry.status,
-                crate::extensions::framework::async_exec::executor::types::AsyncTaskStatus::Cancelled
+                crate::async_exec::executor::types::AsyncTaskStatus::Cancelled
             ) {
                 observed_cancelled = true;
                 break;
@@ -967,24 +965,23 @@ async fn test_executor_cancel() {
     let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
     {
         let mut registry_guard = registry.write().await;
-        let entry =
-            crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
-                run_id.clone(),
-                "Agent".to_string(),
-                serde_json::json!({"task": "Long task"}),
-                "agent:test:peer:user:alice".to_string(),
-                crate::extensions::framework::async_exec::executor::types::AsyncToolConfig {
-                    timeout_secs: Some(3600),
-                    timeout_millis: None,
-                    cleanup_after_delivery: false,
-                    label: None,
-                    wake_on_completion: true,
-                    principal_root_session_key: None,
-                    principal_id: None,
-                    deliver_completion: true,
-                    progress: None,
-                },
-            );
+        let entry = crate::async_exec::executor::registry::AsyncTaskEntry::new(
+            run_id.clone(),
+            "Agent".to_string(),
+            serde_json::json!({"task": "Long task"}),
+            "agent:test:peer:user:alice".to_string(),
+            crate::async_exec::executor::types::AsyncToolConfig {
+                timeout_secs: Some(3600),
+                timeout_millis: None,
+                cleanup_after_delivery: false,
+                label: None,
+                wake_on_completion: true,
+                principal_root_session_key: None,
+                principal_id: None,
+                deliver_completion: true,
+                progress: None,
+            },
+        );
         registry_guard.register(entry);
     }
 
@@ -994,7 +991,7 @@ async fn test_executor_cancel() {
         let entry = registry_guard.get(&run_id).unwrap();
         assert!(matches!(
             entry.status,
-            crate::extensions::framework::async_exec::executor::types::AsyncTaskStatus::Pending
+            crate::async_exec::executor::types::AsyncTaskStatus::Pending
         ));
     }
 
@@ -1341,9 +1338,7 @@ async fn run_child_session_id(
     let guard = registry.read().await;
     let entry = guard.get(run_id)?;
     match &entry.metadata {
-        crate::extensions::framework::async_exec::executor::TaskMetadata::Subagent(meta) => {
-            meta.child_session_id.clone()
-        }
+        crate::async_exec::executor::TaskMetadata::Subagent(meta) => meta.child_session_id.clone(),
         _ => None,
     }
 }
@@ -2269,7 +2264,7 @@ async fn streaming_resume_enforces_guard_stack() {
 /// test is deterministic (no LLM timing involved).
 #[tokio::test(flavor = "multi_thread")]
 async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
-    use crate::extensions::framework::async_exec::executor::{
+    use crate::async_exec::executor::{
         AsyncTaskEntry, AsyncToolConfig, SubagentMetadata, TaskMetadata,
     };
 

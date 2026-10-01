@@ -32,7 +32,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::agents::subagent_executor::{AgenticEventSink, PeerTurnSurface};
-use crate::extensions::framework::async_exec::executor::wake::{
+use crate::async_exec::executor::wake::{
     install_completion_wake_handler, CompletionWakeNotice, WAKE_TURN_MARKER,
 };
 use crate::principal::manager::PrincipalManager;

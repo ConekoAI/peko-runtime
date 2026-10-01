@@ -4,7 +4,7 @@
 //! Phase 10c extracts the six async tools (`AsyncSpawn`, `AsyncOutput`,
 //! `AsyncList`, `AsyncStatus`, `AsyncStop`, plus `async_common` helpers)
 //! out of root. Per the Phase 10 plan rule ("Built-ins must not import
-//! daemon state"), the tools here do NOT call `crate::extensions::framework::async_exec`
+//! daemon state"), the tools here do NOT call `crate::async_exec`
 //! types directly. They speak to a runtime port trait ([`AsyncRuntime`])
 //! that the agent side implements.
 //!
@@ -24,7 +24,7 @@
 //! [`AsyncRuntime`] is the five-method surface the async tools need:
 //! spawn / lookup / list / cancel / wait_for_completion. The
 //! framework-host side implements it (see
-//! `src/extensions/framework/async_exec/executor/async_runtime_impl.rs`).
+//! `src/async_exec/executor/async_runtime_impl.rs`).
 
 pub mod common;
 pub mod list;

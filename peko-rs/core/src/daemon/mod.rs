@@ -255,11 +255,9 @@ impl Daemon {
         // drains. The executor resolves tools via the daemon-global
         // `ExtensionCore` (`Arc::downgrade` so the cron engine does not
         // extend the core's lifetime).
-        let cron_async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                app_state.inbox_registry.clone(),
-            ),
-        );
+        let cron_async_executor = Arc::new(crate::async_exec::executor::AsyncExecutor::new(
+            app_state.inbox_registry.clone(),
+        ));
         let cron_extension_core = crate::extensions::framework::core::global_core()
             .map(|arc| std::sync::Arc::downgrade(&arc))
             .unwrap_or_else(std::sync::Weak::new);

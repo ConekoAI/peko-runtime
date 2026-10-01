@@ -1,7 +1,6 @@
 //! YAML frontmatter parser for SKILL.md files.
 //!
-//! Self-contained copy of the helpers from
-//! `crate::extensions::framework::adapters::parsing`, kept here so
+//! Self-contained helper set, kept local so
 //! `peko_tools_builtin` does not need to import framework internals.
 //! If the parser ever needs more than what is below, prefer
 //! extending THIS helper over pulling in a wider framework dep.

@@ -13,8 +13,9 @@
 //! 1. Built-in tools (`builtin_tools::all_tool_names()`).
 //! 2. Agent prompts under `<workspace>/agents/` (loaded by
 //!    `agent_prompt::load_agent_prompt`, passed in here).
-//! 3. Installed extensions from the process-wide
-//!    [`ExtensionStore`](peko_extension_host::store::ExtensionStore).
+//! 3. Installed extensions (`global_items`). ADR-066 P1 deleted the
+//!    process-wide `ExtensionStore` (zero registered adapters), so
+//!    callers pass an empty slice today.
 //! 4. Workspace scan over `<workspace>/{tools,skills,mcp,hooks,plugins}/`.
 //!    Each subdirectory is one catalog entry (id = basename,
 //!    kind = parent dir). The scan is additive — it does not replace
@@ -23,11 +24,22 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::extensions::framework::store_trait::GlobalExtensionItem;
 use crate::principal::capability_evaluator::CapabilityEvaluator;
 use crate::principal::runtime::builtin_tools;
 use crate::principal::AgentPrompt;
 use peko_extension_api::{Capabilities, Capability, ExtensionManifest};
+
+/// Plain data snapshot of a globally loaded extension, used by the Principal
+/// layer to build a per-Principal view without holding a reference to the store.
+#[derive(Debug, Clone)]
+pub struct GlobalExtensionItem {
+    pub id: String,
+    pub name: String,
+    pub ext_type: String,
+    pub source: Option<String>,
+    pub provides: Vec<String>,
+    pub requires: Vec<String>,
+}
 
 /// A single row in the principal's catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,8 +77,9 @@ impl PrincipalCatalog {
     ///   missing directories produce no entries.
     /// * `capabilities` — the principal's capability grants.
     /// * `agent_prompts` — agents discovered under `<workspace>/agents/`.
-    /// * `global_items` — plain data from the process-wide `ExtensionStore`.
-    ///   When empty the catalog contains only built-ins, agents, and
+    /// * `global_items` — plain data for installed extensions. Empty
+    ///   today (the process-wide store was deleted in ADR-066 P1);
+    ///   when empty the catalog contains only built-ins, agents, and
     ///   any workspace-resident entries.
     #[must_use]
     pub fn build(
@@ -126,7 +139,7 @@ impl PrincipalCatalog {
             }
         }
 
-        // 3. Installed extensions from the global ExtensionStore.
+        // 3. Installed extensions (empty while no store produces them).
         let evaluator = CapabilityEvaluator::new();
         for loaded in global_items {
             let id = loaded.id.clone();

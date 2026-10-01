@@ -11,23 +11,23 @@
 //! ```rust,ignore
 //! let router = AsyncExecutionRouter::new();
 //! let result = router.route(
+//!     "my_tool",
 //!     &mut params,
-//!     &exec_service,
+//!     &tool_context,
+//!     &exec_config,
 //!     |p| async move { tool.execute(p).await }
 //! ).await?;
 //! ```
 
-use crate::extensions::framework::async_exec::executor::{AsyncTaskStatus, AsyncToolConfig};
+use crate::async_exec::executor::{AsyncTaskStatus, AsyncToolConfig};
 use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::services::tool_execution::{
-    ToolExecutionConfig, ToolExecutionService,
-};
 use crate::extensions::framework::transport::async_transport::{
     AsyncTaskTransport, LocalAsyncTransport,
 };
 use crate::extensions::framework::types::{HookOutput, HookResult};
 use anyhow::{anyhow, Result};
 use futures::future::BoxFuture;
+use peko_extension_api::reserved_params::ReservedParamsConfig;
 use serde_json::Value;
 use std::time::Duration;
 use tracing::{info, instrument, warn};
@@ -41,6 +41,42 @@ pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 300;
 /// Legacy reserved params are no longer honored; this is now a no-op.
 fn strip_legacy_reserved_params(params: Value) -> Value {
     params
+}
+
+/// Configuration for tool execution
+#[derive(Debug, Clone)]
+pub struct ToolExecutionConfig {
+    /// Reserved parameter configuration
+    pub reserved_params: ReservedParamsConfig,
+    /// Full parameter schema (with reserved params for validation)
+    pub full_schema: Value,
+}
+
+impl ToolExecutionConfig {
+    /// Create new execution config
+    #[must_use]
+    pub fn new(reserved_params: ReservedParamsConfig, full_schema: Value) -> Self {
+        Self {
+            reserved_params,
+            full_schema,
+        }
+    }
+
+    /// Create config with empty reserved params
+    #[must_use]
+    pub fn with_schema(full_schema: Value) -> Self {
+        Self {
+            reserved_params: ReservedParamsConfig::new(),
+            full_schema,
+        }
+    }
+
+    /// Add reserved params to config (builder pattern)
+    #[must_use]
+    pub fn with_reserved_params(mut self, reserved: ReservedParamsConfig) -> Self {
+        self.reserved_params = reserved;
+        self
+    }
 }
 
 /// Async Execution Router
@@ -83,10 +119,8 @@ impl AsyncExecutionRouter {
     /// (5 min) and a local transport.
     #[must_use]
     pub fn new() -> Self {
-        use crate::extensions::framework::async_exec::executor::AsyncExecutor;
-        let executor = AsyncExecutor::new(
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-        );
+        use crate::async_exec::executor::AsyncExecutor;
+        let executor = AsyncExecutor::new(crate::async_exec::executor::standalone_inbox_registry());
         Self {
             default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
@@ -96,10 +130,8 @@ impl AsyncExecutionRouter {
     /// Create with a custom default tool timeout (local transport).
     #[must_use]
     pub fn with_default_tool_timeout(secs: u64) -> Self {
-        use crate::extensions::framework::async_exec::executor::AsyncExecutor;
-        let executor = AsyncExecutor::new(
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-        );
+        use crate::async_exec::executor::AsyncExecutor;
+        let executor = AsyncExecutor::new(crate::async_exec::executor::standalone_inbox_registry());
         Self {
             default_tool_timeout: Duration::from_secs(secs),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
@@ -117,9 +149,7 @@ impl AsyncExecutionRouter {
 
     /// Create with a shared local async executor (for sharing registries across routers)
     #[must_use]
-    pub fn with_executor(
-        async_executor: crate::extensions::framework::async_exec::executor::AsyncExecutor,
-    ) -> Self {
+    pub fn with_executor(async_executor: crate::async_exec::executor::AsyncExecutor) -> Self {
         Self {
             default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(async_executor)),
@@ -136,7 +166,6 @@ impl AsyncExecutionRouter {
     /// # Arguments
     /// * `tool_name` - Name of the tool being executed
     /// * `params` - Tool parameters (reserved keys will be stripped)
-    /// * `exec_service` - Tool execution service
     /// * `tool_context` - Tool context for execution
     /// * `exec_config` - Execution configuration
     /// * `sync_executor` - Closure that performs the actual tool execution
@@ -144,12 +173,11 @@ impl AsyncExecutionRouter {
     /// # Returns
     /// Tool execution result, or a `task_id` receipt if the work was
     /// detached because it exceeded [`DEFAULT_TOOL_TIMEOUT_SECS`].
-    #[instrument(skip(self, params, _exec_service, sync_executor), level = "debug")]
+    #[instrument(skip(self, params, sync_executor), level = "debug")]
     pub async fn route<F, Fut>(
         &self,
         tool_name: &str,
         params: &mut Value,
-        _exec_service: &ToolExecutionService,
         tool_context: &ToolExecutionContext,
         exec_config: &ToolExecutionConfig,
         sync_executor: F,
@@ -481,16 +509,7 @@ impl AsyncExecutionRouter {
             return HookResult::Error(anyhow!(msg));
         }
 
-        // 4. Get services from context. The exec_service is unused
-        // by `route()` (it takes `_exec_service`), so we no longer
-        // pull it from the (now type-erased) `ExtensionServices`.
-        // The legacy `tool_execution()` getter is removed because
-        // the field is `Arc<dyn Any + Send + Sync>` in Phase 8a.
-        // The trait-port impl in this file constructs a dummy
-        // service before calling into this generic method.
-        let exec_service = std::sync::Arc::new(ToolExecutionService::new());
-
-        // 5. Build execution context
+        // 4. Build execution context
         let tool_ctx = match ctx
             .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
         {
@@ -519,14 +538,7 @@ impl AsyncExecutionRouter {
 
         // 6. Route through AsyncExecutionRouter
         let result = self
-            .route(
-                tool_name,
-                &mut params,
-                &exec_service,
-                &tool_ctx,
-                exec_config,
-                exec_fn,
-            )
+            .route(tool_name, &mut params, &tool_ctx, exec_config, exec_fn)
             .await;
 
         // 7. Map result to HookResult
@@ -627,7 +639,7 @@ impl crate::extensions::framework::transport::AsyncExecutionRouter for AsyncExec
     ) -> HookResult {
         // Rebuild a root-side ToolExecutionConfig. The trait-port
         // `ToolExecConfig` holds a `peko_extension_api::ReservedParamsConfig`,
-        // which is the same type root's `services::ToolExecutionConfig`
+        // which is the same type root's `ToolExecutionConfig`
         // expects, so this is just a struct-field copy.
         let local_exec_config = ToolExecutionConfig {
             full_schema: exec_config.full_schema.clone(),
@@ -653,11 +665,6 @@ impl crate::extensions::framework::transport::AsyncExecutionRouter for AsyncExec
         // `Pin<Box<dyn Future + Send>>` which is itself a valid
         // `Future + Send + 'static`.
         let exec_fn_bridge = move |v: Value| -> BoxFuture<'static, Result<Value>> { exec_fn(v) };
-
-        // `route()` requires `&ToolExecutionService`; root's body
-        // ignores it (the `_exec_service` underscore prefix confirms
-        // this), so we pass a temporary.
-        let _dummy_exec_service = ToolExecutionService::new();
 
         // Delegate to the existing generic `execute_from_hook`. That
         // method performs tool-call extraction, tool-name match,
@@ -791,7 +798,6 @@ mod tests {
     #[tokio::test]
     async fn test_router_sync_path() {
         let router = AsyncExecutionRouter::new();
-        let exec_service = ToolExecutionService::new();
         let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
         let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
 
@@ -801,7 +807,6 @@ mod tests {
             .route(
                 "test_tool",
                 &mut params,
-                &exec_service,
                 &tool_context,
                 &exec_config,
                 |p| async move { Ok(json!({"result": "success", "input": p})) },
@@ -817,7 +822,6 @@ mod tests {
     #[tokio::test]
     async fn test_router_fast_tool_returns_inline_result() {
         let router = AsyncExecutionRouter::new();
-        let exec_service = ToolExecutionService::new();
         let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
         let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
 
@@ -827,7 +831,6 @@ mod tests {
             .route(
                 "fast_tool",
                 &mut params,
-                &exec_service,
                 &tool_context,
                 &exec_config,
                 |p| async move { Ok(json!({"result": "inline", "input": p})) },
@@ -846,7 +849,6 @@ mod tests {
     #[tokio::test]
     async fn test_router_timeout_returns_receipt_with_tool_name() {
         let router = AsyncExecutionRouter::with_default_tool_timeout(1);
-        let exec_service = ToolExecutionService::new();
         let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
         let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
 
@@ -856,7 +858,6 @@ mod tests {
             .route(
                 "slow_tool",
                 &mut params,
-                &exec_service,
                 &tool_context,
                 &exec_config,
                 |_p| async move {
@@ -885,34 +886,32 @@ mod tests {
     impl AsyncTaskTransport for NullStatusTransport {
         async fn spawn_task(
             &self,
-            task_id: crate::extensions::framework::async_exec::executor::AsyncTaskId,
+            task_id: crate::async_exec::executor::AsyncTaskId,
             _tool_name: String,
             _params: Value,
             _session_key: String,
             _workspace: std::path::PathBuf,
-            _config: crate::extensions::framework::async_exec::executor::AsyncToolConfig,
-        ) -> Result<crate::extensions::framework::async_exec::executor::AsyncTaskReceipt> {
-            Ok(
-                crate::extensions::framework::async_exec::executor::AsyncTaskReceipt {
-                    task_id,
-                    status: AsyncTaskStatus::Running,
-                    estimated_duration_secs: None,
-                    task_file: None,
-                    params: None,
-                },
-            )
+            _config: crate::async_exec::executor::AsyncToolConfig,
+        ) -> Result<crate::async_exec::executor::AsyncTaskReceipt> {
+            Ok(crate::async_exec::executor::AsyncTaskReceipt {
+                task_id,
+                status: AsyncTaskStatus::Running,
+                estimated_duration_secs: None,
+                task_file: None,
+                params: None,
+            })
         }
 
         async fn get_status(
             &self,
-            _task_id: &crate::extensions::framework::async_exec::executor::AsyncTaskId,
+            _task_id: &crate::async_exec::executor::AsyncTaskId,
         ) -> Result<Option<AsyncTaskStatus>> {
             Ok(None)
         }
 
         async fn cancel_task(
             &self,
-            _task_id: &crate::extensions::framework::async_exec::executor::AsyncTaskId,
+            _task_id: &crate::async_exec::executor::AsyncTaskId,
         ) -> Result<bool> {
             Ok(false)
         }
@@ -927,7 +926,6 @@ mod tests {
             default_tool_timeout: Duration::from_secs(1),
             transport: std::sync::Arc::new(NullStatusTransport),
         };
-        let exec_service = ToolExecutionService::new();
         let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
         let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
         let mut params = json!({"query": "x"});
@@ -936,7 +934,6 @@ mod tests {
             .route(
                 "ipc_tool",
                 &mut params,
-                &exec_service,
                 &tool_context,
                 &exec_config,
                 |_p| async move { Ok(json!({"result": "should_not_run"})) },

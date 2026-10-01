@@ -13,13 +13,13 @@
 //!   was in sat, now in `peko_extension_api::completion_event`
 //! - `default_data_dir` / `default_agent_workspace` path helpers —
 //!   was in sat, now in `peko_extension_api::paths`
-//! - `ExtensionStoreTrait` (the trait port) — was in sat, now in
-//!   `crate::extensions::framework::store_trait`
 //!
-//! Everything else (concrete `ExtensionStore`, hook dispatcher,
-//! capability gate, async executor, transport, discovery +
-//! extension_storage, framework services, protocol
-//! shared subtrees) stays in root.
+//! Everything else (hook dispatcher, capability gate, transport,
+//! framework services, protocol shared subtrees) stays in root. The
+//! background-task runtime and the session inbox live at
+//! `crate::async_exec` (ADR-066 P1); the extension store / discovery /
+//! storage / adapter-trait stack was deleted in the same pass (zero
+//! registered adapters).
 //!
 //! Extension type implementations (MCP, Gateway, Skill, etc.) live
 //! in `crate::extensions` (plural), not here.
@@ -32,22 +32,11 @@
 //! - `crate::daemon` (daemon-specific code)
 //! - `crate::tools` (tool implementations)
 //!
-//! Dependency direction: `extension::core` → `extension::types` → `extension::async_exec`
-//! Extension lifecycle helpers (`discovery`, `extension_storage`) sit
-//! alongside `ExtensionStore` in `extension::*`.
+//! Dependency direction: `extension::core` → `extension::types`
 
 // ============================================================================
 // Submodules
 // ============================================================================
-
-/// Extension type adapter trait, manifest formats, and built-in adapter provider.
-pub mod adapters;
-
-/// Async task execution framework — owns the canonical `AsyncExecutor`,
-/// `CompletionQueue`, and the spawned-task bookkeeping that engine
-/// flows events into. Type-port helpers (`CompletionEvent`,
-/// `SteeringMessage`) live in `peko_extension_api::completion_event`.
-pub mod async_exec;
 
 /// Hook points, registry, handler traits, executor integration —
 /// the core of the extension system. The `ExtensionCore` impl is
@@ -59,19 +48,6 @@ pub mod core;
 // zero callers in the repo. Its sole purpose was to host the
 // `ExtensionAsyncTool` wrapper (itself deleted in ADR-063 as dead
 // code). Pure removal.
-
-/// Cross-boundary async-task inbox + the `InboxItem` / `SessionInbox`
-/// concrete types. The trait-port data types live in
-/// `peko_extension_api::completion_event` so engine can reach them.
-pub mod inbox;
-
-/// Workspace-resident extension discovery (directory scanning,
-/// detection). Consumed by [`ExtensionStore::load_all`].
-pub mod discovery;
-
-/// On-disk persistence for installed extensions. Consumed by
-/// [`ExtensionStore`] to copy + register loaded extensions.
-pub mod extension_storage;
 
 /// Default-agent-workspace path resolver + principal-messaging
 /// port traits. The path helpers `default_data_dir` /
@@ -100,8 +76,7 @@ pub mod registry;
 // Phase 5 (ADR-047 §2.1) there are no callers left in the repo; the
 // directory and its 399 lines are pure removal.
 
-/// Framework services — config scoping, reserved-params
-/// resolution, extension-host wiring layer.
+/// Framework services — reserved-params resolution.
 pub mod services;
 
 // 2026-09-18 (skills-as-files cleanup): the `skill_catalog` module
@@ -110,12 +85,10 @@ pub mod services;
 // `extensions::skill::reader::WorkspaceSkillRuntime`; nothing in
 // production read the catalog any more.
 
-/// Process-wide `ExtensionStore` trait port + concrete impl.
-/// Two files: `store_trait.rs` (the trait port) + `store.rs` (the
-/// impl). The trait port lifts into `peko-session` later when the
-/// packaging path is ready.
-pub mod store;
-pub mod store_trait;
+// ADR-066 P1: `async_exec/` + `inbox.rs` re-homed to
+// `crate::async_exec`; `store.rs` / `store_trait.rs` / `discovery.rs` /
+// `extension_storage.rs` / `adapters/` / `services/config_service.rs` /
+// `services/tool_execution.rs` deleted (zero production consumers).
 
 /// Engine-facing surface of root's `ExtensionCore`. The trait port
 /// lives in `peko_extension_api::ToolFunnel`; the concrete impl lives

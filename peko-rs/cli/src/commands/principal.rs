@@ -1803,7 +1803,7 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
         resolver,
         Arc::new(DefaultPrincipalMemoryFactory),
         Arc::new(DefaultPrincipalRouterFactory),
-        peko_core::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+        peko_core::async_exec::executor::standalone_inbox_registry(),
     )
 }
 

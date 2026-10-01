@@ -1,10 +1,14 @@
-//! Async execution infrastructure for extensions
+//! Async execution infrastructure
 //!
-//! This module provides async task execution capabilities used across
-//! all extension types. Lifted from `src/extensions/framework/async_exec/`
-//! in Phase 8b.
+//! Background-task runtime used across the runtime: Bash background,
+//! `AsyncSpawn`/`AsyncOutput`, cron firing, and messaging. Owns the
+//! canonical `AsyncExecutor`, `CompletionQueue`, and the spawned-task
+//! bookkeeping that engine flows events into, plus the cross-boundary
+//! async-task inbox (`inbox`). Type-port helpers (`CompletionEvent`,
+//! `SteeringMessage`) live in `peko_extension_api::completion_event`.
 
 pub mod executor;
+pub mod inbox;
 pub mod steer;
 
 pub use executor::{

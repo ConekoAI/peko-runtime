@@ -1444,10 +1444,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_async_completion_reaches_llm_real() {
-        use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
-        use crate::extensions::framework::async_exec::executor::{
-            AsyncTaskStatus, CompletionEvent,
-        };
+        use crate::async_exec::executor::SharedSessionInbox;
+        use crate::async_exec::executor::{AsyncTaskStatus, CompletionEvent};
         use chrono::Utc;
         use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
@@ -1463,9 +1461,8 @@ mod tests {
 
         // Build the queue the same way `Agent::build_agentic_loop` does:
         // shared between the executor and the agentic loop.
-        let queue: SharedSessionInbox = std::sync::Arc::new(
-            crate::extensions::framework::async_exec::executor::SessionInbox::new(),
-        );
+        let queue: SharedSessionInbox =
+            std::sync::Arc::new(crate::async_exec::executor::SessionInbox::new());
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -1594,10 +1591,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_steering_message_reaches_llm_real() {
-        use crate::extensions::framework::async_exec::executor::completion_queue::{
+        use crate::async_exec::executor::completion_queue::{
             SessionInbox, SharedSessionInbox, SteeringMessage,
         };
-        use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
+        use crate::async_exec::executor::AsyncTaskStatus;
         use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
@@ -1633,21 +1630,17 @@ mod tests {
         let session_id = session.id().await;
 
         queue.push(SteeringMessage::new("actually do X instead"));
-        queue.push(
-            crate::extensions::framework::async_exec::executor::CompletionEvent {
-                task_id: "shell:steer-test".to_string(),
-                tool_name: "shell".to_string(),
-                result: serde_json::json!({"exit_code": 0}),
-                status: AsyncTaskStatus::Completed {
-                    result: peko_tools_core::ToolResult::success(
-                        serde_json::json!({"exit_code": 0}),
-                    ),
-                },
-                completed_at: chrono::Utc::now(),
-                output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
-                parent_session_key: session_id.clone(),
+        queue.push(crate::async_exec::executor::CompletionEvent {
+            task_id: "shell:steer-test".to_string(),
+            tool_name: "shell".to_string(),
+            result: serde_json::json!({"exit_code": 0}),
+            status: AsyncTaskStatus::Completed {
+                result: peko_tools_core::ToolResult::success(serde_json::json!({"exit_code": 0})),
             },
-        );
+            completed_at: chrono::Utc::now(),
+            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
+            parent_session_key: session_id.clone(),
+        });
 
         let result = loop_
             .run_with_resume("Trigger steering drain", Vec::new(), |_| {}, &session, None)

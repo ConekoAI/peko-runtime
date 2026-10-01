@@ -1598,17 +1598,15 @@ impl Agent {
             // No shared registry bound (CLI one-shots, tests): a
             // per-call standalone registry stays consistent because
             // the executor below and the loop both read from it.
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry()
+            crate::async_exec::executor::standalone_inbox_registry()
         };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
         // 2. Per-call AsyncExecutor wired to the same registry.
-        let async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                async_inbox_registry.clone(),
-            ),
-        );
+        let async_executor = Arc::new(crate::async_exec::executor::AsyncExecutor::new(
+            async_inbox_registry.clone(),
+        ));
 
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
         //    core. Uses Weak so the tools do not extend the core's lifetime
@@ -1639,16 +1637,14 @@ impl Agent {
         // principal_id + capabilities snapshot, so each Async* tool
         // can take just an `Arc<dyn AsyncRuntime>` rather than
         // reaching into the framework itself.
-        let runtime = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
-                async_executor,
-                core_weak,
-                Some(self.identity.did.clone()),
-                self.principal_id.clone(),
-                snapshot_capabilities,
-                snapshot_active_extensions,
-            ),
-        );
+        let runtime = Arc::new(crate::async_exec::executor::AsyncExecutorRuntime::new(
+            async_executor,
+            core_weak,
+            Some(self.identity.did.clone()),
+            self.principal_id.clone(),
+            snapshot_capabilities,
+            snapshot_active_extensions,
+        ));
         let runtime_handle = runtime.as_shared();
         let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
             runtime_handle.clone(),

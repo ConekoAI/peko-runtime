@@ -6,7 +6,7 @@
 //!   (they tag the `HookOutput::TaskStatus` variant) and live in
 //!   the `peko-extension-api` workspace crate. The shim re-exports
 //!   them from there so existing
-//!   `crate::extensions::framework::async_exec::executor::AsyncTaskStatus`
+//!   `crate::async_exec::executor::AsyncTaskStatus`
 //!   paths keep resolving unchanged.
 //! - `AsyncTaskResult`, `AsyncTaskReceipt`, `AsyncToolConfig`, and
 //!   `WaitResult` are **executor-internal** types that depend on

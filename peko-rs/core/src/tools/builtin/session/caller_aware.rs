@@ -346,7 +346,7 @@ mod tests {
     async fn daemon_mode_fails_closed_without_principal() {
         let tool = CallerAwareSessionTool::for_daemon(
             Weak::new(),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         );
         let ctx = ToolContext::default_for_tool("session").with_principal_name("ghost");
         let err = tool
@@ -378,7 +378,7 @@ mod tests {
 
         let daemon = CallerAwareSessionTool::for_daemon(
             Weak::new(),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         );
         assert_eq!(daemon.name(), "session");
         assert_eq!(daemon.parameters(), stock.parameters());

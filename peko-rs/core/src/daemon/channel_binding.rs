@@ -198,8 +198,8 @@ use peko_session::manager::SessionManager;
 use peko_subject::{PrincipalId, Subject};
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::extensions::framework::async_exec::executor::registry::TaskMetadata;
-use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
+use crate::async_exec::executor::registry::TaskMetadata;
+use crate::async_exec::executor::AsyncTaskStatus;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::Principal;
 use crate::session::ownership::is_run_active_error;
@@ -586,7 +586,7 @@ impl ResponderInner {
                 .driver
                 .drive_turn(
                     session_id,
-                    crate::extensions::framework::async_exec::executor::wake::WAKE_TURN_MARKER,
+                    crate::async_exec::executor::wake::WAKE_TURN_MARKER,
                 )
                 .await
             {
@@ -1927,8 +1927,7 @@ mod tests {
             Self {
                 calls: Arc::new(StdMutex::new(Vec::new())),
                 reply: reply.to_string(),
-                inbox:
-                    crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                inbox: crate::async_exec::executor::standalone_inbox_registry(),
                 active_runs: Arc::new(AtomicUsize::new(0)),
                 first_error: StdMutex::new(Some(first_error)),
             }

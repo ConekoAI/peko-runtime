@@ -1,13 +1,10 @@
 //! Catalog of built-in tool names registered by the framework.
 //!
-//! Lives in the extension framework because both sides of the contract
-//! read it: the framework's own `ExtensionStore::resolve_tool_name`
-//! (builtin-name short-circuit) and the principal layer's
-//! `PrincipalCatalog::build` (which computes `enabled` flags for the
-//! catalog entries — reached via the
-//! `principal::runtime::builtin_tools` re-export). The host crate does
-//! not own these names — they are the canonical contract between the
-//! framework's `ToolRuntime::register_builtins` call (in
+//! Read by the principal layer's `PrincipalCatalog::build` (which
+//! computes `enabled` flags for the catalog entries) and by the
+//! built-in extension adapter. The host crate does not own these
+//! names — they are the canonical contract between the framework's
+//! `ToolRuntime::register_builtins` call (in
 //! `peko-rs/core/src/engine/tool_runtime.rs`) and the principal layer's
 //! view of which built-ins are available.
 

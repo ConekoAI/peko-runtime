@@ -739,7 +739,6 @@ sanitizers remain in `peko_session::key`.
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
 | `ExtensionCore` | `extensions::framework::core` | ✅ New | Central hook registry |
-| `ExtensionStore` | `extensions::framework` | ✅ New | Extension lifecycle + on-disk persistence |
 | `HookPoint` (17 variants post-PR-E #4) | `extensions::framework::core` | ✅ New | Extension hook points |
 | `HookHandler` trait | `extensions::framework::core` | ✅ New | Hook implementation |
 | `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
@@ -754,6 +753,18 @@ sanitizers remain in `peko_session::key`.
 > `EngineChannelResponder` (peko-channel) and the F37 funnel gate
 > (`peko_engine::funnel`); no adapter registry remains. HookPoint
 > dropped from 22 to 17 variants in PR-E #4.
+>
+> **ADR-066 P1 (2026-10-01):** `ExtensionStore`,
+> `extensions::framework::{store, store_trait, discovery,
+> extension_storage, adapters}` and `services::{config_service,
+> tool_execution}` were deleted (zero registered adapters / zero
+> production consumers). `ToolExecutionConfig` moved to
+> `extensions::framework::transport::async_router`;
+> `builtin_tools` moved to `principal::runtime::builtin_tools`;
+> `GlobalExtensionItem` moved to `principal::catalog`. The async
+> executor + session inbox moved to `crate::async_exec` (`async_exec/`
+> + `async_exec/inbox.rs`). The stale `manager` / `adapters` /
+> `services` section bodies above are removed in P6's doc sweep.
 
 ### Agent-Owned Session Management (2026-08-09; revised 2026-08-13)
 
@@ -776,7 +787,7 @@ oversized transcripts page in place. New/changed public items:
 | `SubagentExecutor::{resume_and_execute, resume_and_wait, compact_and_execute, validate_context_parent}` | `agents::subagent_executor` | ✅ New | Persistent subagents (`Agent` `action:"resume"`) + immediate compact-and-continue (`action:"compact"`; replaced `request_compaction` 2026-09-05) |
 | `SpawnRequest` (+`resume_session`, +`caller_session_key`) | `tools::builtin::messaging` | ✅ Extended | Agent tool port input |
 | `SubagentRuntime::compact_and_execute` | `tools::builtin::messaging` | ✅ New | Agent tool compact-action port method (replaced `request_compaction` 2026-09-05) |
-| `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `extensions::framework::async_exec::executor` | ✅ New | Subagent active-run detection |
+| `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `async_exec::executor` | ✅ New | Subagent active-run detection |
 
 ### Agent–Session Paradigm Sprint (2026-08-15)
 

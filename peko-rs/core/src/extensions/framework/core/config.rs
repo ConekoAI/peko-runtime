@@ -24,13 +24,10 @@ pub struct ExtensionServices {
 
     /// Tool execution service (handles parameter injection).
     ///
-    /// Type-erased to `Arc<dyn Any + Send + Sync>` in Phase 8a. The
-    /// concrete `services::ToolExecutionService` lives in root
-    /// `framework/services/` (lifted in 8c). No method on this
-    /// service is called from within the host crate — only from the
-    /// transport subtree that stays in root until 8b — so we don't
-    /// need a trait port yet. 8c will replace this with a proper
-    /// trait object once services/ lifts.
+    /// Type-erased to `Arc<dyn Any + Send + Sync>` in Phase 8a. No
+    /// method on this service is called — ADR-066 P1 deleted the
+    /// concrete `services::ToolExecutionService`; the slot stays
+    /// until the `ExtensionServices` collapse (P3).
     tool_execution: Arc<dyn std::any::Any + Send + Sync>,
 
     /// Reserved parameters service.

@@ -714,7 +714,7 @@ mod tests {
             path_resolver.clone(),
             std::sync::Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
             std::sync::Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         )
         .with_resolver(resolver);
 

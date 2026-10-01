@@ -5,7 +5,7 @@
 //! previously reachable via the deleted `peko-extension-host` sat.
 //!
 //! The implementation stays in root at
-//! `crate::extensions::framework::inbox::SessionInbox` (under foldback).
+//! `crate::async_exec::inbox::SessionInbox` (under foldback).
 //! This file only carries the data types + the `From` conversions
 //! between native `InboxItem` values and the API crate's envelope
 //! forms (`AsyncInboxItem::Completion(CompletionEnvelope)` /

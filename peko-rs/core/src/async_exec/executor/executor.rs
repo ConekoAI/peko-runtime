@@ -9,8 +9,8 @@ use super::registry::{
 use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use super::wake::{notify_completion_wake, CompletionWakeNotice};
+use crate::async_exec::inbox::SessionInbox;
 use crate::extensions::framework::core::ExtensionCore;
-use crate::extensions::framework::inbox::SessionInbox;
 use crate::extensions::framework::transport::async_transport::BoxedExecutionFn;
 use peko_session::InboxRegistry;
 
@@ -341,7 +341,7 @@ impl AsyncExecutor {
             .filter(|_| claimed.config.wake_on_completion);
         let (delivered_key, via_steering) = if let Some(target) = steer_target {
             let label = claimed.config.label.clone().unwrap_or_default();
-            let text = crate::extensions::framework::async_exec::steer::format_cron_steer_message(
+            let text = crate::async_exec::steer::format_cron_steer_message(
                 &label, &task_id, &tool_name, &status,
             );
             let inbox = self.inbox_registry.get_or_create(&target).await;
@@ -996,7 +996,7 @@ impl AsyncExecutor {
 #[cfg(test)]
 mod consolidation_tests {
     use super::*;
-    use crate::extensions::framework::async_exec::executor::wake::{
+    use crate::async_exec::executor::wake::{
         install_completion_wake_handler, uninstall_completion_wake_handler, CompletionWakeNotice,
     };
     use std::sync::Mutex as StdMutex;
@@ -1811,8 +1811,8 @@ mod completion_queue_fan_out_tests {
 #[cfg(test)]
 mod dispatch_tool_tests {
     use super::*;
-    use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
-    use crate::extensions::framework::async_exec::executor::ToolDispatchContext;
+    use crate::async_exec::executor::AsyncTaskStatus;
+    use crate::async_exec::executor::ToolDispatchContext;
     use async_trait::async_trait;
     use peko_tools_core::Tool;
     use std::sync::atomic::AtomicBool;

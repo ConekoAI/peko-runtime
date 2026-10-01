@@ -502,7 +502,7 @@ mod tests {
                 path_resolver,
                 Arc::new(crate::principal::DefaultPrincipalMemoryFactory),
                 Arc::new(crate::principal::DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver)
             .with_channel_port(channel_port.clone()),

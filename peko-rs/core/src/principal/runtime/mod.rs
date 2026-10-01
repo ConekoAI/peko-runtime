@@ -7,11 +7,8 @@
 //!   only consumer was `/help` and the IPC `no_slash` / `output_format`
 //!   fields that paired with it.
 //! * [`builtin_tools`] — the canonical list of built-in tool names
-//!   (global + agent-specific). Restored to
-//!   `crate::extensions::framework::adapters::builtin_tools` (its
-//!   pre-Phase-14.c.2a home) to keep the framework free of
-//!   principal imports; re-exported here for
+//!   (global + agent-specific), read by
 //!   [`super::catalog::PrincipalCatalog::build`] and other
 //!   principal-layer callers.
 
-pub use crate::extensions::framework::adapters::builtin_tools;
+pub mod builtin_tools;

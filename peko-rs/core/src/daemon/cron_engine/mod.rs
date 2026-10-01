@@ -4,11 +4,9 @@
 //! logging. Keeps the daemon's main loop focused on lifecycle and
 //! shutdown.
 
+use crate::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
 use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::async_exec::executor::{
-    AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
-};
 use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
 #[cfg(test)]
@@ -912,23 +910,22 @@ impl CronEngine {
         // CancellationToken into `run_spawn_tool_job` and switch to
         // `dispatch_tool_with_signal`. The funnel is mandatory now,
         // which is the F38 invariant we care about.
-        let context =
-            crate::extensions::framework::async_exec::executor::ToolDispatchContext::builder(
-                tool_name.clone(),
-                tool_params.clone(),
-                caller_session_key.clone(),
-            )
-            .for_principal(snapshot_principal_id, snapshot_capabilities)
-            .with_principal_name(snapshot_principal_name)
-            // The spawned tool runs unattributed to any live turn, so
-            // give it the job's ORIGIN session id as its own session
-            // context (the trunk for legacy jobs) — tools that resolve
-            // the caller session (Agent's `resolve_reference`,
-            // session/Task attribution) refuse the funnel's "unknown"
-            // default, and relative `Agent` paths follow the creating
-            // conversation.
-            .with_session_id(caller_session_key.clone())
-            .with_active_extensions(snapshot_active_extensions);
+        let context = crate::async_exec::executor::ToolDispatchContext::builder(
+            tool_name.clone(),
+            tool_params.clone(),
+            caller_session_key.clone(),
+        )
+        .for_principal(snapshot_principal_id, snapshot_capabilities)
+        .with_principal_name(snapshot_principal_name)
+        // The spawned tool runs unattributed to any live turn, so
+        // give it the job's ORIGIN session id as its own session
+        // context (the trunk for legacy jobs) — tools that resolve
+        // the caller session (Agent's `resolve_reference`,
+        // session/Task attribution) refuse the funnel's "unknown"
+        // default, and relative `Agent` paths follow the creating
+        // conversation.
+        .with_session_id(caller_session_key.clone())
+        .with_active_extensions(snapshot_active_extensions);
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
 
@@ -1285,7 +1282,7 @@ mod tests {
             obs,
             None,
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         )
@@ -1313,7 +1310,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         )
@@ -1418,7 +1415,7 @@ mod tests {
             obs,
             Some(manager.clone()),
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );
@@ -1538,16 +1535,15 @@ mod tests {
         // Build a CronEngine with an executor whose registry holds a
         // terminal entry for `shell:abc`.
         let async_executor = Arc::new(AsyncExecutor::new(
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         ));
-        let mut entry =
-            crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
-                "shell:abc".to_string(),
-                "Bash".to_string(),
-                serde_json::json!({"command": "echo done"}),
-                "session_worker_1".to_string(),
-                AsyncToolConfig::default(),
-            );
+        let mut entry = crate::async_exec::executor::registry::AsyncTaskEntry::new(
+            "shell:abc".to_string(),
+            "Bash".to_string(),
+            serde_json::json!({"command": "echo done"}),
+            "session_worker_1".to_string(),
+            AsyncToolConfig::default(),
+        );
         entry.set_result(serde_json::json!("done"));
         async_executor.registry().write().await.register(entry);
         // Mark the entry as Completed so reconcile treats it as terminal.
@@ -1663,7 +1659,7 @@ mod tests {
             .unwrap();
 
         let async_executor = Arc::new(AsyncExecutor::new(
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         ));
         // Phase A: build a path resolver pointing at the test's
         // tmp dir so the cron engine derives per-principal schedule
@@ -1762,7 +1758,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         );
@@ -1804,7 +1800,7 @@ mod tests {
             Arc::new(Observability::new("daemon")),
             Some(manager.clone()),
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );
@@ -1951,7 +1947,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         );
@@ -1993,7 +1989,7 @@ mod tests {
             Arc::new(Observability::new("daemon")),
             Some(manager.clone()),
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );
@@ -2110,7 +2106,7 @@ mod tests {
             Arc::new(Observability::new("daemon")),
             None,
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );
@@ -2241,7 +2237,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(llm_resolver),
         );
@@ -2254,8 +2250,7 @@ mod tests {
         principal.config.write().await.capabilities = Capabilities::starter_bundle();
 
         // Executor wired to an inbox registry the test can inspect.
-        let registry =
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
+        let registry = crate::async_exec::executor::standalone_inbox_registry();
         let executor = Arc::new(AsyncExecutor::new(registry.clone()));
 
         // ExtensionCore with the stub tool registered through the
@@ -2376,7 +2371,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(llm_resolver),
         );
@@ -2387,7 +2382,7 @@ mod tests {
         principal.config.write().await.capabilities = Capabilities::starter_bundle();
 
         let executor = Arc::new(AsyncExecutor::new(
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         ));
         let core = Arc::new(ExtensionCore::new());
         crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
@@ -2499,7 +2494,7 @@ mod tests {
             obs,
             Some(manager.clone()),
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );
@@ -2592,7 +2587,7 @@ mod tests {
             obs,
             Some(manager.clone()),
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );
@@ -2631,7 +2626,7 @@ mod tests {
             obs,
             Some(manager.clone()),
             Arc::new(AsyncExecutor::new(
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
             std::sync::Weak::new(),
         );

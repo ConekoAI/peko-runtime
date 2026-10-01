@@ -1,6 +1,6 @@
 //! Subagent DTOs lifted from root (`src/agents/{subagent_executor,
 //! subagent_types}.rs` and
-//! `src/extensions/framework/async_exec/executor/registry.rs`).
+//! `src/async_exec/executor/registry.rs`).
 //!
 //! Phase 10e hoists the **shapes** AgentTool needs through its
 //! `SubagentRuntime` port — the heavy `SubagentExecutor` itself
@@ -93,7 +93,7 @@ impl Default for ExecutionConfig {
     }
 }
 
-// ─── SubagentResult (lifted from src/extensions/framework/async_exec/executor/registry.rs)
+// ─── SubagentResult (lifted from src/async_exec/executor/registry.rs)
 
 /// Result of a subagent run.
 #[derive(Debug, Clone, Serialize, Deserialize)]

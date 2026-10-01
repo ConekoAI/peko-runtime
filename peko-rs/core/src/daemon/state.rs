@@ -13,12 +13,11 @@ use crate::daemon::background_runtime::{
 use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
+use crate::async_exec::executor::AsyncExecutor;
+use crate::async_exec::inbox::SessionInbox;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
 use crate::engine::tool_runtime::ToolRuntime;
-use crate::extensions::framework::async_exec::executor::AsyncExecutor;
-use crate::extensions::framework::inbox::SessionInbox;
-use crate::extensions::framework::store::ExtensionStore;
 use crate::principal::{
     factory::{DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory},
     PrincipalManager,
@@ -168,12 +167,6 @@ pub(crate) struct AppState {
 
     /// Extension runtime starter registry — dispatches ext start/stop by type (ADR-025/026)
     runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
-
-    /// Extension store for installed extensions (ADR-030 Tier 1)
-    extension_store: Arc<ExtensionStore>,
-
-    /// Extension services for built-in extension operations
-    extension_services: Arc<crate::extensions::framework::services::Services>,
 
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
@@ -334,8 +327,6 @@ impl std::fmt::Debug for AppState {
                 "runtime_starter_registry",
                 &"<ExtensionRuntimeStarterRegistry>",
             )
-            .field("extension_store", &"<ExtensionStore>")
-            .field("extension_services", &"<ExtensionServices>")
             .field("runtime_identity", &self.runtime_identity.runtime_did)
             .field("runtime_metadata", &self.runtime_metadata.display_name)
             .field("auth", &"<AuthConfig>")
@@ -625,12 +616,11 @@ impl AppState {
         // Install as the process-global default BEFORE the core wiring
         // below, so components constructed outside this composition root
         // — `BashTool`'s process-global background executor (P0-4),
-        // `Services::new`'s default router — resolve THIS registry via
+        // `AsyncExecutionRouter::new`'s default transport — resolve THIS
+        // registry via
         // `shared_inbox_registry()` and their completions land in the
         // inboxes the agentic loop drains. (P0-1, 2026-09-27)
-        crate::extensions::framework::async_exec::executor::install_shared_inbox_registry(
-            Arc::clone(&inbox_registry),
-        );
+        crate::async_exec::executor::install_shared_inbox_registry(Arc::clone(&inbox_registry));
         let global_core = if for_test {
             use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
             use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
@@ -760,35 +750,6 @@ impl AppState {
         runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
-        // ADR-030: Initialize the global ExtensionStore for IPC extension operations
-        let extension_store = Arc::new(
-            ExtensionStore::with_core(Arc::clone(&global_core))
-                .with_storage_dir(path_resolver.extensions_root()),
-        );
-
-        // PR-C.5: `GeneralExtensionAdapter::register_adapter` call
-        // removed. With PR-A/B/C.1-C.4 deleting every other adapter
-        // type (skill/mcp/slash/gateway in prior phases;
-        // validation/BuiltInAdapters in PR-C.1+PR-C.2), no
-        // `ExtensionTypeAdapter` impls remain in the daemon's
-        // process. The store's `load_all` only consults adapters
-        // for manifest types still produced by the validator path
-        // — which is itself deleted — so registering a no-op
-        // adapter here accomplished nothing. The IPC extension
-        // operations live on `ExtensionStore` directly; nothing
-        // about `register_adapter` was load-bearing.
-
-        // Load all extensions (log warnings but don't fail startup)
-        if let Err(e) = extension_store.load_all().await {
-            tracing::warn!(
-                "Failed to load some extensions during daemon startup: {}",
-                e
-            );
-        }
-        let extension_services = Arc::new(
-            crate::extensions::framework::services::Services::with_core(Arc::clone(&global_core)),
-        );
-
         // Observability hub is constructed early so it can be shared with the
         // PrincipalManager and threaded through to subagent spawn audit events.
         // ADR-046 trust + audit: write to JSONL sink rooted at
@@ -812,7 +773,6 @@ impl AppState {
                 Arc::clone(&inbox_registry),
             )
             .with_resolver(resolver.clone())
-            .with_extension_store(Arc::clone(&extension_store))
             .with_observability(Arc::clone(&observability))
             // ADR-058 D1: principal genesis mints a per-principal
             // ed25519 key (DID = did:key of that key) and custodies
@@ -1064,8 +1024,6 @@ impl AppState {
             background_runtime_manager,
             mcp_client_registry,
             runtime_starter_registry,
-            extension_store,
-            extension_services,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
             runtime_identity,
@@ -1349,18 +1307,6 @@ impl AppState {
     #[must_use]
     pub fn runtime_starter_registry(&self) -> &Arc<ExtensionRuntimeStarterRegistry> {
         &self.runtime_starter_registry
-    }
-
-    /// Get the extension manager
-    #[must_use]
-    pub fn extension_store(&self) -> &Arc<ExtensionStore> {
-        &self.extension_store
-    }
-
-    /// Get the extension services
-    #[must_use]
-    pub fn extension_services(&self) -> &Arc<crate::extensions::framework::services::Services> {
-        &self.extension_services
     }
 
     /// Get the auth configuration (ADR-034)
@@ -2396,10 +2342,6 @@ impl crate::ipc::handlers::tool::ToolHost for AppState {
         AppState::principal_manager(self)
     }
 
-    fn extension_store(&self) -> &Arc<ExtensionStore> {
-        AppState::extension_store(self)
-    }
-
     fn tool_runtime(&self) -> Arc<ToolRuntime> {
         self.tool_runtime.clone()
     }
@@ -3246,10 +3188,6 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 
     fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
         &self.inbox_registry
-    }
-
-    fn extension_store(&self) -> &Arc<ExtensionStore> {
-        AppState::extension_store(self)
     }
 
     fn trust_store(&self) -> &Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>> {

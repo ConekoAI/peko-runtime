@@ -862,8 +862,7 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -930,8 +929,7 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -969,8 +967,7 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -995,8 +992,7 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -1023,8 +1019,7 @@ mod tests {
             dir.path().to_path_buf(),
             memory.clone(),
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -1070,8 +1065,7 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),
@@ -1107,8 +1101,7 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(Capabilities::default()),

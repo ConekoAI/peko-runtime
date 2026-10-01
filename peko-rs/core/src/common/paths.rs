@@ -855,8 +855,7 @@ impl PathResolver {
 }
 
 // =============================================================================
-// `PathResolver` impl — narrow cross-boundary view used by the extension
-// framework's `ExtensionStore::load_all_with` (host) and any other host
+// `PathResolver` impl — narrow cross-boundary view for any host
 // crate that needs the data-directory layout. The trait ships in the
 // `peko-extension-host` crate (Phase 8 commit 2); root's concrete
 // `PathResolver` impls it via single-method delegation.

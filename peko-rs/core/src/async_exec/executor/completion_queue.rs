@@ -3,9 +3,9 @@
 //!
 //! The canonical types (`CompletionEvent`, `SteeringMessage`,
 //! `InboxItem`, `SessionInbox`) are defined in `peko_extension_api` and
-//! `crate::extensions::framework::inbox`; this module re-exports them so
+//! `crate::async_exec::inbox`; this module re-exports them so
 //! the historical
-//! `crate::extensions::framework::async_exec::executor::*` import paths
+//! `crate::async_exec::executor::*` import paths
 //! keep resolving, and provides the `SharedSessionInbox` convenience
 //! alias (`Arc<SessionInbox>`) for existing callers (e.g.
 //! `AsyncExecutor::inbox_registry`, the `AsyncInboxAdapter` in
@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-pub use crate::extensions::framework::inbox::SessionInbox;
+pub use crate::async_exec::inbox::SessionInbox;
 pub use peko_extension_api::{CompletionEvent, InboxItem, SteeringMessage};
 
 /// Convenience alias preserved from the pre-Phase-2 root type:
@@ -22,7 +22,7 @@ pub use peko_extension_api::{CompletionEvent, InboxItem, SteeringMessage};
 /// pub type SharedSessionInbox = Arc<SessionInbox>;
 /// ```
 ///
-/// where `SessionInbox` is now `crate::extensions::framework::inbox::SessionInbox`.
+/// where `SessionInbox` is now `crate::async_exec::inbox::SessionInbox`.
 /// Callers that held an `Arc<SharedSessionInbox>` (e.g.
 /// `AsyncExecutor::inbox_registry`, `agentic_loop_compat` tests, the
 /// `AsyncInboxAdapter` in `src/engine/async_inbox_compat.rs`) keep
@@ -34,7 +34,7 @@ mod tests {
     //! Verify the `SharedSessionInbox` alias still constructs from
     //! the canonical `inbox::SessionInbox`. The type-id assertions
     //! from the pre-Phase-8b root shim no longer apply because this
-    //! module now lives in the same crate as `crate::extensions::framework::inbox::*`.
+    //! module now lives in the same crate as `crate::async_exec::inbox::*`.
     use super::*;
 
     #[test]

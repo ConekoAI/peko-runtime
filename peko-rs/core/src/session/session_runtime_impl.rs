@@ -440,7 +440,7 @@ impl SessionRuntime for SessionManagerRuntime {
         // register in the per-agent `AsyncTaskRegistry` instead — so a
         // live subagent session shows up via the unified-registry check
         // (the same guard the delete path uses at `delete_session`).
-        use crate::extensions::framework::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
+        use crate::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
         for info in &mut sessions {
             let run_held = match &self.inbox_registry {
                 Some(registry) => registry.peek_run_held(&info.session_id).await,
@@ -964,7 +964,7 @@ impl SessionRuntime for SessionManagerRuntime {
         // same reason as the InboxRegistry check above — otherwise the
         // in-flight task's completion announcement lands on a
         // tombstone session id. See PR review 2026-08-10.
-        use crate::extensions::framework::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
+        use crate::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
         for id in std::iter::once(&session_key.clone()).chain(descendants.iter()) {
             if has_active_subagent_run_across_all_registries(id).await {
                 return Err(self.refuse(err_run_active(id)));
@@ -1078,7 +1078,7 @@ impl SessionRuntime for SessionManagerRuntime {
         }
         // Subagent runs never hold InboxRegistry permits (they register
         // in the per-agent AsyncTaskRegistry) — same check as delete.
-        use crate::extensions::framework::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
+        use crate::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
         for id in std::iter::once(&session_key.clone()).chain(descendants.iter()) {
             if has_active_subagent_run_across_all_registries(id).await {
                 return Err(self.refuse(err_run_active(id)));
@@ -1228,8 +1228,7 @@ mod tests {
                 .with_agent_name("test-agent");
             let manager = Arc::new(tokio::sync::RwLock::new(manager));
             let current = Arc::new(tokio::sync::RwLock::new(None));
-            let registry =
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
+            let registry = crate::async_exec::executor::standalone_inbox_registry();
             let runtime = Arc::new(SessionManagerRuntime::new(
                 Arc::clone(&manager),
                 Arc::clone(&current),
@@ -1634,12 +1633,10 @@ mod tests {
     /// from other tests in the shared global registries can't collide.
     #[tokio::test]
     async fn list_marks_run_active_for_subagent_run() {
-        use crate::extensions::framework::async_exec::executor::registry::{
+        use crate::async_exec::executor::registry::{
             get_or_create_registry_for_agent, AsyncTaskEntry, SubagentMetadata, TaskMetadata,
         };
-        use crate::extensions::framework::async_exec::executor::types::{
-            AsyncTaskStatus, AsyncToolConfig,
-        };
+        use crate::async_exec::executor::types::{AsyncTaskStatus, AsyncToolConfig};
 
         let h = tree_harness("root:user:alice").await;
         h.create("subrun_probe", Some(sid("root:user:alice").as_str()))

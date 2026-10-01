@@ -35,7 +35,6 @@ use std::sync::{Arc, Mutex};
 use crate::agents::subagent_executor::StreamingResumeOutcome;
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
-use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
     PrincipalLogMessage, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry,
@@ -183,11 +182,6 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// leave a stop-context note for the next run, and by the Gap-2
     /// steering drain at the end of a send run.
     fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry>;
-
-    /// On-disk extension store used by `PrincipalImport`'s
-    /// embedded-extension install path and by `PrincipalExport`'s
-    /// `with_extensions_from_store`.
-    fn extension_store(&self) -> &Arc<ExtensionStore>;
 
     /// Trust store consulted during `PrincipalImport` to enforce the
     /// trust policy (TOFU vs. AllowUntrusted).
@@ -2649,9 +2643,7 @@ async fn run_principal_send(
                     &session_id,
                     peer.clone(),
                     caller.subject(),
-                    SteeringMessage::new(
-                        crate::extensions::framework::async_exec::executor::wake::WAKE_TURN_MARKER,
-                    ),
+                    SteeringMessage::new(crate::async_exec::executor::wake::WAKE_TURN_MARKER),
                     override_model.clone(),
                     channel_port.clone(),
                     dm_channel.clone(),
@@ -3217,9 +3209,8 @@ async fn import_principal_package(
     // Install any embedded extension packages.
     let (manifest, _validation) = unpackager.inspect().await?;
     if !manifest.extensions.is_empty() {
-        let store = host.extension_store();
         let installed = unpackager
-            .import_extensions(&manifest, store)
+            .import_extensions(&manifest)
             .await
             .with_context(|| "Failed to install embedded extensions")?;
         result.installed_extensions = installed.into_iter().map(|id| id.0).collect();
@@ -4059,9 +4050,6 @@ mod tests {
             fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
                 unimplemented!("not reached by read_principal_log")
             }
-            fn extension_store(&self) -> &Arc<ExtensionStore> {
-                unimplemented!("not reached by read_principal_log")
-            }
             fn trust_store(&self) -> &Arc<RwLock<TrustStore>> {
                 unimplemented!("not reached by read_principal_log")
             }
@@ -4149,7 +4137,7 @@ mod tests {
                 path_resolver,
                 Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
                 Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             );
             let manager = if with_port {
                 manager.with_channel_port(store.clone())

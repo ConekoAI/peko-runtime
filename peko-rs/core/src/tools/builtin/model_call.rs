@@ -627,7 +627,7 @@ mod tests {
             path_resolver,
             Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
             Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         )
         .with_resolver(resolver);
         manager

@@ -13,7 +13,7 @@
 //! because the router stores `Arc<dyn AsyncTaskTransport>` and tests
 //! substitute mocks.
 
-use crate::extensions::framework::async_exec::executor::{
+use crate::async_exec::executor::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
 };
 use anyhow::Result;
@@ -88,7 +88,7 @@ pub trait AsyncTaskTransport: Send + Sync {
 // LocalAsyncTransport — used inside the daemon
 // ================================================================================
 
-use crate::extensions::framework::async_exec::executor::AsyncExecutor;
+use crate::async_exec::executor::AsyncExecutor;
 
 /// Local transport that executes tasks in-process via `AsyncExecutor`
 #[derive(Debug, Clone)]
@@ -173,15 +173,13 @@ impl LocalAsyncTransport {
 // ================================================================================
 
 /// Create a local transport wired to the process-shared inbox registry
-/// ([`shared_inbox_registry`](crate::extensions::framework::async_exec::executor::shared_inbox_registry)),
+/// ([`shared_inbox_registry`](crate::async_exec::executor::shared_inbox_registry)),
 /// which defers to the daemon-installed registry once `AppState` installs
 /// it. Used for the pre-`AppState` `ExtensionCore` the CLI installs for
 /// `peko daemon start --foreground`; the daemon's composition root prefers
 /// [`create_local_transport_with_inbox`] with the hoisted registry.
 pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
-    create_local_transport_with_inbox(
-        crate::extensions::framework::async_exec::executor::shared_inbox_registry(),
-    )
+    create_local_transport_with_inbox(crate::async_exec::executor::shared_inbox_registry())
 }
 
 /// WS3 (implicit session management, 2026-08-11): same as
@@ -195,15 +193,9 @@ pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
 pub fn create_local_transport_with_inbox(
     inbox_registry: Arc<peko_session::InboxRegistry>,
 ) -> Arc<dyn AsyncTaskTransport> {
-    let registry =
-        crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent(
-            "_global",
-        );
+    let registry = crate::async_exec::executor::get_or_create_registry_for_agent("_global");
     let executor =
-        crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(
-            registry,
-            inbox_registry,
-        );
+        crate::async_exec::executor::AsyncExecutor::with_registries(registry, inbox_registry);
     Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 
@@ -213,9 +205,7 @@ mod tests {
 
     #[test]
     fn test_local_transport_new() {
-        let executor = AsyncExecutor::new(
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
-        );
+        let executor = AsyncExecutor::new(crate::async_exec::executor::standalone_inbox_registry());
         let transport = LocalAsyncTransport::from_executor(executor);
         let _ = transport.executor();
     }

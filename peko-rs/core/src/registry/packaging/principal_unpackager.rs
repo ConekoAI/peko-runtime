@@ -5,7 +5,6 @@
 
 use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::path_safety::safe_join;
@@ -611,9 +610,8 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
-    /// Extract the embedded `plugins/` (or legacy `extensions/`) layer and
-    /// route each bundle through `store`. Returns the IDs of installed
-    /// plugins.
+    /// Extract the embedded `plugins/` (or legacy `extensions/`) layer.
+    /// Returns the IDs of installed plugins.
     ///
     /// **Phase 5 (ADR-047 §2.1):** workspace-resident tooling
     /// (tools/hooks/skills/MCP) lives in the principal's workspace and
@@ -628,7 +626,6 @@ impl PrincipalUnpackager {
     pub async fn import_extensions(
         &self,
         manifest: &PrincipalManifest,
-        _store: &ExtensionStore,
     ) -> anyhow::Result<Vec<ExtensionId>> {
         if !manifest.extensions.is_empty() {
             tracing::warn!(

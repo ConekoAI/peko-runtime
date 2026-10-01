@@ -25,8 +25,7 @@
 //! escalation. The resolution chain is:
 //!
 //!   `parse_session_key()` → `principal_manager.get_by_name(parts.agent)`
-//!   → `Principal.capabilities().to_strings()` (+ active extensions
-//!   from the daemon-side `ExtensionStore`).
+//!   → `Principal.capabilities().to_strings()`.
 //!
 //! If the principal cannot be resolved (e.g. an unknown session key
 //! raced the principal reload, or the daemon hasn't finished warming
@@ -44,7 +43,6 @@ use async_trait::async_trait;
 use tracing::warn;
 
 use crate::engine::tool_runtime::ToolRuntime;
-use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
@@ -65,10 +63,6 @@ pub(crate) trait ToolHost: Send + Sync {
     /// Principal manager used to resolve the session's owning
     /// principal (ADR-042).
     fn principal_manager(&self) -> &Arc<PrincipalManager>;
-
-    /// Extension store used to source the principal's active extension
-    /// IDs for capability-gated tools.
-    fn extension_store(&self) -> &Arc<ExtensionStore>;
 
     /// Async tool runtime used to execute the requested tool.
     fn tool_runtime(&self) -> Arc<ToolRuntime>;
@@ -163,7 +157,8 @@ impl ToolHandler {
     /// BOTH the granted capability set (`capabilities().to_strings()`)
     /// and the principal's active extension set, built by
     /// `PrincipalCatalog::build` from the principal's capabilities +
-    /// `agent_prompts` and the daemon-wide `ExtensionStore::global_items()`.
+    /// `agent_prompts` (the daemon-wide extension store was deleted in
+    /// ADR-066 P1 — the catalog's installed-extension source is empty).
     /// This is the same path `PrincipalManager::receive` uses when an
     /// agent session boots, so capability-gated tools see the identical
     /// enable set whether they were spawned by chat traffic or by this
@@ -190,12 +185,11 @@ impl ToolHandler {
         match principal {
             Some(principal) => {
                 let caps = principal.capabilities().await;
-                let global_items = self.host.extension_store().global_items().await;
                 let catalog = crate::principal::catalog::PrincipalCatalog::build(
                     &principal.workspace_path,
                     &caps,
                     &principal.agent_prompts,
-                    &global_items,
+                    &[],
                 );
                 SessionAttribution {
                     capabilities: Some(caps.to_strings()),
@@ -390,8 +384,8 @@ fn tool_executed_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::async_exec::executor::AsyncExecutor;
     use crate::common::paths::PathResolver;
-    use crate::extensions::framework::async_exec::executor::AsyncExecutor;
     use crate::principal::config::{
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
@@ -404,13 +398,12 @@ mod tests {
     use tempfile::TempDir;
 
     /// Minimal `ToolHost` double over real components: a
-    /// `PrincipalManager` with one created principal, an empty
-    /// `ExtensionStore`, a `ToolRuntime` with the built-in tools
-    /// registered, and a standalone `AsyncExecutor`. Mirrors the
+    /// `PrincipalManager` with one created principal, a `ToolRuntime`
+    /// with the built-in tools registered, and a standalone
+    /// `AsyncExecutor`. Mirrors the
     /// `principal_log` fixture in `ipc::handlers::principal`.
     struct TestToolHost {
         manager: Arc<PrincipalManager>,
-        extension_store: Arc<ExtensionStore>,
         tool_runtime: Arc<ToolRuntime>,
         run_tokens: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
     }
@@ -418,9 +411,6 @@ mod tests {
     impl ToolHost for TestToolHost {
         fn principal_manager(&self) -> &Arc<PrincipalManager> {
             &self.manager
-        }
-        fn extension_store(&self) -> &Arc<ExtensionStore> {
-            &self.extension_store
         }
         fn tool_runtime(&self) -> Arc<ToolRuntime> {
             self.tool_runtime.clone()
@@ -493,7 +483,7 @@ mod tests {
             path_resolver.clone(),
             Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
             Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         ));
         manager
             .create(test_principal_config(name, capabilities))
@@ -510,7 +500,6 @@ mod tests {
         let tool_runtime = Arc::new(tool_runtime);
         let host = TestToolHost {
             manager: Arc::clone(&manager),
-            extension_store: Arc::new(ExtensionStore::new()),
             tool_runtime: Arc::clone(&tool_runtime),
             run_tokens: Arc::clone(&run_tokens),
         };
@@ -1317,7 +1306,7 @@ mod tests {
             fx.tool_runtime.extension_core(),
             Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
                 Arc::downgrade(&fx.manager),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )),
         )
         .await
@@ -1606,12 +1595,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_async_spawn_stamps_token_node_and_delivers_there() {
-        use crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime;
+        use crate::async_exec::executor::AsyncExecutorRuntime;
         use crate::tools::builtin::async_control::AsyncRuntime as _;
 
         let fx = fixture("asyncwf", Capabilities::starter_bundle()).await;
-        let inbox_registry =
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry();
+        let inbox_registry = crate::async_exec::executor::standalone_inbox_registry();
         let executor = Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
         let principal_id = fx
             .manager

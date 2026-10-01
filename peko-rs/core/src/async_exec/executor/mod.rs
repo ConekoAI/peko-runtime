@@ -6,11 +6,6 @@
 //! This module consolidates the previously fragmented async tool
 //! infrastructure (see Issue 006) into a single, tool-agnostic framework.
 //!
-//! Phase 8b: lifted from `src/extensions/framework/async_exec/executor/`
-//! into `peko-extension-host`. Intra-crate paths use `crate::*`; the
-//! previously-fractured `crate::extensions::framework::*` paths now
-//! resolve through root re-export shims until Phase 16 deletes them.
-//!
 //! 2026-09-27 consolidation (ADR-063): the legacy delivery
 //! stack is deleted — `queue.rs` (`AsyncResultQueueManager`), `delivery.rs`
 //! (`QueueDelivery`/`ChannelDelivery`/`CallbackDelivery` + the formatter
