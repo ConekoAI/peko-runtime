@@ -104,9 +104,8 @@ There are exactly two grounding paths, with two artifact shapes:
 
 - **Grow** — `peko create [-s <seed.toml>]`: a seed
   is a **plain TOML file** (a `principal.toml` with `id`/`did`/
-  `boot_state` stripped). This is also the registry artifact
-  (`peko push` distributes DNA, not creatures; a pulled
-  seed is ground with `create -s` and a freshly minted identity).
+  `boot_state` stripped). PekoHub distributes seeds outside the runtime;
+  downloaded seeds ground with `create -s` and a freshly minted identity.
   Because the identity is always minted fresh, the artifact is a
   seed rather than a template (ADR-060).
 - **Wake** — `peko import <name>.peko`: a full-existence
@@ -127,15 +126,17 @@ my-principal.peko (tar.gz)          # cryogenic transport
 ├── sessions/                       # incl. peers.json
 ├── cron/
 ├── plans/
-├── tools/ skills/ mcp/ hooks/ kb/
-└── plugins/
+└── tools/ skills/ mcp/ hooks/ kb/
 ```
 
-Legacy packages that still ship an `extensions/<id>.ext` layer are
-accepted on import; new exports omit it.
+ADR-066 P5 uses a flat `manifest.toml` with metadata and a `path → sha256`
+file map. Legacy OCI snapshots are rejected with re-export guidance.
+`tar -tf` lists the payload directly. Import displays every hook/MCP manifest
+and skill id and records the inventory at Security severity before writes.
+Checksums cannot be bypassed with `--force`; imports have no confirmation UI.
 
-See [ADR-056](adr/ADR-056-full-existence-peko-snapshot.md),
-[ADR-047 §5](adr/ADR-047-peko-workspace-as-tooling-trust-boundary.md)
+See [ADR-056](adr/ADR-056-full-existence-principal-snapshot.md),
+[ADR-047 §5](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md)
 and [ADR-027 §3](adr/ADR-027-unified-packaging.md) for the format
 history.
 
@@ -204,7 +205,7 @@ flow.
 
 ## Related documentation
 
-- [ADR-047: Peko Workspace as the Tooling Trust Boundary](adr/ADR-047-peko-workspace-as-tooling-trust-boundary.md) — design rationale
+- [ADR-047: Peko Workspace as the Tooling Trust Boundary](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) — design rationale
 - [ADR-050: Capabilities as Workspace Files](adr/ADR-050-capabilities-as-workspace-files.md) — file-only management + per-turn prompt catalog
 - [ADR-046: Trust and Audit](adr/ADR-046-trust-and-audit.md) — audit posture
 - [ADR-027: Unified Packaging](adr/ADR-027-unified-packaging.md) — `plugins/` layer

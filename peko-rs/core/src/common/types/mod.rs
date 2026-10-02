@@ -11,5 +11,4 @@
 // was the slash-command dispatch path, which has been removed.
 
 pub mod config;
-pub mod extension;
 pub mod task;

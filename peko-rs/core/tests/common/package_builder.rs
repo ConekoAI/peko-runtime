@@ -1,232 +1,47 @@
-//! Shared fixture builder for `.peko` integration tests.
-//!
-//! Builds signed (or unsigned) `.peko` packages whose principal config
-//! declares `requires`/`provides` capability grants. Reuses the
-//! canonical `PrincipalPackager`/`PrincipalUnpackager` paths so the fixture
-//! shape matches production packages.
-
+//! Local snapshot fixtures using the production packager.
 #![allow(dead_code)]
-
-use anyhow::Context;
 use peko_core::principal::config::PrincipalConfig;
-use peko_core::registry::packaging::{
-    compute_digest, PrincipalExportOptions, PrincipalManifest, PrincipalPackager,
-    PrincipalRegistryDescriptor,
-};
+use peko_core::registry::packaging::{PrincipalExportOptions, PrincipalPackager};
 use peko_identity::{did::DIDScope, Identity};
-use std::collections::BTreeMap;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// Fixture description for a skill embedded in the package.
-pub struct SkillFixture {
-    pub id: String,
-    pub requires: Vec<String>,
-    pub provides: Vec<String>,
-}
-
-/// Builder for a test `.peko` package.
 pub struct PrincipalPackageBuilder {
     name: String,
-    skills: Vec<SkillFixture>,
-    capabilities: Vec<String>,
-    unsigned: bool,
+    skills: Vec<String>,
 }
-
 impl PrincipalPackageBuilder {
-    /// Start building a package for a principal named `name`.
     pub fn new(name: &str) -> Self {
         Self {
-            name: name.to_string(),
+            name: name.into(),
             skills: Vec::new(),
-            capabilities: Vec::new(),
-            unsigned: false,
         }
     }
-
-    /// Embed a skill extension.
-    pub fn with_skill(mut self, id: &str, requires: &[&str], provides: &[&str]) -> Self {
-        self.skills.push(SkillFixture {
-            id: id.to_string(),
-            requires: requires.iter().map(|s| s.to_string()).collect(),
-            provides: provides.iter().map(|s| s.to_string()).collect(),
-        });
+    pub fn with_skill(mut self, id: &str) -> Self {
+        self.skills.push(id.into());
         self
     }
-
-    /// Add a capability grant to the principal config.
-    pub fn with_capability(mut self, cap: &str) -> Self {
-        self.capabilities.push(cap.to_string());
-        self
-    }
-
-    /// Produce an unsigned package (empty manifest signature).
-    pub fn unsigned(mut self) -> Self {
-        self.unsigned = true;
-        self
-    }
-
-    /// Build the `.peko` archive and return its path.
     pub async fn build(self) -> anyhow::Result<PathBuf> {
-        let descriptor = self.export().await?;
-        if !self.unsigned {
-            return Ok(descriptor.package_path);
-        }
-        strip_signature(&descriptor.package_path)
-    }
-
-    /// Build a registry push descriptor for the package.
-    ///
-    /// For unsigned packages the manifest signature is cleared in the
-    /// descriptor so registry-based previews report `signed: false`.
-    pub async fn build_descriptor(self) -> anyhow::Result<PrincipalRegistryDescriptor> {
-        let mut descriptor = self.export().await?;
-        if self.unsigned {
-            // The OCI config blob is the signed `manifest.toml`. Clear the
-            // signature and replace the config blob in `layer_data` so the
-            // registry manifest's config descriptor stays consistent. The
-            // content-layer digests in `descriptor.layers` and in the embedded
-            // `PrincipalManifest` are unchanged.
-            let old_config_digest = compute_digest(&descriptor.manifest_toml);
-            let mut manifest =
-                PrincipalManifest::from_toml(std::str::from_utf8(&descriptor.manifest_toml)?)?;
-            manifest.signatures.manifest = String::new();
-            descriptor.manifest_toml = manifest.to_toml()?.into_bytes();
-            let new_config_digest = compute_digest(&descriptor.manifest_toml);
-
-            let _ = descriptor.layer_data.remove(&old_config_digest);
-            descriptor
-                .layer_data
-                .insert(new_config_digest, descriptor.manifest_toml.clone());
-        }
-        Ok(descriptor)
-    }
-
-    async fn export(&self) -> anyhow::Result<PrincipalRegistryDescriptor> {
         let temp = tempfile::tempdir()?;
-        let base = temp.path();
-
-        // Reference each fixture skill by `skill:<id>` in the principal's
-        // capability grants. (ADR-066 P1: the `ExtensionStore` fixture load
-        // was deleted with the store — the grants are what the tests
-        // assert on; no adapter ever resolved the fixture manifests.)
-        let mut grants: Vec<String> = self
-            .skills
-            .iter()
-            .map(|s| format!("skill:{}", s.id))
-            .chain(self.capabilities.iter().cloned())
-            .collect();
-        grants.sort();
-        grants.dedup();
-
-        // ── Principal config ─────────────────────────────────────────────
-        let grants_toml = grants
-            .iter()
-            .map(|g| format!("{g:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let config_toml = format!(
-            r#"
-name = {name:?}
-description = "Test principal fixture"
-
-[capabilities]
-grants = [{grants_toml}]
-"#,
-            name = self.name,
-        );
-        let config_dir = base.join("config");
-        tokio::fs::create_dir_all(&config_dir).await?;
-        tokio::fs::write(config_dir.join("principal.toml"), &config_toml).await?;
-        let config: PrincipalConfig =
-            toml::from_str(&config_toml).context("parse generated principal.toml for packager")?;
-
-        // ── Identity ─────────────────────────────────────────────────────
+        let config: PrincipalConfig = toml::from_str(&format!("name = {:?}\n", self.name))?;
         let identity = Identity::generate(DIDScope::Local, Some("fixture"))?;
-        let identity_dir = base.join("identity");
-        tokio::fs::create_dir_all(&identity_dir).await?;
-        let did_doc = identity.to_did_document()?;
-        tokio::fs::write(
-            identity_dir.join("did.json"),
-            serde_json::to_vec_pretty(&did_doc)?,
-        )
-        .await?;
-        let key_export = identity
-            .keypair
-            .as_ref()
-            .context("generated identity has no keypair")?
-            .export();
-        tokio::fs::write(
-            identity_dir.join("keys.enc"),
-            serde_json::to_vec(&key_export)?,
-        )
-        .await?;
-
-        // ── Agent prompt ─────────────────────────────────────────────────
-        let roles_dir = base.join("roles");
-        tokio::fs::create_dir_all(&roles_dir).await?;
-        tokio::fs::write(
-            roles_dir.join("primary.md"),
-            "---\nname: primary\ndescription: Fixture agent\n---\n\n# Primary\n",
-        )
-        .await?;
-
-        // ── Packager ─────────────────────────────────────────────────────
-        let package_path = base.join(format!("{}.peko", self.name));
-        let packager = PrincipalPackager::new(config.clone(), identity).with_roles_dir(&roles_dir);
-        // Phase 5 (ADR-047 §2.1): `with_extensions_from_store` was
-        // deleted. Skills are workspace-resident and are not part of
-        // the portable bundle.
-
-        let export_opts = PrincipalExportOptions {
-            output_path: Some(package_path.to_string_lossy().to_string()),
-            ..Default::default()
-        };
-        let descriptor = packager.export_for_registry(export_opts).await?;
-
-        // Leak the temp dir so the archive survives until the test finishes.
+        for id in &self.skills {
+            let dir = temp.path().join("skills").join(id);
+            tokio::fs::create_dir_all(&dir).await?;
+            tokio::fs::write(
+                dir.join("SKILL.md"),
+                "---\nname: fixture-skill\ndescription: Test skill\n---\nFixture\n",
+            )
+            .await?;
+        }
+        let path = temp.path().join(format!("{}.peko", self.name));
+        PrincipalPackager::new(config, identity)
+            .with_workspace_dir(temp.path())
+            .export(PrincipalExportOptions {
+                output_path: Some(path.display().to_string()),
+                ..Default::default()
+            })
+            .await?;
         let _ = temp.keep();
-        Ok(descriptor)
+        Ok(path)
     }
-}
-
-/// Read a tar.gz archive, clear the manifest signature, and write a new
-/// unsigned archive next to the original.
-fn strip_signature(path: &Path) -> anyhow::Result<PathBuf> {
-    let file = std::fs::File::open(path)?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
-
-    let mut entries: BTreeMap<String, (Vec<u8>, u32)> = BTreeMap::new();
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path_str = entry.path()?.to_string_lossy().to_string();
-        let mode = entry.header().mode().unwrap_or(0o644);
-        let mut data = Vec::new();
-        entry.read_to_end(&mut data)?;
-        entries.insert(path_str, (data, mode));
-    }
-
-    let (manifest_bytes, _) = entries
-        .get_mut("manifest.toml")
-        .context("manifest.toml not found in package")?;
-    let mut manifest = PrincipalManifest::from_toml(std::str::from_utf8(manifest_bytes)?)?;
-    manifest.signatures.manifest = String::new();
-    *manifest_bytes = manifest.to_toml()?.into_bytes();
-
-    let out_path = path.with_extension("unsigned.peko");
-    let out_file = std::fs::File::create(&out_path)?;
-    let enc = flate2::write::GzEncoder::new(out_file, flate2::Compression::default());
-    let mut builder = tar::Builder::new(enc);
-    for (path_str, (data, mode)) in entries {
-        let mut header = tar::Header::new_gnu();
-        header.set_path(&path_str)?;
-        header.set_size(data.len() as u64);
-        header.set_mode(mode);
-        header.set_cksum();
-        builder.append(&header, data.as_slice())?;
-    }
-    builder.finish()?;
-
-    Ok(out_path)
 }

@@ -18,6 +18,36 @@ This document defines the public API surface for Peko, including the new Unified
 7. [Module: `tools::factory`](#module-toolsfactory)
 8. [Module: `session::context`](#module-sessioncontext)
 9. [Compatibility Notes](#compatibility-notes)
+10. [Local Snapshot Packaging](#module-registrypackaging--adr-066-p5)
+
+---
+
+## Module: `registry::packaging` — ADR-066 P5
+
+`registry` now contains only runtime-local snapshot packaging. `PrincipalPackager`
+exports one full-existence `.peko` tar.gz; `PrincipalUnpackager` restores the same
+identity, sessions, authored cron/plans, and workspace tooling. The constructor
+`PrincipalManifest::new(name, did)` creates a flat inventory with `format`, `name`,
+`did`, `created_at`, `peko_version`, optional `description`, and a sorted `files`
+map of archive path to SHA-256. Legacy OCI snapshots fail with re-export guidance.
+
+`PrincipalImportOptions` retains rename, rotation, session/local-state selection,
+caller, and observability; `force` permits overwriting existing principals, never
+checksum bypass. Optional `expected_manifest_checksum` binds a displayed preview
+to the manifest that is actually imported. `ExecutableInventory` contains DID,
+payload file count, hook and MCP ids/paths/verbatim definitions, and sorted skill
+ids. `principal.snapshot_import` records this inventory durably at Security
+severity before writes; the CLI prints it before import without a confirmation
+prompt. The boot-time drift canary remains.
+
+Deleted: registry client/config/cache, OCI manifests/media types/blob layers,
+`PrincipalLayers`, signatures/trust stores, embedded-extension packaging, registry
+export descriptors, and CLI `push`/`pull`/`search`/`registry` (including global
+`--registry` for push/pull). `DaemonClient::{principal_push,principal_pull_preview,
+principal_pull}` and their request/response variants are gone. Local import wire
+packets shed `allow_unsigned` and `confirmed`; preview responses replace `signed`
+with `inventory` and `manifest_checksum`. Deprecated capability fields remain
+parsed-and-ignored until P6. PekoHub login and signed peer transport are unchanged.
 
 ---
 

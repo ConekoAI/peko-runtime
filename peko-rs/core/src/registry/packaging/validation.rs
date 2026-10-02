@@ -24,8 +24,6 @@ pub enum ValidationError {
         expected: String,
         actual: String,
     },
-    /// Invalid signature
-    InvalidSignature(String),
     /// DID resolution failed
     DidResolutionFailed(String),
     /// Required file is empty

@@ -1,339 +1,47 @@
-//! Full packaging integration test (Principal-era, ADR-056).
-//!
-//! End-to-end pipeline:
-//!   export .peko snapshot → push (seed TOML) → pull → ground via create -s
-//!
-//! This test is marked `#[ignore]` because it requires:
-//!   - Node.js 22+ with tsx installed  (local mode)
-//!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
-//!
-//! Run:
-//!   cd peko-runtime
-//!   cargo test --test packaging_integration -- --ignored
-//!
-//! ## Principal-era translation
-//!
-//! After the "Principal as the single actor" migration, the `.agent`
-//! packaging surface was replaced with `.peko` packaging:
-//!
-//! - `peko_core::registry::packaging::Packager` / `AgentManifest` /
-//!   `ExportOptions` / `Unpackager` → `PrincipalPackager` /
-//!   `PrincipalManifest` / `PrincipalExportOptions` /
-//!   `PrincipalUnpackager`.
-//! - `RegistryClient::push(ref)` / `pull(ref)` → `push_principal(...)` /
-//!   `pull_principal(...)` (the underlying OCI/JSON store is generic;
-//!   these wrappers rebuild the right config blob / manifest kind).
-//!
-//! The legacy `AgentRegistry` is still used as the local OCI store
-//! (`registry.has_layer`, `store_layer`, etc.) — it's a generic content-
-//! addressed registry now, not agent-specific. PekoHub-side, the
-//! `RegistryManifest::kind = "principal"` discriminator distinguishes a
-//! Principal push from a legacy `.agent` push.
-//!
-//! The legacy test exercised `export .agent → push → pull → import`.
-//! This file keeps the full `.peko` packaging pipeline.
-//!
-//! ## Principal package shape
-//!
-//! A `.peko` package carries:
-//!   - `manifest.toml` (signed, ed25519) — points at `config/`,
-//!     `identity/`, `agents/`, and optional `memory/` / `sessions/`
-//!     layers.
-//!   - `config/principal.toml` — the PrincipalConfig payload.
-//!   - `identity/did.json` + `identity/keys.enc` — the principal's
-//!     DID + private key (the same shape the agent-era package used).
-//!   - `agents/<prompt>.md` — one or more AGENT.md prompts that
-//!     `peko import` restores into the principal's
-//!     workspace.
-
-use peko_core::principal::config::PrincipalConfig;
-use peko_core::registry::packaging::{
-    PrincipalExportOptions, PrincipalManifest, PrincipalPackager,
-};
-use peko_core::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
-use peko_identity::{did::DIDScope, Identity};
-use std::io::Read;
-use std::path::Path;
-use std::time::Duration;
-
+//! Local snapshot container is directly inspectable with ordinary tar.
 mod common;
-use common::{create_test_user, reset_pekohub, PekohubBackend};
-use serial_test::serial;
-
-// ── Helpers ──────────────────────────────────────────────────────────
-
-/// Create a minimal Principal directory structure for testing.
-async fn create_test_principal_dir(base: &Path) -> anyhow::Result<()> {
-    // config/principal.toml — a minimal PrincipalConfig-shaped body.
-    // The unpackager's validation doesn't pin a specific schema; it
-    // just checks that the manifest's declared files exist in the
-    // package and match their declared checksums. We supply a
-    // representative PrincipalConfig payload.
-    let config_dir = base.join("config");
-    tokio::fs::create_dir_all(&config_dir).await?;
-    let principal_toml = r#"
-name = "integration-principal"
-description = "A test principal for full integration"
-display_name = "Integration Test Principal"
-
-[capabilities]
-grants = []
-"#;
-    tokio::fs::write(config_dir.join("principal.toml"), principal_toml).await?;
-
-    // identity/ — generate a real Identity and write its files
-    let identity = Identity::generate(DIDScope::Local, Some("integration"))?;
-    let identity_dir = base.join("identity");
-    tokio::fs::create_dir_all(&identity_dir).await?;
-
-    let did_doc = identity.to_did_document()?;
-    let did_json = serde_json::to_vec_pretty(&did_doc)?;
-    tokio::fs::write(identity_dir.join("did.json"), did_json).await?;
-
-    let keypair = identity.keypair.as_ref().unwrap();
-    let key_export = keypair.export();
-    let key_json = serde_json::to_vec(&key_export)?;
-    tokio::fs::write(identity_dir.join("keys.enc"), key_json).await?;
-
-    // agents/primary.md — the Principal's default agent prompt.
-    let roles_dir = base.join("roles");
-    tokio::fs::create_dir_all(&roles_dir).await?;
-    tokio::fs::write(
-        roles_dir.join("primary.md"),
-        "---\n\
-         name: primary\n\
-         description: Integration test primary agent\n\
-         ---\n\
-         # Primary Agent\n\n\
-         Integration test principal's primary agent.\n",
-    )
-    .await?;
-
-    Ok(())
-}
-
-/// Build a `.peko` package from a test directory using the
-/// canonical PrincipalPackager.
-async fn build_principal_package_from_dir(
-    principal_dir: &Path,
-    output_path: &Path,
-) -> anyhow::Result<PrincipalManifest> {
-    let config_path = principal_dir.join("config").join("principal.toml");
-    let config_toml = tokio::fs::read_to_string(&config_path).await?;
-    let config: PrincipalConfig = toml::from_str(&config_toml)?;
-
-    let identity_dir = principal_dir.join("identity");
-    let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
-    let did_doc: peko_identity::DIDDocument = serde_json::from_str(&did_json)?;
-    let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
-    let key_export: peko_identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
-    let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
-
-    let roles_dir = principal_dir.join("roles");
-
-    let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
-
-    let export_opts = PrincipalExportOptions {
-        output_path: Some(output_path.to_string_lossy().to_string()),
-        ..Default::default()
-    };
-
-    let _path = packager.export(export_opts).await?;
-
-    // Extract the manifest from the produced archive so the test can
-    // assert on layer structure (the packager's `export` returns the
-    // path but not the manifest).
-    let file = std::fs::File::open(output_path)?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
-    let mut manifest_bytes = Vec::new();
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?;
-        if path.to_string_lossy() == "manifest.toml" {
-            entry.read_to_end(&mut manifest_bytes)?;
-            break;
-        }
-    }
-    let manifest: PrincipalManifest =
-        PrincipalManifest::from_toml(std::str::from_utf8(&manifest_bytes)?)?;
-    Ok(manifest)
-}
-
-/// Create a test registry config pointing at the hub server.
-fn test_registry_config(url: &str) -> RegistryConfig {
-    let mut config = RegistryConfig::default();
-    config.sources.clear();
-    config.add_source(RegistrySource {
-        url: url.to_string(),
-        priority: 1,
-        auth: None,
-        token: None,
-    });
-    config
-}
-
-// ── The full integration test ────────────────────────────────────────
+use common::PrincipalPackageBuilder;
 
 #[tokio::test]
-#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
-#[serial]
-async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
-    let backend = PekohubBackend::start().await;
-    reset_pekohub(&backend.url).await;
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .no_proxy()
+async fn snapshot_tar_lists_flat_manifest_and_workspace_files() {
+    let path = PrincipalPackageBuilder::new("inspectable")
+        .with_skill("skill-one")
         .build()
-        .unwrap();
-
-    // Create user with namespace "ns" — PekoHub requires namespace ownership for pushes
-    let (_id, _ns) = create_test_user(&client, &backend.url, "ns").await;
-
-    // Full registry ref with namespace (PekoHub format: {host}/{namespace}/{name}:{tag})
-    let registry_ref_str = format!("{}/ns/integration-principal:v1.0", backend.url);
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let base_dir = temp_dir.path();
-
-    // ═════════════════════════════════════════════════════════════════
-    // 1. EXPORT .peko snapshot from directory (canonical PrincipalPackager path)
-    // ═════════════════════════════════════════════════════════════════
-    let principal_dir = base_dir.join("integration-principal");
-    create_test_principal_dir(&principal_dir).await.unwrap();
-
-    let package_path = base_dir.join("integration-principal.peko");
-    let manifest = build_principal_package_from_dir(&principal_dir, &package_path)
         .await
         .unwrap();
-
-    assert!(package_path.exists(), ".peko package should exist");
-    // The Principal packager should have emitted at least the
-    // `config/` and `identity/` layers (the `agents/` layer is
-    // populated when the principal carries agent prompts, which
-    // our fixture does).
+    let output = std::process::Command::new("tar")
+        .arg("-tf")
+        .arg(&path)
+        .output()
+        .unwrap();
     assert!(
-        manifest
-            .layers
-            .as_ref()
-            .and_then(|l| l.config.as_ref())
-            .is_some(),
-        "manifest should declare a config layer"
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        manifest
-            .layers
-            .as_ref()
-            .and_then(|l| l.identity.as_ref())
-            .is_some(),
-        "manifest should declare an identity layer"
-    );
-
-    // ═════════════════════════════════════════════════════════════════
-    // 2. PUSH to registry (seed TOML — ADR-056)
-    // ═════════════════════════════════════════════════════════════════
-    // `PrincipalPackager::export_for_registry` produces a seed
-    // descriptor: the OCI config blob is a stripped `principal.toml`
-    // (no DID, no keys, no lived state) with zero content layers.
-    // `push_principal` stores the blob and pushes a `RegistryManifest`
-    // with `kind = "principal"` via the underlying OCI client.
-    let build_registry_dir = base_dir.join("build_registry");
-    let build_registry = AgentRegistry::new(&build_registry_dir);
-    build_registry.init().await.unwrap();
-
-    let config_path = principal_dir.join("config").join("principal.toml");
-    let config_toml = tokio::fs::read_to_string(&config_path).await?;
-    let config: PrincipalConfig = toml::from_str(&config_toml)?;
-    let identity_dir = principal_dir.join("identity");
-    let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
-    let did_doc: peko_identity::DIDDocument = serde_json::from_str(&did_json)?;
-    let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
-    let key_export: peko_identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
-    let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
-    let roles_dir = principal_dir.join("roles");
-
-    let packager = PrincipalPackager::new(config, identity).with_roles_dir(&roles_dir);
-
-    let export_opts = PrincipalExportOptions {
-        output_path: Some(package_path.to_string_lossy().to_string()),
-        ..Default::default()
-    };
-    let descriptor = packager
-        .export_for_registry(export_opts)
-        .await
-        .expect("export_for_registry");
-
-    let push_config = test_registry_config(&backend.url);
-    let push_client = RegistryClient::new(push_config, build_registry.clone());
-
-    let mut push_events = Vec::new();
-    let push_result = push_client
-        .push_principal(
-            &descriptor,
-            "integration-principal",
-            "1.0.0",
-            &registry_ref_str,
-            |event| push_events.push(event),
-        )
-        .await;
-
-    assert!(push_result.is_ok(), "Push failed: {:?}", push_result.err());
-    let has_done = push_events
-        .iter()
-        .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. }));
-    assert!(has_done, "Push should complete with Done event");
-
-    // ═════════════════════════════════════════════════════════════════
-    // 3. PULL from registry to a fresh local registry
-    // ═════════════════════════════════════════════════════════════════
-    let pull_registry_dir = base_dir.join("pull_registry");
-    let pull_registry = AgentRegistry::new(&pull_registry_dir);
-    pull_registry.init().await.unwrap();
-
-    let pull_config = test_registry_config(&backend.url);
-    let pull_client = RegistryClient::new(pull_config, pull_registry.clone());
-
-    let pull_output = base_dir.join("pulled.seed.toml");
-    let mut pull_events = Vec::new();
-    let pull_result = pull_client
-        .pull_principal(&registry_ref_str, &pull_output, |event| {
-            pull_events.push(event)
-        })
-        .await;
-
-    assert!(pull_result.is_ok(), "Pull failed: {:?}", pull_result.err());
-    let has_done = pull_events
-        .iter()
-        .any(|e| matches!(e, peko_core::registry::ProgressEvent::Done { .. }));
-    assert!(has_done, "Pull should complete with Done event");
-
-    assert!(
-        pull_output.exists(),
-        "pulled seed artifact should exist at {}",
-        pull_output.display()
-    );
-
-    // ═════════════════════════════════════════════════════════════════
-    // 4. PULLED ARTIFACT: a seed TOML (ADR-056)
-    // ═════════════════════════════════════════════════════════════════
-    // The registry distributes DNA, not creatures: the pushed config
-    // blob is a seed TOML (a stripped `principal.toml`), and pull
-    // writes it verbatim. It is ground via
-    // `peko create <name> -s <file>` — fresh identity,
-    // inferred boot state — never by re-importing the source identity.
-    let pulled_toml = tokio::fs::read_to_string(&pull_output).await?;
-    let seed: PrincipalConfig = toml::from_str(&pulled_toml)?;
-    assert_eq!(
-        seed.name, "integration-principal",
-        "seed carries the principal's name (DNA)"
-    );
-    assert!(seed.id.is_none(), "seed must not carry a runtime id");
-    assert!(seed.did.is_none(), "seed must not carry a DID");
-    assert!(
-        seed.boot_state.is_none(),
-        "seed must not carry a boot state"
-    );
-
-    Ok(())
+    let listing = String::from_utf8_lossy(&output.stdout);
+    for file in [
+        "manifest.toml",
+        "config/principal.toml",
+        "identity/did.json",
+        "identity/keys.enc",
+        "skills/skill-one/SKILL.md",
+    ] {
+        assert!(listing.lines().any(|line| line == file), "{listing}");
+    }
+    let output = std::process::Command::new("tar")
+        .arg("-xOf")
+        .arg(&path)
+        .arg("manifest.toml")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let manifest = peko_core::registry::packaging::PrincipalManifest::from_toml(
+        std::str::from_utf8(&output.stdout).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest.name, "inspectable");
+    assert!(manifest.files.contains_key("skills/skill-one/SKILL.md"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("layers"));
+    std::fs::remove_file(path).unwrap();
 }

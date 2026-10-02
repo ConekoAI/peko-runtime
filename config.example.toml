@@ -69,5 +69,5 @@
 #   not a config key.
 # - There are no [agent], [memory], [tools], [channels], [security], or
 #   [debug] blocks — those belonged to retired subsystems (agent CRUD,
-#   sqlite memory, registry-downloaded tools, chat-platform adapters).
+#   sqlite memory, workspace tools, chat-platform adapters).
 #   Unknown keys are ignored, so old config files keep parsing.

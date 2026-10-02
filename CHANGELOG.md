@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Pure workspace tooling: local snapshot packaging (ADR-066 P5, 2026-10-02)
+
+- Replaced OCI snapshot layers and signatures with a flat `manifest.toml`
+  containing metadata and a path-to-SHA-256 inventory in an ordinary tar.gz.
+  Legacy snapshots require re-export from the source runtime. Corruption,
+  undeclared files, unsafe paths, and identity mismatches fail before writes;
+  `--force` only allows overwriting local principals.
+- Preserved full-existence restore: identity, role prompts, sessions, authored
+  cron (rebound ids), plans, and workspace tooling; boot state remains verbatim
+  for wakes. Keyless packages retain `create -s` guidance.
+- Import prints full hook/MCP definitions and skill ids and emits the same
+  inventory as a durable Security audit event. Preview bytes are bound to
+  restore by an optional manifest checksum; no confirmation prompt remains.
+- Deleted registry client/cache/config, OCI descriptors/media types, trust
+  stores, embedded-extension packaging, push/pull/search/registry CLI commands,
+  their IPC packets/client methods, and obsolete registry/signature tests.
+  Seeds remain plain TOML; PekoHub login and peer transport are unchanged.
+
 ### Pure workspace tooling: workspace hook dispatcher (ADR-066 P4, 2026-10-02)
 
 - Replaced `HookRegistry` and the hook-point zoo with six principal-owned

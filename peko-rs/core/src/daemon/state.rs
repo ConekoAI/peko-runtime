@@ -22,7 +22,6 @@ use crate::principal::{
     factory::{DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory},
     PrincipalManager,
 };
-use crate::registry::{load_from_workspace, RegistryConfig};
 use peko_cron::IdleDetector;
 use peko_observability::Observability;
 use peko_session::InboxRegistry;
@@ -76,9 +75,6 @@ pub(crate) struct AppState {
     /// build time; the auth layer uses it to derive the local
     /// terminal's attribution identity.
     pub hub_owner: Option<String>,
-
-    /// Registry configuration for push/pull operations
-    registry_config: Arc<RwLock<RegistryConfig>>,
 
     /// Observability hub for audit, metrics, and tracing
     observability: Arc<Observability>,
@@ -203,9 +199,6 @@ pub(crate) struct AppState {
 
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: peko_identity::runtime_metadata::RuntimeMetadata,
-
-    /// Trust store for principal package publisher pinning (issue #91).
-    pub trust_store: std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
 
     /// Auth configuration (ADR-034)
     auth_config: peko_auth::config::AuthConfig,
@@ -535,8 +528,6 @@ impl AppState {
         let mut tunnel_channel_port: Option<Arc<crate::tunnel::TunnelChannelPort>> = None;
         let streaming_runs: Arc<std::sync::Mutex<HashMap<String, StreamingRunHandle>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let trust_store = crate::registry::packaging::TrustStore::load_or_create(&path_resolver)?;
-        let trust_store = std::sync::Arc::new(tokio::sync::RwLock::new(trust_store));
 
         // v3-cleanup: ADR-032 / ADR-033 / provider-catalog migration
         // runners were deleted; the runtime now expects every agent
@@ -973,7 +964,6 @@ impl AppState {
             port,
             host,
             config,
-            registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability,
             config_service,
             resolver,
@@ -1012,7 +1002,6 @@ impl AppState {
             idle_detector: None,
             cron_engine: None,
             runtime_metadata,
-            trust_store,
             auth_config,
             api_key_store,
             api_key_verifier,
@@ -1202,25 +1191,6 @@ impl AppState {
     #[must_use]
     pub fn observability(&self) -> Arc<Observability> {
         self.observability.clone()
-    }
-
-    /// Load registry configuration from workspace
-    pub async fn load_registry_config(&self) {
-        let config = load_from_workspace(&self.workspace_path);
-        let mut registry_config = self.registry_config.write().await;
-        *registry_config = config;
-    }
-
-    /// Get the current registry configuration
-    pub async fn registry_config(&self) -> RegistryConfig {
-        let config = self.registry_config.read().await;
-        config.clone()
-    }
-
-    /// Update the registry configuration
-    pub async fn set_registry_config(&self, config: RegistryConfig) {
-        let mut registry_config = self.registry_config.write().await;
-        *registry_config = config;
     }
 
     /// Get the agent configuration service
@@ -1413,14 +1383,6 @@ impl AppState {
     #[must_use]
     pub fn runtime_metadata(&self) -> &peko_identity::runtime_metadata::RuntimeMetadata {
         &self.runtime_metadata
-    }
-
-    /// Get the trust store for principal package import (issue #91).
-    #[must_use]
-    pub fn trust_store(
-        &self,
-    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>> {
-        &self.trust_store
     }
 
     /// Get the count of registered agents
@@ -3168,10 +3130,6 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 
     fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
         &self.inbox_registry
-    }
-
-    fn trust_store(&self) -> &Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>> {
-        AppState::trust_store(self)
     }
 
     fn config_dir(&self) -> std::path::PathBuf {

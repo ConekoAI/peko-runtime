@@ -1,315 +1,94 @@
-//! Principal manifest for portable `.peko` packages
-//!
-//! Mirrors the shape of the agent manifest but names the top-level metadata
-//! section `principal` and uses principal-specific layer names
-//! (`agents`, `memory`) in addition to the shared `config`, `identity`,
-//! `sessions`, and `plugins` layers. The legacy `extensions` layer is
-//! retained for reading pre-Phase-7 packages.
-
-use crate::registry::packaging::manifest::{IdentityConfig, PackagingMetadata, Signatures};
-use crate::registry::packaging::types::ExtensionRef;
+//! Flat snapshot inventory (ADR-066 D6). Checksums detect corruption;
+//! snapshots are local artifacts and carry no signatures or registry layers.
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-/// Content-addressable layer digests for `.peko` packages.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PrincipalLayers {
-    /// Config layer digest (`config/principal.toml`)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<String>,
-    /// Identity layer digest (`identity/did.json`, `identity/keys.enc`)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub identity: Option<String>,
-    /// Role prompt layer digest (`roles/*.md`; legacy `agents/`)
-    #[serde(skip_serializing_if = "Option::is_none", alias = "agents")]
-    pub roles: Option<String>,
-    /// Memory layer digest (`memory/`)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory: Option<String>,
-    /// Session history layer digest (`sessions/`)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sessions: Option<String>,
-    /// Cron layer digest (`cron/`) — the principal's authored schedule
-    /// (`local/cron/schedule.toml` + run history), ADR-056.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cron: Option<String>,
-    /// Plans layer digest (`plans/`) — the principal's authored Plan
-    /// DAG storage (`local/plans/`), ADR-056.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub plans: Option<String>,
-    /// Tools layer digest (`tools/<id>/`) — ADR-056. Retained for
-    /// reading legacy packages; the universal tools it carried were
-    /// retired in ADR-062.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<String>,
-    /// Skills layer digest (`skills/<id>/`) — ADR-056 (workspace
-    /// tooling; reuses the legacy agent-package layer name).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skills: Option<String>,
-    /// MCP layer digest (`mcp/<id>/`) — ADR-056 (workspace tooling;
-    /// reuses the legacy agent-package layer name).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mcp: Option<String>,
-    /// Hooks layer digest (`hooks/<id>/`) — ADR-056.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hooks: Option<String>,
-    /// Knowledge base layer digest (`kb/`) — ADR-056 (ADR-055 tree).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kb: Option<String>,
-    /// Plugins layer digest (`plugins/<plugin-id>/`) — ADR-047 §2.1.
-    ///
-    /// Replaces the legacy `extensions` layer. New exports emit this
-    /// field; legacy packages that declare `extensions` are still
-    /// accepted on import.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub plugins: Option<String>,
-    /// Extensions layer digest (`extensions/*.ext`) — legacy.
-    ///
-    /// Pre-ADR-047 packages populated this field. New exports never emit
-    /// it; the unpackager accepts it and routes its content to the same
-    /// handler as the `plugins` layer.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extensions: Option<String>,
-}
+/// The supported runtime-local snapshot container.
+pub const SNAPSHOT_FORMAT: &str = "peko-snapshot-v1";
 
-/// Principal manifest - packaging metadata for a portable Principal package.
+/// Snapshot metadata and every payload file's SHA-256 checksum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalManifest {
-    /// Principal metadata
-    pub principal: PrincipalMetadata,
-    /// Identity configuration
-    pub identity: IdentityConfig,
-    /// Content-addressable layer digests
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub layers: Option<PrincipalLayers>,
-    /// Extension dependencies required by this Principal
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extensions: Vec<ExtensionRef>,
-    /// Packaging metadata
-    pub packaging: PackagingMetadata,
-    /// Digital signatures
-    pub signatures: Signatures,
-}
-
-/// Principal metadata section.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrincipalMetadata {
-    /// Principal name
+    pub format: String,
     pub name: String,
-    /// Package version (semver)
-    pub version: String,
-    /// Human-readable description
-    pub description: Option<String>,
-    /// Creation timestamp (RFC 3339)
-    pub created_at: String,
-    /// Export format version
-    pub export_format: String,
-    /// Principal DID
     pub did: String,
-    /// Original runtime version that created this package
+    pub created_at: String,
     pub peko_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub files: BTreeMap<String, String>,
 }
 
 impl PrincipalManifest {
-    /// Create a new manifest with default values.
-    pub fn new(
-        name: impl Into<String>,
-        version: impl Into<String>,
-        did: impl Into<String>,
-    ) -> Self {
-        let now = chrono::Utc::now().to_rfc3339();
-        let name = name.into();
-
+    pub fn new(name: impl Into<String>, did: impl Into<String>) -> Self {
         Self {
-            principal: PrincipalMetadata {
-                name: name.clone(),
-                version: version.into(),
-                description: None,
-                created_at: now,
-                export_format: "1.0".to_string(),
-                did: did.into(),
-                peko_version: crate::VERSION.to_string(),
-            },
-            identity: IdentityConfig {
-                key_algorithm: "ed25519".to_string(),
-                encrypted: false,
-                kdf: None,
-                kdf_params: None,
-            },
-            layers: None,
-            extensions: Vec::new(),
-            packaging: PackagingMetadata {
-                files: Vec::new(),
-                checksums: std::collections::BTreeMap::new(),
-                compression: "gzip".to_string(),
-                archive_format: "tar".to_string(),
-            },
-            signatures: Signatures {
-                manifest: String::new(),
-                algorithm: "ed25519".to_string(),
-            },
+            format: SNAPSHOT_FORMAT.into(),
+            name: name.into(),
+            did: did.into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            peko_version: crate::VERSION.into(),
+            description: None,
+            files: BTreeMap::new(),
         }
     }
 
-    /// Serialize to TOML string.
     pub fn to_toml(&self) -> anyhow::Result<String> {
-        toml::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize principal manifest: {e}"))
+        Ok(toml::to_string_pretty(self)?)
     }
 
-    /// Deserialize from TOML string.
-    pub fn from_toml(toml_str: &str) -> anyhow::Result<Self> {
-        toml::from_str(toml_str)
-            .map_err(|e| anyhow::anyhow!("Failed to parse principal manifest: {e}"))
+    pub fn from_toml(text: &str) -> anyhow::Result<Self> {
+        let value: toml::Value = toml::from_str(text)?;
+        if value.get("principal").is_some() || value.get("layers").is_some() {
+            anyhow::bail!("Legacy OCI snapshot format is unsupported; re-export from the source runtime using the current snapshot format.");
+        }
+        let manifest: Self = value.try_into()?;
+        anyhow::ensure!(
+            manifest.format == SNAPSHOT_FORMAT,
+            "Unsupported snapshot format '{}'; re-export from the source runtime.",
+            manifest.format
+        );
+        Ok(manifest)
     }
 
-    /// Compute checksum for a file.
-    #[must_use]
     pub fn compute_checksum(data: &[u8]) -> String {
         use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        format!("sha256:{:x}", hasher.finalize())
+        format!("sha256:{:x}", Sha256::digest(data))
     }
 
-    /// Add a file to the manifest (sorted for signature determinism).
     pub fn add_file(&mut self, path: impl Into<String>, data: &[u8]) {
-        let path = path.into();
-        let checksum = Self::compute_checksum(data);
-        let pos = self
-            .packaging
-            .files
-            .binary_search(&path)
-            .unwrap_or_else(|e| e);
-        self.packaging.files.insert(pos, path.clone());
-        self.packaging.checksums.insert(path, checksum);
+        self.files.insert(path.into(), Self::compute_checksum(data));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_principal_manifest_creation() {
-        let manifest = PrincipalManifest::new("test-principal", "1.0.0", "did:peko:test");
-        assert_eq!(manifest.principal.name, "test-principal");
-        assert_eq!(manifest.principal.version, "1.0.0");
-        assert_eq!(manifest.principal.did, "did:peko:test");
-        assert!(manifest.layers.is_none());
+    fn flat_manifest_roundtrip() {
+        let mut m = PrincipalManifest::new("test", "did:peko:test");
+        m.add_file("config/principal.toml", b"config");
+        let text = m.to_toml().unwrap();
+        assert!(text.contains("[files]"));
+        assert!(!text.contains("layers"));
+        assert!(!text.contains("signatures"));
+        let parsed = PrincipalManifest::from_toml(&text).unwrap();
+        assert_eq!(parsed.files, m.files);
+        assert_eq!(parsed.name, "test");
     }
-
     #[test]
-    fn test_principal_manifest_serialization() {
-        let mut manifest = PrincipalManifest::new("test-principal", "1.0.0", "did:peko:test");
-        manifest.add_file("config/principal.toml", b"[principal]\nname = \"test\"");
-
-        let toml = manifest.to_toml().unwrap();
-        assert!(toml.contains("name = \"test-principal\""));
-        assert!(toml.contains("did = \"did:peko:test\""));
-
-        let parsed = PrincipalManifest::from_toml(&toml).unwrap();
-        assert_eq!(parsed.principal.name, "test-principal");
+    fn rejects_legacy_with_reexport_guidance() {
+        let err = PrincipalManifest::from_toml(
+            "[principal]\nname = 'old'\n[layers]\nconfig = 'sha256:old'",
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("re-export from the source runtime"));
     }
-
     #[test]
-    fn test_principal_layers_roundtrip() {
-        let layers = PrincipalLayers {
-            config: Some("sha256:abc".to_string()),
-            identity: Some("sha256:def".to_string()),
-            roles: Some("sha256:ghi".to_string()),
-            memory: None,
-            sessions: None,
-            cron: None,
-            plans: None,
-            tools: None,
-            skills: None,
-            mcp: None,
-            hooks: None,
-            kb: None,
-            plugins: Some("sha256:pqr".to_string()),
-            extensions: Some("sha256:jkl".to_string()),
-        };
-
-        let toml = toml::to_string(&layers).unwrap();
-        assert!(toml.contains("roles"));
-        assert!(toml.contains("plugins"));
-        assert!(!toml.contains("memory"));
-
-        let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
-        assert_eq!(parsed.roles, Some("sha256:ghi".to_string()));
-        assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));
-        assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
-    }
-
-    /// Phase 7 (ADR-047 §5): legacy `.peko` packages that declare
-    /// `extensions = "sha256:..."` but not `plugins` continue to
-    /// deserialize cleanly. The new field defaults to `None`.
-    #[test]
-    fn test_principal_layers_accepts_legacy_extensions_only() {
-        let legacy_toml = r#"
-config = "sha256:abc"
-identity = "sha256:def"
-roles = "sha256:ghi"
-extensions = "sha256:jkl"
-"#;
-        let parsed: PrincipalLayers = toml::from_str(legacy_toml).unwrap();
-        assert_eq!(parsed.roles, Some("sha256:ghi".to_string()));
-        assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
-        assert!(parsed.plugins.is_none());
-        assert!(parsed.memory.is_none());
-        assert!(parsed.sessions.is_none());
-    }
-
-    /// Phase 7 (ADR-047 §5): new exports emit `plugins = ...` but skip
-    /// the legacy `extensions` field (skip_serializing_if drops `None`s,
-    /// and `Default` for the deprecated field is `None`).
-    #[test]
-    fn test_principal_layers_plugins_only_emits_no_legacy_field() {
-        let layers = PrincipalLayers {
-            config: Some("sha256:abc".to_string()),
-            identity: Some("sha256:def".to_string()),
-            roles: Some("sha256:ghi".to_string()),
-            memory: None,
-            sessions: None,
-            cron: None,
-            plans: None,
-            tools: None,
-            skills: None,
-            mcp: None,
-            hooks: None,
-            kb: None,
-            plugins: Some("sha256:pqr".to_string()),
-            extensions: None,
-        };
-
-        let toml = toml::to_string(&layers).unwrap();
-        assert!(toml.contains("plugins"));
-        assert!(
-            !toml.contains("extensions"),
-            "legacy field must not be emitted: {toml}"
-        );
-
-        let parsed: PrincipalLayers = toml::from_str(&toml).unwrap();
-        assert_eq!(parsed.plugins, Some("sha256:pqr".to_string()));
-        assert!(parsed.extensions.is_none());
-    }
-
-    /// ADR-056: `.peko` packages are full-existence snapshots —
-    /// there is no export-mode field on the manifest. Legacy manifests
-    /// (with or without the removed `export_mode` field) parse
-    /// unchanged.
-    #[test]
-    fn test_manifest_legacy_export_mode_field_tolerated() {
-        let manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
-        let toml = manifest.to_toml().unwrap();
-        assert!(
-            !toml.contains("export_mode"),
-            "manifests no longer emit an export mode: {toml}"
-        );
-        // A pre-collapse manifest that still carries the field parses
-        // cleanly (unknown fields are ignored).
-        let legacy = toml + "export_mode = \"definition\"\n";
-        let parsed = PrincipalManifest::from_toml(&legacy).unwrap();
-        assert_eq!(parsed.principal.name, "test");
+    fn rejects_unknown_format() {
+        let mut m = PrincipalManifest::new("test", "did:peko:test");
+        m.format = "future".into();
+        assert!(PrincipalManifest::from_toml(&m.to_toml().unwrap()).is_err());
     }
 }

@@ -2,10 +2,11 @@
 
 **Date:** 2026-10-02
 **Branch:** `adr-066-pure-workspace-tooling` (off `master`)
-**Status:** P1–P4 landed, with all standard gates green. P4's final unit
-run passed 2,845 tests with zero failures and three existing ignored tests.
-Docker integration remains unverified: the local server timed out in the
-15-second preflight. P5–P6 are not started.
+**Status:** P1–P5 landed, with all standard gates green. P5's final unit
+run passed 2,768 tests with zero failures and three existing ignored tests.
+All 114 CLI unit tests pass with `PEKO_UNLOCK_METHOD=passphrase`. The full
+Docker mock-LLM integration tier passed 51 tests, and the stack was torn down.
+P6 is not started.
 
 
 The landed P3 recovery patch was removed in P4; its history remains in Git.
@@ -28,7 +29,8 @@ Ten decisions (D1–D10), six phases (P1–P6), each phase a tree-green commit.
 ## 2. Commit state
 
 ```
-P4        This phase: workspace hook dispatcher / exposure deletion
+P5        This phase: flat local snapshots / registry retirement
+1c97cd78  P4: workspace hook dispatcher / exposure deletion
 49720c79  P3: tooling catalog / dispatcher / explicit runtime
 74578be3  docs: ADR-066 implementation handover + P3 WIP patch
 23ba4c26  P2 (ADR-066): delete the capability gate
@@ -187,24 +189,47 @@ before merging.
   Docker again failed the bounded preflight; integration remains unverified
   before merge. P5 is the next implementation phase.
 
-## 7. P5 — not started
+## 7. P5 — landed (ADR §2 D6–D8)
 
-ADR §2 D6–D8, §3 P5. Keep ADR-056 snapshot semantics (collect rules,
-wake/seed, cron rebinding, `path_safety` — test-pinned, do not regress);
-replace the container: flat `manifest.toml` inventory +
-`path → sha256` map; delete the OCI layer model (`LayerType` media
-types, `PrincipalLayers` digests), `registry/client.rs`,
-`registry/manifest.rs`, `registry/config.rs`, `agent_registry.rs`,
-`packaging/trust_store.rs` (~3.6k LOC), the `push`/`pull`/`search`/
-`registry` CLI subcommands, and the 3 `RegistryClient` IPC sites.
-D8: import emits a Security audit event + operator-visible inventory of
-executable content (hooks + binds + commands, MCP servers, skills).
-Old OCI-manifest snapshots rejected with "re-export from source".
-P1 note: `SkillFixture.requires/provides` in
-`tests/common/package_builder.rs` are write-only — prune here.
-Verify the ADR-056 round-trip property (create → self-organize → export
-→ remove → import ⇒ sessions, rebound cron, verbatim boot_state, intact
-tooling) and `tar -tf` inspectability.
+- `.peko` remains tar.gz with ordinary file entries. `PrincipalManifest` is
+  flat: `format = "peko-snapshot-v1"`, name, DID, created-at, peko version,
+  optional description, and a sorted `path → sha256` inventory. No layer
+  tarballs, signatures, TOFU pins, blob descriptors, or embedded archives.
+  Legacy OCI manifests fail with “re-export from the source runtime” guidance.
+- ADR-056 snapshot collect/restore semantics are preserved: roles, identity,
+  sessions, cron (id rebinding), plans, workspace tooling and knowledge base;
+  cache/locks/memory index remain excluded. The live-state test removes the
+  source directories before import, then verifies DID, state and boot behavior.
+  Keyless packages still direct the caller to `peko create -s`; seeds are plain
+  TOML. A local `seed_toml` helper survives without registry transport.
+- Validation always fails before writes on corrupt/missing/undeclared files,
+  unsafe paths, duplicate archive entries, non-file tar entries, malformed
+  config/keys, or DID/key mismatches. `--force` only permits overwrites.
+- `ExecutableInventory` captures DID, payload file count, sorted skill ids,
+  and complete hook/MCP manifest definitions with ids and paths. Verbatim
+  definitions retain binds/commands/args and malformed manifests. The local
+  CLI prints it before import; a durable `principal.snapshot_import` Security
+  event records the same inventory and caller before writes. The CLI carries
+  the preview's manifest checksum into import to reject intervening changes.
+  No confirmation UI remains; `--yes` is a hidden, ignored compatibility flag.
+- Deleted remote registry client/config/cache and OCI models, trust store,
+  daemon registry state, inert extension push/pull DTOs, CLI push/pull/search/
+  registry/global registry flag, and all three registry IPC paths + packets.
+  PekoHub login retains explicit host selection; signed peer transport stays.
+- Replaced obsolete OCI/signature/registry test suites with local tar inspection
+  and CLI import coverage. `SkillFixture.requires/provides` and registry fixture
+  descriptors are gone; fixtures now install actual workspace skills. Updated
+  Makefile's integration targets, API_SURFACE, DATA_MODEL, README, workspace
+  docs, config example, CHANGELOG and local ignored AGENTS.md.
+- Verification: final full workspace unit run: 2,768 passed, zero failed, three
+  existing ignored, 19 suites; all-target clippy, fmt, module boundaries, and
+  all 81 dependency rules pass. The 114 CLI unit tests also pass with the
+  headless test vault forced to passphrase mode (the default macOS mode made
+  the existing model/vault test fail). `make test-integration` passed all 51
+  tests, including CLI import/tar inspection, send, recursive subagents, all
+  filesystem/Bash round trips, mock sequences, permission flows, signed tunnel
+  transport, and the daemon tunnel chat with the mock LLM. `make docker-down`
+  completed successfully.
 
 ## 8. P6 — not started
 
@@ -217,16 +242,18 @@ MCP; delete the crate and update the 81-entry
 `DATA_MODEL.md`, `PRINCIPAL_WORKSPACE.md`, `builtin-tools.md`,
 `config.example.toml`; CHANGELOG entries per landed phase (P1/P2 entries
 still owed). Remove the parsed-and-ignored IPC `capabilities` wire
-fields (the deprecation window P2 opened).
+fields (the deprecation window P2 opened). The local import preview also
+retains an always-empty `extensions` field from the deleted embedded archive
+model; remove it alongside the remaining wire tolerance shells.
 
 ## 9. Operational notes
 
 - **`AGENTS.md` is gitignored** — P1/P2 updated it on disk (§3.2, §5,
   §6.4); those edits are real but never appear in commits.
-- **Integration tier has not been run on this branch** — P1 changed the
-  daemon composition root; run `make docker-up && make test-integration
-  && make docker-down` before merging anything. `#[ignore]`d real-LLM
-  tests were edited in P2 but not executed.
+- **Docker mock integration passed for P5** — 51 tests, zero failures. This
+  also resolves the P3/P4 pre-merge integration gap recorded in their historical
+  notes above. `make docker-down` completed and removed the test stack.
+  Real-LLM tests remain unexecuted.
 - **Doc discipline per phase** (repo rule): when code is deleted or
   renamed, update the docs that name it in the same commit.
 - The original demolition map (subystem LOC, call-site counts, coupling

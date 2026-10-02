@@ -25,14 +25,12 @@
 # peko-rs/core/tests/scenarios/*.rs after Phase 0.Z-D moved tests/).
 # Kept in sync with `cargo metadata` (targets of kind = ["test"]); the
 # Principal migration dropped the cli_compaction / cli_a2a /
-# s3_agent_registry_roundtrip suites, the parity branch added
-# cli_agent_signature for issue #14 (manifest signature verification),
-# and ADR-047 Phases 5d/5e retired the extension_packaging and
-# cli_extensions suites along with the extension framework.
-INTEGRATION_TESTS := pekohub_integration tunnel_integration \
-                     packaging_integration registry_integration \
+# s3_agent_registry_roundtrip suites. ADR-066 P5 replaced OCI/signature
+# suites with local snapshot tests.
+INTEGRATION_TESTS := tunnel_integration \
+                     packaging_integration \
                      cli_send cli_basics cli_subagent \
-                     cli_tools cli_agent_signature \
+                     cli_tools cli_principal_import \
                      cli_providers \
                      s4_publish_running_agent_with_permission \
                      s6_principal_grant_revoke_roundtrip \

@@ -1242,15 +1242,6 @@ impl GlobalPaths {
         &self.user
     }
 
-    /// Load registry configuration from the config directory.
-    ///
-    /// Reads `[registry]` section from `~/.peko/config.toml`,
-    /// falling back to defaults if the file or section doesn't exist.
-    #[must_use]
-    pub fn registry_config(&self) -> crate::registry::config::RegistryConfig {
-        crate::registry::config::load_from_config_dir(&self.config_dir)
-    }
-
     /// Get the runtime directory.
     #[must_use]
     pub fn runtime_dir(&self) -> PathBuf {

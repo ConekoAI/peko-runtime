@@ -140,62 +140,13 @@ pub enum PrincipalCommands {
         #[arg(short, long)]
         name: Option<String>,
 
-        /// Allow importing an unsigned package
-        #[arg(long)]
-        allow_unsigned: bool,
-
-        /// Override trust pinning if the package's DID differs from a
-        /// previously imported package with the same name.
+        /// Overwrite an existing local peko
         #[arg(short, long)]
         force: bool,
 
-        /// Skip the preview confirmation prompt
-        #[arg(long)]
+        /// Deprecated: imports display an inventory and proceed directly
+        #[arg(long, hide = true)]
         yes: bool,
-    },
-
-    /// Push a peko package to a registry
-    Push {
-        /// Peko name
-        name: String,
-
-        /// Registry host (defaults to workspace config)
-        #[arg(long)]
-        registry_host: Option<String>,
-
-        /// Registry auth token
-        #[arg(long)]
-        registry_token: Option<String>,
-    },
-
-    /// Pull a peko package from a registry and import it
-    Pull {
-        /// Registry reference (e.g. `owner/peko:version`)
-        registry_ref: String,
-
-        /// Rename the imported peko
-        #[arg(short, long)]
-        name: Option<String>,
-
-        /// Overwrite an existing peko with the same name
-        #[arg(short, long)]
-        force: bool,
-
-        /// Skip the preview confirmation prompt
-        #[arg(long)]
-        yes: bool,
-
-        /// Allow pulling an unsigned package
-        #[arg(long)]
-        allow_unsigned: bool,
-
-        /// Registry host (defaults to workspace config)
-        #[arg(long)]
-        registry_host: Option<String>,
-
-        /// Registry auth token
-        #[arg(long)]
-        registry_token: Option<String>,
     },
 
     /// Grant a permission on a peko
@@ -311,35 +262,9 @@ pub async fn handle_principal(
         PrincipalCommands::Import {
             file_path,
             name,
-            allow_unsigned,
             force,
             yes,
-        } => import_principal(&file_path, name, allow_unsigned, force, yes).await,
-        PrincipalCommands::Push {
-            name,
-            registry_host,
-            registry_token,
-        } => push_principal(&name, registry_host, registry_token).await,
-        PrincipalCommands::Pull {
-            registry_ref,
-            name,
-            force,
-            yes,
-            allow_unsigned,
-            registry_host,
-            registry_token,
-        } => {
-            pull_principal(
-                &registry_ref,
-                name,
-                force,
-                yes,
-                allow_unsigned,
-                registry_host,
-                registry_token,
-            )
-            .await
-        }
+        } => import_principal(&file_path, name, force, yes).await,
         PrincipalCommands::Permit {
             name,
             subject,
@@ -1184,35 +1109,35 @@ async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
 async fn import_principal(
     file_path: &str,
     name: Option<String>,
-    allow_unsigned: bool,
     force: bool,
-    yes: bool,
+    _yes: bool,
 ) -> Result<()> {
     let client = DaemonClient::connect().await?;
 
     // Always preview first. The preview is read-only and surfaces bundled
-    // agents, extensions, signature status, and validation issues.
+    // role prompts, executable manifests, skills, and validation issues.
     let preview = client
-        .principal_import_preview(file_path, name.clone(), allow_unsigned, force)
+        .principal_import_preview(file_path, name.clone(), force)
         .await?;
 
     let preview = decode_preview_response(preview, "import")?;
 
     render_import_preview(&preview);
 
-    if !preview.validation_errors.is_empty() && !force {
+    if !preview.validation_errors.is_empty() {
         anyhow::bail!(
-            "Package has validation errors. Use --force to import anyway, or fix the package."
+            "Package has validation errors. Fix the package or re-export from the source runtime."
         );
     }
 
-    if !yes && !confirm_prompt("Import this peko?")? {
-        println!("Import cancelled.");
-        return Ok(());
-    }
-
     let response = client
-        .principal_import(file_path, name, allow_unsigned, force, true, Vec::new())
+        .principal_import(
+            file_path,
+            name,
+            force,
+            Vec::new(),
+            Some(preview.manifest_checksum.clone()),
+        )
         .await?;
 
     match response {
@@ -1241,13 +1166,13 @@ struct PrincipalImportPreview {
     agents: Vec<String>,
     extensions: Vec<String>,
     required_capabilities: Vec<String>,
-    signed: bool,
+    inventory: peko_core::registry::packaging::ExecutableInventory,
+    manifest_checksum: String,
     validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
 }
 
-/// Decode either a local import preview response or a remote pull preview
-/// response into the shared `PrincipalImportPreview` struct.
+/// Decode the local snapshot preview.
 fn decode_preview_response(
     response: ResponsePacket,
     operation: &str,
@@ -1261,20 +1186,8 @@ fn decode_preview_response(
             agents,
             extensions,
             required_capabilities,
-            signed,
-            validation_errors,
-            validation_warnings,
-            ..
-        }
-        | ResponsePacket::PrincipalPullPreviewed {
-            name,
-            version,
-            did,
-            description,
-            agents,
-            extensions,
-            required_capabilities,
-            signed,
+            inventory,
+            manifest_checksum,
             validation_errors,
             validation_warnings,
             ..
@@ -1286,7 +1199,8 @@ fn decode_preview_response(
             agents,
             extensions,
             required_capabilities,
-            signed,
+            inventory,
+            manifest_checksum,
             validation_errors,
             validation_warnings,
         }),
@@ -1302,16 +1216,12 @@ fn decode_preview_response(
 fn render_import_preview(preview: &PrincipalImportPreview) {
     println!("Peko import preview:");
     println!("  Name:        {}", preview.name);
-    println!("  Version:     {}", preview.version);
+    println!("  Peko version: {}", preview.version);
     println!("  DID:         {}", preview.did);
     if let Some(desc) = &preview.description {
         println!("  Description: {desc}");
     }
-    println!(
-        "  Signed:      {}",
-        if preview.signed { "yes" } else { "no" }
-    );
-
+    println!("{}", preview.inventory.render());
     if preview.agents.is_empty() {
         println!("  Agents:      (none)");
     } else {
@@ -1362,100 +1272,6 @@ fn confirm_prompt(message: &str) -> Result<bool> {
         .read_line(&mut answer)
         .with_context(|| "failed to read confirmation")?;
     Ok(answer.trim().eq_ignore_ascii_case("y"))
-}
-
-async fn push_principal(
-    name: &str,
-    registry_host: Option<String>,
-    registry_token: Option<String>,
-) -> Result<()> {
-    let client = DaemonClient::connect().await?;
-    let response = client
-        .principal_push(name, registry_host, registry_token)
-        .await?;
-
-    match response {
-        ResponsePacket::PrincipalPushed { name, digest, .. } => {
-            println!("Pushed peko '{name}' (digest {digest})");
-            Ok(())
-        }
-        ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to push peko: {message}");
-        }
-        other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
-        }
-    }
-}
-
-async fn pull_principal(
-    registry_ref: &str,
-    name: Option<String>,
-    force: bool,
-    yes: bool,
-    allow_unsigned: bool,
-    registry_host: Option<String>,
-    registry_token: Option<String>,
-) -> Result<()> {
-    let client = DaemonClient::connect().await?;
-
-    // Always preview first so the user can review capabilities before the
-    // remote package is imported.
-    let preview = client
-        .principal_pull_preview(
-            registry_ref,
-            name.clone(),
-            force,
-            registry_host.clone(),
-            registry_token.clone(),
-        )
-        .await?;
-
-    let preview = decode_preview_response(preview, "pull")?;
-
-    render_import_preview(&preview);
-
-    if !preview.validation_errors.is_empty() && !force {
-        anyhow::bail!(
-            "Package has validation errors. Use --force to import anyway, or fix the package."
-        );
-    }
-
-    if !yes && !confirm_prompt("Pull and import this peko?")? {
-        println!("Pull cancelled.");
-        return Ok(());
-    }
-
-    let response = client
-        .principal_pull(
-            registry_ref,
-            name,
-            force,
-            true,
-            Vec::new(),
-            allow_unsigned,
-            registry_host,
-            registry_token,
-        )
-        .await?;
-
-    match response {
-        ResponsePacket::PrincipalPulled {
-            name,
-            version,
-            digest,
-            ..
-        } => {
-            println!("Pulled peko '{name}' {version} (digest {digest})");
-            Ok(())
-        }
-        ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to pull peko: {message}");
-        }
-        other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
-        }
-    }
 }
 
 fn parse_permission(value: &str) -> Result<peko_auth::Permission> {
@@ -1842,6 +1658,21 @@ mod tests {
     }
 
     #[test]
+    fn retired_registry_commands_and_signature_flag_are_rejected() {
+        use clap::CommandFactory;
+        let command = Cli::command();
+        for name in ["push", "pull", "search", "registry"] {
+            assert!(
+                command.find_subcommand(name).is_none(),
+                "{name} must be retired"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["peko", "import", "snapshot.peko", "--allow-unsigned"]).is_err()
+        );
+    }
+
+    #[test]
     fn principal_import_parses_yes_flag() {
         let cli = Cli::try_parse_from([
             "peko",
@@ -1849,7 +1680,6 @@ mod tests {
             "/tmp/pkg.peko",
             "--name",
             "renamed",
-            "--allow-unsigned",
             "--force",
             "--yes",
         ])
@@ -1859,13 +1689,11 @@ mod tests {
             Commands::Peko(PrincipalCommands::Import {
                 file_path,
                 name,
-                allow_unsigned,
                 force,
                 yes,
             }) => {
                 assert_eq!(file_path, "/tmp/pkg.peko");
                 assert_eq!(name, Some("renamed".to_string()));
-                assert!(allow_unsigned);
                 assert!(force);
                 assert!(yes);
             }
@@ -1883,49 +1711,6 @@ mod tests {
                 assert!(!yes);
             }
             _other => panic!("expected flattened top-level import command"),
-        }
-    }
-
-    #[test]
-    fn principal_pull_parses_yes_flag() {
-        let cli = Cli::try_parse_from([
-            "peko",
-            "pull",
-            "owner/principal:1.0.0",
-            "--name",
-            "renamed",
-            "--force",
-            "--yes",
-        ])
-        .expect("should parse pull with --yes");
-
-        match cli.command {
-            Commands::Peko(PrincipalCommands::Pull {
-                registry_ref,
-                name,
-                force,
-                yes,
-                ..
-            }) => {
-                assert_eq!(registry_ref, "owner/principal:1.0.0");
-                assert_eq!(name, Some("renamed".to_string()));
-                assert!(force);
-                assert!(yes);
-            }
-            _other => panic!("expected flattened top-level pull command"),
-        }
-    }
-
-    #[test]
-    fn principal_pull_without_yes_defaults() {
-        let cli = Cli::try_parse_from(["peko", "pull", "owner/principal:1.0.0"])
-            .expect("should parse pull without --yes");
-
-        match cli.command {
-            Commands::Peko(PrincipalCommands::Pull { yes, .. }) => {
-                assert!(!yes);
-            }
-            _other => panic!("expected flattened top-level pull command"),
         }
     }
 
