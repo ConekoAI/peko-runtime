@@ -9,11 +9,11 @@ use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::core::tool_registry::ToolRegistry;
+use crate::extensions::framework::types::ToolExposure;
 use crate::extensions::framework::types::{
     tool_result_from_hook, ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata,
     ToolRuntimeContext,
 };
-use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, ToolExposure};
 use anyhow::Result;
 use peko_subject::PrincipalId;
 use peko_tools_core::Tool;
@@ -143,19 +143,6 @@ impl ExtensionCore {
         self.services.clone()
     }
 
-    /// Resolve bare tool names to their canonical `extension_id` form.
-    ///
-    /// See [`ToolRegistry::resolve_canonical_ids`] for the contract.
-    pub async fn resolve_canonical_ids(
-        &self,
-        names: &[String],
-        principal_id: &PrincipalId,
-    ) -> Vec<String> {
-        self.tool_registry
-            .resolve_canonical_ids(names, principal_id)
-            .await
-    }
-
     /// Wait for background async tasks to complete
     pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
         self.services.wait_for_async_tasks(timeout).await;
@@ -214,9 +201,11 @@ impl ExtensionCore {
     }
 
     /// Funnel for `AsyncExecutor::dispatch_tool*` so dispatched tool
-    /// calls go through the capability gate at `:260-277` and the
-    /// `PreToolUse` / `ToolExecute` / `PostToolUse` hook chain. F37
-    /// added this method; F38 added `abort_signal` as the 11th parameter.
+    /// calls go through the `PreToolUse` / `ToolExecute` / `PostToolUse`
+    /// hook chain. F37 added this method; F38 added `abort_signal` as
+    /// the last parameter. ADR-066 P2 removed the capability gate
+    /// (presence = executability); identity fields stay for audit and
+    /// the D9 ownership boundary.
     ///
     /// Built on top of `invoke_hook(HookPoint::ToolExecute { ... })` —
     /// the same chokepoint `engine::execute_tool_via_core_with_context`
@@ -237,8 +226,7 @@ impl ExtensionCore {
     /// calling `core.get_tool(name).await.execute(...)` directly because
     /// their factory closures (`Fn() -> Future`) don't have access to a
     /// `&ExtensionCore` parameter. This method gives them one — call
-    /// `core.execute_tool_via_hook(...)` from inside the closure, and
-    /// the gate fires.
+    /// `core.execute_tool_via_hook(...)` from inside the closure.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_tool_via_hook(
         &self,
@@ -250,8 +238,6 @@ impl ExtensionCore {
         caller_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<(String, serde_json::Value, bool)> {
         let point = HookPoint::ToolExecute {
@@ -266,8 +252,6 @@ impl ExtensionCore {
             caller_id,
             principal_id,
             principal_name,
-            capabilities,
-            active_extensions,
             abort_signal,
         };
         let result = self.invoke_hook(point, input).await;
@@ -323,60 +307,8 @@ impl ExtensionCore {
             return HookResult::PassThrough;
         }
 
-        // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
-        // This ensures ALL tools (built-in, MCP) are checked consistently.
-        if let HookPoint::ToolExecute { ref tool_name } = point {
-            let capabilities = match &input {
-                HookInput::ToolCall { capabilities, .. } => capabilities.as_ref(),
-                _ => None,
-            };
-            let active_extensions = match &input {
-                HookInput::ToolCall {
-                    active_extensions, ..
-                } => active_extensions
-                    .as_ref()
-                    .map(|v| ActiveExtensionSet::with_ids(v.iter().cloned())),
-                _ => None,
-            };
-            // The dispatch path forwards the caller's principal_id via
-            // HookInput::ToolCall. Map it onto the registry's `PrincipalId`
-            // type so `is_tool_enabled` can probe `(name, principal_id)` then
-            // fall back to `(name, PrincipalId::system())` for built-ins.
-            let call_principal_id: PrincipalId = match &input {
-                HookInput::ToolCall {
-                    principal_id: Some(pid),
-                    ..
-                } => PrincipalId(pid.clone()),
-                _ => PrincipalId::system().clone(),
-            };
-            let Some(caps) = capabilities else {
-                warn!(tool_name = %tool_name, "Tool execution blocked: no capability set provided");
-                return HookResult::Error(anyhow::anyhow!(
-                    "Tool '{tool_name}' is currently disabled: no capability set was provided \
-                     for this call. This is a caller-context bug — the agentic loop is expected \
-                     to pass the principal's grants."
-                ));
-            };
-            let caps = Capabilities::with_grants(caps.iter().cloned());
-            if !self
-                .tool_registry
-                .is_tool_enabled(
-                    tool_name,
-                    &caps,
-                    active_extensions.as_ref(),
-                    &call_principal_id,
-                )
-                .await
-            {
-                warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
-                return HookResult::Error(anyhow::anyhow!(
-                    "Tool '{tool_name}' is currently disabled. To enable it, add \
-                     \"tool:{tool_name}\" to `[capabilities].grants` in the principal's \
-                     `principal.toml` and restart the daemon (or recreate the run)."
-                ));
-            }
-            trace!(tool_name = %tool_name, "Tool execution permitted");
-        }
+        // ADR-066 P2: the ToolExecute capability gate that used to live
+        // here is deleted — presence in the registry is executability.
 
         self.hook_registry.invoke_hook(point, input).await
     }
@@ -391,15 +323,12 @@ impl ExtensionCore {
     ///
     /// Used by the system-prompt builder for the `skills` section: each
     /// `SkillPromptHandler` reads `principal_id` from the injected
-    /// `ToolRuntimeContext` and filters by the principal's enabled-skill
-    /// allowlist at handle time (P2 audit issue #1).
+    /// `ToolRuntimeContext` to resolve per-principal state at handle time.
     pub async fn invoke_hook_text_with_principal(
         &self,
         point: HookPoint,
         input: HookInput,
         principal_id: Option<&str>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         workspace: Option<String>,
     ) -> Option<String> {
         let mut ctx = HookContext::new(point.clone(), input, self.services.clone());
@@ -408,16 +337,6 @@ impl ExtensionCore {
             .with_workspace(workspace.unwrap_or_default());
         let tool_ctx = if let Some(pid) = principal_id {
             tool_ctx.with_principal_id(pid)
-        } else {
-            tool_ctx
-        };
-        let tool_ctx = if let Some(caps) = capabilities {
-            tool_ctx.with_capabilities(caps)
-        } else {
-            tool_ctx
-        };
-        let tool_ctx = if let Some(active) = active_extensions {
-            tool_ctx.with_active_extensions(active)
         } else {
             tool_ctx
         };
@@ -638,10 +557,8 @@ impl ExtensionCore {
 
     /// List all registered tools visible to `principal_id`.
     ///
-    /// Note: This returns all tools visible to `principal_id` regardless of
-    /// the caller's capability grants. The capability gate is enforced at
-    /// execution time via `invoke_hook`. Callers that need a caller-scoped
-    /// view should use [`Self::list_tool_definitions_with_allowlist`].
+    /// ADR-066 P2: presence in the registry is visibility — there is no
+    /// capability filter anywhere in the catalog path.
     pub async fn list_tools(&self, principal_id: &PrincipalId) -> Vec<ToolMetadata> {
         // Collect tool names from tool index first; that gives us the
         // hook IDs the principal can see.
@@ -678,6 +595,11 @@ impl ExtensionCore {
     }
 
     /// List all registered tools visible to `principal_id` as `ToolDefinitions`.
+    ///
+    /// F34 — the `ToolExposure` filter survives ADR-066 P2: `Hidden` and
+    /// `Deferred` tools are dropped from the native wire catalog (P4
+    /// deletes the exposure mechanism itself). No capability filter
+    /// remains.
     pub async fn list_tool_definitions_for(
         &self,
         principal_id: &PrincipalId,
@@ -685,50 +607,9 @@ impl ExtensionCore {
         self.list_tools(principal_id)
             .await
             .into_iter()
+            .filter(|metadata| metadata.exposure.visible_in_native_catalog())
             .map(|metadata| metadata.to_tool_definition())
             .collect()
-    }
-
-    /// List registered tools as `ToolDefinitions`, filtered by a caller
-    /// capability set.
-    ///
-    /// This closes leak B: without filtering, the LLM sees every tool
-    /// registered on the shared `ExtensionCore` even when the agent/principal
-    /// is only allowed to use a subset.
-    ///
-    /// F34 — also filters by [`ToolExposure::visible_in_native_catalog`].
-    /// `Hidden` and (pre-F35) `Deferred` tools are dropped from the
-    /// native catalog even when capability/extension gates allow them.
-    pub async fn list_tool_definitions_with_allowlist(
-        &self,
-        capabilities: &Capabilities,
-        active_extensions: Option<&ActiveExtensionSet>,
-        principal_id: &PrincipalId,
-    ) -> Vec<peko_providers::ToolDefinition> {
-        let all = self.list_tools(principal_id).await;
-        let mut filtered = Vec::new();
-        for metadata in all {
-            // F34 — exposure gate. Runs BEFORE the capability gate so a
-            // `Hidden` tool is filtered without consulting grants (a
-            // audit-only entry might not have a `tool:<name>` grant at
-            // all, but that shouldn't matter — it's invisible).
-            if !metadata.exposure.visible_in_native_catalog() {
-                continue;
-            }
-            if self
-                .tool_registry
-                .is_tool_enabled(
-                    &metadata.name,
-                    capabilities,
-                    active_extensions,
-                    principal_id,
-                )
-                .await
-            {
-                filtered.push(metadata.to_tool_definition());
-            }
-        }
-        filtered
     }
 
     /// F35 — Search the principal's `ToolExposure::Deferred` tool catalog
@@ -746,25 +627,15 @@ impl ExtensionCore {
     ///    tools must remain invisible even via search — they are
     ///    telemetry-only or sub-tool-of-other-tool and should never be
     ///    surfaced to the model.
-    /// 2. The capability gate applies when the caller supplies a
-    ///    capability set: a `Deferred` tool without the principal's
-    ///    `tool:<name>` grant is dropped from the search results. The
-    ///    caller passes the same `Capabilities` and
-    ///    `ActiveExtensionSet` it would pass to
-    ///    [`Self::list_tool_definitions_with_allowlist`]. `None` skips
-    ///    the gate (test / no-context callers only — production callers
-    ///    always carry the principal's grants).
-    /// 3. Empty query / limit = 0 returns an empty vec — those are
+    /// 2. Empty query / limit = 0 returns an empty vec — those are
     ///    validated upstream in `ToolSearchTool::execute`; this method
     ///    defensively returns empty for them.
     ///
-    /// Use this for the search stub. For the broader capability-gated
-    /// catalog, use [`Self::list_tool_definitions_with_allowlist`].
+    /// Use this for the search stub. For the broader wire
+    /// catalog, use [`Self::list_tool_definitions_for`].
     pub async fn list_deferred_tool_definitions(
         &self,
         principal_id: &PrincipalId,
-        capabilities: Option<&Capabilities>,
-        active_extensions: Option<&ActiveExtensionSet>,
         query: &str,
         limit: usize,
     ) -> Vec<peko_providers::ToolDefinition> {
@@ -777,17 +648,6 @@ impl ExtensionCore {
         for m in all {
             if !matches!(m.exposure, ToolExposure::Deferred) {
                 continue;
-            }
-            // Capability gate — same check the wire catalog applies in
-            // `list_tool_definitions_with_allowlist`.
-            if let Some(caps) = capabilities {
-                if !self
-                    .tool_registry
-                    .is_tool_enabled(&m.name, caps, active_extensions, principal_id)
-                    .await
-                {
-                    continue;
-                }
             }
             deferred.push(m);
         }
@@ -874,7 +734,7 @@ impl ExtensionCore {
     /// the synthetic `__tool_search` stub should be appended to the
     /// native catalog (F35, PR #239). Walks the unfiltered `list_tools`
     /// because `Deferred` tools are filtered out of
-    /// `list_tool_definitions_with_allowlist` (F34 — exposure gate).
+    /// `list_tool_definitions_for` (F34 — exposure filter).
     pub async fn has_deferred_tools_for(&self, principal_id: &PrincipalId) -> bool {
         let all = self.list_tools(principal_id).await;
         all.iter()
@@ -1250,76 +1110,23 @@ mod tests {
         assert_eq!(text, Some("prompt text".to_string()));
     }
 
-    // ==================== ADR-019: Tool Permission Check Tests ====================
+    // ==================== ADR-066 P2: no execution gate ====================
 
     #[tokio::test]
-    async fn test_tool_execute_blocked_when_disabled() {
+    async fn test_tool_execute_runs_without_any_capability_context() {
         let core = ExtensionCore::new();
 
-        // Create a tool execution handler
-        let _handler = Arc::new(MockHandler {
+        // Register a tool execution handler.
+        let handler = Arc::new(MockHandler {
             point: HookPoint::ToolExecute {
                 tool_name: "test_tool".to_string(),
             },
             output: HookResult::Continue(HookOutput::text("executed")),
         });
-
-        // Execute the tool with an empty per-call capability set — every tool
-        // should be denied (fail-closed).
-        let capabilities: Option<Vec<String>> = Some(vec![]);
-
-        // Try to execute the tool - should be blocked
-        let result = core
-            .invoke_hook(
-                HookPoint::ToolExecute {
-                    tool_name: "test_tool".to_string(),
-                },
-                HookInput::ToolCall {
-                    tool_name: "test_tool".to_string(),
-                    params: serde_json::json!({}),
-                    workspace: None,
-                    agent_id: None,
-                    session_id: None,
-                    caller_id: None,
-                    principal_id: None,
-                    principal_name: None,
-                    capabilities,
-                    active_extensions: None,
-                    abort_signal: None,
-                },
-            )
-            .await;
-
-        match result {
-            HookResult::Error(e) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("disabled"),
-                    "Error should mention tool is disabled: {msg}"
-                );
-            }
-            _ => panic!("Expected Error when tool is disabled, got {result:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_tool_execute_permitted_when_enabled() {
-        let core = ExtensionCore::new();
-
-        // Create and register a tool execution handler
-        let handler = Arc::new(MockHandler {
-            point: HookPoint::ToolExecute {
-                tool_name: "enabled_tool".to_string(),
-            },
-            output: HookResult::Continue(HookOutput::Json(
-                serde_json::json!({"result": "success"}),
-            )),
-        });
-
         let ext_id = ExtensionId::new("test");
         core.register_hook(
             HookPoint::ToolExecute {
-                tool_name: "enabled_tool".to_string(),
+                tool_name: "test_tool".to_string(),
             },
             handler,
             &ext_id,
@@ -1327,19 +1134,16 @@ mod tests {
         .await
         .unwrap();
 
-        // Enable the tool via the per-call capability set. The tool was registered
-        // directly on the hook registry, so it has no recorded owner in the
-        // tool index; the capability set therefore uses the bare tool name.
-        let allowed = vec!["tool:enabled_tool".to_string()];
-
-        // Execute the tool - should succeed
+        // The ToolCall payload carries no capability/active-extension
+        // fields at all (ADR-066 P2): presence in the registry is
+        // executability, so the dispatch runs.
         let result = core
             .invoke_hook(
                 HookPoint::ToolExecute {
-                    tool_name: "enabled_tool".to_string(),
+                    tool_name: "test_tool".to_string(),
                 },
                 HookInput::ToolCall {
-                    tool_name: "enabled_tool".to_string(),
+                    tool_name: "test_tool".to_string(),
                     params: serde_json::json!({}),
                     workspace: None,
                     agent_id: None,
@@ -1347,18 +1151,16 @@ mod tests {
                     caller_id: None,
                     principal_id: None,
                     principal_name: None,
-                    capabilities: Some(allowed),
-                    active_extensions: None,
                     abort_signal: None,
                 },
             )
             .await;
 
         match result {
-            HookResult::Continue(HookOutput::Json(json)) => {
-                assert_eq!(json["result"], "success");
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert_eq!(text, "executed");
             }
-            _ => panic!("Expected Continue with JSON result, got {result:?}"),
+            other => panic!("Expected Continue, got {other:?}"),
         }
     }
 
@@ -1495,12 +1297,10 @@ mod tests {
     // ────────────────────────── F36 wire-path catalog tests ───────────────────
     //
     // Mirrors the deleted `auto_prompt_*` tests in `tool_registration.rs`.
-    // Tool catalogs now travel wire-only (via `tools[]` JSON-schema array),
-    // so the same fail-closed safety property must hold at the wire path:
-    // the catalog returned by `list_tool_definitions_with_allowlist` must
-    // exclude a tool when its `tool:<name>` grant is missing, when its
-    // owning extension isn't in the active set, or when capabilities are
-    // empty.
+    // Tool catalogs now travel wire-only (via `tools[]` JSON-schema array).
+    // ADR-066 P2 deleted the capability/active-extension filters: the wire
+    // catalog is presence-based, with only the F34 `ToolExposure` filter
+    // (itself deleted in P4) still dropping `Hidden`/`Deferred` entries.
 
     /// Helper: register a tool with a configurable owner extension id and
     /// default (Direct) exposure. Returns the registered name so callers
@@ -1533,108 +1333,30 @@ mod tests {
         defs.iter().any(|d| d.name == name)
     }
 
-    /// F36 — without the matching `tool:<name>` grant, the wire-format
-    /// catalog must NOT contain the tool. This is the fail-closed property
-    /// that previously lived in `AutoPromptHandler`.
+    /// ADR-066 P2 — presence = visibility: a registered `Direct` tool is
+    /// in the wire catalog, no grant context required.
     #[tokio::test]
-    async fn catalog_excludes_tool_without_grant() {
+    async fn catalog_includes_registered_tool() {
         let core = ExtensionCore::new();
         let ext = ExtensionId::new("builtin:tool:Read");
         register_test_tool(&core, "Read", &ext, ToolExposure::Direct).await;
 
-        let caps = Capabilities::with_grants(["tool:Write"]);
-        let defs = core
-            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
-            .await;
-
-        assert!(!defs_contain(&defs, "Read"));
-    }
-
-    /// F36 — with the matching grant, the wire-format catalog includes the
-    /// tool. Wildcard grant `tool:*` matches everything registered to the
-    /// system principal (see `tool_registry::is_tool_enabled`).
-    #[tokio::test]
-    async fn catalog_includes_tool_with_grant() {
-        let core = ExtensionCore::new();
-        let ext = ExtensionId::new("builtin:tool:Read");
-        register_test_tool(&core, "Read", &ext, ToolExposure::Direct).await;
-
-        let caps = Capabilities::with_grants(["tool:Read"]);
-        let defs = core
-            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
-            .await;
+        let defs = core.list_tool_definitions_for(PrincipalId::system()).await;
 
         assert!(defs_contain(&defs, "Read"));
     }
 
-    /// F36 — `tool:*` wildcard grant covers every tool in the wire-format
-    /// catalog.
+    /// F34 — the exposure filter survives P2: `Hidden` tools stay out of
+    /// the native wire catalog.
     #[tokio::test]
-    async fn catalog_wildcard_grant_covers_tool() {
+    async fn catalog_excludes_hidden_tool() {
         let core = ExtensionCore::new();
-        let ext = ExtensionId::new("builtin:tool:Bash");
-        register_test_tool(&core, "Bash", &ext, ToolExposure::Direct).await;
+        let ext = ExtensionId::new("builtin:tool:Hidden");
+        register_test_tool(&core, "Hidden", &ext, ToolExposure::Hidden).await;
 
-        let caps = Capabilities::with_grants(["tool:*"]);
-        let defs = core
-            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
-            .await;
+        let defs = core.list_tool_definitions_for(PrincipalId::system()).await;
 
-        assert!(defs_contain(&defs, "Bash"));
-    }
-
-    /// F36 — extension-provided tools (owner id does NOT start with
-    /// `builtin:tool:`) require their owner to be in the active set even
-    /// when the capability grant is present.
-    #[tokio::test]
-    async fn catalog_excludes_inactive_extension_tool() {
-        let core = ExtensionCore::new();
-        let ext = ExtensionId::new("extension:search");
-        register_test_tool(&core, "Search", &ext, ToolExposure::Direct).await;
-
-        let caps = Capabilities::with_grants(["tool:Search"]);
-        // Active set empty — Search's owner is missing.
-        let active = ActiveExtensionSet::empty();
-        let defs = core
-            .list_tool_definitions_with_allowlist(&caps, Some(&active), PrincipalId::system())
-            .await;
-
-        assert!(!defs_contain(&defs, "Search"));
-    }
-
-    /// F36 — extension-provided tools appear in the wire-format catalog
-    /// when their owner is in the active set.
-    #[tokio::test]
-    async fn catalog_includes_active_extension_tool() {
-        let core = ExtensionCore::new();
-        let ext = ExtensionId::new("extension:search");
-        register_test_tool(&core, "Search", &ext, ToolExposure::Direct).await;
-
-        let caps = Capabilities::with_grants(["tool:Search"]);
-        let active = ActiveExtensionSet::with_ids(["extension:search"]);
-        let defs = core
-            .list_tool_definitions_with_allowlist(&caps, Some(&active), PrincipalId::system())
-            .await;
-
-        assert!(defs_contain(&defs, "Search"));
-    }
-
-    /// F36 — an empty capability set must drop every tool. Without this,
-    /// a malformed principal profile (zero grants) would silently see
-    /// every registered tool in the wire-format catalog.
-    #[tokio::test]
-    async fn catalog_fails_closed_without_capabilities() {
-        let core = ExtensionCore::new();
-        let ext = ExtensionId::new("builtin:tool:Read");
-        register_test_tool(&core, "Read", &ext, ToolExposure::Direct).await;
-
-        let caps = Capabilities::new(); // zero grants
-        let defs = core
-            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
-            .await;
-
-        assert!(defs.is_empty(), "empty caps must yield empty catalog");
-        assert!(!defs_contain(&defs, "Read"));
+        assert!(!defs_contain(&defs, "Hidden"));
     }
 
     // ─────────────── prompt-cache prefix stability (tool catalog) ───────────
@@ -1687,10 +1409,7 @@ mod tests {
             register_schema_tool(&core, name).await;
         }
 
-        let caps = Capabilities::with_grants(["tool:*"]);
-        let first = core
-            .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
-            .await;
+        let first = core.list_tool_definitions_for(PrincipalId::system()).await;
         let first_vec_bytes = serde_json::to_string(&first).expect("catalog serializes");
         let first_elem_bytes: Vec<String> = first
             .iter()
@@ -1701,9 +1420,7 @@ mod tests {
         // with probability 1 - 1/n! per call, so this fails essentially
         // always when the registry is nondeterministic.
         for call in 1..=64 {
-            let defs = core
-                .list_tool_definitions_with_allowlist(&caps, None, PrincipalId::system())
-                .await;
+            let defs = core.list_tool_definitions_for(PrincipalId::system()).await;
             assert_eq!(
                 first.len(),
                 defs.len(),

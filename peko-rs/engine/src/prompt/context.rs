@@ -40,7 +40,7 @@
 //! `src/engine/agentic_loop.rs` (Phase 9b.N.5b.4 has not lifted it);
 //! once that happens the re-exports become vestigial.
 
-use peko_extension_api::{ActiveExtensionSet, Capabilities};
+use peko_extension_api::Capabilities;
 use peko_provider_api::ToolDefinition;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -106,10 +106,11 @@ pub struct TurnPromptContext {
     pub role_name: String,
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).
     pub body: String,
-    /// Per-agent capability snapshot (None ⇒ fail-closed empty set).
+    /// Per-agent capability snapshot. Inert since ADR-066 P2 (the grant
+    /// gate is deleted); carried only for the `capability_diff` change
+    /// tracker and the compaction snapshot's `permission_policy_summary`
+    /// pending P3/P6.
     pub capabilities: Option<Arc<Capabilities>>,
-    /// Active extension IDs for the principal.
-    pub active_extensions: Option<ActiveExtensionSet>,
     /// Per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
     /// Rendered into the system prompt at the `{{memory}}` placeholder.
     pub principal_memory: Option<String>,
@@ -174,20 +175,12 @@ pub struct TurnPromptContext {
 
 impl TurnPromptContext {
     /// Borrow the principal's capability grant strings (empty when unset).
+    /// Inert since ADR-066 P2 — see the field doc.
     #[must_use]
     pub fn capability_strings(&self) -> Vec<String> {
         self.capabilities
             .as_ref()
             .map(|c| c.to_strings())
-            .unwrap_or_default()
-    }
-
-    /// Borrow the active extension ID list.
-    #[must_use]
-    pub fn active_extension_vec(&self) -> Vec<String> {
-        self.active_extensions
-            .as_ref()
-            .map(|a| a.to_vec())
             .unwrap_or_default()
     }
 }

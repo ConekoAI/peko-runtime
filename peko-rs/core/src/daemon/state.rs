@@ -3230,6 +3230,10 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
         Arc::clone(&self.invite_revocation_set)
     }
 
+    fn observability(&self) -> Option<Arc<Observability>> {
+        Some(AppState::observability(self))
+    }
+
     fn pekohub_base_url(&self) -> String {
         // PekoConfig has no `tunnel` field today; the public hub URL
         // is operator-supplied via the `PEKOHUB_BASE_URL` env var.
@@ -3435,14 +3439,12 @@ mod tests {
             "Grep missing after agent init"
         );
 
-        // Wire-format catalog should expose Bash and Grep under the
-        // `tool:*` grant. F36 removed the `## Available Tools` prose
-        // section; tool catalogs now travel on the wire as the `tools[]`
-        // JSON-schema array. Use the principal-aware allowlist helper so
-        // the capability gate sees the wildcard grant for built-ins.
-        let caps = peko_extension_api::Capabilities::with_grants(["tool:*"]);
+        // Wire-format catalog should expose Bash and Grep. F36 removed
+        // the `## Available Tools` prose section; tool catalogs now
+        // travel on the wire as the `tools[]` JSON-schema array.
+        // ADR-066 P2: presence = visibility — no grant context needed.
         let defs = core
-            .list_tool_definitions_with_allowlist(&caps, None, peko_subject::PrincipalId::system())
+            .list_tool_definitions_for(peko_subject::PrincipalId::system())
             .await;
         let def_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
         assert!(

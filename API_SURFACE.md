@@ -765,6 +765,34 @@ sanitizers remain in `peko_session::key`.
 > executor + session inbox moved to `crate::async_exec` (`async_exec/`
 > + `async_exec/inbox.rs`). The stale `manager` / `adapters` /
 > `services` section bodies above are removed in P6's doc sweep.
+>
+> **ADR-066 P2 (2026-10-01):** the capability gate is deleted
+> (D1 + D9). Gone: `CapabilityEvaluator`,
+> `principal::catalog`'s grant evaluation + active-extension projection
+> (`GlobalExtensionItem`, deleted with it), `ToolRegistry::is_tool_enabled`
+> (+ the `tool_owners` index and `resolve_canonical_ids`),
+> `ExtensionCore::list_tool_definitions_with_allowlist`,
+> `Capabilities::starter_bundle`, `Capabilities::is_granted` /
+> `Capability::matches` (the type stays as a wire/serde data shell until
+> P6), the `capabilities` / `active_extensions` params on
+> `ToolFunnel::{execute_tool_via_hook, pre_tool_use, post_tool_use,
+> invoke_prompt_section_hook, invoke_session_context_build_hook}`
+> (renamed `list_tool_definitions_with_allowlist` →
+> `list_tool_definitions_for`), the same fields on `HookInput::ToolCall`,
+> `ToolContext`, and `ToolRuntimeContext`, the per-agent registration
+> filter, the `role:<name>` spawn gate (`SubagentRuntime::is_subagent_enabled`
+> deleted), the `skill:<name>` prefix check, and the import-time
+> capability negotiation (`PrincipalImportOptions.selected_capabilities`
+> / `caller_capabilities` deleted; the IPC wire fields are
+> parsed-and-ignored for one release window). `principal.toml`'s
+> `[capabilities].grants` is ignored on load (one-time deprecation
+> warning) and never persisted. `common/authority.rs`'s
+> `principal:write_*` grant checks were replaced by ownership
+> comparison (D9): a principal-typed actor may write only its own
+> tiers; crossing attempts fail closed with `AuthorityError::
+> OwnershipDenied` and emit a `principal.cross_principal_write_denied`
+> Security audit event. The `RuntimeAuthority::*_write` accessors are
+> now `async` for that emission.
 
 ### Agent-Owned Session Management (2026-08-09; revised 2026-08-13)
 

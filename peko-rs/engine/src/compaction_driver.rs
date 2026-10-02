@@ -1098,8 +1098,6 @@ mod tests {
             _caller_id: Option<String>,
             _principal_id: Option<String>,
             _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
         ) {
         }
         async fn post_tool_use(
@@ -1112,8 +1110,6 @@ mod tests {
             _caller_id: Option<String>,
             _principal_id: Option<String>,
             _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
         ) {
         }
         async fn execute_tool_via_hook(
@@ -1126,8 +1122,6 @@ mod tests {
             _caller_id: Option<String>,
             _principal_id: Option<String>,
             _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
             _abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
         ) -> Result<(String, serde_json::Value, bool)> {
             anyhow::bail!("EmptyFunnel::execute_tool_via_hook not implemented")
@@ -1153,10 +1147,8 @@ mod tests {
         async fn invoke_stop_hook(&self, _merged: serde_json::Value) {}
         async fn invoke_after_agent_hook(&self, _merged: serde_json::Value) {}
         async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
-        async fn list_tool_definitions_with_allowlist(
+        async fn list_tool_definitions_for(
             &self,
-            _capabilities: &peko_extension_api::Capabilities,
-            _active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
             _principal_id: &peko_subject::PrincipalId,
         ) -> Vec<peko_provider_api::ToolDefinition> {
             Vec::new()
@@ -1169,8 +1161,6 @@ mod tests {
             _section: &str,
             _priority: i32,
             _principal_id: Option<&str>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
             _workspace: Option<String>,
         ) -> Option<String> {
             None
@@ -1179,8 +1169,6 @@ mod tests {
             &self,
             _snapshot: SessionSnapshot,
             _principal_id: Option<&str>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
             _workspace: Option<String>,
         ) -> Option<String> {
             None

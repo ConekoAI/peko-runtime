@@ -279,14 +279,9 @@ pub struct SubagentExecutor {
     /// Principal-scoped tools (e.g. cron) inherit the correct target.
     principal_name: Option<String>,
     /// Snapshot of the spawning principal's capability grants.
-    /// `None` means unbound (no capability filtering). `Some(empty)`
-    /// means deny-all. Propagated to descendant subagents so a
-    /// restricted root agent cannot spawn a more-privileged child.
+    /// ADR-066 P2: inert shell (the grant gate is deleted) — kept for
+    /// the engine's `capability_diff` tracker pending P3/P6.
     principal_capabilities: Option<Arc<Capabilities>>,
-    /// Snapshot of the spawning principal's active extension IDs.
-    /// `None` means unbound (no active-extension check). Propagated to
-    /// descendant subagents.
-    active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
@@ -370,7 +365,6 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
-            active_extensions: None,
             observability: None,
             quota_meter: None,
             // B5d: per-agent attribution meter. Audit-only by default;
@@ -517,28 +511,10 @@ impl SubagentExecutor {
         self
     }
 
-    /// Set the active extension set for the spawning principal.
-    #[must_use]
-    pub fn with_active_extensions(
-        mut self,
-        active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
-    ) -> Self {
-        self.active_extensions = active_extensions;
-        self
-    }
-
     /// Get the spawning principal's capability snapshot, if bound.
     #[must_use]
     pub fn principal_capabilities(&self) -> Option<&Arc<Capabilities>> {
         self.principal_capabilities.as_ref()
-    }
-
-    /// Get the active extension set, if bound.
-    #[must_use]
-    pub fn active_extensions(
-        &self,
-    ) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
-        self.active_extensions.as_ref()
     }
 
     /// Set the observability hub used to audit subagent spawns.
@@ -579,7 +555,6 @@ impl SubagentExecutor {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
-            active_extensions: None,
             observability: None,
             quota_meter: None,
             // B5d: per-agent attribution meter. Audit-only by default;
@@ -2001,7 +1976,6 @@ impl SubagentExecutor {
         let session_manager_clone = self.session_manager.clone();
         let principal_id_clone = self.principal_id.clone();
         let principal_capabilities_clone = self.principal_capabilities.clone();
-        let active_extensions_clone = self.active_extensions.clone();
         let observability_clone = self.observability.clone();
         // F39: clone the parent's quota meter so the spawned task
         // can re-open `QuotaScope::with(...)` inside (task-locals don't
@@ -2148,7 +2122,6 @@ impl SubagentExecutor {
                         principal_id_clone,
                         principal_workspace_clone,
                         principal_capabilities_clone,
-                        active_extensions_clone,
                         observability_clone,
                         child_cancel_for_closure.clone(),
                         parent_quota_meter_clone,
@@ -2552,7 +2525,6 @@ async fn execute_subagent_task(
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
     principal_capabilities: Option<Arc<Capabilities>>,
-    active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     // F39: snapshot of the spawning principal's `QuotaMeter`. The
@@ -2665,7 +2637,6 @@ async fn execute_subagent_task(
     .with_provider(provider.clone())
     .with_agent_config(config.clone())
     .with_principal_capabilities(principal_capabilities.clone())
-    .with_active_extensions(active_extensions.clone())
     .with_observability(observability.clone())
     // F39: nested sub-subagents must inherit the parent meter so
     // they too charge against the spawning principal (not
@@ -2706,7 +2677,6 @@ async fn execute_subagent_task(
         shared_executor,
         Some(provider.clone()),
         principal_capabilities,
-        active_extensions,
         resolved_model_id_override.clone(),
     )
     .await

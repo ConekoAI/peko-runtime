@@ -1,94 +1,27 @@
-//! Capability model — `Capabilities` contract.
+//! Capability model — `Capabilities` data shell.
 //!
-//! # What `Capabilities` owns (ADR-047 §2.5)
+//! ADR-066 D1 deleted the capability **gate**: presence = visibility =
+//! executability, and no `tool:*` / `role:*` / `skill:*` / `agent:*` /
+//! `principal:write_*` grant check fires anywhere in the runtime. The
+//! evaluation surface (`is_granted`, `Capability::matches`,
+//! `Capabilities::starter_bundle`) is gone.
 //!
-//! `Capabilities` carries the **cross-actor / cross-runtime grants** that
-//! survive the post-Phase 3b collapse. Five strings are in scope today
-//! (see `CAP_*` constants in `peko-rs/core/src/common/authority.rs`):
+//! What remains is a plain data shell — a `Vec` of grant strings — kept
+//! only because wire and on-disk shapes still carry it:
 //!
-//! | String                     | Owner / purpose                                              |
-//! |----------------------------|--------------------------------------------------------------|
-//! | `principal:write_config`   | Write the principal's `principal.toml`                       |
-//! | `principal:write_agents`   | Write the principal's `agents/` directory                    |
-//! | `principal:write_identity` | Write the principal's `identity/` directory (DID material)   |
-//! | `principal:write_mcps`     | Write the principal's `mcp/` directory                       |
-//! | `runtime:write_extensions` | Write the runtime `extensions/` directory (reserved; no IPC) |
+//! - `principal.toml`'s legacy `[capabilities] grants = [...]` section
+//!   parses into this type (ignored on load; never persisted — see
+//!   `peko_core::principal::config`).
+//! - IPC DTOs such as `PrincipalSummary.capabilities` serialize it.
 //!
-//! Every string above is a **runtime gate**: the `RuntimeAuthority`
-//! `*_write(Option<&Capabilities>)` accessors fail closed without it
-//! (see `assert_capability_granted`). The `principal:write_cron`
-//! grant was retired 2026-08-25 when cron became an internal
-//! principal tool gated by `tool:Cron{Create,List,Delete}`.
-//!
-//! # What `Capabilities` does NOT own
-//!
-//! Per ADR-047 §2.5, the following kinds moved off `Capabilities` and
-//! onto the workspace (tool/agent catalog) or simply retired when the
-//! `Authority` envelope was deleted in PR-E #1:
-//!
-//! | Retired kind     | New surface                                                  |
-//! |------------------|--------------------------------------------------------------|
-//! | `tool:Bash`      | Workspace tool; visible by default                           |
-//! | `tool:Write`     | Workspace tool; visible by default                           |
-//! | `tool:Edit`      | Workspace tool; visible by default                           |
-//! | `network`        | Retired with `Authority` envelope (PR-E #1)                  |
-//! | `filesystem.*`   | Retired with `Authority` envelope (PR-E #1)                  |
-//! | `tunnel:*`       | Retired with `Authority` envelope (PR-E #1)                  |
-//! | `role:*` (legacy `agent:*`) | Subagent dispatch lives on `subagent_capabilities` snapshot  |
-//! | `skill:*`        | Workspace-resident; visible by default                       |
-//! | `tool:<name>`    | F37 funnel gate; checked in agentic-loop per tool call       |
-//!
-//! `tool:<name>` and `role:*` strings **DO still appear** in the
-//! `[capabilities]` table of `principal.toml` — they are checked by
-//! the F37 agentic-loop funnel / subagent dispatch snapshot, not by
-//! this type. They round-trip through `Capabilities` only because
-//! the type is still the canonical store for whatever grant strings
-//! the principal carries.
-//!
-//! # ADR-046 high-power classifier — DELETED
-//!
-//! `Capability::is_high_power` was deleted in Phase 3b alongside the
-//! capability-grant IPC handler. ADR-046 §3 still describes the
-//! classifier as live; ADR-047 §2.5 documents the replacement
-//! ("authority tier widening"). The replacement audit hook was
-//! keyed off `[authority]` field widening (network flip,
-//! runtime_paths write) and was retired with the `Authority`
-//! envelope in PR-E #1 — there is no longer a high-power classifier
-//! surface in the runtime.
-//!
-//! # IPC surface
-//!
-//! `peko-rs/core/src/ipc/handlers/capability.rs` and the IPC variants
-//! `CapabilityGrant` / `CapabilityList` / `CapabilityRevoke` were
-//! retired in PR #363 (ADR-047 Phases 7+8, commit `5ad12b6e`). The
-//! only IPC path that still mentions capabilities is the wire
-//! projection `Vec<String>` (`peko-rs/core/src/ipc/packet.rs`).
-//!
-//! # Wildcard semantics
-//!
-//! A grant satisfies a requirement when:
-//! - they are identical strings, or
-//! - the grant ends in `*` and the requirement starts with the
-//!   prefix before the wildcard.
-//!
-//! In practice the wildcards in production are `tool:*`, `role:*`,
-//! and `skill:*` (all shipped by [`Capabilities::starter_bundle`] and
-//! matched through [`Capabilities::is_granted`] — e.g. the F37 tool
-//! gate's `is_tool_enabled` — or, for the `Skill` tool's string-slice
-//! gate, an equivalent prefix-wildcard check). `runtime:*` and
-//! `principal:*` are legal but no caller uses them today.
+//! New code must not read grant strings for authorization. The type
+//! folds away entirely in ADR-066 P6.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::fmt;
 
-/// A typed capability grant.
-///
-/// `Capability` is a newtype around `String`. The string taxonomy is
-/// the canonical contract — see the module doc-comment above for the
-/// three strings that are runtime-gated (`principal:write_*`) vs the
-/// kinds that retired with the `Authority` envelope (PR-E #1) or
-/// live behind the F37 funnel.
+/// A capability grant string. Pure data — no matching/evaluation
+/// semantics remain (ADR-066 D1).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Capability(pub String);
 
@@ -103,54 +36,6 @@ impl Capability {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// Whether this capability ends in a wildcard (`*`).
-    #[must_use]
-    pub fn is_wildcard(&self) -> bool {
-        self.0.ends_with('*')
-    }
-
-    /// Whether this grant satisfies `required`.
-    ///
-    /// A grant satisfies a requirement when:
-    /// - they are identical, or
-    /// - the grant ends in `*` and the required capability starts with the
-    ///   grant prefix before the wildcard.
-    #[must_use]
-    pub fn matches(&self, required: &Capability) -> bool {
-        let grant = self.as_str();
-        let req = required.as_str();
-
-        if grant == req {
-            return true;
-        }
-
-        if self.is_wildcard() {
-            let prefix = &grant[..grant.len() - 1];
-            if req.starts_with(prefix) {
-                return true;
-            }
-        }
-
-        // ADR-064 legacy mapping: the pre-rename `agent:*` namespace
-        // (workspace role templates) keeps matching `role:*` strings in
-        // both directions — old bundles granting `agent:*` / `agent:<n>`
-        // authorize the renamed `role:*` requirements.
-        if let Some(legacy_grant) = grant.strip_prefix("agent:") {
-            let normalized_grant = format!("role:{legacy_grant}");
-            if normalized_grant == req {
-                return true;
-            }
-            if self.is_wildcard() {
-                let prefix = &normalized_grant[..normalized_grant.len() - 1];
-                if req.starts_with(prefix) {
-                    return true;
-                }
-            }
-        }
-
-        false
     }
 }
 
@@ -169,11 +54,9 @@ impl fmt::Display for Capability {
     }
 }
 
-/// A capability grant set.
-///
-/// This serializes as `[capabilities] grants = [...]` in `principal.toml` and
-/// is the single human-editable source of truth for what a Principal is allowed
-/// to do.
+/// A capability grant set. Pure data — the load/evaluate path was
+/// deleted in ADR-066 P2; this type only round-trips grant strings on
+/// wire/serde shapes that still carry them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     pub grants: Vec<Capability>,
@@ -215,12 +98,6 @@ impl Capabilities {
         self.grants.contains(cap)
     }
 
-    /// Whether the given capability is granted, taking wildcards into account.
-    #[must_use]
-    pub fn is_granted(&self, required: &Capability) -> bool {
-        self.grants.iter().any(|g| g.matches(required))
-    }
-
     /// Whether no grants are present.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -248,187 +125,5 @@ impl Capabilities {
     #[must_use]
     pub fn contains_str(&self, grant: &str) -> bool {
         self.grants.iter().any(|c| c.as_str() == grant)
-    }
-
-    /// The starter bundle for new Principals.
-    ///
-    /// The tool catalog gate is **fail-closed**: `list_tool_definitions_with_allowlist`
-    /// and `is_tool_enabled` drop any tool without a matching `tool:<name>`
-    /// grant, so a bundle without tool grants would hand a fresh Principal an
-    /// empty `tools: []` wire catalog. This bundle therefore carries the
-    /// wildcard grants that make a fresh Principal useful out of the box:
-    ///
-    /// - `tool:*` — every tool in the catalog (built-in, workspace, MCP)
-    ///   is visible and callable. Wildcards match by prefix via
-    ///   [`Capability::matches`].
-    /// - `role:*` — any workspace role template (`roles/<name>.md` or
-    ///   `roles/<name>/ROLE.md`) passes the `Agent` tool's `is_subagent_enabled`
-    ///   check (legacy `agent:*` grants still match — ADR-064).
-    /// - `skill:*` — any workspace skill passes the `Skill` tool's gate
-    ///   (that gate does its own prefix-wildcard match over the
-    ///   `Vec<String>` projection, same `tool:*` semantics).
-    ///
-    /// Plus the cross-actor / cross-runtime grants that still live on
-    /// `Capabilities`: `principal:write_config`, `principal:write_agents`,
-    /// and `principal:write_identity`.
-    ///
-    /// 2026-08-25: `principal:write_cron` retired. Cron is now an
-    /// internal principal tool gated by `tool:Cron{Create,List,Delete}`
-    /// grants (covered by `tool:*`).
-    ///
-    /// The `network` / `filesystem.*` / `tunnel:*` grants that used to live
-    /// here retired when the `Authority` envelope was deleted in PR-E #1.
-    /// To restrict a Principal, hand-edit `[capabilities].grants` in its
-    /// `principal.toml` and remove the wildcards in favour of specific
-    /// `tool:<name>` / `agent:<name>` / `skill:<name>` grants.
-    #[must_use]
-    pub fn starter_bundle() -> Self {
-        Self::with_grants([
-            "principal:write_config",
-            "principal:write_agents",
-            // PR 2 (storage review): required by
-            // `principal_unpackager::import_identity` so the import
-            // path can write the imported DID's identity directory.
-            "principal:write_identity",
-            // Fail-closed tool catalog gate: without these wildcards a
-            // fresh Principal sees `tools: []` on the wire.
-            "tool:*",
-            "role:*",
-            "skill:*",
-        ])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exact_match() {
-        let grants = Capabilities::with_grants(["principal:write_config"]);
-        assert!(grants.is_granted(&Capability::new("principal:write_config")));
-        assert!(!grants.is_granted(&Capability::new("principal:write_agents")));
-    }
-
-    /// The starter bundle ships `tool:*` / `agent:*` / `skill:*`
-    /// wildcards (see [`Capabilities::starter_bundle`]); they match
-    /// through this type's `is_granted` exactly like the `runtime:*`
-    /// wildcard in the test below.
-    #[test]
-    fn wildcard_match() {
-        let grants = Capabilities::with_grants(["runtime:*"]);
-        assert!(grants.is_granted(&Capability::new("runtime:trust")));
-        assert!(grants.is_granted(&Capability::new("runtime:write_extensions")));
-        assert!(!grants.is_granted(&Capability::new("principal:write_config")));
-    }
-
-    /// The starter bundle carries the cross-actor / cross-runtime grants
-    /// plus the `tool:*` / `agent:*` / `skill:*` wildcards — the catalog
-    /// gate is fail-closed, so a fresh Principal needs them to see any
-    /// tools at all.
-    #[test]
-    fn starter_bundle_carries_principal_grants_and_wildcards() {
-        let caps = Capabilities::starter_bundle();
-        for required in [
-            "principal:write_config",
-            "principal:write_agents",
-            "principal:write_identity",
-            // Wildcards expand by prefix via `Capability::matches`.
-            "tool:Read",
-            "tool:Write",
-            "tool:Bash",
-            "role:researcher",
-            "skill:docker",
-        ] {
-            assert!(
-                caps.is_granted(&Capability::new(required)),
-                "starter_bundle must grant {required}"
-            );
-        }
-        for retired in ["network", "tunnel:create", "filesystem.read:/etc"] {
-            assert!(
-                !caps.is_granted(&Capability::new(retired)),
-                "starter_bundle must NOT carry {retired} (retired kind)"
-            );
-        }
-    }
-}
-
-/// The set of extension IDs that are active for a Principal under a given
-/// capability snapshot.
-///
-/// An extension is active when it is detected/installed, at least one of its
-/// provided capabilities is granted, and all of its `requires` capabilities
-/// are satisfied. The active set is computed once per message and threaded
-/// through tool execution so the runtime can verify that the owning extension
-/// is active before invoking a tool.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActiveExtensionSet {
-    ids: HashSet<String>,
-}
-
-impl ActiveExtensionSet {
-    /// Create an empty active set.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            ids: HashSet::new(),
-        }
-    }
-
-    /// Create an active set from an iterable of extension IDs.
-    #[must_use]
-    pub fn with_ids(ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            ids: ids.into_iter().map(Into::into).collect(),
-        }
-    }
-
-    /// Insert an extension ID into the active set.
-    pub fn insert(&mut self, id: impl Into<String>) {
-        self.ids.insert(id.into());
-    }
-
-    /// Whether the given extension ID is active.
-    #[must_use]
-    pub fn is_active(&self, id: &str) -> bool {
-        self.ids.contains(id)
-    }
-
-    /// Iterate over active extension IDs.
-    pub fn iter(&self) -> impl Iterator<Item = &String> {
-        self.ids.iter()
-    }
-
-    /// Convert the active set to a sorted vector of strings.
-    #[must_use]
-    pub fn to_vec(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.ids.iter().cloned().collect();
-        v.sort();
-        v
-    }
-
-    /// Whether the active set contains no IDs.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
-}
-
-#[cfg(test)]
-mod active_set_tests {
-    use super::*;
-
-    #[test]
-    fn empty_set_is_inactive() {
-        let set = ActiveExtensionSet::empty();
-        assert!(!set.is_active("builtin:tool:Read"));
-    }
-
-    #[test]
-    fn inserted_id_is_active() {
-        let mut set = ActiveExtensionSet::empty();
-        set.insert("builtin:tool:Read");
-        assert!(set.is_active("builtin:tool:Read"));
     }
 }

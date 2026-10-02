@@ -1,7 +1,7 @@
 //! `AsyncExecutorRuntime` — implements the
 //! `crate::tools::builtin::async_control::AsyncRuntime` port by wrapping
 //! the per-agent `AsyncExecutor` + `Weak<ExtensionCore>` +
-//! `principal_id` + `capabilities` snapshot.
+//! `principal_id`.
 //!
 //! This is the bridge between peko-tools-builtin (which only sees the
 //! trait) and the framework-host (which owns `AsyncExecutor` +
@@ -14,10 +14,9 @@
 //!
 //! The `spawn` method builds the canonical funnel closure:
 //! `execute_tool_via_hook(...)`, with
-//! `ToolDispatchContext::for_principal(principal_id, capabilities)` set
-//! so the capability gate at `registry.rs:260-277` evaluates against
-//! the spawning principal's grants. Pre-F37, the spawned tool call
-//! bypassed the gate entirely; this adapter preserves the F37 routing.
+//! `ToolDispatchContext::for_principal(principal_id)` stamping the
+//! spawning principal's identity. (ADR-066 P2 deleted the capability
+//! gate this used to feed.)
 //!
 //! ## F38 alignment
 //!
@@ -71,14 +70,8 @@ pub struct AsyncExecutorRuntime {
     /// the shared `ExtensionCore` for `parent_session_key` stamping.
     agent_id: Option<String>,
     /// F37: snapshot of the spawning principal's ID — flows into
-    /// `ToolDispatchContext::for_principal` at spawn time so the
-    /// capability gate evaluates against the spawning principal.
+    /// `ToolDispatchContext::for_principal` at spawn time.
     principal_id: PrincipalId,
-    /// F37: snapshot of the spawning principal's capability grants.
-    capabilities: Arc<Vec<String>>,
-    /// Snapshot of the spawning principal's active extensions. Extension-owned
-    /// tools must remain inside this scope when dispatched asynchronously.
-    active_extensions: Arc<Vec<String>>,
 }
 
 impl AsyncExecutorRuntime {
@@ -89,16 +82,12 @@ impl AsyncExecutorRuntime {
         extension_core: Weak<ExtensionCore>,
         agent_id: Option<String>,
         principal_id: PrincipalId,
-        capabilities: Arc<Vec<String>>,
-        active_extensions: Arc<Vec<String>>,
     ) -> Self {
         Self {
             executor,
             extension_core,
             agent_id,
             principal_id,
-            capabilities,
-            active_extensions,
         }
     }
 
@@ -196,14 +185,12 @@ impl AsyncRuntime for AsyncExecutorRuntime {
             ..Default::default()
         };
 
-        // F37: the runtime overlays its snapshot
-        // `principal_id` + `capabilities` on the request, so the
-        // closure fires the capability gate against the spawning
-        // principal's grants.
+        // F37: the runtime stamps its snapshot `principal_id` on the
+        // request so the dispatched task is attributed to the spawning
+        // principal.
         let context =
             ToolDispatchContext::builder(request.tool_name, request.params, session_key.clone())
-                .for_principal(self.principal_id.0.clone(), (*self.capabilities).clone())
-                .with_active_extensions((*self.active_extensions).clone());
+                .for_principal(self.principal_id.0.clone());
 
         // F38: `dispatch_tool` internally calls
         // `dispatch_tool_with_signal(core, ctx, config, None)`. No
@@ -512,8 +499,6 @@ mod tests {
             Arc::downgrade(&core),
             None,
             PrincipalId::system().clone(),
-            Arc::new(Vec::new()),
-            Arc::new(Vec::new()),
         ))
     }
 
@@ -646,8 +631,6 @@ mod tests {
             Arc::downgrade(&core),
             None,
             PrincipalId::system().clone(),
-            Arc::new(Vec::new()),
-            Arc::new(Vec::new()),
         ));
         let receipt = runtime
             .spawn(crate::tools::builtin::async_control::SpawnRequest {
@@ -700,8 +683,6 @@ mod tests {
                 Arc::downgrade(&core),
                 None,
                 PrincipalId(pid.to_string()),
-                Arc::new(Vec::new()),
-                Arc::new(Vec::new()),
             ))
         };
         let runtime_a = make_runtime_for("prin_a");

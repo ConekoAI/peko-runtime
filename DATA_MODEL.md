@@ -1397,8 +1397,7 @@ the trunk exists.
 Creation surface: the `CronCreate` tool's `target` param (valid only
 together with `message`). The legacy `peko cron add / at / every /
 add-idle / add-event` CLI subcommands were retired on 2026-08-25
-when cron became a fully internal principal tool gated by
-`tool:Cron{Create,List,Delete}` grants.
+when cron became a fully internal principal tool.
 
 **SpawnTool wake attribution (Phase 3b, 2026-08-15).** `SpawnTool`
 jobs take no `target` param; their `wake_on_completion` steer message
@@ -2504,17 +2503,16 @@ removed 2026-09-27; the CLI never executed tools, ADR-021).
 ```
 
 The wire carries *where the call lands* (`session_key`), never *who the caller
-claims to be* (ADR-057): the daemon parses the key, resolves the owning
-principal server-side, and derives capability grants and active extensions
-from it — grants in the packet are never accepted. An unknown key fails closed
-to deny-all.
+claims to be* (ADR-057): the daemon parses the key and resolves the owning
+principal server-side. ADR-066 P2 deleted the capability gate — there are no
+grants to derive; an unknown key simply yields an unattributed call.
 
 **`run_token`** (phase 2b, ADR-061 D6): when present, the token must validate
 against the daemon's in-memory `RunTokenRegistry` (unknown or expired fails
 closed) AND its recorded `session_key` / `principal_name` must match the
 packet's `session_key` — a mismatch fails closed. Validation failure answers
 with a transport-level `{"type": "error", ...}` (not a `success: false`
-result). The token only *authenticates*: grants still derive from the
+result). The token only *authenticates*: identity still derives from the
 session key, never from the token. Tokens are minted by the `Workflow` tool
 at spawn (32 random bytes, base64url, TTL = run timeout + 60 s) and injected
 into the workflow process as `PEKO_RUN_TOKEN`; the registry is in-memory and

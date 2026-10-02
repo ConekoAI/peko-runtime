@@ -46,7 +46,7 @@ pub struct CronEngine {
     /// **Phase C.** Engine-internal `RuntimeAuthority` for the
     /// `local_cron_schedule_runtime` accessor. The engine writes cron
     /// files on behalf of the principal owner (not a peer session), so
-    /// the capability gate is intentionally bypassed — the principal's
+    /// the ownership gate is intentionally bypassed — the principal's
     /// `[[permissions]]` ACL is the only gate at this layer. Built once
     /// at construction via `RuntimeAuthority::for_runtime(...)`.
     authority: Arc<RuntimeAuthority>,
@@ -116,8 +116,8 @@ impl CronEngine {
         }
         // Resolve DID → name via the manager-aware helper (which also
         // falls back to a disk scan). Then hand the resolved name to the
-        // engine-internal authority accessor — Phase C bypasses the
-        // capability gate because the engine writes on behalf of the
+        // engine-internal authority accessor — it bypasses the
+        // ownership gate because the engine writes on behalf of the
         // principal owner (Subject::Public), not on behalf of a peer.
         // The principal's `[[permissions]]` ACL is the only gate at this
         // layer.
@@ -799,21 +799,10 @@ impl CronEngine {
         // membership check matches the stored `prin_…` member row) reject
         // a name-shaped sender. The name rides along separately as
         // `principal_name` for tools that want the display string.
-        let (snapshot_capabilities, snapshot_principal_id, snapshot_principal_name, capabilities) = {
+        let (snapshot_principal_id, snapshot_principal_name) = {
             let config = principal.config.read().await;
-            let capabilities = config.capabilities.clone();
-            let caps = capabilities.grants.iter().map(|c| c.0.clone()).collect();
-            (
-                caps,
-                principal.id.0.clone(),
-                config.name.clone(),
-                capabilities,
-            )
+            (principal.id.0.clone(), config.name.clone())
         };
-        let snapshot_active_extensions = pm
-            .active_extensions_for(&principal, &capabilities)
-            .await
-            .to_vec();
 
         // Agent-specific built-ins (ChannelSend, Agent, Task*, Async*) are
         // normally registered by `Agent::init_builtins_async` at run start.
@@ -915,7 +904,7 @@ impl CronEngine {
             tool_params.clone(),
             caller_session_key.clone(),
         )
-        .for_principal(snapshot_principal_id, snapshot_capabilities)
+        .for_principal(snapshot_principal_id)
         .with_principal_name(snapshot_principal_name)
         // The spawned tool runs unattributed to any live turn, so
         // give it the job's ORIGIN session id as its own session
@@ -924,8 +913,7 @@ impl CronEngine {
         // session/Task attribution) refuse the funnel's "unknown"
         // default, and relative `Agent` paths follow the creating
         // conversation.
-        .with_session_id(caller_session_key.clone())
-        .with_active_extensions(snapshot_active_extensions);
+        .with_session_id(caller_session_key.clone());
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
 
@@ -2243,11 +2231,10 @@ mod tests {
         );
         let workspace = tmp.path().join("principals");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
-        // Grant the full tool catalog so the F37 capability gate lets
-        // the stub tool execute (`Capabilities::default()` is empty →
-        // fail-closed) — the engine now awaits the tool's outcome, and
-        // this test wants the success path.
-        principal.config.write().await.capabilities = Capabilities::starter_bundle();
+        // ADR-066 P2: no capability gate — the stub tool executes by
+        // presence. The engine now awaits the tool's outcome, and this
+        // test wants the success path.
+        principal.config.write().await.capabilities = Capabilities::new();
 
         // Executor wired to an inbox registry the test can inspect.
         let registry = crate::async_exec::executor::standalone_inbox_registry();
@@ -2379,7 +2366,7 @@ mod tests {
         let principal = create_test_principal(&manager, &workspace, "crony").await;
         // Grant the tool catalog so the F37 gate lets the stub run and
         // the failure comes from the tool body, not the gate.
-        principal.config.write().await.capabilities = Capabilities::starter_bundle();
+        principal.config.write().await.capabilities = Capabilities::new();
 
         let executor = Arc::new(AsyncExecutor::new(
             crate::async_exec::executor::standalone_inbox_registry(),

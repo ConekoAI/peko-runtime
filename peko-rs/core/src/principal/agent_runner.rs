@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -15,7 +14,6 @@ use peko_session::manager::{SessionManager, SessionManagerRotationSink};
 use peko_session::SessionCreateOptions;
 
 use crate::principal::agent_prompt::AgentPrompt;
-use peko_extension_api::Capabilities;
 
 /// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
 /// allowed extensions.
@@ -38,24 +36,12 @@ use peko_extension_api::Capabilities;
 /// install path.
 pub fn build_agent_config(
     prompt: &AgentPrompt,
-    _capabilities: &Capabilities,
-    _available_agents: &[AgentPromptSummary],
     // Model-first: the principal's pinned configured model id, or
     // `None`. The caller threads this to
     // `Agent::new_with_session_manager_resolver`, which forwards it to
     // `init_provider`.
     _provider_hint: Option<String>,
 ) -> AgentConfig {
-    // The `capabilities` / `available_agents` parameters are
-    // kept for API stability but no longer affect `AgentConfig`
-    // construction: the per-agent extension whitelist has been
-    // removed from `AgentConfig`. The principal's allowlist is
-    // bound separately at agent construction time via
-    // [`Agent::with_principal_capabilities`], and the
-    // canonical agents/extensions split is computed at runtime in
-    // [`run_root_agent_prompt_with_callback`] when the catalogue is
-    // installed on the principal's `ExtensionCore`.
-
     AgentConfig {
         name: prompt.name.clone(),
         description: prompt.frontmatter.description.clone(),
@@ -197,32 +183,9 @@ where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
 {
     let provider_hint = resolve_provider_hint(ctx).await;
-    let config = build_agent_config(prompt, &ctx.capabilities, &available_agents, provider_hint);
+    let config = build_agent_config(prompt, provider_hint);
 
-    // Build the principal's shared core first so we can ask the core
-    // to resolve bare extension names into canonical `extension_id`
-    // form. Phase 4a: there is no privileged whitelist anymore — the
-    // principal's `capabilities` are the *only* source of truth for
-    // which tools the root agent (and every subagent that inherits
-    // from it) can see. Each subagent's own `AgentConfig.extensions`
-    // may further filter that set on a per-agent basis.
     let core = ctx.core().await;
-
-    let _agent_names: HashSet<String> = available_agents
-        .iter()
-        .map(|a| a.name.to_ascii_lowercase())
-        .collect();
-
-    // Resolve everything the principal is allowed to use. The agent
-    // catalog filter (separating agent-prompt names from extension
-    // names) is applied here once for the canonical-agent listing; the
-    // principal's allowlist itself is bound below via
-    // `with_principal_capabilities` so the agent's tool filter
-    // (initialized lazily in `init_builtins_async`) only sees
-    // canonical extension ids.
-    let _resolved: Vec<String> = core
-        .resolve_canonical_ids(&ctx.capabilities.to_strings(), ctx.principal_id())
-        .await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
@@ -346,9 +309,6 @@ where
     // `AgentConfig`; the snapshot lives on the agent and is
     // consulted by `init_builtins_async` to prune the tool bag.
     .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
-    // Bind the active extension snapshot so the tool gate also verifies
-    // that each tool's owning extension is active.
-    .with_active_extensions(Some(ctx.active_extensions().clone()))
     // PR #2 wiring: bind the principal's plan DAG port so the seven
     // `Plan*` built-in tools are registered by `init_builtins_async`.
     // `ctx.plan_port()` returns the per-Principal handle from
@@ -461,7 +421,6 @@ where
         )
         .with_principal_name(ctx.name().to_string())
         .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
-        .with_active_extensions(Some(ctx.active_extensions().clone()))
         // PR #2 wiring: same plan_port as the agent, so depth-1+
         // children inherit the per-Principal handle and register their
         // own seven `Plan*` tools.

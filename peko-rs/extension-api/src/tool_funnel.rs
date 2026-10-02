@@ -98,8 +98,6 @@ pub trait ToolFunnel: Send + Sync + 'static {
         caller_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     );
 
     /// F31x observe-only `PostToolUse` hook firing.
@@ -119,16 +117,14 @@ pub trait ToolFunnel: Send + Sync + 'static {
         caller_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     );
 
     /// Canonical funnel method — routes through `invoke_hook` so every
-    /// tool call flows through PreToolUse / ToolExecute / PostToolUse
-    /// hook chain + capability gate + reserved-params injection + abort
+    /// tool call flows through the PreToolUse / ToolExecute / PostToolUse
+    /// hook chain + reserved-params injection + abort
     /// handling. See `ExtensionCore::execute_tool_via_hook` (root) for
     /// the canonical implementation; the trait method has the same
-    /// 11-arg + abort-signal shape.
+    /// shape plus the abort signal.
     ///
     /// F37/F38 notes: the cancel-bridging lives in `peko_engine::funnel`
     /// (not in the trait); only `src/engine/tool_executor.rs` currently
@@ -144,8 +140,6 @@ pub trait ToolFunnel: Send + Sync + 'static {
         caller_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<(String, serde_json::Value, bool)>;
 
@@ -249,17 +243,13 @@ pub trait ToolFunnel: Send + Sync + 'static {
     /// `None` clears the entry.
     async fn set_session_key(&self, agent_id: &str, key: Option<String>);
 
-    /// List tool definitions filtered through the capability
-    /// allowlist + active-extension set, used by the lifted
-    /// `AgenticLoop::build_tool_definitions` (F34).
-    ///
-    /// `None` for `active_extensions` means "no extensions active";
-    /// `None` for `capabilities` (empty) is fail-closed (treats the
-    /// agent as having zero grants).
-    async fn list_tool_definitions_with_allowlist(
+    /// List the tool definitions visible to `principal_id` for the
+    /// wire catalog, used by the lifted
+    /// `AgenticLoop::build_tool_definitions` (F34). ADR-066 P2 removed
+    /// the capability/active-extension filter — presence in the
+    /// registry is visibility.
+    async fn list_tool_definitions_for(
         &self,
-        capabilities: &crate::Capabilities,
-        active_extensions: Option<&crate::ActiveExtensionSet>,
         principal_id: &peko_subject::PrincipalId,
     ) -> Vec<peko_provider_api::ToolDefinition>;
 
@@ -289,7 +279,7 @@ pub trait ToolFunnel: Send + Sync + 'static {
     /// `mcp_context`). The `tools` section is intentionally NOT
     /// dispatched in F36 — tool catalogs travel wire-only via the
     /// `tools[]` JSON-schema array (see
-    /// `list_tool_definitions_with_allowlist`). The impl hides
+    /// `list_tool_definitions_for`). The impl hides
     /// `HookPoint::PromptSystemSection` construction + `HookInput::Unit`
     /// so the trait stays free of root-only `HookPoint` / `HookInput`
     /// types.
@@ -304,8 +294,6 @@ pub trait ToolFunnel: Send + Sync + 'static {
         section: &str,
         priority: i32,
         principal_id: Option<&str>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         workspace: Option<String>,
     ) -> Option<String>;
 
@@ -319,18 +307,12 @@ pub trait ToolFunnel: Send + Sync + 'static {
     /// duplicate a built-in dispatch are deduped by the renderer.
     ///
     /// The impl hides the hook-registry scan so the trait stays free of
-    /// root-only `HookPoint` / `RegisteredHook` types. `active_extensions`
-    /// mirrors the invoke path's context argument; today's impls scope
-    /// by principal only.
+    /// root-only `HookPoint` / `RegisteredHook` types.
     ///
     /// Default: no extra sections — test doubles and impls without a
     /// hook registry keep compiling.
-    async fn registered_prompt_sections(
-        &self,
-        principal_id: Option<&str>,
-        active_extensions: Option<Vec<String>>,
-    ) -> Vec<String> {
-        let _ = (principal_id, active_extensions);
+    async fn registered_prompt_sections(&self, principal_id: Option<&str>) -> Vec<String> {
+        let _ = principal_id;
         Vec::new()
     }
 
@@ -351,8 +333,6 @@ pub trait ToolFunnel: Send + Sync + 'static {
         &self,
         snapshot: SessionSnapshot,
         principal_id: Option<&str>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         workspace: Option<String>,
     ) -> Option<String>;
 }

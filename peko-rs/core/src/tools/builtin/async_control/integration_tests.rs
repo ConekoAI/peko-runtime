@@ -93,10 +93,9 @@ mod tests {
     }
 
     /// Construct a runtime with `StubTool` (and optionally
-    /// `AbortableStubTool`) registered against the supplied capability
-    /// snapshot. Returns an `AsyncToolRig` ready to drive every Async*
-    /// tool from the same backing runtime.
-    async fn setup_with_stop(capabilities: Vec<String>, register_abortable: bool) -> AsyncToolRig {
+    /// `AbortableStubTool`) registered. Returns an `AsyncToolRig`
+    /// ready to drive every Async* tool from the same backing runtime.
+    async fn setup_with_stop(register_abortable: bool) -> AsyncToolRig {
         let core = Arc::new(ExtensionCore::new());
         // Register via `BuiltinToolAdapter::register_tool_system` rather
         // than `core.insert_tool_instance`. The latter only fills the
@@ -126,8 +125,6 @@ mod tests {
             Arc::downgrade(&core),
             Some("test_agent".to_string()),
             PrincipalId("principal_test".to_string()),
-            Arc::new(capabilities),
-            Arc::new(Vec::<String>::new()),
         ));
         let handle = runtime.as_shared();
 
@@ -146,7 +143,7 @@ mod tests {
     /// and `AsyncStatus` reports `is_terminal=true`.
     #[tokio::test]
     async fn test_async_spawn_then_output_blocks_for_terminal_result() {
-        let rig = setup_with_stop(vec!["tool:stub_tool".to_string()], false).await;
+        let rig = setup_with_stop(false).await;
 
         let receipt = rig
             .spawn
@@ -209,7 +206,7 @@ mod tests {
     /// legacy session-key cell.
     #[tokio::test]
     async fn test_spawn_stamps_ctx_session_id_over_cell() {
-        let rig = setup_with_stop(vec!["tool:stub_tool".to_string()], false).await;
+        let rig = setup_with_stop(false).await;
         // The cell holds the legacy stamp; the ctx-carried id must win.
         let receipt = rig
             .spawn
@@ -233,7 +230,7 @@ mod tests {
     /// between runs the way the session-key cell was.
     #[tokio::test]
     async fn test_spawn_sequential_ctx_ids_stamp_independently() {
-        let rig = setup_with_stop(vec!["tool:stub_tool".to_string()], false).await;
+        let rig = setup_with_stop(false).await;
         let mut task_ids = Vec::new();
         for id in ["ctx-run-1", "ctx-run-2"] {
             let receipt = rig
@@ -268,7 +265,7 @@ mod tests {
     async fn test_async_output_block_false_does_not_wait() {
         // 200ms-stub means it will likely still be running when we
         // poll; block:false must return immediately either way.
-        let rig = setup_with_stop(vec!["tool:abortable_stub".to_string()], true).await;
+        let rig = setup_with_stop(true).await;
 
         let receipt = rig
             .spawn
@@ -309,7 +306,7 @@ mod tests {
     /// done". See `common::build_cancel_response`.
     #[tokio::test]
     async fn test_async_stop_on_already_terminal_returns_success_no_op() {
-        let rig = setup_with_stop(vec!["tool:stub_tool".to_string()], false).await;
+        let rig = setup_with_stop(false).await;
 
         let receipt = rig
             .spawn
@@ -338,7 +335,7 @@ mod tests {
     /// — the F38 two-layer contract).
     #[tokio::test]
     async fn test_async_stop_cancels_long_running_task() {
-        let rig = setup_with_stop(vec!["tool:abortable_stub".to_string()], true).await;
+        let rig = setup_with_stop(true).await;
 
         let receipt = rig
             .spawn
@@ -385,7 +382,7 @@ mod tests {
     /// produces this JSON shape (see `status.rs:65-69`).
     #[tokio::test]
     async fn test_async_status_returns_not_found_for_unknown_task() {
-        let rig = setup_with_stop(Vec::new(), false).await;
+        let rig = setup_with_stop(false).await;
         let result = rig
             .status
             .execute(serde_json::json!({"task_id": "ghost:task-id"}))
@@ -400,14 +397,7 @@ mod tests {
     /// count.
     #[tokio::test]
     async fn test_async_list_filters_by_tool_name() {
-        let rig = setup_with_stop(
-            vec![
-                "tool:stub_tool".to_string(),
-                "tool:abortable_stub".to_string(),
-            ],
-            true,
-        )
-        .await;
+        let rig = setup_with_stop(true).await;
 
         // One of each.
         let r1 = rig
@@ -472,12 +462,11 @@ mod tests {
     /// `executor.rs:1188` claimed existed "outside the framework
     /// boundary." It exercises the full chain — `AsyncSpawnTool`
     /// through `AsyncExecutorRuntime::spawn` → `dispatch_tool` →
-    /// `core.execute_tool_via_hook` — and asserts the capability gate
-    /// allows the spawn to reach `completed` (not `failed`) when the
-    /// matching grant is in the snapshot.
+    /// `core.execute_tool_via_hook` — and asserts the spawn reaches
+    /// `completed` (not `failed`). ADR-066 P2: no capability gate.
     #[tokio::test]
-    async fn test_async_spawn_through_capability_gate_allow() {
-        let rig = setup_with_stop(vec!["tool:stub_tool".to_string()], false).await;
+    async fn test_async_spawn_through_funnel_completes() {
+        let rig = setup_with_stop(false).await;
 
         let receipt = rig
             .spawn
@@ -487,11 +476,11 @@ mod tests {
                 "label": "f37-allow",
             }))
             .await
-            .expect("AsyncSpawn returns receipt when the gate allows");
+            .expect("AsyncSpawn returns receipt");
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
 
-        // Poll for terminal via AsyncStatus. If the gate had rejected,
-        // status would be "failed" rather than "completed".
+        // Poll for terminal via AsyncStatus. A funnel-level rejection
+        // would surface as "failed" rather than "completed".
         let status = poll_terminal(&rig, &task_id, "completed").await;
         assert_eq!(status["status"], "completed");
         assert_eq!(status["result"], serde_json::json!({"ok": true}));

@@ -326,7 +326,7 @@ impl AgentTool {
     ///
     /// Sprint 8 Commit 4: returns the workspace-loaded `AgentPrompt`
     /// directly. The pre-validation is for early-fail visibility
-    /// (capability grant + on-disk presence); the spawn path calls
+    /// (on-disk presence); the spawn path calls
     /// `runtime.resolve_agent_config` again in `execute_spawn_blocking`
     /// to thread the resolved prompt through `SpawnRequest`.
     async fn resolve_subagent_config(
@@ -334,17 +334,9 @@ impl AgentTool {
         agent: &str,
         model_override: Option<&str>,
     ) -> anyhow::Result<Arc<crate::agents::subagent_runtime_impl::AgentPrompt>> {
-        // ADR-019/Track B: enforce the per-principal agent capability before
-        // loading any on-disk config. Missing authorization context and missing
-        // grants are both denied.
-        if !self.runtime.is_subagent_enabled(agent) {
-            anyhow::bail!(
-                "Agent template '{agent}' is not enabled for this principal. \
-                 Grant 'agent:{agent}' by adding it to `[capabilities].grants` in the \
-                 principal's `principal.toml` and retry."
-            );
-        }
-
+        // ADR-066 P2: no capability gate — a role file present in the
+        // workspace is spawnable. Unknown names fail in
+        // `resolve_agent_config` (file lookup).
         self.runtime
             .resolve_agent_config(agent, self.runtime.workspace(), model_override)
             .await
@@ -982,8 +974,6 @@ pub struct TestSubagentRuntime {
 
 #[cfg(test)]
 struct TestSubagentState {
-    /// Capability grants (mirrors `Capabilities::with_grants`).
-    grants: Vec<String>,
     /// Registered agent prompts by name. Sprint 8 Commit 4 switched
     /// from the mirror `BuiltinAgentConfig` DTO to `Arc<AgentPrompt>`
     /// (the workspace Markdown becomes the single source of truth).
@@ -1037,7 +1027,6 @@ impl TestSubagentRuntime {
     pub fn new() -> Self {
         Self {
             inner: std::sync::Mutex::new(TestSubagentState {
-                grants: Vec::new(),
                 configs: std::collections::HashMap::new(),
                 audits: Vec::new(),
                 model_overrides_seen: Vec::new(),
@@ -1052,15 +1041,6 @@ impl TestSubagentRuntime {
                 max_depth: 3,
             }),
         }
-    }
-
-    /// Register a capability grant (e.g. `"agent:writer"`).
-    pub fn grant(&self, capability: impl Into<String>) {
-        self.inner
-            .lock()
-            .expect("TestSubagentRuntime mutex poisoned")
-            .grants
-            .push(capability.into());
     }
 
     /// Register an agent prompt (keyed by name). Sprint 8 Commit 4:
@@ -1185,18 +1165,6 @@ impl Default for TestSubagentRuntime {
 #[cfg(test)]
 #[async_trait]
 impl SubagentRuntime for TestSubagentRuntime {
-    fn is_subagent_enabled(&self, agent: &str) -> bool {
-        let state = self
-            .inner
-            .lock()
-            .expect("TestSubagentRuntime mutex poisoned");
-        if state.grants.is_empty() {
-            return false;
-        }
-        let required = format!("agent:{agent}");
-        state.grants.iter().any(|g| g == &required)
-    }
-
     async fn resolve_agent_config(
         &self,
         name: &str,
@@ -1421,7 +1389,6 @@ mod tests {
     #[tokio::test]
     async fn test_agent_state_registry_allows_enabled_subagent() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.grant("agent:writer");
         runtime.register_agent("writer", make_test_prompt("writer", Some("writer agent")));
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
@@ -1434,32 +1401,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_state_registry_denies_disabled_subagent() {
+    async fn test_unknown_subagent_fails_on_lookup() {
+        // ADR-066 P2: no capability gate — an unregistered role name
+        // fails at the workspace lookup, not at a grant check.
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.grant("agent:other");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
 
         let result = tool.resolve_subagent_config("writer", None).await;
-        assert!(
-            result.is_err(),
-            "disabled subagent should be rejected by capability snapshot"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("not enabled"),
-            "error should explain allowlist denial: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_agent_state_registry_unregistered_principal_is_fail_closed() {
-        let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.register_agent("writer", make_test_prompt("writer", None));
-        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
-
-        // No grants registered: missing authorization context is denied.
-        let result = tool.resolve_subagent_config("writer", None).await;
-        assert!(result.is_err(), "unregistered principal should fail closed");
+        assert!(result.is_err(), "unknown role should fail lookup");
     }
 
     #[tokio::test]
@@ -1785,7 +1734,6 @@ mod tests {
     #[tokio::test]
     async fn test_new_rejects_invalid_path_shape() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.grant("agent:writer");
         runtime.register_agent("writer", make_test_prompt("writer", None));
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         // `:` is reserved for raw session ids — slugs refuse it
@@ -2086,7 +2034,6 @@ mod tests {
     #[tokio::test]
     async fn test_audit_records_spawn_event() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.grant("agent:writer");
         runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_principal_id("test-principal");
 
@@ -2122,7 +2069,6 @@ mod tests {
     #[tokio::test]
     async fn test_audit_records_model_override_on_spawn() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.grant("agent:writer");
         runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_principal_id("test-principal");
 
@@ -2174,7 +2120,6 @@ mod tests {
     #[tokio::test]
     async fn test_new_with_path_forwards_child_slug() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.grant("agent:writer");
         runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
@@ -2204,7 +2149,6 @@ mod tests {
     #[tokio::test]
     async fn test_resume_with_path_forwards_target() {
         let runtime = Arc::new(TestSubagentRuntime::new());
-        runtime.grant("agent:writer");
         runtime.register_agent("writer", make_test_prompt("writer", None));
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);

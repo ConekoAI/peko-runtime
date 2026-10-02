@@ -103,7 +103,7 @@ pub enum ToolExposure {
 
 impl ToolExposure {
     /// True if the tool should appear in the native LLM catalog
-    /// (`list_tool_definitions_with_allowlist` output).
+    /// (`list_tool_definitions_for` output).
     /// `Direct` and `DirectModelOnly` qualify. `Deferred` and `Hidden`
     /// do NOT — `Deferred` is resolvable on demand via `__tool_search`
     /// (F35) and `Hidden` must stay invisible to the model.

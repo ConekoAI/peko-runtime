@@ -14,7 +14,7 @@
 //! - `default_data_dir` / `default_agent_workspace` path helpers —
 //!   was in sat, now in `peko_extension_api::paths`
 //!
-//! Everything else (hook dispatcher, capability gate, transport,
+//! Everything else (hook dispatcher, transport,
 //! framework services, protocol shared subtrees) stays in root. The
 //! background-task runtime and the session inbox live at
 //! `crate::async_exec` (ADR-066 P1); the extension store / discovery /

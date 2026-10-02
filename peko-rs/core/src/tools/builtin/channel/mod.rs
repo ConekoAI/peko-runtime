@@ -15,11 +15,8 @@
 //! principal boundary is enforced at the port call site (which has
 //! its own `NotMember` check).
 //!
-//! The capability gate is the standard `tool:ChannelRead` /
-//! `tool:ChannelSend` grant that the principal's capability set
-//! already enforces through the F37 funnel — these tools themselves
-//! do not check capabilities, the gate sits at execute-time on the
-//! caller's side.
+//! ADR-066 P2: no capability gate — the membership check at the
+//! port call site is the boundary; these tools do not gate further.
 
 pub mod channel_read;
 pub mod channel_send;

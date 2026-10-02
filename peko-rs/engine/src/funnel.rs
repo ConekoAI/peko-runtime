@@ -31,8 +31,7 @@ use peko_tools_core::{bridge_from_cancellation_token, AbortSignalBridgeGuard};
 ///
 /// All production code should call this (or `ToolRuntime::execute_tool`)
 /// to ensure consistent behavior: workspace injection, reserved params,
-/// permission checks, abort/timeout handling, progress reporting, and
-/// metrics.
+/// abort/timeout handling, progress reporting, and metrics.
 ///
 /// Returns a triplet of `(display_string, json_value, success)`.
 pub async fn execute_tool_via_core(
@@ -42,13 +41,13 @@ pub async fn execute_tool_via_core(
     workspace: Option<String>,
 ) -> Result<(String, serde_json::Value, bool)> {
     execute_tool_via_core_with_context(
-        core, tool_name, params, workspace, None, None, None, None, None, None, None, None,
+        core, tool_name, params, workspace, None, None, None, None, None, None,
     )
     .await
 }
 
 /// Execute a tool via the [`ToolFunnel`] host surface with agent,
-/// session, caller, principal, and per-call allowlist context.
+/// session, caller, and principal context.
 ///
 /// `agent_id` / `session_id` drive reserved parameter injection.
 /// `caller_id` drives per-user permission checks and audit logging
@@ -58,11 +57,6 @@ pub async fn execute_tool_via_core(
 /// state via `ExtensionStateRegistry` at handle time.
 /// `principal_name` is the human-readable Principal name used by
 /// Principal-scoped tools (e.g. `CronCreate`) to target jobs.
-/// `capabilities` is the principal/agent capability set used by the
-/// execution gate instead of the mutable global `tool_config`.
-/// `active_extensions` is the set of extension IDs that are active
-/// for the current Principal; when present, the gate also verifies
-/// the tool's owner is active.
 /// `cancel` is the soft-interrupt `CancellationToken` (PR #128). When
 /// `Some`, this function bridges the token into a
 /// `watch::Receiver<bool>` (`AbortSignal`) via
@@ -89,8 +83,6 @@ pub async fn execute_tool_via_core_with_context(
     caller_id: Option<String>,
     principal_id: Option<String>,
     principal_name: Option<String>,
-    capabilities: Option<Vec<String>>,
-    active_extensions: Option<Vec<String>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(String, serde_json::Value, bool)> {
     let (abort_signal, _abort_guard) = match cancel {
@@ -102,9 +94,7 @@ pub async fn execute_tool_via_core_with_context(
     };
 
     // F37: build the ToolCall input here (with the bridged abort_signal)
-    // and route through the canonical funnel. The trait method has the
-    // same 11-arg + abort-signal shape as ExtensionCore's inherent
-    // method.
+    // and route through the canonical funnel.
     let (text, json, success) = core
         .execute_tool_via_hook(
             tool_name,
@@ -115,8 +105,6 @@ pub async fn execute_tool_via_core_with_context(
             caller_id,
             principal_id,
             principal_name,
-            capabilities,
-            active_extensions,
             abort_signal,
         )
         .await?;

@@ -816,7 +816,7 @@ impl AsyncExecutor {
     ///    sender. This is the `cancel` → `is_aborted()` bridge.
     /// 3. Build a factory closure that calls `core.execute_tool_via_hook(...)`
     ///    with the `ToolDispatchContext` fields + `Some(rx)`.
-    ///    The closure returns `Err(anyhow!(text))` on gate failure
+    ///    The closure returns `Err(anyhow!(text))` on tool failure
     ///    so the executor records `AsyncTaskStatus::Failed { error }`.
     pub async fn dispatch_tool_with_signal(
         &self,
@@ -863,20 +863,10 @@ impl AsyncExecutor {
                         context.caller_id,
                         context.principal_id,
                         context.principal_name,
-                        if context.capabilities.is_empty() {
-                            None
-                        } else {
-                            Some(context.capabilities)
-                        },
-                        if context.active_extensions.is_empty() {
-                            None
-                        } else {
-                            Some(context.active_extensions)
-                        },
                         Some(rx),
                     )
                     .await?;
-                // F37: surface gate failure as an Err so the executor
+                // F37: surface tool failure as an Err so the executor
                 // records `Failed { error }` (not `Completed` with
                 // error-JSON masquerading as success).
                 if success {
@@ -1799,9 +1789,9 @@ mod completion_queue_fan_out_tests {
 /// via its 5 async_spawn test cases). The goals here are:
 ///
 /// 1. Pin the canonical funnel — `dispatch_tool` calls
-///    `core.execute_tool_via_hook(...)` so the gate fires when no
-///    capability is granted. Pre-F38 the equivalent code path could
-///    bypass the gate (the structural reason F37 closed audit row 7).
+///    `core.execute_tool_via_hook(...)`. Pre-F38 the equivalent code
+///    path could bypass the funnel (the structural reason F37 closed
+///    audit row 7).
 ///
 /// 2. Pin the abort-signal bridge — `dispatch_tool_with_signal`
 ///    installs a `tokio::sync::watch::channel(false)` whose sender is
@@ -1873,24 +1863,26 @@ mod dispatch_tool_tests {
         }
     }
 
-    /// F38: the canonical funnel is mandatory. `dispatch_tool`
-    /// invokes `core.execute_tool_via_hook(...)`, which fires the
-    /// capability gate. A `dispatch_tool` call without the right
-    /// capability must end up in `AsyncTaskStatus::Failed { error }`
-    /// with a message indicating the tool is disabled.
+    /// ADR-066 P2: there is no capability gate. `dispatch_tool`
+    /// invokes `core.execute_tool_via_hook(...)` and a registered tool
+    /// runs to completion with no grant context at all.
     #[tokio::test]
-    async fn test_dispatch_tool_routes_through_capability_gate() {
+    async fn test_dispatch_tool_executes_without_grants() {
         let core = Arc::new(ExtensionCore::new());
-        // Register the stub tool via the side-table so the gate
-        // recognizes the tool exists (otherwise it would error with
-        // "unknown tool" instead of the more specific "disabled").
-        core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
-            .await;
+        // Register the stub tool through the adapter so the funnel's
+        // hook-registry lookup resolves (a bare `insert_tool_instance`
+        // only fills the `Arc<dyn Tool>` side-table and the dispatch
+        // would land on "not available").
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+            &core,
+            Arc::new(StubTool),
+        )
+        .await
+        .expect("register stub_tool");
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
             .with_principal_id("system".to_string());
-        // Empty capabilities — gate must reject.
 
         let receipt = executor
             .dispatch_tool(&core, context, AsyncToolConfig::default())
@@ -1908,17 +1900,11 @@ mod dispatch_tool_tests {
             };
             if let Some(entry) = entry_opt {
                 match &entry.status {
-                    AsyncTaskStatus::Failed { error } => {
-                        assert!(
-                            error.contains("stub_tool") && error.contains("disabled"),
-                            "expected gate to reject stub_tool without capability, got: {error}"
-                        );
-                        return;
-                    }
+                    AsyncTaskStatus::Completed { .. } => return,
                     AsyncTaskStatus::Pending | AsyncTaskStatus::Running => {
                         // fall through to sleep
                     }
-                    other => panic!("expected Failed status from gate, got: {other:?}"),
+                    other => panic!("expected Completed status, got: {other:?}"),
                 }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1926,9 +1912,8 @@ mod dispatch_tool_tests {
         panic!("dispatch_tool task {task_id} never recorded an outcome");
     }
 
-    /// F38: `dispatch_tool` returns Ok(receipt) with a valid task_id
-    /// regardless of whether the gate eventually passes or rejects.
-    /// The success-path (gate passes) outcome is exercised by the
+    /// F38: `dispatch_tool` returns Ok(receipt) with a valid task_id.
+    /// The full success-path outcome is exercised by the
     /// in-tree integration test
     /// `tools::builtin::async_control::integration_tests::tests::test_async_spawn_through_capability_gate_allow`,
     /// which wires `AsyncSpawnTool` against a real
@@ -1940,9 +1925,7 @@ mod dispatch_tool_tests {
     /// registry.
     ///
     /// `insert_tool_instance` populates the side-table (sufficient for
-    /// the receipt to be returned; the gate's hook-registry lookup
-    /// will fail and the closure records Failed, which we do not
-    /// assert against here).
+    /// the receipt to be returned).
     #[tokio::test]
     async fn test_dispatch_tool_returns_valid_receipt() {
         let core = Arc::new(ExtensionCore::new());
@@ -1951,7 +1934,7 @@ mod dispatch_tool_tests {
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
-            .for_principal("system".to_string(), vec!["tool:stub_tool".to_string()]);
+            .for_principal("system".to_string());
 
         let receipt = executor
             .dispatch_tool(&core, context, AsyncToolConfig::default())
@@ -2001,10 +1984,7 @@ mod dispatch_tool_tests {
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context =
             ToolDispatchContext::builder("abortable_stub", serde_json::json!({}), "session_x")
-                .for_principal(
-                    "system".to_string(),
-                    vec!["tool:abortable_stub".to_string()],
-                );
+                .for_principal("system".to_string());
 
         let receipt = executor
             .dispatch_tool_with_signal(&core, context, AsyncToolConfig::default(), None)
@@ -2047,7 +2027,7 @@ mod dispatch_tool_tests {
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
-            .for_principal("system".to_string(), vec!["tool:stub_tool".to_string()]);
+            .for_principal("system".to_string());
 
         let token = tokio_util::sync::CancellationToken::new();
         let token_clone = token.clone();

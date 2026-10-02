@@ -53,7 +53,7 @@
 //! registered such a hook, but the engine's `PromptRenderer` no longer
 //! dispatches it (F36). Tool catalogs travel wire-only via the
 //! `tools[]` JSON-schema array, built by
-//! `list_tool_definitions_with_allowlist`. Registering a handler for
+//! `list_tool_definitions_for`. Registering a handler for
 //! the "tools" section still works but the engine discards its
 //! output.
 

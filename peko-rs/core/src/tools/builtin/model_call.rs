@@ -593,7 +593,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::starter_bundle(),
+            capabilities: Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,
@@ -1264,7 +1264,7 @@ mod tests {
     // ── Funnel-level (registration + gate + ctx threading) ──────────
 
     /// End-to-end through the F37 funnel: system-scope registration,
-    /// F32b schema validation, capability gate, and the
+    /// F32b schema validation, and the
     /// `principal_name` hop from `HookInput::ToolCall` into the tool's
     /// `ToolContext` — the exact path the agentic loop and the
     /// `ExecuteTool` IPC handler drive.
@@ -1313,13 +1313,11 @@ mod tests {
             None,
             Some(principal_id),
             Some("caller".to_string()),
-            Some(vec!["tool:ModelCall".to_string()]),
-            None,
             None,
         )
         .await
         .expect("funnel call");
-        assert!(success, "granted call succeeds: {json}");
+        assert!(success, "call succeeds: {json}");
         assert_eq!(json["text"], "via funnel");
         let snap = manager
             .get_by_name("caller")
@@ -1330,17 +1328,17 @@ mod tests {
         assert_eq!(snap.request_count, 1);
     }
 
-    /// The capability gate refuses a principal lacking `tool:ModelCall`
-    /// — and the refusal arrives as `success: false` data, not a
-    /// transport error (the `ExecuteTool` triplet contract).
+    /// ADR-066 P2: there is no capability gate — a `ModelCall` via the
+    /// funnel executes by presence alone.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn funnel_denies_without_tool_grant() {
+    async fn funnel_executes_without_grants() {
         use crate::extensions::builtin::BuiltinToolAdapter;
         use crate::extensions::framework::core::ExtensionCore;
 
         let temp = tempfile::tempdir().expect("tempdir");
         let adapter = MockAdapter::new();
+        adapter.queue_text("via funnel");
         let (resolver, adapter) = LlmResolver::mock(adapter, temp.path().join("models.toml")).await;
         let manager = manager_with_principal(
             &temp,
@@ -1350,6 +1348,15 @@ mod tests {
             resolver,
         )
         .await;
+        // ModelCall resolves the caller's meter + model from the
+        // principal identity — that's attribution, not a grant.
+        let principal_id = manager
+            .get_by_name("caller")
+            .await
+            .expect("principal")
+            .id
+            .0
+            .clone();
 
         let core = ExtensionCore::new();
         BuiltinToolAdapter::register_tool_system(
@@ -1367,19 +1374,17 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(principal_id),
             Some("caller".to_string()),
-            Some(vec!["tool:Bash".to_string()]),
-            None,
             None,
         )
         .await
         .expect("funnel call");
-        assert!(!success, "missing tool:ModelCall grant must deny");
-        assert!(text.contains("currently disabled"), "gate message: {text}");
-        assert!(
-            adapter.recorded_requests().is_empty(),
-            "denied call must not reach the provider"
+        assert!(success, "no grant context needed: {text}");
+        assert_eq!(
+            adapter.recorded_requests().len(),
+            1,
+            "the call reaches the provider"
         );
     }
 }

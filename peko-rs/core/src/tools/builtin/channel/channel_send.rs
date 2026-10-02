@@ -14,7 +14,7 @@
 //!
 //! Symmetric counterpart of `ChannelReadTool`
 //! (`tools/builtin/channel/channel_read.rs`). The principal boundary
-//! is enforced by the F37 funnel + capability gate; this tool itself
+//! is enforced at the `ChannelPort` call site; this tool itself
 //! dispatches to:
 //!
 //! - `ChannelPort::post` for Bare / Group / Principal (the

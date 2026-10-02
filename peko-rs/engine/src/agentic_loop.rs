@@ -2023,15 +2023,6 @@ impl AgenticLoop {
                             self.caller_id.as_deref(),
                             &self.agent_principal_id,
                             self.agent.principal_name().unwrap_or(""),
-                            // **Track B**: per-agent allowlist now
-                            // lives on the agent itself, not on
-                            // `AgentConfig`.
-                            self.agent
-                                .principal_capabilities()
-                                .map(|allowed| allowed.to_strings()),
-                            self.agent
-                                .principal_active_extensions()
-                                .map(|active| active.to_vec()),
                             self.cancel.clone(),
                             &on_event,
                         )
@@ -2219,9 +2210,9 @@ impl AgenticLoop {
     /// Build tool definitions dynamically from `ExtensionCore` (ADR-019 Phase 2)
     ///
     /// This queries the unified tool registry for currently enabled tools,
-    /// allowing tool changes to take effect without session restart. The
-    /// list is filtered by the agent's extension whitelist so the LLM only
-    /// sees tools the agent is actually allowed to invoke.
+    /// allowing tool changes to take effect without session restart.
+    /// ADR-066 P2 removed the capability-grant filter — presence in the
+    /// registry is visibility.
     ///
     /// F35 — when the agent's [`AgentConfig::enable_tool_search`] is true
     /// AND there is at least one `ToolExposure::Deferred` tool visible to
@@ -2229,18 +2220,10 @@ impl AgenticLoop {
     /// so the model can resolve deferred tools on demand. Mirrors codex
     /// `tools/spec_plan.rs:928-949 append_tool_search_executor`.
     pub async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
-        // The agent carries the principal's capability grant snapshot.
-        // If none is present, treat it as an empty grant set (fail-closed).
-        let capabilities = self
-            .agent
-            .principal_capabilities()
-            .map(|allowed| allowed.as_ref().clone())
-            .unwrap_or_default();
-        let active = self.agent.principal_active_extensions();
         let principal_id = peko_subject::PrincipalId(self.agent_principal_id.clone());
         let mut defs = self
             .extension_core
-            .list_tool_definitions_with_allowlist(&capabilities, active, &principal_id)
+            .list_tool_definitions_for(&principal_id)
             .await;
 
         // F35 — append the synthetic `__tool_search` stub only when both
@@ -2249,7 +2232,7 @@ impl AgenticLoop {
         // `Deferred` tool is registered for this principal. The second
         // gate avoids bloating the catalog when there's nothing to
         // discover — `Deferred` tools aren't visible in
-        // `list_tool_definitions_with_allowlist` (F34) so we walk the
+        // `list_tool_definitions_for` (F34) so we walk the
         // unfiltered `list_tools` to count them.
         if self.agent.config_enable_tool_search() {
             let has_deferred = self
@@ -2393,7 +2376,6 @@ impl AgenticLoop {
             role_name: self.agent.name().to_string(),
             body,
             capabilities: self.agent.principal_capabilities().cloned(),
-            active_extensions: self.agent.principal_active_extensions().cloned(),
             principal_memory: crate::load_principal_memory(&workspace),
             project_instructions,
             workspace,

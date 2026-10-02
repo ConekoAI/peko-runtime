@@ -22,12 +22,10 @@
 //! [`crate::principal::Principal`] as `plan_port`, plumbed into
 //! [`crate::agents::Agent`] via `with_principal_plan_port`).
 //!
-//! ## Capability gating
+//! ## Visibility
 //!
-//! Each tool requires its own `tool:<Name>` grant per the F37 funnel's
-//! [`crate::extensions::framework::core::tool_registry::is_tool_enabled`]
-//! rule. Plan tools are visible to any principal that grants the
-//! `tool:Plan*` set.
+//! ADR-066 P2: no capability gate — the Plan tools are visible to every
+//! principal (presence = executability).
 
 pub mod add_step;
 pub mod close;

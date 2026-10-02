@@ -22,38 +22,30 @@
 //!   the authority once per request, immediately after authenticating
 //!   the caller.
 //!
-//! Phase C composes the authority with `peko_extension_api::Capabilities`
-//! for **writes** — the reader-side actor gate stays; the writer-side
-//! capability gate stacks on top, so a peer channel whose actor passes
-//! the tier gate still has to prove a per-resource capability grant
-//! before receiving a writable path. See the `*_write(Option<&Capabilities>)`
-//! family and the engine-internal `*_runtime` accessors below.
+//! ADR-066 D9: the writer-side grant check (`principal:write_*`
+//! capability strings) is replaced by plain **ownership comparison** —
+//! a principal-typed actor may write only its own principal's tiers; a
+//! crossing attempt fails closed and emits a `Security`-severity audit
+//! event. Operator actors (`Subject::User`) and the runtime itself
+//! (`Subject::Public`, via the `*_runtime` accessors) are trusted.
+//! See the `*_write` family and the engine-internal `*_runtime`
+//! accessors below.
 //!
 //! See [`TierPath`] for the tier-typed wrapper API.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use peko_extension_api::{Capabilities, Capability};
 use peko_subject::{PrincipalId, Subject};
 
 use crate::common::paths::{PathResolver, RuntimeLayout};
 
-// Capability strings for the per-resource write gate. The principal's
-// `config.capabilities` must include the relevant prefix (literal match
-// or `principal:write_*` / `runtime:write_*` wildcard) for the write
-// accessor to hand out a path. See `Capabilities::is_granted` for the
-// prefix-matching semantics.
-const CAP_WRITE_CONFIG: &str = "principal:write_config";
-const CAP_WRITE_AGENTS: &str = "principal:write_agents";
-const CAP_WRITE_MCPS: &str = "principal:write_mcps";
-const CAP_WRITE_IDENTITY: &str = "principal:write_identity";
-const CAP_WRITE_EXTENSIONS: &str = "runtime:write_extensions";
 // 2026-08-25: `principal:write_cron` was retired along with the
 // `CronList` / `CronAdd` / `CronRemove` / `CronRun` / `CronHistory`
 // IPC variants and the `peko cron` CLI. Cron is now an internal
-// principal tool gated by `tool:Cron{Create,List,Delete}` grants in
-// the F37 agentic-loop funnel.
+// principal tool. ADR-066 P2 deleted the remaining `principal:write_*`
+// / `runtime:write_*` grant strings — writes gate on ownership
+// (see the `*_write` family below).
 
 /// The storage tier a path belongs to.
 ///
@@ -181,6 +173,10 @@ impl TierPath for RuntimePath {
 pub struct RuntimeAuthority {
     resolver: PathResolver,
     actor: Arc<Subject>,
+    /// Audit sink for `Security`-severity events on crossing-write
+    /// denials (ADR-066 D9). `None` (tests, bare fixture builders)
+    /// skips the event — the denial still fails closed.
+    audit: Option<Arc<peko_observability::Observability>>,
 }
 
 /// Errors raised by [`RuntimeAuthority`] tier accessors.
@@ -200,12 +196,13 @@ pub enum AuthorityError {
     #[error("caller may not touch tier {tier:?}")]
     TierDenied { tier: Tier },
 
-    /// The actor cleared the tier gate but the principal's grants did
-    /// not include the required capability for this write. Phase C
-    /// composes the authority with `peko_extension_api::Capabilities`
-    /// so writes require a per-resource grant.
-    #[error("capability '{capability}' not granted for {tier:?} write")]
-    CapabilityDenied { tier: Tier, capability: Capability },
+    /// A principal-typed actor (or visitor) attempted to write another
+    /// principal's tier. ADR-066 D9: writes gate on ownership — whose
+    /// files these are — not on grant strings. The denial is also
+    /// emitted as a `Security` audit event when the authority carries
+    /// an audit sink.
+    #[error("cross-principal write denied: {actor} may not write principal '{principal}'")]
+    OwnershipDenied { actor: String, principal: String },
 }
 
 impl RuntimeAuthority {
@@ -219,6 +216,7 @@ impl RuntimeAuthority {
         Self {
             resolver,
             actor: Arc::new(Subject::Public),
+            audit: None,
         }
     }
 
@@ -232,7 +230,19 @@ impl RuntimeAuthority {
         Self {
             resolver,
             actor: Arc::new(actor),
+            audit: None,
         }
+    }
+
+    /// Attach the observability hub so ownership-crossing denials emit
+    /// a `Security`-severity audit event (ADR-066 D9).
+    #[must_use]
+    pub fn with_audit_sink(
+        mut self,
+        audit: Option<Arc<peko_observability::Observability>>,
+    ) -> Self {
+        self.audit = audit;
+        self
     }
 
     /// Borrow the underlying resolver. Provided for tests and one-off
@@ -266,7 +276,7 @@ impl RuntimeAuthority {
     /// isn't `Subject::Public` or `Subject::Principal`.
     pub fn local_root(&self, principal: &PrincipalId) -> Result<LocalPath, AuthorityError> {
         self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         Ok(LocalPath(layout.local.root))
     }
 
@@ -276,14 +286,14 @@ impl RuntimeAuthority {
         principal: &PrincipalId,
     ) -> Result<LocalPath, AuthorityError> {
         self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         Ok(LocalPath(layout.local.cron_schedule))
     }
 
     /// Hand out a `LocalPath` for the principal's sessions directory.
     pub fn local_sessions_dir(&self, principal: &PrincipalId) -> Result<LocalPath, AuthorityError> {
         self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         Ok(LocalPath(layout.local.sessions_dir))
     }
 
@@ -293,25 +303,22 @@ impl RuntimeAuthority {
     // authenticated actor with visibility on the principal can read;
     // writes require the principal owner.
     //
-    // **Phase B (read path only):** the read gate is permissive — any
-    // non-Public actor can ask for Shared paths and we'll hand them out.
-    // The WriteSide gate (e.g. peer channels may read but not write
-    // principal.toml) is deferred to Phase C, where the authority
-    // composes with `peko_extension_api::Capabilities` for fine-grained
-    // per-resource gating.
+    // The read gate is permissive — any non-Public actor can ask for
+    // Shared paths and we'll hand them out. The write side gates on
+    // ownership (ADR-066 D9 — see the `*_write` family below).
     // ---------------------------------------------------------------------
 
     /// Hand out a `SharedPath` for `principal.toml`.
     pub fn shared_config(&self, principal: &PrincipalId) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         Ok(SharedPath(layout.shared.config_file))
     }
 
     /// Hand out a `SharedPath` for the principal's agents directory.
     pub fn shared_roles_dir(&self, principal: &PrincipalId) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         Ok(SharedPath(layout.shared.roles_dir))
     }
 
@@ -322,7 +329,7 @@ impl RuntimeAuthority {
         principal: &PrincipalId,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         // The identity dir is the Shared root joined with `"identity"`,
         // matching the legacy `principal_identity_dir` layout.
         Ok(SharedPath(layout.shared.root.join("identity")))
@@ -331,7 +338,7 @@ impl RuntimeAuthority {
     /// Hand out a `SharedPath` for the principal's MCP server configs.
     pub fn shared_mcps_dir(&self, principal: &PrincipalId) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         Ok(SharedPath(layout.shared.mcps_dir))
     }
 
@@ -373,32 +380,27 @@ impl RuntimeAuthority {
     }
 
     // ---------------------------------------------------------------------
-    // WriteSide gate (Phase C).
+    // WriteSide ownership gate (ADR-066 D9).
     //
     // The reader-side actor gate above decides whether an actor MAY touch
-    // a tier at all. The writer-side capability gate decides whether
-    // they may WRITE — it composes with `peko_extension_api::Capabilities`
-    // so a peer channel whose actor clears the tier gate still has to
-    // prove the principal carries a per-resource capability grant.
-    //
-    // Each `_write` accessor takes `Option<&Capabilities>`:
-    // - `Some(&caps)`: the principal's grants. The gate fires
-    //   `caps.is_granted(&Capability::new(required))`.
-    // - `None`: fail-closed `CapabilityDenied`. Cron / daemon-internal
-    //   callers that legitimately don't need a per-grant check use the
-    //   separate `_runtime` accessors below.
+    // a tier at all. The writer-side gate decides whether they may WRITE:
+    // plain ownership comparison — an operator (`Subject::User`) writes
+    // any principal's tiers; a principal-typed actor writes only its own;
+    // visitors never write. A crossing attempt fails closed and emits a
+    // `Security` audit event (when the authority carries a sink). No grant
+    // language remains: the boundary is whose files these are.
     // ---------------------------------------------------------------------
 
-    /// Hand out a `SharedPath` for `principal.toml` IF the principal
-    /// carries `principal:write_config`. Actor + tier gate fires first.
-    pub fn shared_config_write(
+    /// Hand out a `SharedPath` for `principal.toml` IF the actor owns
+    /// the principal (or is the operator). Tier gate fires first.
+    pub async fn shared_config_write(
         &self,
         principal: &PrincipalId,
-        caps: Option<&Capabilities>,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        self.assert_capability_granted(caps, CAP_WRITE_CONFIG, Tier::Shared)?;
+        let (name, layout) = self.principal_layout(principal)?;
+        self.assert_write_owner_for_id(&name, principal, Tier::Shared)
+            .await?;
         Ok(SharedPath(layout.shared.config_file))
     }
 
@@ -408,106 +410,104 @@ impl RuntimeAuthority {
     /// caller's `PrincipalId` may not round-trip through
     /// `lookup_principal_name` (e.g. the principal's on-disk
     /// `did = None` because it was created via the CLI default).
-    /// The actor + capability gate is identical; the layout is
+    /// The actor + ownership gate is identical; the layout is
     /// resolved directly from the validated name.
-    pub fn shared_config_write_for_name(
+    pub async fn shared_config_write_for_name(
         &self,
         principal_name: &str,
-        caps: Option<&Capabilities>,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
         let layout = self.resolver.principal_layout(principal_name);
-        self.assert_capability_granted(caps, CAP_WRITE_CONFIG, Tier::Shared)?;
+        self.assert_write_owner_for_name(principal_name, Tier::Shared)
+            .await?;
         Ok(SharedPath(layout.shared.config_file))
     }
 
-    /// Hand out a `SharedPath` for the agents directory IF the principal
-    /// carries `principal:write_agents`. Gates `agents/` + the
-    /// Hand out a `SharedPath` for the agents directory IF the principal
-    /// carries `principal:write_agents`. Gates `agents/` + the
+    /// Hand out a `SharedPath` for the agents directory IF the actor
+    /// owns the principal. Gates `agents/` + the
     /// `agents/primary.md` write done by `PrincipalCreate`.
-    pub fn shared_roles_dir_write(
+    pub async fn shared_roles_dir_write(
         &self,
         principal: &PrincipalId,
-        caps: Option<&Capabilities>,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        self.assert_capability_granted(caps, CAP_WRITE_AGENTS, Tier::Shared)?;
+        let (name, layout) = self.principal_layout(principal)?;
+        self.assert_write_owner_for_id(&name, principal, Tier::Shared)
+            .await?;
         Ok(SharedPath(layout.shared.roles_dir))
     }
 
     /// Name-keyed variant of [`shared_roles_dir_write`] for
     /// `PrincipalCreate`, where the principal's `PrincipalId` has
     /// not yet been generated (`PrincipalManager::create` assigns
-    /// it). The actor + capability gate is identical; the layout is
+    /// it). The actor + ownership gate is identical; the layout is
     /// resolved directly from the validated name.
-    pub fn shared_roles_dir_write_for_name(
+    pub async fn shared_roles_dir_write_for_name(
         &self,
         principal_name: &str,
-        caps: Option<&Capabilities>,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
         let layout = self.resolver.principal_layout(principal_name);
-        self.assert_capability_granted(caps, CAP_WRITE_AGENTS, Tier::Shared)?;
+        self.assert_write_owner_for_name(principal_name, Tier::Shared)
+            .await?;
         Ok(SharedPath(layout.shared.roles_dir))
     }
 
-    /// Hand out a `SharedPath` for the identity directory IF the principal
-    /// carries `principal:write_identity`.
-    pub fn shared_identity_dir_write(
+    /// Hand out a `SharedPath` for the identity directory IF the actor
+    /// owns the principal.
+    pub async fn shared_identity_dir_write(
         &self,
         principal: &PrincipalId,
-        caps: Option<&Capabilities>,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        self.assert_capability_granted(caps, CAP_WRITE_IDENTITY, Tier::Shared)?;
+        let (name, layout) = self.principal_layout(principal)?;
+        self.assert_write_owner_for_id(&name, principal, Tier::Shared)
+            .await?;
         Ok(SharedPath(layout.shared.root.join("identity")))
     }
 
     /// Name-keyed variant of [`shared_identity_dir_write`] for
     /// `principal_unpackager::import_identity`, where the new
     /// principal's `PrincipalId` has not yet been generated by the
-    /// manager. The actor + capability gate is identical; the layout
+    /// manager. The actor + ownership gate is identical; the layout
     /// is resolved directly from the validated name.
-    pub fn shared_identity_dir_write_for_name(
+    pub async fn shared_identity_dir_write_for_name(
         &self,
         principal_name: &str,
-        caps: Option<&Capabilities>,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
         let layout = self.resolver.principal_layout(principal_name);
-        self.assert_capability_granted(caps, CAP_WRITE_IDENTITY, Tier::Shared)?;
+        self.assert_write_owner_for_name(principal_name, Tier::Shared)
+            .await?;
         Ok(SharedPath(layout.shared.root.join("identity")))
     }
 
-    /// Hand out a `SharedPath` for the MCP server configs IF the principal
-    /// carries `principal:write_mcps`.
-    pub fn shared_mcps_dir_write(
+    /// Hand out a `SharedPath` for the MCP server configs IF the actor
+    /// owns the principal.
+    pub async fn shared_mcps_dir_write(
         &self,
         principal: &PrincipalId,
-        caps: Option<&Capabilities>,
     ) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
-        let layout = self.principal_layout(principal)?;
-        self.assert_capability_granted(caps, CAP_WRITE_MCPS, Tier::Shared)?;
+        let (name, layout) = self.principal_layout(principal)?;
+        self.assert_write_owner_for_id(&name, principal, Tier::Shared)
+            .await?;
         Ok(SharedPath(layout.shared.mcps_dir))
     }
 
-    /// Hand out a `RuntimePath` for the extensions install root IF the
-    /// principal carries `runtime:write_extensions`. Reserved for
-    /// future workspace-installer flows; the Phase 5 IPC surface
-    /// (`ExtensionInstall` / `ExtensionUninstall` / `ExtensionBundle`)
-    /// was removed in ADR-047 §2.1.
-    pub fn runtime_extensions_root_write(
-        &self,
-        caps: Option<&Capabilities>,
-    ) -> Result<RuntimePath, AuthorityError> {
-        self.assert_capability_granted(caps, CAP_WRITE_EXTENSIONS, Tier::Runtime)?;
+    /// Hand out a `RuntimePath` for the extensions install root.
+    /// Runtime-tier writes belong to the runtime / operator — a
+    /// principal-typed or visitor actor is denied (and audited).
+    pub async fn runtime_extensions_root_write(&self) -> Result<RuntimePath, AuthorityError> {
+        match self.actor.as_ref() {
+            Subject::Public | Subject::User(_) => {}
+            Subject::Principal(_) | Subject::Visitor(_) => {
+                self.deny_crossing(self.actor_label(), "runtime:extensions", Tier::Runtime)
+                    .await?;
+            }
+        }
         Ok(RuntimePath(self.resolver.extensions_root()))
     }
-
     // ---------------------------------------------------------------------
     // Engine-internal `_runtime` accessors.
     //
@@ -523,18 +523,17 @@ impl RuntimeAuthority {
     // ---------------------------------------------------------------------
 
     /// **Cron-engine-only.** Hands out a `LocalPath` for the principal's
-    /// cron schedule file, bypassing the capability gate (the engine
+    /// cron schedule file, bypassing the ownership gate (the engine
     /// writes on behalf of the principal; the principal's `[[permissions]]`
     /// ACL is the only gate). The legacy IPC `*_write` accessors were
     /// deleted in the cron-as-internal-tool refactor (2026-08-25):
-    /// cron is now a fully internal principal tool gated by
-    /// `tool:Cron{Create,List,Delete}` grants in the F37 funnel.
+    /// cron is now a fully internal principal tool.
     pub fn local_cron_schedule_runtime(
         &self,
         principal: &PrincipalId,
     ) -> Result<LocalPath, AuthorityError> {
         self.assert_local_entitled()?;
-        let layout = self.principal_layout(principal)?;
+        let (_name, layout) = self.principal_layout(principal)?;
         Ok(LocalPath(layout.local.cron_schedule))
     }
 
@@ -568,12 +567,12 @@ impl RuntimeAuthority {
     fn principal_layout(
         &self,
         principal: &PrincipalId,
-    ) -> Result<crate::common::paths::PrincipalLayout, AuthorityError> {
+    ) -> Result<(String, crate::common::paths::PrincipalLayout), AuthorityError> {
         let name = self
             .resolver
             .lookup_principal_name(principal)
             .ok_or_else(|| AuthorityError::UnknownPrincipal(principal.clone()))?;
-        Ok(self.resolver.principal_layout(&name))
+        Ok((name.clone(), self.resolver.principal_layout(&name)))
     }
 
     /// Local-tier gate: only the runtime (`Subject::Public`) or a
@@ -590,11 +589,10 @@ impl RuntimeAuthority {
         }
     }
 
-    /// Shared-tier read gate (Phase B permissive). Any non-`Public`
-    /// actor can read Shared paths. The tighter write gate lands in
-    /// Phase C alongside `Capabilities` composition. Visitors count
-    /// as non-`Public` here: they are hub-minted identified peers,
-    /// not unauthenticated access.
+    /// Shared-tier read gate (permissive). Any non-`Public` actor can
+    /// read Shared paths; the write side gates on ownership (ADR-066
+    /// D9). Visitors count as non-`Public` here: they are hub-minted
+    /// identified peers, not unauthenticated access.
     fn assert_shared_read_entitled(&self) -> Result<(), AuthorityError> {
         match self.actor.as_ref() {
             Subject::Public => Err(AuthorityError::TierDenied { tier: Tier::Shared }),
@@ -602,39 +600,124 @@ impl RuntimeAuthority {
         }
     }
 
-    /// Write-side capability gate. Returns `Err(CapabilityDenied)` if
-    /// `caps` is `None` (fail-closed by design — daemon-internal callers
-    /// must use the `_runtime` family explicitly) or if
-    /// `caps.is_granted(required)` is false. The `required` capability
-    /// string is captured in the error so the caller can surface a
-    /// helpful message ("`principal:write_config` not granted").
-    fn assert_capability_granted(
+    /// Write-side ownership gate for an ID-keyed target whose name the
+    /// caller already resolved via `principal_layout` (ADR-066 D9).
+    /// Ownership compares the actor's DID against the target's on-disk
+    /// `did` — robust to both `PrincipalId` string forms (`prin_*` and
+    /// the bare DID).
+    async fn assert_write_owner_for_id(
         &self,
-        caps: Option<&Capabilities>,
-        required: &str,
+        principal_name: &str,
+        principal: &PrincipalId,
         tier: Tier,
     ) -> Result<(), AuthorityError> {
-        let required_cap = Capability::new(required);
-        let Some(caps) = caps else {
-            return Err(AuthorityError::CapabilityDenied {
-                tier,
-                capability: required_cap,
-            });
-        };
-        if !caps.is_granted(&required_cap) {
-            return Err(AuthorityError::CapabilityDenied {
-                tier,
-                capability: required_cap,
-            });
+        match self.actor.as_ref() {
+            // The operator (local CLI / authenticated hub user) writes
+            // any principal's tiers.
+            Subject::User(_) => Ok(()),
+            // A principal-typed actor writes only its own tiers. The
+            // target's DID comes from its on-disk config, not from the
+            // caller-supplied id string.
+            Subject::Principal(did) => {
+                match self.principal_did_for_name(principal_name).as_deref() {
+                    Some(target) if target == did.0 => Ok(()),
+                    _ => {
+                        self.deny_crossing(self.actor_label(), principal_name, tier)
+                            .await
+                    }
+                }
+            }
+            Subject::Visitor(_) | Subject::Public => {
+                self.deny_crossing(self.actor_label(), &principal.0, tier)
+                    .await
+            }
         }
-        Ok(())
+    }
+
+    /// Write-side ownership gate for a name-keyed target. Resolves the
+    /// target principal's DID from its on-disk config; a target that
+    /// doesn't exist yet (PrincipalCreate) is writable by the operator
+    /// only — a principal-typed actor can never prove ownership of a
+    /// principal that isn't on disk, so it fails closed.
+    async fn assert_write_owner_for_name(
+        &self,
+        principal_name: &str,
+        tier: Tier,
+    ) -> Result<(), AuthorityError> {
+        match self.actor.as_ref() {
+            Subject::User(_) => Ok(()),
+            Subject::Principal(did) => {
+                match self.principal_did_for_name(principal_name).as_deref() {
+                    Some(target) if target == did.0 => Ok(()),
+                    _ => {
+                        self.deny_crossing(self.actor_label(), principal_name, tier)
+                            .await
+                    }
+                }
+            }
+            Subject::Visitor(_) | Subject::Public => {
+                self.deny_crossing(self.actor_label(), principal_name, tier)
+                    .await
+            }
+        }
+    }
+
+    /// Read a principal's DID from its on-disk `principal.toml`.
+    /// `None` when the principal isn't on disk or carries no `did`.
+    fn principal_did_for_name(&self, principal_name: &str) -> Option<String> {
+        let config_path = self
+            .resolver
+            .principal_layout(principal_name)
+            .shared
+            .config_file;
+        let contents = std::fs::read_to_string(config_path).ok()?;
+        let value: toml::Value = contents.parse().ok()?;
+        value
+            .get("did")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|d| !d.is_empty())
+    }
+
+    /// Wire form of the actor for error messages + audit details.
+    fn actor_label(&self) -> String {
+        self.actor.to_string()
+    }
+
+    /// Fail closed and emit the ADR-066 D9 `Security` audit event when
+    /// the authority carries an audit sink.
+    async fn deny_crossing(
+        &self,
+        actor: String,
+        target: &str,
+        tier: Tier,
+    ) -> Result<(), AuthorityError> {
+        if let Some(audit) = self.audit.as_ref() {
+            let result = audit
+                .audit_security_with_caller(
+                    Some(self.actor.as_ref()),
+                    "principal.cross_principal_write_denied",
+                    None,
+                    serde_json::json!({
+                        "target_principal": target,
+                        "path_tier": format!("{tier:?}").to_lowercase(),
+                    }),
+                )
+                .await;
+            if let Err(e) = result {
+                tracing::warn!("failed to emit cross-principal-write audit event: {e}");
+            }
+        }
+        Err(AuthorityError::OwnershipDenied {
+            actor,
+            principal: target.to_string(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_extension_api::Capabilities;
     use std::path::PathBuf;
 
     fn test_resolver() -> PathResolver {
@@ -723,152 +806,19 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Phase C — WriteSide gate tests.
+    // ADR-066 D9 — ownership write-gate tests.
     //
-    // The reader-side actor gate fires first; the writer-side capability
+    // The reader-side actor gate fires first; the writer-side ownership
     // gate stacks on top. Together they pin that:
-    // (a) a satisfied capability grant clears the write accessor;
-    // (b) a missing grant returns `CapabilityDenied` (not `TierDenied`);
-    // (c) wildcard grants satisfy specific requirements;
+    // (a) a principal-typed actor writes its own tiers;
+    // (b) a principal-typed actor writing another principal's tiers
+    //     gets `OwnershipDenied` (not `TierDenied`) and a Security
+    //     audit event;
+    // (c) the operator (`Subject::User`) writes any principal;
     // (d) a `Subject::Public` actor still gets `TierDenied` on Shared
-    //     (the capability gate cannot rescue a tier-denied actor);
+    //     (the ownership gate cannot rescue a tier-denied actor);
     // (e) a `Subject::User` actor still gets `TierDenied` on Local;
-    // (f) a `Subject::Principal` actor with empty grants gets
-    //     `CapabilityDenied` (not `TierDenied`) on Shared;
-    // (g) `None` capabilities is fail-closed `CapabilityDenied`.
-    //
-    // Note: the on-disk layout lookup runs AFTER the actor gate but
-    // BEFORE the capability gate (the layout has to exist before we
-    // hand out a path). The empty-resolver tests below use `UnknownPrincipal`
-    // for cases that never reach the capability check — the test
-    // descriptions tag which gate the test pins.
-    // ---------------------------------------------------------------------
-
-    #[test]
-    fn write_gate_accepts_satisfied_grant() {
-        // The actor gate clears (User + Shared tier is allowed), the
-        // principal has `principal:write_config` — write succeeds.
-        let resolver = test_resolver();
-        let pid = principal_id("alice");
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("alice".into()));
-        let caps = Capabilities::with_grants(["principal:write_config"]);
-        // We can't reach `Ok(...)` without a real on-disk principal —
-        // but the error shape here pins the gate ordering: the actor
-        // gate clears, the principal lookup is the FIRST thing to fail.
-        let result = authority.shared_config_write(&pid, Some(&caps));
-        assert!(matches!(result, Err(AuthorityError::UnknownPrincipal(_))));
-    }
-
-    #[test]
-    fn write_gate_rejects_missing_grant() {
-        // Same shape as `write_gate_accepts_satisfied_grant` — the
-        // actor gate clears, then the principal lookup fails. The
-        // "missing grant" rejection lives in tests that mock the
-        // on-disk layout lookup, which we exercise at the integration
-        // tier (CLI + IPC). This unit test pins the gate order: the
-        // actor gate fires before the capability gate.
-        let resolver = test_resolver();
-        let pid = principal_id("alice");
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("alice".into()));
-        let caps = Capabilities::with_grants(["tool:Read"]); // unrelated
-        let result = authority.shared_config_write(&pid, Some(&caps));
-        // Actor gate clears; the missing principal is the first thing
-        // that fails — proves the gate order.
-        assert!(matches!(result, Err(AuthorityError::UnknownPrincipal(_))));
-    }
-
-    #[test]
-    fn write_gate_wildcard_grant_satisfies_specific_requirement() {
-        // `Capabilities::is_granted` already does prefix matching. The
-        // runtime_extensions_root_write accessor doesn't need a
-        // principal, so this test can actually succeed end-to-end.
-        let resolver = test_resolver();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("alice".into()));
-        let caps = Capabilities::with_grants(["runtime:write_*"]);
-        let result = authority.runtime_extensions_root_write(Some(&caps));
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn write_gate_public_actor_on_shared_is_tier_denied() {
-        // The runtime (Subject::Public) cannot read Shared-tier paths
-        // because it should always go through the Local runtime paths
-        // when operating on its own behalf. The capability gate cannot
-        // rescue a tier-denied actor.
-        let resolver = test_resolver();
-        let authority = RuntimeAuthority::for_runtime(resolver);
-        let pid = principal_id("alice");
-        let caps = Capabilities::with_grants(["principal:write_config"]);
-        let result = authority.shared_config_write(&pid, Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::TierDenied { tier: Tier::Shared })
-        ));
-    }
-
-    #[test]
-    fn write_gate_principal_actor_on_shared_without_grant_is_capability_denied() {
-        // The Principal owner DID clear the tier gate (Subject::Principal
-        // is allowed on Shared). But with empty grants, the capability
-        // gate fires `CapabilityDenied`. We exercise this through
-        // `runtime_extensions_root_write` which doesn't need a principal
-        // on disk — the actor gate is the only thing that can fire
-        // before the capability check.
-        let resolver = test_resolver();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new(); // empty
-                                        // `runtime_extensions_root_write` doesn't take a principal —
-                                        // prove the empty-grant path here.
-        let result = authority.runtime_extensions_root_write(Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Runtime,
-                capability
-            }) if capability == Capability::new("runtime:write_extensions")
-        ));
-    }
-
-    #[test]
-    fn write_gate_none_capabilities_is_fail_closed() {
-        // `None` is the cron-engine / daemon-internal opt-in. Callers
-        // who route through the `*_write` accessors MUST explicitly
-        // grant, not implicitly skip. This pins that `None` is
-        // fail-closed.
-        let resolver = test_resolver();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let result = authority.runtime_extensions_root_write(None);
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Runtime,
-                capability
-            }) if capability == Capability::new("runtime:write_extensions")
-        ));
-    }
-
-    #[test]
-    fn engine_runtime_accessor_skips_capability_gate() {
-        // The cron engine writes on behalf of the principal owner
-        // (Subject::Public from `for_runtime`); the principal's
-        // `[[permissions]]` ACL is the only gate at that layer. The
-        // `*_runtime` accessors skip the capability check — only the
-        // actor + tier gate fires. The principal lookup is the first
-        // thing that fails on an empty resolver, which proves the
-        // capability check is bypassed.
-        let resolver = test_resolver();
-        let pid = principal_id("404");
-        let authority = RuntimeAuthority::for_runtime(resolver);
-        let result = authority.local_cron_schedule_runtime(&pid);
-        assert!(matches!(result, Err(AuthorityError::UnknownPrincipal(_))));
-    }
-    // were retired along with the IPC cron surface; cron is now an
-    // internal principal tool gated by `tool:Cron*` grants.)
-    //
-    // Each `principal:write_*` capability gets a positive and negative
-    // test through both the ID-keyed and `_for_name` paths.
+    // (f) visitors never write.
     // ---------------------------------------------------------------------
 
     /// Build a tempdir-backed `PathResolver` with a real
@@ -901,221 +851,198 @@ mod tests {
         (tmp, resolver, pid)
     }
 
-    // ----- ID-keyed accessors with real layout -------------------------
-
-    #[test]
-    fn write_gate_shared_config_with_grant_succeeds() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_config"]);
-        let result = authority.shared_config_write(&pid, Some(&caps));
-        assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/principal.toml"));
+    /// The fixture principal's DID (kept in one place so the actor
+    /// construction can't drift from the on-disk value).
+    fn alice_did() -> peko_subject::PrincipalDID {
+        peko_subject::PrincipalDID("did:peko:public:alice-test-fixture".to_string())
     }
 
-    #[test]
-    fn write_gate_shared_config_without_grant_is_capability_denied() {
+    // ----- ID-keyed accessors --------------------------------------------
+
+    #[tokio::test]
+    async fn owner_writes_own_shared_tiers() {
         let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.shared_config_write(&pid, Some(&caps));
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
+        assert!(authority.shared_config_write(&pid).await.is_ok());
+        assert!(authority.shared_roles_dir_write(&pid).await.is_ok());
+        assert!(authority.shared_identity_dir_write(&pid).await.is_ok());
+        assert!(authority.shared_mcps_dir_write(&pid).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cross_principal_write_is_denied() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let mallory = peko_subject::PrincipalDID("did:peko:public:mallory".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(mallory));
+        let result = authority.shared_config_write(&pid).await;
+        assert!(
+            matches!(result, Err(AuthorityError::OwnershipDenied { .. })),
+            "crossing write must fail closed, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_principal_write_emits_security_audit_event() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let audit_dir = _tmp.path().join("audit");
+        let observability = Arc::new(
+            peko_observability::Observability::with_audit_dir("test", audit_dir.clone())
+                .expect("audit dir"),
+        );
+        let mallory = peko_subject::PrincipalDID("did:peko:public:mallory".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(mallory))
+            .with_audit_sink(Some(observability));
+
+        let result = authority.shared_roles_dir_write(&pid).await;
         assert!(matches!(
             result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Shared,
-                capability
-            }) if capability == Capability::new("principal:write_config")
+            Err(AuthorityError::OwnershipDenied { .. })
+        ));
+
+        // The durable JSONL sink writes within the awaited call — read
+        // today's file back and pin the event.
+        let today = chrono::Utc::now().date_naive();
+        let log = std::fs::read_to_string(audit_dir.join(format!("audit-{today}.jsonl")))
+            .expect("audit file written");
+        assert!(
+            log.contains("principal.cross_principal_write_denied"),
+            "audit log must carry the crossing event: {log}"
+        );
+        assert!(
+            log.contains("\"severity\":\"security\""),
+            "event must be Security severity: {log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_writes_any_principal() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("local".into()));
+        assert!(authority.shared_config_write(&pid).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn visitor_write_is_denied() {
+        let (_tmp, resolver, pid) = with_real_principal();
+        let authority =
+            RuntimeAuthority::for_caller(resolver, Subject::Visitor("visitor-1".to_string()));
+        let result = authority.shared_config_write(&pid).await;
+        assert!(matches!(
+            result,
+            Err(AuthorityError::OwnershipDenied { .. })
         ));
     }
 
-    #[test]
-    fn write_gate_shared_roles_dir_with_grant_succeeds() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_agents"]);
-        let result = authority.shared_roles_dir_write(&pid, Some(&caps));
-        assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/roles"));
-    }
-
-    #[test]
-    fn write_gate_shared_roles_dir_without_grant_is_capability_denied() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.shared_roles_dir_write(&pid, Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Shared,
-                capability
-            }) if capability == Capability::new("principal:write_agents")
-        ));
-    }
-
-    #[test]
-    fn write_gate_shared_identity_dir_with_grant_succeeds() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_identity"]);
-        let result = authority.shared_identity_dir_write(&pid, Some(&caps));
-        assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/identity"));
-    }
-
-    #[test]
-    fn write_gate_shared_identity_dir_without_grant_is_capability_denied() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.shared_identity_dir_write(&pid, Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Shared,
-                capability
-            }) if capability == Capability::new("principal:write_identity")
-        ));
-    }
-
-    #[test]
-    fn write_gate_shared_mcps_dir_with_grant_succeeds() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_mcps"]);
-        let result = authority.shared_mcps_dir_write(&pid, Some(&caps));
-        assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/mcps"));
-    }
-
-    #[test]
-    fn write_gate_shared_mcps_dir_without_grant_is_capability_denied() {
-        let (_tmp, resolver, pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.shared_mcps_dir_write(&pid, Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Shared,
-                capability
-            }) if capability == Capability::new("principal:write_mcps")
-        ));
-    }
-
-    // ----- _for_name accessors with real layout ------------------------
-
-    #[test]
-    fn write_gate_shared_config_for_name_with_grant_succeeds() {
-        let (_tmp, resolver, _pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_config"]);
-        let result = authority.shared_config_write_for_name("alice", Some(&caps));
-        assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/principal.toml"));
-    }
-
-    #[test]
-    fn write_gate_shared_config_for_name_without_grant_is_capability_denied() {
-        let (_tmp, resolver, _pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.shared_config_write_for_name("alice", Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Shared,
-                capability
-            }) if capability == Capability::new("principal:write_config")
-        ));
-    }
-
-    #[test]
-    fn write_gate_shared_roles_dir_for_name_with_grant_succeeds() {
-        let (_tmp, resolver, _pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_agents"]);
-        let result = authority.shared_roles_dir_write_for_name("alice", Some(&caps));
-        assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/roles"));
-    }
-
-    #[test]
-    fn write_gate_shared_agents_dir_for_name_without_grant_is_capability_denied() {
-        let (_tmp, resolver, _pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.shared_roles_dir_write_for_name("alice", Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Shared,
-                capability
-            }) if capability == Capability::new("principal:write_agents")
-        ));
-    }
-
-    #[test]
-    fn write_gate_shared_identity_dir_for_name_with_grant_succeeds() {
-        let (_tmp, resolver, _pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_identity"]);
-        let result = authority.shared_identity_dir_write_for_name("alice", Some(&caps));
-        assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/identity"));
-    }
-
-    #[test]
-    fn write_gate_shared_identity_dir_for_name_without_grant_is_capability_denied() {
-        let (_tmp, resolver, _pid) = with_real_principal();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::new();
-        let result = authority.shared_identity_dir_write_for_name("alice", Some(&caps));
-        assert!(matches!(
-            result,
-            Err(AuthorityError::CapabilityDenied {
-                tier: Tier::Shared,
-                capability
-            }) if capability == Capability::new("principal:write_identity")
-        ));
-    }
-
-    /// `_for_name` variants intentionally skip the existence check that
-    /// `lookup_principal_name` performs for ID-keyed accessors. The
-    /// design choice: name-keyed accessors are only ever called from
-    /// IPC handlers that have already validated the principal exists
-    /// (via `resolve_principal` or similar). The path computation is
-    /// pure (no I/O), so an unknown name produces a path under a
-    /// non-existent directory — the *caller* of the gate is
-    /// responsible for ensuring the principal exists before
-    /// exercising the path. This test pins the fail-open behavior so
-    /// future refactors don't quietly change it.
-    #[test]
-    fn write_gate_for_name_with_unknown_name_still_yields_path() {
+    #[tokio::test]
+    async fn public_actor_on_shared_write_is_tier_denied() {
+        // The runtime (Subject::Public) cannot read Shared-tier paths
+        // because it should always go through the Local runtime paths
+        // when operating on its own behalf. The ownership gate cannot
+        // rescue a tier-denied actor.
         let resolver = test_resolver();
-        let did = peko_subject::PrincipalDID("prin_alice".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(did));
-        let caps = Capabilities::with_grants(["principal:write_agents"]);
-        // "ghost" is not on disk and the resolver has no layout for
-        // it — but the gate fires only on the actor and capability
-        // tier; the path is constructed regardless.
-        let result = authority.shared_roles_dir_write_for_name("ghost", Some(&caps));
+        let authority = RuntimeAuthority::for_runtime(resolver);
+        let pid = principal_id("alice");
+        let result = authority.shared_config_write(&pid).await;
+        assert!(matches!(
+            result,
+            Err(AuthorityError::TierDenied { tier: Tier::Shared })
+        ));
+    }
+
+    // ----- _for_name accessors --------------------------------------------
+
+    #[tokio::test]
+    async fn owner_writes_own_shared_tiers_for_name() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
+        let result = authority.shared_config_write_for_name("alice").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().as_path().ends_with("alice/principal.toml"));
+        assert!(authority
+            .shared_roles_dir_write_for_name("alice")
+            .await
+            .is_ok());
+        assert!(authority
+            .shared_identity_dir_write_for_name("alice")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn cross_principal_write_for_name_is_denied() {
+        let (_tmp, resolver, _pid) = with_real_principal();
+        let mallory = peko_subject::PrincipalDID("did:peko:public:mallory".to_string());
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(mallory));
+        let result = authority.shared_roles_dir_write_for_name("alice").await;
+        assert!(matches!(
+            result,
+            Err(AuthorityError::OwnershipDenied { .. })
+        ));
+    }
+
+    /// A principal-typed actor can never prove ownership of a principal
+    /// that isn't on disk — fail closed. (The operator creates new
+    /// principals; `Subject::User` is unaffected.)
+    #[tokio::test]
+    async fn principal_actor_write_for_unknown_name_is_denied() {
+        let resolver = test_resolver();
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
+        let result = authority.shared_roles_dir_write_for_name("ghost").await;
+        assert!(matches!(
+            result,
+            Err(AuthorityError::OwnershipDenied { .. })
+        ));
+    }
+
+    /// The operator's `_for_name` path doesn't require the principal to
+    /// exist on disk (PrincipalCreate writes the first files before the
+    /// manager assigns the id).
+    #[tokio::test]
+    async fn operator_write_for_unknown_name_yields_path() {
+        let resolver = test_resolver();
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("local".into()));
+        let result = authority.shared_roles_dir_write_for_name("ghost").await;
         assert!(result.is_ok());
         let path = result.unwrap().into_path_buf();
         assert!(path.ends_with("ghost/roles"));
+    }
+
+    // ----- Runtime tier ----------------------------------------------------
+
+    #[tokio::test]
+    async fn runtime_tier_write_allows_operator_and_runtime() {
+        let resolver = test_resolver();
+        let as_operator =
+            RuntimeAuthority::for_caller(resolver.clone(), Subject::User("local".into()));
+        assert!(as_operator.runtime_extensions_root_write().await.is_ok());
+        let as_runtime = RuntimeAuthority::for_runtime(resolver);
+        assert!(as_runtime.runtime_extensions_root_write().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn runtime_tier_write_denies_principal_actor() {
+        let resolver = test_resolver();
+        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
+        let result = authority.runtime_extensions_root_write().await;
+        assert!(matches!(
+            result,
+            Err(AuthorityError::OwnershipDenied { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn engine_runtime_accessor_skips_ownership_gate() {
+        // The cron engine writes on behalf of the principal owner
+        // (Subject::Public from `for_runtime`); the principal's
+        // `[[permissions]]` ACL is the only gate at that layer. The
+        // `*_runtime` accessors skip the ownership check — only the
+        // actor + tier gate fires. The principal lookup is the first
+        // thing that fails on an empty resolver, which proves the
+        // ownership check is bypassed.
+        let resolver = test_resolver();
+        let pid = principal_id("404");
+        let authority = RuntimeAuthority::for_runtime(resolver);
+        let result = authority.local_cron_schedule_runtime(&pid);
+        assert!(matches!(result, Err(AuthorityError::UnknownPrincipal(_))));
     }
 }

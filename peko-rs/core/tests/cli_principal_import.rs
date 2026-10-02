@@ -56,13 +56,8 @@ async fn import_yes_selects_no_required_capabilities() {
         toml::from_str(&config_toml).expect("parse imported principal.toml");
 
     assert!(
-        !config.capabilities.contains_str("tool:fixture.exec"),
-        "--yes should not grant tool:fixture.exec; got {:?}",
-        config.capabilities
-    );
-    assert!(
-        !config.capabilities.contains_str("tool:fixture.read"),
-        "--yes should not grant tool:fixture.read; got {:?}",
+        config.capabilities.is_empty(),
+        "ADR-066 P2: imported principals carry no grants; got {:?}",
         config.capabilities
     );
 }
@@ -121,13 +116,8 @@ async fn import_unsigned_with_allow_unsigned_yes_selects_none() {
         toml::from_str(&config_toml).expect("parse imported principal.toml");
 
     assert!(
-        !config.capabilities.contains_str("tool:fixture.exec"),
-        "unsigned --yes should not grant tool:fixture.exec; got {:?}",
-        config.capabilities
-    );
-    assert!(
-        !config.capabilities.contains_str("tool:fixture.read"),
-        "unsigned --yes should not grant tool:fixture.read; got {:?}",
+        config.capabilities.is_empty(),
+        "ADR-066 P2: imported principals carry no grants; got {:?}",
         config.capabilities
     );
 }

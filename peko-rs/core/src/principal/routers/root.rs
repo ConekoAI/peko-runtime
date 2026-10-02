@@ -235,10 +235,6 @@ impl RootRouter {
                 tracing::debug!("RootRouter::build_context: {e}");
             }
         }
-        if let Err(e) = principal_ctx.set_active_extensions(ctx.active_extensions.clone()) {
-            tracing::debug!("RootRouter::build_context: active_extensions already set");
-            let _ = e;
-        }
         if let Some(ref obs) = ctx.observability {
             if principal_ctx.set_observability(Arc::clone(obs)).is_err() {
                 tracing::debug!("RootRouter::build_context: observability already set");

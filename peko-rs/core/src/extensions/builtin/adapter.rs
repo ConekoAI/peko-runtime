@@ -265,9 +265,7 @@ impl HookHandler for BuiltinExecuteHandler {
                 .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
                 .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default())
                 .with_principal_id(runtime_ctx.principal_id.clone().unwrap_or_default())
-                .with_principal_name(runtime_ctx.principal_name.clone().unwrap_or_default())
-                .with_capabilities(runtime_ctx.capabilities.clone().unwrap_or_default())
-                .with_active_extensions(runtime_ctx.active_extensions.clone().unwrap_or_default());
+                .with_principal_name(runtime_ctx.principal_name.clone().unwrap_or_default());
         let tool_ctx = match runtime_ctx.abort_signal.as_ref() {
             Some(rx) => base_ctx.with_abort_signal(rx.clone()),
             None => base_ctx,
@@ -439,7 +437,7 @@ impl HookHandler for BuiltinExecuteHandler {
 /// F36: `BuiltinPromptHandler` was removed when peko switched to a
 /// wire-only tool catalog. Built-in tool descriptions travel on the
 /// wire as the `tools[]` JSON-schema array; see
-/// `list_tool_definitions_with_allowlist` for the capability gate.
+/// `list_tool_definitions_for`.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,8 +621,6 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            capabilities: Some(vec!["tool:Fast".to_string()]),
-            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -702,8 +698,6 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            capabilities: Some(vec!["tool:Slow".to_string()]),
-            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -794,8 +788,6 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            capabilities: Some(vec!["tool:Enriching".to_string()]),
-            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -919,8 +911,6 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            capabilities: Some(vec!["tool:Cleanup".to_string()]),
-            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -1041,8 +1031,6 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            capabilities: Some(vec!["tool:RequiredField".to_string()]),
-            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {
@@ -1138,8 +1126,6 @@ mod tests {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            capabilities: Some(vec!["tool:RequiredFieldPass".to_string()]),
-            active_extensions: None,
             abort_signal: Some(rx),
         };
         let point = HookPoint::ToolExecute {

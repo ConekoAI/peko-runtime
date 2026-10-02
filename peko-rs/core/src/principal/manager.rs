@@ -980,24 +980,6 @@ impl PrincipalManager {
         (Arc::clone(&self.inbox_registry), lock)
     }
 
-    /// Recompute the principal's active extension set for a capability
-    /// snapshot. (The global extension inventory is empty — ADR-066 P1
-    /// deleted the process-wide store; the catalog is built-ins +
-    /// agents + workspace entries.)
-    pub(crate) async fn active_extensions_for(
-        &self,
-        principal: &Principal,
-        capabilities: &peko_extension_api::Capabilities,
-    ) -> peko_extension_api::ActiveExtensionSet {
-        crate::principal::catalog::PrincipalCatalog::build(
-            &principal.workspace_path,
-            capabilities,
-            &principal.agent_prompts,
-            &[],
-        )
-        .active_extensions()
-    }
-
     /// Build the `RouterContext` for a message arriving at a Principal
     /// boundary. This is the single point of truth for permission checks,
     /// session recall, and the principal's per-message view of its
@@ -1111,18 +1093,10 @@ impl PrincipalManager {
             }
         }
 
-        let (
-            available_agents,
-            catalog,
-            active_extensions,
-            routing,
-            capabilities,
-            intent,
-            governance,
-            principal_name,
-        ) = {
+        let (available_agents, routing, capabilities, intent, governance, principal_name) = {
             let config = principal.config.read().await;
-            let allowed = &config.capabilities;
+            // ADR-066 P2: presence = spawnability — every role file in
+            // the workspace is enabled.
             let available_agents: Vec<_> = principal
                 .agent_prompts
                 .iter()
@@ -1130,29 +1104,14 @@ impl PrincipalManager {
                     id: id.clone(),
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
-                    enabled: allowed
-                        .is_granted(&peko_extension_api::Capability::new(format!("agent:{id}")))
-                        || allowed.is_granted(&peko_extension_api::Capability::new(format!(
-                            "agent:{}",
-                            p.name
-                        ))),
+                    enabled: true,
                 })
                 .collect();
 
-            let catalog_local = crate::principal::catalog::PrincipalCatalog::build(
-                &principal.workspace_path,
-                allowed,
-                &principal.agent_prompts,
-                &[],
-            );
-            let active_extensions = catalog_local.active_extensions();
-
             (
                 available_agents,
-                catalog_local,
-                active_extensions,
                 config.routing.clone(),
-                allowed.clone(),
+                config.capabilities.clone(),
                 config.intent.clone(),
                 config.governance.clone(),
                 config.name.clone(),
@@ -1168,8 +1127,6 @@ impl PrincipalManager {
             routing,
             recalled_context,
             available_agents,
-            catalog,
-            active_extensions,
             capabilities,
             intent,
             governance,
@@ -1721,7 +1678,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::starter_bundle(),
+            capabilities: Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,
@@ -2373,25 +2330,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn build_router_context_marks_disabled_agents() {
+    async fn build_router_context_marks_all_agents_enabled() {
+        // ADR-066 P2: presence = spawnability — every role file in the
+        // workspace is enabled; no grant check.
         let (temp, manager, _adapter, _id) = setup().await;
 
-        // Re-create a principal with two agents, only one of which is allowed.
         manager.remove("stressy").await.unwrap();
 
         let principal = create_test_principal_with_agents(
             &manager,
             "stressy",
-            &["enabled_agent", "disabled_agent"],
+            &["first_agent", "second_agent"],
         )
         .await;
-        manager
-            .update_config("stressy", |config| {
-                config.capabilities =
-                    Capabilities::with_grants(["agent:enabled_agent", "tool:Read"]);
-            })
-            .await
-            .unwrap();
 
         let ctx = manager
             .build_router_context(
@@ -2404,28 +2355,14 @@ mod tests {
             .await
             .expect("build_router_context should succeed");
 
-        let enabled = ctx
-            .available_agents
-            .iter()
-            .find(|a| a.id == "enabled_agent")
-            .expect("enabled_agent should be in catalog");
-        assert!(enabled.enabled, "enabled_agent should be enabled");
-
-        let disabled = ctx
-            .available_agents
-            .iter()
-            .find(|a| a.id == "disabled_agent")
-            .expect("disabled_agent should be in catalog");
-        assert!(!disabled.enabled, "disabled_agent should be disabled");
-
-        // The PrincipalCatalog also surfaces the disabled agent.
-        let store_disabled = ctx
-            .catalog
-            .entries()
-            .iter()
-            .find(|i| i.id == "disabled_agent")
-            .expect("disabled_agent should be in catalog");
-        assert!(!store_disabled.enabled);
+        for id in ["first_agent", "second_agent"] {
+            let entry = ctx
+                .available_agents
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("{id} should be in catalog"));
+            assert!(entry.enabled, "{id} is enabled by presence");
+        }
 
         // Suppress unused warning for temp.
         let _ = temp;

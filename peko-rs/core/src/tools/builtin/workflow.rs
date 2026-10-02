@@ -166,8 +166,8 @@ impl Tool for WorkflowTool {
          `timeout_ms` defaults to 300000 (capped at 3600000). The workflow \
          process runs with PEKO_* identity env injected and can call back \
          into the runtime (ModelCall, Glob, …) via the peko_workflow SDK; \
-         every callback is attributed to this principal and passes the \
-         capability gate. Returns exit code plus bounded stdout/stderr \
+         every callback is attributed to this principal. Returns exit \
+         code plus bounded stdout/stderr \
          tails. Use when: a saved procedure (loop, poll, batch) should run \
          as code instead of a turn-by-turn agent loop. Don't use when: the \
          task is one tool call — call the tool directly."
@@ -824,7 +824,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::starter_bundle(),
+            capabilities: Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,

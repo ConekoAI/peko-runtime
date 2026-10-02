@@ -69,13 +69,13 @@ pub use async_types::AsyncReceipt;
 // PR-E #1: the `Authority` / `NetworkAccess` / `TunnelAccess` envelope
 // was deleted in this commit. ADR-047 §2.5 had planned to migrate the
 // runtime `_write(Option<&Caps>)` accessors onto it, but no producer
-// of `[authority]` field checks ever landed (the runtime gate
-// continues to consult `Capabilities` for the cross-actor /
-// cross-runtime `principal:write_*` strings). With zero consumers
+// of `[authority]` field checks ever landed. With zero consumers
 // outside the now-deleted `peko_extension_api::authority` module and
 // the deserialization-only field on `PrincipalConfig`, the entire
-// envelope is pure deletion.
-pub use capabilities::{ActiveExtensionSet, Capabilities, Capability};
+// envelope is pure deletion. ADR-066 P2 then deleted the grant
+// evaluation surface itself; `Capabilities` remains only as a
+// wire/serde data shell pending P6.
+pub use capabilities::{Capabilities, Capability};
 pub use hook_io::{
     tool_result_from_hook, CompactionPreparationPayload, CompactionResultPayload, HookDecision,
     HookInput, HookOutput, HookResult,

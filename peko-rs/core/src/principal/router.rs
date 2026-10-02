@@ -83,16 +83,11 @@ pub struct RouterContext {
     pub routing: PrincipalRoutingConfig,
     pub recalled_context: Vec<ContextInjection>,
     pub available_agents: Vec<AgentPromptSummary>,
+    /// Inert shell (ADR-066 P2): always empty on load. Still threaded
+    /// to the engine's `capability_diff` tracker pending P3/P6.
     pub capabilities: Capabilities,
     pub intent: PrincipalIntentConfig,
     pub governance: PrincipalGovernanceConfig,
-    /// Per-principal snapshot of all detected tooling/agents and their
-    /// authority state.
-    pub catalog: crate::principal::catalog::PrincipalCatalog,
-    /// Set of catalog IDs that are currently active for this Principal.
-    /// Derived from `catalog.active_extensions()` and carried here so
-    /// routers can thread it into `PrincipalContext` without recomputing.
-    pub active_extensions: peko_extension_api::ActiveExtensionSet,
     /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
@@ -137,8 +132,6 @@ impl std::fmt::Debug for RouterContext {
             .field("capabilities", &self.capabilities)
             .field("intent", &self.intent)
             .field("governance", &self.governance)
-            .field("catalog", &self.catalog)
-            .field("active_extensions", &self.active_extensions)
             .field("inbox_registry", &"<InboxRegistry>")
             .field("session_creation_lock", &"<Mutex>")
             .field("observability", &self.observability)
@@ -165,8 +158,6 @@ impl Clone for RouterContext {
             capabilities: self.capabilities.clone(),
             intent: self.intent.clone(),
             governance: self.governance.clone(),
-            catalog: self.catalog.clone(),
-            active_extensions: self.active_extensions.clone(),
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: Arc::clone(&self.session_creation_lock),
             observability: self.observability.clone(),

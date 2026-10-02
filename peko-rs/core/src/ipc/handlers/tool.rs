@@ -18,23 +18,18 @@
 //!   it (same pattern as `SystemHost` and `AuthHost`).
 //! - F6: this module must not import any other `ipc::handlers::*` module.
 //!
-//! Security (ADR-042 + F8 invariant): capability grants passed to
-//! `ToolRuntime::execute_tool_with_workspace` are **always** derived
-//! server-side from the session's owning Principal. They are never
+//! Security (ADR-042 + F8 invariant): the attribution passed to
+//! `ToolRuntime::execute_tool_full_with_workspace` is **always** derived
+//! server-side from the session's owning Principal. It is never
 //! accepted from the IPC packet itself — that would be privilege
 //! escalation. The resolution chain is:
 //!
 //!   `parse_session_key()` → `principal_manager.get_by_name(parts.agent)`
-//!   → `Principal.capabilities().to_strings()`.
+//!   → principal identity (id + name).
 //!
-//! If the principal cannot be resolved (e.g. an unknown session key
-//! raced the principal reload, or the daemon hasn't finished warming
-//! up), the handler **fails closed** — it falls back to `None, None`,
-//! matching the system-wide invariant that an empty grant set denies
-//! capability-gated tools (`engine::tool_runtime`,
-//! `framework::core::tool_registry`, `agents::agent`,
-//! `engine::agentic_loop` all treat `None`/empty as deny-all). The
-//! `*_fail_closed_without_principal_id` gate tests pin this contract.
+//! ADR-066 P2 deleted the capability gate this attribution used to feed;
+//! what remains is identity threading for principal-scoped tools and
+//! audit.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -133,10 +128,10 @@ impl RequestHandler for ToolHandler {
 /// Server-side attribution for one `session_key` (ADR-042 + F8 +
 /// ADR-057). Everything in here is derived from the resolved principal —
 /// never from the packet. On any resolution failure every field is
-/// `None`, which the downstream gate treats as deny-all (fail-closed).
+/// `None`. ADR-066 P2 removed the capability/active-extension fields
+/// (there is no grant gate to feed); what remains is identity for
+/// audit + D9 ownership.
 struct SessionAttribution {
-    capabilities: Option<Vec<String>>,
-    active_extensions: Option<Vec<String>>,
     /// Stable principal id + human-readable name, threaded into the
     /// funnel so principal-scoped tools (e.g. ADR-061 `ModelCall`,
     /// cron) can resolve per-principal state at handle time.
@@ -145,29 +140,19 @@ struct SessionAttribution {
 }
 
 impl ToolHandler {
-    /// Resolve the owning principal's capability grants and active
-    /// extension set server-side from a session key (ADR-042 + F8 —
-    /// see the module-level doc for the full chain). `ExecuteTool`
-    /// uses this attribution path (ADR-061).
+    /// Resolve the owning principal's identity server-side from a
+    /// session key (ADR-042 + F8 — see the module-level doc for the full
+    /// chain). `ExecuteTool` uses this attribution path (ADR-061).
     ///
     /// The principal name is the session's `agent` segment per ADR-042;
     /// `principal_manager` never returns a stale entry — it holds
     /// `Arc<Principal>` and reloads are coordinated by
-    /// `PrincipalManager` itself. From the resolved principal we derive
-    /// BOTH the granted capability set (`capabilities().to_strings()`)
-    /// and the principal's active extension set, built by
-    /// `PrincipalCatalog::build` from the principal's capabilities +
-    /// `agent_prompts` (the daemon-wide extension store was deleted in
-    /// ADR-066 P1 — the catalog's installed-extension source is empty).
-    /// This is the same path `PrincipalManager::receive` uses when an
-    /// agent session boots, so capability-gated tools see the identical
-    /// enable set whether they were spawned by chat traffic or by this
-    /// IPC path.
+    /// `PrincipalManager` itself.
     ///
-    /// Fail-closed: any resolution failure returns all-`None` fields —
-    /// deny-all downstream — and warns so the mismatch is visible in
-    /// tracing without leaking data to the caller. `caller` labels the
-    /// warn line with the owning variant ("ExecuteTool").
+    /// Any resolution failure returns all-`None` fields and warns so
+    /// the mismatch is visible in tracing without leaking data to the
+    /// caller. `caller` labels the warn line with the owning variant
+    /// ("ExecuteTool").
     async fn resolve_session_grants(
         &self,
         session_key: &str,
@@ -183,29 +168,16 @@ impl ToolHandler {
             .await;
 
         match principal {
-            Some(principal) => {
-                let caps = principal.capabilities().await;
-                let catalog = crate::principal::catalog::PrincipalCatalog::build(
-                    &principal.workspace_path,
-                    &caps,
-                    &principal.agent_prompts,
-                    &[],
-                );
-                SessionAttribution {
-                    capabilities: Some(caps.to_strings()),
-                    active_extensions: Some(catalog.active_extensions().to_vec()),
-                    principal_id: Some(principal.id.0.clone()),
-                    principal_name: Some(principal.name().await),
-                }
-            }
+            Some(principal) => SessionAttribution {
+                principal_id: Some(principal.id.0.clone()),
+                principal_name: Some(principal.name().await),
+            },
             None => {
                 warn!(
                     "{caller} session_key={session_key} resolved to unknown principal \
-                     '{principal_agent}'; falling back to fail-closed (no grants)",
+                     '{principal_agent}'; no attribution",
                 );
                 SessionAttribution {
-                    capabilities: None,
-                    active_extensions: None,
                     principal_id: None,
                     principal_name: None,
                 }
@@ -312,8 +284,6 @@ impl ToolHandler {
                 Some(threaded_session_id),
                 attribution.principal_id,
                 attribution.principal_name,
-                attribution.capabilities,
-                attribution.active_extensions,
             )
             .await;
 
@@ -576,7 +546,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_executes_with_resolved_principal_capabilities() {
-        let fx = fixture("attributed", Capabilities::starter_bundle()).await;
+        let fx = fixture("attributed", Capabilities::new()).await;
         std::fs::write(fx.workspace.join("hello.txt"), "hi").expect("seed file");
 
         let response = execute_tool(
@@ -603,14 +573,14 @@ mod tests {
         assert!(!truncated);
     }
 
-    /// An unknown `session_key` resolves to no principal; the handler
-    /// fails closed to deny-all and the tool never runs (no side
-    /// effects).
+    /// ADR-066 P2: no capability gate — an unknown `session_key`
+    /// resolves to no principal attribution, and the tool still runs
+    /// (there is no grant set to deny against).
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn execute_tool_unknown_session_key_fails_closed() {
-        let fx = fixture("known", Capabilities::starter_bundle()).await;
-        let marker = fx.workspace.join("should_not_exist");
+    async fn execute_tool_unknown_session_key_executes_unattributed() {
+        let fx = fixture("known", Capabilities::new()).await;
+        let marker = fx.workspace.join("created-by-unattributed-call");
 
         let response = execute_tool(
             &fx.handler,
@@ -628,31 +598,24 @@ mod tests {
         else {
             panic!("expected ToolExecuted, got {response:?}");
         };
-        assert!(
-            !success,
-            "fail-closed: unknown principal must not execute: {content}"
-        );
-        assert!(
-            content.contains("currently disabled"),
-            "deny-all gate message expected, got: {content}"
-        );
-        assert!(!marker.exists(), "denied tool must not have run");
+        assert!(success, "no gate: tool executes unattributed: {content}");
+        assert!(marker.exists(), "the tool ran");
     }
 
-    /// A resolved principal without a `tool:Bash` grant is refused by
-    /// the capability gate; its granted tools still run.
+    /// ADR-066 P2: a principal with no grants at all executes Bash —
+    /// presence = executability.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn execute_tool_denied_when_principal_lacks_grant() {
-        let fx = fixture("limited", Capabilities::with_grants(["tool:Glob"])).await;
-        let marker = fx.workspace.join("should_not_exist");
+    async fn execute_tool_executes_without_grants() {
+        let fx = fixture("unrestricted", Capabilities::new()).await;
+        let marker = fx.workspace.join("created-without-grants");
 
         let response = execute_tool(
             &fx.handler,
             3,
             "Bash",
             json!({"command": format!("touch {}", marker.display())}),
-            "agent:limited:cli:default",
+            "agent:unrestricted:cli:default",
             &fx.workspace,
         )
         .await;
@@ -663,32 +626,8 @@ mod tests {
         else {
             panic!("expected ToolExecuted, got {response:?}");
         };
-        assert!(!success, "missing tool:Bash grant must deny: {content}");
-        assert!(
-            content.contains("currently disabled"),
-            "capability-gate message expected, got: {content}"
-        );
-        assert!(!marker.exists(), "denied tool must not have run");
-
-        let response = execute_tool(
-            &fx.handler,
-            4,
-            "Glob",
-            json!({"pattern": "*", "path": fx.workspace.to_string_lossy()}),
-            "agent:limited:cli:default",
-            &fx.workspace,
-        )
-        .await;
-        let ResponsePacket::ToolExecuted {
-            content, success, ..
-        } = response
-        else {
-            panic!("expected ToolExecuted, got {response:?}");
-        };
-        assert!(
-            success,
-            "tool:Glob grant should pass for the same principal: {content}"
-        );
+        assert!(success, "no grants needed: {content}");
+        assert!(marker.exists(), "the tool ran");
     }
 
     #[test]
@@ -755,7 +694,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_with_valid_run_token_executes() {
-        let fx = fixture("tokprincipal", Capabilities::starter_bundle()).await;
+        let fx = fixture("tokprincipal", Capabilities::new()).await;
         std::fs::write(fx.workspace.join("hello.txt"), "hi").expect("seed file");
         let token = fx.run_tokens.mint(
             "tokprincipal",
@@ -791,7 +730,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_unknown_run_token_fails_closed() {
-        let fx = fixture("tokunknown", Capabilities::starter_bundle()).await;
+        let fx = fixture("tokunknown", Capabilities::new()).await;
         let marker = fx.workspace.join("should_not_exist");
 
         let response = execute_tool_with_token(
@@ -817,7 +756,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_mismatched_session_key_fails_closed() {
-        let fx = fixture("tokmismatch", Capabilities::starter_bundle()).await;
+        let fx = fixture("tokmismatch", Capabilities::new()).await;
         let marker = fx.workspace.join("should_not_exist");
         let token = fx.run_tokens.mint(
             "tokmismatch",
@@ -850,7 +789,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_expired_run_token_fails_closed() {
-        let fx = fixture("tokexpired", Capabilities::starter_bundle()).await;
+        let fx = fixture("tokexpired", Capabilities::new()).await;
         let token = fx.run_tokens.mint(
             "tokexpired",
             "agent:tokexpired:cli:default",
@@ -881,13 +820,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_cross_principal_token_fails_closed() {
-        let fx = fixture("toka", Capabilities::starter_bundle()).await;
+        let fx = fixture("toka", Capabilities::new()).await;
         // Same fixture manager hosts a second principal.
         fx.manager
-            .create(test_principal_config(
-                "tokb",
-                Capabilities::starter_bundle(),
-            ))
+            .create(test_principal_config("tokb", Capabilities::new()))
             .await
             .expect("create second principal");
         let token = fx.run_tokens.mint(
@@ -922,7 +858,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_stamps_workflow_depth_from_run_token() {
-        let fx = fixture("deepwf", Capabilities::starter_bundle()).await;
+        let fx = fixture("deepwf", Capabilities::new()).await;
         // Register the Workflow runner on the fixture's core (daemon
         // state.rs does this in production).
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
@@ -1071,7 +1007,7 @@ mod tests {
         name: &str,
         metas: Vec<peko_session::SessionMetadata>,
     ) -> (Fixture, Arc<ClassifyProbeTool>) {
-        let fx = fixture(name, Capabilities::starter_bundle()).await;
+        let fx = fixture(name, Capabilities::new()).await;
         let probe = Arc::new(ClassifyProbeTool { metas });
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
             fx.tool_runtime.extension_core(),
@@ -1318,7 +1254,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_unresolvable_without_daemon_registration() {
-        let fx = fixture("nosess", Capabilities::starter_bundle()).await;
+        let fx = fixture("nosess", Capabilities::new()).await;
         let response = execute_tool(
             &fx.handler,
             30,
@@ -1347,7 +1283,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_status_matches_direct_call_from_token_node() {
-        let fx = fixture("sesshead", Capabilities::starter_bundle()).await;
+        let fx = fixture("sesshead", Capabilities::new()).await;
         register_daemon_session_tool(&fx).await;
         let (trunk, child) = seed_principal_tree(&fx, "sesshead", "head").await;
 
@@ -1415,7 +1351,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_trunk_token_resolves_trunk() {
-        let fx = fixture("sesstrunk", Capabilities::starter_bundle()).await;
+        let fx = fixture("sesstrunk", Capabilities::new()).await;
         register_daemon_session_tool(&fx).await;
         let (trunk, _child) = seed_principal_tree(&fx, "sesstrunk", "base").await;
 
@@ -1453,7 +1389,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_without_node_degrades_to_dangling() {
-        let fx = fixture("sessdang", Capabilities::starter_bundle()).await;
+        let fx = fixture("sessdang", Capabilities::new()).await;
         register_daemon_session_tool(&fx).await;
         let (_trunk, _child) = seed_principal_tree(&fx, "sessdang", "dang").await;
 
@@ -1511,7 +1447,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_tokenless_degrades_to_dangling() {
-        let fx = fixture("sessplain", Capabilities::starter_bundle()).await;
+        let fx = fixture("sessplain", Capabilities::new()).await;
         register_daemon_session_tool(&fx).await;
         let (_trunk, _child) = seed_principal_tree(&fx, "sessplain", "plain").await;
 
@@ -1543,12 +1479,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_isolates_principal_stores() {
-        let fx = fixture("sessA", Capabilities::starter_bundle()).await;
+        let fx = fixture("sessA", Capabilities::new()).await;
         fx.manager
-            .create(test_principal_config(
-                "sessB",
-                Capabilities::starter_bundle(),
-            ))
+            .create(test_principal_config("sessB", Capabilities::new()))
             .await
             .expect("create sessB");
         register_daemon_session_tool(&fx).await;
@@ -1598,7 +1531,7 @@ mod tests {
         use crate::async_exec::executor::AsyncExecutorRuntime;
         use crate::tools::builtin::async_control::AsyncRuntime as _;
 
-        let fx = fixture("asyncwf", Capabilities::starter_bundle()).await;
+        let fx = fixture("asyncwf", Capabilities::new()).await;
         let inbox_registry = crate::async_exec::executor::standalone_inbox_registry();
         let executor = Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
         let principal_id = fx
@@ -1614,8 +1547,6 @@ mod tests {
             Arc::downgrade(fx.tool_runtime.extension_core()),
             None, // no agent-DID cell — the request must carry the parent
             peko_subject::PrincipalId(principal_id.clone()),
-            Arc::new(vec!["tool:*".to_string()]),
-            Arc::new(Vec::<String>::new()),
         ));
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
             fx.tool_runtime.extension_core(),

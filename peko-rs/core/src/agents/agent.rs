@@ -90,31 +90,13 @@ pub struct Agent {
     /// jobs by name.
     principal_name: Option<String>,
     /// Snapshot of the spawning principal's capability grants,
-    /// captured at construction from
-    /// `PrincipalContext::capabilities`. Used by
-    /// `init_builtins_async` to filter the tool registry down to
-    /// what this agent's principal can see.
+    /// captured at construction from `PrincipalContext::capabilities`.
     ///
-    /// `None` means the agent is unbound from any principal and no
-    /// allowlist-based filtering is applied — every registered tool
-    /// stays visible. This preserves pre-Track-B behaviour for
-    /// test-only `Agent::new` callers and standalone agents.
-    ///
-    /// `Some(empty)` means the principal has an empty allowlist and
-    /// every tool is denied (fail-closed). This matches the
-    /// `AgentStateRegistry` / `ExtensionStateRegistry` semantics.
-    ///
-    /// **Track B**: this snapshot replaces
-    /// `AgentConfig::extensions`/`extension_whitelist` for the
-    /// runtime filter. Once `AgentConfig::extensions` is removed
-    /// the principal's allowlist is the *only* source of truth.
+    /// ADR-066 P2: inert shell (the grant gate is deleted; the snapshot
+    /// is always empty). Still read by the engine's `capability_diff`
+    /// change tracker and the compaction snapshot's
+    /// `permission_policy_summary`; P3/P6 sweep it.
     principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-    /// Snapshot of the spawning principal's active extension IDs.
-    ///
-    /// When `Some`, tool execution verifies that the tool's owning
-    /// extension is present in this set in addition to the capability
-    /// grant check. Subagents inherit the same snapshot.
-    principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     /// Spawning principal's plan DAG port. Populated via
     /// `with_principal_plan_port` from
     /// `PrincipalContext::plan_port().clone()` in `agent_runner.rs`
@@ -183,7 +165,6 @@ impl Clone for Agent {
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
             principal_capabilities: self.principal_capabilities.clone(),
-            principal_active_extensions: self.principal_active_extensions.clone(),
             principal_plan_port: self.principal_plan_port.clone(),
             model_catalog: self.model_catalog.clone(),
             // Phase 4: Arc-cloned so the trait-object + closure
@@ -369,32 +350,8 @@ impl Agent {
             );
         }
 
-        // Filter against the spawning principal's capabilities. The set
-        // is captured at construction from
-        // `PrincipalContext::capabilities` (see
-        // `with_principal_capabilities`).
-        //
-        // `None`    => no allowlist bound; every registered tool stays visible
-        //              (standalone / test behaviour).
-        // `Some(_)` => filter to the granted tools. An empty inner set means
-        //              deny-all (fail-closed), matching the semantics of
-        //              `AgentStateRegistry` / `ExtensionStateRegistry`.
-        if let Some(caps) = self.principal_capabilities.as_ref() {
-            let before_count = tools.len();
-            tools.retain(|tool| {
-                let required = crate::extensions::framework::types::Capability::new(format!(
-                    "tool:{}",
-                    tool.name()
-                ));
-                caps.is_granted(&required)
-            });
-            tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
-        }
-
-        // `ADR-020: Per-agent tool configuration is now carried on each
-        // `HookInput::ToolCall` via `capabilities` instead of a shared global
-        // whitelist. This eliminates a race where concurrent agents overwrite
-        // each other's capability set on the daemon-global `ExtensionCore`.
+        // ADR-066 P2: no capability filter — every registered tool is
+        // visible (presence = visibility = executability).
 
         // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
         // Common built-in tools are already registered via ToolRuntime::register_builtins
@@ -597,7 +554,6 @@ impl Agent {
             principal_id,
             principal_name: None,
             principal_capabilities: None,
-            principal_active_extensions: None,
             principal_plan_port: None,
             // Phase 2 of `feature/multi-model-subagents`: the
             // standalone / CLI one-shot `Agent::new` path doesn't
@@ -710,20 +666,10 @@ impl Agent {
         self
     }
 
-    /// Bind the spawning principal's capabilities for this agent's tool
-    /// filter.
+    /// Bind the spawning principal's capabilities snapshot.
     ///
-    /// Captures a snapshot of `PrincipalContext::capabilities` at
-    /// construction time so `init_builtins_async` can prune the
-    /// registered tool bag down to what the principal is allowed to
-    /// see. Mutations to the principal's capabilities after construction
-    /// are not picked up by this agent — that is the intended
-    /// semantic (the principal-scoping rules bind per-session).
-    ///
-    /// `None` means unbound — no capability-based filtering is applied.
-    /// `Some(set)` filters to the granted tools; an empty inner set
-    /// means deny-all (fail-closed). This matches the
-    /// `AgentStateRegistry` / `ExtensionStateRegistry` semantics.
+    /// ADR-066 P2: inert shell — no filtering derives from this
+    /// anymore; the engine's `capability_diff` tracker still reads it.
     #[must_use]
     pub fn with_principal_capabilities(
         mut self,
@@ -734,24 +680,6 @@ impl Agent {
             .with_principal_capabilities(capabilities.clone());
         self.subagent_executor = Arc::new(executor);
         self.principal_capabilities = capabilities;
-        self
-    }
-
-    /// Bind the active extension set for this agent's tool execution gate.
-    ///
-    /// When `Some`, every tool call also verifies that the tool's owning
-    /// extension is active. Propagated to the subagent executor so
-    /// descendant spawns inherit the same set.
-    #[must_use]
-    pub fn with_active_extensions(
-        mut self,
-        active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
-    ) -> Self {
-        let executor = (*self.subagent_executor)
-            .clone()
-            .with_active_extensions(active_extensions.clone());
-        self.subagent_executor = Arc::new(executor);
-        self.principal_active_extensions = active_extensions;
         self
     }
 
@@ -964,9 +892,6 @@ impl Agent {
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<peko_providers::Provider>>,
         principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-        principal_active_extensions: Option<
-            crate::extensions::framework::types::ActiveExtensionSet,
-        >,
     ) -> Result<Self> {
         Self::new_with_shared_executor_with_model_override(
             config,
@@ -974,7 +899,6 @@ impl Agent {
             subagent_executor,
             inherited_provider,
             principal_capabilities,
-            principal_active_extensions,
             None,
         )
         .await
@@ -998,9 +922,6 @@ impl Agent {
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<peko_providers::Provider>>,
         principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-        principal_active_extensions: Option<
-            crate::extensions::framework::types::ActiveExtensionSet,
-        >,
         // Optional catalog id the caller stamped on the inherited
         // provider (Phase 1). `None` keeps the pre-Phase-1
         // behavior: `resolved_model_id` is `None` for the
@@ -1057,7 +978,6 @@ impl Agent {
             principal_id,
             principal_name,
             principal_capabilities,
-            principal_active_extensions,
             principal_plan_port: None,
             model_catalog: None,
             // Phase 4: CLI one-shot path doesn't bind an audit
@@ -1614,27 +1534,10 @@ impl Agent {
         let core_weak = Arc::downgrade(&extension_core);
         // F37: snapshot the spawning principal's capability grants.
         // `AsyncExecutorRuntime::spawn` builds the F37 canonical
-        // funnel closure (`execute_tool_via_hook` with
-        // `ToolDispatchContext::for_principal(...)`) and dispatches
-        // it via `AsyncExecutor::dispatch_tool`. The capability gate
-        // at `registry.rs:260-277` evaluates against these snapshotted
-        // grants. Pre-F37, the gate was bypassed entirely.
-        let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
-            self.principal_capabilities
-                .as_ref()
-                .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
-                .unwrap_or_default(),
-        );
-        let snapshot_active_extensions: Arc<Vec<String>> = Arc::new(
-            self.principal_active_extensions
-                .as_ref()
-                .map(|active| active.to_vec())
-                .unwrap_or_default(),
-        );
         // Phase 10c: `AsyncExecutorRuntime` is the framework-host
         // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
         // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
-        // principal_id + capabilities snapshot, so each Async* tool
+        // principal_id, so each Async* tool
         // can take just an `Arc<dyn AsyncRuntime>` rather than
         // reaching into the framework itself.
         let runtime = Arc::new(crate::async_exec::executor::AsyncExecutorRuntime::new(
@@ -1642,8 +1545,6 @@ impl Agent {
             core_weak,
             Some(self.identity.did.clone()),
             self.principal_id.clone(),
-            snapshot_capabilities,
-            snapshot_active_extensions,
         ));
         let runtime_handle = runtime.as_shared();
         let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
@@ -1910,17 +1811,6 @@ impl Agent {
         self.principal_capabilities.as_ref()
     }
 
-    /// Snapshot of the principal's active extension IDs bound at construction.
-    ///
-    /// The engine consults this set at tool execution time to verify
-    /// that the tool's owning extension is active.
-    #[must_use]
-    pub fn principal_active_extensions(
-        &self,
-    ) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
-        self.principal_active_extensions.as_ref()
-    }
-
     // ---- Phase 2 inert field accessors ----
     //
     // The loop reads these via `&self.agent.channel()` etc. when
@@ -2106,7 +1996,6 @@ impl Agent {
             principal_id: peko_subject::PrincipalId::generate(),
             principal_name: None,
             principal_capabilities: None,
-            principal_active_extensions: None,
             principal_plan_port: None,
             // Phase 2 of `feature/multi-model-subagents`: the
             // test-only `Agent::new_for_test` path doesn't bind a
@@ -2261,10 +2150,6 @@ impl peko_engine::AgentView for Agent {
         // (e.g. `TurnPromptContext::capabilities`) without an extra
         // `Arc::new(...)` wrap at every site.
         Agent::principal_capabilities(self)
-    }
-
-    fn principal_active_extensions(&self) -> Option<&peko_extension_api::ActiveExtensionSet> {
-        Agent::principal_active_extensions(self)
     }
 
     fn channel(&self) -> Option<&str> {

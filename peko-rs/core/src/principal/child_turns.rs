@@ -98,12 +98,7 @@ pub(crate) fn peer_child_agent_config(
             ),
         }
     }
-    build_agent_config(
-        &prompt,
-        &config.capabilities,
-        &[],
-        config.preferred_model_id.clone(),
-    )
+    build_agent_config(&prompt, config.preferred_model_id.clone())
 }
 
 /// Result of [`PeerChildTurns::ensure_child_ingress`]: the peer's
@@ -200,21 +195,17 @@ impl PeerChildTurns {
             // `PrincipalManager::build_router_context` computes for
             // the root-agent path — the `role_catalog` tool's
             // contents.
-            let available_agents: Vec<AgentPromptSummary> =
-                principal
-                    .agent_prompts
-                    .iter()
-                    .map(|(id, p)| AgentPromptSummary {
-                        id: id.clone(),
-                        name: p.name.clone(),
-                        description: p.frontmatter.description.clone(),
-                        enabled: config.capabilities.is_granted(
-                            &peko_extension_api::Capability::new(format!("agent:{id}")),
-                        ) || config.capabilities.is_granted(
-                            &peko_extension_api::Capability::new(format!("agent:{}", p.name)),
-                        ),
-                    })
-                    .collect();
+            // ADR-066 P2: presence = spawnability.
+            let available_agents: Vec<AgentPromptSummary> = principal
+                .agent_prompts
+                .iter()
+                .map(|(id, p)| AgentPromptSummary {
+                    id: id.clone(),
+                    name: p.name.clone(),
+                    description: p.frontmatter.description.clone(),
+                    enabled: true,
+                })
+                .collect();
             (
                 config.name.clone(),
                 config.owner.clone(),
@@ -825,7 +816,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing,
-            capabilities: peko_extension_api::Capabilities::starter_bundle(),
+            capabilities: peko_extension_api::Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,

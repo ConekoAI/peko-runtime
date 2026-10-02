@@ -226,9 +226,8 @@ async fn register_one_hook(
     };
 
     // Each workspace hook gets a per-principal ExtensionId. The hook
-    // registry uses this to filter handlers when `active_extensions`
-    // is passed by the dispatcher (the principal only sees hooks
-    // registered under its own scope or the system scope).
+    // registry uses this to scope handlers — the principal only sees
+    // hooks registered under its own scope or the system scope.
     let extension_id = ExtensionId::new(format!("principal:{}/hook:{}", principal_id, hook_id));
 
     let mut registered = 0usize;
@@ -657,13 +656,11 @@ output = "text"
         // principal only.
         let pid_str = pid.to_string();
         let mine = core
-            .registered_prompt_sections(Some(pid_str.as_str()), None)
+            .registered_prompt_sections(Some(pid_str.as_str()))
             .await;
         assert_eq!(mine, vec!["weather".to_string()], "got: {mine:?}");
         let other = PrincipalId::generate().to_string();
-        let theirs = core
-            .registered_prompt_sections(Some(other.as_str()), None)
-            .await;
+        let theirs = core.registered_prompt_sections(Some(other.as_str())).await;
         assert!(
             !theirs.contains(&"weather".to_string()),
             "other principal must not see the hook, got: {theirs:?}"
@@ -671,7 +668,7 @@ output = "text"
 
         // Fire the section through the same port the renderer uses.
         let text = core
-            .invoke_prompt_section_hook("weather", 100, Some(pid_str.as_str()), None, None, None)
+            .invoke_prompt_section_hook("weather", 100, Some(pid_str.as_str()), None)
             .await;
         match text {
             Some(text) => assert!(

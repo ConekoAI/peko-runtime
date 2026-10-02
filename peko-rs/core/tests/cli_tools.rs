@@ -128,14 +128,9 @@ fn ensure_workspace_dir(cli: &PekoCli) {
     std::fs::create_dir_all(workspace_dir(cli)).expect("create workspaces dir");
 }
 
-/// Write a mock-LLM-pointed Principal that has all 6 built-in filesystem +
-/// shell tools granted.
-///
-/// Tools are granted with the `tool:<name>` capability syntax in the
-/// Principal's `principal.toml [capabilities] grants` list. The agent's
-/// `init_builtins_async` filters the registered tools against those
-/// capabilities, and the dispatcher's per-call `capabilities` set gates
-/// execution in `is_tool_enabled_with_whitelist`.
+/// Write a mock-LLM-pointed Principal. ADR-066 P2: the tool list is
+/// ignored — a fresh principal sees every built-in tool (presence =
+/// executability).
 fn write_builtin_agent(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     create_mock_principal_with_tools(
         cli,

@@ -39,8 +39,6 @@ impl ToolFunnel for ExtensionCore {
         caller_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) {
         let input = HookInput::ToolCall {
             tool_name: tool_name.to_string(),
@@ -51,8 +49,6 @@ impl ToolFunnel for ExtensionCore {
             caller_id,
             principal_id,
             principal_name,
-            capabilities,
-            active_extensions,
             abort_signal: None,
         };
         let point = HookPoint::PreToolUse {
@@ -72,8 +68,6 @@ impl ToolFunnel for ExtensionCore {
         caller_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) {
         let input = HookInput::ToolCall {
             tool_name: tool_name.to_string(),
@@ -84,8 +78,6 @@ impl ToolFunnel for ExtensionCore {
             caller_id,
             principal_id,
             principal_name,
-            capabilities,
-            active_extensions,
             abort_signal: None,
         };
         let point = HookPoint::PostToolUse {
@@ -105,8 +97,6 @@ impl ToolFunnel for ExtensionCore {
         caller_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> anyhow::Result<(String, serde_json::Value, bool)> {
         ExtensionCore::execute_tool_via_hook(
@@ -119,8 +109,6 @@ impl ToolFunnel for ExtensionCore {
             caller_id,
             principal_id,
             principal_name,
-            capabilities,
-            active_extensions,
             abort_signal,
         )
         .await
@@ -169,19 +157,11 @@ impl ToolFunnel for ExtensionCore {
         ExtensionCore::set_session_key(self, agent_id, key).await;
     }
 
-    async fn list_tool_definitions_with_allowlist(
+    async fn list_tool_definitions_for(
         &self,
-        capabilities: &peko_extension_api::Capabilities,
-        active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
         principal_id: &peko_subject::PrincipalId,
     ) -> Vec<peko_provider_api::ToolDefinition> {
-        ExtensionCore::list_tool_definitions_with_allowlist(
-            self,
-            capabilities,
-            active_extensions,
-            principal_id,
-        )
-        .await
+        ExtensionCore::list_tool_definitions_for(self, principal_id).await
     }
 
     async fn has_deferred_tools_for(&self, principal_id: &peko_subject::PrincipalId) -> bool {
@@ -194,14 +174,11 @@ impl ToolFunnel for ExtensionCore {
         section: &str,
         priority: i32,
         principal_id: Option<&str>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         workspace: Option<String>,
     ) -> Option<String> {
         // Phase 9b.N.5b.4: lifted PromptRenderer::dispatch_text's
         // hook firing into the trait. Delegates to
-        // ExtensionCore::invoke_hook_text_with_principal (the
-        // canonical 7-arg principal-context-aware method).
+        // ExtensionCore::invoke_hook_text_with_principal.
         self.invoke_hook_text_with_principal(
             HookPoint::PromptSystemSection {
                 section: section.to_string(),
@@ -209,27 +186,19 @@ impl ToolFunnel for ExtensionCore {
             },
             HookInput::Unit,
             principal_id,
-            capabilities,
-            active_extensions,
             workspace,
         )
         .await
     }
 
-    async fn registered_prompt_sections(
-        &self,
-        principal_id: Option<&str>,
-        _active_extensions: Option<Vec<String>>,
-    ) -> Vec<String> {
+    async fn registered_prompt_sections(&self, principal_id: Option<&str>) -> Vec<String> {
         // ADR-052 D6: scan the hook registry for `PromptSystemSection`
         // points so workspace hooks (`principal:<pid>/hook:<id>`) can
         // contribute named tail sections. Scoping mirrors the
         // principal-visibility rule used for workspace-hook
         // registration: a principal-scoped extension id is visible only
         // to its own principal; every other id is system scope and
-        // visible to all. (`active_extensions` is accepted for parity
-        // with the invoke path's context but not consulted — the hook
-        // invoke path doesn't filter by it either.)
+        // visible to all.
         let hooks = self.get_all_hooks().await;
         let mut sections: Vec<String> = hooks
             .iter()
@@ -252,8 +221,6 @@ impl ToolFunnel for ExtensionCore {
         &self,
         snapshot: SessionSnapshot,
         principal_id: Option<&str>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
         workspace: Option<String>,
     ) -> Option<String> {
         // Phase 9b.N.5b.4: lifted PromptRenderer::dispatch_session_context's
@@ -262,8 +229,6 @@ impl ToolFunnel for ExtensionCore {
             HookPoint::SessionContextBuild,
             HookInput::SessionState(snapshot),
             principal_id,
-            capabilities,
-            active_extensions,
             workspace,
         )
         .await

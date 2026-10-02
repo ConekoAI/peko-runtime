@@ -232,7 +232,14 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// `https://pekohub.org` if the runtime has no configured hub.
     fn pekohub_base_url(&self) -> String;
 
-    /// **Phase C.** Build a per-call authority that projects this
+    /// Observability hub for the ADR-066 D9 `Security` audit event a
+    /// denied cross-principal write emits. Default `None` (test hosts)
+    /// skips the event — the denial still fails closed.
+    fn observability(&self) -> Option<Arc<peko_observability::Observability>> {
+        None
+    }
+
+    /// Build a per-call authority that projects this
     /// handler's caller subject. Handlers MUST call this when they
     /// intend to write — the returned authority is the only one
     /// entitled to clear the Shared-write actor gate (peer-as-User
@@ -240,12 +247,14 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// constructs the authority from the caller's subject via
     /// `RuntimeAuthority::for_caller`; production hosts inherit this
     /// default because `for_caller` already accepts any verified
-    /// `Subject`.
+    /// `Subject`. ADR-066 D9: the authority also carries the host's
+    /// audit sink so ownership denials emit a `Security` event.
     fn authority_for(&self, caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
         crate::common::authority::RuntimeAuthority::for_caller(
             self.path_resolver(),
             caller.subject().clone(),
         )
+        .with_audit_sink(self.observability())
     }
 }
 
@@ -787,20 +796,18 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                // Phase C: WriteSide gate. The capabilities on the
-                // principal's own config must include
-                // `principal:write_config` before we touch shared
-                // state — `update_config` rewrites `principal.toml`.
-                // Actor + tier gate already fired inside
-                // `shared_config_write` via `for_caller(caller)` in
-                // `authority_for`.
-                let caps = config.capabilities.clone();
+                // ADR-066 D9: ownership gate — `update_config`
+                // rewrites `principal.toml`, so the actor must own
+                // this principal (or be the operator). The tier gate
+                // fires inside `shared_config_write_for_name` via
+                // `for_caller(caller)` in `authority_for`.
                 drop(config);
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalGrantPermission capability denied: {e}");
+                    warn!("PrincipalGrantPermission write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1026,29 +1033,15 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                // Phase C: WriteSide gate. The principal's own
-                // capabilities must include `principal:write_config`
-                // before we let `update_config` rewrite
-                // `principal.toml`. Load the principal just to read
-                // its capabilities — `update_config` will validate
-                // ownership again on its own path.
-                let principal_for_gate = match load_principal(host, &name).await {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal '{}' not found", name),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-                let caps = principal_for_gate.capabilities().await;
+                // ADR-066 D9: ownership gate — `update_config`
+                // rewrites `principal.toml`, so the actor must own
+                // this principal (or be the operator).
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalSetStatus capability denied: {e}");
+                    warn!("PrincipalSetStatus write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1129,27 +1122,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                // Phase C: WriteSide gate. Capabilities on the
-                // principal's own config must include
-                // `principal:write_config` before `update_config`
-                // rewrites `principal.toml`.
-                let principal_for_gate = match load_principal(host, &name).await {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal '{}' not found", name),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-                let caps = principal_for_gate.capabilities().await;
+                // ADR-066 D9: ownership gate.
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalSetExposure capability denied: {e}");
+                    warn!("PrincipalSetExposure write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1413,24 +1392,19 @@ impl RequestHandler for PrincipalHandler {
                     .principal_layout(&name)
                     .shared
                     .roles_dir;
-                // Phase C: WriteSide gate. The fresh principal's
-                // `starter_bundle()` capabilities already include
-                // `principal:write_agents` (see
-                // `Capabilities::starter_bundle`), so this gate
-                // passes for any caller with a Shared-tier
-                // entitlement (User or Principal) when the bundle
-                // hasn't been mutated. The principal doesn't exist
-                // yet — we use the name-keyed variant
+                // ADR-066 D9: ownership gate. The principal doesn't
+                // exist yet — we use the name-keyed variant
                 // `shared_roles_dir_write_for_name` because the
                 // `PrincipalId` is generated inside
-                // `PrincipalManager::create`.
-                let capabilities =
-                    crate::extensions::framework::types::Capabilities::starter_bundle();
+                // `PrincipalManager::create`. The operator may create
+                // principals; a principal-typed actor may not create
+                // other principals (fail closed).
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_roles_dir_write_for_name(&name, Some(&capabilities))
+                    .shared_roles_dir_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalCreate capability denied: {e}");
+                    warn!("PrincipalCreate write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1481,7 +1455,7 @@ impl RequestHandler for PrincipalHandler {
                     governance: PrincipalGovernanceConfig::default(),
                     memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
-                    capabilities: capabilities.clone(),
+                    capabilities: Default::default(),
                     exposure: Exposure::Private,
                     status: None,
                     boot_state: None,
@@ -1564,19 +1538,17 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                // Phase C: WriteSide gate. The principal's own
-                // capabilities must include `principal:write_config`
-                // before we let `update_config` rewrite
-                // `principal.toml`. The check sits below the
+                // ADR-066 D9: ownership gate. Sits below the
                 // `Permission::ManageSettings` PekoHub ACL check —
                 // both layers must pass.
-                let caps = config.capabilities.clone();
+                // ADR-066 D9: ownership gate.
                 drop(config);
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalUpdate capability denied: {e}");
+                    warn!("PrincipalUpdate write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -3182,26 +3154,20 @@ async fn import_principal_package(
         host.config_dir(),
         host.data_dir(),
     );
-    // Phase C: project the caller's subject and capability snapshot
-    // into the unpackager so the agent-prompt + identity writes gate
-    // through `RuntimeAuthority::shared_*_write_for_name`. We use
-    // `Capabilities::starter_bundle()` widened by the caller-chosen
-    // `selected_capabilities` because the new principal doesn't exist
-    // yet on disk — the gate fires against the post-merge cap set
-    // (what the principal will actually carry once persisted).
-    let mut caller_caps = peko_extension_api::Capabilities::starter_bundle();
-    for cap in &selected_capabilities {
-        caller_caps.push(cap.clone());
-    }
+    // ADR-066 P2/D1: no capability negotiation — the caller's subject
+    // is projected into the unpackager so the agent-prompt + identity
+    // writes gate through `RuntimeAuthority::shared_*_write_for_name`
+    // on ownership. The wire's `selected_capabilities` is
+    // parsed-and-ignored (deprecated).
+    let _ = selected_capabilities;
     let opts = crate::registry::packaging::PrincipalImportOptions {
         new_name,
         allow_unsigned,
         force: trust_policy == crate::registry::packaging::TrustPolicy::AllowUntrusted,
         trust_store: Some(host.trust_store().clone()),
         trust_policy,
-        selected_capabilities,
         caller_subject: caller.subject().clone(),
-        caller_capabilities: caller_caps,
+        observability: host.observability(),
         ..Default::default()
     };
     let mut result = unpackager.import(opts).await?;
@@ -4103,7 +4069,7 @@ mod tests {
                 governance: PrincipalGovernanceConfig::default(),
                 memory: PrincipalMemoryConfig::default(),
                 routing: PrincipalRoutingConfig::default(),
-                capabilities: peko_extension_api::Capabilities::starter_bundle(),
+                capabilities: peko_extension_api::Capabilities::new(),
                 exposure: peko_auth::Exposure::Private,
                 status: None,
                 boot_state: None,

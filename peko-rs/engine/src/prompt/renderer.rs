@@ -37,8 +37,8 @@
 //!   a single misbehaving extension can't stall the loop. The `tools`
 //!   section is intentionally not dispatched — tool catalogs travel on
 //!   the wire as the `tools[]` JSON-schema array (see
-//!   `crate::agentic_loop::build_tool_definitions` and the
-//!   `list_tool_definitions_with_allowlist` filter in
+//!   `crate::agentic_loop::build_tool_definitions` and
+//!   `list_tool_definitions_for` in
 //!   `peko_core::extensions::framework::core::registry`).
 //! - **`skills` / `roles` / `workflows` ride the tail.** These sections render
 //!   in the runtime-context message ([`PromptRenderer::render_runtime_context`]),
@@ -402,10 +402,7 @@ impl PromptRenderer {
         // producing output retracts once.
         let mut custom_names = self
             .extension_core
-            .registered_prompt_sections(
-                Some(ctx.principal_id.as_str()),
-                Some(ctx.active_extension_vec()),
-            )
+            .registered_prompt_sections(Some(ctx.principal_id.as_str()))
             .await;
         custom_names.retain(|name| !BUILTIN_PROMPT_SECTIONS.contains(&name.as_str()));
         custom_names.sort();
@@ -466,21 +463,12 @@ impl PromptRenderer {
         // `HookInput::Unit` internally and delegates to
         // `ExtensionCore::invoke_hook_text_with_principal`.
         let principal_id = Some(ctx.principal_id.as_str());
-        let capabilities = Some(ctx.capability_strings());
-        let active_extensions = Some(ctx.active_extension_vec());
         let workspace = Some(ctx.workspace.to_string_lossy().to_string());
 
         let core = Arc::clone(&self.extension_core);
         let result = tokio::time::timeout(
             HOOK_TIMEOUT,
-            core.invoke_prompt_section_hook(
-                section,
-                100,
-                principal_id,
-                capabilities,
-                active_extensions,
-                workspace,
-            ),
+            core.invoke_prompt_section_hook(section, 100, principal_id, workspace),
         )
         .await;
 
@@ -527,8 +515,6 @@ impl PromptRenderer {
             core.invoke_session_context_build_hook(
                 snapshot,
                 Some(ctx.principal_id.as_str()),
-                Some(ctx.capability_strings()),
-                Some(ctx.active_extension_vec()),
                 Some(ctx.workspace.to_string_lossy().to_string()),
             ),
         )
@@ -1227,8 +1213,6 @@ mod tests {
             _caller_id: Option<String>,
             _principal_id: Option<String>,
             _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
         ) {
         }
         async fn post_tool_use(
@@ -1241,8 +1225,6 @@ mod tests {
             _caller_id: Option<String>,
             _principal_id: Option<String>,
             _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
         ) {
         }
         async fn execute_tool_via_hook(
@@ -1255,8 +1237,6 @@ mod tests {
             _caller_id: Option<String>,
             _principal_id: Option<String>,
             _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
             _abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
         ) -> anyhow::Result<(String, serde_json::Value, bool)> {
             anyhow::bail!("EmptyExtensionCore::execute_tool_via_hook not implemented")
@@ -1282,10 +1262,8 @@ mod tests {
         async fn invoke_stop_hook(&self, _merged: serde_json::Value) {}
         async fn invoke_after_agent_hook(&self, _merged: serde_json::Value) {}
         async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
-        async fn list_tool_definitions_with_allowlist(
+        async fn list_tool_definitions_for(
             &self,
-            _capabilities: &peko_extension_api::Capabilities,
-            _active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
             _principal_id: &PrincipalId,
         ) -> Vec<peko_provider_api::ToolDefinition> {
             Vec::new()
@@ -1298,8 +1276,6 @@ mod tests {
             section: &str,
             _priority: i32,
             _principal_id: Option<&str>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
             _workspace: Option<String>,
         ) -> Option<String> {
             self.section_texts
@@ -1308,11 +1284,7 @@ mod tests {
                 .get(section)
                 .cloned()
         }
-        async fn registered_prompt_sections(
-            &self,
-            _principal_id: Option<&str>,
-            _active_extensions: Option<Vec<String>>,
-        ) -> Vec<String> {
+        async fn registered_prompt_sections(&self, _principal_id: Option<&str>) -> Vec<String> {
             self.registered_sections
                 .lock()
                 .expect("registered_sections mutex poisoned")
@@ -1322,8 +1294,6 @@ mod tests {
             &self,
             _snapshot: SessionSnapshot,
             _principal_id: Option<&str>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
             _workspace: Option<String>,
         ) -> Option<String> {
             self.session_context_snapshots
@@ -1365,7 +1335,6 @@ mod tests {
             role_name: "test-agent".to_string(),
             body: "You are {{agent_name}} on {{workspace}}.".to_string(),
             capabilities: None,
-            active_extensions: None,
             principal_memory: None,
             project_instructions: None,
             workspace: PathBuf::from("/tmp/workspace"),

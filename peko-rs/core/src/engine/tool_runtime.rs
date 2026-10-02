@@ -281,10 +281,6 @@ impl ToolRuntime {
     /// # Arguments
     /// * `tool_name` - Name of the tool to execute
     /// * `params` - JSON parameters for the tool
-    /// * `capabilities` - Optional per-call capability grants. When `None`,
-    ///   the execution gate is fail-closed.
-    /// * `active_extensions` - Optional active extension IDs for the current
-    ///   Principal; when present, the tool's owning extension must be active.
     ///
     /// # Returns
     /// The JSON result of the tool execution
@@ -292,17 +288,9 @@ impl ToolRuntime {
         &self,
         tool_name: &str,
         params: serde_json::Value,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
-        self.execute_tool_with_workspace(
-            tool_name,
-            params,
-            &self.workspace,
-            capabilities,
-            active_extensions,
-        )
-        .await
+        self.execute_tool_with_workspace(tool_name, params, &self.workspace)
+            .await
     }
 
     /// Execute a tool with an explicit workspace override
@@ -311,20 +299,9 @@ impl ToolRuntime {
         tool_name: &str,
         params: serde_json::Value,
         workspace: &std::path::Path,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
         let (display, json, success) = self
-            .execute_tool_full_with_workspace(
-                tool_name,
-                params,
-                workspace,
-                None,
-                None,
-                None,
-                capabilities,
-                active_extensions,
-            )
+            .execute_tool_full_with_workspace(tool_name, params, workspace, None, None, None)
             .await?;
 
         if !success {
@@ -349,15 +326,13 @@ impl ToolRuntime {
     /// a transport error.
     ///
     /// `session_id` / `principal_id` / `principal_name` carry the
-    /// **server-resolved** calling context (phase 2a/2b): the gate
-    /// probes the principal-scoped registration before falling back to
-    /// the system scope, and principal-scoped tools (`ModelCall`,
+    /// **server-resolved** calling context (phase 2a/2b):
+    /// principal-scoped tools (`ModelCall`,
     /// `Workflow`, cron) read the identity off the resulting
     /// `ToolContext`. On the `ExecuteTool` path `session_id` carries
     /// the packet's `session_key` (the workflow's attribution anchor —
     /// e.g. `agent:<principal>:workflow:<uuid>`), not a session UUID.
-    /// All three are `None` for unattributed standalone calls
-    /// (fail-closed downstream).
+    /// All three are `None` for unattributed standalone calls.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_tool_full_with_workspace(
         &self,
@@ -367,8 +342,6 @@ impl ToolRuntime {
         session_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) -> Result<(String, serde_json::Value, bool)> {
         peko_engine::funnel::execute_tool_via_core_with_context(
             &*self.extension_core,
@@ -380,8 +353,6 @@ impl ToolRuntime {
             None,
             principal_id,
             principal_name,
-            capabilities,
-            active_extensions,
             None,
         )
         .await
@@ -454,12 +425,7 @@ mod tests {
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
         let result = runtime
-            .execute_tool(
-                "Bash",
-                json!({"command": "echo hello"}),
-                Some(vec!["tool:Bash".to_string()]),
-                None,
-            )
+            .execute_tool("Bash", json!({"command": "echo hello"}))
             .await;
 
         assert!(
@@ -471,14 +437,46 @@ mod tests {
         assert!(output.get("stdout").is_some() || output.get("result").is_some());
     }
 
+    /// ADR-066 D1 (P2): presence = visibility = executability. A fresh
+    /// principal carries no grants (`principal.toml` never persists a
+    /// `[capabilities]` section), so this path exercises exactly what a
+    /// fresh principal gets: the full wire catalog, and `Bash` runs.
+    #[tokio::test]
+    async fn test_no_grant_context_full_catalog_and_bash_executes() {
+        let resolver = PathResolver::new();
+        let runtime = ToolRuntime::new(resolver).await.unwrap();
+
+        // The wire catalog contains the built-ins with no capability
+        // set anywhere in the call path.
+        let defs = runtime
+            .extension_core()
+            .list_tool_definitions_for(peko_subject::PrincipalId::system())
+            .await;
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        for expected in ["Bash", "Read", "Write", "Glob", "Grep", "Edit"] {
+            assert!(
+                names.contains(&expected),
+                "fresh principal sees {expected} in the wire catalog: {names:?}"
+            );
+        }
+
+        // And execution works — the funnel is called with no grant
+        // context at all (`execute_tool` carries no capabilities).
+        let result = runtime
+            .execute_tool("Bash", json!({"command": "echo hello"}))
+            .await;
+        assert!(
+            result.is_ok(),
+            "Bash executes without any grant context: {result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_tool_runtime_execute_unknown_tool() {
         let resolver = PathResolver::new();
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
-        let result = runtime
-            .execute_tool("nonexistent_tool", json!({}), None, None)
-            .await;
+        let result = runtime.execute_tool("nonexistent_tool", json!({})).await;
 
         assert!(result.is_err());
     }

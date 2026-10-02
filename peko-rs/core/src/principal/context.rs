@@ -110,12 +110,6 @@ pub struct PrincipalContext {
     /// Optional observability hub. Set from the `RouterContext` by the root
     /// router so subagent spawns can be audited under the parent principal.
     observability: OnceLock<Arc<Observability>>,
-    /// Snapshot of the extension IDs that are active for this principal on
-    /// this message. Derived from the `RouterContext::active_extensions`
-    /// snapshot and consulted by the agent's tool gate so a tool is only
-    /// callable when both its capability is granted and its owning extension
-    /// is active.
-    active_extensions: OnceLock<peko_extension_api::ActiveExtensionSet>,
     // F19 (revised 2026-08-01 v2): the engine loop never managed to
     // fetch the principal's meter directly — the dispatcher boundary
     // is the only point with a `PrincipalManager` reference in scope,
@@ -191,7 +185,6 @@ impl PrincipalContext {
             caller_principal_did: OnceLock::new(),
             caller_runtime_id: OnceLock::new(),
             observability: OnceLock::new(),
-            active_extensions: OnceLock::new(),
             quota_meter: OnceLock::new(),
             seen_models: Arc::new(Mutex::new(initial_seen.models)),
         }
@@ -270,23 +263,6 @@ impl PrincipalContext {
     #[must_use]
     pub fn observability(&self) -> Option<&Arc<Observability>> {
         self.observability.get()
-    }
-
-    /// Bind the active extension snapshot for this principal context.
-    /// Idempotent.
-    pub fn set_active_extensions(
-        &self,
-        active_extensions: peko_extension_api::ActiveExtensionSet,
-    ) -> Result<(), peko_extension_api::ActiveExtensionSet> {
-        self.active_extensions.set(active_extensions)
-    }
-
-    /// Snapshot of extension IDs active for this principal. Returns an empty
-    /// set if no snapshot has been bound.
-    #[must_use]
-    pub fn active_extensions(&self) -> &peko_extension_api::ActiveExtensionSet {
-        self.active_extensions
-            .get_or_init(peko_extension_api::ActiveExtensionSet::empty)
     }
 
     /// Bind the principal's quota meter (Bug A, 2026-08-01 v2). Set

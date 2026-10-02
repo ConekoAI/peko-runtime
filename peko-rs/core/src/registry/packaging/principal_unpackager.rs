@@ -12,7 +12,6 @@ use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
 use peko_auth::Subject;
-use peko_extension_api::Capabilities;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
 use peko_subject::PrincipalDID;
 use std::collections::{BTreeSet, HashMap};
@@ -43,22 +42,15 @@ pub struct PrincipalImportOptions {
     pub trust_store: Option<Arc<RwLock<TrustStore>>>,
     /// How to handle trust pinning conflicts.
     pub trust_policy: TrustPolicy,
-    /// Capability grants to add to the imported Principal's
-    /// `[capabilities] grants` list, deduplicated against existing grants.
-    pub selected_capabilities: Vec<String>,
-    /// Caller subject for the WriteSide gate. The IPC handler
-    /// passes `caller.subject().clone(); defaults to
+    /// Caller subject for the ownership write gate (ADR-066 D9). The
+    /// IPC handler passes `caller.subject().clone()`; defaults to
     /// `Subject::User("local")` so library callers (tests, the CLI
     /// `import` subcommand if it ever bypasses the IPC layer) clear
     /// the Shared tier actor gate.
     pub caller_subject: Subject,
-    /// Caller capability snapshot for the WriteSide gate. The IPC
-    /// handler passes the post-merge `Capabilities` (starter bundle
-    /// plus any caller-selected grants) so the gate reflects what
-    /// the new principal will actually carry. Defaults to
-    /// `Capabilities::starter_bundle()` so existing tests don't
-    /// need to thread this through.
-    pub caller_capabilities: Capabilities,
+    /// Observability hub for the ADR-066 D9 `Security` audit event a
+    /// denied ownership-crossing write emits. `None` skips the event.
+    pub observability: Option<Arc<peko_observability::Observability>>,
 }
 
 impl Default for PrincipalImportOptions {
@@ -72,9 +64,8 @@ impl Default for PrincipalImportOptions {
             force: false,
             trust_store: None,
             trust_policy: TrustPolicy::Tofu,
-            selected_capabilities: Vec::new(),
             caller_subject: Subject::User("local".to_string()),
-            caller_capabilities: Capabilities::starter_bundle(),
+            observability: None,
         }
     }
 }
@@ -253,31 +244,30 @@ impl PrincipalUnpackager {
                 .map_err(|e| anyhow::anyhow!("[unsafe_extension_id] {}: {e}", ext_ref.id))?;
         }
 
-        // Phase C: Build a per-call authority that projects the IPC
-        // caller's subject and capability snapshot. The agent prompt
-        // and identity writes (Shared tier) gate on this authority;
-        // sessions writes (Local tier) rely on the actor gate alone
-        // (no per-resource capability exists for sessions — the
-        // actor's tier-entitlement is the only Layer 2 check).
+        // Build a per-call authority that projects the IPC
+        // caller's subject. The agent prompt
+        // and identity writes (Shared tier) gate on ownership via this
+        // authority; sessions writes (Local tier) rely on the actor gate
+        // alone (the actor's tier-entitlement is the only Layer 2
+        // check).
         let resolver = PathResolver::with_dirs(
             self.config_dir.clone(),
             self.data_dir.clone(),
             self.data_dir.clone(),
         );
-        let authority = RuntimeAuthority::for_caller(resolver, options.caller_subject.clone());
+        let authority = RuntimeAuthority::for_caller(resolver, options.caller_subject.clone())
+            .with_audit_sink(options.observability.clone());
 
         let identity = self
             .import_identity(&files, &manifest, &options, &name, &authority)
             .await?;
         let mut config = self.import_config(&files, &name, &identity)?;
 
-        // Apply any capabilities chosen during the preview/confirm flow.
-        for cap in &options.selected_capabilities {
-            if !config.capabilities.contains_str(cap) {
-                config.capabilities.push(cap.clone());
-            }
-        }
-
+        // ADR-066 P2: no capability negotiation — the wire's
+        // `selected_capabilities` was dropped from
+        // `PrincipalImportOptions`; imported principals carry no
+        // grants (the `[capabilities]` section is ignored on load
+        // and never persisted).
         // Update DID in config to match the imported/rotated identity
         config.did = Some(PrincipalDID(identity.did.clone()));
         config.name = name.clone();
@@ -313,8 +303,7 @@ impl PrincipalUnpackager {
             config.boot_state = None;
         }
 
-        self.import_roles(&files, &name, &options, &authority)
-            .await?;
+        self.import_roles(&files, &name, &authority).await?;
         // Phase A: the legacy `import_memory` is gone. The memory
         // index (`local/memory_index.json`) is derived state — never
         // packaged, rebuilt by the runtime (ADR-056).
@@ -397,12 +386,12 @@ impl PrincipalUnpackager {
         // `identity.json` (public DID) and `keys.enc` (private key
         // export); `KeyStorage::with_path` expects the directory.
         //
-        // Phase C: gate the directory on `principal:write_identity`
-        // via the caller-projected authority. Sponsor's `[[permissions]]`
-        // ACL is the lower-level PekoHub check; this is the per-resource
-        // gate.
+        // ADR-066 D9: gate the directory on ownership via the
+        // caller-projected authority. Sponsor's `[[permissions]]`
+        // ACL is the lower-level PekoHub check.
         let identity_dir = authority
-            .shared_identity_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
+            .shared_identity_dir_write_for_name(principal_name)
+            .await?
             .to_path_buf();
 
         if options.rotate_keys {
@@ -460,7 +449,6 @@ impl PrincipalUnpackager {
         &self,
         files: &HashMap<String, Vec<u8>>,
         principal_name: &str,
-        options: &PrincipalImportOptions,
         authority: &RuntimeAuthority,
     ) -> anyhow::Result<()> {
         // Phase A: role files live under the Shared tier
@@ -470,11 +458,12 @@ impl PrincipalUnpackager {
         // `agents/` prefix are restored into `roles/` with their
         // directory-layout `AGENT.md` files renamed to `ROLE.md`.
         //
-        // Phase C: gate the directory on `principal:write_agents` via
-        // the caller-projected authority. Matches the
+        // ADR-066 D9: gate the directory on ownership via the
+        // caller-projected authority. Matches the
         // `PrincipalCreate` role-prompt write gate.
         let roles_dir = authority
-            .shared_roles_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
+            .shared_roles_dir_write_for_name(principal_name)
+            .await?
             .to_path_buf();
 
         for (path, content) in files {
@@ -1085,22 +1074,10 @@ mod tests {
         assert!(!opts.rotate_keys);
         assert!(opts.import_sessions);
         assert!(!opts.allow_unsigned);
-        assert!(opts.selected_capabilities.is_empty());
-        // Phase C bootstrap: defaults clear the Shared tier gate so
-        // library callers (tests, future direct-call sites) don't
-        // have to thread `caller_subject` / `caller_capabilities`
-        // through every constructor.
+        // Defaults clear the Shared tier gate so library callers
+        // (tests, future direct-call sites) don't have to thread
+        // `caller_subject` through every constructor.
         assert!(matches!(opts.caller_subject, Subject::User(ref u) if u == "local"));
-        assert!(opts
-            .caller_capabilities
-            .is_granted(&peko_extension_api::Capability::new(
-                "principal:write_agents"
-            )));
-        assert!(opts
-            .caller_capabilities
-            .is_granted(&peko_extension_api::Capability::new(
-                "principal:write_identity"
-            )));
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
@@ -1716,18 +1693,12 @@ principal_id = "prin_old"
         assert_eq!(required, vec!["tool:Read".to_string()]);
     }
 
-    /// PR 2: Phase C gate. A caller without `principal:write_agents`
-    /// cannot import a `.peko` package — the gate fires inside
-    /// `import_agents` before any agent prompt reaches disk.
-    /// `import_identity` runs first and also requires
-    /// `principal:write_identity`; either gate is acceptable here
-    /// (they're checked in order: identity first, then agents).
-    /// The test asserts the operation fails with a capability-denied
-    /// message rather than letting agent prompts land on disk.
+    /// ADR-066 D9: a non-operator caller (principal-typed or visitor)
+    /// cannot import a `.peko` package — the ownership gate fires
+    /// inside `import_identity` before any file reaches disk, and the
+    /// denial lands in the Security audit log when a sink is attached.
     #[tokio::test]
-    async fn import_denied_when_caller_lacks_write_caps() {
-        use peko_extension_api::Capabilities;
-
+    async fn import_denied_for_non_operator_caller() {
         let identity = Identity::new("denied", DIDScope::Local).await.unwrap();
         let config = sample_config("denied", &identity.did);
 
@@ -1748,27 +1719,35 @@ principal_id = "prin_old"
 
         let config_dir = tmp.path().join("cfg");
         let data_dir = tmp.path().join("data");
-        let unpackager = PrincipalUnpackager::new(&out, config_dir, data_dir);
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir);
 
-        // Caller clears the Shared tier actor gate (Subject::User)
-        // but carries no capability grants — the first gate that
-        // fires (inside `import_identity` for
-        // `principal:write_identity`) returns a
-        // `CapabilityDenied{Shared}` wrapped in `anyhow::Error`.
+        let audit_dir = tmp.path().join("audit");
+        let observability = std::sync::Arc::new(
+            peko_observability::Observability::with_audit_dir("test", audit_dir.clone())
+                .expect("audit dir"),
+        );
+
         let opts = PrincipalImportOptions {
-            caller_capabilities: Capabilities::new(), // empty
+            caller_subject: peko_auth::Subject::Visitor("visitor-1".to_string()),
+            observability: Some(observability),
             ..PrincipalImportOptions::default()
         };
         let err = unpackager
             .import(opts)
             .await
-            .expect_err("import should be denied without capability grants");
+            .expect_err("import should be denied for a visitor caller");
         let msg = format!("{err}");
         assert!(
-            msg.contains("principal:write_identity")
-                || msg.contains("principal:write_agents")
-                || msg.contains("CapabilityDenied"),
-            "expected capability denial, got: {msg}"
+            msg.contains("cross-principal write denied"),
+            "expected ownership denial, got: {msg}"
+        );
+
+        let today = chrono::Utc::now().date_naive();
+        let log = std::fs::read_to_string(audit_dir.join(format!("audit-{today}.jsonl")))
+            .expect("audit file written");
+        assert!(
+            log.contains("principal.cross_principal_write_denied"),
+            "audit log must carry the crossing event: {log}"
         );
     }
 }

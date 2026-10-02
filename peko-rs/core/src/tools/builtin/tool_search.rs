@@ -44,7 +44,7 @@ use serde_json::json;
 use std::sync::Weak;
 
 use crate::extensions::framework::core::ExtensionCore;
-use crate::extensions::framework::types::{ActiveExtensionSet, Capabilities, ToolExposure};
+use crate::extensions::framework::types::ToolExposure;
 use peko_tools_core::Tool;
 use peko_tools_core::ToolError;
 
@@ -123,14 +123,14 @@ impl Tool for ToolSearchTool {
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // No-context entry point (unit tests, direct callers): search
-        // the system principal's scope with no capability gate.
-        self.search(params, None, None).await
+        // the system principal's scope.
+        self.search(params, None).await
     }
 
     /// Production entry point — the framework routes through here with
     /// the caller's `ToolContext`, so the search runs against the
-    /// *calling* principal's tool scope and capability grants (the
-    /// pre-fix v1 hardcoded `PrincipalId::system()`).
+    /// *calling* principal's tool scope (the pre-fix v1 hardcoded
+    /// `PrincipalId::system()`).
     async fn execute_with_context(
         &self,
         params: serde_json::Value,
@@ -141,35 +141,17 @@ impl Tool for ToolSearchTool {
             .as_deref()
             .filter(|id| !id.is_empty())
             .map(|id| peko_subject::PrincipalId(id.to_string()));
-        let capabilities = ctx
-            .capabilities
-            .as_ref()
-            .map(|grants| Capabilities::with_grants(grants.iter().cloned()));
-        let active_extensions = ctx
-            .active_extensions
-            .as_ref()
-            .map(|ids| ActiveExtensionSet::with_ids(ids.iter().cloned()));
-        self.search(
-            params,
-            principal_id,
-            capabilities
-                .as_ref()
-                .map(|c| (c, active_extensions.as_ref())),
-        )
-        .await
+        self.search(params, principal_id).await
     }
 }
 
 impl ToolSearchTool {
     /// Shared search body. `principal_id` defaults to the system
-    /// scope when the caller carries no principal context; `gate` is
-    /// the optional `(capabilities, active_extensions)` pair forwarded
-    /// to `list_deferred_tool_definitions`.
+    /// scope when the caller carries no principal context.
     async fn search(
         &self,
         params: serde_json::Value,
         principal_id: Option<peko_subject::PrincipalId>,
-        gate: Option<(&Capabilities, Option<&ActiveExtensionSet>)>,
     ) -> anyhow::Result<serde_json::Value> {
         // ── 1. Parse and validate arguments ──────────────────────────────
         let query = params
@@ -198,15 +180,8 @@ impl ToolSearchTool {
         // ── 3. Run the search in the caller's principal scope ────────────
         let principal_id =
             principal_id.unwrap_or_else(|| peko_subject::PrincipalId::system().clone());
-        let (capabilities, active_extensions) = gate.unzip();
         let matched = core
-            .list_deferred_tool_definitions(
-                &principal_id,
-                capabilities,
-                active_extensions.flatten(),
-                query,
-                limit_usize,
-            )
+            .list_deferred_tool_definitions(&principal_id, query, limit_usize)
             .await;
 
         Ok(json!({
@@ -375,11 +350,11 @@ mod tests {
     }
 
     /// The production path (`execute_with_context`) must search the
-    /// *caller's* principal scope (not the hardcoded system scope) and
-    /// apply the capability gate: a deferred tool without the
-    /// caller's `tool:<name>` grant is dropped from the results.
+    /// *caller's* principal scope (not the hardcoded system scope).
+    /// ADR-066 P2: no capability gate — deferred tools resolve by
+    /// presence.
     #[tokio::test]
-    async fn tool_search_gates_on_caller_capabilities() {
+    async fn tool_search_resolves_deferred_tool_by_presence() {
         let core = Arc::new(ExtensionCore::new());
         insert_test_metadata(
             &core,
@@ -393,27 +368,14 @@ mod tests {
 
         let tool = ToolSearchTool::new(Arc::downgrade(&core));
 
-        // Caller without the `tool:DeferredBash` grant: gated out.
         let ctx = peko_tools_core::ToolContext::for_hook_run("run", "tc", "__tool_search")
-            .with_principal_id("principal_test")
-            .with_capabilities(vec!["tool:SomethingElse".to_string()]);
+            .with_principal_id("principal_test");
         let result = tool
             .execute_with_context(json!({ "query": "bash" }), &ctx)
             .await
             .expect("execute succeeds");
         let tools = result["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 0, "ungranted deferred tool must be gated out");
-
-        // Same caller with the wildcard grant: resolves.
-        let ctx = peko_tools_core::ToolContext::for_hook_run("run", "tc", "__tool_search")
-            .with_principal_id("principal_test")
-            .with_capabilities(vec!["tool:*".to_string()]);
-        let result = tool
-            .execute_with_context(json!({ "query": "bash" }), &ctx)
-            .await
-            .expect("execute succeeds");
-        let tools = result["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 1, "granted deferred tool must resolve");
+        assert_eq!(tools.len(), 1, "deferred tool resolves by presence");
         assert_eq!(tools[0]["name"], "DeferredBash");
     }
 

@@ -86,9 +86,6 @@ pub trait AgentView: Send + Sync + 'static {
     /// noise.
     fn principal_capabilities(&self) -> Option<&std::sync::Arc<peko_extension_api::Capabilities>>;
 
-    /// Active extension IDs for the principal (None ⇒ no extensions).
-    fn principal_active_extensions(&self) -> Option<&peko_extension_api::ActiveExtensionSet>;
-
     /// Channel type (e.g. `"discord"`, `"cli"`). Defaults to `"cli"` when unset.
     fn channel(&self) -> Option<&str>;
 

@@ -992,15 +992,9 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     // principal has installed — built-in tools + agents + workspace
     // entries. Empty workspaces render as an empty `catalog` object so
     // downstream tooling doesn't have to special-case missing.
-    let allowed = {
-        let config = principal.config.read().await;
-        config.capabilities.clone()
-    };
     let catalog = peko_core::principal::catalog::PrincipalCatalog::build(
         &principal.workspace_path,
-        &allowed,
         &principal.agent_prompts,
-        &[],
     );
 
     if json {
@@ -1197,25 +1191,14 @@ async fn import_principal(
     let client = DaemonClient::connect().await?;
 
     // Always preview first. The preview is read-only and surfaces bundled
-    // agents, extensions, signature status, validation issues, and the
-    // capabilities that the package's extensions require.
+    // agents, extensions, signature status, and validation issues.
     let preview = client
         .principal_import_preview(file_path, name.clone(), allow_unsigned, force)
         .await?;
 
     let preview = decode_preview_response(preview, "import")?;
 
-    // Default to granting nothing, even for signed packages. A signature
-    // verifies integrity, not intent; the user must opt in to each requested
-    // capability (or pre-grant them via `peko capability grant`).
-    let default_select_all = false;
-    let selected_capabilities = if yes {
-        apply_capability_defaults(&preview.required_capabilities, default_select_all)
-    } else {
-        prompt_capability_selection(&preview.required_capabilities, default_select_all)?
-    };
-
-    render_import_preview(&preview, &selected_capabilities);
+    render_import_preview(&preview);
 
     if !preview.validation_errors.is_empty() && !force {
         anyhow::bail!(
@@ -1229,14 +1212,7 @@ async fn import_principal(
     }
 
     let response = client
-        .principal_import(
-            file_path,
-            name,
-            allow_unsigned,
-            force,
-            true,
-            selected_capabilities,
-        )
+        .principal_import(file_path, name, allow_unsigned, force, true, Vec::new())
         .await?;
 
     match response {
@@ -1323,7 +1299,7 @@ fn decode_preview_response(
     }
 }
 
-fn render_import_preview(preview: &PrincipalImportPreview, selected_capabilities: &[String]) {
+fn render_import_preview(preview: &PrincipalImportPreview) {
     println!("Peko import preview:");
     println!("  Name:        {}", preview.name);
     println!("  Version:     {}", preview.version);
@@ -1354,17 +1330,10 @@ fn render_import_preview(preview: &PrincipalImportPreview, selected_capabilities
         }
     }
 
-    if preview.required_capabilities.is_empty() {
-        println!("  Required capabilities: (none)");
-    } else {
-        println!("  Required capabilities:");
+    if !preview.required_capabilities.is_empty() {
+        println!("  Required capabilities (informational; ignored):");
         for cap in &preview.required_capabilities {
-            let mark = if selected_capabilities.contains(cap) {
-                "[x]"
-            } else {
-                "[ ]"
-            };
-            println!("    {mark} {cap}");
+            println!("    - {cap}");
         }
     }
 
@@ -1381,47 +1350,6 @@ fn render_import_preview(preview: &PrincipalImportPreview, selected_capabilities
             println!("    ❌ {error}");
         }
     }
-}
-
-/// Return the full required capability list if `select_all` is true,
-/// otherwise an empty list. Used by `--yes` to accept defaults.
-fn apply_capability_defaults(required: &[String], select_all: bool) -> Vec<String> {
-    if select_all {
-        required.to_vec()
-    } else {
-        Vec::new()
-    }
-}
-
-/// Interactively prompt the user to toggle each required capability.
-/// `default_enabled` controls the default answer for each item.
-fn prompt_capability_selection(required: &[String], default_enabled: bool) -> Result<Vec<String>> {
-    if required.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    println!("\nSelect capabilities to grant to the imported peko:");
-    let mut selected = Vec::new();
-    for cap in required {
-        let default_label = if default_enabled { "Y/n" } else { "y/N" };
-        print!("  Grant {cap}? [{default_label}] ");
-        std::io::Write::flush(&mut std::io::stdout())
-            .with_context(|| "failed to flush capability prompt")?;
-        let mut answer = String::new();
-        std::io::stdin()
-            .read_line(&mut answer)
-            .with_context(|| "failed to read capability selection")?;
-        let answer = answer.trim();
-        let enabled = if answer.is_empty() {
-            default_enabled
-        } else {
-            answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
-        };
-        if enabled {
-            selected.push(cap.clone());
-        }
-    }
-    Ok(selected)
 }
 
 /// Ask a yes/no question and return the answer.
@@ -1485,16 +1413,7 @@ async fn pull_principal(
 
     let preview = decode_preview_response(preview, "pull")?;
 
-    // Default to granting nothing, even for signed packages. A signature
-    // verifies integrity, not intent; the user must opt in to each requested
-    // capability (or pre-grant them via `peko capability grant`).
-    let selected_capabilities = if yes {
-        apply_capability_defaults(&preview.required_capabilities, false)
-    } else {
-        prompt_capability_selection(&preview.required_capabilities, false)?
-    };
-
-    render_import_preview(&preview, &selected_capabilities);
+    render_import_preview(&preview);
 
     if !preview.validation_errors.is_empty() && !force {
         anyhow::bail!(
@@ -1513,7 +1432,7 @@ async fn pull_principal(
             name,
             force,
             true,
-            selected_capabilities,
+            Vec::new(),
             allow_unsigned,
             registry_host,
             registry_token,
@@ -1824,7 +1743,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
-        capabilities: peko_extension_api::Capabilities::starter_bundle(),
+        capabilities: peko_extension_api::Capabilities::new(),
         exposure: peko_auth::Exposure::Private,
         status: None,
         boot_state: None,

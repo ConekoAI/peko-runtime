@@ -1,6 +1,6 @@
 //! Tool Registry
 //!
-//! This module implements the registry for tools and tool policy.
+//! This module implements the registry for tools.
 //!
 //! ## Key shape
 //!
@@ -11,40 +11,32 @@
 //! (e.g. a principal's `Skill` or `AgentCatalog`) are registered under the
 //! principal's own `PrincipalId` and shadow any same-named system entry.
 //!
-//! Read paths (`is_tool_enabled`, `get_tool_hook_id`, `list_tool_names`,
-//! `tool_count`, `resolve_canonical_ids`) use a two-probe fallback:
+//! Read paths (`get_tool_hook_id`, `list_tool_names`,
+//! `tool_count`) use a two-probe fallback:
 //! `(name, principal_id)` first, then `(name, PrincipalId::system())`.
+//!
+//! ADR-066 P2 deleted the capability-gate bookkeeping (`is_tool_enabled`
+//! + the owner index) — presence in the registry is executability.
 //!
 //! Built on [`crate::extensions::framework::registry::SharedRegistry`] to avoid hand-rolling
 //! `Arc<RwLock<HashMap<K, V>>>` patterns.
 
 use crate::extensions::framework::registry::SharedRegistry;
-use crate::extensions::framework::types::{
-    ActiveExtensionSet, Capabilities, Capability, ExtensionId, HookId,
-};
+use crate::extensions::framework::types::{ExtensionId, HookId};
 use anyhow::Result;
 use peko_subject::PrincipalId;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
 use tracing::{debug, instrument, warn};
 
-/// Registry for tools and tool policy
+/// Registry for tools
 ///
-/// This component manages tool registrations and enforces the capability-based
-/// enablement policy. The tool index is backed by a [`SharedRegistry`] for
-/// thread-safe access.
+/// Manages tool registrations. The tool index is backed by a
+/// [`SharedRegistry`] for thread-safe access.
 #[derive(Debug)]
 pub struct ToolRegistry {
     /// Tool index: maps `(tool_name, principal_id)` to the `HookId` of the
     /// execution handler. Built-ins are registered under
     /// [`PrincipalId::system`]; per-principal tools under their own id.
     pub(crate) tool_index: SharedRegistry<(String, PrincipalId), HookId>,
-
-    /// Maps `(tool_name, principal_id)` to the owning extension ID for
-    /// capability checking. Same key shape as `tool_index` — the fallback
-    /// applies identically so a built-in (owned by `builtin:tool:Read`)
-    /// is treated as global regardless of which principal is querying.
-    tool_owners: RwLock<HashMap<(String, PrincipalId), ExtensionId>>,
 }
 
 impl ToolRegistry {
@@ -53,67 +45,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tool_index: SharedRegistry::new(),
-            tool_owners: RwLock::new(HashMap::new()),
         }
-    }
-
-    /// Look up the owning extension for `tool_name` from `principal_id`'s
-    /// perspective: probes `(name, principal_id)` then `(name, system())`
-    /// and returns whichever is present. None means the tool is unknown.
-    async fn lookup_owner(
-        &self,
-        tool_name: &str,
-        principal_id: &PrincipalId,
-    ) -> Option<ExtensionId> {
-        let owners = self.tool_owners.read().await;
-        if let Some(ext_id) = owners.get(&(tool_name.to_string(), principal_id.clone())) {
-            return Some(ext_id.clone());
-        }
-        if !std::ptr::eq(
-            std::ptr::from_ref(principal_id),
-            std::ptr::from_ref(PrincipalId::system()),
-        ) {
-            if let Some(ext_id) =
-                owners.get(&(tool_name.to_string(), PrincipalId::system().clone()))
-            {
-                return Some(ext_id.clone());
-            }
-        }
-        None
-    }
-
-    /// Check if a tool is enabled under the given capability set.
-    ///
-    /// The capability `tool:{tool_name}` must be granted. Wildcards such as
-    /// `tool:*` are expanded by the capability set.
-    ///
-    /// When `active_extensions` is provided, the tool's owning extension must
-    /// be present in the active set. Built-in tools are owned by
-    /// `builtin:tool:{tool_name}` pseudo-extensions; extension-provided tools
-    /// are owned by their canonical extension ID. A tool with no recorded owner
-    /// is treated as a built-in/core tool and is gated only by its capability.
-    pub async fn is_tool_enabled(
-        &self,
-        tool_name: &str,
-        capabilities: &Capabilities,
-        active_extensions: Option<&ActiveExtensionSet>,
-        principal_id: &PrincipalId,
-    ) -> bool {
-        if !capabilities.is_granted(&Capability::new(format!("tool:{tool_name}"))) {
-            return false;
-        }
-        if let Some(active) = active_extensions {
-            if let Some(owner) = self.lookup_owner(tool_name, principal_id).await {
-                // Built-in tools are owned by pseudo-extensions such as
-                // `builtin:tool:Bash`.  They are always present and are gated
-                // solely by the matching capability grant.
-                let is_builtin = owner.0.starts_with("builtin:tool:");
-                if !is_builtin && !active.is_active(&owner.0) {
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     /// Register a tool in the index
@@ -141,7 +73,6 @@ impl ToolRegistry {
     ) -> Result<()> {
         let key = (tool_name.to_string(), principal_id.clone());
         self.tool_index.insert(key.clone(), hook_id).await;
-        self.tool_owners.write().await.insert(key, extension_id);
         debug!(tool_name = %tool_name, hook_id = %hook_id, principal_id = %principal_id, "Registered tool in index");
         Ok(())
     }
@@ -160,7 +91,6 @@ impl ToolRegistry {
     ) -> Result<Option<HookId>> {
         let key = (tool_name.to_string(), principal_id.clone());
         let hook_id = self.tool_index.remove(&key).await;
-        self.tool_owners.write().await.remove(&key);
         if hook_id.is_some() {
             debug!(tool_name = %tool_name, principal_id = %principal_id, "Unregistered tool from index");
         } else {
@@ -241,41 +171,6 @@ impl ToolRegistry {
             })
             .await
     }
-
-    /// Resolve a list of bare tool names to their canonical
-    /// `extension_id` form (from `principal_id`'s perspective).
-    ///
-    /// For each input name, if the registry knows the tool's owning
-    /// `extension_id` (e.g. `"Read"` → `"builtin:tool:Read"`), the
-    /// canonical form is returned. For unknown names — typically
-    /// extension-provided skills or MCPs whose canonical ID is
-    /// already the bare name — the bare name is returned unchanged.
-    pub async fn resolve_canonical_ids(
-        &self,
-        names: &[String],
-        principal_id: &PrincipalId,
-    ) -> Vec<String> {
-        let owners = self.tool_owners.read().await;
-        names
-            .iter()
-            .map(|name| {
-                let per_principal = owners.get(&(name.clone(), principal_id.clone()));
-                let ext_id = per_principal.or_else(|| {
-                    if std::ptr::eq(
-                        std::ptr::from_ref(principal_id),
-                        std::ptr::from_ref(PrincipalId::system()),
-                    ) {
-                        None
-                    } else {
-                        owners.get(&(name.clone(), PrincipalId::system().clone()))
-                    }
-                });
-                ext_id
-                    .map(|id| id.0.clone())
-                    .unwrap_or_else(|| name.clone())
-            })
-            .collect()
-    }
 }
 
 impl Default for ToolRegistry {
@@ -290,93 +185,6 @@ mod tests {
 
     fn system() -> &'static PrincipalId {
         PrincipalId::system()
-    }
-
-    #[tokio::test]
-    async fn test_unknown_tool_with_per_call_allowlist_uses_capability() {
-        let registry = ToolRegistry::new();
-        // No registration, so no owner is recorded.
-        let caps = Capabilities::with_grants(["tool:custom_skill"]);
-        assert!(
-            registry
-                .is_tool_enabled("custom_skill", &caps, None, system())
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn test_empty_allowlist_denies_all() {
-        let registry = ToolRegistry::new();
-        registry
-            .register_tool(
-                "Read",
-                HookId::new(),
-                ExtensionId::new("builtin:tool:Read"),
-                system(),
-            )
-            .await
-            .unwrap();
-
-        // An empty capability set must fail-closed.
-        let caps = Capabilities::new();
-        assert!(
-            !registry
-                .is_tool_enabled("Read", &caps, None, system())
-                .await,
-            "empty capability set should deny every tool"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_wildcard_capability_matches() {
-        let registry = ToolRegistry::new();
-        registry
-            .register_tool(
-                "Read",
-                HookId::new(),
-                ExtensionId::new("builtin:tool:Read"),
-                system(),
-            )
-            .await
-            .unwrap();
-
-        let caps = Capabilities::with_grants(["tool:*"]);
-        assert!(
-            registry
-                .is_tool_enabled("Read", &caps, None, system())
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inactive_owning_extension_denies_tool() {
-        let registry = ToolRegistry::new();
-        registry
-            .register_tool(
-                "Read",
-                HookId::new(),
-                ExtensionId::new("mcp:read"),
-                system(),
-            )
-            .await
-            .unwrap();
-
-        let caps = Capabilities::with_grants(["tool:Read"]);
-        let active = ActiveExtensionSet::empty();
-        assert!(
-            !registry
-                .is_tool_enabled("Read", &caps, Some(&active), system())
-                .await,
-            "tool whose owning extension is inactive should be denied"
-        );
-
-        let active = ActiveExtensionSet::with_ids(["mcp:read"]);
-        assert!(
-            registry
-                .is_tool_enabled("Read", &caps, Some(&active), system())
-                .await,
-            "tool whose owning extension is active should be permitted"
-        );
     }
 
     /// Two principals register the same tool name under their own
@@ -444,11 +252,6 @@ mod tests {
             .await
             .unwrap();
 
-        let cap = Capabilities::with_grants(["tool:Bash"]);
-        assert!(
-            registry.is_tool_enabled("Bash", &cap, None, &p1).await,
-            "principal without an override should see the system tool"
-        );
         assert!(
             registry.get_tool_hook_id("Bash", &p1).await.is_some(),
             "principal without an override should resolve the system hook"

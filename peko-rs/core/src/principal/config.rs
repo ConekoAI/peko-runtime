@@ -45,11 +45,31 @@ pub enum BootState {
     Organized,
 }
 
+/// ADR-066 D1: `[capabilities] grants = [...]` is parsed for tolerance
+/// and then dropped — grants are ignored on load and never persisted.
+/// A non-empty section fires a one-time deprecation warning per process.
+fn deserialize_ignored_capabilities<'de, D>(deserializer: D) -> Result<Capabilities, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let parsed = Capabilities::deserialize(deserializer)?;
+    if !parsed.is_empty() {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "principal.toml `[capabilities].grants` is deprecated and ignored: \
+                 the capability gate was removed in ADR-066 (presence = executability). \
+                 Delete the section from your principal.toml files."
+            );
+        }
+    }
+    Ok(Capabilities::new())
+}
+
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalConfig {
     pub name: String,
-
     /// Stable runtime id (`prin_*`). Persisted so daemon restarts keep
     /// the same principal identity — peer DM channels, cron ownership,
     /// and per-principal runtime state are keyed by it. Generated at
@@ -82,12 +102,19 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub routing: PrincipalRoutingConfig,
 
-    /// Capability grants for this Principal.
+    /// Legacy capability grants for this Principal.
     ///
-    /// On disk this is written as `[capabilities] grants = [...]`.
-    /// This is the single source of truth for what the Principal is allowed
-    /// to do.
-    #[serde(default, rename = "capabilities")]
+    /// ADR-066 D1: the capability gate is deleted — grants are
+    /// **ignored on load** (a one-time deprecation warning fires the
+    /// first time a non-empty section is seen in this process) and
+    /// **never persisted** (`skip_serializing`). The field stays so
+    /// pre-P2 `principal.toml` files keep parsing.
+    #[serde(
+        default,
+        rename = "capabilities",
+        deserialize_with = "deserialize_ignored_capabilities",
+        skip_serializing
+    )]
     pub capabilities: Capabilities,
 
     // PR-E #1: the `authority: Option<Authority>` field (Phase 3a
@@ -99,10 +126,8 @@ pub struct PrincipalConfig {
     // deserialization path. On-disk `[authority]` blocks written by
     // pre-PR-E-#1 builds will be silently ignored going forward —
     // same forward-only behavior as every other pre-launch migration.
-    // Anyone who actually used `[authority]` to gate network or
-    // tunnel can move that policy into the `Capabilities` grant set
-    // (the runtime gate for `principal:write_*` / `runtime:*`
-    // survived intact — see `peko_extension_api::Capabilities`).
+    // ADR-066 P2 then deleted the grant evaluation surface itself —
+    // see the field doc above.
     /// Network exposure level for this Principal.
     #[serde(default)]
     pub exposure: Exposure,
@@ -395,9 +420,7 @@ fn default_max_router_iterations() -> usize {
 // explicit `[authority]` block was present. After the envelope itself
 // was deleted (zero runtime consumers; only the deserialization path
 // on `PrincipalConfig` ever produced a value), the migration shim has
-// nothing left to translate. Capabilities remain the SoT for the
-// `principal:write_*` / `runtime:*` grants (see
-// `peko_extension_api::Capabilities`).
+// nothing left to translate.
 //
 // impl PrincipalConfig {
 //     pub fn resolved_authority(&self) -> Authority { ... }
@@ -579,9 +602,10 @@ mod tests {
         );
     }
 
-    /// New `principal.toml` files use `[capabilities] grants = [...]`.
+    /// ADR-066 D1: the `[capabilities]` section is never serialized —
+    /// newly written `principal.toml` files carry no grants.
     #[test]
-    fn principal_config_serializes_capabilities_grants() {
+    fn principal_config_never_serializes_capabilities() {
         let cfg = PrincipalConfig {
             name: "alice".into(),
             id: None,
@@ -603,12 +627,8 @@ mod tests {
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
-            serialized.contains("[capabilities]"),
-            "expected [capabilities] table, got: {serialized}"
-        );
-        assert!(
-            serialized.contains("grants = ["),
-            "expected grants array, got: {serialized}"
+            !serialized.contains("[capabilities]"),
+            "capabilities table must not persist: {serialized}"
         );
         assert!(
             !serialized.contains("allowed_extensions"),
@@ -616,9 +636,10 @@ mod tests {
         );
     }
 
-    /// `[capabilities] grants = [...]` parses into the new model.
+    /// ADR-066 D1: a legacy `[capabilities] grants = [...]` section
+    /// parses (tolerance) and is ignored — the in-memory set is empty.
     #[test]
-    fn principal_config_accepts_capabilities_grants() {
+    fn principal_config_ignores_capabilities_grants_on_load() {
         let toml = r#"
             name = "modern"
             exposure = "private"
@@ -626,39 +647,12 @@ mod tests {
             [capabilities]
             grants = ["tool:Bash", "agent:researcher"]
         "#;
-        let cfg: PrincipalConfig = toml::from_str(toml).expect("modern TOML must parse");
-        assert!(cfg.capabilities.is_granted(&"tool:Bash".into()));
-        assert!(cfg.capabilities.is_granted(&"agent:researcher".into()));
-        assert!(!cfg.capabilities.is_granted(&"tool:Write".into()));
-    }
-
-    /// Wildcard grants are expanded at evaluation time, not serialization.
-    #[test]
-    fn principal_config_wildcard_grants_match() {
-        let cfg = PrincipalConfig {
-            name: "wildcard".into(),
-            id: None,
-            did: None,
-            owner: Default::default(),
-            identity: Default::default(),
-            intent: Default::default(),
-            governance: Default::default(),
-            memory: Default::default(),
-            routing: Default::default(),
-            capabilities: Capabilities::with_grants(["tool:*", "agent:agency-agents/*"]),
-            exposure: Default::default(),
-            status: None,
-            boot_state: None,
-            permissions: Vec::new(),
-            preferred_model_id: None,
-            quota: None,
-            children: Default::default(),
-        };
-        assert!(cfg.capabilities.is_granted(&"tool:Read".into()));
-        assert!(cfg
-            .capabilities
-            .is_granted(&"agent:agency-agents/writer".into()));
-        assert!(!cfg.capabilities.is_granted(&"agent:other/writer".into()));
+        let cfg: PrincipalConfig = toml::from_str(toml).expect("legacy TOML must parse");
+        assert!(
+            cfg.capabilities.is_empty(),
+            "grants are ignored on load: {:?}",
+            cfg.capabilities
+        );
     }
 
     /// R4: the inbound ACL contract.

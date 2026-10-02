@@ -12,7 +12,7 @@
 //! F36: the prior [`AutoPromptHandler`] that emitted per-tool prose for the
 //! `## Available Tools` prompt section was removed when peko switched to a
 //! wire-only tool catalog (see `build_tool_definitions` and
-//! `list_tool_definitions_with_allowlist`). Tool descriptions and JSON-schema
+//! `list_tool_definitions_for`). Tool descriptions and JSON-schema
 //! parameters now travel on the wire as the `tools[]` array.
 //!
 //! The remaining handlers are intentionally simple and generic. They all
@@ -270,8 +270,6 @@ mod tests {
                 caller_id: None,
                 principal_id: None,
                 principal_name: None,
-                capabilities: None,
-                active_extensions: None,
                 abort_signal: None,
             },
             Arc::new(ExtensionServices::new()),

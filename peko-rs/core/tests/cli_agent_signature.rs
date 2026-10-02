@@ -201,12 +201,10 @@ fn import_options(
         } else {
             TrustPolicy::Tofu
         },
-        selected_capabilities: Vec::new(),
         // PR #338 added these two fields for the WriteSide gate. The
         // import-options helper is library-side (tests + the `import`
         // CLI), not an IPC handler, so the defaults match what the
-        // IPC handler would have computed: Subject::User("local") +
-        // Capabilities::starter_bundle().
+        // IPC handler would have computed: Subject::User("local").
         ..Default::default()
     }
 }

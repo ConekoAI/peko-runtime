@@ -24,9 +24,9 @@ pub use peko_extension_api::types::{
 };
 
 pub use peko_extension_api::{
-    tool_result_from_hook, ActiveExtensionSet, AsyncReceipt, AsyncTaskId, AsyncTaskResult,
-    AsyncTaskStatus, Capabilities, Capability, ExtensionDependency, ExtensionManifest, HookInput,
-    HookOutput, HookResult, MessageEnvelope, ParamSource, PromptBuildState, ReservedParamsConfig,
+    tool_result_from_hook, AsyncReceipt, AsyncTaskId, AsyncTaskResult, AsyncTaskStatus,
+    Capabilities, Capability, ExtensionDependency, ExtensionManifest, HookInput, HookOutput,
+    HookResult, MessageEnvelope, ParamSource, PromptBuildState, ReservedParamsConfig,
     ReservedParamsService, SessionSnapshot, ToolMetadata, ToolRegistryAccess, ToolSource,
 };
 

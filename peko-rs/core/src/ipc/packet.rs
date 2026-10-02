@@ -621,7 +621,8 @@ pub enum RequestPacket {
         force: bool,
         #[serde(default)]
         confirmed: bool,
-        /// Capabilities selected by the user during the preview flow.
+        /// Deprecated (ADR-066 D1): parsed-and-ignored; the capability
+        /// gate is deleted. Kept on the wire for one release window.
         #[serde(default)]
         selected_capabilities: Vec<String>,
     },
@@ -667,7 +668,8 @@ pub enum RequestPacket {
         force: bool,
         #[serde(default)]
         confirmed: bool,
-        /// Capabilities selected by the user during the preview flow.
+        /// Deprecated (ADR-066 D1): parsed-and-ignored; the capability
+        /// gate is deleted. Kept on the wire for one release window.
         #[serde(default)]
         selected_capabilities: Vec<String>,
         /// Allow pulling an unsigned package.
@@ -1765,6 +1767,8 @@ pub enum ResponsePacket {
         extensions: Vec<String>,
         /// Capabilities required by the bundled extensions. Old daemons that
         /// omit this field deserialize to an empty list.
+        /// Deprecated (ADR-066 D1): informational only; nothing grants
+        /// capabilities any more.
         #[serde(default)]
         required_capabilities: Vec<String>,
         signed: bool,
@@ -1783,6 +1787,8 @@ pub enum ResponsePacket {
         agents: Vec<String>,
         extensions: Vec<String>,
         /// Capabilities required by the bundled extensions.
+        /// Deprecated (ADR-066 D1): informational only; nothing grants
+        /// capabilities any more.
         #[serde(default)]
         required_capabilities: Vec<String>,
         signed: bool,

@@ -1,7 +1,7 @@
 //! Dispatch context for [`AsyncExecutor::dispatch_tool`] and
 //! [`AsyncExecutor::dispatch_tool_with_signal`].
 //!
-//! F38 introduces a typed `ToolDispatchContext` that consolidates the 11
+//! F38 introduces a typed `ToolDispatchContext` that consolidates the
 //! fields the F37 canonical funnel
 //! ([`ExtensionCore::execute_tool_via_hook`](crate::extensions::framework::core::ExtensionCore::execute_tool_via_hook))
 //! requires. Bundling them means callers don't have to thread 11 named
@@ -14,7 +14,7 @@
 /// Consolidated dispatch context for `AsyncExecutor::dispatch_tool*`.
 ///
 /// All fields except `tool_name`, `params`, and `parent_session_key`
-/// are optional — defaults to `None` / empty `Vec`.
+/// are optional — defaults to `None`.
 #[derive(Debug, Clone)]
 pub struct ToolDispatchContext {
     /// The tool to dispatch (e.g. `"Bash"`, `"Read"`).
@@ -42,14 +42,6 @@ pub struct ToolDispatchContext {
     /// Human-readable principal name (for Principal-scoped tools like
     /// `CronCreate`).
     pub principal_name: Option<String>,
-
-    /// Per-call capability grants. The capability gate at
-    /// `registry.rs:260-277` evaluates tool access against this set.
-    /// `None` or empty means fail-closed (no grants).
-    pub capabilities: Vec<String>,
-    /// Active extension IDs for this principal. When non-empty, the
-    /// gate verifies the tool's owning extension is active.
-    pub active_extensions: Vec<String>,
 }
 
 impl ToolDispatchContext {
@@ -71,17 +63,14 @@ impl ToolDispatchContext {
             caller_id: None,
             principal_id: None,
             principal_name: None,
-            capabilities: Vec::new(),
-            active_extensions: Vec::new(),
         }
     }
 
-    /// Convenience: pre-fill principal_id + capabilities for the F37
+    /// Convenience: pre-fill principal_id for the
     /// `AsyncSpawnTool` and `cron_engine` snapshot pattern.
     #[must_use]
-    pub fn for_principal(mut self, principal_id: String, capabilities: Vec<String>) -> Self {
+    pub fn for_principal(mut self, principal_id: String) -> Self {
         self.principal_id = Some(principal_id);
-        self.capabilities = capabilities;
         self
     }
 
@@ -127,13 +116,6 @@ impl ToolDispatchContext {
     #[must_use]
     pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
         self.principal_id = Some(principal_id.into());
-        self
-    }
-
-    /// Set the active extension IDs.
-    #[must_use]
-    pub fn with_active_extensions(mut self, ids: Vec<String>) -> Self {
-        self.active_extensions = ids;
         self
     }
 

@@ -37,20 +37,10 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     create_mock_principal_with_tools(cli, name, mock_llm_url, &[]);
 }
 
-/// Like [`create_mock_principal`], but additionally grants the Principal a set
-/// of capability tools.
-///
-/// Newly-created Principals ship the `tool:*` / `agent:*` / `skill:*`
-/// wildcards via `Capabilities::starter_bundle`, so extra grants are no
-/// longer required for the root agent to call built-in tools. This helper
-/// remains for tests that want an explicit, narrower grant list recorded
-/// in `principal.toml`.
-///
-/// `tools` are bare tool names (e.g. `"Write"`, `"Bash"`, `"Agent"`) or
-/// already-typed capability strings (e.g. `"mcp:memory_server"`).
-/// Bare names are written as `tool:<name>`; strings that already contain a
-/// `:` are passed through verbatim into `principals/<name>/principal.toml`
-/// under `[capabilities] grants` after `peko create`.
+/// Like [`create_mock_principal`]. The `tools` list is accepted for
+/// call-site compatibility and ignored: ADR-066 P2 deleted the
+/// capability gate, so a freshly created principal sees every tool
+/// (presence = executability) and `principal.toml` carries no grants.
 pub fn create_mock_principal_with_tools(
     cli: &PekoCli,
     name: &str,
@@ -71,36 +61,10 @@ pub fn create_mock_principal_with_tools(
         String::from_utf8_lossy(&output.stderr),
     );
 
-    if tools.is_empty() {
-        return;
-    }
-
-    // Patch the Principal's capabilities so the root agent can see the
-    // requested tools. We rewrite `principal.toml` directly rather than going
-    // through a CLI grant path so the helper stays a single, daemon-free
-    // setup step (callable before `DaemonGuard::spawn`).
-    //
-    // Each tool is granted as `tool:<name>` (e.g. `tool:Read`).
-    let path = cli
-        .peko_dir()
-        .join("principals")
-        .join(name)
-        .join("principal.toml");
-    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
-    let mut cfg: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&raw).expect("parse principal.toml");
-    cfg.capabilities.extend(tools.iter().map(|t| {
-        if t.contains(':') {
-            t.to_string()
-        } else {
-            format!("tool:{t}")
-        }
-    }));
-    std::fs::write(
-        &path,
-        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
-    )
-    .expect("write principal.toml");
+    // ADR-066 P2: grants are ignored on load and never persisted, so
+    // there is nothing to patch. The parameter exists for call-site
+    // compatibility only.
+    let _ = tools;
 }
 
 /// Seed one configured-model entry in the model catalog at
