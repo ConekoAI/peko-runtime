@@ -3,28 +3,13 @@ name = "peko-engine"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Peko agentic engine (Phase 9a + 9b.N.1 + 9b.N.2) — owns the pure-dependency loops moved out of src/engine/: chunker, event_processor, state, stream_buffer, stream_orchestrator, tool_stream, parallel_gate, the AgenticError taxonomy, the events re-export, stream_types (Phase 9b.1), the async_completion message synthesizer (Phase 9b.N.1), and the F37 execute_tool_via_core* canonical funnel (Phase 9b.N.2). Phase 9b.N.1 introduced peko-extension-api + peko-extension-host deps for the AsyncTaskStatus + CompletionEvent types used by async_completion::build_async_completion_message. Phase 9b.N.2 lifted just the funnel functions out of tool_runtime.rs; the surrounding ToolRuntime struct + register_builtins stay in root until BashTool is lifted into peko-tools-builtin. The remaining root-coupled files (agentic_loop, compaction_driver, tool_executor) stay in src/engine/ until later Phase 9b commits lift the agent/session/builtin-tools couplings."
+description = "Agentic loop, prompt renderer, compaction orchestration, and host tooling ports"
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
 [dependencies]
-# Crate hierarchy: peko-engine sits between the extension host (which it
-# coordinates with via LifecyclePhase / AgenticEvent) and the provider
-# API (it consumes StreamEvent / StopReason). peko-message is the
-# shared content-type crate; peko-tools-core provides the Tool trait
-# used by parallel_gate tests; peko-quota provides QuotaError used by
-# error.rs; peko-events is the neutral AgenticEvent / LifecyclePhase
-# definitions.
-#
-# Phase 9b.N.1 added peko-extension-api + peko-extension-host as
-# direct deps — async_completion uses both `AsyncTaskStatus` (API
-# crate, used by HookOutput::TaskStatus) and `CompletionEvent` (host
-# crate inbox.rs). Adding the API+host deps does NOT create a cycle:
-# `peko-extension-host` depends on `peko-extension-api`, `peko-message`,
-# `peko-tools-core`, `peko-provider-api`, and `peko-subject` — none of
-# which depend on `peko-engine`. This matches the target dependency
-# graph in the workspace migration plan (peko-engine is downstream of
-# peko-extension-host).
+# Contract and persistence dependencies; no host/root dependency.
+
 peko-message = { path = "../message" }
 peko-provider-api = { path = "../provider-api" }
 # Phase 6 — `ProviderView` lives in `peko-providers` next to `Provider`,
@@ -37,20 +22,6 @@ peko-providers = { path = "../providers" }
 peko-tools-core = { path = "../tools-core" }
 peko-quota = { path = "../quota" }
 peko-events = { path = "../events" }
-peko-extension-api = { path = "../extension-api" }
-# Phase F2 foldback: `peko-extension-host` was deleted; its `ToolFunnel`
-# trait moved into `peko-rs/core/src/extensions/framework/tool_funnel.rs`
-# and the concrete funnel impls into `framework/tool_funnel_impl.rs` /
-# `framework/transport/async_router.rs`. Engine's 5 call sites that
-# imported `peko_extension_host::ToolFunnel` now reach the trait via
-# this crate via `peko-session`-style chained re-export — the trait
-# type itself is reachable through the file path after the F2 rewrite
-# since `peko-engine` already depends on `peko-message`/`peko-subject`
-# (the trait's only deps).
-# Phase 9b.N.5b.9 — `PrincipalId` is used in the loop's hook-input
-# construction (`HookInput::ToolCall::principal_id`). peko-engine
-# already takes a `String` in the constructor, but the test fixtures
-# and the `load_principal_memory` helper reference the typed subject.
 peko-subject = { path = "../subject" }
 # Phase 7 — the compaction data types + CompactorBackend trait port +
 # `drop_oldest_respecting_pairs` helper live in `peko-session`. Engine

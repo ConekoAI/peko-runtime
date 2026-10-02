@@ -813,7 +813,7 @@ impl ToolResult {
 
 // The `impl From<ToolResult> for HookOutput` (and `tool_result_from_hook`
 // shim) used to live here. It has been migrated to
-// `extensions::framework::types::hook_io` because the orphan rule
+// the host workspace observer payload module because the orphan rule
 // requires trait impls that touch a foreign type to be in the crate
 // owning at least one of {trait, type}; `ToolResult` now lives in
 // `peko-tools-core` while `HookOutput` lives in the extensions

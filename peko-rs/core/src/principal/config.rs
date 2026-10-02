@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use peko_auth::host::PrincipalResourceView;
 pub use peko_auth::{Exposure, Permission, PermissionGrant};
-use peko_extension_api::Capabilities;
+
 use peko_quota::QuotaConfig;
 use peko_subject::{PrincipalDID, PrincipalId};
 
@@ -45,29 +45,8 @@ pub enum BootState {
     Organized,
 }
 
-/// ADR-066 D1: `[capabilities] grants = [...]` is parsed for tolerance
-/// and then dropped — grants are ignored on load and never persisted.
-/// A non-empty section fires a one-time deprecation warning per process.
-fn deserialize_ignored_capabilities<'de, D>(deserializer: D) -> Result<Capabilities, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let parsed = Capabilities::deserialize(deserializer)?;
-    if !parsed.is_empty() {
-        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            tracing::warn!(
-                "principal.toml `[capabilities].grants` is deprecated and ignored: \
-                 the capability gate was removed in ADR-066 (presence = executability). \
-                 Delete the section from your principal.toml files."
-            );
-        }
-    }
-    Ok(Capabilities::new())
-}
-
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PrincipalConfig {
     pub name: String,
     /// Stable runtime id (`prin_*`). Persisted so daemon restarts keep
@@ -102,21 +81,6 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub routing: PrincipalRoutingConfig,
 
-    /// Legacy capability grants for this Principal.
-    ///
-    /// ADR-066 D1: the capability gate is deleted — grants are
-    /// **ignored on load** (a one-time deprecation warning fires the
-    /// first time a non-empty section is seen in this process) and
-    /// **never persisted** (`skip_serializing`). The field stays so
-    /// pre-P2 `principal.toml` files keep parsing.
-    #[serde(
-        default,
-        rename = "capabilities",
-        deserialize_with = "deserialize_ignored_capabilities",
-        skip_serializing
-    )]
-    pub capabilities: Capabilities,
-
     // PR-E #1: the `authority: Option<Authority>` field (Phase 3a
     // envelope) and the `resolved_authority()` method that bridged
     // legacy grants onto it are deleted. ADR-047 §2.5 had planned to
@@ -127,7 +91,7 @@ pub struct PrincipalConfig {
     // pre-PR-E-#1 builds will be silently ignored going forward —
     // same forward-only behavior as every other pre-launch migration.
     // ADR-066 P2 then deleted the grant evaluation surface itself —
-    // see the field doc above.
+    // legacy grant bytes are handled only during deserialization.
     /// Network exposure level for this Principal.
     #[serde(default)]
     pub exposure: Exposure,
@@ -162,9 +126,7 @@ pub struct PrincipalConfig {
     /// introduce any IPC path that overwrites this list from a
     /// hub-provided value.
     ///
-    /// Distinct from `capabilities` (above), which lists the
-    /// tools/extensions the Principal itself may use; `permissions`
-    /// is the inbound ACL.
+    /// This is the inbound peer ACL; workspace tooling is available by presence.
     #[serde(default)]
     pub permissions: Vec<PermissionGrant>,
 
@@ -201,6 +163,83 @@ pub struct PrincipalConfig {
     /// `BTreeMap` keeps the serialized form stable (sorted by name).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub children: BTreeMap<String, ChildDeclaration>,
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "PrincipalConfig")]
+struct PrincipalConfigFields {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<PrincipalId>,
+
+    #[serde(default)]
+    did: Option<PrincipalDID>,
+
+    #[serde(default)]
+    owner: peko_auth::Subject,
+
+    #[serde(default)]
+    identity: PrincipalIdentityConfig,
+
+    #[serde(default)]
+    intent: PrincipalIntentConfig,
+
+    #[serde(default)]
+    governance: PrincipalGovernanceConfig,
+
+    #[serde(default)]
+    memory: PrincipalMemoryConfig,
+
+    #[serde(default)]
+    routing: PrincipalRoutingConfig,
+
+    #[serde(default)]
+    exposure: Exposure,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<Status>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    boot_state: Option<BootState>,
+
+    #[serde(default)]
+    permissions: Vec<PermissionGrant>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preferred_model_id: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quota: Option<QuotaConfig>,
+
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    children: BTreeMap<String, ChildDeclaration>,
+}
+
+// Legacy grants are consumed only here, never stored or threaded into runtime state.
+impl<'de> Deserialize<'de> for PrincipalConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct OnLoad {
+            #[serde(default)]
+            capabilities: serde_json::Value,
+            #[serde(flatten, deserialize_with = "PrincipalConfigFields::deserialize")]
+            config: PrincipalConfig,
+        }
+        let loaded = OnLoad::deserialize(deserializer)?;
+        if loaded
+            .capabilities
+            .get("grants")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|g| !g.is_empty())
+        {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!("principal.toml `[capabilities].grants` is deprecated and ignored: the capability gate was removed in ADR-066. Delete the section from your principal.toml files.");
+            }
+        }
+        Ok(loaded.config)
+    }
 }
 
 impl PrincipalConfig {
@@ -553,7 +592,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             boot_state: None,
@@ -586,7 +624,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             boot_state: None,
@@ -616,7 +653,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Capabilities::with_grants(["tool:Bash", "agent:researcher"]),
             exposure: Default::default(),
             status: None,
             boot_state: None,
@@ -648,11 +684,9 @@ mod tests {
             grants = ["tool:Bash", "agent:researcher"]
         "#;
         let cfg: PrincipalConfig = toml::from_str(toml).expect("legacy TOML must parse");
-        assert!(
-            cfg.capabilities.is_empty(),
-            "grants are ignored on load: {:?}",
-            cfg.capabilities
-        );
+        let persisted = toml::to_string(&cfg).unwrap();
+        assert!(!persisted.contains("capabilities"));
+        assert!(!persisted.contains("tool:Bash"));
     }
 
     /// R4: the inbound ACL contract.
@@ -691,7 +725,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             boot_state: None,
@@ -747,7 +780,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             boot_state: None,

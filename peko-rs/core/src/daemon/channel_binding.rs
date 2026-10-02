@@ -192,9 +192,9 @@ use peko_channel::{
     ChannelCursors, ChannelEvent, ChannelId, ChannelMeter, ChannelPort, ChannelResponder,
     ChannelSubscriber, NoopChannelResponder, PostMsg, RespondCtx, SubscriptionConfig,
 };
-use peko_extension_api::SteeringMessage;
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
+use peko_session::SteeringMessage;
 use peko_subject::{PrincipalId, Subject};
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};

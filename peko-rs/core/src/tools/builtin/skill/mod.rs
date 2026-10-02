@@ -37,18 +37,12 @@ use std::sync::Arc;
 
 /// Entry for a single discovered skill.
 ///
-/// `extension_id` is opaque to peko-tools-builtin (it is the
-/// `peko_extension_api::ExtensionId` newtype on the root side) so we
-/// keep it as a `String` here. The daemon adapter converts at the
-/// boundary.
 #[derive(Debug, Clone)]
 pub struct SkillEntry {
     /// Skill name (from SKILL.md frontmatter).
     pub name: String,
     /// Absolute path to the skill's `SKILL.md`.
     pub path: PathBuf,
-    /// Optional owning extension id, for cleanup on uninstall.
-    pub extension_id: Option<String>,
 }
 
 // ─── SkillRuntime port trait ───────────────────────────────────────
@@ -103,7 +97,6 @@ impl TestSkillRuntime {
         let entry = SkillEntry {
             name: name.clone(),
             path: path.into(),
-            extension_id: None,
         };
         self.entries
             .lock()

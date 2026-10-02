@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Pure workspace tooling: contract fold and cleanup (ADR-066 P6, 2026-10-02)
+
+- Deleted `peko-extension-api` and moved live tooling ports to the engine,
+  inbox/completion/session contracts to session, task statuses and paths to
+  tools-core, and MCP reserved injection beside MCP. Workspace observers and
+  catalog metadata now live in root; role discovery uses plain role metadata.
+- Removed extension ids/manifests, unused hook payloads, duplicate spawn policy,
+  capability state threading, capability-diff prompts, and the compaction
+  allowlist. Legacy principal grants are consumed only at deserialization,
+  warned once, and never saved; inbound peer permissions remain intact.
+- Removed import IPC negotiation fields and empty extension previews; legacy
+  unknown JSON fields remain tolerated. Updated architecture/API/data/tool
+  docs and dependency rules: 20 crates, 69 forbidden edges.
+
 ### Pure workspace tooling: local snapshot packaging (ADR-066 P5, 2026-10-02)
 
 - Replaced OCI snapshot layers and signatures with a flat `manifest.toml`
@@ -51,6 +65,20 @@ All notable changes to Peko.
 - Installs workspace tools once per principal and prompt providers once per
   runtime; scopes workspace hooks to their owning principal.
 - Migrated singleton-dependent tests to explicitly constructed runtimes.
+
+
+### Pure workspace tooling: ownership and audit (ADR-066 P2, 2026-10-01)
+
+- Deleted capability gates for tool visibility/execution, roles, skills,
+  subagents, and imports. Presence makes workspace tooling available.
+- Cross-principal writes now compare filesystem ownership and fail closed
+  with a durable Security audit event. Legacy grants warn once and are dropped.
+
+### Pure workspace tooling: async host cleanup (ADR-066 P1, 2026-10-01)
+
+- Moved async execution and session inbox to `async_exec`. Deleted the inert
+  extension store, discovery/storage, adapter trait, configuration services,
+  and tool execution service; re-homed live principal tooling and catalog glue.
 
 
 ### Iteration cap removed from the agentic loop (2026-09-30)

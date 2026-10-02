@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use peko_extension_api::AsyncInboxLike;
+use crate::AsyncInboxLike;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 /// Factory that creates a fresh inbox on first access. The factory
@@ -182,8 +182,9 @@ impl Default for InboxRegistry {
 #[cfg(test)]
 mod tests {
     use crate::*;
+    use crate::{AsyncInboxItem, AsyncInboxLike};
     use async_trait::async_trait;
-    use peko_extension_api::{AsyncInboxItem, AsyncInboxLike, AsyncTaskStatus};
+    use peko_tools_core::AsyncTaskStatus;
     use peko_tools_core::ToolResult;
     use serde_json::json;
     use std::path::PathBuf;
@@ -212,7 +213,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn make_event(task_id: &str, session: &str) -> AsyncInboxItem {
-        AsyncInboxItem::Completion(peko_extension_api::CompletionEnvelope {
+        AsyncInboxItem::Completion(crate::CompletionEnvelope {
             task_id: task_id.to_string(),
             tool_name: "shell".to_string(),
             result: json!({"exit_code": 0}),

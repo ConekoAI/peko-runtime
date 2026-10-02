@@ -28,15 +28,13 @@
 //! ## Phase F2 foldback
 //!
 //! `CompletionEvent`, `SteeringMessage`, and `InboxItem` moved to
-//! `peko_extension_api::completion_event` so the engine can reach
+//! `peko_session::completion_event` so the engine can reach
 //! them without depending on root (which would cycle). The concrete
 //! `SessionInbox` impl below uses those data types; conversions to
 //! the API's `AsyncInboxItem` envelopes happen at the
 //! `AsyncInboxLike` trait impl boundary.
 
-use peko_extension_api::{
-    AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage,
-};
+use peko_session::{AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify}; // `Mutex` is used by `InboxSinkRegistry` only; `SessionInbox` uses `std::sync::Mutex`.
@@ -216,7 +214,7 @@ impl SessionInboxSink for SessionInbox {
 }
 
 /// Phase 7 trait-port: `SessionInbox` implements
-/// `peko_extension_api::AsyncInboxLike` so the daemon-global
+/// `peko_session::AsyncInboxLike` so the daemon-global
 /// `peko_session::InboxRegistry` can hold
 /// `Arc<dyn AsyncInboxLike>` without importing `peko-extension-host`
 /// directly (a forbidden direction: `peko-session` is downstream of
@@ -240,7 +238,7 @@ impl AsyncInboxLike for SessionInbox {
             .collect()
     }
 
-    async fn drain_steering(&self) -> Vec<peko_extension_api::SteeringEnvelope> {
+    async fn drain_steering(&self) -> Vec<peko_session::SteeringEnvelope> {
         SessionInbox::drain_steering(self)
             .await
             .into_iter()
@@ -341,7 +339,7 @@ mod tests {
             task_id: task_id.to_string(),
             tool_name: "tool".to_string(),
             result: json!({"ok": true}),
-            status: peko_extension_api::AsyncTaskStatus::Completed {
+            status: peko_tools_core::AsyncTaskStatus::Completed {
                 result: peko_tools_core::ToolResult::success(json!({"ok": true})),
             },
             completed_at: chrono::Utc::now(),

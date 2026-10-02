@@ -444,7 +444,7 @@ impl AgentTool {
                 let status_str = run.status.as_str();
                 let success = matches!(
                     run.status,
-                    peko_extension_api::AsyncTaskStatus::Completed { .. }
+                    peko_tools_core::AsyncTaskStatus::Completed { .. }
                 );
 
                 let mut result = json!({
@@ -623,7 +623,7 @@ impl AgentTool {
                 let status_str = run.status.as_str();
                 let success = matches!(
                     run.status,
-                    peko_extension_api::AsyncTaskStatus::Completed { .. }
+                    peko_tools_core::AsyncTaskStatus::Completed { .. }
                 );
 
                 let mut result = json!({
@@ -714,7 +714,7 @@ impl AgentTool {
                 let status_str = run.status.as_str();
                 let success = matches!(
                     run.status,
-                    peko_extension_api::AsyncTaskStatus::Completed { .. }
+                    peko_tools_core::AsyncTaskStatus::Completed { .. }
                 );
 
                 let mut result = json!({
@@ -1257,7 +1257,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             child_session_key: "test-child".into(),
             parent_session_key: request.parent_session_key.clone(),
             task: request.prompt.clone(),
-            status: peko_extension_api::AsyncTaskStatus::Completed {
+            status: peko_tools_core::AsyncTaskStatus::Completed {
                 result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
             },
             started_at: chrono::Utc::now(),
@@ -1293,7 +1293,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             child_session_key: target.to_string(),
             parent_session_key: caller_session_key.to_string(),
             task: prompt.to_string(),
-            status: peko_extension_api::AsyncTaskStatus::Completed {
+            status: peko_tools_core::AsyncTaskStatus::Completed {
                 result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
             },
             started_at: chrono::Utc::now(),
@@ -1301,7 +1301,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
             label: None,
             result: Some(crate::tools::builtin::messaging::dto::SubagentResult {
-                status: peko_extension_api::AsyncTaskStatus::Completed {
+                status: peko_tools_core::AsyncTaskStatus::Completed {
                     result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
                 },
                 output: Some("compacted and continued".to_string()),
@@ -1342,7 +1342,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             child_session_key: target.to_string(),
             parent_session_key: caller_session_key.to_string(),
             task: prompt.to_string(),
-            status: peko_extension_api::AsyncTaskStatus::Completed {
+            status: peko_tools_core::AsyncTaskStatus::Completed {
                 result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
             },
             started_at: chrono::Utc::now(),
@@ -1350,7 +1350,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
             label: None,
             result: Some(crate::tools::builtin::messaging::dto::SubagentResult {
-                status: peko_extension_api::AsyncTaskStatus::Completed {
+                status: peko_tools_core::AsyncTaskStatus::Completed {
                     result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
                 },
                 output: Some("branched and ran".to_string()),

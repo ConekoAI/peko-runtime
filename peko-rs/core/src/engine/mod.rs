@@ -24,7 +24,7 @@
 //! `agentic_loop.rs` will consume in 9b.N.5b: `AgentView`
 //! (peko-engine) abstracts `Agent`'s engine-facing surface,
 //! `AsyncInboxLike` (peko-engine) abstracts `SharedSessionInbox`,
-//! `CapabilityDiffTracker` lifts into `peko-engine::iteration_state`,
+//! Capability grant tracking was retired in ADR-066 P6,
 //! and `ToolFunnel` gains `invoke_stop_hook` /
 //! `invoke_after_agent_hook`. The actual `agentic_loop.rs` lift is
 //! Phase 9b.N.5b. This module re-exports their public surface

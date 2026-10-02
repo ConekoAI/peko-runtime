@@ -88,14 +88,6 @@ pub struct Agent {
     /// `ToolContext` so Principal-scoped tools (e.g. cron) can target
     /// jobs by name.
     principal_name: Option<String>,
-    /// Snapshot of the spawning principal's capability grants,
-    /// captured at construction from `PrincipalContext::capabilities`.
-    ///
-    /// ADR-066 P2: inert shell (the grant gate is deleted; the snapshot
-    /// is always empty). Still read by the engine's `capability_diff`
-    /// change tracker and the compaction snapshot's
-    /// `permission_policy_summary`; P3/P6 sweep it.
-    principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
     /// Spawning principal's plan DAG port. Populated via
     /// `with_principal_plan_port` from
     /// `PrincipalContext::plan_port().clone()` in `agent_runner.rs`
@@ -163,7 +155,6 @@ impl Clone for Agent {
             caller_principal_did: self.caller_principal_did.clone(),
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
-            principal_capabilities: self.principal_capabilities.clone(),
             principal_plan_port: self.principal_plan_port.clone(),
             model_catalog: self.model_catalog.clone(),
             // Phase 4: Arc-cloned so the trait-object + closure
@@ -561,7 +552,6 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name: None,
-            principal_capabilities: None,
             principal_plan_port: None,
             // Phase 2 of `feature/multi-model-subagents`: the
             // standalone / CLI one-shot `Agent::new` path doesn't
@@ -671,23 +661,6 @@ impl Agent {
             .with_principal_name(name.clone());
         self.subagent_executor = Arc::new(executor);
         self.principal_name = Some(name);
-        self
-    }
-
-    /// Bind the spawning principal's capabilities snapshot.
-    ///
-    /// ADR-066 P2: inert shell — no filtering derives from this
-    /// anymore; the engine's `capability_diff` tracker still reads it.
-    #[must_use]
-    pub fn with_principal_capabilities(
-        mut self,
-        capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-    ) -> Self {
-        let executor = (*self.subagent_executor)
-            .clone()
-            .with_principal_capabilities(capabilities.clone());
-        self.subagent_executor = Arc::new(executor);
-        self.principal_capabilities = capabilities;
         self
     }
 
@@ -894,14 +867,12 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<peko_providers::Provider>>,
-        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
     ) -> Result<Self> {
         Self::new_with_shared_executor_with_model_override(
             config,
             session_manager,
             subagent_executor,
             inherited_provider,
-            principal_capabilities,
             None,
         )
         .await
@@ -924,7 +895,6 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<peko_providers::Provider>>,
-        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
         // Optional catalog id the caller stamped on the inherited
         // provider (Phase 1). `None` keeps the pre-Phase-1
         // behavior: `resolved_model_id` is `None` for the
@@ -954,10 +924,7 @@ impl Agent {
         };
         let llm_resolver: Option<Arc<peko_providers::LlmResolver>> = None;
 
-        // Subagents share the daemon-global ExtensionCore with every other
-        // agent in the process. There is no per-principal core; per-principal
-        // tool visibility is enforced by the per-call `capabilities`
-        // allowlist.
+        // Subagents inherit the explicit tooling runtime and principal scope.
 
         let principal_id = subagent_executor.principal_id().clone();
         let principal_name = subagent_executor.principal_name().map(String::from);
@@ -982,7 +949,6 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name,
-            principal_capabilities,
             principal_plan_port: None,
             model_catalog: None,
             // Phase 4: CLI one-shot path doesn't bind an audit
@@ -1021,8 +987,7 @@ impl Agent {
             "principal_id": self.subagent_executor.principal_id().to_string(),
             "workspace": self.principal_workspace.as_ref().map(|path| path.to_string_lossy().into_owned()),
         });
-        peko_extension_api::EngineHooks::fire_after_agent_hook(&*self.tooling, after_agent_payload)
-            .await;
+        peko_engine::EngineHooks::fire_after_agent_hook(&*self.tooling, after_agent_payload).await;
 
         Ok(())
     }
@@ -1511,8 +1476,6 @@ impl Agent {
         //    core. Uses Weak so the tools do not extend the core's lifetime
         //    past the core itself.
         let core_weak = Arc::downgrade(&tooling);
-        // F37: snapshot the spawning principal's capability grants.
-        // `AsyncExecutorRuntime::spawn` builds the F37 canonical
         // Phase 10c: `AsyncExecutorRuntime` is the framework-host
         // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
         // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ToolingRuntime>` +
@@ -1628,12 +1591,7 @@ impl Agent {
         //    parent_session_key on every spawned task. The session key is
         //    keyed by this agent's DID on the shared core so concurrent
         //    agents in daemon mode do not clobber each other (issue #68).
-        peko_extension_api::EngineHooks::set_session_key(
-            &*tooling,
-            &self.identity.did,
-            session_key,
-        )
-        .await;
+        peko_engine::EngineHooks::set_session_key(&*tooling, &self.identity.did, session_key).await;
 
         // 6. Construct AgenticLoop with the queue.
         //
@@ -1738,22 +1696,6 @@ impl Agent {
     #[must_use]
     pub fn principal_name(&self) -> Option<&str> {
         self.principal_name.as_deref()
-    }
-
-    /// Snapshot of the principal's capabilities bound at construction.
-    ///
-    /// The engine consults this set when filtering the tool bag
-    /// during `init_builtins_async` and when computing per-call
-    /// tool definitions. **Track B**: replaces
-    /// `AgentConfig::extension_whitelist()` for runtime reads.
-    ///
-    /// `None` means the agent is unbound and no capability-based
-    /// filtering is applied.
-    #[must_use]
-    pub fn principal_capabilities(
-        &self,
-    ) -> Option<&Arc<crate::extensions::framework::types::Capabilities>> {
-        self.principal_capabilities.as_ref()
     }
 
     // ---- Phase 2 inert field accessors ----
@@ -1943,7 +1885,6 @@ impl Agent {
             caller_principal_did: None,
             principal_id: peko_subject::PrincipalId::generate(),
             principal_name: None,
-            principal_capabilities: None,
             principal_plan_port: None,
             // Phase 2 of `feature/multi-model-subagents`: the
             // test-only `Agent::new_for_test` path doesn't bind a
@@ -2087,17 +2028,6 @@ impl peko_engine::AgentView for Agent {
 
     fn principal_workspace(&self) -> Option<&std::path::PathBuf> {
         Agent::principal_workspace(self)
-    }
-
-    fn principal_capabilities(&self) -> Option<&Arc<peko_extension_api::Capabilities>> {
-        // `Agent::principal_capabilities` returns
-        // `Option<&Arc<Capabilities>>` (the Arc lets the agent cache
-        // a principal's capability snapshot across iterations); the
-        // trait surface keeps the `&Arc<...>` shape so callers can
-        // `.cloned()` straight into `Option<Arc<Capabilities>>` slots
-        // (e.g. `TurnPromptContext::capabilities`) without an extra
-        // `Arc::new(...)` wrap at every site.
-        Agent::principal_capabilities(self)
     }
 
     fn channel(&self) -> Option<&str> {

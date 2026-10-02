@@ -3,8 +3,8 @@
 //! Mirrors the shape of `PlanGetTool` (`plan/get.rs`):
 //!   `pub struct X { port: Arc<dyn ...> }` with `execute_with_context`
 //!   pulling `PrincipalId` out of the `ToolContext`. The principal
-//!   boundary is enforced by the caller (the F37 funnel + capability
-//!   gate); this tool itself is a thin wrapper around `ChannelPort::peek`.
+//!   membership boundary is enforced by ChannelPort; this tool is a thin
+//!   wrapper around `ChannelPort::peek`.
 
 use std::sync::Arc;
 

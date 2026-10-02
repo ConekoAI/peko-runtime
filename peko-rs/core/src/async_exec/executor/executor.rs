@@ -18,7 +18,7 @@ use peko_session::InboxRegistry;
 /// Constructs an empty `SessionInbox` per session key.
 #[must_use]
 pub fn default_inbox_factory() -> peko_session::InboxFactory {
-    Arc::new(|| -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) })
+    Arc::new(|| -> Arc<dyn peko_session::AsyncInboxLike> { Arc::new(SessionInbox::new()) })
 }
 
 /// Construct a standalone `InboxRegistry` backed by the default
@@ -160,7 +160,7 @@ impl AsyncExecutor {
     /// per-call scopes, placeholders, and tests.
     #[must_use]
     pub fn new(inbox_registry: Arc<InboxRegistry>) -> Self {
-        let task_file_writer = crate::extensions::framework::paths::default_data_dir()
+        let task_file_writer = peko_tools_core::default_data_dir()
             .join("async_tasks")
             .into();
         Self {
@@ -181,7 +181,7 @@ impl AsyncExecutor {
         registry: SharedAsyncTaskRegistry,
         inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
-        let task_file_writer = crate::extensions::framework::paths::default_data_dir()
+        let task_file_writer = peko_tools_core::default_data_dir()
             .join("async_tasks")
             .into();
         Self {
@@ -853,7 +853,7 @@ impl AsyncExecutor {
         let tooling_for_closure = tooling.clone();
         let boxed_fn: BoxedExecutionFn = Box::new(move || {
             Box::pin(async move {
-                let spec = peko_extension_api::ToolCallSpec {
+                let spec = peko_engine::ToolCallSpec {
                     tool_name: context.tool_name.clone(),
                     params: context.params,
                     workspace: context.workspace,
@@ -1095,7 +1095,7 @@ mod consolidation_tests {
         let inbox = registry.get_or_create("session_partial").await;
         for _ in 0..300 {
             for item in inbox.drain_all().await {
-                if let peko_extension_api::AsyncInboxItem::Completion(e) = item {
+                if let peko_session::AsyncInboxItem::Completion(e) = item {
                     event = Some(e);
                 }
             }
@@ -1230,7 +1230,7 @@ mod consolidation_tests {
                 let items = inbox.drain_all().await;
                 assert!(matches!(
                     items[0],
-                    peko_extension_api::AsyncInboxItem::Completion(_)
+                    peko_session::AsyncInboxItem::Completion(_)
                 ));
                 return;
             }
@@ -1571,7 +1571,7 @@ mod completion_queue_fan_out_tests {
         let items = inbox.drain_all().await;
         assert_eq!(items.len(), 1, "expected one completion event");
         match &items[0] {
-            peko_extension_api::AsyncInboxItem::Completion(e) => {
+            peko_session::AsyncInboxItem::Completion(e) => {
                 assert_eq!(e.task_id, task_id);
                 assert_eq!(e.tool_name, "shell");
                 assert_eq!(e.parent_session_key, "session_1");
@@ -1610,7 +1610,7 @@ mod completion_queue_fan_out_tests {
                 let items = inbox.drain_all().await;
                 assert_eq!(items.len(), 1);
                 match &items[0] {
-                    peko_extension_api::AsyncInboxItem::Completion(e) => {
+                    peko_session::AsyncInboxItem::Completion(e) => {
                         assert!(matches!(e.status, AsyncTaskStatus::Failed { .. }));
                     }
                     other => panic!("expected AsyncInboxItem::Completion, got {other:?}"),
@@ -1659,7 +1659,7 @@ mod completion_queue_fan_out_tests {
         let items_a = inbox_a.drain_all().await;
         assert_eq!(items_a.len(), 1);
         match &items_a[0] {
-            peko_extension_api::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_a),
+            peko_session::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_a),
             other => panic!("expected Completion, got {other:?}"),
         }
 
@@ -1667,7 +1667,7 @@ mod completion_queue_fan_out_tests {
         let items_b = inbox_b.drain_all().await;
         assert_eq!(items_b.len(), 1);
         match &items_b[0] {
-            peko_extension_api::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_b),
+            peko_session::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_b),
             other => panic!("expected Completion, got {other:?}"),
         }
     }
@@ -1715,7 +1715,7 @@ mod completion_queue_fan_out_tests {
                     "expected exactly one steer message in principal root inbox"
                 );
                 match &root_items[0] {
-                    peko_extension_api::AsyncInboxItem::Steering(s) => {
+                    peko_session::AsyncInboxItem::Steering(s) => {
                         assert!(s.content.contains("daily-summary"));
                         assert!(s.content.contains("AsyncOutput"));
                         assert!(s.content.contains(&task_id));
@@ -1771,7 +1771,7 @@ mod completion_queue_fan_out_tests {
         assert_eq!(items.len(), 1);
         assert!(matches!(
             items[0],
-            peko_extension_api::AsyncInboxItem::Completion(_)
+            peko_session::AsyncInboxItem::Completion(_)
         ));
 
         // principal_root inbox stays empty.
@@ -1931,7 +1931,7 @@ mod dispatch_tool_tests {
         core.catalog()
             .register_system(
                 Arc::new(StubTool),
-                crate::extensions::framework::types::ToolSource::BuiltIn,
+                crate::tools::metadata::ToolSource::BuiltIn,
             )
             .await;
 
@@ -1981,7 +1981,7 @@ mod dispatch_tool_tests {
                 Arc::new(AbortableStubTool {
                     aborted: aborted.clone(),
                 }),
-                crate::extensions::framework::types::ToolSource::BuiltIn,
+                crate::tools::metadata::ToolSource::BuiltIn,
             )
             .await;
 
@@ -2029,7 +2029,7 @@ mod dispatch_tool_tests {
         core.catalog()
             .register_system(
                 Arc::new(StubTool),
-                crate::extensions::framework::types::ToolSource::BuiltIn,
+                crate::tools::metadata::ToolSource::BuiltIn,
             )
             .await;
 

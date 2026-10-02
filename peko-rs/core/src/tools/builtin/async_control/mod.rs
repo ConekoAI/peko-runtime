@@ -54,7 +54,7 @@ use std::time::Duration;
 /// Request to spawn a new async task.
 ///
 /// The runtime adapter overlays the spawning principal's identity
-/// (`principal_id`, `capabilities`) at dispatch time, so those fields
+/// (`principal_id`) at dispatch time, so those fields
 /// do not appear here — built-in tools do not own them; the per-agent
 /// runtime does.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,7 +211,7 @@ pub enum CancelResult {
 ///
 /// The framework-host implements this via `AsyncExecutorRuntime` (which
 /// wraps the per-agent `AsyncExecutor` + `Weak<ToolingRuntime>` +
-/// `principal_id` + `capabilities` snapshot). The trait is per-agent:
+/// principal identity). The trait is per-agent:
 /// each `Agent` constructs one runtime and shares it across its
 /// `AsyncSpawn`/`AsyncOutput`/`AsyncStatus`/`AsyncList`/`AsyncStop`
 /// instances.

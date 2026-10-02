@@ -1135,7 +1135,6 @@ async fn import_principal(
             file_path,
             name,
             force,
-            Vec::new(),
             Some(preview.manifest_checksum.clone()),
         )
         .await?;
@@ -1164,8 +1163,6 @@ struct PrincipalImportPreview {
     did: String,
     description: Option<String>,
     agents: Vec<String>,
-    extensions: Vec<String>,
-    required_capabilities: Vec<String>,
     inventory: peko_core::registry::packaging::ExecutableInventory,
     manifest_checksum: String,
     validation_errors: Vec<String>,
@@ -1184,8 +1181,6 @@ fn decode_preview_response(
             did,
             description,
             agents,
-            extensions,
-            required_capabilities,
             inventory,
             manifest_checksum,
             validation_errors,
@@ -1197,8 +1192,6 @@ fn decode_preview_response(
             did,
             description,
             agents,
-            extensions,
-            required_capabilities,
             inventory,
             manifest_checksum,
             validation_errors,
@@ -1228,22 +1221,6 @@ fn render_import_preview(preview: &PrincipalImportPreview) {
         println!("  Agents:");
         for agent in &preview.agents {
             println!("    - {agent}");
-        }
-    }
-
-    if preview.extensions.is_empty() {
-        println!("  Extensions:  (none)");
-    } else {
-        println!("  Extensions:");
-        for ext in &preview.extensions {
-            println!("    - {ext}");
-        }
-    }
-
-    if !preview.required_capabilities.is_empty() {
-        println!("  Required capabilities (informational; ignored):");
-        for cap in &preview.required_capabilities {
-            println!("    - {cap}");
         }
     }
 
@@ -1559,7 +1536,6 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
-        capabilities: peko_extension_api::Capabilities::new(),
         exposure: peko_auth::Exposure::Private,
         status: None,
         boot_state: None,

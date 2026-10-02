@@ -2,11 +2,10 @@
 
 **Date:** 2026-10-02
 **Branch:** `adr-066-pure-workspace-tooling` (off `master`)
-**Status:** P1–P5 landed, with all standard gates green. P5's final unit
-run passed 2,768 tests with zero failures and three existing ignored tests.
+**Status:** P1–P6 landed, with all standard gates green.
+P6's final unit run passed 2,741 tests with zero failures and three existing ignored tests.
 All 114 CLI unit tests pass with `PEKO_UNLOCK_METHOD=passphrase`. The full
-Docker mock-LLM integration tier passed 51 tests, and the stack was torn down.
-P6 is not started.
+Docker mock-LLM integration tier passed all 51 tests, and the stack was torn down.
 
 
 The landed P3 recovery patch was removed in P4; its history remains in Git.
@@ -29,7 +28,8 @@ Ten decisions (D1–D10), six phases (P1–P6), each phase a tree-green commit.
 ## 2. Commit state
 
 ```
-P5        This phase: flat local snapshots / registry retirement
+P6        This phase: contract fold / capability and wire cleanup
+e0e50ce2  P5: flat local snapshots / registry retirement
 1c97cd78  P4: workspace hook dispatcher / exposure deletion
 49720c79  P3: tooling catalog / dispatcher / explicit runtime
 74578be3  docs: ADR-066 implementation handover + P3 WIP patch
@@ -91,16 +91,15 @@ python3 scripts/check_workspace_deps.py
   Bash executes (`engine/tool_runtime.rs`); cross-principal denial +
   durable Security audit event (`common/authority.rs`).
 
-### P2 leftovers for later phases
+### P2 leftovers — resolved in P6
 
-- `Capabilities` survives as a wire-tolerance shell (data ops only) in
-  `extension-api/src/capabilities.rs` — P6 folds the crate.
-- Inert shell chain (renders nothing from an always-empty set):
+- P6 deleted the `Capabilities` wire-tolerance shell and folded the live
+  contracts out of `extension-api`.
+- P6 deleted the inert shell chain (which rendered an always-empty set):
   `PrincipalConfig.capabilities` → `RouterContext.capabilities` →
   `PrincipalContext.capabilities` → `Agent::with_principal_capabilities`
   → `AgentView::principal_capabilities`, feeding the `capability_diff`
-  prompt tracker and compaction `permission_policy_summary`. Delete in
-  P3 (optional) or P6.
+  prompt tracker and compaction `permission_policy_summary`.
 - `ModelCall` genuinely needs `principal_id` (meter/model resolution) —
   unknown-session-key IPC calls now execute *unattributed* (pinned test).
 - `RuntimeMetadataResponse.capabilities` and MCP `ClientCapabilities`
@@ -231,26 +230,53 @@ before merging.
   transport, and the daemon tunnel chat with the mock LLM. `make docker-down`
   completed successfully.
 
-## 8. P6 — not started
+## 8. P6 — landed (ADR §2 D10; net about −3.2k LOC)
 
-ADR §2 D10, §3 P6. Fold `extension-api`: survivors (`default_*_dir`,
-completion/inbox contracts, session/subagent types) into
-`peko-tools-core`/`peko-session`/root; `reserved_params.rs` → beside
-MCP; delete the crate and update the 81-entry
-`scripts/check_workspace_deps.py` table. Doc sweep: `AGENTS.md` (§3.2,
-§5, §6.4 were touched in P1/P2 — finish §6), `API_SURFACE.md`,
-`DATA_MODEL.md`, `PRINCIPAL_WORKSPACE.md`, `builtin-tools.md`,
-`config.example.toml`; CHANGELOG entries per landed phase (P1/P2 entries
-still owed). Remove the parsed-and-ignored IPC `capabilities` wire
-fields (the deprecation window P2 opened). The local import preview also
-retains an always-empty `extensions` field from the deleted embedded archive
-model; remove it alongside the remaining wire tolerance shells.
+- Deleted `peko-extension-api`, its workspace member and four consumers'
+  Cargo dependencies. Live ports belong to their consumers: engine owns
+  `ToolCallSpec`, `ToolFunnel`, `EngineHooks`, `ToolingSeam` and prompt
+  section contracts; tools-core owns task statuses and default paths;
+  session owns inbox/completion/steering items and session snapshots.
+  Spawn cleanup policy uses session's existing enum instead of a duplicate.
+- Root owns plain tool metadata and the six workspace observer payloads;
+  MCP reserved-parameter data and resolution now live together beside MCP.
+  Role discovery uses `RoleMetadata`. Deleted unused extension manifests,
+  ids, hook payload variants and framework type/service modules. The live
+  framework host utilities (transport, registry handles, paths, vault) remain.
+- Deleted principal/agent/router capability state, grant propagation,
+  `AgentView::principal_capabilities`, the capability-diff tracker and
+  prompt placeholder, and compaction's empty capability allowlist.
+  Principal config consumes legacy grants only during deserialization,
+  warns once for a non-empty set, and never stores or persists them.
+  Inbound peer permissions, ownership checks, model metadata, MCP protocol
+  capabilities and runtime discovery metadata remain intact.
+- Removed import selection/negotiation fields, empty extension previews,
+  unused extension-summary DTOs, principal summary grants, and inert catalog
+  `provides`/skill extension ids. Old unknown IPC JSON fields still deserialize.
+  Regression tests pin dropping old import fields without losing the preview
+  checksum, dropping old compaction allowlists without losing runtime context,
+  and removing the old capability-diff marker from rendered prompts.
+- Removed only the 12 forbidden-edge rules touching the deleted crate.
+  The dependency graph now has 20 members, 54 edges and 69 forbidden rules;
+  leaf/wire purity and engine/provider/host boundaries remain enforced.
+- Updated API_SURFACE, DATA_MODEL, README, workspace/tool docs, config example,
+  source docs, the ADR, and local ignored AGENTS.md. Added CHANGELOG entries
+  for P6 and the previously missing P1/P2 phases; historical proposals are
+  explicitly marked superseded.
+- Verification: formatting, all-target clippy, 2,741 workspace unit tests
+  (zero failures; three existing ignored; 18 suites), 114 CLI unit tests,
+  module boundaries and all 69 dependency rules pass. Docker mock-LLM
+  integration passed all 51 tests, including recursive subagents, filesystem/
+  Bash round trips, mock sequences, snapshot import, peer permissions, signed
+  transport and the daemon tunnel chat. `make docker-down` completed successfully.
+  Real-LLM tests remain unexecuted.
 
 ## 9. Operational notes
 
-- **`AGENTS.md` is gitignored** — P1/P2 updated it on disk (§3.2, §5,
-  §6.4); those edits are real but never appear in commits.
-- **Docker mock integration passed for P5** — 51 tests, zero failures. This
+- **`AGENTS.md` is gitignored** — updated on disk through P6 (20 members,
+  consumer-owned contracts, 69 dependency rules and ungated workspace tooling);
+  those edits are real but never appear in commits.
+- **Docker mock integration passed for P5 and P6** — 51 tests each, zero failures. This
   also resolves the P3/P4 pre-merge integration gap recorded in their historical
   notes above. `make docker-down` completed and removed the test stack.
   Real-LLM tests remain unexecuted.

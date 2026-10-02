@@ -7,9 +7,9 @@
 //! This crate replaces `src/common/persistence/` and
 //! `src/session/lock.rs` (the latter was a `pub use` shim). Nothing
 //! else in the workspace depends on it. Keeping it leaf-sized avoids
-//! pulling the extension framework in just for its path helpers —
+//! pulling tool contracts in just for their path helpers —
 //! `default_workspace_lock_dir` mirrors
-//! `peko_extension_api::paths::default_data_dir` locally.
+//! `peko_tools_core::paths::default_data_dir` locally.
 //!
 //! Phase 5 of the post-migration cleanup; ADR-065 added the workspace
 //! lock and removed the (dead + broken) `LockManager`.

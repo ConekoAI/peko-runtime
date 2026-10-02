@@ -19,8 +19,8 @@
 //! ```
 
 use crate::extensions::framework::protocols::shared::proxy_utils::execute_with_context_handling;
-use crate::extensions::framework::services::ReservedParamsConfig;
 use crate::extensions::mcp::protocol::types::Tool as McpTool;
+use crate::extensions::mcp::reserved_params::ReservedParamsConfig;
 use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
 use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
@@ -159,15 +159,14 @@ impl InjectableMcpToolProxy {
             // so callers don't have to switch to the trait-object form.
             let vault: Option<&dyn crate::extensions::framework::vault::VaultAccess> =
                 vault.map(|v| v as &dyn crate::extensions::framework::vault::VaultAccess);
-            let value =
-                crate::extensions::framework::services::reserved_params::resolve_reserved_params(
-                    &self.reserved_params,
-                    ctx,
-                    vault,
-                )
-                .get(name)
-                .cloned()
-                .unwrap_or(Value::Null);
+            let value = crate::extensions::mcp::reserved_params::resolve_reserved_params(
+                &self.reserved_params,
+                ctx,
+                vault,
+            )
+            .get(name)
+            .cloned()
+            .unwrap_or(Value::Null);
             trace!("Injecting reserved param '{}' = {:?}", name, value);
             obj.insert(name.clone(), value);
         }
@@ -329,12 +328,11 @@ mod tests {
             .with_runtime("peer_id", "peer_id")
             .with_static("static_val", "hardcoded");
 
-        let resolved =
-            crate::extensions::framework::services::reserved_params::resolve_reserved_params(
-                &config,
-                Some(&ctx),
-                None,
-            );
+        let resolved = crate::extensions::mcp::reserved_params::resolve_reserved_params(
+            &config,
+            Some(&ctx),
+            None,
+        );
 
         assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
         assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
@@ -349,9 +347,7 @@ mod tests {
             .with_static("static_val", "hardcoded");
 
         let resolved =
-            crate::extensions::framework::services::reserved_params::resolve_reserved_params(
-                &config, None, None,
-            );
+            crate::extensions::mcp::reserved_params::resolve_reserved_params(&config, None, None);
 
         // Without context, runtime params resolve to null
         assert_eq!(resolved.get("agent_id"), Some(&json!(null)));

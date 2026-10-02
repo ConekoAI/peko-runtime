@@ -20,15 +20,15 @@ use futures::FutureExt;
 use serde_json::Value;
 use tracing::{debug, warn};
 
-use peko_extension_api::ToolCallSpec;
+use peko_engine::ToolCallSpec;
 use peko_tools_core::ToolInterruptNotice;
 
 use crate::extensions::framework::transport::async_router::{
     AsyncExecutionRouter, ToolExecutionContext,
 };
-use crate::extensions::framework::types::HookInput;
 use crate::extensions::workspace_dispatcher::WorkspaceHookDispatcher;
 use crate::extensions::workspace_dispatcher::WorkspaceHookPoint;
+use crate::extensions::workspace_io::HookInput;
 use crate::tools::catalog::ToolCatalog;
 
 /// The single tool-execution point. Cheap to clone (every field is an
@@ -362,7 +362,7 @@ fn apply_workspace_injection(params: &mut Value, tool_name: &str, workspace: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::types::ToolSource;
+    use crate::tools::metadata::ToolSource;
     use peko_tools_core::{Tool, ToolContext};
 
     struct ProbeTool;

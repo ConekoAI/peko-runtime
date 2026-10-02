@@ -12,8 +12,8 @@ A peko's workspace contains everything the peko uses: identity,
 config, agent prompts, session history, and the tooling (tools, skills,
 MCP servers, hooks, plugins) the peko has chosen to install. The
 runtime's job is to scan the workspace on peko boot and dispatch by
-tool name; there is no extension registry, no canonical funnel, and no
-manifest validation beyond presence.
+tool name through an explicit `ToolCatalog` / `ToolDispatcher` / `ToolingRuntime`.
+Workspace hook binds and MCP configurations are validated before loading.
 
 This replaces the legacy "extension" model (ADR-017, ADR-024, ADR-026,
 ADR-036) where every plugin passed through a single `ExtensionCore`
@@ -51,7 +51,7 @@ For the trust-and-audit posture that makes this safe, see
 
 | Path                       | Contents                                                                  |
 |----------------------------|---------------------------------------------------------------------------|
-| `principal.toml`           | Owner, permissions, exposure, capabilities, root prompt                    |
+| `principal.toml`           | Owner, permissions, exposure, quota, root prompt                    |
 | `roles/<name>.md`         | Role prompts (per-peko) — T1 role bodies (ADR-064)                   |
 | `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` + `CONVENTIONS.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `roles/<name>.md` for the named role |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
@@ -142,22 +142,35 @@ history.
 
 ---
 
+## Contract ownership (ADR-066 P6)
+
+The `peko-extension-api` crate and extension manifests are retired. The engine
+owns the three-method tooling port; session owns inbox/completion contracts;
+tools-core owns async status and fallback paths. Root owns catalog metadata and
+workspace observer payloads, while MCP owns reserved injection. Principals and
+agents carry no tool grant state. The compaction snapshot contains runtime
+context only. Import previews report executable inventory without capability
+negotiation or embedded-extension lists.
+
 ## Discovery & dispatch
 
-1. **Discovery**: at peko boot, scan
-   `<workspace>/{skills,mcp,hooks,plugins}` and build a
-   `PrincipalCatalog` keyed by tool name.
-2. **Dispatch**: `tool_runtime::dispatch(tool_name, args)` looks up the
-   catalog entry and invokes. No funnel, no `execute_tool_via_hook`
-   registry.
-3. **Discovery metadata for the model**: the catalog is exposed to the
-   prompt builder exactly once, as a list of
-   `(tool_name, description, source_path)`.
+1. Built-ins and MCP proxies register in `ToolCatalog`; principal-scoped
+   entries shadow system entries. Every registered tool is in the native
+   wire `tools[]` catalog.
+2. The engine uses `peko_engine::tooling::ToolFunnel` for execution, catalog
+   definitions, and prompt sections. Its host implementation routes execution
+   through `ToolDispatcher`, which validates parameters, propagates identity
+   and cancellation, handles async detach, and emits one attributed audit event.
+3. Roles, skills, and workflows are rescanned with change-aware caches each
+   iteration; their prompt catalogs ride the tail runtime-context message.
+4. Workspace hooks run only for their owner, at six observer points, in
+   registration order with a two-second soft-fail budget. Hook errors, panics,
+   timeouts, and handled results cannot veto tool execution. Tool selectors
+   are exact or absent; wildcard manifests fail with migration guidance.
 
-The runtime does not validate plugin contents. Whatever the peko
-has installed is what the model sees. Per ADR-046, the audit log records
-every tool install/remove and every tool call — the audit log is the
-safety net, not a permission layer.
+Filesystem ownership governs cross-principal writes. Inbound peer permissions
+and quotas remain independent runtime boundaries. Audit records installs,
+removals, denied writes, local snapshot imports, and tool calls.
 
 ---
 

@@ -361,7 +361,7 @@ mod tests {
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use peko_auth::Subject;
-    use peko_extension_api::Capabilities;
+
     use peko_tools_core::Tool as _;
     use serde_json::json;
     use std::sync::Mutex;
@@ -414,10 +414,7 @@ mod tests {
         tool_runtime: Arc<ToolRuntime>,
     }
 
-    fn test_principal_config(
-        name: &str,
-        capabilities: Capabilities,
-    ) -> crate::principal::PrincipalConfig {
+    fn test_principal_config(name: &str) -> crate::principal::PrincipalConfig {
         crate::principal::PrincipalConfig {
             name: name.to_string(),
             id: None,
@@ -428,7 +425,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities,
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,
@@ -439,7 +435,7 @@ mod tests {
         }
     }
 
-    async fn fixture(name: &str, capabilities: Capabilities) -> Fixture {
+    async fn fixture(name: &str) -> Fixture {
         let temp = TempDir::new().expect("temp dir");
         std::env::set_var("PEKO_HOME", temp.path());
         peko_identity::init_test_env();
@@ -456,7 +452,7 @@ mod tests {
             crate::async_exec::executor::standalone_inbox_registry(),
         ));
         manager
-            .create(test_principal_config(name, capabilities))
+            .create(test_principal_config(name))
             .await
             .expect("create principal");
 
@@ -545,8 +541,8 @@ mod tests {
     /// `tool:*` wildcard).
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn execute_tool_executes_with_resolved_principal_capabilities() {
-        let fx = fixture("attributed", Capabilities::new()).await;
+    async fn execute_tool_executes_with_resolved_principal() {
+        let fx = fixture("attributed").await;
         std::fs::write(fx.workspace.join("hello.txt"), "hi").expect("seed file");
 
         let response = execute_tool(
@@ -579,7 +575,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_unknown_session_key_executes_unattributed() {
-        let fx = fixture("known", Capabilities::new()).await;
+        let fx = fixture("known").await;
         let marker = fx.workspace.join("created-by-unattributed-call");
 
         let response = execute_tool(
@@ -607,7 +603,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_executes_without_grants() {
-        let fx = fixture("unrestricted", Capabilities::new()).await;
+        let fx = fixture("unrestricted").await;
         let marker = fx.workspace.join("created-without-grants");
 
         let response = execute_tool(
@@ -694,7 +690,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_with_valid_run_token_executes() {
-        let fx = fixture("tokprincipal", Capabilities::new()).await;
+        let fx = fixture("tokprincipal").await;
         std::fs::write(fx.workspace.join("hello.txt"), "hi").expect("seed file");
         let token = fx.run_tokens.mint(
             "tokprincipal",
@@ -730,7 +726,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_unknown_run_token_fails_closed() {
-        let fx = fixture("tokunknown", Capabilities::new()).await;
+        let fx = fixture("tokunknown").await;
         let marker = fx.workspace.join("should_not_exist");
 
         let response = execute_tool_with_token(
@@ -756,7 +752,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_mismatched_session_key_fails_closed() {
-        let fx = fixture("tokmismatch", Capabilities::new()).await;
+        let fx = fixture("tokmismatch").await;
         let marker = fx.workspace.join("should_not_exist");
         let token = fx.run_tokens.mint(
             "tokmismatch",
@@ -789,7 +785,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_expired_run_token_fails_closed() {
-        let fx = fixture("tokexpired", Capabilities::new()).await;
+        let fx = fixture("tokexpired").await;
         let token = fx.run_tokens.mint(
             "tokexpired",
             "agent:tokexpired:cli:default",
@@ -820,10 +816,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_cross_principal_token_fails_closed() {
-        let fx = fixture("toka", Capabilities::new()).await;
+        let fx = fixture("toka").await;
         // Same fixture manager hosts a second principal.
         fx.manager
-            .create(test_principal_config("tokb", Capabilities::new()))
+            .create(test_principal_config("tokb"))
             .await
             .expect("create second principal");
         let token = fx.run_tokens.mint(
@@ -858,7 +854,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_stamps_workflow_depth_from_run_token() {
-        let fx = fixture("deepwf", Capabilities::new()).await;
+        let fx = fixture("deepwf").await;
         // Register the Workflow runner on the fixture's core (daemon
         // state.rs does this in production).
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
@@ -1007,7 +1003,7 @@ mod tests {
         name: &str,
         metas: Vec<peko_session::SessionMetadata>,
     ) -> (Fixture, Arc<ClassifyProbeTool>) {
-        let fx = fixture(name, Capabilities::new()).await;
+        let fx = fixture(name).await;
         let probe = Arc::new(ClassifyProbeTool { metas });
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
             fx.tool_runtime.tooling().catalog(),
@@ -1254,7 +1250,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_unresolvable_without_daemon_registration() {
-        let fx = fixture("nosess", Capabilities::new()).await;
+        let fx = fixture("nosess").await;
         let response = execute_tool(
             &fx.handler,
             30,
@@ -1283,7 +1279,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_status_matches_direct_call_from_token_node() {
-        let fx = fixture("sesshead", Capabilities::new()).await;
+        let fx = fixture("sesshead").await;
         register_daemon_session_tool(&fx).await;
         let (trunk, child) = seed_principal_tree(&fx, "sesshead", "head").await;
 
@@ -1351,7 +1347,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_trunk_token_resolves_trunk() {
-        let fx = fixture("sesstrunk", Capabilities::new()).await;
+        let fx = fixture("sesstrunk").await;
         register_daemon_session_tool(&fx).await;
         let (trunk, _child) = seed_principal_tree(&fx, "sesstrunk", "base").await;
 
@@ -1389,7 +1385,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_without_node_degrades_to_dangling() {
-        let fx = fixture("sessdang", Capabilities::new()).await;
+        let fx = fixture("sessdang").await;
         register_daemon_session_tool(&fx).await;
         let (_trunk, _child) = seed_principal_tree(&fx, "sessdang", "dang").await;
 
@@ -1447,7 +1443,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_tokenless_degrades_to_dangling() {
-        let fx = fixture("sessplain", Capabilities::new()).await;
+        let fx = fixture("sessplain").await;
         register_daemon_session_tool(&fx).await;
         let (_trunk, _child) = seed_principal_tree(&fx, "sessplain", "plain").await;
 
@@ -1479,9 +1475,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_isolates_principal_stores() {
-        let fx = fixture("sessA", Capabilities::new()).await;
+        let fx = fixture("sessA").await;
         fx.manager
-            .create(test_principal_config("sessB", Capabilities::new()))
+            .create(test_principal_config("sessB"))
             .await
             .expect("create sessB");
         register_daemon_session_tool(&fx).await;
@@ -1531,7 +1527,7 @@ mod tests {
         use crate::async_exec::executor::AsyncExecutorRuntime;
         use crate::tools::builtin::async_control::AsyncRuntime as _;
 
-        let fx = fixture("asyncwf", Capabilities::new()).await;
+        let fx = fixture("asyncwf").await;
         let inbox_registry = crate::async_exec::executor::standalone_inbox_registry();
         let executor = Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
         let principal_id = fx
@@ -1607,7 +1603,7 @@ mod tests {
         assert!(
             delivered.iter().any(|item| matches!(
                 item,
-                peko_extension_api::AsyncInboxItem::Completion(env)
+                peko_session::AsyncInboxItem::Completion(env)
                     if env.parent_session_key == node && env.tool_name == "Glob"
             )),
             "completion for the spawned Glob must land in the node's inbox: {delivered:?}"

@@ -35,3 +35,8 @@ pub use exec::{
 };
 pub use interrupt::ToolInterruptNotice;
 pub use traits::Tool;
+
+pub mod async_status;
+pub mod paths;
+pub use async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
+pub use paths::{default_agent_workspace, default_data_dir};

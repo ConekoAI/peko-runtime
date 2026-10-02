@@ -49,7 +49,7 @@
 //!   scan result actually changes.
 //! - **`mcp_context` normalized.** This section previously used plain
 //!   `invoke_hook_text`; the rest use the trait-port
-//!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_api::ToolFunnel::invoke_prompt_section_hook).
+//!   [`ToolFunnel::render_prompt_sections`](crate::tooling::ToolFunnel::render_prompt_sections).
 //! - **`remove_missing=true` for placeholders.** Templates that omit
 //!   any of the four control-surface placeholders get no section.
 //!
@@ -65,14 +65,11 @@
 // `#[cfg(test)]` blocks below, so `--lib` builds (no `--tests`) flag
 // them as unused. Allow explicitly to keep `--lib` clean.
 #[allow(unused_imports)]
-use super::context::{
-    render_quota_tripped_section, CapabilityChange, CapabilityChangeKind, CapabilityDiff,
-    IterationBudgetState, TurnPromptContext,
-};
+use super::context::{render_quota_tripped_section, IterationBudgetState, TurnPromptContext};
 use super::placeholder::{replace_placeholders, Placeholder};
+use crate::tooling::{PromptSectionRequest, ToolingSeam};
 use async_trait::async_trait;
 use chrono::{Local, Utc};
-use peko_extension_api::{PromptSectionRequest, ToolingSeam};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -122,7 +119,7 @@ impl McpPromptContextProvider for EmptyMcpPromptContextProvider {
 ///
 /// Constructed once per agentic loop and shared across iterations. Cheap
 /// to construct — just an `Arc` clone of the tooling seam (ADR-066 P3:
-/// `peko_extension_api::ToolingSeam`, implemented by root's
+/// `crate::tooling::ToolingSeam`, implemented by root's
 /// `ToolingRuntime`).
 ///
 /// Phase 2 PR 2 (ADR-047 §2.3) added the `mcp_context_provider`
@@ -205,7 +202,7 @@ impl PromptRenderer {
     /// mutates. Excludes per-iteration fields like `{{iteration_budget}}`,
     /// `{{quota_tripped}}`, `{{session_context}}`, `{{memory}}`,
     /// `{{current_time}}`, `{{soft_cancel}}`, and
-    /// `{{capability_diff}}` (those go in the tail runtime-context
+    /// control banners (those go in the tail runtime-context
     /// message — see [`render_runtime_context`]).
     /// `{{timezone}}` is retired from the per-turn context (redundant
     /// with `{{current_time}}`); it still resolves in
@@ -247,7 +244,7 @@ impl PromptRenderer {
     /// suffix (`{{current_time}}`, `{{memory}}`,
     /// `{{session_context}}`, `{{agents}}`, `{{skills}}`,
     /// `{{iteration_budget}}`, `{{quota_tripped}}`, `{{soft_cancel}}`,
-    /// `{{capability_diff}}`). The engine loop appends the returned
+    /// runtime sections). The engine loop appends the returned
     /// string as a user-role message at the TAIL of the conversation,
     /// so `messages[0]` stays byte-identical across iterations and the
     /// provider's front-anchored prefix cache (Anthropic explicit
@@ -270,7 +267,7 @@ impl PromptRenderer {
     ///   `PromptSection` binds) follow the same on-change policy under
     ///   their own names.
     /// - **Event-edged**: `quota_tripped`, `soft_cancel`,
-    ///   `capability_diff` — included only when the corresponding
+    ///   banners — included only when the corresponding
     ///   `TurnPromptContext` field fires (the loop computes the rising
     ///   edges upstream).
     ///
@@ -420,13 +417,6 @@ impl PromptRenderer {
         if ctx.soft_cancel_pending {
             sections.push(render_soft_cancel_section().trim_end().to_string());
         }
-        if let Some(diff) = ctx.capability_diff.as_ref() {
-            let rendered = diff.render();
-            if !rendered.is_empty() {
-                sections.push(rendered.trim_end().to_string());
-            }
-        }
-
         if sections.is_empty() {
             return None;
         }
@@ -698,14 +688,6 @@ fn build_placeholder_values(
             String::new()
         },
     );
-    values.insert(
-        Placeholder::CapabilityDiff,
-        ctx.capability_diff
-            .as_ref()
-            .map(CapabilityDiff::render)
-            .unwrap_or_default(),
-    );
-
     values
 }
 
@@ -719,7 +701,7 @@ fn build_placeholder_values(
 /// so new workspace files appear on the next iteration; the other
 /// volatile placeholders (`timezone`, `memory`, `session_context`,
 /// `iteration_budget`, `quota_tripped`, `soft_cancel`,
-/// `capability_diff`) are omitted as before — `remove_missing=true`
+/// control banners) are omitted as before — `remove_missing=true`
 /// strips them on render.
 fn build_stable_placeholder_values(
     ctx: &TurnPromptContext,
@@ -748,7 +730,6 @@ fn build_stable_placeholder_values(
     );
     values.insert(Placeholder::McpContext, mcp.to_string());
     // Memory, SessionContext, IterationBudget, QuotaTripped, SoftCancel,
-    // CapabilityDiff intentionally omitted — volatile.
 
     values
 }
@@ -836,7 +817,7 @@ fn format_workflows_section(text: &str) -> String {
     }
     format!(
         r"## Workflows
-Procedural scripts this principal has saved under `workflows/`. Run one with the `Workflow` tool (`path` = the listed file) instead of re-deriving the procedure turn by turn; a workflow can call tools back through the runtime with this principal's capabilities. When a task matches an existing workflow, prefer running it; when you repeat a procedure twice, consider writing it as a workflow.
+Procedural scripts this principal has saved under `workflows/`. Run one with the `Workflow` tool (`path` = the listed file) instead of re-deriving the procedure turn by turn; a workflow can call tools back through the runtime with this principal's attribution. When a task matches an existing workflow, prefer running it; when you repeat a procedure twice, consider writing it as a workflow.
 
 <available_workflows>
 {text}
@@ -1074,8 +1055,8 @@ fn render_soft_cancel_section() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tooling::{EngineHooks, ToolFunnel, ToolingSeam};
     use async_trait::async_trait;
-    use peko_extension_api::{EngineHooks, ToolFunnel, ToolingSeam};
     use peko_subject::PrincipalId;
     use std::path::PathBuf;
 
@@ -1109,7 +1090,7 @@ mod tests {
     impl ToolFunnel for EmptyToolingRuntime {
         async fn execute(
             &self,
-            _call: peko_extension_api::ToolCallSpec,
+            _call: crate::tooling::ToolCallSpec,
         ) -> anyhow::Result<(String, serde_json::Value, bool)> {
             anyhow::bail!("EmptyToolingRuntime::execute not implemented")
         }
@@ -1121,8 +1102,8 @@ mod tests {
         }
         async fn render_prompt_sections(
             &self,
-            request: &peko_extension_api::PromptSectionRequest,
-        ) -> peko_extension_api::PromptSections {
+            request: &crate::tooling::PromptSectionRequest,
+        ) -> crate::tooling::PromptSections {
             self.session_context_snapshots
                 .lock()
                 .expect("snapshots mutex poisoned")
@@ -1168,7 +1149,7 @@ mod tests {
                 let text = texts.get(&name).cloned().unwrap_or_default();
                 sections.push((name, text));
             }
-            peko_extension_api::PromptSections { sections }
+            crate::tooling::PromptSections { sections }
         }
     }
 
@@ -1213,7 +1194,6 @@ mod tests {
             session_id: "test-session".to_string(),
             role_name: "test-agent".to_string(),
             body: "You are {{agent_name}} on {{workspace}}.".to_string(),
-            capabilities: None,
             principal_memory: None,
             project_instructions: None,
             workspace: PathBuf::from("/tmp/workspace"),
@@ -1228,7 +1208,6 @@ mod tests {
             iteration_budget: None,
             quota_tripped: false,
             soft_cancel_pending: false,
-            capability_diff: None,
             tool_definitions: vec![],
         }
     }
@@ -1295,7 +1274,7 @@ mod tests {
     // single field on `ctx`, renders, and asserts on the resulting
     // Markdown body. Together these prove the renderer correctly wires
     // `{{iteration_budget}}`, `{{quota_tripped}}`, and
-    // `{{capability_diff}}` from `TurnPromptContext` into the
+    // control banners from `TurnPromptContext` into the
     // rendered prompt. (`{{soft_cancel}}` is already covered above.)
 
     #[tokio::test]
@@ -1348,37 +1327,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_emits_capability_diff_section_when_changed() {
+    async fn render_drops_retired_capability_diff_marker() {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{capability_diff}}".to_string();
-        let diff = CapabilityDiff {
-            granted: vec![CapabilityChange {
-                capability: "tool:Write".to_string(),
-                kind: CapabilityChangeKind::Granted,
-            }],
-            revoked: vec![CapabilityChange {
-                capability: "tool:Bash".to_string(),
-                kind: CapabilityChangeKind::Revoked,
-            }],
-        };
-        ctx.capability_diff = Some(diff);
-        let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(rendered.contains("## Capability changes since last turn"));
-        assert!(rendered.contains("Granted:"));
-        assert!(rendered.contains("- tool:Write"));
-        assert!(rendered.contains("Revoked:"));
-        assert!(rendered.contains("- tool:Bash"));
-    }
-
-    #[tokio::test]
-    async fn render_omits_capability_diff_when_none() {
-        let renderer = PromptRenderer::new(empty_funnel());
-        let mut ctx = empty_ctx();
-        ctx.body = "{{capability_diff}}".to_string();
-        ctx.capability_diff = None;
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(!rendered.contains("## Capability changes"));
+        assert!(!rendered.contains("{{capability_diff}}"));
     }
 
     // ---------- Frozen system prompt + tail runtime context ----------
@@ -1621,7 +1576,7 @@ mod tests {
     }
 
     /// Event-edged sections ride only on the iteration they fire:
-    /// `quota_tripped` / `soft_cancel` / `capability_diff` are included
+    /// `quota_tripped` / `soft_cancel` are included
     /// when the ctx flags them and absent otherwise (the loop computes
     /// the rising edges upstream of the renderer).
     #[tokio::test]
@@ -1631,13 +1586,6 @@ mod tests {
         let mut ctx = empty_ctx();
         ctx.quota_tripped = true;
         ctx.soft_cancel_pending = true;
-        ctx.capability_diff = Some(CapabilityDiff {
-            granted: vec![CapabilityChange {
-                capability: "tool:Write".to_string(),
-                kind: CapabilityChangeKind::Granted,
-            }],
-            revoked: vec![],
-        });
 
         let fired = renderer
             .render_runtime_context(&ctx, &mut state)
@@ -1645,14 +1593,9 @@ mod tests {
             .expect("edged sections fire");
         assert!(fired.contains("## Quota tripped"), "got: {fired}");
         assert!(fired.contains("## Cancellation requested"), "got: {fired}");
-        assert!(
-            fired.contains("## Capability changes since last turn"),
-            "got: {fired}"
-        );
 
         ctx.quota_tripped = false;
         ctx.soft_cancel_pending = false;
-        ctx.capability_diff = None;
         // Nothing due at all now (no iteration budget set, on-change
         // sections unchanged) → the whole message is skipped.
         let quiet = renderer.render_runtime_context(&ctx, &mut state).await;

@@ -16,7 +16,7 @@ use peko_session::SessionCreateOptions;
 use crate::principal::agent_prompt::AgentPrompt;
 
 /// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
-/// allowed extensions.
+/// configured model.
 ///
 /// `provider_hint` is the resolved configured-model id (the principal's
 /// `preferred_model_id`, or a per-message `--model` override). Without a
@@ -26,14 +26,6 @@ use crate::principal::agent_prompt::AgentPrompt;
 /// default model and no other code path that can recover a provider
 /// for the root agent at run time.
 ///
-/// **Track B**: the `capabilities` / `available_agents` filtering
-/// no longer touches the agent config (the per-agent extension whitelist
-/// is gone from `AgentConfig`). The principal's allowlist is bound
-/// separately at agent construction time via
-/// [`Agent::with_principal_capabilities`]. The filter itself still
-/// matters at runtime — see
-/// [`run_root_agent_prompt_with_callback`] for the canonical-agent and
-/// install path.
 pub fn build_agent_config(
     prompt: &AgentPrompt,
     // Model-first: the principal's pinned configured model id, or
@@ -102,11 +94,7 @@ pub(crate) async fn resolve_provider_hint(ctx: &PrincipalContext) -> Option<Stri
 /// Run the root agent prompt in a peer-scoped
 /// session using the principal's shared `ToolingRuntime`.
 ///
-/// The root agent is just another agent of the principal — the same
-/// `PrincipalContext.core()` is used by every agent the principal
-/// spawns. What the root agent can see is governed by the principal's
-/// `capabilities`; what any subagent can see is governed by that
-/// subagent's own extension whitelist.
+/// Root and spawned agents share the principal's explicit tooling runtime.
 pub async fn run_root_agent_prompt(
     prompt: &AgentPrompt,
     peer: Subject,
@@ -188,8 +176,7 @@ where
     let core = ctx.tooling().await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
-    // snapshot can change between messages if the principal's
-    // `capabilities` was edited. We re-register it on the
+    // snapshot can change when workspace role files change. We re-register it on the
     // shared core, which is idempotent on tool name.
     install_role_catalog(&core, available_agents, ctx.principal_id()).await?;
 
@@ -309,7 +296,6 @@ where
     // Track B moved the per-agent extension whitelist off
     // `AgentConfig`; the snapshot lives on the agent and is
     // consulted by `init_builtins_async` to prune the tool bag.
-    .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
     // PR #2 wiring: bind the principal's plan DAG port so the seven
     // `Plan*` built-in tools are registered by `init_builtins_async`.
     // `ctx.plan_port()` returns the per-Principal handle from
@@ -422,7 +408,6 @@ where
             Arc::clone(&ctx.tooling),
         )
         .with_principal_name(ctx.name().to_string())
-        .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
         // PR #2 wiring: same plan_port as the agent, so depth-1+
         // children inherit the per-Principal handle and register their
         // own seven `Plan*` tools.

@@ -1,23 +1,5 @@
-//! `ToolFunnel` — the engine-facing tool-execution seam (ADR-066 D2).
-//!
-//! Phase 9b.N.2 introduced this trait as the engine-facing surface of
-//! root's `ExtensionCore`. ADR-066 P3 splits the daemon-global
-//! `ExtensionCore` into named pieces — `ToolCatalog` (registration +
-//! wire catalog), `ToolDispatcher` (execution), and the prompt-section
-//! providers — and the funnel collapses to the three methods the
-//! engine actually drives:
-//!
-//! - `execute` — run one tool call (identity + abort receiver carried
-//!   on [`ToolCallSpec`]).
-//! - `list_tool_definitions` — the wire catalog (`tools[]` array).
-//! - `render_prompt_sections` — the per-turn tail sections.
-//!
-//! The dep-graph rule stands: `peko-engine` must not depend on root —
-//! the seam stays a trait in this contract crate.
-//!
-//! The non-execution surface the engine also needs (lifecycle hook
-//! firing, session-key bookkeeping, the parallel-execution probe) moved to
-//! [`EngineHooks`] below rather than growing the funnel.
+//! Engine tool execution, prompt rendering, and lifecycle ports.
+//! The host implements these ports without an engine → host dependency.
 
 use anyhow::Result;
 
@@ -106,7 +88,7 @@ impl PromptSections {
 }
 
 /// The engine-facing tool-execution seam (ADR-066 D2). Implemented by
-/// root's `ToolDispatcher` composition; see
+/// root's `ToolingRuntime` composition; see
 /// `peko-rs/core/src/tools/runtime.rs`.
 #[async_trait::async_trait]
 pub trait ToolFunnel: Send + Sync + 'static {

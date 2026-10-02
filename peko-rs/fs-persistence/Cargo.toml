@@ -20,7 +20,7 @@ anyhow = "1.0"
 sha2 = "0.10"
 
 # ADR-065: default_workspace_lock_dir mirrors
-# peko_extension_api::paths::default_data_dir (env override, platform
+# peko_tools_core::paths::default_data_dir (env override, platform
 # data dir, /tmp fallback) — must stay in sync with it
 dirs = "5.0"
 

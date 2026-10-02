@@ -4,7 +4,7 @@
 //! owns. Principal-level config ([`PrincipalConfig`](crate::principal::config::PrincipalConfig))
 //! and runtime state ([`PrincipalContext`](crate::principal::context::PrincipalContext))
 //! hold the authority for shared fields (owner, permissions, workspace,
-//! provider/model hint, capabilities). What stays here is per-agent:
+//! provider/model hint, tooling). What stays here is per-agent:
 //!
 //! - `name` / `description` — identity for serialization/routing
 //! - `prompt` — the agent's authored system prompt body (Markdown)

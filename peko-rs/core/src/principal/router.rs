@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::principal::config::{
     PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
 };
-use peko_extension_api::Capabilities;
+
 use peko_message::LlmMessage;
 use peko_observability::Observability;
 use peko_session::InboxRegistry;
@@ -84,9 +84,6 @@ pub struct RouterContext {
     pub routing: PrincipalRoutingConfig,
     pub recalled_context: Vec<ContextInjection>,
     pub available_agents: Vec<AgentPromptSummary>,
-    /// Inert shell (ADR-066 P2): always empty on load. Still threaded
-    /// to the engine's `capability_diff` tracker pending P3/P6.
-    pub capabilities: Capabilities,
     pub intent: PrincipalIntentConfig,
     pub governance: PrincipalGovernanceConfig,
     /// Shared inbox registry so the router can wire the root agent
@@ -130,7 +127,6 @@ impl std::fmt::Debug for RouterContext {
             .field("routing", &self.routing)
             .field("recalled_context", &self.recalled_context)
             .field("available_agents", &self.available_agents)
-            .field("capabilities", &self.capabilities)
             .field("intent", &self.intent)
             .field("governance", &self.governance)
             .field("inbox_registry", &"<InboxRegistry>")
@@ -157,7 +153,6 @@ impl Clone for RouterContext {
             routing: self.routing.clone(),
             recalled_context: self.recalled_context.clone(),
             available_agents: self.available_agents.clone(),
-            capabilities: self.capabilities.clone(),
             intent: self.intent.clone(),
             governance: self.governance.clone(),
             inbox_registry: Arc::clone(&self.inbox_registry),

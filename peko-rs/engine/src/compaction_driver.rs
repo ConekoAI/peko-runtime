@@ -283,9 +283,8 @@ impl CompactionDriver {
         self.ensure_limits_state_hydrated(session).await;
 
         info!(
-            "Mid-turn compaction fired ({} messages, snapshot covers {} capabilities)",
+            "Mid-turn compaction fired ({} messages, runtime snapshot)",
             messages.len(),
-            snapshot.permission_policy_summary.len()
         );
         on_event(AgenticEvent::Thinking {
             run_id: run_id.to_string(),
@@ -1224,7 +1223,6 @@ mod tests {
         let on_event = event_sink(&f.events);
         let snapshot = peko_session::EnvironmentSnapshot {
             runtime_environment: "test-os".to_string(),
-            permission_policy_summary: vec!["tool:read".to_string()],
         };
         let (driven, ()) = tokio::join!(
             f.driver

@@ -12,38 +12,12 @@
 
 use std::path::PathBuf;
 
-/// Default data directory for async-task records (mirrors
-/// `src/common::paths::default_data_dir()` exactly).
-///
-/// **Must stay in sync with
-/// `src/common::paths::default_data_dir()`.**
-#[must_use]
-pub fn default_data_dir() -> PathBuf {
-    std::env::var_os("PEKO_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("peko")
-        })
-}
+pub use peko_tools_core::paths::{default_agent_workspace, default_data_dir};
 
-/// Default directory for async-task file records
-/// (`default_data_dir()` joined with `async_tasks`).
+/// Default directory for async task records.
 #[must_use]
 pub fn default_async_tasks_dir() -> PathBuf {
     default_data_dir().join("async_tasks")
-}
-
-/// Default per-agent workspace directory.
-///
-/// Phase 9b.N.5b.9: added so `peko_engine::AgenticLoop` can fall back to
-/// a per-agent default when `AgentView::principal_workspace()` returns
-/// `None` (test paths that bypass the principal setup). Mirrors
-/// `src/common::paths::PathResolver::agent_workspace`.
-#[must_use]
-pub fn default_agent_workspace(agent_name: &str) -> PathBuf {
-    default_data_dir().join("roles").join(agent_name)
 }
 
 /// Cross-boundary view of `crate::common::paths::PathResolver`.

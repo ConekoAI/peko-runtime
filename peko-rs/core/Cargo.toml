@@ -90,25 +90,7 @@ peko-provider-api = { path = "../provider-api" }
 # Replaces root `src/providers/`; the historical
 # `crate::providers::*` paths are intentionally broken.
 peko-providers = { path = "../providers" }
-# Workspace member providing the extension framework API contracts
-# (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result,
-# ExtensionManifest, Capability, Capabilities, ActiveExtensionSet,
-# ToolMetadata, ToolSource, ToolRuntimeContext, AsyncReceipt,
-# AsyncTaskStatus, MessageEnvelope, SessionSnapshot, PromptBuildState,
-# ToolRegistryAccess, and the data parts of ReservedParamsConfig /
-# ParamSource. The concrete framework host (registry, async executor,
-# transport, store, manager, scaffold) stays in the root package —
-# Phase 8 will move that into `peko-extension-host`. Depends on
-# peko-message, peko-tools-core, peko-provider-api; the root
-# re-exports through `peko_extension_host::types::*` for
-# backwards compatibility.
-peko-extension-api = { path = "../extension-api" }
-# Phase F2 (foldback): the extension framework host (ExtensionCore,
-# hook dispatch, capability gate, async executor, transport, manager/store,
-# scaffold, skill catalog, integration, framework services, and the
-# SimpleRegistry/SharedRegistry utilities) was folded back into
-# `peko-rs/core/src/extensions/framework/` and the `peko-extension-host`
-# crate deleted. Callers now import from `crate::extensions::framework::*`.
+# ADR-066: live tooling, inbox, and status contracts are consumer-owned.
 # Workspace member providing the IPC + tunnel wire-shape contracts
 # (Phase 11a) — owns the auth envelope (`AuthCredential`,
 # `AuthHeader`) and the shared packet/timeout
@@ -168,7 +150,7 @@ peko-cron = { path = "../cron" }
 # paths via the legacy `src/session/` shim until Phase 7.4 deletes
 # the directory. After 7.4, root-side callers will import from
 # `peko_session::*` directly. The crate is downstream of
-# peko-extension-api / peko-providers / peko-fs-persistence / etc.
+# peko-providers / peko-fs-persistence / etc.
 # (see peko-rs/session/Cargo.toml).
 peko-session = { path = "../session" }
 peko-channel = { path = "../channel" }

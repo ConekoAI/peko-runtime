@@ -16,8 +16,8 @@
 //! The receiver is `&dyn ToolFunnel` — the engine-facing seam (ADR-066
 //! D2) implemented by root's `ToolingRuntime`.
 
+use crate::tooling::{ToolCallSpec, ToolFunnel};
 use anyhow::Result;
-use peko_extension_api::{ToolCallSpec, ToolFunnel};
 use peko_tools_core::{bridge_from_cancellation_token, AbortSignalBridgeGuard};
 
 /// Canonical tool execution via the [`ToolFunnel`] host surface.

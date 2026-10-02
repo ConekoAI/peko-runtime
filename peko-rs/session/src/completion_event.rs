@@ -1,15 +1,4 @@
-//! Phase F2 foldback: `CompletionEvent`, `SteeringMessage`, and
-//! `InboxItem` moved here from `peko-extension-host::inbox`
-//! (deleted). Engine depends on `peko-extension-api` but not on root;
-//! these types are needed in `peko_engine::async_completion` and were
-//! previously reachable via the deleted `peko-extension-host` sat.
-//!
-//! The implementation stays in root at
-//! `crate::async_exec::inbox::SessionInbox` (under foldback).
-//! This file only carries the data types + the `From` conversions
-//! between native `InboxItem` values and the API crate's envelope
-//! forms (`AsyncInboxItem::Completion(CompletionEnvelope)` /
-//! `::Steering(SteeringEnvelope)`).
+//! Session inbox completion events and steering messages.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -22,7 +11,7 @@ pub struct CompletionEvent {
     pub task_id: String,
     pub tool_name: String,
     pub result: serde_json::Value,
-    pub status: crate::AsyncTaskStatus,
+    pub status: peko_tools_core::AsyncTaskStatus,
     pub completed_at: DateTime<Utc>,
     pub output_path: std::path::PathBuf,
     pub parent_session_key: String,

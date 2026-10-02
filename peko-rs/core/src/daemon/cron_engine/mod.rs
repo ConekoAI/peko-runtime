@@ -1216,7 +1216,7 @@ mod tests {
     use chrono::{Duration, Utc};
     use peko_auth::Exposure;
     use peko_auth::{Permission, PermissionGrant};
-    use peko_extension_api::Capabilities;
+
     use peko_providers::mock::MockAdapter;
     use peko_providers::resolver::LlmResolver;
     use peko_subject::Subject;
@@ -1349,7 +1349,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::default(),
             exposure: Exposure::Private,
             status: None,
             boot_state: None,
@@ -2244,7 +2243,6 @@ mod tests {
         // ADR-066 P2: no capability gate — the stub tool executes by
         // presence. The engine now awaits the tool's outcome, and this
         // test wants the success path.
-        principal.config.write().await.capabilities = Capabilities::new();
 
         // Executor wired to an inbox registry the test can inspect.
         let registry = crate::async_exec::executor::standalone_inbox_registry();
@@ -2324,7 +2322,7 @@ mod tests {
                     "expected exactly one steer message in the trunk inbox"
                 );
                 match &items[0] {
-                    peko_extension_api::AsyncInboxItem::Steering(s) => {
+                    peko_session::AsyncInboxItem::Steering(s) => {
                         assert!(s.content.contains("wake-trunk"));
                         assert!(s.content.contains(&task_id));
                     }
@@ -2376,7 +2374,6 @@ mod tests {
         let principal = create_test_principal(&manager, &workspace, "crony").await;
         // Grant the tool catalog so the F37 gate lets the stub run and
         // the failure comes from the tool body, not the gate.
-        principal.config.write().await.capabilities = Capabilities::new();
 
         let executor = Arc::new(AsyncExecutor::new(
             crate::async_exec::executor::standalone_inbox_registry(),

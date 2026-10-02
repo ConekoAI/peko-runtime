@@ -2,9 +2,9 @@
 //! Six points survive. Tool selectors are exact names or absent (all tools);
 //! hooks cannot veto execution. Each handler has a two-second soft-fail budget.
 
+use crate::extensions::workspace_io::{HookInput, HookOutput, HookResult, ToolRuntimeContext};
 use async_trait::async_trait;
 use futures::FutureExt;
-use peko_extension_api::{HookInput, HookOutput, HookResult, ToolRuntimeContext};
 use peko_subject::PrincipalId;
 use std::sync::Arc;
 
@@ -205,7 +205,7 @@ impl WorkspaceHookDispatcher {
         if outputs.is_empty() {
             HookResult::PassThrough
         } else {
-            HookResult::Continue(HookOutput::combine(outputs))
+            HookResult::Continue(HookOutput::Vec(outputs))
         }
     }
 }
@@ -270,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn observers_keep_registration_order_and_soft_fail_without_vetoing_tool_execution() {
         use crate::tools::runtime::ToolingRuntime;
-        use peko_extension_api::{ToolCallSpec, ToolFunnel};
+        use peko_engine::{ToolCallSpec, ToolFunnel};
         let runtime = ToolingRuntime::standalone();
         let p1 = PrincipalId::generate();
         let p2 = PrincipalId::generate();
@@ -331,7 +331,7 @@ mod tests {
             .unwrap();
         runtime
             .catalog()
-            .register_system(Arc::new(Echo), peko_extension_api::ToolSource::BuiltIn)
+            .register_system(Arc::new(Echo), crate::tools::metadata::ToolSource::BuiltIn)
             .await;
         let mut call = ToolCallSpec::new("echo", serde_json::json!({"ok":true}));
         call.principal_id = Some(p1.to_string());
@@ -350,7 +350,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_and_prompt_dispatch_preserve_scope_identity_and_all_handler_outputs() {
-        use peko_extension_api::{EngineHooks, PromptSectionRequest, ToolFunnel};
+        use peko_engine::{EngineHooks, PromptSectionRequest, ToolFunnel};
         let runtime = crate::tools::runtime::ToolingRuntime::standalone();
         let p1 = PrincipalId::generate();
         let p2 = PrincipalId::generate();

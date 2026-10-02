@@ -1,34 +1,12 @@
-//! Core types for the async executor framework
-//!
-//! Phase 7 split this module in two:
-//!
-//! - `AsyncTaskStatus` and `AsyncTaskId` are **framework contracts**
-//!   (they tag the `HookOutput::TaskStatus` variant) and live in
-//!   the `peko-extension-api` workspace crate. The shim re-exports
-//!   them from there so existing
-//!   `crate::async_exec::executor::AsyncTaskStatus`
-//!   paths keep resolving unchanged.
-//! - `AsyncTaskResult`, `AsyncTaskReceipt`, `AsyncToolConfig`, and
-//!   `WaitResult` are **executor-internal** types that depend on
-//!   `peko-tools-core::ToolResult` and other host-only deps. They
-//!   live in the framework host; Phase 8b moved the entire executor
-//!   to `peko-extension-host`.
-//!
-//! 2026-09-27 consolidation (ADR-063): the legacy delivery
-//! stack (`AsyncResultDeliveryMode`, `DeliveryTarget`,
-//! `SessionMessageType`, the queue/channel/callback deliveries) was
-//! deleted — completions are delivered exclusively via the
-//! per-session inbox push in `AsyncExecutor::execute_inner`.
+//! Host task execution bookkeeping. Shared task statuses live in tools-core.
 
 use std::sync::Arc;
 
 use peko_tools_core::ToolResult;
 use serde::{Deserialize, Serialize};
 
-// Re-export the framework-contract types that moved to peko-extension-api
-// in Phase 7. The contract types live next to the `HookOutput::TaskStatus`
-// variant; the executor imports them from there.
-pub use peko_extension_api::async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
+// Shared background task status contracts
+pub use peko_tools_core::async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 
 /// Receipt returned to agent when spawning an async task
 #[derive(Debug, Clone, Serialize, Deserialize)]

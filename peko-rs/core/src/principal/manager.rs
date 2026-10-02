@@ -18,7 +18,6 @@ use crate::principal::AgentPrompt;
 use crate::principal::PrincipalConfig;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
-use peko_extension_api::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
@@ -26,6 +25,7 @@ use peko_plan::{PlanNodeStatus, PlanRecord};
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_session::RunPermitGuard;
+use peko_session::SteeringMessage;
 use peko_subject::PrincipalDID;
 
 /// Maximum number of resumed plans injected into the router context at
@@ -1105,7 +1105,7 @@ impl PrincipalManager {
             }
         }
 
-        let (available_agents, routing, capabilities, intent, governance, principal_name) = {
+        let (available_agents, routing, intent, governance, principal_name) = {
             let config = principal.config.read().await;
             // ADR-066 P2: presence = spawnability — every role file in
             // the workspace is enabled.
@@ -1123,7 +1123,6 @@ impl PrincipalManager {
             (
                 available_agents,
                 config.routing.clone(),
-                config.capabilities.clone(),
                 config.intent.clone(),
                 config.governance.clone(),
                 config.name.clone(),
@@ -1140,7 +1139,6 @@ impl PrincipalManager {
             routing,
             recalled_context,
             available_agents,
-            capabilities,
             intent,
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
@@ -1413,7 +1411,7 @@ async fn discover_role_prompts(
         let adapter = RoleAdapter::new();
         let discovered = adapter.discover_roles(roles_dir);
         for d in discovered {
-            let canonical_id = d.manifest.id.0.clone();
+            let canonical_id = d.manifest.id.clone();
             let prompt = load_agent_prompt(&d.file_path)
                 .map_err(|e| PrincipalManagerError::Config(format!("{}: {e}", canonical_id)))?;
             prompts.insert(canonical_id, prompt);
@@ -1504,7 +1502,7 @@ mod tests {
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use peko_extension_api::Capabilities;
+
     use peko_providers::{LlmResolver, MockAdapter};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1691,7 +1689,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,

@@ -19,7 +19,7 @@ impl AsyncSpawnTool {
     /// Construct with an async runtime.
     ///
     /// The runtime holds the per-agent `Weak<ToolingRuntime>`,
-    /// `principal_id`, and capabilities snapshot internally — agents
+    /// `principal_id` internally — agents
     /// construct the runtime once and share it across the Async*
     /// family. This matches the F37+F38 funnel: the runtime's
     /// `spawn` calls `AsyncExecutor::dispatch_tool` which builds the
@@ -126,7 +126,7 @@ impl AsyncSpawnTool {
         let timeout_secs = params.get("timeout_secs").and_then(|v| v.as_u64());
 
         // The runtime encapsulates the per-agent snapshot (ToolingRuntime,
-        // principal_id, capabilities). The tool body has no opinions about
+        // principal_id). The tool body has no opinions about
         // them — agents construct the runtime with whatever their
         // principal context requires, and the runtime handles routing
         // through the F37 canonical funnel.
@@ -147,7 +147,7 @@ impl AsyncSpawnTool {
         };
 
         // The runtime adapter wraps the per-agent ToolingRuntime snap and
-        // overlays the right principal_id + capabilities. We hand it a
+        // overlays the right principal_id. We hand it a
         // minimal SpawnRequest here so the public tool API doesn't leak
         // those concepts; the adapter fills them in. (If a caller ever
         // needs to override per-call, an optional fields API can come

@@ -59,7 +59,7 @@ mod tests {
     fn test_agent_config(name: &str) -> AgentConfig {
         // **Track B**: per-agent extension whitelist removed from
         // `AgentConfig`. The `*` placeholder this used to set is
-        // now applied via `Agent::with_principal_capabilities`
+        // retired in ADR-066; every registered tool is available
         // downstream of this fixture.
         AgentConfig {
             name: name.to_string(),
@@ -114,9 +114,9 @@ mod tests {
             async fn handle(
                 &self,
                 _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Text(
+            ) -> crate::extensions::workspace_io::HookResult {
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Text(
                         "Always use the Superpowers skill pack.".to_string(),
                     ),
                 )
@@ -1275,7 +1275,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_parallel_tool_execution_overlaps_in_time() {
         use crate::extensions::builtin::adapter::BuiltinToolAdapter;
-        use crate::extensions::framework::types::{Capabilities, Capability};
+
         use peko_providers::MockResponse;
         use peko_tools_core::Tool;
         use serde_json::json;
@@ -1388,10 +1388,7 @@ mod tests {
         let agent = Arc::new(
             Agent::new_for_test(config, temp_dir.path(), tooling.clone())
                 .await
-                .unwrap()
-                .with_principal_capabilities(Some(std::sync::Arc::new(Capabilities::with_grants(
-                    [Capability::new("tool:ParaA"), Capability::new("tool:ParaB")],
-                )))),
+                .unwrap(),
         );
         let loop_ = AgenticLoop::new(
         agent.clone(),
@@ -2314,10 +2311,10 @@ mod tests {
             async fn handle(
                 &self,
                 _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
+            ) -> crate::extensions::workspace_io::HookResult {
                 tokio::time::sleep(self.1).await;
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Text(self.0.to_string()),
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Text(self.0.to_string()),
                 )
             }
         }
@@ -2357,7 +2354,6 @@ mod tests {
             session_id: "test-session".into(),
             role_name: "test-agent".into(),
             body: "{{tools}} {{skills}} {{roles}} {{mcp_context}}".into(),
-            capabilities: None,
             principal_memory: None,
             project_instructions: None,
             workspace: tempdir_unused(),
@@ -2372,7 +2368,6 @@ mod tests {
             iteration_budget: None,
             quota_tripped: false,
             soft_cancel_pending: false,
-            capability_diff: None,
             tool_definitions: vec![],
         };
 
@@ -2418,11 +2413,11 @@ mod tests {
             async fn handle(
                 &self,
                 _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
+            ) -> crate::extensions::workspace_io::HookResult {
                 // Sleep far longer than the renderer's 2s timeout.
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Text("never".to_string()),
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Text("never".to_string()),
                 )
             }
         }
@@ -2444,7 +2439,6 @@ mod tests {
             session_id: "test-session".into(),
             role_name: "test-agent".into(),
             body: "before {{skills}} after".into(),
-            capabilities: None,
             principal_memory: None,
             project_instructions: None,
             workspace: tempdir_unused(),
@@ -2459,7 +2453,6 @@ mod tests {
             iteration_budget: None,
             quota_tripped: false,
             soft_cancel_pending: false,
-            capability_diff: None,
             tool_definitions: vec![],
         };
 
@@ -2498,7 +2491,6 @@ mod tests {
         session_id: "test-session".into(),
         role_name: "test-agent".into(),
         body: "channel={{channel}} thinking={{thinking_level}} runtime={{runtime}} sandbox={{sandbox}} aliases={{model_aliases}}".into(),
-        capabilities: None,
         principal_memory: None,
         project_instructions: None,
         workspace: tempdir_unused(),
@@ -2513,7 +2505,6 @@ mod tests {
         iteration_budget: None,
         quota_tripped: false,
         soft_cancel_pending: false,
-        capability_diff: None,
         tool_definitions: vec![],
     }
     }
@@ -2880,177 +2871,6 @@ mod tests {
         assert!(rendered.contains("## Cancellation requested"));
     }
 
-    #[tokio::test]
-    #[serial_test::serial(core)]
-    async fn loop_handles_capability_grant_mid_run() {
-        // Phase 3: `cap_diff_tracker.observe` returns `Some(diff)` when
-        // the grant set expands between iterations. The tracker's
-        // state lives on the loop, so mid-run grant = a new
-        // `Capabilities` snapshot the loop observes on the next call
-        // to `build_turn_context`. We exercise the tracker directly
-        // (same code path the loop uses) plus a render of the diff
-        // the loop would surface.
-        use crate::extensions::framework::types::{Capabilities, Capability};
-        use peko_engine::prompt::context::CapabilityDiffTracker;
-        peko_identity::init_test_env();
-        let tooling = test_tooling().await;
-
-        let temp = tempdir_unused();
-        std::fs::create_dir_all(&temp).unwrap();
-        let (provider, _adapter) = mock_provider();
-
-        let base_caps = Arc::new(Capabilities::with_grants([Capability::new("tool:Read")]));
-        let expanded_caps = Arc::new(Capabilities::with_grants([
-            Capability::new("tool:Read"),
-            Capability::new("tool:Write"),
-        ]));
-
-        let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-cap-grant"), &temp, tooling.clone())
-                .await
-                .unwrap()
-                .with_principal_capabilities(Some(Arc::clone(&base_caps))),
-        );
-        let loop_ = AgenticLoop::new(
-        Arc::clone(&agent) as Arc<dyn AgentView>,
-        Arc::clone(&provider),
-        agent.tooling(),
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-    .await;
-
-        // First observation: baseline → diff is `None` (no section).
-        let ctx1 = loop_.build_turn_context(1, &[], "test-session", None);
-        assert!(
-            ctx1.capability_diff.is_none(),
-            "first observation must be the baseline (no diff)"
-        );
-
-        // Drive the tracker directly with the new snapshot. The loop's
-        // tracker is private; this exercises the same `observe` impl.
-        let mut tracker = CapabilityDiffTracker::new();
-        let first = tracker.observe(&base_caps);
-        assert!(first.is_none(), "first observation is baseline");
-        let second = tracker.observe(&expanded_caps);
-        let diff = second.expect("grant must surface a diff on the 2nd observation");
-        assert_eq!(diff.granted.len(), 1);
-        assert_eq!(diff.granted[0].capability, "tool:Write");
-        assert_eq!(diff.revoked.len(), 0);
-
-        // Pin the render path: a ctx carrying this diff renders the
-        // expected Markdown section.
-        let ctx2 = TurnPromptContext {
-            principal_id: agent.principal_id().to_string(),
-            session_id: "test-session".into(),
-            role_name: agent.name().to_string(),
-            body: "{{capability_diff}}".into(),
-            capabilities: Some(expanded_caps),
-            principal_memory: None,
-            project_instructions: None,
-            workspace: tempdir_unused(),
-            resolved_model: "mock-model".into(),
-            channel: "discord".into(),
-            thinking_level: "medium".into(),
-            sandbox_enabled: false,
-            model_aliases: vec![],
-            has_gateway: true,
-            conversation_channel: None,
-            conversation_peer: None,
-            iteration_budget: None,
-            quota_tripped: false,
-            soft_cancel_pending: false,
-            capability_diff: Some(diff),
-            tool_definitions: vec![],
-        };
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
-        let rendered = renderer.render_for_iteration(&ctx2).await;
-        assert!(rendered.contains("## Capability changes since last turn"));
-        assert!(rendered.contains("Granted:"));
-        assert!(rendered.contains("- tool:Write"));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial(core)]
-    async fn loop_handles_capability_revoke_mid_run() {
-        // Phase 3: mirror of the grant test — when the grant set
-        // shrinks between iterations, the diff surfaces the revoked
-        // capability under `Revoked:`.
-        use crate::extensions::framework::types::{Capabilities, Capability};
-        use peko_engine::prompt::context::CapabilityDiffTracker;
-        peko_identity::init_test_env();
-        let tooling = test_tooling().await;
-
-        let full_caps = Arc::new(Capabilities::with_grants([
-            Capability::new("tool:Read"),
-            Capability::new("tool:Write"),
-        ]));
-        let shrunk_caps = Arc::new(Capabilities::with_grants([Capability::new("tool:Read")]));
-
-        let mut tracker = CapabilityDiffTracker::new();
-        let first = tracker.observe(&full_caps);
-        assert!(first.is_none());
-        let second = tracker.observe(&shrunk_caps);
-        let diff = second.expect("revoke must surface a diff");
-        assert_eq!(diff.granted.len(), 0);
-        assert_eq!(diff.revoked.len(), 1);
-        assert_eq!(diff.revoked[0].capability, "tool:Write");
-
-        // Pin render too.
-        let temp = tempdir_unused();
-        std::fs::create_dir_all(&temp).unwrap();
-        let (provider, _adapter) = mock_provider();
-        let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-cap-revoke"), &temp, tooling.clone())
-                .await
-                .unwrap(),
-        );
-        let loop_ = AgenticLoop::new(
-        Arc::clone(&agent) as Arc<dyn AgentView>,
-        Arc::clone(&provider),
-        agent.tooling(),
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-    .await;
-
-        let ctx = TurnPromptContext {
-            principal_id: agent.principal_id().to_string(),
-            session_id: "test-session".into(),
-            role_name: agent.name().to_string(),
-            body: "{{capability_diff}}".into(),
-            capabilities: Some(shrunk_caps),
-            principal_memory: None,
-            project_instructions: None,
-            workspace: tempdir_unused(),
-            resolved_model: "mock-model".into(),
-            channel: "discord".into(),
-            thinking_level: "medium".into(),
-            sandbox_enabled: false,
-            model_aliases: vec![],
-            has_gateway: true,
-            conversation_channel: None,
-            conversation_peer: None,
-            iteration_budget: None,
-            quota_tripped: false,
-            soft_cancel_pending: false,
-            capability_diff: Some(diff),
-            tool_definitions: vec![],
-        };
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
-        let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(rendered.contains("Revoked:"));
-        assert!(rendered.contains("- tool:Write"));
-    }
-
     // -----------------------------------------------------------------
     // Goal verification: the system prompt is reconstructed every turn
     // from a freshly read `AgentConfig::prompt`. If the principal's
@@ -3208,10 +3028,10 @@ mod tests {
             async fn handle(
                 &self,
                 _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
+            ) -> crate::extensions::workspace_io::HookResult {
                 self.log.lock().unwrap().push(self.label);
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Unit,
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Unit,
                 )
             }
         }
@@ -3315,12 +3135,12 @@ mod tests {
             async fn handle(
                 &self,
                 ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
-                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+            ) -> crate::extensions::workspace_io::HookResult {
+                if let crate::extensions::workspace_io::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Unit,
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Unit,
                 )
             }
         }
@@ -3404,12 +3224,12 @@ mod tests {
             async fn handle(
                 &self,
                 ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
-                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+            ) -> crate::extensions::workspace_io::HookResult {
+                if let crate::extensions::workspace_io::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Unit,
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Unit,
                 )
             }
         }
@@ -3495,12 +3315,12 @@ mod tests {
             async fn handle(
                 &self,
                 ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
-                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+            ) -> crate::extensions::workspace_io::HookResult {
+                if let crate::extensions::workspace_io::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Unit,
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Unit,
                 )
             }
         }
@@ -3585,15 +3405,14 @@ mod tests {
             async fn handle(
                 &self,
                 ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
-                if let crate::extensions::framework::types::HookInput::ToolCall {
-                    tool_name, ..
-                } = &ctx.input
+            ) -> crate::extensions::workspace_io::HookResult {
+                if let crate::extensions::workspace_io::HookInput::ToolCall { tool_name, .. } =
+                    &ctx.input
                 {
                     self.log.lock().unwrap().push(serde_json::json!(tool_name));
                 }
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Unit,
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Unit,
                 )
             }
         }
@@ -3680,12 +3499,12 @@ mod tests {
             async fn handle(
                 &self,
                 ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
-            ) -> crate::extensions::framework::types::HookResult {
-                if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
+            ) -> crate::extensions::workspace_io::HookResult {
+                if let crate::extensions::workspace_io::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
                 }
-                crate::extensions::framework::types::HookResult::Continue(
-                    crate::extensions::framework::types::HookOutput::Unit,
+                crate::extensions::workspace_io::HookResult::Continue(
+                    crate::extensions::workspace_io::HookOutput::Unit,
                 )
             }
         }

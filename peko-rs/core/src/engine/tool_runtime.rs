@@ -175,18 +175,14 @@ impl ToolRuntime {
             Arc::new(
                 WriteTool::new()
                     .with_workspace(workspace.clone())
-                    .with_lock_dir(
-                        crate::extensions::framework::paths::default_data_dir().join("locks"),
-                    ),
+                    .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
             ),
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
             Arc::new(
                 EditTool::new()
                     .with_workspace(workspace.clone())
-                    .with_lock_dir(
-                        crate::extensions::framework::paths::default_data_dir().join("locks"),
-                    ),
+                    .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
             ),
             Arc::new(CronCreateTool::new()),
             Arc::new(CronDeleteTool::new()),
@@ -331,7 +327,7 @@ impl ToolRuntime {
     /// The runtime is shared across the daemon, so
     /// `PrincipalId::system()` is the right scope here.
     #[must_use]
-    pub async fn list_tools(&self) -> Vec<crate::extensions::framework::types::ToolMetadata> {
+    pub async fn list_tools(&self) -> Vec<crate::tools::metadata::ToolMetadata> {
         self.tooling
             .catalog()
             .list_tools(peko_subject::PrincipalId::system())

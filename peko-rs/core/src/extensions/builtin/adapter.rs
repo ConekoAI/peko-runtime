@@ -17,8 +17,8 @@ use peko_subject::PrincipalId;
 use peko_tools_core::Tool;
 use std::sync::Arc;
 
-use crate::extensions::framework::types::ToolSource;
 use crate::tools::catalog::ToolCatalog;
+use crate::tools::metadata::ToolSource;
 
 /// Adapter for registering built-in tools with the catalog.
 #[derive(Debug)]

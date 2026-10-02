@@ -32,7 +32,7 @@ use crate::tools::builtin::messaging::{
     SpawnAuditEvent, SpawnRequest, SubagentRunView, SubagentRuntime,
 };
 use anyhow::Context;
-use peko_extension_api::SpawnCleanupPolicy;
+use peko_session::SpawnCleanupPolicy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

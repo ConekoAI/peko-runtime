@@ -13,15 +13,15 @@
 
 use crate::audit_sink::{AuditEventView, AuditSeverity};
 use crate::synthetic_stream::synthesize_stream_from_blocking;
+use crate::tooling::ToolingSeam;
 use crate::{
     AgentView, AgenticEvent, AsyncInboxItem, AsyncInboxLike, BackgroundCompactorFactory,
-    CapabilityDiffTracker, CompactionConfig, EmptyMcpPromptContextProvider, LifecyclePhase,
-    McpPromptContextProvider, OrchestratorConfig, PromptRenderer, ProviderView, SessionView,
-    StackedMeteredProvider, StreamOrchestrator, TurnPromptContext,
+    CompactionConfig, EmptyMcpPromptContextProvider, LifecyclePhase, McpPromptContextProvider,
+    OrchestratorConfig, PromptRenderer, ProviderView, SessionView, StackedMeteredProvider,
+    StreamOrchestrator, TurnPromptContext,
 };
 use anyhow::Result;
 use futures::StreamExt;
-use peko_extension_api::ToolingSeam;
 use peko_message::{ContentBlock, LlmMessage};
 use peko_provider_api::{
     clamp_openai_prompt_cache_key, BodyStringClassifier, CacheRetention, ChatOptions, MessageRole,
@@ -86,16 +86,7 @@ pub struct AgenticLoop {
     /// `BackgroundCompactorFactoryAdapter`.
     compactor_factory: Arc<dyn BackgroundCompactorFactory>,
     system_prompt: String,
-    /// Extension core for skill loading, tool registration, and hook
-    /// firing. Phase 9b.N.5b.4 switched the field from the concrete
-    /// root `Arc<peko_extension_api::ToolingRuntime>` to
-    /// `Arc<dyn ToolFunnel>` — the trait port the renderer, tool
-    /// executor, and compaction driver all use. The renderer
-    /// (now in `peko_engine::prompt::renderer`) calls
-    /// `ToolFunnel::invoke_prompt_section_hook` /
-    /// `invoke_session_context_build_hook` instead of constructing
-    /// `HookPoint` / `HookInput` directly, so the loop never needs
-    /// the concrete root type.
+    /// Host tool execution, prompt sections, and lifecycle/bookkeeping ports.
     pub tooling: Arc<dyn ToolingSeam>,
     /// Resolved caller identity (pekohub sub, API key id, or `None` for
     /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
@@ -151,14 +142,6 @@ pub struct AgenticLoop {
     /// `Arc::new(AsyncInboxAdapter::new(...))` before calling
     /// [`AgenticLoop::with_async_completion_queue`].
     async_completion_queue: Option<Arc<dyn AsyncInboxLike>>,
-    /// Per-loop capability-diff tracker. The renderer observes the
-    /// principal's grants each iteration and emits a `{{capability_diff}}`
-    /// section when the set has changed since the last observation.
-    /// Lives on the loop (per-loop mutable state), not on the renderer
-    /// (which is stateless). Wrapped in `Mutex` for interior mutability
-    /// so the public `run*` methods can stay `&self` without
-    /// forcing callers to take a mutable borrow for the entire run.
-    cap_diff_tracker: std::sync::Mutex<CapabilityDiffTracker>,
     /// Optional soft-interrupt token. When set, the loop checks
     /// `is_cancelled()` at the start of each iteration and just
     /// before delivering the final answer; if cancelled, it emits a
@@ -258,7 +241,7 @@ impl AgenticLoop {
     ///   `Agent`; see `peko_engine::AgentView`).
     /// * `provider` - The LLM provider to use
     /// * `tooling` - The trait-object tooling seam
-    ///   (`peko_extension_api::ToolingSeam`) — implemented by root's
+    ///   (`crate::tooling::ToolingSeam`) — implemented by root's
     ///   `ToolingRuntime` (ADR-066 P3).
     pub async fn new(
         agent: Arc<dyn AgentView>,
@@ -301,7 +284,6 @@ impl AgenticLoop {
             caller_id: None,
             agent_principal_id,
             async_completion_queue: None,
-            cap_diff_tracker: std::sync::Mutex::new(CapabilityDiffTracker::new()),
             cancel: None,
             quota_meter: Arc::new(peko_quota::QuotaMeter::unlimited()),
             // F31b: default to 3 streaming retries per iteration,
@@ -962,7 +944,7 @@ impl AgenticLoop {
         let provider_clone = Arc::clone(&self.provider);
         // Phase 1: `run_inner_with_meter` needs `&mut self` so the
         // per-iteration prompt rebuild can read (and advance) the
-        // `cap_diff_tracker`. The quota-scope closures capture
+        // the prompt context. The quota-scope closures capture
         // `self` by mutable reference; the lifetime ends when the
         // outer scope returns. Move the tracker reads into the
         // body, where `self` is borrowed mutably via this method's
@@ -2080,11 +2062,6 @@ impl AgenticLoop {
                             std::env::consts::OS,
                             self.agent.name()
                         ),
-                        permission_policy_summary: self
-                            .agent
-                            .principal_capabilities()
-                            .map(|allowed| allowed.to_strings())
-                            .unwrap_or_default(),
                     };
                     info!(
                         "AgenticLoop: mid-turn threshold hit ({} tokens); firing compaction",
@@ -2221,7 +2198,7 @@ impl AgenticLoop {
         self.agent
             .principal_workspace()
             .cloned()
-            .unwrap_or_else(|| peko_extension_api::default_agent_workspace(self.agent.name()))
+            .unwrap_or_else(|| peko_tools_core::default_agent_workspace(self.agent.name()))
     }
 
     /// Build a [`TurnPromptContext`] for the current iteration.
@@ -2239,7 +2216,7 @@ impl AgenticLoop {
     /// `sandbox_enabled`, `model_aliases` from `AgentConfig`. Phase 3
     /// will populate the four control surfaces
     /// (`iteration_budget`, `quota_tripped`, `soft_cancel_pending`,
-    /// `capability_diff`).
+    /// runtime control banners).
     pub fn build_turn_context(
         &self,
         iteration: usize,
@@ -2257,16 +2234,6 @@ impl AgenticLoop {
         // from the agent's resolved catalog id (falls back to
         // `provider.model_id()`). Reflects per-call `message_override`.
         let resolved_model = self.resolved_model_id.clone();
-
-        // Capability diff: lock the tracker, observe, drop the lock.
-        // The tracker's `observe` is sync and fast; the `Mutex` is a
-        // plain std one so contention is minimal. First observation
-        // returns `None` (baseline); subsequent calls return
-        // `Some(diff)` when the grant set changed.
-        let capability_diff = self
-            .agent
-            .principal_capabilities()
-            .and_then(|caps| self.cap_diff_tracker.lock().ok()?.observe(caps));
 
         // Phase 3 wiring — four long-horizon control surfaces. The
         // renderer always emits the corresponding `{{placeholder}}` from
@@ -2298,8 +2265,6 @@ impl AgenticLoop {
         // - `soft_cancel_pending`: already wired in Phase 1; the token
         //   is set by the IPC handler when `PrincipalStop`
         //   arrives. Surfaced verbatim at `{{soft_cancel}}`.
-        // - `capability_diff`: already wired in Phase 1 via the
-        //   tracker's `observe` call above.
         let iteration_budget = Some(crate::IterationBudgetState { iteration });
 
         // Rising-edge trip detection: only surface the banner on the
@@ -2331,7 +2296,6 @@ impl AgenticLoop {
             session_id: session_id.to_string(),
             role_name: self.agent.name().to_string(),
             body,
-            capabilities: self.agent.principal_capabilities().cloned(),
             principal_memory: crate::load_principal_memory(&workspace),
             project_instructions,
             workspace,
@@ -2354,7 +2318,7 @@ impl AgenticLoop {
             iteration_budget,
             quota_tripped,
             soft_cancel_pending: self.cancel.as_ref().is_some_and(|t| t.is_cancelled()),
-            capability_diff,
+
             tool_definitions: tool_defs.to_vec(),
         }
     }

@@ -488,7 +488,6 @@ impl DaemonClient {
         file_path: impl Into<String>,
         name: Option<String>,
         force: bool,
-        selected_capabilities: Vec<String>,
         expected_manifest_checksum: Option<String>,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
@@ -497,7 +496,6 @@ impl DaemonClient {
             file_path: file_path.into(),
             name,
             force,
-            selected_capabilities,
             expected_manifest_checksum,
         };
         self.request_response(packet).await

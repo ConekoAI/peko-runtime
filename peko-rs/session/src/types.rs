@@ -130,12 +130,7 @@ impl fmt::Display for OverlayType {
 
 /// Cleanup policy for spawn overlays.
 ///
-/// The enum lives in `peko-session::types` because the spawn overlay
-/// DTO that uses it (`SubagentMetadata`) is part of the session
-/// persistence layer. `peko-extension-host` re-exports the same type
-/// under `peko_extension_host::subagent::SpawnCleanupPolicy` for
-/// the framework code paths that need to reference it without
-/// depending on the session crate.
+/// Shared by persistence and the host's subagent execution tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SpawnCleanupPolicy {
     /// Keep the spawn session after completion

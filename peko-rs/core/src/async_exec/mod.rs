@@ -5,7 +5,7 @@
 //! canonical `AsyncExecutor`, `CompletionQueue`, and the spawned-task
 //! bookkeeping that engine flows events into, plus the cross-boundary
 //! async-task inbox (`inbox`). Type-port helpers (`CompletionEvent`,
-//! `SteeringMessage`) live in `peko_extension_api::completion_event`.
+//! `SteeringMessage`) live in `peko_session::completion_event`.
 
 pub mod executor;
 pub mod inbox;

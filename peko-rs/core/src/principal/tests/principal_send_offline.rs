@@ -81,7 +81,6 @@ async fn create_test_principal(
         governance: Default::default(),
         memory: Default::default(),
         routing: Default::default(),
-        capabilities: Default::default(),
         exposure: Exposure::Public,
         status: None,
         boot_state: None,

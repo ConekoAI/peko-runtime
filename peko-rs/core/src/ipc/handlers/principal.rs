@@ -61,7 +61,7 @@ use peko_protocol::ipc::HEARTBEAT_INTERVAL_SECS;
 use std::time::Duration;
 use tracing::warn;
 
-use peko_extension_api::SteeringMessage;
+use peko_session::SteeringMessage;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
 
@@ -74,8 +74,6 @@ pub struct PrincipalImportPreview {
     did: String,
     description: Option<String>,
     agents: Vec<String>,
-    extensions: Vec<String>,
-    required_capabilities: Vec<String>,
     inventory: crate::registry::packaging::ExecutableInventory,
     manifest_checksum: String,
     validation_errors: Vec<String>,
@@ -511,8 +509,6 @@ impl RequestHandler for PrincipalHandler {
                             did: preview.did,
                             description: preview.description,
                             agents: preview.agents,
-                            extensions: preview.extensions,
-                            required_capabilities: preview.required_capabilities,
                             inventory: preview.inventory,
                             manifest_checksum: preview.manifest_checksum,
                             validation_errors: preview.validation_errors,
@@ -535,7 +531,6 @@ impl RequestHandler for PrincipalHandler {
                 file_path,
                 name,
                 force,
-                selected_capabilities,
                 expected_manifest_checksum,
             } => {
                 // The `name` field is the caller's chosen rename for an
@@ -561,7 +556,6 @@ impl RequestHandler for PrincipalHandler {
                     std::path::Path::new(&file_path),
                     name.clone(),
                     force,
-                    selected_capabilities,
                     expected_manifest_checksum,
                 )
                 .await
@@ -1292,7 +1286,6 @@ impl RequestHandler for PrincipalHandler {
                     governance: PrincipalGovernanceConfig::default(),
                     memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
-                    capabilities: Default::default(),
                     exposure: Exposure::Private,
                     status: None,
                     boot_state: None,
@@ -2958,8 +2951,6 @@ async fn preview_principal_import(
         did: manifest.did,
         description: manifest.description,
         agents,
-        extensions: Vec::new(),
-        required_capabilities: Vec::new(),
         inventory,
         manifest_checksum,
         validation_errors,
@@ -2974,7 +2965,6 @@ async fn import_principal_package(
     file_path: &std::path::Path,
     new_name: Option<String>,
     force: bool,
-    selected_capabilities: Vec<String>,
     expected_manifest_checksum: Option<String>,
 ) -> anyhow::Result<crate::registry::packaging::PrincipalImportResult> {
     let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
@@ -2984,10 +2974,7 @@ async fn import_principal_package(
     );
     // ADR-066 P2/D1: no capability negotiation — the caller's subject
     // is projected into the unpackager so the agent-prompt + identity
-    // writes gate through `RuntimeAuthority::shared_*_write_for_name`
-    // on ownership. The wire's `selected_capabilities` is
-    // parsed-and-ignored (deprecated).
-    let _ = selected_capabilities;
+    // writes use ownership checks through RuntimeAuthority.
     let opts = crate::registry::packaging::PrincipalImportOptions {
         new_name,
         force,
@@ -3651,7 +3638,6 @@ mod tests {
                 governance: PrincipalGovernanceConfig::default(),
                 memory: PrincipalMemoryConfig::default(),
                 routing: PrincipalRoutingConfig::default(),
-                capabilities: peko_extension_api::Capabilities::new(),
                 exposure: peko_auth::Exposure::Private,
                 status: None,
                 boot_state: None,

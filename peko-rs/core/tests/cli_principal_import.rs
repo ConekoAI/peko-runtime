@@ -35,5 +35,5 @@ async fn import_displays_inventory_and_restores_workspace_without_confirmation()
     assert!(root.join("skills/fixture-skill/SKILL.md").exists());
     let config: peko_core::principal::config::PrincipalConfig =
         toml::from_str(&std::fs::read_to_string(root.join("principal.toml")).unwrap()).unwrap();
-    assert!(config.capabilities.is_empty());
+    assert!(!toml::to_string(&config).unwrap().contains("capabilities"));
 }

@@ -38,10 +38,6 @@ pub struct CatalogEntry {
     /// Always `true` since ADR-066 P2 (no capability gate). The field
     /// stays so the `peko show` catalog payload keeps its shape.
     pub enabled: bool,
-    /// Capabilities this entity declares it provides. Empty for entities
-    /// (built-ins, agents, workspace scan entries) whose capability is
-    /// implicit. Inert metadata since ADR-066 P2.
-    pub provides: Vec<String>,
 }
 
 /// Per-principal snapshot of all detected tooling.
@@ -72,7 +68,6 @@ impl PrincipalCatalog {
                     kind: "builtin".to_string(),
                     source: None,
                     enabled: true,
-                    provides: Vec::new(),
                 });
             }
         }
@@ -86,7 +81,6 @@ impl PrincipalCatalog {
                     kind: "agent".to_string(),
                     source: None,
                     enabled: true,
-                    provides: Vec::new(),
                 });
             }
         }
@@ -117,7 +111,6 @@ impl PrincipalCatalog {
                     kind: (*kind).to_string(),
                     source: None,
                     enabled: true,
-                    provides: Vec::new(),
                 });
             }
         }

@@ -1,20 +1,9 @@
-//! Per-session inbox of completed async tasks and user steering messages
-//! waiting to be injected into the next agentic loop iteration.
-//!
-//! The canonical types (`CompletionEvent`, `SteeringMessage`,
-//! `InboxItem`, `SessionInbox`) are defined in `peko_extension_api` and
-//! `crate::async_exec::inbox`; this module re-exports them so
-//! the historical
-//! `crate::async_exec::executor::*` import paths
-//! keep resolving, and provides the `SharedSessionInbox` convenience
-//! alias (`Arc<SessionInbox>`) for existing callers (e.g.
-//! `AsyncExecutor::inbox_registry`, the `AsyncInboxAdapter` in
-//! `src/engine/async_inbox_compat.rs`).
+//! Completion queue compatibility surface for session-owned events and the host inbox.
 
 use std::sync::Arc;
 
 pub use crate::async_exec::inbox::SessionInbox;
-pub use peko_extension_api::{CompletionEvent, InboxItem, SteeringMessage};
+pub use peko_session::{CompletionEvent, InboxItem, SteeringMessage};
 
 /// Convenience alias preserved from the pre-Phase-2 root type:
 ///

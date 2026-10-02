@@ -19,18 +19,16 @@
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
-use peko_extension_api::session::SessionSnapshot;
-use peko_extension_api::{
-    EngineHooks, PromptSectionRequest, PromptSections, ToolCallSpec, ToolFunnel,
-};
+use peko_engine::{EngineHooks, PromptSectionRequest, PromptSections, ToolCallSpec, ToolFunnel};
+use peko_session::SessionSnapshot;
 use peko_subject::PrincipalId;
 
 use crate::extensions::framework::core::ExtensionServices;
 use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
-use crate::extensions::framework::types::HookInput;
 use crate::extensions::workspace_dispatcher::{
     WorkspaceHookContext, WorkspaceHookDispatcher, WorkspaceHookPoint,
 };
+use crate::extensions::workspace_io::HookInput;
 use crate::tools::catalog::ToolCatalog;
 use crate::tools::dispatcher::ToolDispatcher;
 use crate::tools::prompt_sections::{PromptSectionInput, PromptSectionProvider};
@@ -277,15 +275,15 @@ impl ToolingRuntime {
             HookInput::Unit
         };
         let mut ctx = WorkspaceHookContext::new(point, input);
-        ctx.runtime = crate::extensions::framework::types::ToolRuntimeContext::new()
+        ctx.runtime = crate::extensions::workspace_io::ToolRuntimeContext::new()
             .with_principal_id(request.principal_id.clone())
             .with_workspace(request.workspace.clone())
             .with_session_id(request.session_id.clone());
         let result = self.hooks.invoke_hook_with_context(ctx).await;
         match result {
-            crate::extensions::framework::types::HookResult::Continue(output) => {
+            crate::extensions::workspace_io::HookResult::Continue(output) => {
                 output.as_text().map(str::to_owned).or_else(|| {
-                    if let crate::extensions::framework::types::HookOutput::Vec(outputs) = output {
+                    if let crate::extensions::workspace_io::HookOutput::Vec(outputs) = output {
                         Some(
                             outputs
                                 .iter()

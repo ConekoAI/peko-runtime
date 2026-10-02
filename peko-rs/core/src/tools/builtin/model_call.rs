@@ -44,7 +44,7 @@
 //! handle, which does not exist yet when
 //! `ToolRuntime::register_builtins` runs). Both the agentic loop and
 //! the ADR-061 `ExecuteTool` IPC path reach it through the F37 funnel;
-//! capability-gated by `tool:ModelCall` like any other built-in.
+//! every registered tool is available (ADR-066).
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -562,7 +562,7 @@ mod tests {
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use peko_auth::Subject;
-    use peko_extension_api::Capabilities;
+
     use peko_message::MessageRole;
     use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelCatalogFile};
     use peko_providers::secret_store::InMemorySecretStore;
@@ -588,7 +588,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,

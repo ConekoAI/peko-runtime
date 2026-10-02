@@ -617,10 +617,6 @@ pub enum RequestPacket {
         name: Option<String>,
         #[serde(default)]
         force: bool,
-        /// Deprecated (ADR-066 D1): parsed-and-ignored; the capability
-        /// gate is deleted. Kept on the wire for one release window.
-        #[serde(default)]
-        selected_capabilities: Vec<String>,
         #[serde(default)]
         expected_manifest_checksum: Option<String>,
     },
@@ -1717,13 +1713,6 @@ pub enum ResponsePacket {
         did: String,
         description: Option<String>,
         agents: Vec<String>,
-        extensions: Vec<String>,
-        /// Capabilities required by the bundled extensions. Old daemons that
-        /// omit this field deserialize to an empty list.
-        /// Deprecated (ADR-066 D1): informational only; nothing grants
-        /// capabilities any more.
-        #[serde(default)]
-        required_capabilities: Vec<String>,
         inventory: crate::registry::packaging::ExecutableInventory,
         manifest_checksum: String,
         validation_errors: Vec<String>,
@@ -2197,22 +2186,6 @@ pub struct RotationBindingWire {
     pub key: String,
     pub strategy: String,
     pub order: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtensionSummary {
-    pub id: String,
-    pub name: String,
-    pub ext_type: String,
-    pub version: String,
-    pub source: String, // "built-in" or "installed"
-    pub enabled: bool,
-    pub runtime: String, // "running", "stopped", or "n/a"
-    pub description: String,
-    /// Capabilities this extension declares it provides (e.g. `tool:Read`).
-    pub provides: Vec<String>,
-    /// Capabilities this extension requires to function.
-    pub requires: Vec<String>,
 }
 
 /// A single doctor check result
@@ -2829,7 +2802,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             }],
@@ -2861,7 +2833,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
             }),
@@ -3289,7 +3260,6 @@ mod tests {
                 exposure: peko_auth::Exposure::Public,
                 status: Some(crate::principal::config::Status::Busy),
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3344,7 +3314,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3768,8 +3737,6 @@ mod tests {
             did: "did:peko:local:preview".to_string(),
             description: Some("A preview test principal".to_string()),
             agents: vec!["primary".to_string(), "researcher".to_string()],
-            extensions: vec!["ext-1".to_string()],
-            required_capabilities: vec!["tool:Read".to_string(), "network".to_string()],
             inventory: crate::registry::packaging::ExecutableInventory::from_files(
                 "did:peko:local:preview",
                 &std::collections::HashMap::new(),
@@ -3780,6 +3747,8 @@ mod tests {
         };
         let bytes = resp.to_bytes().unwrap();
         let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(!json.contains("required_capabilities"));
+        assert!(!json.contains("extensions"));
         assert!(
             json.contains("\"type\":\"principal_import_previewed\""),
             "expected principal_import_previewed wire tag, got: {json}"
@@ -3793,8 +3762,6 @@ mod tests {
                 did,
                 description,
                 agents,
-                extensions,
-                required_capabilities,
                 inventory,
                 manifest_checksum,
                 validation_errors,
@@ -3809,11 +3776,6 @@ mod tests {
                     agents,
                     vec!["primary".to_string(), "researcher".to_string()]
                 );
-                assert_eq!(extensions, vec!["ext-1".to_string()]);
-                assert_eq!(
-                    required_capabilities,
-                    vec!["tool:Read".to_string(), "network".to_string()]
-                );
                 assert_eq!(inventory.did, "did:peko:local:preview");
                 assert_eq!(manifest_checksum, "sha256:test");
                 assert!(validation_errors.is_empty());
@@ -3821,6 +3783,28 @@ mod tests {
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    #[test]
+    fn principal_import_drops_legacy_negotiation_fields() {
+        let request = RequestPacket::from_bytes(
+            br#"{"type":"principal_import","request_id":1,"file_path":"/tmp/p.peko","name":null,"force":false,"selected_capabilities":["tool:Bash"],"expected_manifest_checksum":"sha256:preview"}"#,
+        )
+        .unwrap();
+        match &request {
+            RequestPacket::PrincipalImport {
+                expected_manifest_checksum,
+                ..
+            } => {
+                assert_eq!(
+                    expected_manifest_checksum.as_deref(),
+                    Some("sha256:preview")
+                );
+            }
+            _ => panic!("wrong packet"),
+        }
+        let encoded = String::from_utf8(request.to_bytes().unwrap()).unwrap();
+        assert!(!encoded.contains("selected_capabilities"));
     }
 
     #[test]
@@ -3875,7 +3859,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             },
@@ -4732,8 +4715,6 @@ mod tests {
             did: "did:peko:local:p".to_string(),
             description: None,
             agents: vec![],
-            extensions: vec![],
-            required_capabilities: vec![],
             inventory: crate::registry::packaging::ExecutableInventory::from_files(
                 "did:peko:local:preview",
                 &std::collections::HashMap::new(),

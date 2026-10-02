@@ -32,8 +32,6 @@ use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalId;
 
-use peko_extension_api::Capabilities;
-
 /// Per-principal runtime state shared by the root agent and its
 /// subagents.
 ///
@@ -68,8 +66,6 @@ pub struct PrincipalContext {
     /// Held during root-agent session creation so concurrent peers
     /// don't race on shared session metadata.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Deprecated capability data shell, ignored since ADR-066 P2.
-    pub capabilities: Arc<Capabilities>,
     /// LLM resolver used to validate provider hints and surface
     /// catalog defaults.
     pub resolver: Option<Arc<LlmResolver>>,
@@ -139,7 +135,6 @@ impl PrincipalContext {
         memory: Arc<dyn PrincipalMemory>,
         inbox_registry: Arc<InboxRegistry>,
         session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-        capabilities: Arc<Capabilities>,
         resolver: Option<Arc<LlmResolver>>,
         provider_hint: Option<String>,
         // Per-message configured model override. Mirrored from
@@ -173,7 +168,6 @@ impl PrincipalContext {
             memory,
             inbox_registry,
             session_creation_lock,
-            capabilities,
             resolver,
             provider_hint,
             message_override,
@@ -723,8 +717,7 @@ async fn install_principal_tool_bag(
 ///
 /// The catalog is the *only* per-call tool — its contents are the
 /// currently-available `AgentPromptSummary` list, which can change
-/// between messages if the principal's `capabilities` was
-/// edited. Everything else on the core is stable. Scoped to the
+/// when workspace role files change. Everything else on the core is stable. Scoped to the
 /// owning principal_id so the catalog lives under each principal's
 /// row in the registry and re-registration on each call idempotently
 /// replaces the prior entry.
@@ -746,7 +739,7 @@ mod tests {
     use super::*;
     use crate::principal::memory::DefaultPrincipalMemory;
     use crate::principal::seen_models::seen_models_path;
-    use peko_extension_api::Capabilities;
+
     use peko_subject::PrincipalId;
     use serial_test::serial;
     use std::sync::Arc;
@@ -777,7 +770,6 @@ mod tests {
                 crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
@@ -843,7 +835,6 @@ mod tests {
                 crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
@@ -882,7 +873,6 @@ mod tests {
                 crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
@@ -908,7 +898,6 @@ mod tests {
                 crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
@@ -936,7 +925,6 @@ mod tests {
                 crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
@@ -983,7 +971,6 @@ mod tests {
                 crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
@@ -1020,7 +1007,6 @@ mod tests {
                 crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
@@ -1040,7 +1026,7 @@ mod tests {
 #[cfg(test)]
 mod tooling_install_tests {
     use super::*;
-    use peko_extension_api::{PromptSectionRequest, ToolFunnel};
+    use peko_engine::{PromptSectionRequest, ToolFunnel};
 
     #[tokio::test]
     async fn shared_runtime_installs_each_principal_without_duplicate_prompt_sections() {

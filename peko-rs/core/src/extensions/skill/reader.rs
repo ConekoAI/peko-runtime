@@ -73,7 +73,6 @@ impl SkillRuntime for WorkspaceSkillRuntime {
         Some(SkillEntry {
             name: name.to_string(),
             path: skill_md,
-            extension_id: None,
         })
     }
 

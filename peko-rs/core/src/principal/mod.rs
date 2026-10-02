@@ -152,7 +152,6 @@ impl Principal {
             exposure: config.exposure.clone(),
             status: config.status.clone(),
             preferred_model_id: config.preferred_model_id.clone(),
-            capabilities: config.capabilities.clone(),
             agent_prompt_count: self.agent_prompts.len(),
             workspace_path: self.workspace_path.display().to_string(),
         }
@@ -175,7 +174,6 @@ pub struct PrincipalSummary {
     pub exposure: peko_auth::Exposure,
     pub status: Option<crate::principal::config::Status>,
     pub preferred_model_id: Option<String>,
-    pub capabilities: peko_extension_api::Capabilities,
     pub agent_prompt_count: usize,
     pub workspace_path: String,
 }

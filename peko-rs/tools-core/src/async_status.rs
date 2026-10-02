@@ -1,13 +1,6 @@
-//! `AsyncTaskStatus` — the status of an async tool task.
-//!
-//! Moved from `src/async_exec/executor/types.rs` in
-//! Phase 7. The variant is part of the `HookOutput::TaskStatus` contract,
-//! so it must live in the API crate even though the surrounding executor
-//! is a host-only implementation. Uses `peko_tools_core::ToolResult` for
-//! the completed-result payload; that crate is a permitted dependency
-//! of the extension API.
+//! Background tool task status and results.
 
-use peko_tools_core::ToolResult;
+use crate::ToolResult;
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for an async task

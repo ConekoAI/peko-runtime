@@ -35,7 +35,7 @@ use crate::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
 };
-use crate::extensions::framework::types::Capabilities;
+
 use peko_auth::Subject;
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
@@ -278,10 +278,6 @@ pub struct SubagentExecutor {
     /// The spawning principal's human-readable name. Carried so
     /// Principal-scoped tools (e.g. cron) inherit the correct target.
     principal_name: Option<String>,
-    /// Snapshot of the spawning principal's capability grants.
-    /// ADR-066 P2: inert shell (the grant gate is deleted) — kept for
-    /// the engine's `capability_diff` tracker pending P3/P6.
-    principal_capabilities: Option<Arc<Capabilities>>,
     /// Optional observability hub for audit/metrics. When set, subagent
     /// spawns are recorded in the audit log under the parent principal.
     observability: Option<Arc<Observability>>,
@@ -367,7 +363,6 @@ impl SubagentExecutor {
             principal_workspace: None,
             principal_id,
             principal_name: None,
-            principal_capabilities: None,
             observability: None,
             quota_meter: None,
             // B5d: per-agent attribution meter. Audit-only by default;
@@ -508,19 +503,6 @@ impl SubagentExecutor {
         self
     }
 
-    /// Set the spawning principal's capability snapshot.
-    #[must_use]
-    pub fn with_principal_capabilities(mut self, capabilities: Option<Arc<Capabilities>>) -> Self {
-        self.principal_capabilities = capabilities;
-        self
-    }
-
-    /// Get the spawning principal's capability snapshot, if bound.
-    #[must_use]
-    pub fn principal_capabilities(&self) -> Option<&Arc<Capabilities>> {
-        self.principal_capabilities.as_ref()
-    }
-
     /// The shared tooling runtime this executor's spawns dispatch through.
     #[must_use]
     pub fn tooling(&self) -> &Arc<crate::tools::runtime::ToolingRuntime> {
@@ -565,7 +547,6 @@ impl SubagentExecutor {
             principal_workspace: None,
             principal_id,
             principal_name: None,
-            principal_capabilities: None,
             observability: None,
             quota_meter: None,
             // B5d: per-agent attribution meter. Audit-only by default;
@@ -1987,7 +1968,6 @@ impl SubagentExecutor {
         let principal_workspace_clone = self.principal_workspace.clone();
         let session_manager_clone = self.session_manager.clone();
         let principal_id_clone = self.principal_id.clone();
-        let principal_capabilities_clone = self.principal_capabilities.clone();
         let tooling_clone = Arc::clone(&self.tooling);
         let observability_clone = self.observability.clone();
         // F39: clone the parent's quota meter so the spawned task
@@ -2134,7 +2114,6 @@ impl SubagentExecutor {
                         registry_for_task,
                         principal_id_clone,
                         principal_workspace_clone,
-                        principal_capabilities_clone,
                         tooling_clone,
                         observability_clone,
                         child_cancel_for_closure.clone(),
@@ -2459,7 +2438,7 @@ struct SubagentTaskOutput {
 
 /// ADR-052 D3: apply the spawned role's Markdown body as the child
 /// `AgentConfig`'s system prompt. Only the `prompt` field is
-/// overridden — name, capabilities, and every other field of the
+/// overridden — name and every other field of the
 /// inherited parent config stay intact. `None` leaves the config
 /// untouched (the child inherits the parent persona verbatim, the
 /// pre-D3 behavior that conversation-mode peer turns and cron runs
@@ -2538,7 +2517,6 @@ async fn execute_subagent_task(
     async_registry: SharedAsyncTaskRegistry,
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
-    principal_capabilities: Option<Arc<Capabilities>>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
@@ -2635,7 +2613,7 @@ async fn execute_subagent_task(
     });
     // ADR-052 D3: a named subagent runs its own role persona — the
     // resolved Markdown body replaces ONLY the prompt; name,
-    // capabilities, and every other inherited field stay intact.
+    // every other inherited field stays intact.
     apply_role_prompt_override(&mut config, role_prompt);
 
     // Create a shared executor with the parent's registry so nested spawn depth
@@ -2652,7 +2630,6 @@ async fn execute_subagent_task(
     )
     .with_provider(provider.clone())
     .with_agent_config(config.clone())
-    .with_principal_capabilities(principal_capabilities.clone())
     .with_observability(observability.clone())
     // F39: nested sub-subagents must inherit the parent meter so
     // they too charge against the spawning principal (not
@@ -2692,7 +2669,6 @@ async fn execute_subagent_task(
         session_manager,
         shared_executor,
         Some(provider.clone()),
-        principal_capabilities,
         resolved_model_id_override.clone(),
     )
     .await
@@ -3533,34 +3509,6 @@ mod tests {
             let mgr = manager.read().await;
             assert_eq!(mgr.spawn_overlay_count(), 0);
         }
-    }
-
-    #[tokio::test]
-    async fn test_principal_capabilities_propagation() {
-        let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let allowed = Arc::new(Capabilities::with_grants(["tool:Read", "tool:Write"]));
-
-        let executor = SubagentExecutor::new(
-            manager.clone(),
-            "test_agent",
-            5,
-            peko_subject::PrincipalId::generate(),
-            crate::tools::runtime::ToolingRuntime::standalone(),
-        )
-        .with_principal_capabilities(Some(Arc::clone(&allowed)));
-
-        assert_eq!(
-            executor.principal_capabilities(),
-            Some(&allowed),
-            "builder should store the capability snapshot"
-        );
-
-        let cloned = executor.clone();
-        assert_eq!(
-            cloned.principal_capabilities(),
-            Some(&allowed),
-            "clone should preserve the capability snapshot"
-        );
     }
 
     /// ADR-052 D3: the role override replaces ONLY the child config's

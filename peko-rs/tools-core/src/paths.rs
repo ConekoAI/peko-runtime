@@ -1,15 +1,9 @@
-//! Default data directory helpers — moved here from root's
-//! `crate::extensions::framework::paths` (Phase F2 foldback) so the
-//! engine and tools can reach `default_data_dir()` /
-//! `default_agent_workspace()` without depending on root (which
-//! would create a cycle: root→engine, engine→root).
-//!
-//! **Must stay in sync with `src/common/paths.rs::PathResolver`**.
-//! The trait lives there; these helpers are pure path math.
+//! Default runtime data and fallback workspace paths.
+//! Keep these helpers in sync with the host PathResolver.
 
 use std::path::PathBuf;
 
-/// Default data directory for async-task records.
+/// Default runtime data directory.
 #[must_use]
 pub fn default_data_dir() -> PathBuf {
     std::env::var_os("PEKO_DATA_DIR")

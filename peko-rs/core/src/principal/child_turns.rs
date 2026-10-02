@@ -190,7 +190,7 @@ impl PeerChildTurns {
         inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
         tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Result<Self> {
-        let (name, owner, capabilities, agent_config, preferred_model_id, available_agents) = {
+        let (name, owner, agent_config, preferred_model_id, available_agents) = {
             let config = principal.config.read().await;
             // Same `available_agents` projection
             // `PrincipalManager::build_router_context` computes for
@@ -210,7 +210,6 @@ impl PeerChildTurns {
             (
                 config.name.clone(),
                 config.owner.clone(),
-                config.capabilities.clone(),
                 // Persona inheritance — see module docs.
                 peer_child_agent_config(&config, &principal.workspace_path),
                 config.preferred_model_id.clone(),
@@ -257,7 +256,6 @@ impl PeerChildTurns {
         )
         .with_principal_name(name)
         .with_principal_workspace(principal.workspace_path.clone())
-        .with_principal_capabilities(Some(Arc::new(capabilities)))
         .with_principal_plan_port(Arc::clone(&principal.plan_port))
         .with_observability(Some(observability))
         // Phase 7: child runs drain the daemon-shared registry so the
@@ -774,7 +772,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing,
-            capabilities: peko_extension_api::Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,

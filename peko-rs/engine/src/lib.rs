@@ -1,56 +1,5 @@
-//! `peko-engine` — Peko agentic engine (Phase 9a + 9b.N.1 + 9b.N.2 + 9b.N.3 + 9b.N.4).
-//!
-//! Phase 9a moves the **`src/engine/` files that have zero root-only
-//! dependencies** into the `peko-engine` crate. Phase 9b.1 followed up
-//! with `stream_types` after lifting `ToolCallInfo` to `peko-message`.
-//! Phase 9b.N.1 then lifted `async_completion` after its two remaining
-//! imports (`AsyncTaskStatus`, `CompletionEvent`) gained
-//! workspace-crate homes in Phase 7 (peko-extension-api) and Phase 8
-//! (peko-extension-host). Phase 9b.N.2 lifted the F37
-//! `execute_tool_via_core*` funnel functions out of
-//! `src/engine/tool_runtime.rs`; `ToolRuntime` itself remains in root
-//! pending BashTool's lift into `peko-tools-builtin`. Phase 9b.N.3
-//! lifts `tool_executor.rs` after introducing the `SessionView` trait
-//! port — the executor only needs `add_tool_result(...)` against the
-//! session, which the trait exposes via an `Arc<RwLock<Session>>` impl
-//! in root (orphan rule). Phase 9b.N.4 lifts `compaction_driver.rs`
-//! after introducing the `CompactorBackend` trait port — the driver
-//! only needs the dual-threshold check + oneshot submit pattern, which
-//! the trait exposes via the root-owned `BackgroundCompactor` impl.
-//!
-//! The remaining root-coupled files (`agentic_loop`,
-//! `compaction_driver`, `tool_runtime`) stay in `src/engine/`
-//! until later Phase 9b commits lift the agent / session /
-//! builtin-tools couplings (AgentView trait port, `ToolSearchTool`
-//! synthetic shims, `BuiltinToolAdapter` → `peko-tools-core`).
-//!
-//! What lives here:
-//!
-//! | Module              | Phase responsibility |
-//! |---------------------|-----------------------|
-//! | [`agentic_loop`]    | Phase 9b.N.5b.9 — the lifted agentic loop (`AgenticLoop`, `AgenticResult`). |
-//! | [`async_completion`] | Phase 9b.N.1 — synthetic user-role `LlmMessage` builder for completed async tasks. |
-//! | [`chunker`]         | Block-level text chunking (`BlockChunker`, `CoalescingChunker`). |
-//! | [`event_processor`] | Channel-action state machine (`EventProcessor`, `ProcessorConfig`). |
-//! | [`events`]          | Re-export of `peko_events` (`AgenticEvent`, `LifecyclePhase`). |
-//! | [`execution`]       | Tool-execution primitives (`TaskId`, `ExecutionMode`, `TaskStatus`, `TaskSummary`). |
-//! | [`error`]           | F31c `AgenticError` taxonomy. |
-//! | [`funnel`]          | Phase 9b.N.2 — F37 canonical `execute_tool_via_core*` chokepoint. |
-//! | [`parallel_gate`]   | F33 single-runtime RwLock gate for tool dispatch. |
-//! | [`prompt`]          | Phase 9b.N.5b.4 — `PromptRenderer` + `TurnPromptContext` + placeholder/memory helpers lifted from `src/agents/prompt/`. |
-//! | [`session_view`]    | Phase 9b.N.3 — narrow `add_tool_result(...)` trait port for tool dispatch. |
-//! | [`state`]           | `AgentState` / `StateMachine` — atomic Idle/Busy tracker. |
-//! | [`stacked_metered_provider`] | Phase 9b.N.5b.8 — `StackedMeteredProvider` lifted from `src/providers/stacked_metered.rs` (refactored to wrap `Arc<dyn ProviderView>`). |
-//! | [`stream_buffer`]   | Coalescing buffer between orchestrator and channel. |
-//! | [`stream_orchestrator`] | `StreamEvent` → `AgenticEvent` transformation. |
-//! | [`stream_types`]    | Phase 9b.1 — public `ChannelOutput`/`EventStream`/`StreamingConfig` (`ToolCallInfo` lifted to `peko-message`). |
-//! | [`synthetic_stream`] | Phase 9b.N.5b.5 — `synthesize_stream_from_blocking` lifted from `src/providers/synthetic_stream.rs`. |
-//! | [`tool_executor`]   | Phase 9b.N.3 — `ToolExecutor` for the agentic loop. |
-//! | [`tool_stream`]     | Streaming tool-call text parser. |
-//!
-//! Phase 9a/9b slices are intentionally permissive: the crate boundary
-//! is established one file at a time so each residual coupling can be
-//! lifted incrementally with its own narrow PR.
+//! Agentic loop, tool execution, prompt rendering, and compaction orchestration.
+//! Host services implement the ports in `tooling`; inbox contracts are session-owned.
 
 // Noise lints, consistent with the root crate's curated allow-list.
 #![allow(clippy::too_many_arguments)]
@@ -68,7 +17,6 @@ pub mod event_processor;
 pub mod events;
 pub mod execution;
 pub mod funnel;
-pub mod iteration_state;
 pub mod parallel_gate;
 pub mod prompt;
 pub mod spec_gate;
@@ -98,9 +46,6 @@ pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
 pub use funnel::{execute_tool_via_core, execute_tool_via_core_with_context};
-pub use iteration_state::{
-    CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
-};
 pub use peko_session::compaction::{
     drop_oldest_respecting_pairs, BackgroundCompactorFactory, CompactionConfig, CompactionEntry,
     CompactionLimitsState, CompactionQuota, CompactionRequest, CompactionResponse,
@@ -136,4 +81,9 @@ pub use synthetic_stream::synthesize_stream_from_blocking;
 pub use tool_executor::{ToolExecutionResult, ToolExecutor};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
+};
+
+pub mod tooling;
+pub use tooling::{
+    EngineHooks, PromptSectionRequest, PromptSections, ToolCallSpec, ToolFunnel, ToolingSeam,
 };

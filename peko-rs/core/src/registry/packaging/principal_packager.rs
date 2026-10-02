@@ -403,7 +403,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             boot_state: None,

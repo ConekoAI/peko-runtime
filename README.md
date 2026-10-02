@@ -391,7 +391,6 @@ peko-rs/
 ├── events/             # Neutral agentic event contract (leaf)
 ├── protocol/           # IPC + tunnel wire contracts (serde only)
 ├── auth/  identity/  quota/  plan/  observability/  fs-persistence/
-├── extension-api/      # Framework contracts (no impl deps)
 ├── provider-api/       # Provider contract types
 └── peko-daemon/        # peko-daemon binary
 ```

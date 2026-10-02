@@ -593,7 +593,7 @@ impl AppState {
         // otherwise subagent results are silently dropped on the
         // floor and `persist_subagent_completions` never fires.
         let inbox_registry = Arc::new(InboxRegistry::new(Arc::new(
-            || -> Arc<dyn peko_extension_api::AsyncInboxLike> { Arc::new(SessionInbox::new()) },
+            || -> Arc<dyn peko_session::AsyncInboxLike> { Arc::new(SessionInbox::new()) },
         )));
         // Install as the process-global default BEFORE the core wiring
         // below, so components constructed outside this composition root
@@ -3371,7 +3371,7 @@ mod tests {
 
         // Tools should still be available after agent init
         let core = agent.tooling();
-        let tools: Vec<crate::extensions::framework::types::ToolMetadata> = core
+        let tools: Vec<crate::tools::metadata::ToolMetadata> = core
             .catalog()
             .list_tools(peko_subject::PrincipalId::system())
             .await;

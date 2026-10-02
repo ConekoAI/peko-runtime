@@ -29,7 +29,13 @@
 //! [`RoleAdapter::discover_roles`] (also called from
 //! `principal/manager.rs`) + the data types it produces.
 
-use crate::extensions::framework::types::ExtensionManifest;
+/// Metadata parsed from a workspace role file.
+#[derive(Debug, Clone)]
+pub struct RoleMetadata {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -124,8 +130,8 @@ impl RoleAdapter {
         roles
     }
 
-    /// Parse a ROLE.md file into an extension manifest
-    fn parse_role_manifest(&self, path: &Path) -> Result<ExtensionManifest> {
+    /// Parse a ROLE.md file into role metadata.
+    fn parse_role_manifest(&self, path: &Path) -> Result<RoleMetadata> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
 
@@ -144,22 +150,11 @@ impl RoleAdapter {
             anyhow::bail!("Role canonical id cannot be empty for {path:?}");
         }
 
-        let base_dir = path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-
-        let mut manifest = ExtensionManifest::new(
-            &canonical_id,
-            ROLE_EXTENSION_TYPE,
-            &meta.name,
-            &meta.description,
-            "1.0.0",
-            base_dir,
-        );
-
-        manifest.set("role_file", path.to_string_lossy().to_string());
-        manifest.set("color", meta.color.unwrap_or_default());
+        let manifest = RoleMetadata {
+            id: canonical_id,
+            name: meta.name,
+            description: meta.description,
+        };
 
         Ok(manifest)
     }
@@ -229,8 +224,8 @@ impl Default for RoleAdapter {
 /// A discovered role before registration
 #[derive(Debug, Clone)]
 pub struct DiscoveredRole {
-    /// Extension manifest
-    pub manifest: ExtensionManifest,
+    /// Metadata parsed from the role file.
+    pub manifest: RoleMetadata,
     /// Full path to ROLE.md
     pub file_path: PathBuf,
     /// Role base directory
@@ -242,8 +237,6 @@ pub struct DiscoveredRole {
 struct RoleFrontmatter {
     name: String,
     description: String,
-    #[serde(default)]
-    color: Option<String>,
 }
 
 /// Workspace-scanning handler for the `roles` prompt section.
@@ -321,7 +314,7 @@ impl WorkspaceRolesPromptHandler {
                 let location = a.file_path.to_string_lossy().replace('\\', "/");
                 format!(
                     "- {} (id: {}): {} (location: {})",
-                    a.manifest.name, a.manifest.id.0, a.manifest.description, location
+                    a.manifest.name, a.manifest.id, a.manifest.description, location
                 )
             })
             .collect::<Vec<_>>()
@@ -461,8 +454,8 @@ This is a test role.
         let roles = adapter.discover_roles(temp.path());
 
         assert_eq!(roles.len(), 2);
-        assert!(roles.iter().any(|a| a.manifest.id.0 == "role1"));
-        assert!(roles.iter().any(|a| a.manifest.id.0 == "role2"));
+        assert!(roles.iter().any(|a| a.manifest.id == "role1"));
+        assert!(roles.iter().any(|a| a.manifest.id == "role2"));
     }
 
     #[test]
@@ -476,8 +469,8 @@ This is a test role.
         let roles = adapter.discover_roles(temp.path());
 
         assert_eq!(roles.len(), 2);
-        assert!(roles.iter().any(|a| a.manifest.id.0 == "role1"));
-        assert!(roles.iter().any(|a| a.manifest.id.0 == "role2"));
+        assert!(roles.iter().any(|a| a.manifest.id == "role1"));
+        assert!(roles.iter().any(|a| a.manifest.id == "role2"));
         assert!(roles
             .iter()
             .any(|a| a.file_path == temp.path().join("role1.md")));
@@ -497,8 +490,8 @@ This is a test role.
         let roles = adapter.discover_roles(temp.path());
 
         assert_eq!(roles.len(), 2);
-        assert!(roles.iter().any(|a| a.manifest.id.0 == "dir-role"));
-        assert!(roles.iter().any(|a| a.manifest.id.0 == "flat-role"));
+        assert!(roles.iter().any(|a| a.manifest.id == "dir-role"));
+        assert!(roles.iter().any(|a| a.manifest.id == "flat-role"));
     }
 
     #[test]
@@ -509,10 +502,9 @@ This is a test role.
         let adapter = RoleAdapter::new();
         let manifest = adapter.parse_role_manifest(&role_md).unwrap();
 
-        assert_eq!(manifest.id.0, "math");
+        assert_eq!(manifest.id, "math");
         assert_eq!(manifest.name, "math");
         assert_eq!(manifest.description, "Math operations");
-        assert_eq!(manifest.extension_type, "role");
     }
 
     #[test]
@@ -537,7 +529,7 @@ color: '#ff0000'
         let adapter = RoleAdapter::new();
         let manifest = adapter.parse_role_manifest(&role_md).unwrap();
 
-        assert_eq!(manifest.id.0, "senior-developer");
+        assert_eq!(manifest.id, "senior-developer");
         assert_eq!(manifest.name, "Senior Developer");
         assert_eq!(manifest.description, "Premium implementation specialist");
     }

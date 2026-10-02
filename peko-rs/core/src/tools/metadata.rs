@@ -1,12 +1,5 @@
-//! Tool-related types
-//!
-//! Lifted from `src/extensions/framework/types/tool.rs` in Phase 7.
-//! `to_tool_definition` produces
-//! `peko_provider_api::ToolDefinition` (was `crate::providers::ToolDefinition`).
-//! `reserved_params` is the data-only `peko_extension_api::ReservedParamsConfig`
-//! from this crate (no resolution methods — those live in the host).
+//! Registered tool metadata and source.
 
-use crate::reserved_params::ReservedParamsConfig;
 use peko_provider_api::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -42,8 +35,6 @@ pub struct ToolMetadata {
     pub parameters: serde_json::Value,
     /// Source of the tool
     pub source: ToolSource,
-    /// Reserved parameters configuration
-    pub reserved_params: ReservedParamsConfig,
 }
 
 impl ToolMetadata {
@@ -59,15 +50,7 @@ impl ToolMetadata {
             description: description.into(),
             parameters,
             source,
-            reserved_params: ReservedParamsConfig::new(),
         }
-    }
-
-    /// Set reserved params configuration
-    #[must_use]
-    pub fn with_reserved_params(mut self, config: ReservedParamsConfig) -> Self {
-        self.reserved_params = config;
-        self
     }
 
     /// Convert to `ToolDefinition` for LLM API

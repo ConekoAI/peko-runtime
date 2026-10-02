@@ -9,10 +9,10 @@
 //! `hooks/session-start` prints JSON containing `additionalContext`, which is
 //! then injected into the system prompt via `{{session_context}}`.
 
-use crate::extensions::framework::types::{HookInput, HookOutput, HookResult};
 use crate::extensions::workspace_dispatcher::{
     WorkspaceHookContext, WorkspaceHookHandler, WorkspaceHookPoint,
 };
+use crate::extensions::workspace_io::{HookInput, HookOutput, HookResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -347,7 +347,7 @@ mod tests {
     #[cfg(unix)]
     mod unix {
         use super::*;
-        use crate::extensions::framework::types::SessionSnapshot;
+        use peko_session::SessionSnapshot;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
         use tempfile::TempDir;

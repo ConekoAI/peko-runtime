@@ -74,17 +74,6 @@ pub trait AgentView: Send + Sync + 'static {
     /// Field access at `agentic_loop.rs:1948` — `self.agent.principal_workspace()`.
     fn principal_workspace(&self) -> Option<&std::path::PathBuf>;
 
-    /// Per-principal capability snapshot (None ⇒ unscope).
-    ///
-    /// Returns `Option<&Arc<Capabilities>>` to match the `Agent`'s
-    /// internal cache shape — the loop's prompt context
-    /// (`TurnPromptContext::capabilities: Option<Arc<Capabilities>>`)
-    /// takes ownership via `.cloned()`, so exposing `&Arc<...>` keeps
-    /// the `.cloned()` call sites intact. Peeling the Arc out in the
-    /// trait would force every caller to do `.map(Arc::new)` which is
-    /// noise.
-    fn principal_capabilities(&self) -> Option<&std::sync::Arc<peko_extension_api::Capabilities>>;
-
     /// Channel type (e.g. `"discord"`, `"cli"`). Defaults to `"cli"` when unset.
     fn channel(&self) -> Option<&str>;
 

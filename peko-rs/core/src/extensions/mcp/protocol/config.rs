@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-// Internal use — types reachable directly via crate::extensions::framework::services::*.
+// Internal use — types reachable directly via crate::extensions::mcp::reserved_params::*.
 #[cfg(test)]
-use crate::extensions::framework::services::ParamSource;
-use crate::extensions::framework::services::ReservedParamsConfig;
+use crate::extensions::mcp::reserved_params::ParamSource;
+use crate::extensions::mcp::reserved_params::ReservedParamsConfig;
 
 /// Transport type for MCP connections
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

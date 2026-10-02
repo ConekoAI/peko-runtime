@@ -1,32 +1,14 @@
-//! `AsyncInboxLike` — narrow trait port for the agentic loop's async
-//! inbox, plus the envelope types it carries.
-//!
-//! Phase 7 promotes this from a `peko-engine` definition to the
-//! `peko-extension-api` crate so that `peko-session` (which owns
-//! the daemon-global `InboxRegistry`) can hold
-//! `Arc<dyn AsyncInboxLike>` without importing either
-//! `peko-engine` (a forbidden direction) or
-//! `peko-extension-host` (a forbidden direction). The host's
-//! concrete [`SessionInbox`](peko_extension_host::SessionInbox)
-//! implements this trait by converting its native
-//! [`CompletionEvent`](peko_extension_host::CompletionEvent) /
-//! [`SteeringMessage`](peko_extension_host::SteeringMessage) values
-//! into the envelopes defined here.
-//!
-//! The engine's `agentic_loop.rs` consumes `AsyncInboxItem`s
-//! through this trait; the conversion to envelope form is invisible
-//! to it. The envelopes mirror the host types' fields so the loop's
-//! downstream message synthesis keeps working without changes.
+//! Session inbox port and completion/steering envelopes.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 
-use crate::AsyncTaskStatus;
+use peko_tools_core::AsyncTaskStatus;
 
 /// One inbox item yielded by [`AsyncInboxLike::drain_all`].
 ///
-/// Mirrors `peko_extension_host::InboxItem`'s two relevant variants.
+/// Mirrors `host::InboxItem`'s two relevant variants.
 /// Other variants (`Provider`, `ExtensionSignal`) are kept
 /// host-side; the agentic loop only ever sees `Completion` and
 /// `Steering`.
@@ -38,11 +20,11 @@ pub enum AsyncInboxItem {
     Steering(SteeringEnvelope),
 }
 
-/// Envelope form of a `peko_extension_host::CompletionEvent`.
+/// Envelope form of a `host::CompletionEvent`.
 ///
 /// Carries exactly the fields the agentic loop reads; the host's
 /// richer struct is wrapped at the trait impl boundary so this API
-/// crate does not depend on `peko-extension-host`.
+/// crate does not depend on `host async runtime`.
 #[derive(Debug, Clone)]
 pub struct CompletionEnvelope {
     pub task_id: String,
@@ -54,7 +36,7 @@ pub struct CompletionEnvelope {
     pub parent_session_key: String,
 }
 
-/// Envelope form of a `peko_extension_host::SteeringMessage`.
+/// Envelope form of a `host::SteeringMessage`.
 #[derive(Debug, Clone)]
 pub struct SteeringEnvelope {
     pub id: uuid::Uuid,
@@ -70,7 +52,7 @@ pub struct SteeringEnvelope {
 /// The trait exposes the surface the loop needs: drain everything
 /// in one batch, once per iteration. Drain-order preservation is
 /// the implementor's responsibility (FIFO insertion order is the
-/// host's contract). Producers (extension-host tasks, principal
+/// host's contract). Producers (background tasks, principal
 /// send, etc.) push items through [`AsyncInboxLike::push`] — a
 /// default no-op implementation lets test stubs opt out.
 #[async_trait::async_trait]
@@ -102,7 +84,7 @@ pub trait AsyncInboxLike: Send + Sync + 'static {
 
     /// Push an item into the inbox. Default is a no-op (test stubs
     /// don't need to retain pushed items). Real implementations
-    /// (peko-extension-host's `SessionInbox`) override to append to
+    /// (host async runtime's `SessionInbox`) override to append to
     /// their internal buffer.
     async fn push(&self, _item: AsyncInboxItem) {}
 

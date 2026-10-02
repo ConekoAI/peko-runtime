@@ -529,7 +529,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Default::default(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,

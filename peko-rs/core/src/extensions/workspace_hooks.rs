@@ -268,7 +268,7 @@ fn bind_to_point(bind: &BindSpec, hook_id: &str) -> Result<WorkspaceHookPoint> {
 mod tests {
     use super::*;
     use crate::tools::runtime::ToolingRuntime;
-    use peko_extension_api::{PromptSectionRequest, ToolCallSpec, ToolFunnel};
+    use peko_engine::{PromptSectionRequest, ToolCallSpec, ToolFunnel};
 
     fn manifest(binds: &str) -> HookManifest {
         toml::from_str(&format!("binds = [{binds}]\ncommand = \"/bin/echo\"\n")).unwrap()
@@ -345,7 +345,7 @@ output = "text"
         call.principal_id = Some(p1.to_string());
         call.workspace = Some(request.workspace.clone());
         assert!(!runtime.execute(call).await.unwrap().2);
-        use peko_extension_api::EngineHooks;
+        use peko_engine::EngineHooks;
         runtime
             .fire_stop_hook(serde_json::json!({"principal_id":p1,"workspace":request.workspace}))
             .await;

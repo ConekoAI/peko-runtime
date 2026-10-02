@@ -243,6 +243,13 @@ or root as their consumers dictate; `reserved_params.rs` moves beside
 MCP (its only consumer). The crate is deleted and the 81-entry
 `check_workspace_deps.py` forbidden-edge table is updated.
 
+P6 places the live `ToolFunnel`/`EngineHooks` ports in `peko-engine`,
+which consumes them; root implements them without an engine → root edge.
+Async task statuses and paths live in `peko-tools-core`; completion,
+inbox, session snapshots, and spawn cleanup policy live in `peko-session`.
+Workspace observer payloads and catalog metadata live in root. Removing
+the retired crate's 12 forbidden edges leaves 20 members and 69 rules.
+
 ## 3. Migration plan
 
 Six phases, each a separate PR, each leaving the tree green. Standard

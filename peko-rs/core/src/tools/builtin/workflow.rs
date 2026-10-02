@@ -798,7 +798,7 @@ mod tests {
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use peko_auth::Subject;
-    use peko_extension_api::Capabilities;
+
     use tempfile::TempDir;
 
     fn principal_config(name: &str) -> crate::principal::PrincipalConfig {
@@ -812,7 +812,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::new(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,

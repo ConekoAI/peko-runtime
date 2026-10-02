@@ -23,7 +23,7 @@ use peko_subject::PrincipalId;
 use peko_tools_core::Tool;
 
 use crate::extensions::framework::registry::SharedRegistry;
-use crate::extensions::framework::types::{ToolMetadata, ToolSource};
+use crate::tools::metadata::{ToolMetadata, ToolSource};
 
 /// One registered tool: the executable instance plus its metadata.
 #[derive(Clone)]

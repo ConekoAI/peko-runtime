@@ -1,31 +1,5 @@
-//! Extensions module — Extension Framework + Type Implementations
-//!
-//! Contains both the **generic extension framework** (under `framework/`)
-//! and the **extension type implementations** (MCP, Skill, Builtin,
-//! Agent). The framework is generic and dependency-free; type
-//! implementations sit beside it and depend on the framework.
-//!
-//! # Module Boundaries
-//!
-//! Each extension type lives in its own directory with its adapter, runtime,
-//! and protocol code. Cross-extension dependencies should go through the
-//! framework (`crate::extensions::framework`), not directly between extension types.
-//!
-//! # Directory Layout
-//!
-//! ```text
-//! src/extensions/
-//! ├── framework/   # Generic framework: core, types, transport, services, protocols
-//! ├── builtin/     # Built-in tool adapter
-//! ├── (gateway retired — Sprint 9 Commit 3: chat-gateway adapter
-//! │   framework removed; ingress is now exclusively through
-//! │   per-peer standing children under the agent-session paradigm)
-//! ├── (general retired — PR-C.5: the general adapter had no
-//! │   remaining production callers; command_handler was lifted out)
-//! ├── mcp/         # MCP adapter, protocol, runtime
-//! ├── agent/       # AGENT.md adapter
-//! └── skill/       # Skill adapter
-//! ```
+//! Workspace tooling adapters and observe-only hook dispatch.
+//! Shared host utilities remain under `framework`; executable dispatch lives in `tools`.
 
 // ============================================================================
 // Framework
@@ -232,3 +206,5 @@ mod tests {
 
 /// Principal-owned workspace hook dispatch (ADR-066 D3).
 pub mod workspace_dispatcher;
+
+pub mod workspace_io;

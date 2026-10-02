@@ -1,7 +1,7 @@
 # Peko — Data Model Specification
 
 **Version:** 0.1.0
-**Date:** 2026-06-23 (review pass)
+**Date:** 2026-10-02 (ADR-066 P6)
 **Status:** Current
 **Companion docs:** [`AGENTS.md`](AGENTS.md) (build & module rules), [`API_SURFACE.md`](API_SURFACE.md) (public Rust API), [`docs/architecture/adr/`](docs/architecture/adr/) (decisions)
 
@@ -23,6 +23,25 @@ Commands receive principal/workspace/session/agent context through the
 `PEKO_*` environment variables; prompt output retains tail-message change /
 retraction semantics. Invalid binds reject the entire manifest; other hooks
 still load.
+
+## Runtime contract cleanup (ADR-066 P6)
+
+Principal configuration, summary, agent context, and import IPC no longer carry
+capability grants. Older `principal.toml` files may contain `[capabilities]`;
+deserialization consumes it, warns once for nonempty grants, and saving drops it.
+Inbound `permissions` remain the authorization policy for peer access.
+
+`principal_import` carries file path, optional name, force, and optional expected
+manifest checksum. `principal_import_previewed` carries snapshot metadata,
+roles (`agents`), executable inventory, checksum, validation errors and warnings.
+The retired `selected_capabilities`, `required_capabilities`, and `extensions`
+fields are omitted from serialization; unknown legacy JSON fields are ignored.
+
+Mid-turn `EnvironmentSnapshot` contains `runtime_environment` only. The old
+`permission_policy_summary` JSON field is ignored on read; rendered snapshots
+no longer advertise an empty capability allowlist. Completion and steering
+payload shapes remain unchanged and are owned by `peko-session`; background
+task statuses remain unchanged and are owned by `peko-tools-core`.
 
 ## Table of Contents
 
@@ -50,7 +69,7 @@ still load.
    13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
    13¾. [`ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)](#13¾-modelcall--one-shot-inference--the-judgment-wire-adr-061-phase-2a)
    13⅞. [`Workflow` runner + the `workflows/` directory (ADR-061 phase 2b)](#13⅞-workflow-runner--the-workflows-directory-adr-061-phase-2b)
-14. [Extension Manifest](#14-extension-manifest)
+14. [Extension Manifest (RETIRED)](#14-extension-manifest-retired)
 15. [Type Reference](#15-type-reference)
 16. [Changelog](#16-changelog)
 
@@ -238,7 +257,7 @@ deleted the deprecated field entirely (PR #43 follow-up).
 When `[base]` is specified, the runtime loads the base image's `config.toml` first, then merges the local config on top. Merge rules:
 
 - Scalar fields: local value overwrites base.
-- Array fields (`capabilities.tools`, `capabilities.mcps`, etc.): local array is **appended** to base array, then deduplicated.
+- Workspace tooling is supplied by plain files; capability arrays are retired.
 - `[[hooks]]`: local hooks are appended to base hooks. Base hooks cannot be removed, only added to.
 - `[provider]`: entire section replaced by local if present; otherwise base provider is used.
 
@@ -314,19 +333,7 @@ log_level   = "info"             # Optional. "error"|"warn"|"info"|"debug"|"trac
 log_format  = "text"             # Optional. "text"|"json". Default: "text"
 pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 
-# ── Registry ───────────────────────────────────────────────────────────────
-
-[registry]
-default = "pekohub.com"          # Optional. Default: "pekohub.com"
-
-[[registry.sources]]
-url      = "pekohub.com"
-priority = 1                     # Lower = checked first
-
-[[registry.sources]]
-url      = "registry.internal.example.com"
-priority = 2
-auth     = { type = "token", env = "INTERNAL_REGISTRY_TOKEN" }
+# Remote registry settings are retired (ADR-066).
 
 # ── Provider credentials ───────────────────────────────────────────────────
 # API keys are resolved at runtime from environment variables.
@@ -336,11 +343,7 @@ auth     = { type = "token", env = "INTERNAL_REGISTRY_TOKEN" }
 anthropic_api_key_env = "ANTHROPIC_API_KEY"   # Optional. Default: "ANTHROPIC_API_KEY"
 openai_api_key_env    = "OPENAI_API_KEY"       # Optional. Default: "OPENAI_API_KEY"
 
-# ── Capabilities ───────────────────────────────────────────────────────────
-
-[capabilities]
-auto_install    = false           # Optional. Default: false (safe for prod)
-install_dir     = "~/.peko/capabilities"  # Optional. Default: as shown
+# Tooling is supplied by workspace files; no capability installation settings.
 
 # ── Principal workspace ──────────────────────────────────────────────────────
 #
@@ -351,15 +354,12 @@ install_dir     = "~/.peko/capabilities"  # Optional. Default: as shown
 # tables and their `workspace_root` keys no longer exist.
 ```
 
-### 3.2 Auth Types for Registry Sources
+### 3.2 Registry settings (retired)
 
-| `type` | Fields | Description |
-|--------|--------|-------------|
-| `token` | `env` | Bearer token read from the named env var |
-| `basic` | `user_env`, `password_env` | HTTP Basic, credentials from env vars |
-| `none` | — | Unauthenticated (public registries) |
+Remote registry configuration and source credentials are retired in ADR-066 P5.
+Local `.peko` snapshots need no registry connection. PekoHub login remains a
+separate credential flow.
 
----
 
 ## 4. team.toml — Team Definition (RETIRED)
 
@@ -2496,7 +2496,7 @@ session with missing metadata does on the agent path.
 
 - `content` — the display string the agentic loop would feed the model.
 - `result` — the structured value (`null` when truncated).
-- `success` — `false` for tool errors **and** capability-gate denials alike
+- `success` — `false` for tool errors and dispatcher validation failures
   (the fail-closed path surfaces as data, not a transport error; the denial
   text in `content` reads `Error: Tool '<name>' is currently disabled…`).
 - `truncated` — when the serialized payload would exceed the datagram budget,
@@ -2688,71 +2688,12 @@ guard cannot be spoofed from the wire.
 
 ---
 
-## 14. Extension Manifest
+## 14. Extension Manifest (RETIRED)
 
-> **Note:** The pre-extension `capability.toml` / `AgentCapability` system has been removed. The extension framework (`extensions.enabled` whitelist, `ExtensionManager`) is the single mechanism for controlling tool/MCP/skill access.
-
-Every installable extension includes a manifest that describes it.
-
-### 14.1 Extension Types
-
-| Type | Description | Manifest File |
-|------|-------------|---------------|
-| `skill` | Markdown-based skill | `SKILL.md` with YAML frontmatter |
-| `mcp` | MCP server adapter | `manifest.yaml` |
-| `gateway` | Gateway adapter | `manifest.yaml` |
-| `builtin` | Built-in tool | Embedded in runtime |
-| `general` | General extension | `manifest.yaml` |
-
-> The `universal` (universal tool adapter) extension type was retired in
-> ADR-062; historical `universal-tool` manifests are rejected as invalid
-> types.
-
-### 14.2 SKILL.md Frontmatter (Skill Extensions)
-
-> **Note (2026-09):** the skill *extension-manifest* context below is
-> retired (ADR-047/050) — skills are no longer installed extensions. A
-> skill is a plain workspace file at `<workspace>/skills/<name>/SKILL.md`;
-> the current format reference is
-> [`docs/architecture/SKILLS.md`](docs/architecture/SKILLS.md).
-
-```yaml
----
-name: docker-skill
-description: Manage Docker containers
-version: 1.0.0
----
-
-# Docker Skill
-
-Skill content in Markdown...
-```
-
-### 14.3 Extension Package Layout
-
-```
-~/.peko/extensions/
-├── skill/
-│   └── docker-skill/
-│       ├── SKILL.md
-│       └── templates/
-└── mcp/
-    └── filesystem/
-        └── manifest.yaml
-```
-
-### 14.3 Extension Package Layout
-
-```
-~/.peko/extensions/
-├── skill/
-│   └── docker-skill/
-│       ├── SKILL.md
-│       └── templates/
-└── mcp/
-    └── filesystem/
-        └── manifest.yaml
-```
+The extension manifest and id model was retired by ADR-066. Roles and skills
+are ordinary Markdown files; MCP servers use their workspace manifests; hooks
+use `hook.toml` with the six observer points documented above. `.peko` is a
+flat local snapshot, described in §6.
 
 ---
 

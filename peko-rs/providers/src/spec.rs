@@ -8,9 +8,8 @@
 //! reads from. Engine gating lives in PR 2; the desktop gallery rework
 //! is PR 4.
 //!
-//! Why not call this `Capabilities`? `Capabilities` already names the
-//! principal capability system (different concept). `ModelSpec` keeps
-//! the namespace disjoint.
+//! `ModelSpec` describes provider/model features, independent of the
+//! principal's workspace tooling and inbound peer permissions.
 //!
 //! Every field on `ModelSpec` (and every nested type) is `serde-
 //! default`, so an older `models.toml` written before this PR still

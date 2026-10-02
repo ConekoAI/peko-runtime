@@ -530,7 +530,6 @@ mod tests {
                 governance: Default::default(),
                 memory: Default::default(),
                 routing: Default::default(),
-                capabilities: Default::default(),
                 exposure: crate::principal::config::Exposure::Public,
                 status: None,
                 boot_state: None,

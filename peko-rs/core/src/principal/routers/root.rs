@@ -207,7 +207,6 @@ impl RootRouter {
             Arc::clone(&self.memory),
             Arc::clone(&ctx.inbox_registry),
             Arc::clone(&ctx.session_creation_lock),
-            Arc::new(ctx.capabilities.clone()),
             self.resolver.clone(),
             self.principal_model_id.clone(),
             // Per-message configured model override from `RouterContext`

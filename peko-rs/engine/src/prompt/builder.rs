@@ -9,7 +9,7 @@
 //! hook-driven sections (`tools`, `skills`, `agents`, `mcp_context`,
 //! `SessionContextBuild`) via [`ToolingRuntime`] and threads the four
 //! long-horizon control surfaces (`iteration_budget`, `quota_tripped`,
-//! `soft_cancel`, `capability_diff`) into the body.
+//! `soft_cancel`) into the body.
 //!
 //! This module survives as a **test-only** static renderer — a pure
 //! function from `(body, memory, session_context, agent_name, ...)`
@@ -158,7 +158,6 @@ impl SystemPromptBuilder {
         // the renderer populates these from `TurnPromptContext`.
         values.insert(Placeholder::IterationBudget, String::new());
         values.insert(Placeholder::SoftCancel, String::new());
-        values.insert(Placeholder::CapabilityDiff, String::new());
 
         replace_placeholders(&template, &values, true)
     }

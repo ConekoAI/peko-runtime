@@ -55,3 +55,5 @@ pub mod prompt_sections;
 pub mod registry;
 pub mod runtime;
 pub mod session_keys;
+
+pub mod metadata;
