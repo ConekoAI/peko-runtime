@@ -43,7 +43,7 @@ pub trait AgentView: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     /// Agent DID — used as the session-key namespace on the shared
-    /// `ExtensionCore` (issue #68) so concurrent agents don't clobber
+    /// `ToolingRuntime` (issue #68) so concurrent agents don't clobber
     /// each other.
     fn identity_did(&self) -> &str;
 

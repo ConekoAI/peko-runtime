@@ -40,7 +40,7 @@ pub mod framework;
 // Extension Type Submodules
 // ============================================================================
 
-/// Built-in tool adapter — registers native Tool trait implementations with ExtensionCore.
+/// Built-in tool adapter — registers native Tool trait implementations with ToolingRuntime.
 pub mod builtin;
 
 // Sprint 9 Commit 3: the gateway extension was retired. The
@@ -89,7 +89,7 @@ pub mod role;
 
 /// ADR-047 §5 Phase 4: workspace-resident hook scanner. Reads
 /// `<workspace>/hooks/<id>/hook.toml` and registers each binding
-/// against the canonical `ExtensionCore` hook registry.
+/// against the canonical `ToolingRuntime` hook registry.
 pub mod workspace_hooks;
 
 // PR-C: `extensions/validation.rs` (788 lines) deleted. The

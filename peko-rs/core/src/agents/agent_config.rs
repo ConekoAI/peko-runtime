@@ -45,7 +45,7 @@ pub struct AgentConfig {
     /// pay the prompt-token cost of always-on deferred-tool discovery.
     ///
     /// When `true` and at least one `ToolExposure::Deferred` tool is
-    /// registered on the shared `ExtensionCore`, the loop appends a
+    /// registered on the shared `ToolingRuntime`, the loop appends a
     /// `__tool_search` entry to the native tool catalog so the model
     /// can resolve deferred tools on demand. Without at least one
     /// deferred tool the stub is omitted from the catalog regardless

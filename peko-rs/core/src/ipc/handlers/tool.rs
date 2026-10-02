@@ -862,7 +862,7 @@ mod tests {
         // Register the Workflow runner on the fixture's core (daemon
         // state.rs does this in production).
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.extension_core(),
+            fx.tool_runtime.tooling().catalog(),
             Arc::new(crate::tools::builtin::WorkflowTool::new(
                 Arc::downgrade(&fx.manager),
                 Arc::clone(&fx.run_tokens),
@@ -1010,7 +1010,7 @@ mod tests {
         let fx = fixture(name, Capabilities::new()).await;
         let probe = Arc::new(ClassifyProbeTool { metas });
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.extension_core(),
+            fx.tool_runtime.tooling().catalog(),
             probe.clone(),
         )
         .await
@@ -1239,7 +1239,7 @@ mod tests {
     /// fixture core (daemon/state.rs does this in production).
     async fn register_daemon_session_tool(fx: &Fixture) {
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.extension_core(),
+            fx.tool_runtime.tooling().catalog(),
             Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
                 Arc::downgrade(&fx.manager),
                 crate::async_exec::executor::standalone_inbox_registry(),
@@ -1544,12 +1544,12 @@ mod tests {
             .clone();
         let runtime = Arc::new(AsyncExecutorRuntime::new(
             Arc::clone(&executor),
-            Arc::downgrade(fx.tool_runtime.extension_core()),
+            Arc::downgrade(fx.tool_runtime.tooling()),
             None, // no agent-DID cell — the request must carry the parent
             peko_subject::PrincipalId(principal_id.clone()),
         ));
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.extension_core(),
+            fx.tool_runtime.tooling().catalog(),
             Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
                 Arc::clone(&runtime).as_shared(),
             )),

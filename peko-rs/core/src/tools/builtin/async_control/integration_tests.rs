@@ -2,7 +2,7 @@
 //!
 //! Wires `AsyncSpawnTool` / `AsyncOutputTool` / `AsyncStatusTool` /
 //! `AsyncListTool` / `AsyncStopTool` against a real
-//! `AsyncExecutorRuntime` wrapping `AsyncExecutor` + `Arc<ExtensionCore>`.
+//! `AsyncExecutorRuntime` wrapping `AsyncExecutor` + `Arc<ToolingRuntime>`.
 //!
 //! These tests pin two contracts that layered unit tests cannot:
 //!
@@ -28,10 +28,10 @@ mod tests {
         standalone_inbox_registry, AsyncExecutor, AsyncExecutorRuntime,
     };
     use crate::extensions::builtin::BuiltinToolAdapter;
-    use crate::extensions::framework::core::ExtensionCore;
     use crate::tools::builtin::{
         AsyncListTool, AsyncOutputTool, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
     };
+    use crate::tools::runtime::ToolingRuntime;
     use async_trait::async_trait;
     use peko_subject::PrincipalId;
     use peko_tools_core::Tool;
@@ -84,7 +84,7 @@ mod tests {
     /// each Async* tool's `.execute()` against the same backing state.
     struct AsyncToolRig {
         #[allow(dead_code)] // retained for diagnostic future tests
-        core: Arc<ExtensionCore>,
+        core: Arc<ToolingRuntime>,
         spawn: AsyncSpawnTool,
         output: AsyncOutputTool,
         status: AsyncStatusTool,
@@ -96,7 +96,7 @@ mod tests {
     /// `AbortableStubTool`) registered. Returns an `AsyncToolRig`
     /// ready to drive every Async* tool from the same backing runtime.
     async fn setup_with_stop(register_abortable: bool) -> AsyncToolRig {
-        let core = Arc::new(ExtensionCore::new());
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         // Register via `BuiltinToolAdapter::register_tool_system` rather
         // than `core.insert_tool_instance`. The latter only fills the
         // `Arc<dyn Tool>` side-table that direct callers (e.g.
@@ -108,16 +108,16 @@ mod tests {
         // converts that to `("Tool 'stub_tool' not available",
         // success=false)`, which is why every spawned task landed in
         // `Failed` with no `result` field before this fix.
-        BuiltinToolAdapter::register_tool_system(&core, Arc::new(StubTool))
+        BuiltinToolAdapter::register_tool_system(core.catalog(), Arc::new(StubTool))
             .await
             .expect("register stub_tool");
         if register_abortable {
-            BuiltinToolAdapter::register_tool_system(&core, Arc::new(AbortableStubTool))
+            BuiltinToolAdapter::register_tool_system(core.catalog(), Arc::new(AbortableStubTool))
                 .await
                 .expect("register abortable_stub");
         }
-        core.set_session_key("test_agent", Some("session_under_test".to_string()))
-            .await;
+        core.session_keys()
+            .set("test_agent", Some("session_under_test".to_string()));
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let runtime = Arc::new(AsyncExecutorRuntime::new(

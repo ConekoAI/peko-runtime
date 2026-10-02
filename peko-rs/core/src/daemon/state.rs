@@ -475,7 +475,7 @@ impl AppState {
         config_dir: PathBuf,
         data_dir: PathBuf,
         cache_dir: PathBuf,
-        for_test: bool,
+        _for_test: bool,
     ) -> anyhow::Result<Self> {
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             config_dir.clone(),
@@ -592,17 +592,8 @@ impl AppState {
 
         let session_service = Arc::new(SessionService::new(path_resolver.clone()));
 
-        // ADR-021: Initialize global ExtensionCore FIRST so ToolRuntime can register
-        // tools with it, and Agent::new() can find them later.
-        //
-        // If main.rs already initialized the global core (e.g. for the async router),
-        // reuse it and register tools on that instance. Otherwise create a new one.
-        // This prevents a race where main.rs sets an empty core and AppState's
-        // tool-filled core gets discarded by the OnceLock.
-
-        // For tests, always create a fresh core to avoid shared mutable state
-        // between concurrent tests.
-        //
+        // Compose an isolated tooling runtime for each daemon/test state.
+        // Its async router must share the inbox registry the engine drains.
         // WS3 (implicit session management, 2026-08-11): hoist the
         // daemon-shared inbox registry ABOVE this block so the
         // AsyncExecutionRouter can be wired to it. The router owns an
@@ -621,39 +612,30 @@ impl AppState {
         // `shared_inbox_registry()` and their completions land in the
         // inboxes the agentic loop drains. (P0-1, 2026-09-27)
         crate::async_exec::executor::install_shared_inbox_registry(Arc::clone(&inbox_registry));
-        let global_core = if for_test {
-            use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
-            use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
-            use crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox;
-            let router = AsyncExecutionRouter::with_transport(create_local_transport_with_inbox(
-                Arc::clone(&inbox_registry),
-            ));
-            let services = ExtensionServices::with_async_router(Arc::new(router));
-            Arc::new(ExtensionCore::with_services(Arc::new(services)))
-        } else if let Some(existing) = crate::extensions::framework::core::global_core() {
-            tracing::info!("Reusing global ExtensionCore initialized by main.rs");
-            existing
-        } else {
-            use crate::extensions::framework::core::{
-                init_global_core, ExtensionCore, ExtensionServices,
-            };
-            use crate::extensions::framework::transport::async_router::AsyncExecutionRouter;
-            use crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox;
-            let router = AsyncExecutionRouter::with_transport(create_local_transport_with_inbox(
-                Arc::clone(&inbox_registry),
-            ));
-            let services = ExtensionServices::with_async_router(Arc::new(router));
-            let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
-            init_global_core(Arc::clone(&core));
-            core
-        };
+
+        let observability = Arc::new(Observability::with_audit_dir(
+            "api",
+            path_resolver.audit_dir(),
+        )?);
+        let services = Arc::new(crate::extensions::framework::core::ExtensionServices::new());
+        let hooks = Arc::new(
+            crate::extensions::framework::core::HookRegistry::with_services(Arc::clone(&services)),
+        );
+        let router = crate::extensions::framework::transport::async_router::AsyncExecutionRouter::with_transport(
+            crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
+        );
+        let tooling = Arc::new(crate::tools::runtime::ToolingRuntime::new(
+            Arc::new(crate::tools::catalog::ToolCatalog::new()),
+            hooks,
+            services,
+            Arc::new(router),
+            Some(Arc::clone(&observability)),
+        ));
 
         // Make the LLM resolver available to extension hooks (e.g. MCP sampling).
-        global_core
-            .services()
-            .set_llm_resolver(Arc::clone(&resolver));
+        tooling.services().set_llm_resolver(Arc::clone(&resolver));
 
-        // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
+        // ADR-020: Initialize ToolRuntime with the shared ToolingRuntime so tools
         // are registered where Agent::new() can find them.
         // PR-4a: wire the daemon's real `channel_port` so `ChannelRead`
         // resolves to the file-backed `ChannelStore` (PR-5b) and
@@ -703,14 +685,12 @@ impl AppState {
         // `set_llm_resolver` above). Without this the per-agent
         // registration falls through to the `No ChannelPort` branch
         // and ChannelSend is skipped entirely.
-        global_core
-            .services()
-            .set_channel_port(channel_port.clone());
+        tooling.services().set_channel_port(channel_port.clone());
         let tool_runtime = Arc::new(
             ToolRuntime::with_workspace_and_core_and_channel_port(
                 path_resolver.clone(),
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                Arc::clone(&global_core),
+                Arc::clone(&tooling),
                 channel_port.clone(),
             )
             .await
@@ -722,7 +702,7 @@ impl AppState {
         // background tasks), and the in-flight `AgenticLoop` (which
         // drains at iteration start). Lazy-initializes entries on
         // first access; no explicit cleanup. NOTE: the actual
-        // `inbox_registry` Arc is constructed ABOVE the global_core
+        // `inbox_registry` Arc is constructed ABOVE the tooling
         // block (WS3, 2026-08-11) so the AsyncExecutionRouter can be
         // wired to it; we just `Arc::clone` it here.
         let async_task_executor = Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
@@ -772,6 +752,7 @@ impl AppState {
                 Arc::new(DefaultPrincipalRouterFactory),
                 Arc::clone(&inbox_registry),
             )
+            .with_tooling(Arc::clone(&tooling))
             .with_resolver(resolver.clone())
             .with_observability(Arc::clone(&observability))
             // ADR-058 D1: principal genesis mints a per-principal
@@ -853,17 +834,17 @@ impl AppState {
         // `tool:ModelCall` / `tool:Workflow`.
         let run_token_registry = Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new());
         if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            &global_core,
+            tooling.catalog(),
             Arc::new(crate::tools::builtin::ModelCallTool::new(Arc::downgrade(
                 &principal_manager,
             ))),
         )
         .await
         {
-            tracing::warn!("Failed to register built-in tool 'ModelCall' with ExtensionCore: {e}");
+            tracing::warn!("Failed to register built-in tool 'ModelCall' with ToolingRuntime: {e}");
         }
         if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            &global_core,
+            tooling.catalog(),
             Arc::new(crate::tools::builtin::WorkflowTool::new(
                 Arc::downgrade(&principal_manager),
                 Arc::clone(&run_token_registry),
@@ -871,7 +852,7 @@ impl AppState {
         )
         .await
         {
-            tracing::warn!("Failed to register built-in tool 'Workflow' with ExtensionCore: {e}");
+            tracing::warn!("Failed to register built-in tool 'Workflow' with ToolingRuntime: {e}");
         }
 
         // ADR-061 caller-awareness: daemon-global `session` builtin
@@ -885,7 +866,7 @@ impl AppState {
         // `CallerAwareSessionTool::for_agent` instance shadows it with
         // identical per-call semantics.
         if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            &global_core,
+            tooling.catalog(),
             Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
                 Arc::downgrade(&principal_manager),
                 Arc::clone(&inbox_registry),
@@ -893,7 +874,7 @@ impl AppState {
         )
         .await
         {
-            tracing::warn!("Failed to register built-in tool 'session' with ExtensionCore: {e}");
+            tracing::warn!("Failed to register built-in tool 'session' with ToolingRuntime: {e}");
         }
 
         // ADR-034: Initialize auth components
@@ -1706,14 +1687,14 @@ impl AppState {
         //    `services().cross_runtime_a2a_ctx()` and builds with the
         //    ctx if present.
         //
-        //    `tool_runtime.extension_core().services()` returns
+        //    `tool_runtime.tooling().services()` returns
         //    `Arc<ExtensionServices>`; we set the ctx on the
         //    underlying ExtensionServices via the Arc. (In tests
-        //    the ExtensionCore may have no services — log and
+        //    the ToolingRuntime may have no services — log and
         //    skip rather than crash; the outbound path returns a
         //    clean "not configured" error in that case.)
         self.tool_runtime
-            .extension_core()
+            .tooling()
             .services()
             .set_cross_runtime_a2a_ctx(ctx);
 
@@ -3385,17 +3366,23 @@ mod tests {
         // and `BuiltinToolAdapter::register_async_spawn_tool`. Asserting they
         // are missing here pins the contract.
 
-        // ExtensionCore should list the tools
-        let core = tool_runtime.extension_core();
-        let tools = core.list_tools(peko_subject::PrincipalId::system()).await;
-        assert!(!tools.is_empty(), "No tools in ExtensionCore");
+        // ToolingRuntime should list the tools
+        let core = tool_runtime.tooling();
+        let tools = core
+            .catalog()
+            .list_tools(peko_subject::PrincipalId::system())
+            .await;
+        assert!(!tools.is_empty(), "No tools in ToolingRuntime");
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(tool_names.contains(&"Bash".to_string()));
         assert!(tool_names.contains(&"Grep".to_string()));
 
         // Tool definitions should be available for LLM API
-        let defs = core.list_tool_definitions().await;
+        let defs = core
+            .catalog()
+            .tool_definitions(peko_subject::PrincipalId::system())
+            .await;
         assert!(!defs.is_empty(), "No tool definitions available");
     }
 
@@ -3404,20 +3391,20 @@ mod tests {
     async fn test_agent_init_preserves_pre_registered_tools() {
         use crate::agents::agent_config::AgentConfig;
         use crate::agents::Agent;
-        use crate::extensions::framework::core::init_global_core;
 
         let state = create_test_state().await;
-        let global_core = state.tool_runtime.extension_core().clone();
+        let tooling = state.tool_runtime.tooling().clone();
 
         // Simulate what Agent::new() does
-        init_global_core(global_core.clone());
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
             ..Default::default()
         };
 
-        let agent = Agent::new(config).await.expect("Failed to create agent");
+        let agent = Agent::new(config, tooling)
+            .await
+            .expect("Failed to create agent");
 
         // init_builtins_async should find pre-registered tools
         agent
@@ -3426,9 +3413,11 @@ mod tests {
             .expect("Failed to init builtins");
 
         // Tools should still be available after agent init
-        let core = agent.extension_core();
-        let tools: Vec<crate::extensions::framework::types::ToolMetadata> =
-            core.list_tools(peko_subject::PrincipalId::system()).await;
+        let core = agent.tooling();
+        let tools: Vec<crate::extensions::framework::types::ToolMetadata> = core
+            .catalog()
+            .list_tools(peko_subject::PrincipalId::system())
+            .await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(
             tool_names.contains(&"Bash".to_string()),
@@ -3444,7 +3433,8 @@ mod tests {
         // travel on the wire as the `tools[]` JSON-schema array.
         // ADR-066 P2: presence = visibility — no grant context needed.
         let defs = core
-            .list_tool_definitions_for(peko_subject::PrincipalId::system())
+            .catalog()
+            .tool_definitions(peko_subject::PrincipalId::system())
             .await;
         let def_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
         assert!(

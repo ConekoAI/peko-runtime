@@ -301,7 +301,7 @@ fn seed_minimax_catalog_entry(
 
 // Production daemon runs on a multi-threaded Tokio runtime; the
 // `SystemPromptBuilder` uses `tokio::task::block_in_place` to drive
-// ExtensionCore hooks synchronously, which requires a multi-threaded
+// ToolingRuntime hooks synchronously, which requires a multi-threaded
 // runtime. `#[tokio::test]` defaults to `current_thread`, which panics
 // with "can call blocking only when running on the multi-threaded
 // runtime" — pin this test to the production flavor.

@@ -188,6 +188,7 @@ impl PeerChildTurns {
         llm_resolver: &peko_providers::LlmResolver,
         observability: Arc<Observability>,
         inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
+        tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Result<Self> {
         let (name, owner, capabilities, agent_config, preferred_model_id, available_agents) = {
             let config = principal.config.read().await;
@@ -252,6 +253,7 @@ impl PeerChildTurns {
             registry_key,
             64,
             principal.id.clone(),
+            Arc::clone(&tooling),
         )
         .with_principal_name(name)
         .with_principal_workspace(principal.workspace_path.clone())
@@ -279,6 +281,7 @@ impl PeerChildTurns {
         // advertises). Both installs are idempotent; the tool-bag
         // install honors the core's once-gate.
         let core = crate::principal::context::ensure_principal_tool_bag(
+            tooling,
             &principal.workspace_path,
             &principal.id,
         )
@@ -666,93 +669,60 @@ fn render_self_position(
 pub(crate) struct SelfPositionSessionContextHandler;
 
 #[async_trait::async_trait]
-impl crate::extensions::framework::core::HookHandler for SelfPositionSessionContextHandler {
-    async fn handle(
-        &self,
-        ctx: crate::extensions::framework::core::HookContext,
-    ) -> crate::extensions::framework::types::HookResult {
-        use crate::extensions::framework::types::{HookOutput, HookResult};
-
-        let session_id = match &ctx.input {
-            crate::extensions::framework::types::HookInput::SessionState(snapshot) => {
-                peko_session::id::SessionId::parse(&snapshot.session_id)
-            }
-            _ => None,
-        };
-        let Some(session_id) = session_id else {
-            return HookResult::PassThrough;
-        };
-        let workspace = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
-            .and_then(|rtc| rtc.workspace.clone())
-            .filter(|w| !w.is_empty());
-        let Some(workspace) = workspace else {
-            return HookResult::PassThrough;
-        };
-        let Some(sessions_dir) = sessions_dir_for_workspace(&workspace) else {
-            return HookResult::PassThrough;
-        };
-        let metas = peko_session::manager::SessionManager::new()
-            .with_sessions_dir_internal(sessions_dir)
-            .list_all_sessions(false)
-            .await
-            .unwrap_or_default();
-
-        match render_self_position(&metas, session_id) {
-            Some(text) => HookResult::Continue(HookOutput::Text(text)),
-            None => HookResult::PassThrough,
-        }
-    }
-
-    fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-        crate::extensions::framework::core::HookPoint::SessionContextBuild
+impl crate::tools::prompt_sections::PromptSectionProvider for SelfPositionSessionContextHandler {
+    fn section(&self) -> &'static str {
+        "session_context"
     }
 
     fn priority(&self) -> i32 {
-        // Above `PeersSessionContextHandler` (100): the hook registry
-        // invokes higher-priority handlers first, and the aggregated
-        // text outputs concatenate in invocation order, so the
+        // Above `PeersSessionContextHandler` (100): the aggregator
+        // renders higher-priority providers first, so the
         // self-position line lands above the peer list.
         110
     }
 
-    fn name(&self) -> String {
-        "SelfPositionSessionContextHandler".to_string()
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::extensions::framework::core::HookHandler for PeersSessionContextHandler {
-    async fn handle(
+    async fn render(
         &self,
-        ctx: crate::extensions::framework::core::HookContext,
-    ) -> crate::extensions::framework::types::HookResult {
-        use crate::extensions::framework::types::{HookOutput, HookResult};
-
-        let tool_ctx = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
-        let (workspace, principal_id) = match tool_ctx {
-            Some(rtc) => (rtc.workspace.clone(), rtc.principal_id.clone()),
-            None => (None, None),
-        };
-        let (Some(workspace), Some(principal_id)) = (workspace, principal_id) else {
-            return HookResult::PassThrough;
-        };
-        if workspace.is_empty() || principal_id.is_empty() {
-            return HookResult::PassThrough;
+        input: &crate::tools::prompt_sections::PromptSectionInput,
+    ) -> Option<String> {
+        let session_id = peko_session::id::SessionId::parse(&input.session_id)?;
+        let workspace = input.workspace.to_string_lossy().to_string();
+        if workspace.is_empty() {
+            return None;
         }
-        let Some(sessions_dir) = sessions_dir_for_workspace(&workspace) else {
-            return HookResult::PassThrough;
-        };
+        let sessions_dir = sessions_dir_for_workspace(&workspace)?;
         let metas = peko_session::manager::SessionManager::new()
             .with_sessions_dir_internal(sessions_dir)
             .list_all_sessions(false)
             .await
             .unwrap_or_default();
-        let port = match ctx.services.channel_port() {
-            Some(p) => p,
-            None => return HookResult::PassThrough,
-        };
+
+        render_self_position(&metas, session_id)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::prompt_sections::PromptSectionProvider for PeersSessionContextHandler {
+    fn section(&self) -> &'static str {
+        "session_context"
+    }
+
+    async fn render(
+        &self,
+        input: &crate::tools::prompt_sections::PromptSectionInput,
+    ) -> Option<String> {
+        let workspace = input.workspace.to_string_lossy().to_string();
+        let principal_id = input.principal_id.clone();
+        if workspace.is_empty() || principal_id.is_empty() {
+            return None;
+        }
+        let sessions_dir = sessions_dir_for_workspace(&workspace)?;
+        let metas = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir)
+            .list_all_sessions(false)
+            .await
+            .unwrap_or_default();
+        let port = input.channel_port.clone()?;
         let principal_id = peko_subject::PrincipalId(principal_id);
 
         let mut lines = String::new();
@@ -774,23 +744,11 @@ impl crate::extensions::framework::core::HookHandler for PeersSessionContextHand
             lines.push_str(&format!("- `/{slug}` — {peer} — channel {channel}\n"));
         }
         if lines.is_empty() {
-            return HookResult::PassThrough;
+            return None;
         }
-        HookResult::Continue(HookOutput::Text(format!(
+        Some(format!(
             "peer sessions (address with Agent path or ChannelSend):\n{lines}"
-        )))
-    }
-
-    fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-        crate::extensions::framework::core::HookPoint::SessionContextBuild
-    }
-
-    fn priority(&self) -> i32 {
-        100
-    }
-
-    fn name(&self) -> String {
-        "PeersSessionContextHandler".to_string()
+        ))
     }
 }
 
@@ -1026,6 +984,7 @@ mod tests {
             "root",
             5,
             principal_id.clone(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
         PeerChildTurns {
             executor,

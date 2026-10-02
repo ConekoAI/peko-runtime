@@ -21,7 +21,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::StreamExt;
-use peko_extension_api::ToolFunnel;
+use peko_extension_api::ToolingSeam;
 use peko_message::{ContentBlock, LlmMessage};
 use peko_provider_api::{
     clamp_openai_prompt_cache_key, BodyStringClassifier, CacheRetention, ChatOptions, MessageRole,
@@ -88,7 +88,7 @@ pub struct AgenticLoop {
     system_prompt: String,
     /// Extension core for skill loading, tool registration, and hook
     /// firing. Phase 9b.N.5b.4 switched the field from the concrete
-    /// root `Arc<peko_extension_api::ExtensionCore>` to
+    /// root `Arc<peko_extension_api::ToolingRuntime>` to
     /// `Arc<dyn ToolFunnel>` — the trait port the renderer, tool
     /// executor, and compaction driver all use. The renderer
     /// (now in `peko_engine::prompt::renderer`) calls
@@ -96,7 +96,7 @@ pub struct AgenticLoop {
     /// `invoke_session_context_build_hook` instead of constructing
     /// `HookPoint` / `HookInput` directly, so the loop never needs
     /// the concrete root type.
-    pub extension_core: Arc<dyn ToolFunnel>,
+    pub tooling: Arc<dyn ToolingSeam>,
     /// Resolved caller identity (pekohub sub, API key id, or `None` for
     /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
     /// on every tool invocation so downstream permission checks and audit
@@ -257,16 +257,13 @@ impl AgenticLoop {
     /// * `agent` - The agent configuration (trait-object view of root's
     ///   `Agent`; see `peko_engine::AgentView`).
     /// * `provider` - The LLM provider to use
-    /// * `extension_core` - The trait-object view of the extension host
-    ///   (`peko_extension_api::ToolFunnel`). Phase 9b.N.5b.4 switched
-    ///   the constructor param to `Arc<dyn ToolFunnel>` — the concrete
-    ///   `ExtensionCore` still implements `ToolFunnel` via the
-    ///   `src/engine/extension_core_funnel_compat.rs` impl, so
-    ///   `Arc::new(core) as Arc<dyn ToolFunnel>` works at call sites.
+    /// * `tooling` - The trait-object tooling seam
+    ///   (`peko_extension_api::ToolingSeam`) — implemented by root's
+    ///   `ToolingRuntime` (ADR-066 P3).
     pub async fn new(
         agent: Arc<dyn AgentView>,
         provider: Arc<dyn ProviderView>,
-        extension_core: Arc<dyn ToolFunnel>,
+        tooling: Arc<dyn ToolingSeam>,
         compactor_factory: Arc<dyn BackgroundCompactorFactory>,
         compaction_config: CompactionConfig,
     ) -> Self {
@@ -300,7 +297,7 @@ impl AgenticLoop {
             provider,
             compactor_factory,
             system_prompt: placeholder_prompt,
-            extension_core,
+            tooling,
             caller_id: None,
             agent_principal_id,
             async_completion_queue: None,
@@ -548,15 +545,15 @@ impl AgenticLoop {
 
     /// Get the extension core
     #[must_use]
-    pub fn extension_core(&self) -> &dyn ToolFunnel {
-        // Trait-object view of the concrete `Arc<ExtensionCore>` so
+    pub fn tooling(&self) -> &dyn ToolingSeam {
+        // Trait-object view of the concrete `Arc<ToolingRuntime>` so
         // call-sites outside this crate can hold the port without
-        // importing root's `ExtensionCore` type. Phase 9b.N.5b.3
-        // returns `&dyn ToolFunnel` rather than `&Arc<ExtensionCore>`
+        // importing root's `ToolingRuntime` type. Phase 9b.N.5b.3
+        // returns `&dyn ToolFunnel` rather than `&Arc<ToolingRuntime>`
         // so future dependents (after the loop lifts into
         // `peko-engine`) only depend on the trait, not the root
         // extension host.
-        &*self.extension_core
+        &*self.tooling
     }
 
     /// Run the agent with a user prompt, optionally resuming from an existing session.
@@ -897,6 +894,13 @@ impl AgenticLoop {
         let mut merged = payload;
         if let serde_json::Value::Object(ref mut map) = merged {
             map.insert("role_name".to_string(), self.agent.name().into());
+            map.insert("principal_id".to_string(), self.agent.principal_id().into());
+            if let Some(workspace) = self.agent.principal_workspace() {
+                map.insert(
+                    "workspace".to_string(),
+                    workspace.to_string_lossy().into_owned().into(),
+                );
+            }
             map.insert(
                 "agent_did".to_string(),
                 self.agent.identity_did().to_string().into(),
@@ -906,15 +910,14 @@ impl AgenticLoop {
         // `Stop` hook — per-turn exit signal.
         //
         // Phase 9b.N.5b.3 routed the firing through the
-        // `ToolFunnel::invoke_stop_hook` trait method. The trait impl
-        // lives in `src/engine/extension_core_funnel_compat.rs` and
+        // `EngineHooks::fire_stop_hook` trait method (ADR-066 P3).
         // builds `HookInput::Json(merged) + HookPoint::Stop`
         // internally, so this agentic loop no longer touches
         // `HookPoint` or `HookInput` directly at the loop-exit seam.
         // Soft-fails on timeout (the impl wraps `invoke_hook` in
         // `HOOK_TIMEOUT`).
-        let funnel = &*self.extension_core;
-        funnel.invoke_stop_hook(merged.clone()).await;
+        let funnel = &*self.tooling;
+        funnel.fire_stop_hook(merged.clone()).await;
 
         // F31x.1: fire `AfterAgent` alongside `Stop` so the per-turn
         // cleanup hook actually fires every run. `Agent::stop()`
@@ -924,7 +927,7 @@ impl AgenticLoop {
         // request and never explicitly stopped). Symmetric with the
         // `Stop` site above — both go through `ToolFunnel` trait
         // methods.
-        funnel.invoke_after_agent_hook(merged).await;
+        funnel.fire_after_agent_hook(merged).await;
         let _ = run_id; // currently unused by handlers; kept on signature for forward-compat
     }
 
@@ -1022,9 +1025,9 @@ impl AgenticLoop {
         // begins, so even the first `AsyncSpawn` issued mid-iteration
         // sees a real `parent_session_key` rather than the `"unknown"`
         // fallback. The session key is keyed by the loop's agent DID on
-        // the shared `ExtensionCore` so concurrent agents in daemon mode
+        // the shared `ToolingRuntime` so concurrent agents in daemon mode
         // do not clobber each other (issue #68).
-        self.extension_core
+        self.tooling
             .set_session_key(self.agent.identity_did(), Some(session_id.clone()))
             .await;
 
@@ -1262,7 +1265,7 @@ impl AgenticLoop {
                     focus_dir.as_deref(),
                 );
                 let renderer = PromptRenderer::with_mcp_context_provider(
-                    Arc::clone(&self.extension_core),
+                    Arc::clone(&self.tooling),
                     Arc::clone(&self.mcp_context_provider),
                 );
 
@@ -1333,13 +1336,7 @@ impl AgenticLoop {
             // ADR-022 Phase 3: Compaction with Extension Hooks
             // ============================================================
             compaction_driver
-                .check_and_compact(
-                    &mut messages,
-                    session,
-                    &*self.extension_core,
-                    &on_event,
-                    &run_id,
-                )
+                .check_and_compact(&mut messages, session, &*self.tooling, &on_event, &run_id)
                 .await?;
 
             // Fold the compaction summarization LLM call's usage
@@ -1991,12 +1988,8 @@ impl AgenticLoop {
                             tc,
                             // Phase 9b.N.3: route through `&dyn
                             // ToolFunnel`. `&self.extension_core` is
-                            // `&Arc<ExtensionCore>`; deref to
-                            // `&ExtensionCore` so it coerces to the
-                            // trait (impl lives on `ExtensionCore`,
-                            // not `Arc<ExtensionCore>`).
-                            &*self.extension_core,
-                            self.agent.name(),
+                            &*self.tooling,
+                            self.agent.identity_did(),
                             // **Track B**: per-agent `workspace`
                             // was removed from `AgentConfig`. The
                             // principal's workspace still lives on the
@@ -2101,7 +2094,7 @@ impl AgenticLoop {
                         .compact_mid_turn(
                             &mut messages,
                             session,
-                            &*self.extension_core,
+                            &*self.tooling,
                             &on_event,
                             &run_id,
                             snapshot,
@@ -2207,7 +2200,7 @@ impl AgenticLoop {
         }
     }
 
-    /// Build tool definitions dynamically from `ExtensionCore` (ADR-019 Phase 2)
+    /// Build tool definitions dynamically from `ToolingRuntime` (ADR-019 Phase 2)
     ///
     /// This queries the unified tool registry for currently enabled tools,
     /// allowing tool changes to take effect without session restart.
@@ -2221,10 +2214,7 @@ impl AgenticLoop {
     /// `tools/spec_plan.rs:928-949 append_tool_search_executor`.
     pub async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
         let principal_id = peko_subject::PrincipalId(self.agent_principal_id.clone());
-        let mut defs = self
-            .extension_core
-            .list_tool_definitions_for(&principal_id)
-            .await;
+        let mut defs = self.tooling.list_tool_definitions(&principal_id).await;
 
         // F35 — append the synthetic `__tool_search` stub only when both
         // gates pass: (a) the agent opted in via
@@ -2235,10 +2225,7 @@ impl AgenticLoop {
         // `list_tool_definitions_for` (F34) so we walk the
         // unfiltered `list_tools` to count them.
         if self.agent.config_enable_tool_search() {
-            let has_deferred = self
-                .extension_core
-                .has_deferred_tools_for(&principal_id)
-                .await;
+            let has_deferred = self.tooling.has_deferred_tools(&principal_id).await;
             if has_deferred {
                 defs.push(ToolDefinition {
                     name: crate::tool_search_metadata::TOOL_SEARCH_TOOL_NAME.to_string(),
@@ -2249,7 +2236,7 @@ impl AgenticLoop {
         }
 
         info!(
-            "Dynamically built {} tool definitions from ExtensionCore: {:?}",
+            "Dynamically built {} tool definitions from ToolingRuntime: {:?}",
             defs.len(),
             defs.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
@@ -2692,7 +2679,7 @@ mod tests {
     // Empty by design.
     //
     // The agentic_loop's test suite references root-only fixture types
-    // (`Agent`, `ExtensionCore`, `Subject`, `SessionManager`, `Provider`,
+    // (`Agent`, `ToolingRuntime`, `Subject`, `SessionManager`, `Provider`,
     // `MockAdapter`, `BuiltinToolAdapter`, `LlmResolver`, etc.) that cannot
     // lift into `peko-engine` without violating `check_workspace_deps.py`
     // forbidden-edge rules.

@@ -27,7 +27,7 @@ pub fn parse_status_param(value: &serde_json::Value) -> anyhow::Result<TodoStatu
 pub fn missing_session_error() -> anyhow::Error {
     anyhow::anyhow!(
         "Task tools require a session context; route execution through \
-         execute_with_context (production callers go via ExtensionCore::invoke_hook, \
+         execute_with_context (production callers go via ToolingRuntime::invoke_hook, \
          which always supplies a session_id)"
     )
 }

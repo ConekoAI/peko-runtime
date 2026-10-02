@@ -58,7 +58,7 @@ pub struct ToolMetadata {
     /// Reserved parameters configuration
     pub reserved_params: ReservedParamsConfig,
     /// Companion hook IDs registered alongside the primary execution hook.
-    /// Populated by `ExtensionCore::register_tool()` and used during
+    /// Populated by `ToolingRuntime::register_tool()` and used during
     /// `unregister_tool()` for atomic cleanup.
     #[serde(skip)]
     pub companion_hook_ids: Option<Vec<HookId>>,
@@ -97,7 +97,7 @@ impl ToolMetadata {
         self
     }
 
-    /// Set companion hook IDs (used internally by `ExtensionCore::register_tool`).
+    /// Set companion hook IDs (used internally by `ToolingRuntime::register_tool`).
     #[must_use]
     pub fn with_companion_hook_ids(mut self, ids: Vec<HookId>) -> Self {
         self.companion_hook_ids = Some(ids);

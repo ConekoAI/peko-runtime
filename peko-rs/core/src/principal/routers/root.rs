@@ -110,7 +110,7 @@ pub fn root_session_id_for_channel(kind: &crate::principal::router::ChannelKind)
 /// A Principal router powered by a root-agent agentic loop.
 ///
 /// Holds a cached `PrincipalContext` for the principal's lifetime; the
-/// shared per-principal `ExtensionCore` lives on the context and is
+/// shared per-principal `ToolingRuntime` lives on the context and is
 /// reused across messages.
 pub struct RootRouter {
     memory: Arc<dyn PrincipalMemory>,
@@ -218,6 +218,7 @@ impl RootRouter {
             ctx.principal_id.clone(),
             // PR #2 wiring: per-Principal plan DAG port.
             Arc::clone(&self.plan_port),
+            Arc::clone(&ctx.tooling),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
         // Phase 4b: bind caller identity so `send_peer` is

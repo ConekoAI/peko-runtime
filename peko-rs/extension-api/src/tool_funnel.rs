@@ -1,338 +1,201 @@
-//! `ToolFunnel` — the engine-facing surface of root's `ExtensionCore`.
+//! `ToolFunnel` — the engine-facing tool-execution seam (ADR-066 D2).
 //!
-//! Phase 9b.N.2: F37's `execute_tool_via_core_with_context` funnel
-//! lives in `peko_engine::funnel`. It depends on the canonical
-//! `ExtensionCore::execute_tool_via_hook` method, but `ExtensionCore`
-//! itself is still in root (`src/extensions/framework/core/registry.rs`)
-//! — its Phase 8 bulk move into `peko-extension-host` is deferred
-//! (per [[workspace-phase8-commit2-scope-down]]).
+//! Phase 9b.N.2 introduced this trait as the engine-facing surface of
+//! root's `ExtensionCore`. ADR-066 P3 splits the daemon-global
+//! `ExtensionCore` into named pieces — `ToolCatalog` (registration +
+//! wire catalog), `ToolDispatcher` (execution), and the prompt-section
+//! providers — and the funnel collapses to the three methods the
+//! engine actually drives:
 //!
-//! To unblock the funnel lift without a cycle or a big-bang move, the
-//! trait abstracts the engine-facing surface of `ExtensionCore`. It
-//! follows the existing `peko-extension-host` pattern of narrow,
-//! real-consumer view traits (`PathResolver`, `SessionInboxSink`,
-//! `InboxSinkProvider`, `VaultAccess`,
-//! `PrincipalMessageService`).
+//! - `execute` — run one tool call (identity + abort receiver carried
+//!   on [`ToolCallSpec`]).
+//! - `list_tool_definitions` — the wire catalog (`tools[]` array).
+//! - `render_prompt_sections` — the per-turn tail sections.
 //!
-//! **Transient scaffolding.** When the Phase 8 bulk move eventually
-//! lifts `ExtensionCore` into `peko-extension-host`, this trait can be
-//! removed (its methods become direct impls on the real type). Until
-//! then it lets the four Phase 9b.N residuals that read `ExtensionCore`
-//! (9b.N.2 funnel, 9b.N.3 tool_executor, 9b.N.4
-//! compaction_driver, 9b.N.5+ agentic_loop) consume the engine's
-//! host contract through one trait port.
+//! The dep-graph rule stands: `peko-engine` must not depend on root —
+//! the seam stays a trait in this contract crate.
 //!
-//! Phase 9b.N.3 widened the trait to cover the full surface the engine
-//! needs from `ExtensionCore`: `is_parallelizable(name)` (F33 gate
-//! probe), `pre_tool_use(...)` / `post_tool_use(...)` (F31x observe-only
-//! hook firing), and `execute_tool_via_hook(...)` (F37 funnel).
-//! Phase 9b.N.4 added three more methods for the compaction +
-//! session-state hooks the lifted `CompactionDriver` fires:
-//! `invoke_session_compaction_pre_hook`,
-//! `invoke_session_compaction_post_hook`, and
-//! `invoke_session_state_change_hook`. Hiding `HookPoint` /
-//! `HookInput` construction inside the impl keeps the trait free of
-//! root-only type dependencies — `HookPoint` (865 lines in
-//! `src/extensions/framework/core/hook_points.rs`) hasn't been
-//! lifted into `peko-extension-api` yet, so re-exporting it from the
-//! trait would defeat the move. Each hook method takes the raw
-//! fields the driver already has in scope (or a typed payload
-//! from `peko-extension-api::hook_io`).
+//! The non-execution surface the engine also needs (lifecycle hook
+//! firing, session-key bookkeeping, the F33/F35 probes) moved to
+//! [`EngineHooks`] below rather than growing the funnel.
 
 use crate::hook_io::{CompactionPreparationPayload, CompactionResultPayload, HookDecision};
 use crate::session::SessionSnapshot;
 use anyhow::Result;
 
-/// The engine-facing surface of root's `ExtensionCore`.
-///
-/// Implemented by root's `crate::extensions::framework::core::ExtensionCore`
-/// via `src/engine/extension_core_funnel_compat.rs`. The trait is
-/// object-safe because `async-trait` is used in production via
-/// `#[async_trait]` — see F37's `ExtensionCore::execute_tool_via_hook`
-/// signature for the canonical 11-arg + abort-signal shape.
-///
-/// # Why these methods
-///
-/// The 4 Phase 9b.N residuals each need access to `ExtensionCore`'s
-/// state. The trait exposes exactly the engine-facing surface
-/// `peko-engine` consumes today:
-/// - `is_parallelizable` — F33 gate probe at the start of `ToolExecutor::execute`.
-/// - `pre_tool_use` / `post_tool_use` — F31x observe-only hook firing
-///   around the dispatch (observe-only → return is ignored, but the
-///   impl still respects the 2s `HOOK_TIMEOUT` soft-fail).
-/// - `execute_tool_via_hook` — F37 canonical funnel for the actual
-///   tool dispatch.
-///
-/// Each additional method has a single real consumer today (the
-/// tool executor). The trait surface stays narrow until a second
-/// consumer appears — matching the F6/F7 lesson in
-/// [[prefer-concrete-over-speculative-abstraction]].
+/// One tool call, fully attributed (ADR-066 D2). Identity fields feed
+/// audit, reserved-param injection, and the D9 ownership boundary —
+/// never a capability gate (deleted in P2).
+#[derive(Debug)]
+pub struct ToolCallSpec {
+    /// The tool to execute (catalog name).
+    pub tool_name: String,
+    /// JSON parameters from the LLM.
+    pub params: serde_json::Value,
+    /// Working directory override (`None` = the tool's default).
+    pub workspace: Option<String>,
+    /// Agent identity (DID) — reserved-param injection.
+    pub agent_id: Option<String>,
+    /// Session id — reserved-param injection + session attribution.
+    pub session_id: Option<String>,
+    /// Resolved caller identity (pekohub sub, API key id, or `local`)
+    /// for per-user permission checks and audit logging (issue #17).
+    pub caller_id: Option<String>,
+    /// Owning principal id — per-principal tool state + quota
+    /// attribution.
+    pub principal_id: Option<String>,
+    /// Human-readable principal name (cron-scoped tools target jobs
+    /// by it).
+    pub principal_name: Option<String>,
+    /// Soft-interrupt abort receiver. When `Some`, the tool layer's
+    /// `is_aborted()` check is meaningful; `None` for non-cancellable
+    /// dispatches.
+    pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl ToolCallSpec {
+    /// A bare call: just the tool name + params, everything else unset.
+    #[must_use]
+    pub fn new(tool_name: impl Into<String>, params: serde_json::Value) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            params,
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: None,
+            principal_name: None,
+            abort_signal: None,
+        }
+    }
+}
+
+/// Input to [`ToolFunnel::render_prompt_sections`]: the per-turn
+/// rendering context the providers resolve against.
+#[derive(Debug, Clone)]
+pub struct PromptSectionRequest {
+    /// Owning principal id.
+    pub principal_id: String,
+    /// The principal's workspace path (providers scan
+    /// `<workspace>/{roles,skills,workflows}` and read
+    /// `<workspace>/principal.toml`).
+    pub workspace: String,
+    /// The running session's id (session-context providers key off it).
+    pub session_id: String,
+}
+
+/// The rendered per-turn tail sections: `(section_name, text)` pairs.
+/// Built-in section names: `identity`, `roles`, `skills`,
+/// `workflows`, `session_context`. Workspace-hook `PromptSection`
+/// binds arrive under their own names.
+#[derive(Debug, Clone, Default)]
+pub struct PromptSections {
+    /// `(section name, rendered text)` pairs; empty text means the
+    /// section is absent this turn.
+    pub sections: Vec<(String, String)>,
+}
+
+impl PromptSections {
+    /// Look up a rendered section by name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.sections
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| t.as_str())
+    }
+}
+
+/// The engine-facing tool-execution seam (ADR-066 D2). Implemented by
+/// root's `ToolDispatcher` composition; see
+/// `peko-rs/core/src/tools/runtime.rs`.
 #[async_trait::async_trait]
 pub trait ToolFunnel: Send + Sync + 'static {
-    /// F33 gate probe: is the named tool parallelizable?
-    ///
-    /// Returns `true` if the tool isn't registered — the dispatch will
-    /// fail anyway, and admitting without serializing is the right
-    /// "no-op" fallback (matches the pre-F37 behavior at
-    /// `tool_executor.rs:147`). See `ExtensionCore::is_parallelizable`
-    /// (root) for the canonical implementation.
-    async fn is_parallelizable(&self, tool_name: &str) -> bool;
+    /// Execute one tool call. Returns the `(display, json, success)`
+    /// triplet — unavailable tools and tool errors arrive as
+    /// `success: false` data, not a transport error.
+    async fn execute(&self, call: ToolCallSpec) -> Result<(String, serde_json::Value, bool)>;
 
-    /// F31x observe-only `PreToolUse` hook firing.
-    ///
-    /// Builds the `HookInput::ToolCall` + `HookPoint::PreToolUse`
-    /// payload internally and invokes the hook chain with the shared
-    /// `HOOK_TIMEOUT` budget. Handlers see the same `ToolCall` payload
-    /// the dispatcher will use, but the return value is intentionally
-    /// discarded — observe-only in v1 (the loop always continues to
-    /// `ToolExecute`). Soft-fails on timeout (mirrors
-    /// `loop_per_hook_timeout_fails_open`).
-    #[allow(clippy::too_many_arguments)]
-    async fn pre_tool_use(
+    /// The wire catalog for `principal_id` (`tools[]` JSON-schema
+    /// array shape). Presence = visibility (ADR-066 D1); the F34
+    /// `ToolExposure` filter still applies until P4.
+    async fn list_tool_definitions(
+        &self,
+        principal_id: &peko_subject::PrincipalId,
+    ) -> Vec<peko_provider_api::ToolDefinition>;
+
+    /// Render the per-turn prompt tail sections (identity, workspace
+    /// catalogs, session context, plus workspace-hook `PromptSection`
+    /// binds). ADR-052 D2/D6.
+    async fn render_prompt_sections(&self, request: &PromptSectionRequest) -> PromptSections;
+}
+
+/// The engine-facing lifecycle/bookkeeping seam (ADR-066 D2 split).
+///
+/// Everything the engine used to drive through the 12-method
+/// `ToolFunnel` that is *not* tool execution: observe-only hook firing
+/// (Stop / AfterAgent / session-compaction / session-state), per-agent
+/// session-key bookkeeping, and the F33/F35 catalog probes. Implemented
+/// by the same root-side runtime object as [`ToolFunnel`]. P4 replaces
+/// the hook firing with the minimal workspace-hook dispatcher.
+#[async_trait::async_trait]
+pub trait EngineHooks: Send + Sync + 'static {
+    /// F33 gate probe: is the named tool parallelizable for
+    /// `principal_id`? Returns `true` if the tool isn't registered —
+    /// the dispatch will fail anyway, and admitting without serializing
+    /// is the right "no-op" fallback.
+    async fn is_parallelizable(
         &self,
         tool_name: &str,
-        params: serde_json::Value,
-        workspace: Option<String>,
-        agent_id: Option<String>,
-        session_id: Option<String>,
-        caller_id: Option<String>,
-        principal_id: Option<String>,
-        principal_name: Option<String>,
-    );
+        principal_id: &peko_subject::PrincipalId,
+    ) -> bool;
 
-    /// F31x observe-only `PostToolUse` hook firing.
-    ///
-    /// Symmetric with `pre_tool_use` — handlers see the executed
-    /// result's *context* but their return value is ignored. The
-    /// hook fires regardless of dispatch outcome so handlers see
-    /// both successes and failures.
-    #[allow(clippy::too_many_arguments)]
-    async fn post_tool_use(
-        &self,
-        tool_name: &str,
-        params: serde_json::Value,
-        workspace: Option<String>,
-        agent_id: Option<String>,
-        session_id: Option<String>,
-        caller_id: Option<String>,
-        principal_id: Option<String>,
-        principal_name: Option<String>,
-    );
+    /// Fire `HookPoint::Stop` (observe-only; return value discarded).
+    async fn fire_stop_hook(&self, payload: serde_json::Value);
 
-    /// Canonical funnel method — routes through `invoke_hook` so every
-    /// tool call flows through the PreToolUse / ToolExecute / PostToolUse
-    /// hook chain + reserved-params injection + abort
-    /// handling. See `ExtensionCore::execute_tool_via_hook` (root) for
-    /// the canonical implementation; the trait method has the same
-    /// shape plus the abort signal.
-    ///
-    /// F37/F38 notes: the cancel-bridging lives in `peko_engine::funnel`
-    /// (not in the trait); only `src/engine/tool_executor.rs` currently
-    /// passes a cancel today.
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_tool_via_hook(
-        &self,
-        tool_name: &str,
-        params: serde_json::Value,
-        workspace: Option<String>,
-        agent_id: Option<String>,
-        session_id: Option<String>,
-        caller_id: Option<String>,
-        principal_id: Option<String>,
-        principal_name: Option<String>,
-        abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
-    ) -> Result<(String, serde_json::Value, bool)>;
-
-    // ═══════════════════════════════════════════════════════════════════
-    // Phase 9b.N.4 — compaction / session-state hook firing
-    // ═══════════════════════════════════════════════════════════════════
+    /// Fire `HookPoint::AfterAgent` (observe-only; return value
+    /// discarded).
+    async fn fire_after_agent_hook(&self, payload: serde_json::Value);
 
     /// Fire `HookPoint::SessionCompaction` with
     /// `HookInput::CompactionPreparation`. The lifted
-    /// `CompactionDriver` calls this at the start of each
-    /// compaction iteration to let extensions replace or cancel the
-    /// built-in compaction (see `HookPoint::SessionCompaction`).
-    ///
-    /// `payload` carries the typed data the hook needs (F21 hybrid
-    /// estimate, split-turn info, file-ops, settings). The impl
-    /// serializes the typed fields into `serde_json::Value` blobs
-    /// matching the API crate's `HookInput::CompactionPreparation`
-    /// variant shape (Phase 7 lifts `HookInput` into
-    /// `peko-extension-api` but the compaction variant uses
-    /// `serde_json::Value` so the API crate stays free of
-    /// root-only deps).
-    ///
-    /// Returns a [`HookDecision`]: `ReplaceMessages` swaps the
-    /// orchestrator's `messages` vec in place, `Handled` skips the
-    /// built-in compaction this iteration, `PassThrough` falls
-    /// through to the default behavior.
-    async fn invoke_session_compaction_pre_hook(
+    /// `CompactionDriver` calls this at the start of each compaction
+    /// iteration. Returns a [`HookDecision`]: `ReplaceMessages` swaps
+    /// the orchestrator's `messages` vec in place, `Handled` skips the
+    /// built-in compaction this iteration, `PassThrough` falls through
+    /// to the default behavior.
+    async fn session_compaction_pre_hook(
         &self,
         payload: CompactionPreparationPayload,
     ) -> HookDecision;
 
     /// Fire `HookPoint::SessionCompactionPost` with
-    /// `HookInput::CompactionResult`. The lifted
-    /// `CompactionDriver` calls this after a successful
-    /// background compaction completes, so extensions can augment,
-    /// validate, or log the compacted result (see
-    /// `HookPoint::SessionCompactionPost`).
-    ///
-    /// `payload` carries the summary + bookkeeping + the post-
-    /// compaction message list. Returns a [`HookDecision`] —
-    /// `ReplaceMessages` is the documented valid return (extensions
-    /// may modify the final message list).
-    async fn invoke_session_compaction_post_hook(
-        &self,
-        payload: CompactionResultPayload,
-    ) -> HookDecision;
+    /// `HookInput::CompactionResult` after a successful background
+    /// compaction. `ReplaceMessages` is the documented valid return.
+    async fn session_compaction_post_hook(&self, payload: CompactionResultPayload) -> HookDecision;
 
     /// Fire `HookPoint::SessionStateChange` with
-    /// `HookInput::SessionState(SessionSnapshot)`. The lifted
-    /// `CompactionDriver` calls this as a fallback when no
-    /// `CompactionResult` is available (the loop's "session state
-    /// changed" hook firing — see
-    /// `src/engine/compaction_driver.rs:387`).
-    ///
-    /// Returns a [`HookDecision`]. Compaction / session-state hooks
-    /// only honor `ReplaceMessages` and `Handled` returns — anything
-    /// else collapses to `PassThrough` via
-    /// [`HookDecision::from_hook_result`].
-    async fn invoke_session_state_change_hook(&self, snapshot: SessionSnapshot) -> HookDecision;
-
-    // ═══════════════════════════════════════════════════════════════════
-    // Phase 9b.N.5a — Stop / AfterAgent hook firing
-    // ═══════════════════════════════════════════════════════════════════
-
-    /// Fire `HookPoint::Stop` with `HookInput::Json(merged)`.
-    ///
-    /// `merged` is the merged JSON the loop wants to ship as the
-    /// "stop" event payload (typically the agent's final summary +
-    /// metadata). The loop's pre-lift code constructs
-    /// `HookInput::Json(merged.clone())` + `HookPoint::Stop` directly
-    /// at `agentic_loop.rs:669-670` — that direct construction keeps
-    /// the trait tied to root-only types.
-    ///
-    /// Phase 9b.N.5a moved the construction into the trait impl (in
-    /// `src/engine/extension_core_funnel_compat.rs` per the
-    /// 9b.N.2/9b.N.3/9b.N.4 pattern) so the lifted
-    /// `src/engine/agentic_loop.rs` (Phase 9b.N.5b) never sees
-    /// `HookPoint` / `HookInput`.
-    ///
-    /// Observe-only in v1 (return value discarded — the loop always
-    /// continues past the `Stop` point).
-    async fn invoke_stop_hook(&self, merged: serde_json::Value);
-
-    /// Fire `HookPoint::AfterAgent` with `HookInput::Json(merged)`.
-    ///
-    /// Symmetric with [`Self::invoke_stop_hook`] — runs once per agent
-    /// invocation after the loop exits. See
-    /// `agentic_loop.rs:683-684` for the pre-lift call site. Observe-
-    /// only in v1.
-    async fn invoke_after_agent_hook(&self, merged: serde_json::Value);
-
-    // ═══════════════════════════════════════════════════════════════════
-    // Phase 9b.N.5b.3 — agentic_loop site methods
-    // ═══════════════════════════════════════════════════════════════════
+    /// `HookInput::SessionState(SessionSnapshot)`.
+    async fn session_state_change_hook(&self, snapshot: SessionSnapshot) -> HookDecision;
 
     /// Set the per-agent session key (issue #68 — concurrent agents
-    /// use distinct session keys on the shared `ExtensionCore`).
-    ///
-    /// The lifted `AgenticLoop::run_inner` calls this once at start
-    /// with `(self.agent.identity_did(), Some(session_id))`. Passing
-    /// `None` clears the entry.
+    /// use distinct session keys on the shared runtime). The lifted
+    /// `AgenticLoop::run_inner` calls this once at start with
+    /// `(self.agent.identity_did(), Some(session_id))`. Passing `None`
+    /// clears the entry.
     async fn set_session_key(&self, agent_id: &str, key: Option<String>);
 
-    /// List the tool definitions visible to `principal_id` for the
-    /// wire catalog, used by the lifted
-    /// `AgenticLoop::build_tool_definitions` (F34). ADR-066 P2 removed
-    /// the capability/active-extension filter — presence in the
-    /// registry is visibility.
-    async fn list_tool_definitions_for(
-        &self,
-        principal_id: &peko_subject::PrincipalId,
-    ) -> Vec<peko_provider_api::ToolDefinition>;
-
-    /// Quick `Deferred`-exposure probe: does the principal see any
-    /// tool with `ToolExposure::Deferred`?
-    ///
-    /// The lifted `AgenticLoop::build_tool_definitions` uses this to
-    /// gate the synthetic F35 `__tool_search` stub (deferred to F35.x).
-    /// Exposed as a `bool` probe instead of returning the full
-    /// `Vec<ToolMetadata>` so the trait stays free of
-    /// `ToolMetadata`-related root-only deps.
-    async fn has_deferred_tools_for(&self, principal_id: &peko_subject::PrincipalId) -> bool;
-
-    // ═══════════════════════════════════════════════════════════════════
-    // Phase 9b.N.5b.4 — PromptRenderer hook firing
-    // ═══════════════════════════════════════════════════════════════════
-
-    /// Fire `HookPoint::PromptSystemSection { section, priority }` with
-    /// `HookInput::Unit` and the principal/extension context the
-    /// renderer needs. Returns the first non-empty text output, or
-    /// `None` if no handler produced text (timeout / no handler /
-    /// handler returned empty).
-    ///
-    /// The lifted `PromptRenderer::dispatch_text` (Phase 9b.N.5b.4,
-    /// `peko_engine::prompt::renderer`) calls this for each of the
-    /// three hook-driven sections (`skills`, `agents`,
-    /// `mcp_context`). The `tools` section is intentionally NOT
-    /// dispatched in F36 — tool catalogs travel wire-only via the
-    /// `tools[]` JSON-schema array (see
-    /// `list_tool_definitions_for`). The impl hides
-    /// `HookPoint::PromptSystemSection` construction + `HookInput::Unit`
-    /// so the trait stays free of root-only `HookPoint` / `HookInput`
-    /// types.
-    ///
-    /// `priority` is the section priority the renderer wants (today
-    /// always 100 — the system-prompt section hooks ignore priority
-    /// and only one handler per section is registered, but keeping
-    /// it explicit lets future order-sensitive hooks honor priority).
-    #[allow(clippy::too_many_arguments)]
-    async fn invoke_prompt_section_hook(
-        &self,
-        section: &str,
-        priority: i32,
-        principal_id: Option<&str>,
-        workspace: Option<String>,
-    ) -> Option<String>;
-
-    /// ADR-052 D6: enumerate the prompt-section names with at least one
-    /// registered handler visible to `principal_id`. The lifted
-    /// `PromptRenderer::render_runtime_context`
-    /// (`peko_engine::prompt::renderer`) calls this after its built-in
-    /// `identity` / `agents` / `skills` dispatches so workspace hooks
-    /// (`<workspace>/hooks/<id>/hook.toml` with a `PromptSection` bind)
-    /// can contribute additional named tail sections. Names that
-    /// duplicate a built-in dispatch are deduped by the renderer.
-    ///
-    /// The impl hides the hook-registry scan so the trait stays free of
-    /// root-only `HookPoint` / `RegisteredHook` types.
-    ///
-    /// Default: no extra sections — test doubles and impls without a
-    /// hook registry keep compiling.
-    async fn registered_prompt_sections(&self, principal_id: Option<&str>) -> Vec<String> {
-        let _ = principal_id;
-        Vec::new()
-    }
-
-    /// Fire `HookPoint::SessionContextBuild` with
-    /// `HookInput::SessionState(snapshot)`. The lifted
-    /// `PromptRenderer::dispatch_session_context`
-    /// (`peko_engine::prompt::renderer`) calls this once per turn to
-    /// resolve the `{{session_context}}` placeholder. Returns the
-    /// first non-empty text output, or `None` on timeout / no handler
-    /// / empty result.
-    ///
-    /// `snapshot` is the principal's session snapshot the renderer
-    /// builds per-iteration (today: empty `session_id` /
-    /// `message_count=0` / `context_tokens=0` / empty metadata —
-    /// the loop owns the real session id).
-    #[allow(clippy::too_many_arguments)]
-    async fn invoke_session_context_build_hook(
-        &self,
-        snapshot: SessionSnapshot,
-        principal_id: Option<&str>,
-        workspace: Option<String>,
-    ) -> Option<String>;
+    /// Quick `Deferred`-exposure probe: does the principal see any tool
+    /// with `ToolExposure::Deferred`? Gates the synthetic F35
+    /// `__tool_search` stub in `AgenticLoop::build_tool_definitions`.
+    async fn has_deferred_tools(&self, principal_id: &peko_subject::PrincipalId) -> bool;
 }
+
+/// The engine's single tooling handle: [`ToolFunnel`] (execution +
+/// catalog + prompt sections) plus [`EngineHooks`] (lifecycle firing +
+/// bookkeeping). Blanket-implemented by any type implementing both —
+/// root's `ToolingRuntime` is the production one.
+pub trait ToolingSeam: ToolFunnel + EngineHooks {}
+
+impl<T: ToolFunnel + EngineHooks> ToolingSeam for T {}

@@ -10,7 +10,7 @@
 //! loop, not the tools; built-ins are an implementation detail").
 //!
 //! The actual `ToolSearchTool` impl stays in root
-//! (`src/tools/builtin/tool_search.rs`) — it needs `Arc<ExtensionCore>`
+//! (`src/tools/builtin/tool_search.rs`) — it needs `Arc<ToolingRuntime>`
 //! for the catalog walk inside `execute`, which hasn't lifted to the
 //! workspace. When the `ToolFunnel` trait gains a
 //! `list_deferred_tool_definitions` method (or a similar

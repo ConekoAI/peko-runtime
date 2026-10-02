@@ -69,8 +69,6 @@ use tokio::io::AsyncReadExt;
 use peko_session::key::{parse_session_key, sanitize_key_component};
 use peko_tools_core::{Tool, ToolContext, ToolError};
 
-use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{HookOutput, HookResult, ToolRuntimeContext};
 use crate::ipc::run_tokens::RunTokenRegistry;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::Principal;
@@ -598,7 +596,7 @@ type DirFingerprint = Vec<(String, SystemTime, u64)>;
 /// renders one line per workflow: `- {name}: {first docstring line}
 /// (workflows/{name}.py)`. Presence = visibility (ADR-050); no
 /// capability filter. A missing dir / no workspace yields
-/// [`HookResult::PassThrough`] so the section is stripped.
+/// `None` so the section is stripped.
 #[derive(Debug, Default)]
 pub struct WorkspaceWorkflowsPromptHandler {
     cache: Mutex<Option<(DirFingerprint, String)>>,
@@ -660,35 +658,24 @@ fn workflows_dir_fingerprint(workflows_dir: &Path) -> Option<DirFingerprint> {
 }
 
 #[async_trait]
-impl HookHandler for WorkspaceWorkflowsPromptHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        let workspace = ctx
-            .get_state::<ToolRuntimeContext>("tool_context")
-            .and_then(|rtc| rtc.workspace.clone());
-
-        let Some(workspace) = workspace.filter(|w| !w.is_empty()) else {
-            return HookResult::PassThrough;
-        };
-
-        match self.render_catalog(&workspace) {
-            Some(text) => HookResult::Continue(HookOutput::Text(text)),
-            None => HookResult::PassThrough,
-        }
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::PromptSystemSection {
-            section: "workflows".to_string(),
-            priority: WORKFLOW_CATALOG_HOOK_PRIORITY,
-        }
+impl crate::tools::prompt_sections::PromptSectionProvider for WorkspaceWorkflowsPromptHandler {
+    fn section(&self) -> &'static str {
+        "workflows"
     }
 
     fn priority(&self) -> i32 {
         WORKFLOW_CATALOG_HOOK_PRIORITY
     }
 
-    fn name(&self) -> String {
-        "WorkspaceWorkflowsPromptHandler".to_string()
+    async fn render(
+        &self,
+        input: &crate::tools::prompt_sections::PromptSectionInput,
+    ) -> Option<String> {
+        let workspace = input.workspace.to_string_lossy().to_string();
+        if workspace.is_empty() {
+            return None;
+        }
+        self.render_catalog(&workspace)
     }
 }
 
@@ -804,7 +791,8 @@ fn first_docstring_line(content: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::common::paths::PathResolver;
-    use crate::extensions::framework::core::ExtensionServices;
+    use crate::tools::prompt_sections::PromptSectionProvider;
+
     use crate::principal::config::{
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
@@ -1361,30 +1349,14 @@ print("argv:" + ",".join(sys.argv[1:]))
 
     // ── Prompt catalog ───────────────────────────────────────────────
 
-    fn workflows_hook_ctx(workspace: Option<&str>) -> HookContext {
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "workflows".to_string(),
-                priority: WORKFLOW_CATALOG_HOOK_PRIORITY,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        if let Some(ws) = workspace {
-            ctx.set_state(
-                "tool_context",
-                ToolRuntimeContext::new()
-                    .with_workspace(ws)
-                    .with_principal_id("test-principal"),
-            );
-        }
-        ctx
-    }
-
-    fn handle_text(result: HookResult) -> Option<String> {
-        match result {
-            HookResult::Continue(HookOutput::Text(text)) => Some(text),
-            _ => None,
+    fn workflows_input(
+        workspace: &std::path::Path,
+    ) -> crate::tools::prompt_sections::PromptSectionInput {
+        crate::tools::prompt_sections::PromptSectionInput {
+            principal_id: "test-principal".to_string(),
+            workspace: workspace.to_path_buf(),
+            session_id: String::new(),
+            channel_port: None,
         }
     }
 
@@ -1410,12 +1382,10 @@ print("argv:" + ",".join(sys.argv[1:]))
         std::fs::write(dir.join("notes.txt"), "not a workflow").unwrap();
 
         let handler = WorkspaceWorkflowsPromptHandler::new();
-        let text = handle_text(
-            handler
-                .handle(workflows_hook_ctx(Some(&temp.path().to_string_lossy())))
-                .await,
-        )
-        .expect("expected catalog text");
+        let text = handler
+            .render(&workflows_input(temp.path()))
+            .await
+            .expect("expected catalog text");
 
         assert!(
             text.contains("- triage: Triage inbound signals. (workflows/triage.py)"),
@@ -1442,18 +1412,17 @@ print("argv:" + ",".join(sys.argv[1:]))
     #[tokio::test]
     async fn workflows_catalog_passes_through_without_workspace() {
         let handler = WorkspaceWorkflowsPromptHandler::new();
-        let result = handler.handle(workflows_hook_ctx(None)).await;
-        assert!(matches!(result, HookResult::PassThrough));
+        let temp = TempDir::new().unwrap();
+        let result = handler.render(&workflows_input(temp.path())).await;
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn workflows_catalog_passes_through_on_missing_dir() {
         let temp = TempDir::new().unwrap();
         let handler = WorkspaceWorkflowsPromptHandler::new();
-        let result = handler
-            .handle(workflows_hook_ctx(Some(&temp.path().to_string_lossy())))
-            .await;
-        assert!(matches!(result, HookResult::PassThrough));
+        let result = handler.render(&workflows_input(temp.path())).await;
+        assert!(result.is_none());
     }
 
     #[tokio::test]
@@ -1464,10 +1433,11 @@ print("argv:" + ",".join(sys.argv[1:]))
         std::fs::write(dir.join("a.py"), "\"\"\"First.\"\"\"\n").unwrap();
 
         let handler = WorkspaceWorkflowsPromptHandler::new();
-        let ws = temp.path().to_string_lossy().to_string();
 
-        let first =
-            handle_text(handler.handle(workflows_hook_ctx(Some(&ws))).await).expect("catalog");
+        let first = handler
+            .render(&workflows_input(temp.path()))
+            .await
+            .expect("catalog");
         assert!(
             first.contains("- a: First. (workflows/a.py)"),
             "got: {first}"
@@ -1475,8 +1445,10 @@ print("argv:" + ",".join(sys.argv[1:]))
         assert!(!first.contains("b.py"), "got: {first}");
 
         std::fs::write(dir.join("b.py"), "\"\"\"Second.\"\"\"\n").unwrap();
-        let second =
-            handle_text(handler.handle(workflows_hook_ctx(Some(&ws))).await).expect("catalog");
+        let second = handler
+            .render(&workflows_input(temp.path()))
+            .await
+            .expect("catalog");
         assert!(
             second.contains("b.py"),
             "rescan must see the new file: {second}"

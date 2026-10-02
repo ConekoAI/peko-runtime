@@ -484,6 +484,21 @@ impl HookRegistry {
                 tool_ctx
             };
             ctx.set_state("tool_context", tool_ctx);
+        } else if let HookInput::Json(ref payload) = input {
+            let mut tool_ctx = crate::extensions::framework::types::ToolRuntimeContext::new();
+            if let Some(principal_id) = payload["principal_id"].as_str() {
+                tool_ctx = tool_ctx.with_principal_id(principal_id);
+            }
+            if let Some(workspace) = payload["workspace"].as_str() {
+                tool_ctx = tool_ctx.with_workspace(workspace);
+            }
+            if let Some(agent_id) = payload["agent_did"].as_str() {
+                tool_ctx = tool_ctx.with_agent_id(agent_id);
+            }
+            if let Some(session_id) = payload["session_id"].as_str() {
+                tool_ctx = tool_ctx.with_session_id(session_id);
+            }
+            ctx.set_state("tool_context", tool_ctx);
         }
 
         self.invoke_hook_with_context(ctx).await
@@ -497,6 +512,9 @@ impl HookRegistry {
     /// other state is reset for each handler to match the behaviour of
     /// [`Self::invoke_hook`].
     pub async fn invoke_hook_with_context(&self, ctx: HookContext) -> HookResult {
+        if !self.is_globally_enabled().await {
+            return HookResult::PassThrough;
+        }
         let point = ctx.point.clone();
         let input = ctx.input.clone();
         let tool_ctx = ctx
@@ -518,6 +536,12 @@ impl HookRegistry {
         let mut outputs = Vec::new();
 
         for handler in handlers {
+            if let Some(rest) = handler.extension_id.0.strip_prefix("principal:") {
+                let owner = rest.split('/').next().unwrap_or(rest);
+                if tool_ctx.as_ref().and_then(|tc| tc.principal_id.as_deref()) != Some(owner) {
+                    continue;
+                }
+            }
             let hook_id = handler.id;
             let start = std::time::Instant::now();
 

@@ -9,11 +9,11 @@
 //!
 //! Phase 9b.N.3 lift: previously this module lived at
 //! `src/engine/tool_executor.rs` and depended on root-only types
-//! (`ExtensionCore`, `Arc<RwLock<Session>>`). The lift introduces two
+//! (`ToolingRuntime`, `Arc<RwLock<Session>>`). The lift introduces two
 //! trait ports so the executor no longer needs those root-only types:
 //!
 //! - [`ToolFunnel`] (peko-extension-host) — abstracts the engine-facing
-//!   surface of `ExtensionCore` (gate probe, PreToolUse/PostToolUse
+//!   surface of `ToolingRuntime` (gate probe, PreToolUse/PostToolUse
 //!   hook firing, F37 funnel).
 //! - [`SessionView`] (this crate) — abstracts the single write path
 //!   the executor needs (`add_tool_result`) against the session.
@@ -25,7 +25,7 @@ use crate::events::AgenticEvent;
 use crate::parallel_gate::ParallelGate;
 use crate::SessionView;
 use anyhow::Result;
-use peko_extension_api::ToolFunnel;
+use peko_extension_api::ToolingSeam;
 use peko_message::ContentBlock;
 use peko_message::LlmMessage;
 use tracing::{info, warn};
@@ -145,8 +145,8 @@ impl ToolExecutor {
     /// * `tool_call` - The `ContentBlock::ToolCall` to execute
     /// * `tool_funnel` - The host funnel for tool dispatch (F37 +
     ///   F31x hook firing + F33 gate probe). Implemented on root's
-    ///   `ExtensionCore` via `src/engine/extension_core_funnel_compat.rs`.
-    /// * `agent_name` - The agent's name (for workspace resolution)
+    ///   `ToolingRuntime` via `src/engine/extension_core_funnel_compat.rs`.
+    /// * `agent_id` - The executing agent DID (context and audit attribution)
     /// * `agent_workspace` - The agent's configured workspace
     /// * `session` - Session sink for recording tool results
     ///   (via [`SessionView`]).
@@ -176,8 +176,8 @@ impl ToolExecutor {
     pub async fn execute(
         &self,
         tool_call: &ContentBlock,
-        tool_funnel: &dyn ToolFunnel,
-        agent_name: &str,
+        tool_funnel: &dyn ToolingSeam,
+        agent_id: &str,
         agent_workspace: Option<&std::path::PathBuf>,
         session: &dyn SessionView,
         session_id: &str,
@@ -236,37 +236,22 @@ impl ToolExecutor {
         // PreToolUse, ToolExecute, PostToolUse, session record — so the
         // tool's atomicity window matches its `parallelizable()` claim.
         //
-        // F37 / Phase 9b.N.3: route through `ToolFunnel::is_parallelizable`
-        // instead of reaching into the side-table. The trait method
-        // delegates to `ExtensionCore::is_parallelizable` in root; the
-        // side-table handle stays `pub(crate)`. Returns `true` if the
-        // tool isn't registered — the dispatch will fail anyway, and
-        // admitting without serializing is the right "no-op" fallback.
-        let parallel = tool_funnel.is_parallelizable(name).await;
+        // The probe routes through the seam (the root catalog answers
+        // from the registered `Tool::parallelizable`). Returns `true`
+        // if the tool isn't registered — the dispatch will fail anyway,
+        // and admitting without serializing is the right "no-op"
+        // fallback.
+        let parallel = tool_funnel
+            .is_parallelizable(name, &peko_subject::PrincipalId(principal_id.to_string()))
+            .await;
         let _gate_guard = self.parallel_gate.admit(parallel).await;
 
         let workspace = agent_workspace.map(|p| p.to_string_lossy().to_string());
-        let agent_id = agent_name.to_string();
+        let agent_id = agent_id.to_string();
         let session_id_owned = session_id.to_string();
 
-        // F31x: PreToolUse observe-only hook. The trait method hides
-        // `HookPoint` / `HookInput` construction + the 2s `HOOK_TIMEOUT`
-        // soft-fail inside the impl on `ExtensionCore` (see
-        // `src/engine/extension_core_funnel_compat.rs`). Handlers see
-        // the same ToolCall payload the dispatcher will use, but their
-        // return value is intentionally discarded (observe-only in v1).
-        tool_funnel
-            .pre_tool_use(
-                name,
-                arguments.clone(),
-                workspace.clone(),
-                Some(agent_id.clone()),
-                Some(session_id_owned.clone()),
-                caller_id.map(str::to_string),
-                Some(principal_id.to_string()),
-                Some(principal_name.to_string()),
-            )
-            .await;
+        // F31x: the observe-only PreToolUse hook fires inside the
+        // dispatcher (ADR-066 P3), not here.
 
         let (tool_result_str, tool_result_json, success) =
             match crate::funnel::execute_tool_via_core_with_context(
@@ -285,12 +270,12 @@ impl ToolExecutor {
             {
                 Ok((s, v, ok)) => {
                     if ok {
-                        info!("Tool '{}' executed successfully via ExtensionCore", name);
+                        info!("Tool '{}' executed successfully via ToolingRuntime", name);
                     }
                     (s, v, ok)
                 }
                 Err(e) => {
-                    warn!("Tool '{}' failed via ExtensionCore: {}", name, e);
+                    warn!("Tool '{}' failed via ToolingRuntime: {}", name, e);
                     let s = format!("Error: {e}");
                     (s.clone(), serde_json::Value::String(s), false)
                 }
@@ -298,21 +283,7 @@ impl ToolExecutor {
 
         // P2: record the outcome for the identical-failure breaker.
         self.breaker.record(name, arguments, success);
-        // F31x: PostToolUse observe-only hook. Symmetric with PreToolUse
-        // — handlers see the executed result's context but their return
-        // value is ignored.
-        tool_funnel
-            .post_tool_use(
-                name,
-                arguments.clone(),
-                workspace.clone(),
-                Some(agent_id.clone()),
-                Some(session_id_owned.clone()),
-                caller_id.map(str::to_string),
-                Some(principal_id.to_string()),
-                Some(principal_name.to_string()),
-            )
-            .await;
+        // F31x: PostToolUse fires inside the dispatcher (ADR-066 P3).
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 

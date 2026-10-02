@@ -10,7 +10,7 @@
 //! into `peko-engine`. The lift relied on three trait ports so the
 //! driver can talk to root-only types without a direct dependency:
 //!
-//! - **`ToolFunnel`** (`peko-extension-host`) — abstracted `ExtensionCore`
+//! - **`ToolFunnel`** (`peko-extension-host`) — abstracted `ToolingRuntime`
 //!   for hook firing. Three new methods added in 9b.N.4 cover the
 //!   compaction / session-state hooks (`invoke_session_compaction_pre_hook`,
 //!   `invoke_session_compaction_post_hook`, `invoke_session_state_change_hook`).
@@ -33,7 +33,7 @@ use crate::SessionView;
 use anyhow::Result;
 use peko_extension_api::hook_io::{CompactionPreparationPayload, CompactionResultPayload};
 use peko_extension_api::session::SessionSnapshot;
-use peko_extension_api::ToolFunnel;
+use peko_extension_api::EngineHooks;
 use peko_message::LlmMessage;
 use peko_session::compaction::{
     CompactionConfig, CompactionPhase, CompactionRequest, CompactionResponse, CompactionResult,
@@ -148,7 +148,7 @@ impl CompactionDriver {
         &mut self,
         messages: &mut Vec<LlmMessage>,
         session: &S,
-        funnel: &dyn ToolFunnel,
+        hooks: &dyn EngineHooks,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
         run_id: &str,
     ) -> Result<bool>
@@ -227,7 +227,7 @@ impl CompactionDriver {
                 });
             }
 
-            self.invoke_pre_hook(messages, session, funnel, effective_tokens, phase)
+            self.invoke_pre_hook(messages, session, hooks, effective_tokens, phase)
                 .await;
         }
 
@@ -236,7 +236,7 @@ impl CompactionDriver {
 
         // Post-compaction hook and cleanup
         if self.compaction_performed {
-            self.invoke_post_hook(messages, session, funnel, run_id)
+            self.invoke_post_hook(messages, session, hooks, run_id)
                 .await;
             self.compaction_performed = false;
             self.last_compaction_result = None;
@@ -279,7 +279,7 @@ impl CompactionDriver {
         &mut self,
         messages: &mut Vec<LlmMessage>,
         session: &S,
-        funnel: &dyn ToolFunnel,
+        hooks: &dyn EngineHooks,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
         run_id: &str,
         snapshot: peko_session::EnvironmentSnapshot,
@@ -329,7 +329,7 @@ impl CompactionDriver {
         self.invoke_pre_hook(
             messages,
             session,
-            funnel,
+            hooks,
             effective_tokens,
             CompactionPhase::MidTurn,
         )
@@ -397,7 +397,7 @@ impl CompactionDriver {
         self.compaction_performed = false;
         // Post-hook fires the same as pre-turn — let handlers see
         // the result and mutate `messages` further if they want.
-        self.invoke_post_hook(messages, session, funnel, run_id)
+        self.invoke_post_hook(messages, session, hooks, run_id)
             .await;
 
         Ok(true)
@@ -474,7 +474,7 @@ impl CompactionDriver {
         &mut self,
         messages: &mut Vec<LlmMessage>,
         _session: &S,
-        funnel: &dyn ToolFunnel,
+        hooks: &dyn EngineHooks,
         estimated_tokens: usize,
         phase: CompactionPhase,
     ) where
@@ -539,7 +539,7 @@ impl CompactionDriver {
             settings: serde_json::to_value(&self.config).unwrap_or(serde_json::Value::Null),
         };
 
-        let decision = funnel.invoke_session_compaction_pre_hook(payload).await;
+        let decision = hooks.session_compaction_pre_hook(payload).await;
 
         match decision {
             peko_extension_api::hook_io::HookDecision::ReplaceMessages(custom_messages) => {
@@ -665,7 +665,7 @@ impl CompactionDriver {
         &mut self,
         messages: &mut Vec<LlmMessage>,
         session: &S,
-        funnel: &dyn ToolFunnel,
+        hooks: &dyn EngineHooks,
         _run_id: &str,
     ) where
         S: SessionView + ?Sized,
@@ -695,7 +695,7 @@ impl CompactionDriver {
                 messages_after: messages.clone(),
             };
 
-            let decision = funnel.invoke_session_compaction_post_hook(payload).await;
+            let decision = hooks.session_compaction_post_hook(payload).await;
 
             if let peko_extension_api::hook_io::HookDecision::ReplaceMessages(modified) = decision {
                 info!(
@@ -717,7 +717,7 @@ impl CompactionDriver {
                 metadata: HashMap::new(),
             };
 
-            let _ = funnel.invoke_session_state_change_hook(snapshot).await;
+            let _ = hooks.session_state_change_hook(snapshot).await;
         }
 
         // Update context cache after compaction
@@ -1079,99 +1079,41 @@ mod tests {
         }
     }
 
-    /// No-op `ToolFunnel` (same shape as the renderer's test stub —
-    /// every hook passes through / returns empty).
+    /// No-op `EngineHooks` — every hook passes through / returns empty.
     struct EmptyFunnel;
 
     #[async_trait]
-    impl ToolFunnel for EmptyFunnel {
-        async fn is_parallelizable(&self, _tool_name: &str) -> bool {
+    impl EngineHooks for EmptyFunnel {
+        async fn is_parallelizable(
+            &self,
+            _tool_name: &str,
+            _principal_id: &peko_subject::PrincipalId,
+        ) -> bool {
             true
         }
-        async fn pre_tool_use(
-            &self,
-            _tool_name: &str,
-            _params: serde_json::Value,
-            _workspace: Option<String>,
-            _agent_id: Option<String>,
-            _session_id: Option<String>,
-            _caller_id: Option<String>,
-            _principal_id: Option<String>,
-            _principal_name: Option<String>,
-        ) {
-        }
-        async fn post_tool_use(
-            &self,
-            _tool_name: &str,
-            _params: serde_json::Value,
-            _workspace: Option<String>,
-            _agent_id: Option<String>,
-            _session_id: Option<String>,
-            _caller_id: Option<String>,
-            _principal_id: Option<String>,
-            _principal_name: Option<String>,
-        ) {
-        }
-        async fn execute_tool_via_hook(
-            &self,
-            _tool_name: &str,
-            _params: serde_json::Value,
-            _workspace: Option<String>,
-            _agent_id: Option<String>,
-            _session_id: Option<String>,
-            _caller_id: Option<String>,
-            _principal_id: Option<String>,
-            _principal_name: Option<String>,
-            _abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
-        ) -> Result<(String, serde_json::Value, bool)> {
-            anyhow::bail!("EmptyFunnel::execute_tool_via_hook not implemented")
-        }
-        async fn invoke_session_compaction_pre_hook(
+        async fn fire_stop_hook(&self, _payload: serde_json::Value) {}
+        async fn fire_after_agent_hook(&self, _payload: serde_json::Value) {}
+        async fn session_compaction_pre_hook(
             &self,
             _payload: CompactionPreparationPayload,
         ) -> peko_extension_api::hook_io::HookDecision {
             peko_extension_api::hook_io::HookDecision::PassThrough
         }
-        async fn invoke_session_compaction_post_hook(
+        async fn session_compaction_post_hook(
             &self,
             _payload: CompactionResultPayload,
         ) -> peko_extension_api::hook_io::HookDecision {
             peko_extension_api::hook_io::HookDecision::PassThrough
         }
-        async fn invoke_session_state_change_hook(
+        async fn session_state_change_hook(
             &self,
             _snapshot: SessionSnapshot,
         ) -> peko_extension_api::hook_io::HookDecision {
             peko_extension_api::hook_io::HookDecision::PassThrough
         }
-        async fn invoke_stop_hook(&self, _merged: serde_json::Value) {}
-        async fn invoke_after_agent_hook(&self, _merged: serde_json::Value) {}
         async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
-        async fn list_tool_definitions_for(
-            &self,
-            _principal_id: &peko_subject::PrincipalId,
-        ) -> Vec<peko_provider_api::ToolDefinition> {
-            Vec::new()
-        }
-        async fn has_deferred_tools_for(&self, _principal_id: &peko_subject::PrincipalId) -> bool {
+        async fn has_deferred_tools(&self, _principal_id: &peko_subject::PrincipalId) -> bool {
             false
-        }
-        async fn invoke_prompt_section_hook(
-            &self,
-            _section: &str,
-            _priority: i32,
-            _principal_id: Option<&str>,
-            _workspace: Option<String>,
-        ) -> Option<String> {
-            None
-        }
-        async fn invoke_session_context_build_hook(
-            &self,
-            _snapshot: SessionSnapshot,
-            _principal_id: Option<&str>,
-            _workspace: Option<String>,
-        ) -> Option<String> {
-            None
         }
     }
 

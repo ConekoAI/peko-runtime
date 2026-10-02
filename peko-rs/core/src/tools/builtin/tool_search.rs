@@ -21,7 +21,7 @@
 //!   (config-level, not per-turn). Add a per-turn override only when a
 //!   use case materializes.
 //! * Peko's stub is registered per-agent (in `Agent::init_builtins_async`)
-//!   with `Weak<ExtensionCore>` so the loop survives the agent going
+//!   with `Weak<ToolingRuntime>` so the loop survives the agent going
 //!   away without leaking the core.
 //!
 //! See the F35 audit doc section 3 row 6 for the full design.
@@ -33,9 +33,9 @@
 //! (`TOOL_SEARCH_DEFAULT_LIMIT`, `TOOL_SEARCH_TOOL_NAME`) live in
 //! `peko_tools_builtin::tool_search_metadata` so `peko-engine`'s
 //! agentic loop can render the catalog entry without taking a
-//! dependency on root-only `ExtensionCore`. This file keeps the
+//! dependency on root-only `ToolingRuntime`. This file keeps the
 //! instance-level impl (`Tool for ToolSearchTool`, which needs
-//! `Weak<ExtensionCore>` at execute time); the static helpers are
+//! `Weak<ToolingRuntime>` at execute time); the static helpers are
 //! re-exported here for backward compat with callers that still
 //! import from `crate::tools::builtin::ToolSearchTool`.
 
@@ -43,8 +43,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Weak;
 
-use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::types::ToolExposure;
+use crate::tools::runtime::ToolingRuntime;
 use peko_tools_core::Tool;
 use peko_tools_core::ToolError;
 
@@ -62,22 +62,23 @@ pub use peko_engine::{
 ///
 /// Registered per-agent (in `Agent::init_builtins_async`) when
 /// `AgentConfig.enable_tool_search == true`. The Weak reference to
-/// [`ExtensionCore`] is upgraded at execute time so the tool doesn't
+/// [`ToolingRuntime`](crate::tools::runtime::ToolingRuntime) is upgraded
+/// at execute time so the tool doesn't
 /// extend the core's lifetime past the core itself.
 pub struct ToolSearchTool {
-    extension_core: Weak<ExtensionCore>,
+    tooling: Weak<ToolingRuntime>,
 }
 
 impl ToolSearchTool {
-    /// Construct with a weak handle to the shared `ExtensionCore`.
+    /// Construct with a weak handle to the shared tooling runtime.
     ///
     /// The weak handle matches the pattern used by `AsyncSpawnTool`
     /// (`tools/builtin/async_spawn.rs:14-20`). When the core is dropped
     /// (typically only on daemon shutdown), `execute` returns an error
     /// rather than panicking.
     #[must_use]
-    pub fn new(extension_core: Weak<ExtensionCore>) -> Self {
-        Self { extension_core }
+    pub fn new(tooling: Weak<ToolingRuntime>) -> Self {
+        Self { tooling }
     }
 }
 
@@ -173,14 +174,15 @@ impl ToolSearchTool {
         let limit_usize = usize::try_from(limit).unwrap_or(usize::MAX);
 
         // ── 2. Upgrade the Weak ref; bail if the core is gone ────────────
-        let core = self.extension_core.upgrade().ok_or_else(|| {
-            anyhow::anyhow!("ExtensionCore has been dropped; __tool_search cannot run")
+        let tooling = self.tooling.upgrade().ok_or_else(|| {
+            anyhow::anyhow!("ToolingRuntime has been dropped; __tool_search cannot run")
         })?;
 
         // ── 3. Run the search in the caller's principal scope ────────────
         let principal_id =
             principal_id.unwrap_or_else(|| peko_subject::PrincipalId::system().clone());
-        let matched = core
+        let matched = tooling
+            .catalog()
             .list_deferred_tool_definitions(&principal_id, query, limit_usize)
             .await;
 
@@ -197,8 +199,8 @@ impl ToolSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::ExtensionCore;
     use crate::extensions::framework::types::{ToolMetadata, ToolSource};
+    use crate::tools::runtime::ToolingRuntime;
     use std::sync::Arc;
 
     /// Build a stub `ToolMetadata` for the test registry.
@@ -212,44 +214,55 @@ mod tests {
         .with_exposure(exposure)
     }
 
-    /// Insert a test tool directly into the registry, bypassing
-    /// `BuiltinToolAdapter` (which needs a `Tool` impl). The
-    /// search backend only needs `ToolMetadata` shape, not the
-    /// underlying `Arc<dyn Tool>`.
-    async fn insert_test_metadata(core: &ExtensionCore, meta: ToolMetadata) {
-        // Use a no-op handler via the lower-level registry. The search
-        // backend walks `list_tools(principal_id)` which reads from the
-        // hook registry directly, so we need a registered hook_id.
-        use crate::extensions::framework::core::handler::HookHandler;
-        use crate::extensions::framework::core::HookContext;
-        use crate::extensions::framework::types::{HookOutput, HookResult};
-        use peko_subject::PrincipalId;
+    /// A stub tool registered into the test catalog (the catalog stores
+    /// `Arc<dyn Tool>`; the search backend only reads the metadata the
+    /// catalog derives from it).
+    struct StubTool {
+        name: String,
+        description: String,
+        exposure: ToolExposure,
+    }
 
-        #[derive(Debug)]
-        struct NoopHandler;
-        #[async_trait::async_trait]
-        impl HookHandler for NoopHandler {
-            async fn handle(&self, _ctx: HookContext) -> HookResult {
-                HookResult::Continue(HookOutput::Unit)
-            }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::ToolExecute {
-                    tool_name: String::new(),
-                }
-            }
+    #[async_trait::async_trait]
+    impl peko_tools_core::Tool for StubTool {
+        fn name(&self) -> &str {
+            &self.name
         }
+        fn description(&self) -> String {
+            self.description.clone()
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn exposure(&self) -> ToolExposure {
+            self.exposure
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
 
-        let handler = Arc::new(NoopHandler);
-        let ext_id = crate::extensions::framework::types::ExtensionId::new("test:tool_search");
-        let _ = core
-            .register_tool(meta, handler, &ext_id, PrincipalId::system())
-            .await
-            .expect("register test tool");
+    /// Insert a test tool into the runtime's catalog.
+    async fn insert_test_metadata(core: &Arc<ToolingRuntime>, meta: ToolMetadata) {
+        core.catalog()
+            .register_system(
+                Arc::new(StubTool {
+                    name: meta.name.clone(),
+                    description: meta.description.clone(),
+                    exposure: meta.exposure,
+                }),
+                crate::extensions::framework::types::ToolSource::BuiltIn,
+            )
+            .await;
+    }
+
+    fn test_runtime() -> Arc<ToolingRuntime> {
+        ToolingRuntime::standalone()
     }
 
     #[tokio::test]
     async fn tool_search_returns_deferred_tools_only() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         insert_test_metadata(
             &core,
             metadata("DirectTool", "visible tool", ToolExposure::Direct),
@@ -279,7 +292,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_search_respects_limit() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         for name in ["D1", "D2", "D3", "D4", "D5"] {
             insert_test_metadata(
                 &core,
@@ -299,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_search_handles_missing_query_with_error() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         let tool = ToolSearchTool::new(Arc::downgrade(&core));
         let result = tool.execute(json!({ "limit": 8 })).await;
         assert!(result.is_err(), "missing query must error");
@@ -307,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_search_handles_empty_query_with_error() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         let tool = ToolSearchTool::new(Arc::downgrade(&core));
         let result = tool.execute(json!({ "query": "   " })).await;
         assert!(result.is_err(), "empty query must error");
@@ -315,7 +328,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_search_handles_zero_limit_with_error() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         let tool = ToolSearchTool::new(Arc::downgrade(&core));
         let result = tool.execute(json!({ "query": "x", "limit": 0 })).await;
         assert!(result.is_err(), "zero limit must error");
@@ -324,7 +337,7 @@ mod tests {
     #[test]
     fn tool_search_exposure_is_direct() {
         // No core needed; just verify the trait method returns Direct.
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         let tool = ToolSearchTool::new(Arc::downgrade(&core));
         assert_eq!(tool.exposure(), ToolExposure::Direct);
         assert_eq!(tool.name(), "__tool_search");
@@ -333,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_search_no_matches_returns_empty_array() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         insert_test_metadata(
             &core,
             metadata("Bash", "execute shell commands", ToolExposure::Deferred),
@@ -355,7 +368,7 @@ mod tests {
     /// presence.
     #[tokio::test]
     async fn tool_search_resolves_deferred_tool_by_presence() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         insert_test_metadata(
             &core,
             metadata(
@@ -385,7 +398,7 @@ mod tests {
     /// a payload without `query`.
     #[test]
     fn tool_search_schema_matches_execute_contract() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = test_runtime();
         let tool = ToolSearchTool::new(Arc::downgrade(&core));
         let schema = tool.parameters();
         assert_eq!(schema["type"], "object");

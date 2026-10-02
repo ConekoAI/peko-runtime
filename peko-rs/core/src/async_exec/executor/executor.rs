@@ -10,8 +10,8 @@ use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use super::wake::{notify_completion_wake, CompletionWakeNotice};
 use crate::async_exec::inbox::SessionInbox;
-use crate::extensions::framework::core::ExtensionCore;
 use crate::extensions::framework::transport::async_transport::BoxedExecutionFn;
+use crate::tools::runtime::ToolingRuntime;
 use peko_session::InboxRegistry;
 
 /// Default `InboxFactory` for [`InboxRegistry`] construction.
@@ -44,10 +44,10 @@ pub fn standalone_inbox_registry() -> Arc<InboxRegistry> {
 /// ([`install_shared_inbox_registry`]). Components that are constructed
 /// outside the composition root but still produce completion events —
 /// `BashTool`'s process-global background executor, the CLI daemon
-/// command's pre-installed `ExtensionCore` — resolve their registry
+/// command's pre-installed `ToolingRuntime` — resolve their registry
 /// through [`shared_inbox_registry`] so their completions land in the
 /// same inboxes the agentic loop drains, regardless of construction
-/// order (the daemon's global `ExtensionCore` can be installed by
+/// order (the daemon's global `ToolingRuntime` can be installed by
 /// `cli/main.rs` before `AppState` exists).
 static SHARED_INBOX_REGISTRY: std::sync::OnceLock<std::sync::RwLock<Option<Arc<InboxRegistry>>>> =
     std::sync::OnceLock::new();
@@ -776,7 +776,7 @@ impl AsyncExecutor {
 
     /// F38: spawn an async task that dispatches `context.tool_name`
     /// through the F37 canonical funnel
-    /// (`ExtensionCore::execute_tool_via_hook`). The executor owns
+    /// (`ToolingRuntime::execute_tool_via_hook`). The executor owns
     /// the factory closure construction internally — callers cannot
     /// accidentally bypass the gate (the structural reason the
     /// pre-F37 bypass existed in the first place).
@@ -794,11 +794,11 @@ impl AsyncExecutor {
     /// `ToolDispatchContext` struct bundles the parameters.
     pub async fn dispatch_tool(
         &self,
-        core: &Arc<ExtensionCore>,
+        tooling: &Arc<ToolingRuntime>,
         context: ToolDispatchContext,
         config: AsyncToolConfig,
     ) -> Result<AsyncTaskReceipt> {
-        self.dispatch_tool_with_signal(core, context, config, None)
+        self.dispatch_tool_with_signal(tooling, context, config, None)
             .await
     }
 
@@ -807,20 +807,20 @@ impl AsyncExecutor {
     ///
     /// Internal plumbing:
     /// 1. Build `tokio::sync::watch::channel(false)` — the receiver
-    ///    flows to `execute_tool_via_hook`'s `abort_signal` parameter;
+    ///    flows to the dispatcher's abort signal;
     ///    a clone of the sender is attached to the `AsyncTaskEntry`
     ///    via `execute_inner`'s `cancel_signal` parameter, so
     ///    [`Self::cancel`] can flip it to `true` later.
     /// 2. If `cancel: Some(token)`, spawn a small `tokio::spawn` task
     ///    that awaits `token.cancelled()` and `send(true)`s on the
     ///    sender. This is the `cancel` → `is_aborted()` bridge.
-    /// 3. Build a factory closure that calls `core.execute_tool_via_hook(...)`
-    ///    with the `ToolDispatchContext` fields + `Some(rx)`.
+    /// 3. Build a factory closure that calls `ToolFunnel::execute` on the
+    ///    tooling runtime with the `ToolDispatchContext` fields + `Some(rx)`.
     ///    The closure returns `Err(anyhow!(text))` on tool failure
     ///    so the executor records `AsyncTaskStatus::Failed { error }`.
     pub async fn dispatch_tool_with_signal(
         &self,
-        core: &Arc<ExtensionCore>,
+        tooling: &Arc<ToolingRuntime>,
         context: ToolDispatchContext,
         config: AsyncToolConfig,
         cancel: Option<tokio_util::sync::CancellationToken>,
@@ -850,22 +850,21 @@ impl AsyncExecutor {
 
         // 3. Build the factory closure that does the actual dispatch.
         //    It owns `context` (moved) and `rx`.
-        let core_for_closure = core.clone();
+        let tooling_for_closure = tooling.clone();
         let boxed_fn: BoxedExecutionFn = Box::new(move || {
             Box::pin(async move {
-                let (text, json, success) = core_for_closure
-                    .execute_tool_via_hook(
-                        &context.tool_name,
-                        context.params,
-                        context.workspace,
-                        context.agent_id,
-                        context.session_id,
-                        context.caller_id,
-                        context.principal_id,
-                        context.principal_name,
-                        Some(rx),
-                    )
-                    .await?;
+                let spec = peko_extension_api::ToolCallSpec {
+                    tool_name: context.tool_name.clone(),
+                    params: context.params,
+                    workspace: context.workspace,
+                    agent_id: context.agent_id,
+                    session_id: context.session_id,
+                    caller_id: context.caller_id,
+                    principal_id: context.principal_id,
+                    principal_name: context.principal_name,
+                    abort_signal: Some(rx),
+                };
+                let (text, json, success) = tooling_for_closure.dispatcher().execute(spec).await?;
                 // F37: surface tool failure as an Err so the executor
                 // records `Failed { error }` (not `Completed` with
                 // error-JSON masquerading as success).
@@ -1807,7 +1806,7 @@ mod dispatch_tool_tests {
     use peko_tools_core::Tool;
     use std::sync::atomic::AtomicBool;
 
-    /// Minimal stub tool used to register an entry in `ExtensionCore`'s
+    /// Minimal stub tool used to register an entry in `ToolingRuntime`'s
     /// tool side-table so `execute_tool_via_hook` can find it.
     struct StubTool;
 
@@ -1868,13 +1867,13 @@ mod dispatch_tool_tests {
     /// runs to completion with no grant context at all.
     #[tokio::test]
     async fn test_dispatch_tool_executes_without_grants() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         // Register the stub tool through the adapter so the funnel's
         // hook-registry lookup resolves (a bare `insert_tool_instance`
         // only fills the `Arc<dyn Tool>` side-table and the dispatch
         // would land on "not available").
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            &core,
+            core.catalog(),
             Arc::new(StubTool),
         )
         .await
@@ -1928,8 +1927,12 @@ mod dispatch_tool_tests {
     /// the receipt to be returned).
     #[tokio::test]
     async fn test_dispatch_tool_returns_valid_receipt() {
-        let core = Arc::new(ExtensionCore::new());
-        core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
+        core.catalog()
+            .register_system(
+                Arc::new(StubTool),
+                crate::extensions::framework::types::ToolSource::BuiltIn,
+            )
             .await;
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
@@ -1971,15 +1974,16 @@ mod dispatch_tool_tests {
     /// bodies that respect it).
     #[tokio::test]
     async fn test_dispatch_tool_with_signal_cancel_flips_registry_status() {
-        let core = Arc::new(ExtensionCore::new());
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         let aborted = Arc::new(AtomicBool::new(false));
-        core.insert_tool_instance(
-            "abortable_stub".to_string(),
-            Arc::new(AbortableStubTool {
-                aborted: aborted.clone(),
-            }),
-        )
-        .await;
+        core.catalog()
+            .register_system(
+                Arc::new(AbortableStubTool {
+                    aborted: aborted.clone(),
+                }),
+                crate::extensions::framework::types::ToolSource::BuiltIn,
+            )
+            .await;
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context =
@@ -2021,8 +2025,12 @@ mod dispatch_tool_tests {
     /// without calling `executor.cancel()`.
     #[tokio::test]
     async fn test_dispatch_tool_with_signal_bridges_cancellation_token() {
-        let core = Arc::new(ExtensionCore::new());
-        core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
+        core.catalog()
+            .register_system(
+                Arc::new(StubTool),
+                crate::extensions::framework::types::ToolSource::BuiltIn,
+            )
             .await;
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));

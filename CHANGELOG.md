@@ -4,6 +4,21 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Pure workspace tooling: funnel split (ADR-066 P3, 2026-10-02)
+
+- Replaced `ExtensionCore` and its process-global accessors with an
+  explicitly shared `ToolingRuntime`: `ToolCatalog`, `ToolDispatcher`,
+  prompt-section providers, `SessionKeys`, and the surviving hook registry.
+- Reduced `ToolFunnel` to execution, catalog listing, and prompt rendering;
+  lifecycle/compaction/bookkeeping now use `EngineHooks`.
+- Tool execution dispatches directly from the catalog, retains validation,
+  workspace injection, abort, timeout/detach and panic isolation, and emits
+  one attributed `tool.call` audit event. Pre/Post hooks remain observe-only.
+- Installs workspace tools once per principal and prompt providers once per
+  runtime; scopes workspace hooks to their owning principal.
+- Migrated singleton-dependent tests to explicitly constructed runtimes.
+
+
 ### Iteration cap removed from the agentic loop (2026-09-30)
 
 The agentic loop's hard-coded `max_iterations = 10` ceiling

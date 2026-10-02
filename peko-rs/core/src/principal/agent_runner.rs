@@ -100,7 +100,7 @@ pub(crate) async fn resolve_provider_hint(ctx: &PrincipalContext) -> Option<Stri
 }
 
 /// Run the root agent prompt in a peer-scoped
-/// session using the principal's shared `ExtensionCore`.
+/// session using the principal's shared `ToolingRuntime`.
 ///
 /// The root agent is just another agent of the principal — the same
 /// `PrincipalContext.core()` is used by every agent the principal
@@ -185,7 +185,7 @@ where
     let provider_hint = resolve_provider_hint(ctx).await;
     let config = build_agent_config(prompt, provider_hint);
 
-    let core = ctx.core().await;
+    let core = ctx.tooling().await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
@@ -274,7 +274,7 @@ where
     let history: Vec<LlmMessage> = session.read().await.load_history().await?;
 
     // Cold-start the root agent. After the Phase-2 redo there is one
-    // daemon-global `ExtensionCore`; the agent picks it up internally.
+    // daemon-global `ToolingRuntime`; the agent picks it up internally.
     // `principal_id` is threaded through so the agent's
     // `SubagentExecutor` (and every descendant spawn) inherits the
     // principal scope. Wiring it to the same inbox registry the
@@ -293,6 +293,7 @@ where
         // `ResolveRequest::override_model` so the resolver classifies
         // the resolution as `ExplicitOverride` when set.
         ctx.message_override.clone(),
+        Arc::clone(&ctx.tooling),
     )
     .await?
     // Scope the agent's `Agent` tool to this principal's workspace so
@@ -418,6 +419,7 @@ where
             &prompt.name,
             5,
             ctx.principal_id().clone(),
+            Arc::clone(&ctx.tooling),
         )
         .with_principal_name(ctx.name().to_string())
         .with_principal_capabilities(Some(Arc::clone(&ctx.capabilities)))
@@ -478,7 +480,7 @@ where
         subagent_executor,
     ));
     crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-        &core,
+        core.catalog(),
         agent_tool,
         ctx.principal_id(),
     )

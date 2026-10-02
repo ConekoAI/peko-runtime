@@ -50,7 +50,7 @@ use crate::extensions::command_handler::{
     CommandHookConfig, CommandHookHandler, CommandOutputFormat,
 };
 use crate::extensions::framework::core::hook_points::{HookPoint, HookPointBuilder};
-use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::core::HookRegistry;
 use crate::extensions::framework::types::ExtensionId;
 use anyhow::{anyhow, Context, Result};
 use peko_subject::PrincipalId;
@@ -98,7 +98,7 @@ pub struct HookManifest {
 }
 
 /// Scan `<workspace>/hooks/<id>/hook.toml` and register each hook with
-/// the global `ExtensionCore`. Returns the number of successfully-
+/// the global `ToolingRuntime`. Returns the number of successfully-
 /// registered hook bindings.
 ///
 /// The scanner is additive over any hooks already registered by other
@@ -112,7 +112,7 @@ pub struct HookManifest {
 /// called once per principal boot.
 pub async fn load_workspace_hooks(
     hooks_dir: &Path,
-    core: &ExtensionCore,
+    core: &HookRegistry,
     principal_id: &PrincipalId,
 ) -> Result<usize> {
     if !hooks_dir.exists() {
@@ -180,7 +180,7 @@ pub async fn load_workspace_hooks(
 async fn register_one_hook(
     manifest_path: &Path,
     hook_id: &str,
-    core: &ExtensionCore,
+    core: &HookRegistry,
     principal_id: &PrincipalId,
 ) -> Result<usize> {
     let raw = tokio::fs::read_to_string(manifest_path)
@@ -570,9 +570,9 @@ output = "text"
         );
         std::fs::write(hook_dir.join("hook.toml"), manifest).unwrap();
 
-        let core = ExtensionCore::new();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         let pid = PrincipalId::generate();
-        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), &core, &pid)
+        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), core.hooks(), &pid)
             .await
             .unwrap();
         assert_eq!(loaded, 1, "exactly one binding registered");
@@ -580,12 +580,23 @@ output = "text"
         // Build a minimal HookContext — the handler doesn't read
         // anything besides the dispatch path. We pass an empty
         // HookInput::Unit since the test script only echoes.
-        let handler_id = core.hook_count().await;
+        let handler_id = core.hooks().hook_count().await;
         assert!(handler_id >= 1);
 
         // Fire PreToolUse("Bash") and observe the captured stdout.
-        let input = HookInput::Unit;
+        let input = HookInput::ToolCall {
+            tool_name: "Bash".into(),
+            params: serde_json::json!({}),
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: Some(pid.to_string()),
+            principal_name: None,
+            abort_signal: None,
+        };
         let result = core
+            .hooks()
             .invoke_hook(
                 crate::extensions::framework::core::hook_points::HookPointBuilder::pre_tool_use(
                     "Bash",
@@ -645,9 +656,9 @@ output = "text"
         );
         std::fs::write(hook_dir.join("hook.toml"), manifest).unwrap();
 
-        let core = ExtensionCore::new();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         let pid = PrincipalId::generate();
-        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), &core, &pid)
+        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), core.hooks(), &pid)
             .await
             .unwrap();
         assert_eq!(loaded, 1, "exactly one binding registered");
@@ -655,21 +666,21 @@ output = "text"
         // The funnel port enumerates the section for the owning
         // principal only.
         let pid_str = pid.to_string();
-        let mine = core
-            .registered_prompt_sections(Some(pid_str.as_str()))
+        let request = peko_extension_api::PromptSectionRequest {
+            principal_id: pid_str.clone(),
+            workspace: tmp.path().to_string_lossy().into_owned(),
+            session_id: "test".into(),
+        };
+        let mine = core.render_prompt_sections(&request).await;
+        assert!(mine.get("weather").unwrap().contains("clear-skies"));
+        let theirs = core
+            .render_prompt_sections(&peko_extension_api::PromptSectionRequest {
+                principal_id: PrincipalId::generate().to_string(),
+                ..request.clone()
+            })
             .await;
-        assert_eq!(mine, vec!["weather".to_string()], "got: {mine:?}");
-        let other = PrincipalId::generate().to_string();
-        let theirs = core.registered_prompt_sections(Some(other.as_str())).await;
-        assert!(
-            !theirs.contains(&"weather".to_string()),
-            "other principal must not see the hook, got: {theirs:?}"
-        );
-
-        // Fire the section through the same port the renderer uses.
-        let text = core
-            .invoke_prompt_section_hook("weather", 100, Some(pid_str.as_str()), None)
-            .await;
+        assert!(theirs.get("weather").is_none());
+        let text = mine.get("weather").map(str::to_string);
         match text {
             Some(text) => assert!(
                 text.contains("clear-skies"),
@@ -712,9 +723,9 @@ command = "/nonexistent/binary"
         )
         .unwrap();
 
-        let core = ExtensionCore::new();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         let pid = PrincipalId::generate();
-        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), &core, &pid)
+        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), core.hooks(), &pid)
             .await
             .unwrap();
         // The bad manifest fails parsing (no `command`) and is
@@ -733,9 +744,9 @@ command = "/nonexistent/binary"
         use peko_subject::PrincipalId;
 
         let tmp = tempfile::tempdir().unwrap();
-        let core = ExtensionCore::new();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         let pid = PrincipalId::generate();
-        let loaded = load_workspace_hooks(&tmp.path().join("nope"), &core, &pid)
+        let loaded = load_workspace_hooks(&tmp.path().join("nope"), core.hooks(), &pid)
             .await
             .unwrap();
         assert_eq!(loaded, 0);
@@ -750,9 +761,9 @@ command = "/nonexistent/binary"
 
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("hooks")).unwrap();
-        let core = ExtensionCore::new();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         let pid = PrincipalId::generate();
-        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), &core, &pid)
+        let loaded = load_workspace_hooks(&tmp.path().join("hooks"), core.hooks(), &pid)
             .await
             .unwrap();
         assert_eq!(loaded, 0);

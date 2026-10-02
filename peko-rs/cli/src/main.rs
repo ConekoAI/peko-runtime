@@ -35,7 +35,7 @@ async fn main() {
     // Set up global paths
     let paths = from_cli(&cli);
 
-    // No global `ExtensionCore` is pre-installed here (2026-09-27,
+    // No global `ToolingRuntime` is pre-installed here (2026-09-27,
     // ADR-063 (P0-1) + D1): the CLI never executes tools
     // (ADR-021), so the core's async router had no live consumer on
     // this side, and the pre-installed core actively *pre-empted* the

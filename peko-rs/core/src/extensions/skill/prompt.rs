@@ -28,8 +28,6 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{HookOutput, HookResult, ToolRuntimeContext};
 use crate::tools::builtin::skill::{parse_yaml_frontmatter_typed, SkillFrontmatter};
 
 /// Default priority for the skills-catalog prompt section.
@@ -124,35 +122,24 @@ fn skills_dir_fingerprint(skills_dir: &Path) -> Option<DirFingerprint> {
 }
 
 #[async_trait]
-impl HookHandler for WorkspaceSkillsPromptHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        let workspace = ctx
-            .get_state::<ToolRuntimeContext>("tool_context")
-            .and_then(|rtc| rtc.workspace.clone());
-
-        let Some(workspace) = workspace.filter(|w| !w.is_empty()) else {
-            return HookResult::PassThrough;
-        };
-
-        match self.render_catalog(&workspace) {
-            Some(text) => HookResult::Continue(HookOutput::Text(text)),
-            None => HookResult::PassThrough,
-        }
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::PromptSystemSection {
-            section: "skills".to_string(),
-            priority: SKILL_CATALOG_HOOK_PRIORITY,
-        }
+impl crate::tools::prompt_sections::PromptSectionProvider for WorkspaceSkillsPromptHandler {
+    fn section(&self) -> &'static str {
+        "skills"
     }
 
     fn priority(&self) -> i32 {
         SKILL_CATALOG_HOOK_PRIORITY
     }
 
-    fn name(&self) -> String {
-        "WorkspaceSkillsPromptHandler".to_string()
+    async fn render(
+        &self,
+        input: &crate::tools::prompt_sections::PromptSectionInput,
+    ) -> Option<String> {
+        let workspace = input.workspace.to_string_lossy().to_string();
+        if workspace.is_empty() {
+            return None;
+        }
+        self.render_catalog(&workspace)
     }
 }
 
@@ -239,8 +226,8 @@ fn scan_skills_dir(skills_dir: &Path, workspace: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::ExtensionServices;
-    use std::sync::Arc;
+    use crate::tools::prompt_sections::PromptSectionProvider;
+
     use tempfile::TempDir;
 
     fn make_skill(skills_dir: &Path, name: &str, description: &str) {
@@ -253,32 +240,13 @@ mod tests {
         .unwrap();
     }
 
-    /// Build a `PromptSystemSection { section: "skills" }` hook context,
-    /// optionally carrying a workspace in the `tool_context` state.
-    fn skills_hook_ctx(workspace: Option<&str>) -> HookContext {
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "skills".to_string(),
-                priority: SKILL_CATALOG_HOOK_PRIORITY,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        if let Some(ws) = workspace {
-            ctx.set_state(
-                "tool_context",
-                ToolRuntimeContext::new()
-                    .with_workspace(ws)
-                    .with_principal_id("test-principal"),
-            );
-        }
-        ctx
-    }
-
-    fn handle_text(result: HookResult) -> Option<String> {
-        match result {
-            HookResult::Continue(HookOutput::Text(text)) => Some(text),
-            _ => None,
+    /// Build the provider input for `workspace`.
+    fn skills_input(workspace: &Path) -> crate::tools::prompt_sections::PromptSectionInput {
+        crate::tools::prompt_sections::PromptSectionInput {
+            principal_id: "test-principal".to_string(),
+            workspace: workspace.to_path_buf(),
+            session_id: String::new(),
+            channel_port: None,
         }
     }
 
@@ -295,12 +263,10 @@ mod tests {
         std::fs::write(bad_dir.join("SKILL.md"), "no frontmatter here").unwrap();
 
         let handler = WorkspaceSkillsPromptHandler::new();
-        let text = handle_text(
-            handler
-                .handle(skills_hook_ctx(Some(&temp.path().to_string_lossy())))
-                .await,
-        )
-        .expect("expected catalog text");
+        let text = handler
+            .render(&skills_input(temp.path()))
+            .await
+            .expect("expected catalog text");
 
         assert!(
             text.contains("- docker: Docker ops (skills/docker/SKILL.md)"),
@@ -315,12 +281,10 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_skills_handler_passes_through_without_workspace() {
+        let temp = TempDir::new().unwrap();
         let handler = WorkspaceSkillsPromptHandler::new();
-        let result = handler.handle(skills_hook_ctx(None)).await;
-        assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected PassThrough without workspace, got {result:?}"
-        );
+        let result = handler.render(&skills_input(temp.path())).await;
+        assert!(result.is_none(), "Expected no section, got {result:?}");
     }
 
     #[tokio::test]
@@ -329,12 +293,10 @@ mod tests {
         std::fs::create_dir(temp.path().join("skills")).unwrap();
 
         let handler = WorkspaceSkillsPromptHandler::new();
-        let result = handler
-            .handle(skills_hook_ctx(Some(&temp.path().to_string_lossy())))
-            .await;
+        let result = handler.render(&skills_input(temp.path())).await;
         assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected PassThrough for empty skills dir, got {result:?}"
+            result.is_none(),
+            "Expected no section for empty skills dir, got {result:?}"
         );
     }
 
@@ -346,10 +308,12 @@ mod tests {
         make_skill(&skills_dir, "docker", "Docker ops");
 
         let handler = WorkspaceSkillsPromptHandler::new();
-        let ws = temp.path().to_string_lossy().to_string();
+        let _ws = temp.path().to_string_lossy().to_string();
 
         // First call scans and caches.
-        let first = handle_text(handler.handle(skills_hook_ctx(Some(&ws))).await)
+        let first = handler
+            .render(&skills_input(temp.path()))
+            .await
             .expect("expected catalog text");
         assert!(first.contains("docker"), "got: {first}");
         assert!(!first.contains("git"), "got: {first}");
@@ -358,7 +322,9 @@ mod tests {
         // must re-scan rather than serve the cached catalog.
         make_skill(&skills_dir, "git", "Git workflow");
 
-        let second = handle_text(handler.handle(skills_hook_ctx(Some(&ws))).await)
+        let second = handler
+            .render(&skills_input(temp.path()))
+            .await
             .expect("expected catalog text");
         assert!(second.contains("docker"), "got: {second}");
         assert!(second.contains("git"), "got: {second}");
@@ -377,9 +343,11 @@ mod tests {
         make_skill(&skills_dir, "docker", "Docker ops");
 
         let handler = WorkspaceSkillsPromptHandler::new();
-        let ws = temp.path().to_string_lossy().to_string();
+        let _ws = temp.path().to_string_lossy().to_string();
 
-        let first = handle_text(handler.handle(skills_hook_ctx(Some(&ws))).await)
+        let first = handler
+            .render(&skills_input(temp.path()))
+            .await
             .expect("expected catalog text");
         assert!(first.contains("Docker ops"), "got: {first}");
 
@@ -387,7 +355,9 @@ mod tests {
         // changes; dir mtime does not.
         make_skill(&skills_dir, "docker", "Docker ops, compose, and swarm");
 
-        let second = handle_text(handler.handle(skills_hook_ctx(Some(&ws))).await)
+        let second = handler
+            .render(&skills_input(temp.path()))
+            .await
             .expect("expected updated catalog text");
         assert!(
             second.contains("Docker ops, compose, and swarm"),

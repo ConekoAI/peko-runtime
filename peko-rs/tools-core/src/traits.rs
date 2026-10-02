@@ -90,7 +90,7 @@ pub trait Tool: Send + Sync {
     ///
     /// ⚠️ **TEST-ONLY IN PRODUCTION CONTEXTS**
     ///
-    /// Production code must route tool execution through `ExtensionCore::invoke_hook`
+    /// Production code must route tool execution through `ToolingRuntime::invoke_hook`
     /// (or `ToolRuntime::execute_tool`) to ensure consistent behavior:
     /// - Workspace injection
     /// - Reserved parameter validation/injection
@@ -101,7 +101,7 @@ pub trait Tool: Send + Sync {
     ///
     /// Direct calls to this method are appropriate for:
     /// - Unit tests of individual tools
-    /// - The `BuiltinToolAdapter` wrapper (which bridges into ExtensionCore)
+    /// - The `BuiltinToolAdapter` wrapper (which bridges into ToolingRuntime)
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value>;
 
     /// Hook called by the framework when a tool call is cancelled.

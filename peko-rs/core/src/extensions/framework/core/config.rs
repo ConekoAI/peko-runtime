@@ -3,9 +3,7 @@
 //! This module defines the service locator [`ExtensionServices`] passed to hook
 //! handlers, along with [`ExtensionConfig`] and [`TelemetryService`].
 
-use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::transport::AsyncExecutionRouter;
 use crate::extensions::framework::types::HookId;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,15 +33,6 @@ pub struct ExtensionServices {
     /// Type-erased for the same reason as `tool_execution`. The
     /// concrete `services::ReservedParamsService` lives in root.
     reserved_params: Arc<dyn std::any::Any + Send + Sync>,
-
-    /// Async execution router.
-    ///
-    /// Stored as `Arc<dyn AsyncExecutionRouter>` (Phase 8a trait
-    /// port). The concrete `transport::AsyncExecutionRouter` stays
-    /// in root until Phase 8b. The impl is `Send + Sync` so the
-    /// trait object can live in `ExtensionServices` and be cloned
-    /// into per-agent `ExtensionCore` instances.
-    async_router: Arc<dyn AsyncExecutionRouter>,
 
     // Sprint 9 Commit 4: `principal_message_service` slot retired.
     // `StatelessAgentService` was the sole
@@ -81,7 +70,6 @@ impl std::fmt::Debug for ExtensionServices {
         f.debug_struct("ExtensionServices")
             .field("config", &self.config)
             .field("telemetry", &self.telemetry)
-            .field("async_router", &"<dyn AsyncExecutionRouter>")
             .field(
                 "cross_runtime_a2a_ctx",
                 &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>",
@@ -95,34 +83,16 @@ impl std::fmt::Debug for ExtensionServices {
 }
 
 impl ExtensionServices {
-    /// Create new extension services with a no-op async router.
-    ///
-    /// The default router does nothing — `execute_from_hook` returns
-    /// `HookResult::PassThrough` and `wait_for_all_tasks` returns
-    /// immediately. Production callers (daemon, CLI, main) should
-    /// use [`Self::with_async_router`] and pass a real router
-    /// wrapping the local or HTTP transport. The no-op default keeps
-    /// the host self-contained and avoids a host → root dep on the
-    /// concrete `framework::transport::AsyncExecutionRouter`
-    /// (lifted in Phase 8b).
+    /// Create new extension services (ADR-066 P3: the async-router slot
+    /// moved to the `ToolDispatcher`; `ExtensionServices` now carries
+    /// only the hook-context slots: channel port, cross-runtime ctx).
     #[must_use]
     pub fn new() -> Self {
-        Self::with_async_router(Arc::new(NoopAsyncExecutionRouter))
-    }
-
-    /// Create with a custom async execution router (for custom transport).
-    ///
-    /// Sprint 9 Commit 4: the
-    /// `with_async_router_and_principal_message_service` constructor
-    /// was retired along with the `principal_message_service` slot.
-    #[must_use]
-    pub fn with_async_router(async_router: Arc<dyn AsyncExecutionRouter>) -> Self {
         Self {
             config: ExtensionConfig::default(),
             telemetry: TelemetryService::new(),
             tool_execution: Arc::new(()),
             reserved_params: Arc::new(()),
-            async_router,
             // Issue #29: cross-runtime a2a ctx starts as None and
             // is filled in by the daemon-state after the tunnel
             // client is wired. Until then, every per-agent
@@ -142,18 +112,6 @@ impl ExtensionServices {
     /// Get telemetry service
     pub fn telemetry(&self) -> &TelemetryService {
         &self.telemetry
-    }
-
-    /// Get the async execution router.
-    ///
-    /// Returns the trait-object reference so callers can dispatch via
-    /// the [`AsyncExecutionRouter`] port. Root-side adapters
-    /// (`extensions/{builtin,mcp}/adapter.rs`) call
-    /// `.execute_from_hook(...)` on this; the host's
-    /// [`Self::wait_for_async_tasks`] delegates to
-    /// `.wait_for_all_tasks(...)`.
-    pub fn async_router(&self) -> &Arc<dyn AsyncExecutionRouter> {
-        &self.async_router
     }
 
     // Sprint 9 Commit 4: `set_principal_message_service` and
@@ -220,11 +178,6 @@ impl ExtensionServices {
     pub fn record_invocation(&self, hook_id: &HookId, point: &HookPoint, duration_ms: u64) {
         self.telemetry
             .record_hook_invocation(hook_id, point, duration_ms);
-    }
-
-    /// Wait for all async tasks to complete
-    pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
-        self.async_router.wait_for_all_tasks(timeout).await;
     }
 }
 
@@ -334,97 +287,6 @@ impl TelemetryService {
         };
 
         total_time / count
-    }
-}
-
-/// Synchronous-local [`AsyncExecutionRouter`] used as the default router by
-/// [`ExtensionServices::new`].
-///
-/// The router pulls the tool-call input out of `ctx`, runs the F32b JSON-Schema
-/// validator, runs the caller's preprocessor (if any), invokes the caller's
-/// `exec_fn` (the actual tool call), and maps the `Result<Value>` back to a
-/// `HookResult`. This is enough to satisfy the F37 funnel used by
-/// `BuiltinExecuteHandler` (and the parallel MCP adapter) when
-/// no real daemon-side `AsyncExecutor` is wired in — typical for unit tests
-/// that construct an `ExtensionCore` via `ExtensionCore::new()`.
-///
-/// Production callers (the daemon, CLI `peko` binary, scenario tests) should
-/// override with a real router via [`ExtensionServices::with_async_router`]
-/// so async tools (`AsyncSpawn`, `AsyncOutput`, …) reach the
-/// `AsyncExecutor`'s spawn path. Sync tools work either way.
-struct NoopAsyncExecutionRouter;
-
-#[async_trait::async_trait]
-impl AsyncExecutionRouter for NoopAsyncExecutionRouter {
-    async fn execute_from_hook(
-        &self,
-        ctx: &HookContext,
-        tool_name: &str,
-        exec_config: &crate::extensions::framework::transport::ToolExecConfig,
-        preprocessor: Option<crate::extensions::framework::transport::PreprocessorFn>,
-        exec_fn: crate::extensions::framework::transport::ExecFn,
-    ) -> crate::extensions::framework::types::HookResult {
-        // Pull the (name, params, workspace) triple out of the tool-call
-        // input. If the input isn't a ToolCall (e.g. a prompt-section
-        // hook mistakenly routed here), fall back to PassThrough.
-        let (_called_tool_name, mut params, workspace) = match ctx.as_tool_call() {
-            Some((name, params, ws)) => (name.to_string(), params.clone(), ws.map(str::to_string)),
-            None => return crate::extensions::framework::types::HookResult::PassThrough,
-        };
-
-        // F32b — validate LLM-emitted args against the tool's declared JSON
-        // schema before invoking the preprocessor. Mirrors the root-side
-        // router's behavior so the noop-router is faithful enough for
-        // production semantics on synchronous tools.
-        if let Err(msg) = validate_tool_args(&exec_config.full_schema, &params, tool_name) {
-            return crate::extensions::framework::types::HookResult::Error(anyhow::anyhow!(msg));
-        }
-
-        // Run the preprocessor if the caller passed one. Preprocessor is
-        // `Fn` (callable multiple times) and `Send + Sync`; treat it as
-        // such.
-        if let Some(pre) = preprocessor {
-            pre(&mut params, workspace.as_deref());
-        }
-
-        // Invoke the caller's `exec_fn`. The `exec_fn` closure is the
-        // adapter-supplied wrapper around `tool.execute_with_context(...)`;
-        // running it here yields the tool's JSON output (or an error).
-        match exec_fn(params).await {
-            Ok(value) => crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Json(value),
-            ),
-            Err(e) => crate::extensions::framework::types::HookResult::Error(e),
-        }
-    }
-
-    async fn wait_for_all_tasks(&self, _timeout: std::time::Duration) {
-        // No-op.
-    }
-}
-
-/// Mirror of root's `AsyncExecutionRouter::validate_tool_args` so the
-/// noop router stays self-contained. The validator reports a structured
-/// error per F32b: names the tool + the missing/invalid fields.
-fn validate_tool_args(
-    schema: &serde_json::Value,
-    params: &serde_json::Value,
-    tool_name: &str,
-) -> Result<(), String> {
-    let validator = match jsonschema::validator_for(schema) {
-        Ok(v) => v,
-        Err(e) => return Err(format!("schema compile error for {tool_name}: {e}")),
-    };
-    let errors: Vec<_> = validator.iter_errors(params).collect();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        let joined = errors
-            .iter()
-            .map(|e| format!("{}", e))
-            .collect::<Vec<_>>()
-            .join("; ");
-        Err(format!("{tool_name} args failed schema: {joined}"))
     }
 }
 

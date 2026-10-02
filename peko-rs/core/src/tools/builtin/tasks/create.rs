@@ -70,7 +70,7 @@ Returns the created todo including its taskId."
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Production callers always go through `execute_with_context` via
-        // `ExtensionCore::invoke_hook`; this branch exists only to satisfy
+        // `ToolingRuntime::invoke_hook`; this branch exists only to satisfy
         // the `Tool` trait's default `execute` method. Returning a regular
         // `anyhow::Error` (instead of a structured JSON blob) keeps the
         // error path consistent with other tools and lets the harness

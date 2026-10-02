@@ -7,7 +7,7 @@
 //! imports them without depending on root) moved into
 //! `peko-extension-api` instead:
 //!
-//! - `ToolFunnel` (engine-facing `ExtensionCore` surface) — was in sat,
+//! - `ToolFunnel` (engine-facing `ToolingRuntime` surface) — was in sat,
 //!   now in `peko_extension_api::ToolFunnel`
 //! - `CompletionEvent` / `SteeringMessage` / `InboxItem` data types —
 //!   was in sat, now in `peko_extension_api::completion_event`
@@ -39,7 +39,7 @@
 // ============================================================================
 
 /// Hook points, registry, handler traits, executor integration —
-/// the core of the extension system. The `ExtensionCore` impl is
+/// the core of the extension system. The `ToolingRuntime` impl is
 /// the canonical entry point for `peko_engine::funnel` (F37
 /// funnel).
 pub mod core;
@@ -90,12 +90,6 @@ pub mod services;
 // `extension_storage.rs` / `adapters/` / `services/config_service.rs` /
 // `services/tool_execution.rs` deleted (zero production consumers).
 
-/// Engine-facing surface of root's `ExtensionCore`. The trait port
-/// lives in `peko_extension_api::ToolFunnel`; the concrete impl lives
-/// in `tool_funnel_impl.rs` at this path. The trait-and-impl pair
-/// is split to break a sat→root dep cycle.
-pub mod tool_funnel_impl;
-
 /// Async-task transport sub-module (router + transport adapters
 /// + shim module).
 pub mod transport;
@@ -115,7 +109,7 @@ pub mod vault;
 /// Prelude for convenient imports
 pub mod prelude {
     pub use crate::extensions::framework::core::{
-        common, ExtensionCore, HookContext, HookHandler, HookPoint, HookPointBuilder,
+        common, HookContext, HookHandler, HookPoint, HookPointBuilder, HookRegistry,
     };
     pub use crate::extensions::framework::types::{
         ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookResult,

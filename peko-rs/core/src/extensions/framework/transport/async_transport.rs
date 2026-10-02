@@ -175,7 +175,7 @@ impl LocalAsyncTransport {
 /// Create a local transport wired to the process-shared inbox registry
 /// ([`shared_inbox_registry`](crate::async_exec::executor::shared_inbox_registry)),
 /// which defers to the daemon-installed registry once `AppState` installs
-/// it. Used for the pre-`AppState` `ExtensionCore` the CLI installs for
+/// it. Used for the pre-`AppState` `ToolingRuntime` the CLI installs for
 /// `peko daemon start --foreground`; the daemon's composition root prefers
 /// [`create_local_transport_with_inbox`] with the hoisted registry.
 pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {

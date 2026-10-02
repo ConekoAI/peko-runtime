@@ -29,8 +29,7 @@
 //! [`RoleAdapter::discover_roles`] (also called from
 //! `principal/manager.rs`) + the data types it produces.
 
-use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{ExtensionManifest, HookOutput, HookResult};
+use crate::extensions::framework::types::ExtensionManifest;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -257,7 +256,7 @@ struct RoleFrontmatter {
 ///
 /// Presence in the workspace = visible (ADR-047): there is deliberately
 /// **no** capability or active-extension filter. A missing workspace or
-/// an empty `roles/` directory yields [`HookResult::PassThrough`] so
+/// an empty `roles/` directory yields no section so
 /// the section is stripped from the prompt.
 ///
 /// The scan result is cached in a `Mutex` keyed on a per-file
@@ -375,35 +374,24 @@ fn roles_dir_fingerprint(roles_dir: &Path) -> Option<DirFingerprint> {
 }
 
 #[async_trait]
-impl HookHandler for WorkspaceRolesPromptHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        let workspace = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
-            .and_then(|rtc| rtc.workspace.clone());
-
-        let Some(workspace) = workspace.filter(|w| !w.is_empty()) else {
-            return HookResult::PassThrough;
-        };
-
-        match self.render_catalog(&workspace) {
-            Some(text) => HookResult::Continue(HookOutput::Text(text)),
-            None => HookResult::PassThrough,
-        }
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::PromptSystemSection {
-            section: "roles".to_string(),
-            priority: ROLE_HOOK_PRIORITY,
-        }
+impl crate::tools::prompt_sections::PromptSectionProvider for WorkspaceRolesPromptHandler {
+    fn section(&self) -> &'static str {
+        "roles"
     }
 
     fn priority(&self) -> i32 {
         ROLE_HOOK_PRIORITY
     }
 
-    fn name(&self) -> String {
-        "WorkspaceRolesPromptHandler".to_string()
+    async fn render(
+        &self,
+        input: &crate::tools::prompt_sections::PromptSectionInput,
+    ) -> Option<String> {
+        let workspace = input.workspace.to_string_lossy().to_string();
+        if workspace.is_empty() {
+            return None;
+        }
+        self.render_catalog(&workspace)
     }
 }
 
@@ -417,8 +405,8 @@ pub fn load_roles_from_directory(path: &Path) -> Vec<DiscoveredRole> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::ExtensionServices;
-    use std::sync::Arc;
+    use crate::tools::prompt_sections::PromptSectionProvider;
+
     use tempfile::TempDir;
 
     fn create_test_role(dir: &Path, name: &str, description: &str) -> PathBuf {
@@ -554,26 +542,14 @@ color: '#ff0000'
         assert_eq!(manifest.description, "Premium implementation specialist");
     }
 
-    /// Build a `PromptSystemSection { section: "roles" }` hook context,
-    /// optionally carrying a workspace in the `tool_context` state.
-    fn roles_hook_ctx(workspace: Option<&str>) -> HookContext {
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "roles".to_string(),
-                priority: ROLE_HOOK_PRIORITY,
-            },
-            crate::extensions::framework::types::HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        if let Some(ws) = workspace {
-            ctx.set_state(
-                "tool_context",
-                crate::extensions::framework::types::ToolRuntimeContext::new()
-                    .with_workspace(ws)
-                    .with_principal_id("test-principal"),
-            );
+    /// Build the provider input for `workspace`.
+    fn roles_input(workspace: &Path) -> crate::tools::prompt_sections::PromptSectionInput {
+        crate::tools::prompt_sections::PromptSectionInput {
+            principal_id: "test-principal".to_string(),
+            workspace: workspace.to_path_buf(),
+            session_id: String::new(),
+            channel_port: None,
         }
-        ctx
     }
 
     #[tokio::test]
@@ -585,37 +561,30 @@ color: '#ff0000'
         create_test_role_flat(&roles_dir, "reviewer", "Reviews code");
 
         let handler = WorkspaceRolesPromptHandler::new();
-        let result = handler
-            .handle(roles_hook_ctx(Some(&temp.path().to_string_lossy())))
-            .await;
-
-        match result {
-            HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(
-                    text.contains("- math (id: math): Math operations"),
-                    "got: {text}"
-                );
-                assert!(
-                    text.contains("- reviewer (id: reviewer): Reviews code"),
-                    "got: {text}"
-                );
-                assert!(text.contains("(location: "), "got: {text}");
-                assert!(text.contains("roles/math/ROLE.md"), "got: {text}");
-                assert!(text.contains("roles/reviewer.md"), "got: {text}");
-            }
-            _ => panic!("Expected Continue with Text, got {result:?}"),
-        }
+        let text = handler
+            .render(&roles_input(temp.path()))
+            .await
+            .expect("expected roles catalog text");
+        assert!(
+            text.contains("- math (id: math): Math operations"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("- reviewer (id: reviewer): Reviews code"),
+            "got: {text}"
+        );
+        assert!(text.contains("(location: "), "got: {text}");
+        assert!(text.contains("roles/math/ROLE.md"), "got: {text}");
+        assert!(text.contains("roles/reviewer.md"), "got: {text}");
     }
 
     #[tokio::test]
     async fn workspace_roles_handler_passes_through_without_workspace() {
         let handler = WorkspaceRolesPromptHandler::new();
-        // No tool_context state at all → PassThrough.
-        let result = handler.handle(roles_hook_ctx(None)).await;
-        assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected PassThrough without workspace, got {result:?}"
-        );
+        let temp = TempDir::new().unwrap();
+        // A workspace with no `roles/` dir → no section.
+        let result = handler.render(&roles_input(temp.path())).await;
+        assert!(result.is_none(), "Expected no section, got {result:?}");
     }
 
     #[tokio::test]
@@ -624,12 +593,10 @@ color: '#ff0000'
         std::fs::create_dir(temp.path().join("roles")).unwrap();
 
         let handler = WorkspaceRolesPromptHandler::new();
-        let result = handler
-            .handle(roles_hook_ctx(Some(&temp.path().to_string_lossy())))
-            .await;
+        let result = handler.render(&roles_input(temp.path())).await;
         assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected PassThrough for empty roles dir, got {result:?}"
+            result.is_none(),
+            "Expected no section for empty roles dir, got {result:?}"
         );
     }
 
@@ -641,29 +608,27 @@ color: '#ff0000'
         create_test_role(&roles_dir, "math", "Math operations");
 
         let handler = WorkspaceRolesPromptHandler::new();
-        let ws = temp.path().to_string_lossy().to_string();
-
         // First call scans and caches.
-        let first = handler.handle(roles_hook_ctx(Some(&ws))).await;
+        let first = handler.render(&roles_input(temp.path())).await;
         match &first {
-            HookResult::Continue(HookOutput::Text(text)) => {
+            Some(text) => {
                 assert!(text.contains("math"), "got: {text}");
                 assert!(!text.contains("reviewer"), "got: {text}");
             }
-            _ => panic!("Expected Continue with Text, got {first:?}"),
+            None => panic!("Expected catalog text, got {first:?}"),
         }
 
         // Adding a role bumps the `roles/` dir mtime → the next call
         // must re-scan rather than serve the cached catalog.
         create_test_role_flat(&roles_dir, "reviewer", "Reviews code");
 
-        let second = handler.handle(roles_hook_ctx(Some(&ws))).await;
+        let second = handler.render(&roles_input(temp.path())).await;
         match &second {
-            HookResult::Continue(HookOutput::Text(text)) => {
+            Some(text) => {
                 assert!(text.contains("math"), "got: {text}");
                 assert!(text.contains("reviewer"), "got: {text}");
             }
-            _ => panic!("Expected Continue with Text, got {second:?}"),
+            None => panic!("Expected catalog text, got {second:?}"),
         }
     }
 
@@ -680,14 +645,13 @@ color: '#ff0000'
         let role_md = create_test_role(&roles_dir, "math", "Math operations");
 
         let handler = WorkspaceRolesPromptHandler::new();
-        let ws = temp.path().to_string_lossy().to_string();
 
-        let first = handler.handle(roles_hook_ctx(Some(&ws))).await;
+        let first = handler.render(&roles_input(temp.path())).await;
         match &first {
-            HookResult::Continue(HookOutput::Text(text)) => {
+            Some(text) => {
                 assert!(text.contains("Math operations"), "got: {text}");
             }
-            _ => panic!("Expected Continue with Text, got {first:?}"),
+            None => panic!("Expected catalog text, got {first:?}"),
         }
 
         // Rewrite the same file with a longer description — the file's
@@ -697,15 +661,15 @@ color: '#ff0000'
             .replace("Math operations", "Math operations and symbolic algebra");
         std::fs::write(&role_md, content).unwrap();
 
-        let second = handler.handle(roles_hook_ctx(Some(&ws))).await;
+        let second = handler.render(&roles_input(temp.path())).await;
         match &second {
-            HookResult::Continue(HookOutput::Text(text)) => {
+            Some(text) => {
                 assert!(
                     text.contains("Math operations and symbolic algebra"),
                     "got: {text}"
                 );
             }
-            _ => panic!("Expected Continue with Text, got {second:?}"),
+            None => panic!("Expected catalog text, got {second:?}"),
         }
     }
 }

@@ -52,7 +52,7 @@ use crate::principal::Principal;
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentResolution, DirectoryError, ResolvedExposure};
 
-/// Wire name registered with the ExtensionCore.
+/// Wire name registered with the ToolingRuntime.
 pub const CHANNEL_SEND_TOOL_NAME: &str = "ChannelSend";
 
 // ---------------------------------------------------------------------------

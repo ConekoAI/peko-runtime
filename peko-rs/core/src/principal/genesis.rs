@@ -703,7 +703,6 @@ mod tests {
         )
         .await
         .expect("tool runtime should initialize");
-        crate::extensions::framework::core::init_global_core(tool_runtime.extension_core().clone());
 
         let (resolver, _adapter) = peko_providers::resolver::LlmResolver::mock(
             peko_providers::mock::MockAdapter::new(),
@@ -716,6 +715,7 @@ mod tests {
             std::sync::Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
             crate::async_exec::executor::standalone_inbox_registry(),
         )
+        .with_tooling(tool_runtime.tooling().clone())
         .with_resolver(resolver);
 
         let mut config = bare_config();

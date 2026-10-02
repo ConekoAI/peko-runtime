@@ -156,6 +156,7 @@ async fn test_e2e_spawn_and_complete() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     // Spawn a subagent
@@ -218,6 +219,7 @@ async fn subagent_inherits_parent_cancel() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let parent_token = tokio_util::sync::CancellationToken::new();
@@ -313,6 +315,7 @@ async fn test_spawn_depth_limit() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     // Create a config with max_depth = 1
@@ -421,6 +424,7 @@ async fn test_isolated_vs_shared_session() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
@@ -502,6 +506,7 @@ async fn test_result_format_in_registry() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let run_id = executor
@@ -549,6 +554,7 @@ async fn test_list_runs_functionality() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
@@ -631,6 +637,7 @@ async fn test_cleanup_policy_tracking() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
@@ -684,6 +691,7 @@ async fn test_parent_child_relationship() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let run_id = executor
@@ -728,6 +736,7 @@ async fn test_runs_by_parent_filtering() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
@@ -810,6 +819,7 @@ async fn test_concurrent_runs_counting() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
@@ -880,6 +890,7 @@ async fn test_executor_get_status() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let run_id = executor
@@ -931,6 +942,7 @@ async fn test_executor_get_run() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let run_id = executor
@@ -954,6 +966,7 @@ async fn test_executor_cancel() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     // Cancel is racing the spawned task's completion. Without a provider,
@@ -1037,6 +1050,7 @@ async fn test_max_concurrent_limit() {
         agent_name.clone(),
         1, // Only 1 concurrent
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     // First spawn should succeed
@@ -1120,6 +1134,7 @@ async fn resume_refuses_nonexistent_target() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     let err = executor
         .resume_and_execute(
@@ -1157,6 +1172,7 @@ async fn resume_refuses_non_spawn_target() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     let err = executor
         .resume_and_execute(
@@ -1190,6 +1206,7 @@ async fn resume_refuses_self_and_ancestor() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
 
     // Self: target == the session the caller is running in.
@@ -1250,6 +1267,7 @@ async fn resume_happy_path_preserves_history() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
 
     // No provider configured → the task body returns the stub success
@@ -1371,6 +1389,7 @@ async fn new_with_name_attaches_to_standing_child() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     let run_id = executor
         .spawn_and_execute(
@@ -1437,6 +1456,7 @@ async fn new_with_fresh_name_spawns_new_session() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     let run_id = executor
         .spawn_and_execute(
@@ -1509,6 +1529,7 @@ async fn new_with_name_colliding_non_spawn_errors() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     let err = executor
         .spawn_and_execute(
@@ -1549,6 +1570,7 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     // The standing child was declared with `archivist`; requesting
     // `writer` is a structured refusal before anything runs.
@@ -1613,6 +1635,7 @@ async fn compact_refuses_nonexistent_target() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     let err = executor
         .compact_and_execute(
@@ -1649,6 +1672,7 @@ async fn compact_refuses_self_and_ancestor() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
 
     // Self: the engine compacts the caller's own session automatically.
@@ -1704,6 +1728,7 @@ async fn compact_happy_path_runs_session_without_trigger_requirement() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     // No provider is wired into the test executor, so the run completes
     // immediately via the "no provider configured" shortcut — enough to
@@ -1762,6 +1787,7 @@ async fn validate_context_parent_resolves_path() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
 
     // B4 cleanup: `validate_context_parent` is now a thin resolve_reference
@@ -1811,6 +1837,7 @@ async fn spawn_with_name_stamps_child_slug() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     let run_id = executor
         .spawn_and_execute(
@@ -1909,16 +1936,6 @@ async fn spawn_with_name_stamps_child_slug() {
 // caller's sink.
 // ---------------------------------------------------------------------------
 
-/// Ensure the daemon-global ExtensionCore exists for tests that build
-/// real `Agent`s through the executor path.
-fn ensure_global_core() {
-    if crate::extensions::framework::core::global_core().is_none() {
-        crate::extensions::framework::core::init_global_core(Arc::new(
-            crate::extensions::framework::core::ExtensionCore::new(),
-        ));
-    }
-}
-
 /// Build a `MockAdapter`-backed `Provider` (mirrors the engine tests'
 /// `mock_provider` fixture).
 fn mock_provider() -> (Arc<peko_providers::Provider>, peko_providers::MockAdapter) {
@@ -1967,7 +1984,6 @@ fn streaming_test_config() -> ExecutionConfig {
 #[tokio::test(flavor = "multi_thread")]
 async fn streaming_resume_happy_path_streams_and_returns_final_text() {
     peko_identity::init_test_env();
-    ensure_global_core();
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
     create_linked_session(
@@ -1987,6 +2003,7 @@ async fn streaming_resume_happy_path_streams_and_returns_final_text() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     )
     .with_provider(provider)
     // Persona: the child agent must run with the caller-provided
@@ -2064,7 +2081,6 @@ async fn streaming_resume_happy_path_streams_and_returns_final_text() {
 #[tokio::test(flavor = "multi_thread")]
 async fn streaming_resume_registers_active_run_in_registry() {
     peko_identity::init_test_env();
-    ensure_global_core();
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
     create_linked_session(
@@ -2085,6 +2101,7 @@ async fn streaming_resume_registers_active_run_in_registry() {
             agent_name,
             5,
             peko_subject::PrincipalId::generate(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         )
         .with_provider(provider),
     );
@@ -2147,7 +2164,6 @@ async fn streaming_resume_registers_active_run_in_registry() {
 #[tokio::test(flavor = "multi_thread")]
 async fn streaming_resume_cancellation_stops_the_run() {
     peko_identity::init_test_env();
-    ensure_global_core();
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
     create_linked_session(
@@ -2167,6 +2183,7 @@ async fn streaming_resume_cancellation_stops_the_run() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     )
     .with_provider(provider);
 
@@ -2218,6 +2235,7 @@ async fn streaming_resume_enforces_guard_stack() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
 
     // Non-spawn target.
@@ -2312,6 +2330,7 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
         format!("{agent_name}-streaming"),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
 
     let (sink, _e) = event_collector();
@@ -2350,7 +2369,6 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
 #[tokio::test(flavor = "multi_thread")]
 async fn streaming_resume_sequential_turns_keep_history() {
     peko_identity::init_test_env();
-    ensure_global_core();
     let (session_manager, registry, agent_name) = create_test_components().await;
     create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
     create_linked_session(
@@ -2371,6 +2389,7 @@ async fn streaming_resume_sequential_turns_keep_history() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     )
     .with_provider(provider);
 
@@ -2461,6 +2480,7 @@ async fn peer_bound_run_delivers_reply_via_surface() {
         &agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     )
     .with_peer_turn_surface(Some(surface.clone()));
 
@@ -2537,6 +2557,7 @@ async fn resume_allows_cross_subtree_target() {
         &agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
     // Caller /user-a resumes sibling /user-b — previously refused
     // with err_out_of_tree.
@@ -2586,6 +2607,7 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
         &agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     );
 
     // Attach: /user-b exists at top level — the call drives a turn
@@ -2714,6 +2736,7 @@ async fn test_e2e_branch_copies_source_context() {
         agent_name,
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let view = executor
@@ -2815,6 +2838,7 @@ async fn test_branch_overwrite_reseeds_in_place() {
         agent_name.clone(),
         5,
         peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     // Fire #1: an ordinary spawn occupies the target slug (the recurring

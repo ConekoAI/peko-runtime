@@ -11,8 +11,8 @@
 //! This module no longer maintains a separate `SubagentRegistry`.
 //!
 //! The executor carries a `principal_id` (the spawning principal's DID)
-//! rather than an `Arc<ExtensionCore>` — there is one daemon-global
-//! [`crate::extensions::framework::core::ExtensionCore`] (`global_core()`) and
+//! rather than an `Arc<ToolingRuntime>` — there is one daemon-global
+//! [`crate::tools::runtime::ToolingRuntime`] (`the injected tooling runtime`) and
 //! principals share it. Per-principal tool instances (sessions/memory/
 //! catalog) are registered on that single global core keyed by the
 //! principal, so per-subagent visibility is still scoped to the
@@ -328,6 +328,10 @@ pub struct SubagentExecutor {
     inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
     /// Optional peer-turn delivery surface — see [`PeerTurnSurface`].
     peer_turn_surface: Option<Arc<dyn PeerTurnSurface>>,
+    /// The shared tooling runtime (ADR-066 P3): catalog + dispatcher +
+    /// hooks, threaded explicitly — spawned child agents register and
+    /// dispatch through it.
+    tooling: Arc<crate::tools::runtime::ToolingRuntime>,
 }
 
 impl SubagentExecutor {
@@ -336,16 +340,15 @@ impl SubagentExecutor {
     /// Uses the global per-agent async task registry so that status queries
     /// and result delivery work across stateless requests.
     ///
-    /// `principal_id` is the spawning principal's runtime id. There is no
-    /// per-principal `ExtensionCore` — the executor and its subagents look
-    /// tools up on the daemon-global
-    /// [`crate::extensions::framework::core::global_core`].
+    /// `principal_id` is the spawning principal's runtime id. The injected
+    /// tooling runtime is propagated to every child and recursive spawn.
     #[must_use]
     pub fn new(
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
         principal_id: PrincipalId,
+        tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Self {
         let agent_name = agent_name.into();
         let async_registry = get_or_create_registry_for_agent(&agent_name);
@@ -375,6 +378,7 @@ impl SubagentExecutor {
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
             peer_turn_surface: None,
+            tooling,
         }
     }
 
@@ -517,6 +521,12 @@ impl SubagentExecutor {
         self.principal_capabilities.as_ref()
     }
 
+    /// The shared tooling runtime this executor's spawns dispatch through.
+    #[must_use]
+    pub fn tooling(&self) -> &Arc<crate::tools::runtime::ToolingRuntime> {
+        &self.tooling
+    }
+
     /// Set the observability hub used to audit subagent spawns.
     #[must_use]
     pub fn with_observability(mut self, observability: Option<Arc<Observability>>) -> Self {
@@ -538,6 +548,7 @@ impl SubagentExecutor {
         agent_name: impl Into<String>,
         max_concurrent: usize,
         principal_id: PrincipalId,
+        tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Self {
         let unified_executor = AsyncExecutor::with_registries(
             async_registry,
@@ -565,6 +576,7 @@ impl SubagentExecutor {
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
             peer_turn_surface: None,
+            tooling,
         }
     }
 
@@ -1976,6 +1988,7 @@ impl SubagentExecutor {
         let session_manager_clone = self.session_manager.clone();
         let principal_id_clone = self.principal_id.clone();
         let principal_capabilities_clone = self.principal_capabilities.clone();
+        let tooling_clone = Arc::clone(&self.tooling);
         let observability_clone = self.observability.clone();
         // F39: clone the parent's quota meter so the spawned task
         // can re-open `QuotaScope::with(...)` inside (task-locals don't
@@ -2122,6 +2135,7 @@ impl SubagentExecutor {
                         principal_id_clone,
                         principal_workspace_clone,
                         principal_capabilities_clone,
+                        tooling_clone,
                         observability_clone,
                         child_cancel_for_closure.clone(),
                         parent_quota_meter_clone,
@@ -2468,8 +2482,8 @@ fn apply_role_prompt_override(config: &mut AgentConfig, role_prompt: Option<Stri
 ///    stream; sprint 2 Phase 6)
 /// 4. Returns the assistant's final answer + token usage
 ///
-/// The child resolves tools from the daemon-global
-/// [`crate::extensions::framework::core::global_core`]. The parent's
+/// The child resolves tools from the parent's injected
+/// [`crate::tools::runtime::ToolingRuntime`]. The parent's
 /// `principal_id` is propagated so the child's own `SubagentExecutor`
 /// and any descendant spawns carry the same identity.
 #[allow(clippy::too_many_arguments)]
@@ -2525,6 +2539,7 @@ async fn execute_subagent_task(
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
     principal_capabilities: Option<Arc<Capabilities>>,
+    tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     observability: Option<Arc<Observability>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     // F39: snapshot of the spawning principal's `QuotaMeter`. The
@@ -2633,6 +2648,7 @@ async fn execute_subagent_task(
         agent_name,
         5,
         principal_id.clone(),
+        Arc::clone(&tooling),
     )
     .with_provider(provider.clone())
     .with_agent_config(config.clone())
@@ -2767,7 +2783,7 @@ async fn execute_subagent_task(
     // Conversation mode (peer ingress) skips the wrapper entirely:
     // the task message IS the user's text. Otherwise we pass
     // history: None so that run_with_resume prepends the FULL system
-    // prompt (including tool definitions from ExtensionCore).
+    // prompt (including tool definitions from ToolingRuntime).
     // Previously we passed the subagent context as a system message
     // in history, which caused run_with_resume to skip the full
     // system prompt — leaving the subagent without knowledge of
@@ -3375,6 +3391,7 @@ mod tests {
             "test_agent",
             5,
             peko_subject::PrincipalId::generate(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         assert_eq!(executor.agent_name, "test_agent");
@@ -3393,6 +3410,7 @@ mod tests {
             "test_agent",
             5,
             peko_subject::PrincipalId::generate(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         // Default-constructed agent_meter is an unlimited fallback.
@@ -3443,6 +3461,7 @@ mod tests {
             "test_agent",
             5,
             peko_subject::PrincipalId::generate(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         // Initially empty
@@ -3526,6 +3545,7 @@ mod tests {
             "test_agent",
             5,
             peko_subject::PrincipalId::generate(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         )
         .with_principal_capabilities(Some(Arc::clone(&allowed)));
 

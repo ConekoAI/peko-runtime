@@ -7,10 +7,10 @@
 use crate::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
 use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::core::ExtensionCore;
 use crate::principal::manager::PrincipalManager;
 #[cfg(test)]
 use crate::principal::router::{ChannelContext, ChannelKind};
+use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
@@ -54,13 +54,13 @@ pub struct CronEngine {
     observability: Arc<Observability>,
     principal_manager: Option<Arc<PrincipalManager>>,
     /// Cron-owned `AsyncExecutor`. Spawned with a `Weak` reference to
-    /// the daemon's global `ExtensionCore` so it can resolve tool
+    /// the daemon's global `ToolingRuntime` so it can resolve tool
     /// instances by name without keeping the core alive longer than the
     /// daemon. Wired to the daemon's `InboxRegistry` so completion
     /// events and steer messages land in the same inboxes the
     /// in-flight `AgenticLoop` drains.
     async_executor: Arc<AsyncExecutor>,
-    extension_core: Weak<ExtensionCore>,
+    tooling: Weak<ToolingRuntime>,
 }
 
 impl CronEngine {
@@ -73,7 +73,7 @@ impl CronEngine {
     /// (built with `AsyncExecutor::new(standalone_inbox_registry())`) when
     /// no daemon-global executor is desired; the cron engine does not
     /// share its executor with any agent's per-call executor today.
-    /// `extension_core` is held weakly so the cron engine never keeps
+    /// `tooling` is held weakly so the cron engine never keeps
     /// the daemon's core alive past its natural lifetime.
     pub fn new(
         path_resolver: PathResolver,
@@ -81,7 +81,7 @@ impl CronEngine {
         observability: Arc<Observability>,
         principal_manager: Option<Arc<PrincipalManager>>,
         async_executor: Arc<AsyncExecutor>,
-        extension_core: Weak<ExtensionCore>,
+        tooling: Weak<ToolingRuntime>,
     ) -> Self {
         Self {
             schedulers: Arc::new(Mutex::new(HashMap::new())),
@@ -91,7 +91,7 @@ impl CronEngine {
             observability,
             principal_manager,
             async_executor,
-            extension_core,
+            tooling,
         }
     }
 
@@ -622,6 +622,7 @@ impl CronEngine {
                 &resolver,
                 Arc::clone(&self.observability),
                 Some(pm.shared_inbox_registry()),
+                pm.tooling(),
             )
             .await
             {
@@ -636,7 +637,7 @@ impl CronEngine {
                             // carries no peer surface (the ingress driver
                             // posts replies itself), so deliver here —
                             // the same DM projection, once.
-                            if let Some(core) = self.extension_core.upgrade() {
+                            if let Some(core) = self.tooling.upgrade() {
                                 if let Some(port) = core.services().channel_port() {
                                     let surface =
                                         crate::principal::child_turns::PeerTurnSurfaceImpl::new(
@@ -695,7 +696,7 @@ impl CronEngine {
 
     /// Run a [`CronJobAction::SpawnTool`] job by handing it to the
     /// cron engine's `AsyncExecutor`. The executor:
-    /// 1. resolves the tool instance via the daemon's `ExtensionCore`,
+    /// 1. resolves the tool instance via the daemon's `ToolingRuntime`,
     /// 2. records an `AsyncTask` entry attributed to the principal's
     ///    trunk session (so `AsyncOutput`/`AsyncStatus`/`AsyncStop`
     ///    remain scoped to that root), and
@@ -737,13 +738,13 @@ impl CronEngine {
             ));
         };
 
-        let core = match self.extension_core.upgrade() {
+        let core = match self.tooling.upgrade() {
             Some(c) => c,
             None => {
                 return Ok((
                     "failed".to_string(),
                     None,
-                    Some("ExtensionCore dropped; cannot resolve tool".to_string()),
+                    Some("ToolingRuntime dropped; cannot resolve tool".to_string()),
                 ));
             }
         };
@@ -814,6 +815,7 @@ impl CronEngine {
         // churn when a run already registered it.
         if tool_name == crate::tools::builtin::channel::CHANNEL_SEND_TOOL_NAME
             && core
+                .catalog()
                 .get_tool_metadata(tool_name, &principal.id)
                 .await
                 .is_none()
@@ -825,7 +827,7 @@ impl CronEngine {
                         Some(tool) => {
                             if let Err(e) =
                                 crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-                                    &core,
+                                    core.catalog(),
                                     tool,
                                     &principal.id,
                                 )
@@ -838,7 +840,7 @@ impl CronEngine {
                         }
                         None => {
                             tracing::warn!(
-                                "cron SpawnTool: no ChannelPort on ExtensionCore — \
+                                "cron SpawnTool: no ChannelPort on ToolingRuntime — \
                                  ChannelSend cannot be registered"
                             );
                         }
@@ -863,6 +865,7 @@ impl CronEngine {
         // `/local-user`) deliver their reply to the peer's DM channel.
         if tool_name == "Agent"
             && core
+                .catalog()
                 .get_tool_metadata(tool_name, &principal.id)
                 .await
                 .is_none()
@@ -1074,7 +1077,7 @@ impl CronEngine {
         &self,
         pm: &Arc<PrincipalManager>,
         principal: &Arc<crate::principal::Principal>,
-        core: &Arc<ExtensionCore>,
+        core: &Arc<ToolingRuntime>,
     ) -> Result<()> {
         let resolver = pm
             .llm_resolver()
@@ -1084,6 +1087,7 @@ impl CronEngine {
             &resolver,
             Arc::clone(&self.observability),
             Some(pm.shared_inbox_registry()),
+            pm.tooling(),
         )
         .await?;
         let surface = core.services().channel_port().map(|port| {
@@ -1097,8 +1101,12 @@ impl CronEngine {
         let tool = Arc::new(crate::tools::builtin::messaging::new_agent_tool(Arc::new(
             executor,
         )));
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool(core, tool, &principal.id)
-            .await?;
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+            core.catalog(),
+            tool,
+            &principal.id,
+        )
+        .await?;
         info!(
             principal = %principal.id.0,
             "cron cold start: registered Agent tool for principal"
@@ -1197,7 +1205,7 @@ mod tests {
     use super::*;
     use crate::common::paths::PathResolver;
     use crate::engine::tool_runtime::ToolRuntime;
-    use crate::extensions::framework::core::init_global_core;
+
     use crate::principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
@@ -1285,7 +1293,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let workspace = tmp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
@@ -1300,6 +1307,7 @@ mod tests {
                 Arc::new(DefaultPrincipalRouterFactory),
                 crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver),
         )
     }
@@ -1736,7 +1744,7 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
+
         let catalog_path = tmp.path().join("models.toml");
         let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         adapter.queue_text("conversational reply");
@@ -1748,6 +1756,7 @@ mod tests {
                 Arc::new(DefaultPrincipalRouterFactory),
                 crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver),
         );
 
@@ -1925,7 +1934,7 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
+
         let catalog_path = tmp.path().join("models.toml");
         let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         adapter.queue_text("conversational reply");
@@ -1937,6 +1946,7 @@ mod tests {
                 Arc::new(DefaultPrincipalRouterFactory),
                 crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver),
         );
 
@@ -2073,7 +2083,7 @@ mod tests {
     /// F3 regression (2026-08-07 field test): a one-shot
     /// (`delete_after_run`) SpawnTool job must be reaped after its fire
     /// even though the fire path returns "failed" (here: no
-    /// `ExtensionCore`, so the spawn refuses immediately). The old
+    /// `ToolingRuntime`, so the spawn refuses immediately). The old
     /// `status == "success"` gate parked such jobs on the 100-year
     /// sentinel forever.
     #[tokio::test]
@@ -2086,7 +2096,7 @@ mod tests {
         );
         let scheduler =
             Arc::new(CronScheduler::new(engine_resolver.cron_schedule("crony")).unwrap());
-        // No ExtensionCore (Weak::new) and no PrincipalManager: the
+        // No ToolingRuntime (Weak::new) and no PrincipalManager: the
         // spawn refuses immediately with "failed".
         let engine = CronEngine::new(
             engine_resolver,
@@ -2204,13 +2214,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_spawn_tool_wake_posts_to_trunk_inbox() {
         let tmp = TempDir::new().unwrap();
-        // Build the manager WITHOUT `init_global_core` (unlike
+        // Build the manager WITHOUT `runtime injection` (unlike
         // `setup_principal_manager`): this test never runs an agentic
         // turn — `run_spawn_tool_job` only reads the principal config
-        // and dispatches through the `ExtensionCore` passed to the
+        // and dispatches through the `ToolingRuntime` passed to the
         // engine — so it must not replace the process-wide core that
         // parallel agentic-loop tests register hooks on (test-build
-        // `init_global_core` overwrites the global; pre-existing race
+        // `runtime injection` overwrites the global; pre-existing race
         // surfaced in
         // `after_agent_hook_fires_from_loop_with_agent_name_and_did`).
         let path_resolver = PathResolver::with_dirs(
@@ -2240,13 +2250,13 @@ mod tests {
         let registry = crate::async_exec::executor::standalone_inbox_registry();
         let executor = Arc::new(AsyncExecutor::new(registry.clone()));
 
-        // ExtensionCore with the stub tool registered through the
+        // ToolingRuntime with the stub tool registered through the
         // built-in adapter so the F37 funnel resolves an execution
         // handler (bare `insert_tool_instance` only fills the
         // side-table; the hook dispatch would return "not available").
-        let core = Arc::new(ExtensionCore::new());
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            &core,
+            core.catalog(),
             Arc::new(CronStubTool),
         )
         .await
@@ -2345,7 +2355,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // Same manager-without-global-core setup as the wake test
         // above: `run_spawn_tool_job` dispatches through the
-        // `ExtensionCore` handed to the engine, not the process-global.
+        // `ToolingRuntime` handed to the engine, not the process-global.
         let path_resolver = PathResolver::with_dirs(
             tmp.path().join("config"),
             tmp.path().join("data"),
@@ -2371,9 +2381,9 @@ mod tests {
         let executor = Arc::new(AsyncExecutor::new(
             crate::async_exec::executor::standalone_inbox_registry(),
         ));
-        let core = Arc::new(ExtensionCore::new());
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            &core,
+            core.catalog(),
             Arc::new(CronFailingStubTool),
         )
         .await
@@ -2525,7 +2535,7 @@ mod tests {
         // And the work actually happens (poll until finalized).
         // Sprint 7 Commit D: the original assertion was `status == "success"`
         // (Notify was a no-tool-call delivery). SpawnTool jobs run through
-        // `AsyncExecutor` → `ExtensionCore` → `ToolRuntime` which this test
+        // `AsyncExecutor` → `ToolingRuntime` → `ToolRuntime` which this test
         // intentionally does not bootstrap, so the job lands on `"failed"`.
         // The plumbing being verified here is `execute_job_for_id` itself —
         // any terminal status other than "running" proves the job fired.

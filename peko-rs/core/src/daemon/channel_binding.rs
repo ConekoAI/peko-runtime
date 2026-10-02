@@ -1262,6 +1262,7 @@ impl ChannelBindingSupervisor {
             // child mid-run is consumed at the next iteration
             // boundary instead of stalling in the inbox.
             Some(self.principal_manager.shared_inbox_registry()),
+            self.principal_manager.tooling(),
         )
         .await
         {
@@ -2641,6 +2642,7 @@ mod tests {
             &agent_name,
             5,
             PrincipalId::generate(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
         let driver = SubagentResumeDriver::new(executor, sid("root:user:alice"));
 
@@ -2678,6 +2680,7 @@ mod tests {
             &agent_name,
             5,
             PrincipalId::generate(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
         let driver = SubagentResumeDriver::new(executor, sid("root:user:alice"));
 

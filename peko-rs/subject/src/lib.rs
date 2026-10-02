@@ -43,7 +43,7 @@ impl PrincipalId {
     }
 
     /// Canonical "system" sentinel for tools registered once on the shared
-    /// `ExtensionCore` (built-ins, MCP servers) and
+    /// `ToolingRuntime` (built-ins, MCP servers) and
     /// visible to every principal.
     ///
     /// The inner string is prefixed with `__` so generated ids

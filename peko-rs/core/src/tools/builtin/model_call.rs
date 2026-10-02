@@ -39,7 +39,7 @@
 //!
 //! ## Registration
 //!
-//! Registered once on the daemon-global `ExtensionCore` under the
+//! Registered once on the daemon-global `ToolingRuntime` under the
 //! system scope by `daemon::state` (it needs the `PrincipalManager`
 //! handle, which does not exist yet when
 //! `ToolRuntime::register_builtins` runs). Both the agentic loop and
@@ -1272,7 +1272,6 @@ mod tests {
     #[serial_test::serial]
     async fn funnel_executes_completion_with_principal_attribution() {
         use crate::extensions::builtin::BuiltinToolAdapter;
-        use crate::extensions::framework::core::ExtensionCore;
 
         let temp = tempfile::tempdir().expect("tempdir");
         let adapter = MockAdapter::new();
@@ -1295,16 +1294,16 @@ mod tests {
             .0
             .clone();
 
-        let core = ExtensionCore::new();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         BuiltinToolAdapter::register_tool_system(
-            &core,
+            core.catalog(),
             Arc::new(ModelCallTool::new(Arc::downgrade(&manager))),
         )
         .await
         .expect("register");
 
         let (_text, json, success) = peko_engine::funnel::execute_tool_via_core_with_context(
-            &core,
+            &*core,
             MODEL_CALL_TOOL_NAME,
             json!({"prompt": "hi"}),
             None,
@@ -1334,7 +1333,6 @@ mod tests {
     #[serial_test::serial]
     async fn funnel_executes_without_grants() {
         use crate::extensions::builtin::BuiltinToolAdapter;
-        use crate::extensions::framework::core::ExtensionCore;
 
         let temp = tempfile::tempdir().expect("tempdir");
         let adapter = MockAdapter::new();
@@ -1358,16 +1356,16 @@ mod tests {
             .0
             .clone();
 
-        let core = ExtensionCore::new();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         BuiltinToolAdapter::register_tool_system(
-            &core,
+            core.catalog(),
             Arc::new(ModelCallTool::new(Arc::downgrade(&manager))),
         )
         .await
         .expect("register");
 
         let (text, _json, success) = peko_engine::funnel::execute_tool_via_core_with_context(
-            &core,
+            &*core,
             MODEL_CALL_TOOL_NAME,
             json!({"prompt": "hi"}),
             None,

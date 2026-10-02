@@ -225,7 +225,7 @@ pub mod auth_compat;
 // post-slash-removal; PrincipalExtensionRow re-type also retired with
 // the slash module). The runtime cluster (manager/context/agent_runner/
 // routers) still in root pending 14.c.2b
-// port traits (RootAgentRunner + ExtensionCoreProvider).
+// port traits (RootAgentRunner + ToolingRuntimeProvider).
 pub mod principal;
 
 // (Phase 15: peko-quota shim deleted; callers use peko_quota::* directly)

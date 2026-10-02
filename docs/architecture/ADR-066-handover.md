@@ -2,9 +2,14 @@
 
 **Date:** 2026-10-02
 **Branch:** `adr-066-pure-workspace-tooling` (off `master`)
-**Status:** P1 + P2 landed and green; P3 designed and ~80% implemented but
-reverted to keep the tree green — full WIP preserved in
-[`adr-066-p3-wip.patch`](adr-066-p3-wip.patch). P4–P6 not started.
+**Status:** P1 + P2 landed; P3 implemented using the saved WIP and
+subsequent fixes, with all standard gates green. Docker integration is
+unverified because the local Docker server did not respond within a
+15-second preflight. P4–P6 are not started.
+
+The original [`adr-066-p3-wip.patch`](adr-066-p3-wip.patch) is retained as
+historical recovery material for the P2 base; do not apply it over P3.
+
 
 This document is the complete context needed to resume the work. Read
 [ADR-066](adr/ADR-066-pure-workspace-tooling.md) first — it is the decision
@@ -24,7 +29,9 @@ Ten decisions (D1–D10), six phases (P1–P6), each phase a tree-green commit.
 ## 2. Commit state
 
 ```
-23ba4c26  P2 (ADR-066): delete the capability gate        ← HEAD, all gates green
+P3        This phase: tooling catalog / dispatcher / explicit runtime
+74578be3  docs: ADR-066 implementation handover + P3 WIP patch
+23ba4c26  P2 (ADR-066): delete the capability gate
 7d6dbe04  P1 (ADR-066): re-home async_exec, delete inert extension framework
 336ffd55  docs: ADR-066 pure workspace tooling
 ```
@@ -97,71 +104,57 @@ python3 scripts/check_workspace_deps.py
 - `RuntimeMetadataResponse.capabilities` and MCP `ClientCapabilities`
   are unrelated namesakes — do not touch.
 
-## 5. P3 — IN PROGRESS, reverted (the big one)
+## 5. P3 — implemented (ADR §2 D2)
 
-**Goal (ADR §2 D2):** split the daemon-global `ExtensionCore` singleton
-(`global_core()`, ~300 mentions) into named pieces; engine seam
-`ToolFunnel` shrinks 12 methods → 3; single-point tool-call audit.
+The saved WIP was applied and completed without changing its catalog /
+dispatcher / runtime / prompt-provider / session-key design:
 
-The quota cut hit mid-refactor at 20 lib + 279 lib-test compile errors
-(remaining: engine test doubles and un-converted call sites). The WIP
-was reverted to keep HEAD green; **the complete implementation-in-flight
-is in `adr-066-p3-wip.patch`** (7,670 lines, applies with
-`git apply docs/architecture/adr-066-p3-wip.patch` onto 23ba4c26).
+- `tools/catalog.rs`: executable tool + metadata map keyed by `(name,
+  PrincipalId)`, with principal entries shadowing the system catalog;
+  stable sorted wire definitions. Exposure/search survive until P4.
+- `tools/dispatcher.rs`: the single execution point. Preserves schema
+  validation, workspace path injection, abort bridging, interrupt notices,
+  timeout/detach, and panic isolation. Observe-only Pre/Post hooks fire
+  even for unknown tools; one durable `tool.call` event covers success,
+  tool errors, unknown tools, validation failures, and panics. Agent DID,
+  caller, principal, and session attribution are retained; params are
+  represented by a full SHA-256 digest rather than raw content.
+- `tools/runtime.rs`: explicit composition built in `daemon/state.rs`,
+  passed through `PrincipalManager` / `RouterContext` / `PrincipalContext`
+  to root, peer, completion-wake, cron, and recursive subagent turns.
+  Tests construct isolated runtimes; no process-global tool accessor.
+- `ToolFunnel` has three methods: `execute(ToolCallSpec)`,
+  `list_tool_definitions`, and `render_prompt_sections`. `EngineHooks`
+  holds lifecycle/compaction hooks, session keys, and catalog probes;
+  `ToolingSeam` combines both without an engine → root edge.
+- Built-in prompt handlers are plain `PromptSectionProvider`s. Independent
+  sections still render concurrently, with the 2-second soft-fail budget,
+  stable aggregation, and custom-section retraction preserved.
+- Workspace tools install once **per principal** under a serialized guard;
+  prompt providers install once per runtime. This fixes the WIP's runtime-
+  wide install flag that would have skipped the second principal's tools.
+  Daemon-configured built-ins are preserved during workspace installation.
+- Surviving workspace hooks are owner-scoped for tool, prompt, and
+  Stop/AfterAgent dispatch. Lifecycle payloads carry principal/workspace
+  context and the runtime supplies the agent's current session key.
+- Deleted `ExtensionCore`, its global accessors, the unused async bridge,
+  tool registry, and companion-hook registration/codegen. `HookRegistry`
+  / `HookPoint` remain until P4; their hook-dispatch tests are retained.
+- The inert capabilities shell chain remains for P6. MCP
+  `ClientCapabilities` / `RuntimeMetadataResponse.capabilities` are unrelated.
 
-### The design in the patch (validated by how far it compiled — finish it, don't redesign)
+Verification: full workspace/all-target compile and all standard gates
+passed: formatting, clippy, 2,908 unit tests (zero failures; three existing
+ignored tests), module boundaries, and workspace dependencies. Dedicated regressions cover
+durable single-event audit (including errors/panics), two principals'
+workspace-tool and prompt isolation, scoped tool/lifecycle observers, and
+existing renderer/mock-agent tool round trips. Docker integration could
+not start: the local server timed out in the bounded preflight. Run
+`make test-integration` and `make docker-down` when Docker is available,
+before merging.
 
-- **`tools/catalog.rs`** — `ToolCatalog`: `(name, PrincipalId) →
-  (Arc<dyn Tool>, ToolMetadata)` map reusing
-  `framework::registry::SharedRegistry`. Built-ins/MCP proxies register
-  under `PrincipalId::system`; per-agent tools register under the owning
-  principal and shadow system entries on read. No capability filter;
-  the F34 `ToolExposure` filter survives until P4.
-- **`tools/dispatcher.rs`** — `ToolDispatcher`: the single execution
-  point. Composes `ToolCatalog` + `HookRegistry` (now used ONLY for the
-  observe-only Pre/PostToolUse points until P4) + `AsyncExecutionRouter`
-  (timeout/panic-isolation/detach) + optional `Observability` audit
-  sink. Emits the `tool.call` audit event here (ADR §4 requirement:
-  attribution consolidates at this one point).
-- **`tools/runtime.rs`** — `ToolingRuntime`: the ExtensionCore
-  replacement composition (catalog + dispatcher + hooks + `SessionKeys`
-  + `ExtensionServices` + `prompt_providers` + a `tool_bag_installed`
-  guard so `ensure_principal_tool_bag` installs once per daemon, not
-  per run). Built once in `daemon::state`, threaded explicitly
-  `PrincipalManager → PrincipalContext → Agent →` engine seams.
-  **No process-global accessor** — tests construct their own.
-- **`tools/prompt_sections.rs`** — `PromptSectionProvider` trait
-  (`section()` / `priority()` / `render(PromptSectionInput)`); built-in
-  sections: `identity`, `roles`, `skills`, `workflows`,
-  `session_context`. Workspace-hook `PromptSection` binds keep riding
-  the hook registry inside the same aggregation until P4 unifies.
-- **`tools/session_keys.rs`** — `SessionKeys`: per-agent-DID session-key
-  table (the issue-#68 side table, extracted from ExtensionCore).
-- **`extension-api/src/tool_funnel.rs`** — the 3-method seam:
-  `execute(ToolCallSpec)`, `list_tool_definitions`,
-  `render_prompt_sections(PromptSectionRequest) → PromptSections`.
-  `ToolCallSpec` carries identity + abort (no grants). The non-execution
-  surface (lifecycle hook firing, session keys, F33/F35 probes) moved to
-  a new **`EngineHooks`** trait in the same file. Dep-graph rule stands:
-  engine must not depend on root.
-
-### To finish P3
-
-1. Apply the patch; `cargo check --workspace --all-targets` and burn
-   down the errors. The bulk (279) are test doubles —
-   `engine/src/compaction_driver.rs` (~1119) and
-   `engine/src/prompt/renderer.rs` (~1248) funnel doubles, engine
-   `funnel.rs`/`tool_executor.rs`/`agentic_loop.rs` call sites — plus
-   root call sites still naming `ExtensionCore`/`global_core()`.
-2. Delete `ExtensionCore`, `global_core()`, `init_global_core`
-   (`daemon/state.rs`) and the `Arc<ExtensionCore>` threading
-   (`agents/agent.rs`, `daemon/cron_engine/`, IPC handlers, subagent
-   executor). Hollow out `framework/core/registry.rs`; park whatever
-   hook-dispatch remnants P4 still needs.
-3. Keep PreToolUse/PostToolUse firing through `HookRegistry` (P4
-   replaces it — do not delete HookRegistry/HookPoint in P3).
-4. Optional tail: the inert capabilities shell chain (§4 above).
-5. Full gate + commit.
+`API_SURFACE.md`, `CHANGELOG.md`, source docs, and the ignored local
+`AGENTS.md` are updated for P3. P4 is the next implementation phase.
 
 ## 6. P4 — not started
 
@@ -170,8 +163,8 @@ PreToolUse/PostToolUse observe-only 2 s soft-fail, Stop, AfterAgent,
 PromptSection, SessionContextBuild — a `Vec` fired in registration
 order; no priorities/wildcards/companion codegen) replaces
 `HookRegistry` for workspace hooks; rewire `workspace_hooks.rs` +
-`command_handler.rs`. Delete `HookRegistry`, the 790-LOC `HookPoint`
-zoo, `tool_registration.rs` companion-hook codegen. Delete
+`command_handler.rs`. Delete `HookRegistry` and the 790-LOC `HookPoint`
+zoo (companion-hook codegen was removed with P3's execution path). Delete
 `ToolExposure` (all tools are Direct), the exposure filter in the
 catalog, `AgentConfig::enable_tool_search`, `tools/builtin/tool_search.rs`,
 `framework/core/scoring.rs`. Verify hook integration tests (observe-only
@@ -223,6 +216,3 @@ fields (the deprecation window P2 opened).
   inventory) was produced by an explore subagent; its findings are
   distilled into ADR-066 §1 — trust the ADR, re-verify against the
   compiler when it disagrees.
-- P2's resume agent (`agent-15`) holds P1–P3 working context if this
-  session is still alive — resuming it with "continue" is cheaper than
-  a cold start.

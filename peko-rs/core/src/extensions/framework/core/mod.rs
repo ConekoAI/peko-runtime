@@ -1,61 +1,4 @@
-//! Extension Core module
-//!
-//! This module provides the foundation for the Unified Extension Architecture.
-//! It defines hook points in the agentic loop and manages registration/invocation
-//! of extension handlers.
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                    EXTENSION CORE                               │
-//! │                                                                 │
-//! │  Hook Points          Registry            Context               │
-//! │  ───────────          ────────            ───────               │
-//! │  PromptSystemSection  ExtensionCore      HookContext            │
-//! │  ToolRegister         RegisteredHook     HookState              │
-//! │  SessionStateChange   HookId             ExtensionServices      │
-//! │  ChannelInput                                                   │
-//! │  EventSubscribe                                                 │
-//! │  ...                                                            │
-//! └─────────────────────────────────────────────────────────────────┘
-//!                              │
-//!                    ┌─────────┴─────────┐
-//!                    ▼                   ▼
-//!           ┌─────────────┐    ┌─────────────────┐
-//!           │   Adapters  │    │ Extension Manager│
-//!           │  (Phase 2+) │    │   (Phase 7+)     │
-//!           └─────────────┘    └─────────────────┘
-//! ```
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! use peko::extensions::core::{ExtensionCore, HookPoint};
-//!
-//! // Create the core
-//! let core = ExtensionCore::new();
-//!
-//! // Register a handler
-//! let handler = Arc::new(MyHandler);
-//! let registration = core.register_hook(
-//!     HookPoint::PromptSystemSection { section: "skills".to_string(), priority: 100 },
-//!     handler,
-//!     &ExtensionId::new("my-extension"),
-//! ).await?;
-//!
-//! // Invoke hooks
-//! let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
-//! ```
-//!
-//! Note: `HookPoint::PromptSystemSection { section: "tools" }` is
-//! retained in the enum for back-compat with extensions that
-//! registered such a hook, but the engine's `PromptRenderer` no longer
-//! dispatches it (F36). Tool catalogs travel wire-only via the
-//! `tools[]` JSON-schema array, built by
-//! `list_tool_definitions_for`. Registering a handler for
-//! the "tools" section still works but the engine discards its
-//! output.
+//! Hook registry retained for workspace and lifecycle hooks until ADR-066 P4.
 
 // Re-export hook point definitions
 pub use hook_points::{common, HookPoint, HookPointBuilder};
@@ -73,32 +16,24 @@ pub use binding::{HookBinding, HookBindingBuilder};
 pub use config::{ExtensionConfig, ExtensionServices, TelemetryService};
 
 // Re-export registry types
-pub use registry::{
-    global_core, init_global_core, BuiltinExtensionInfo, ExtensionCore, RegisteredHook,
-};
+pub use hook_registry::{BuiltinExtensionInfo, RegisteredHook};
 
 // Re-export tool registration composite
-pub use tool_registration::ToolRegistration;
 
 // Re-export sub-registries
 pub use hook_registry::HookRegistry;
-pub use tool_registry::ToolRegistry;
 
 // Re-export tool registry types
 pub use crate::extensions::framework::types::{ToolMetadata, ToolSource};
 
 // Submodules
-pub mod async_bridge;
 pub mod binding;
 pub mod config;
 pub mod context;
 pub mod handler;
 pub mod hook_points;
 pub mod hook_registry;
-pub mod registry;
 pub mod scoring;
-pub mod tool_registration;
-pub mod tool_registry;
 
 // PR-E #5: `framework::core::test_sync` (459 lines, test-utils feature
 // only) deleted. The module hosted `TestSyncHandler` for the F36
@@ -155,7 +90,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_full_lifecycle() {
-        let core = ExtensionCore::new();
+        let core = HookRegistry::new();
 
         // Register multiple handlers
         let handler1 = Arc::new(TrackingHandler::new(
@@ -250,7 +185,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_multiple_handlers_same_point() {
-        let core = ExtensionCore::new();
+        let core = HookRegistry::new();
 
         let handler1 = Arc::new(TrackingHandler::new(HookPoint::ToolRegister, "handler1"));
         let handler2 = Arc::new(TrackingHandler::new(HookPoint::ToolRegister, "handler2"));
@@ -296,7 +231,7 @@ mod integration_tests {
             }
         }
 
-        let core = ExtensionCore::new();
+        let core = HookRegistry::new();
         let handler = Arc::new(ErrorHandler);
         let ext_id = ExtensionId::new("test");
 
@@ -332,7 +267,7 @@ mod integration_tests {
             }
         }
 
-        let core = ExtensionCore::new();
+        let core = HookRegistry::new();
         let handler = Arc::new(ReplaceHandler);
         let ext_id = ExtensionId::new("test");
 
@@ -386,7 +321,7 @@ mod integration_tests {
             }
         }
 
-        let core = ExtensionCore::new();
+        let core = HookRegistry::new();
 
         let handler1 = Arc::new(HandledHandler);
         let handler2 = Arc::new(SecondHandler {
@@ -413,25 +348,5 @@ mod integration_tests {
 
         // Second handler should NOT be invoked because first returned Handled
         assert!(!handler2.invoked.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial(core)]
-    async fn test_global_instance() {
-        // Note: This test may run after other tests that already set the global core.
-        // We can only verify that global_core() returns consistent results.
-
-        // If global core is already set, verify it's consistent
-        if let Some(global1) = global_core() {
-            let global2 = global_core().unwrap();
-            assert!(Arc::ptr_eq(&global1, &global2));
-        }
-
-        // Try to set our own core
-        let core = Arc::new(ExtensionCore::new());
-        init_global_core(core.clone());
-
-        // Verify global instance is set (either ours or from a previous test)
-        assert!(global_core().is_some());
     }
 }

@@ -114,6 +114,7 @@ impl std::error::Error for IngressError {}
 
 /// Owns all Principals in a runtime.
 pub struct PrincipalManager {
+    tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
     path_resolver: PathResolver,
@@ -198,6 +199,7 @@ impl PrincipalManager {
         inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
         Self {
+            tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
             path_resolver,
@@ -213,6 +215,15 @@ impl PrincipalManager {
             dm_subscriber_hook: std::sync::RwLock::new(None),
             identity_vault: None,
         }
+    }
+
+    pub fn tooling(&self) -> Arc<crate::tools::runtime::ToolingRuntime> {
+        Arc::clone(&self.tooling)
+    }
+
+    pub fn with_tooling(mut self, tooling: Arc<crate::tools::runtime::ToolingRuntime>) -> Self {
+        self.tooling = tooling;
+        self
     }
 
     pub fn with_resolver(mut self, resolver: Arc<LlmResolver>) -> Self {
@@ -851,6 +862,7 @@ impl PrincipalManager {
             &resolver,
             observability,
             Some(self.shared_inbox_registry()),
+            Arc::clone(&self.tooling),
         )
         .await
         .map_err(|e| {
@@ -1119,6 +1131,7 @@ impl PrincipalManager {
         };
 
         Ok(RouterContext {
+            tooling: Arc::clone(&self.tooling),
             principal_id: principal.id.clone(),
             principal_name,
             peer,
@@ -1482,7 +1495,7 @@ mod tests {
     use peko_auth::{Permission, PermissionGrant, Subject};
 
     use crate::engine::tool_runtime::ToolRuntime;
-    use crate::extensions::framework::core::init_global_core;
+
     use crate::principal::{
         router::{ChannelContext, ChannelKind},
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
@@ -1509,7 +1522,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let workspace = temp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
@@ -1523,6 +1535,7 @@ mod tests {
                 Arc::new(DefaultPrincipalRouterFactory),
                 crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver),
         );
 
@@ -1552,7 +1565,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let workspace = temp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
@@ -1572,6 +1584,7 @@ mod tests {
                 Arc::new(DefaultPrincipalRouterFactory),
                 crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver)
             .with_channel_port(store.clone()),
         );
@@ -2113,7 +2126,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let catalog_path = temp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
@@ -2127,6 +2139,7 @@ mod tests {
             Arc::new(DefaultPrincipalRouterFactory),
             crate::async_exec::executor::standalone_inbox_registry(),
         )
+        .with_tooling(tool_runtime.tooling().clone())
         .with_resolver(resolver)
         .with_identity_vault(Arc::clone(&vault));
 
@@ -3178,7 +3191,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let workspace = temp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
@@ -3193,6 +3205,7 @@ mod tests {
             Arc::new(DefaultPrincipalRouterFactory),
             crate::async_exec::executor::standalone_inbox_registry(),
         )
+        .with_tooling(tool_runtime.tooling().clone())
         .with_resolver(resolver);
         let principal = create_test_principal(&manager, "stressy").await;
         let id = principal.id.clone();

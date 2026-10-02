@@ -74,6 +74,7 @@ pub fn recalled_context_messages(injections: &[ContextInjection]) -> Vec<LlmMess
 
 /// Context passed to a `PrincipalRouter`.
 pub struct RouterContext {
+    pub tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     pub principal_id: super::PrincipalId,
     pub principal_name: String,
     pub peer: peko_auth::Subject,
@@ -147,6 +148,7 @@ impl std::fmt::Debug for RouterContext {
 impl Clone for RouterContext {
     fn clone(&self) -> Self {
         Self {
+            tooling: Arc::clone(&self.tooling),
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
             peer: self.peer.clone(),

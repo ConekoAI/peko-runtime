@@ -1,7 +1,7 @@
 //! Simple word-overlap scoring backend for the synthetic `__tool_search` tool.
 //!
 //! Lives in `extensions::framework::core::scoring` (not `tools::builtin`)
-//! because the framework's `ExtensionCore::list_deferred_tool_definitions`
+//! because the framework's `ToolingRuntime::list_deferred_tool_definitions`
 //! uses it directly, and module-boundary rule 3 forbids
 //! `extensions/framework/core/` from importing `tools/builtin`.
 //!

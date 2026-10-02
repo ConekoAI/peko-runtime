@@ -458,7 +458,7 @@ mod tests {
     /// self-view.
     #[tokio::test(flavor = "multi_thread")]
     // This test mutates process-global state (PEKO_HOME,
-    // init_global_core). All such tests share the plain `serial`
+    // runtime injection). All such tests share the plain `serial`
     // group — 2026-08-19: the separate `global_core_lock` group ran
     // in parallel with it and raced (PEKO_HOME swapped mid-test).
     #[serial_test::serial]
@@ -481,7 +481,6 @@ mod tests {
         )
         .await
         .expect("tool runtime should initialize");
-        crate::extensions::framework::core::init_global_core(tool_runtime.extension_core().clone());
 
         let catalog_path = tmp.path().join("models.toml");
         let (resolver, adapter) =
@@ -504,6 +503,7 @@ mod tests {
                 Arc::new(crate::principal::DefaultPrincipalRouterFactory),
                 crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver)
             .with_channel_port(channel_port.clone()),
         );

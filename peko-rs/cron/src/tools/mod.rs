@@ -894,7 +894,7 @@ mod tests {
         let back: CronJob = serde_json::from_str(&json).unwrap();
 
         // The dispatch surface must name `ChannelRead` exactly so the
-        // engine can resolve it through `ExtensionCore::list_tools`.
+        // engine can resolve it through `ToolingRuntime::list_tools`.
         let CronJobAction::SpawnTool {
             tool_name,
             tool_params,

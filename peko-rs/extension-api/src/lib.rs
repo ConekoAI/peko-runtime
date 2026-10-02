@@ -59,8 +59,10 @@ pub use completion_event::{CompletionEvent, InboxItem, SteeringMessage};
 // Phase F2 foldback: `ToolFunnel` trait lives here (not in root) so
 // the engine can depend on the API crate without depending on root
 // (would cycle). The trait impl lives in root on the real
-// `ExtensionCore`.
-pub use tool_funnel::ToolFunnel;
+// `ToolingRuntime`.
+pub use tool_funnel::{
+    EngineHooks, PromptSectionRequest, PromptSections, ToolCallSpec, ToolFunnel, ToolingSeam,
+};
 // Phase F2 foldback: `default_data_dir` + `default_agent_workspace`
 // moved here so `peko_engine::AgenticLoop` reaches them without
 // depending on root.

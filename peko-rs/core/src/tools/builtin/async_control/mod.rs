@@ -210,7 +210,7 @@ pub enum CancelResult {
 /// Runtime port the built-in async control tools speak to.
 ///
 /// The framework-host implements this via `AsyncExecutorRuntime` (which
-/// wraps the per-agent `AsyncExecutor` + `Weak<ExtensionCore>` +
+/// wraps the per-agent `AsyncExecutor` + `Weak<ToolingRuntime>` +
 /// `principal_id` + `capabilities` snapshot). The trait is per-agent:
 /// each `Agent` constructs one runtime and shares it across its
 /// `AsyncSpawn`/`AsyncOutput`/`AsyncStatus`/`AsyncList`/`AsyncStop`

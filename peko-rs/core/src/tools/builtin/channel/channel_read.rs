@@ -13,7 +13,7 @@ use peko_channel::{ChannelError, ChannelId, ChannelPort, Checkpoint};
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::json;
 
-/// Wire name registered with the ExtensionCore.
+/// Wire name registered with the ToolingRuntime.
 pub const CHANNEL_READ_TOOL_NAME: &str = "ChannelRead";
 
 /// Read events from a channel the calling principal is a member of.

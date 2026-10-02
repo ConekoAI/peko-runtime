@@ -229,7 +229,7 @@ pub enum HookInput {
         /// Threaded into `ToolRuntimeContext` and `ToolContext` so
         /// extension-scoped tools (e.g. `Skill`) can resolve per-
         /// principal state at handle time without per-call re-
-        /// registration on the shared global `ExtensionCore`.
+        /// registration on the shared global `ToolingRuntime`.
         principal_id: Option<String>,
         /// Human-readable Principal name. Cron-scoped tools use this to
         /// create and filter jobs for the current Principal.

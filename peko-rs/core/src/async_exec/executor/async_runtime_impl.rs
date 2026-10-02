@@ -1,11 +1,11 @@
 //! `AsyncExecutorRuntime` — implements the
 //! `crate::tools::builtin::async_control::AsyncRuntime` port by wrapping
-//! the per-agent `AsyncExecutor` + `Weak<ExtensionCore>` +
+//! the per-agent `AsyncExecutor` + `Weak<ToolingRuntime>` +
 //! `principal_id`.
 //!
 //! This is the bridge between peko-tools-builtin (which only sees the
 //! trait) and the framework-host (which owns `AsyncExecutor` +
-//! `ExtensionCore`). Agents construct one `AsyncExecutorRuntime` per
+//! `ToolingRuntime`). Agents construct one `AsyncExecutorRuntime` per
 //! agent process and pass it to `AsyncSpawnTool::new`,
 //! `AsyncOutputTool::new`, etc. via the factory closure
 //! (`Arc<AsyncExecutorRuntime>` → `Arc<dyn AsyncRuntime>`).
@@ -46,11 +46,11 @@
 use super::dispatch::ToolDispatchContext;
 use super::executor::AsyncExecutor;
 use super::types::AsyncToolConfig;
-use crate::extensions::framework::core::ExtensionCore;
 use crate::tools::builtin::async_control::{
     AsyncRuntime, CancelResult as PortCancelResult, SharedAsyncRuntime, SpawnReceipt, SpawnRequest,
     TaskView, WaitResult,
 };
+use crate::tools::runtime::ToolingRuntime;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use peko_subject::PrincipalId;
@@ -65,9 +65,9 @@ use std::time::Duration;
 /// peko-tools-builtin.
 pub struct AsyncExecutorRuntime {
     executor: Arc<AsyncExecutor>,
-    extension_core: Weak<ExtensionCore>,
+    tooling: Weak<ToolingRuntime>,
     /// Agent identity (DID) used to look up this agent's session key on
-    /// the shared `ExtensionCore` for `parent_session_key` stamping.
+    /// the shared `ToolingRuntime` for `parent_session_key` stamping.
     agent_id: Option<String>,
     /// F37: snapshot of the spawning principal's ID — flows into
     /// `ToolDispatchContext::for_principal` at spawn time.
@@ -79,13 +79,13 @@ impl AsyncExecutorRuntime {
     #[must_use]
     pub fn new(
         executor: Arc<AsyncExecutor>,
-        extension_core: Weak<ExtensionCore>,
+        tooling: Weak<ToolingRuntime>,
         agent_id: Option<String>,
         principal_id: PrincipalId,
     ) -> Self {
         Self {
             executor,
-            extension_core,
+            tooling,
             agent_id,
             principal_id,
         }
@@ -143,9 +143,9 @@ impl AsyncExecutorRuntime {
 impl AsyncRuntime for AsyncExecutorRuntime {
     async fn spawn(&self, request: SpawnRequest) -> Result<SpawnReceipt> {
         let core = self
-            .extension_core
+            .tooling
             .upgrade()
-            .ok_or_else(|| anyhow!("ExtensionCore has been dropped; cannot spawn"))?;
+            .ok_or_else(|| anyhow!("ToolingRuntime has been dropped; cannot spawn"))?;
 
         // Parent-session stamping, per call (ADR-061 follow-up): the
         // request's `parent_session_id` — filled by `AsyncSpawnTool`
@@ -165,7 +165,7 @@ impl AsyncRuntime for AsyncExecutorRuntime {
             .or_else(|| {
                 self.agent_id
                     .as_deref()
-                    .and_then(|agent_id| core.current_session_key(agent_id))
+                    .and_then(|agent_id| core.session_keys().get(agent_id))
             })
             .unwrap_or_else(|| "unknown".to_string());
 
@@ -493,7 +493,7 @@ mod tests {
     /// resolution of a task id must come from the global-registry
     /// fallback.
     fn make_runtime() -> Arc<AsyncExecutorRuntime> {
-        let core = Arc::new(ExtensionCore::new());
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         Arc::new(AsyncExecutorRuntime::new(
             Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
             Arc::downgrade(&core),
@@ -625,7 +625,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_without_timeout_gets_default_7200() {
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
-        let core = Arc::new(ExtensionCore::new());
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
         let runtime = Arc::new(AsyncExecutorRuntime::new(
             Arc::clone(&executor),
             Arc::downgrade(&core),
@@ -677,7 +677,7 @@ mod tests {
         }
 
         let make_runtime_for = |pid: &str| {
-            let core = Arc::new(ExtensionCore::new());
+            let core = crate::tools::runtime::ToolingRuntime::standalone();
             Arc::new(AsyncExecutorRuntime::new(
                 Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
                 Arc::downgrade(&core),

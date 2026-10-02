@@ -21,6 +21,31 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Module: `tools` — ADR-066 P3
+
+The daemon constructs one `ToolingRuntime` and passes it explicitly to
+`PrincipalManager`, root/peer/cron turns, agents, and their children.
+Standalone callers and tests construct isolated runtimes.
+
+| Contract | Module | Behavior |
+|---|---|---|
+| `ToolCatalog::{register, get, tool_definitions}` | `tools::catalog` | Stores executable `Arc<dyn Tool>` plus metadata by `(name, PrincipalId)`; principal entries shadow system entries; definitions sorted by name; exposure retained until P4 |
+| `ToolDispatcher::execute(ToolCallSpec)` | `tools::dispatcher` | Validates args, builds identity/abort context, injects workspace paths, routes timeout/detach and panic isolation, fires observe-only Pre/Post hooks, emits one `tool.call` audit event |
+| `ToolingRuntime::{catalog, dispatcher, hooks, services, session_keys}` | `tools::runtime` | Named composition; workspace tools installed per principal and prompt providers installed once |
+| `PromptSectionProvider::{section, priority, render}` | `tools::prompt_sections` | Plain per-turn provider for identity, roles, skills, workflows, and session context |
+| `SessionKeys::{set, get}` | `tools::session_keys` | Per-agent DID session-key table |
+
+`peko_extension_api::ToolFunnel` has exactly three methods:
+`execute(ToolCallSpec)`, `list_tool_definitions(&PrincipalId)`, and
+`render_prompt_sections(&PromptSectionRequest)`. `EngineHooks` carries
+lifecycle/compaction hooks, session-key bookkeeping, and catalog probes;
+`ToolingSeam` combines both traits without a root dependency in the engine.
+`ToolCallSpec` carries tool name, params, workspace, agent/session/caller/
+principal identity, principal name, and abort receiver. Execution returns
+`Result<(String, Value, bool)>`; tool failures are data with `false`.
+
+---
+
 ## Module: `extensions::framework`
 
 **Status:** ACTIVE  
@@ -30,43 +55,13 @@ The `extensions::framework` module contains the **generic extension framework** 
 
 ### `extensions::framework::core`
 
-#### `ExtensionCore`
+#### `HookRegistry` (ADR-066 P3 survivor)
 
-Central registry for all extension hooks.
-
-```rust
-pub struct ExtensionCore { ... }
-
-impl ExtensionCore {
-    /// Register a hook handler
-    pub async fn register_hook(
-        &self,
-        point: HookPoint,
-        handler: Arc<dyn HookHandler>,
-        extension_id: &ExtensionId,
-    ) -> Result<HookId>
-    
-    /// Unregister a hook
-    pub async fn unregister_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Enable/disable hooks
-    pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()>
-    pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Invoke hooks at a specific point
-    pub async fn invoke_hooks(
-        &self,
-        point: HookPoint,
-        context: HookContext,
-    ) -> Result<Vec<HookResult>>
-    
-    /// List all registered tools
-    pub async fn list_tools(&self) -> Vec<ToolMetadata>
-    
-    /// List tool definitions for LLM API
-    pub async fn list_tool_definitions(&self) -> Vec<ToolDefinition>
-}
-```
+Workspace and lifecycle hook handlers register on `HookRegistry`. Its
+`register_hook(point, handler, extension_id)` returns a `RegisteredHook`;
+`invoke_hook(point, input)` returns a `HookResult`. Execution is no longer
+hook-dispatched. Principal-scoped handlers run only with their owner's
+`ToolRuntimeContext`. P4 replaces this registry.
 
 #### `HookPoint`
 
@@ -177,7 +172,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState>;
     async fn shutdown(&self, state: ExtensionState) -> Result<()>;
     async fn is_healthy(&self, state: &ExtensionState) -> bool;
-    async fn register_tools(&self, core: &ExtensionCore, manifest: &ExtensionManifest) -> Result<usize>;
+    async fn register_tools(&self, catalog: &ToolCatalog, manifest: &ExtensionManifest) -> Result<usize>;
 }
 ```
 
@@ -332,43 +327,11 @@ pub fn is_valid_type(ext_type: &str) -> bool;
 pub fn standard_types() -> Vec<&'static str>;
 ```
 
-#### `ExtensionCore`
+#### Tooling composition (ADR-066 P3)
 
-Central registry for all extension hooks.
-
-```rust
-pub struct ExtensionCore { ... }
-
-impl ExtensionCore {
-    /// Register a hook handler
-    pub async fn register_hook(
-        &self,
-        point: HookPoint,
-        handler: Arc<dyn HookHandler>,
-        extension_id: &ExtensionId,
-    ) -> Result<HookId>
-    
-    /// Unregister a hook
-    pub async fn unregister_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Enable/disable hooks
-    pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()>
-    pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Invoke hooks at a specific point
-    pub async fn invoke_hooks(
-        &self,
-        point: HookPoint,
-        context: HookContext,
-    ) -> Result<Vec<HookResult>>
-    
-    /// List all registered hooks
-    pub async fn list_hooks(&self) -> Vec<HookInfo>
-    
-    /// Get hooks for a specific extension
-    pub async fn get_hooks_for_extension(&self, ext_id: &ExtensionId) -> Vec<HookInfo>
-}
-```
+See the `tools` contracts below. `ExtensionCore`, its process-global
+accessors, tool-instance side table, companion-hook codegen, and
+`ExtensionAsyncAdapter` have been deleted.
 
 #### `HookPoint`
 
@@ -738,7 +701,7 @@ sanitizers remain in `peko_session::key`.
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `ExtensionCore` | `extensions::framework::core` | ✅ New | Central hook registry |
+| `ToolingRuntime` | `tools::runtime` | ⚠️ Changed | Explicit daemon tooling composition; no process-global accessor |
 | `HookPoint` (17 variants post-PR-E #4) | `extensions::framework::core` | ✅ New | Extension hook points |
 | `HookHandler` trait | `extensions::framework::core` | ✅ New | Hook implementation |
 | `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
@@ -1031,7 +994,7 @@ items:
 | `discover_project_instructions` / `PROJECT_INSTRUCTIONS_MAX_BYTES` | `peko_engine::prompt::memory` | ✅ New | D5 (T2): walk up from the run's focus directory to the nearest `AGENTS.md` — no workspace cap; stops after a `.git`-owning directory or at the filesystem root; non-empty only; 32 KiB cap with notice |
 | `TurnPromptContext.project_instructions` / `AgenticLoop::build_turn_context` `focus_dir` param | `peko_engine::prompt::context`, `peko_engine::agentic_loop` | ⚠️ Changed | D5 (T2): the loop tracks the last directory a path-bearing tool call touched (per-run state) and the context carries the discovered `(path-label, content)`; `build_turn_context` gains a `focus_dir: Option<&Path>` parameter |
 | `SectionSlot::ProjectContext` ("project instructions" tail section) | `peko_engine::prompt::renderer` | ✅ New | D5 (T2): renders `## Project instructions (<path>)` + environment-provided provenance note; full D2 update/retraction semantics (rides once, update notice on project/file change, retracts when leaving all AGENTS.md scopes) |
-| `ToolFunnel::registered_prompt_sections` | `peko_extension_api::tool_funnel` (impl: `extensions::framework::tool_funnel_impl`) | ✅ New | D6: enumerates prompt-section names with a registered handler visible to a principal (workspace-hook `principal:<pid>/hook:<id>` ids scope to their principal; all other ids are system scope). Default trait impl returns `vec![]` so test doubles keep compiling |
+| `ToolFunnel::render_prompt_sections` | `peko_extension_api::tool_funnel` (impl: `tools::runtime`) | ⚠️ Changed | Returns `PromptSections` aggregating built-in providers and workspace-hook sections visible to the requested principal; retains empty custom sections for retraction |
 | `BindSpec.{section, priority}` + `PromptSection` bind point | `extensions::workspace_hooks` | ✅ New | D6: `hook.toml` binds may name `point = "PromptSection"` with a non-empty `section` (control chars/newlines rejected) and optional `priority` (default 100) → `HookPoint::PromptSystemSection`; the command's stdout becomes a `## <name>` runtime-context tail section |
 | `RuntimeContextState` custom-section map + `take_changed_custom` | `peko_engine::prompt::renderer` | ✅ New | D6: open `HashMap<String, String>` change tracker for workspace-hook sections; shares the D2 notice-decision helper (`take_changed_cell`) with the fixed slots — notices always on, label = section name. `render_runtime_context` dedupes `registered_prompt_sections` against the built-in dispatches and renders sorted for byte-stable ordering |
 
@@ -1203,7 +1166,7 @@ The following operations must be tested:
    - Delete session
 
 5. **Tool Operations**
-   - Register tools via ExtensionCore
+   - Register tools via ToolCatalog
    - Execute built-in tools
    - Execute MCP tools
 

@@ -1,7 +1,7 @@
 //! Root-side test harness for `peko_engine::AgenticLoop`.
 //!
 //! The test suite lives here (Phase 9b.N.5b.9) because the fixtures
-//! (`Agent`, `ExtensionCore`, `Subject`, `SessionManager`, etc.) are
+//! (`Agent`, `ToolingRuntime`, `Subject`, `SessionManager`, etc.) are
 //! root-only types that `peko-engine` cannot depend on without violating
 //! `check_workspace_deps.py` forbidden-edge rules. Root provides the test
 //! harness, `peko-engine` owns the production type — production callers
@@ -17,7 +17,7 @@
 mod tests {
     use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
-    use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
+    use crate::tools::runtime::ToolingRuntime;
     use peko_auth::Subject;
     use peko_engine::AgenticEvent;
     use peko_engine::StackedMeteredProvider;
@@ -85,11 +85,12 @@ mod tests {
         handle.base().clone()
     }
 
-    /// Ensure global ExtensionCore is initialized for tests
-    fn ensure_global_core() {
-        if global_core().is_none() {
-            init_global_core(Arc::new(ExtensionCore::new()));
-        }
+    async fn test_tooling() -> Arc<ToolingRuntime> {
+        crate::engine::tool_runtime::ToolRuntime::new(crate::common::paths::PathResolver::new())
+            .await
+            .unwrap()
+            .tooling()
+            .clone()
     }
 
     // ===================================================================
@@ -102,7 +103,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_session_context_build_hook_injects_context() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Acknowledged.");
@@ -135,8 +136,9 @@ mod tests {
             }
         }
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         let hook_id = core
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::SessionContextBuild,
                 Arc::new(ContextBuildHandler),
@@ -150,7 +152,11 @@ mod tests {
         let mut config = test_agent_config(&agent_name);
         config.prompt =
             Some("You are {{agent_name}}.\n\n{{session_context}}\n\n{{tools}}\n".to_string());
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -177,7 +183,7 @@ mod tests {
             .await;
 
         // Clean up the hook so later tests are not affected.
-        let _ = global_core().unwrap().unregister_hook(&hook_id).await;
+        let _ = tooling.clone().hooks().unregister_hook(&hook_id).await;
 
         assert!(
             result.is_ok(),
@@ -243,14 +249,18 @@ mod tests {
         // `peko_identity::init_test_env` for the rationale (Windows-headless
         // keyring panics inside `Agent::new_for_test` → `KeyStorage::with_path`).
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Hello, I am a mock assistant.");
 
         let config = test_agent_config("rt001-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -319,14 +329,18 @@ mod tests {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Streaming response");
 
         let config = test_agent_config("rt002-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -383,7 +397,7 @@ mod tests {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Quick response");
@@ -393,11 +407,11 @@ mod tests {
         // block. The agentic loop consults the resolved Provider's
         // own timeout. Default timeout in tests is sufficient.
         let agent = Arc::new(
-            Agent::new_for_test(config.clone(), temp_dir.path())
+            Agent::new_for_test(config.clone(), temp_dir.path(), tooling.clone())
                 .await
                 .unwrap(),
         );
-        let extension_core = global_core().unwrap();
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -432,14 +446,18 @@ mod tests {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_error("LLM API rate limit exceeded");
 
         let config = test_agent_config("rt004-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -509,14 +527,18 @@ mod tests {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Persisted answer");
 
         let config = test_agent_config("rt005-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -571,14 +593,18 @@ mod tests {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Persisted answer with context");
 
         let config = test_agent_config("rt005b-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -691,14 +717,18 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt005c_resume_after_compaction_keeps_summary() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Resumed answer");
 
         let config = test_agent_config("rt005c-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -818,7 +848,7 @@ mod tests {
         use std::time::Duration;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
@@ -833,8 +863,12 @@ mod tests {
         mock.queue_text("Recovered after retry");
 
         let config = test_agent_config("rt007-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         // Default retry budget is 3 — two failures + one success fits.
         // F40: explicitly wire a 3-permit shared budget so the test
         // contract stays local to the configured ceiling (the
@@ -946,7 +980,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt007b_streaming_retry_exhausted() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
@@ -960,8 +994,12 @@ mod tests {
         mock.queue_error("connection refused: attempt 4");
 
         let config = test_agent_config("rt007b-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -1049,7 +1087,7 @@ mod tests {
         use peko_quota::{QuotaConfig, QuotaCycle, QuotaError, QuotaMeter};
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Unreachable");
@@ -1100,8 +1138,12 @@ mod tests {
         );
 
         let config = test_agent_config("rt008-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -1186,7 +1228,7 @@ mod tests {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
@@ -1196,8 +1238,12 @@ mod tests {
         mock.queue_text("Tool result processed.");
 
         let config = test_agent_config("tool-loop-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -1224,7 +1270,7 @@ mod tests {
         let result = result.unwrap();
         assert!(result.success);
         assert_eq!(result.final_answer, "Tool result processed.");
-        // Tool execution may fail because "echo" is not registered in the test ExtensionCore.
+        // Tool execution may fail because "echo" is not registered in the test ToolingRuntime.
         // If the tool fails, the loop still gets a tool result message and may continue,
         // but if the mock queue is exhausted on the second iteration it could error.
         // We accept either 1 iteration (tool failed, loop stopped) or 2 (tool succeeded).
@@ -1253,7 +1299,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
@@ -1293,9 +1339,9 @@ mod tests {
             }
         }
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         BuiltinToolAdapter::register_tool_system(
-            &core,
+            core.catalog(),
             Arc::new(SlowTool {
                 label: "ParaA",
                 log: log.clone(),
@@ -1304,7 +1350,7 @@ mod tests {
         .await
         .unwrap();
         BuiltinToolAdapter::register_tool_system(
-            &core,
+            core.catalog(),
             Arc::new(SlowTool {
                 label: "ParaB",
                 log: log.clone(),
@@ -1357,7 +1403,7 @@ mod tests {
 
         let config = test_agent_config("para-tools-agent");
         let agent = Arc::new(
-            Agent::new_for_test(config, temp_dir.path())
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
                 .await
                 .unwrap()
                 .with_principal_capabilities(Some(std::sync::Arc::new(Capabilities::with_grants(
@@ -1450,14 +1496,18 @@ mod tests {
         use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Got the completion.");
 
         let config = test_agent_config("e2e-completion-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
 
         // Build the queue the same way `Agent::build_agentic_loop` does:
         // shared between the executor and the agentic loop.
@@ -1573,7 +1623,7 @@ mod tests {
         // born inside `run_inner` and the caller's `build_agentic_loop`
         // would have pushed `None`). The lookup is keyed by the
         // agent's DID on the shared core (issue #68).
-        let core_key = extension_core.current_session_key(&agent.identity.did);
+        let core_key = extension_core.session_keys().get(&agent.identity.did);
         assert_eq!(
         core_key,
         Some(session_id.clone()),
@@ -1598,14 +1648,18 @@ mod tests {
         use peko_message::{ContentBlock as CB, LlmMessage, MessageRole};
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Got the steering.");
 
         let config = test_agent_config("e2e-steering-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
 
         let queue: SharedSessionInbox = std::sync::Arc::new(SessionInbox::new());
         let loop_ = AgenticLoop::new(
@@ -1710,7 +1764,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_interrupt_pre_cancelled_token_short_circuits() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         // No LLM call should be made because the cancel check fires
@@ -1719,8 +1773,12 @@ mod tests {
         mock.queue_text("THIS_SHOULD_NOT_BE_RETURNED");
 
         let config = test_agent_config("interrupt-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel(); // pre-cancel
         let loop_ = AgenticLoop::new(
@@ -1935,7 +1993,7 @@ mod tests {
         use peko_session::jsonl::SessionStorage;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Acknowledged stale system.");
@@ -1973,8 +2031,12 @@ mod tests {
         let agent_name = format!("phase1-overwrite-agent-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
         config.prompt = Some("RENDERED-FOR-PHASE1: You are {{agent_name}}.".to_string());
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent,
         provider.clone(),
@@ -2027,7 +2089,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn loop_does_not_persist_system_messages() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("done");
@@ -2035,8 +2097,12 @@ mod tests {
         let agent_name = format!("phase1-no-system-row-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
         config.prompt = Some("You are {{agent_name}}.".to_string());
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent,
         provider.clone(),
@@ -2058,7 +2124,7 @@ mod tests {
         assert!(result.is_ok(), "agentic loop should succeed");
 
         // Read history and confirm no system messages were persisted.
-        let history = loop_.extension_core.clone(); // placeholder to keep borrow alive
+        let history = loop_.tooling.clone(); // placeholder to keep borrow alive
 
         // Reload from disk via the session's storage so we know we're
         // checking the actual JSONL, not the in-memory messages vec.
@@ -2096,7 +2162,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn loop_freezes_system_prompt_and_injects_runtime_context_at_tail() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
@@ -2114,12 +2180,12 @@ mod tests {
         let mut config = test_agent_config(&agent_name);
         config.prompt = Some("You are {{agent_name}}.".to_string());
         let agent = Arc::new(
-            Agent::new_for_test(config, temp_dir.path())
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
                 .await
                 .unwrap()
                 .with_principal_workspace(workspace),
         );
-        let extension_core = global_core().unwrap();
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -2254,8 +2320,8 @@ mod tests {
         use std::time::Instant;
 
         peko_identity::init_test_env();
-        ensure_global_core();
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let _tooling = ToolingRuntime::standalone();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
 
         // Register four 50ms-sleep handlers (one per section).
         #[derive(Debug)]
@@ -2286,16 +2352,19 @@ mod tests {
         }
 
         for section in ["tools", "skills", "roles"] {
-            core.register_hook(
-                crate::extensions::framework::core::HookPoint::PromptSystemSection {
-                    section: section.to_string(),
-                    priority: 100,
-                },
-                Arc::new(SleepHandler(section, std::time::Duration::from_millis(50))),
-                &crate::extensions::framework::types::ExtensionId::new(format!("sleep-{section}")),
-            )
-            .await
-            .unwrap();
+            core.hooks()
+                .register_hook(
+                    crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                        section: section.to_string(),
+                        priority: 100,
+                    },
+                    Arc::new(SleepHandler(section, std::time::Duration::from_millis(50))),
+                    &crate::extensions::framework::types::ExtensionId::new(format!(
+                        "sleep-{section}"
+                    )),
+                )
+                .await
+                .unwrap();
         }
 
         // Phase 2 PR 2 (ADR-047 §2.3): `mcp_context` is no longer
@@ -2371,8 +2440,8 @@ mod tests {
         use peko_engine::PromptRenderer;
 
         peko_identity::init_test_env();
-        ensure_global_core();
-        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let _tooling = ToolingRuntime::standalone();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
 
         #[derive(Debug)]
         struct StuckHandler;
@@ -2402,16 +2471,17 @@ mod tests {
             }
         }
 
-        core.register_hook(
-            crate::extensions::framework::core::HookPoint::PromptSystemSection {
-                section: "skills".to_string(),
-                priority: 100,
-            },
-            Arc::new(StuckHandler),
-            &crate::extensions::framework::types::ExtensionId::new("stuck"),
-        )
-        .await
-        .unwrap();
+        core.hooks()
+            .register_hook(
+                crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                    section: "skills".to_string(),
+                    priority: 100,
+                },
+                Arc::new(StuckHandler),
+                &crate::extensions::framework::types::ExtensionId::new("stuck"),
+            )
+            .await
+            .unwrap();
 
         let renderer = PromptRenderer::new(core);
         let ctx = TurnPromptContext {
@@ -2499,7 +2569,7 @@ mod tests {
     /// section (unchanged non-peer behavior).
     #[tokio::test]
     async fn session_context_renders_conversation_channel_and_peer() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(crate::tools::runtime::ToolingRuntime::standalone());
         let ctx = TurnPromptContext {
             body: "{{session_context}}".into(),
             conversation_channel: Some("chan_abc123".into()),
@@ -2512,7 +2582,7 @@ mod tests {
         assert!(rendered.contains("peer: user:alice"));
 
         // No conversation context ⇒ no section (hook text is empty
-        // with a bare ExtensionCore).
+        // with a bare ToolingRuntime).
         let rendered = renderer.render_for_iteration(&inert_ctx()).await;
         assert!(!rendered.contains("## Session context"));
     }
@@ -2523,7 +2593,7 @@ mod tests {
         // flows into `{{runtime}}`'s `Model:` line. Back-compat
         // hardcoded values render if `ctx.resolved_model` is the
         // legacy default.
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(crate::tools::runtime::ToolingRuntime::standalone());
         let ctx = inert_ctx();
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(
@@ -2534,7 +2604,7 @@ mod tests {
 
     #[tokio::test]
     async fn loop_renders_channel_and_thinking_level_from_context() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(crate::tools::runtime::ToolingRuntime::standalone());
         let ctx = inert_ctx();
         let body = "channel={{channel}} thinking={{thinking_level}}";
         let mut ctx = ctx;
@@ -2546,7 +2616,7 @@ mod tests {
 
     #[tokio::test]
     async fn loop_renders_sandbox_section_when_enabled() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(crate::tools::runtime::ToolingRuntime::standalone());
         let ctx = inert_ctx();
         let mut ctx = ctx;
         ctx.body = "{{sandbox}}".into();
@@ -2559,7 +2629,7 @@ mod tests {
 
     #[tokio::test]
     async fn loop_renders_model_aliases_list_when_set() {
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(crate::tools::runtime::ToolingRuntime::standalone());
         let ctx = inert_ctx();
         let mut ctx = ctx;
         ctx.body = "{{model_aliases}}".into();
@@ -2575,7 +2645,7 @@ mod tests {
         // render without those sections. The fixture pins the
         // historical channel value explicitly; the runtime default is
         // now `"cli"` (see `AgenticLoop::build_turn_context`).
-        let renderer = PromptRenderer::new(Arc::new(ExtensionCore::new()));
+        let renderer = PromptRenderer::new(crate::tools::runtime::ToolingRuntime::standalone());
         let ctx = TurnPromptContext {
             channel: "discord".into(),
             thinking_level: "medium".into(),
@@ -2599,7 +2669,7 @@ mod tests {
         // the existing `mock_provider()` helper so the test stays
         // independent of the resolver code path.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
 
         let (provider, _adapter) = mock_provider();
         let temp = tempdir_unused();
@@ -2608,12 +2678,16 @@ mod tests {
         let mut config = test_agent_config("phase2-resolved");
         config.prompt = Some("runtime: {{runtime}}".into());
 
-        let agent = Arc::new(Agent::new_for_test(config, &temp).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, &temp, tooling.clone())
+                .await
+                .unwrap(),
+        );
         let expected = provider.model_id().clone();
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
-        agent.extension_core(),
+        agent.tooling(),
         std::sync::Arc::new(
             crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
                 provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
@@ -2667,21 +2741,21 @@ mod tests {
         // integration is the field population) and also verify the
         // rendered prompt contains the rendered body.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
 
         let temp = tempdir_unused();
         std::fs::create_dir_all(&temp).unwrap();
         let (provider, _adapter) = mock_provider();
 
         let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-iter"), &temp)
+            Agent::new_for_test(loop_test_agent("phase3-iter"), &temp, tooling.clone())
                 .await
                 .unwrap(),
         );
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
-        agent.extension_core(),
+        agent.tooling(),
         std::sync::Arc::new(
             crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
                 provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
@@ -2701,7 +2775,7 @@ mod tests {
         // Pin the render: `## Iteration budget` + `Iteration 3.`
         // shows up in the Markdown body the loop would pass to the
         // LLM.
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Iteration budget"));
         assert!(rendered.contains("Iteration 3."));
@@ -2719,14 +2793,14 @@ mod tests {
         use peko_message::TokenUsage;
         use peko_quota::{QuotaConfig, QuotaMeter};
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
 
         let temp = tempdir_unused();
         std::fs::create_dir_all(&temp).unwrap();
         let (provider, _adapter) = mock_provider();
 
         let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-quota-trip"), &temp)
+            Agent::new_for_test(loop_test_agent("phase3-quota-trip"), &temp, tooling.clone())
                 .await
                 .unwrap(),
         );
@@ -2745,7 +2819,7 @@ mod tests {
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
-        agent.extension_core(),
+        agent.tooling(),
         std::sync::Arc::new(
             crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
                 provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
@@ -2788,7 +2862,7 @@ mod tests {
             "iteration 2 must surface quota_tripped on the rising edge"
         );
 
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
         let rendered = renderer.render_for_iteration(&ctx_trip).await;
         assert!(rendered.contains("## Quota tripped"));
 
@@ -2815,14 +2889,14 @@ mod tests {
         // signal flow from the IPC handler's `with_cancel_token` into
         // the next-turn system prompt.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
 
         let temp = tempdir_unused();
         std::fs::create_dir_all(&temp).unwrap();
         let (provider, _adapter) = mock_provider();
 
         let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-cancel"), &temp)
+            Agent::new_for_test(loop_test_agent("phase3-cancel"), &temp, tooling.clone())
                 .await
                 .unwrap(),
         );
@@ -2832,7 +2906,7 @@ mod tests {
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
-        agent.extension_core(),
+        agent.tooling(),
         std::sync::Arc::new(
             crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
                 provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
@@ -2846,7 +2920,7 @@ mod tests {
         let ctx = loop_.build_turn_context(1, &[], "test-session", None);
         assert!(ctx.soft_cancel_pending);
 
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Cancellation requested"));
     }
@@ -2864,7 +2938,7 @@ mod tests {
         use crate::extensions::framework::types::{Capabilities, Capability};
         use peko_engine::prompt::context::CapabilityDiffTracker;
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
 
         let temp = tempdir_unused();
         std::fs::create_dir_all(&temp).unwrap();
@@ -2877,7 +2951,7 @@ mod tests {
         ]));
 
         let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-cap-grant"), &temp)
+            Agent::new_for_test(loop_test_agent("phase3-cap-grant"), &temp, tooling.clone())
                 .await
                 .unwrap()
                 .with_principal_capabilities(Some(Arc::clone(&base_caps))),
@@ -2885,7 +2959,7 @@ mod tests {
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
-        agent.extension_core(),
+        agent.tooling(),
         std::sync::Arc::new(
             crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
                 provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
@@ -2938,7 +3012,7 @@ mod tests {
             capability_diff: Some(diff),
             tool_definitions: vec![],
         };
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
         let rendered = renderer.render_for_iteration(&ctx2).await;
         assert!(rendered.contains("## Capability changes since last turn"));
         assert!(rendered.contains("Granted:"));
@@ -2954,7 +3028,7 @@ mod tests {
         use crate::extensions::framework::types::{Capabilities, Capability};
         use peko_engine::prompt::context::CapabilityDiffTracker;
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
 
         let full_caps = Arc::new(Capabilities::with_grants([
             Capability::new("tool:Read"),
@@ -2976,14 +3050,14 @@ mod tests {
         std::fs::create_dir_all(&temp).unwrap();
         let (provider, _adapter) = mock_provider();
         let agent = Arc::new(
-            Agent::new_for_test(loop_test_agent("phase3-cap-revoke"), &temp)
+            Agent::new_for_test(loop_test_agent("phase3-cap-revoke"), &temp, tooling.clone())
                 .await
                 .unwrap(),
         );
         let loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
-        agent.extension_core(),
+        agent.tooling(),
         std::sync::Arc::new(
             crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
                 provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
@@ -3016,7 +3090,7 @@ mod tests {
             capability_diff: Some(diff),
             tool_definitions: vec![],
         };
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("Revoked:"));
         assert!(rendered.contains("- tool:Write"));
@@ -3048,7 +3122,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn loop_renders_fresh_prompt_body_each_iteration() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
 
         let temp = tempdir_unused();
         std::fs::create_dir_all(&temp).unwrap();
@@ -3061,11 +3135,15 @@ mod tests {
         let mut cfg = test_agent_config("phase4-rebuild-v1");
         cfg.prompt = Some("v1: You are {{agent_name}}.".to_string());
 
-        let agent = Arc::new(Agent::new_for_test(cfg, &temp).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(cfg, &temp, tooling.clone())
+                .await
+                .unwrap(),
+        );
         let mut loop_ = AgenticLoop::new(
         Arc::clone(&agent) as Arc<dyn AgentView>,
         Arc::clone(&provider),
-        agent.extension_core(),
+        agent.tooling(),
         std::sync::Arc::new(
             crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
                 provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
@@ -3090,7 +3168,7 @@ mod tests {
         // Iteration 1: render with the v1 body.
         let ctx1 = loop_.build_turn_context(1, &[], "test-session", None);
         assert_eq!(ctx1.body, "v1: You are {{agent_name}}.");
-        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.extension_core));
+        let renderer = peko_engine::PromptRenderer::new(Arc::clone(&loop_.tooling));
         let rendered1 = renderer.render_for_iteration(&ctx1).await;
         assert!(
             rendered1.starts_with("v1: You are phase4-rebuild-v1."),
@@ -3155,7 +3233,7 @@ mod tests {
         use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
@@ -3164,7 +3242,7 @@ mod tests {
         mock.queue_tool_call("tc_1", "echo", serde_json::json!({"msg": "hello"}));
         mock.queue_text("Tool result processed.");
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
         #[derive(Debug)]
@@ -3196,6 +3274,7 @@ mod tests {
         }
 
         let pre_id = core
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::PreToolUse {
                     tool_name: "echo".to_string(),
@@ -3213,6 +3292,7 @@ mod tests {
             .unwrap()
             .id;
         let post_id = core
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::PostToolUse {
                     tool_name: "echo".to_string(),
@@ -3231,7 +3311,11 @@ mod tests {
             .id;
 
         let config = test_agent_config("f31x-pre-post-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -3251,8 +3335,8 @@ mod tests {
             .await;
 
         // Clean up so other tests aren't affected.
-        let _ = core.unregister_hook(&pre_id).await;
-        let _ = core.unregister_hook(&post_id).await;
+        let _ = core.hooks().unregister_hook(&pre_id).await;
+        let _ = core.hooks().unregister_hook(&post_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
         assert!(
@@ -3285,12 +3369,12 @@ mod tests {
         use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Single text response, no tools.");
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         #[derive(Debug)]
@@ -3322,6 +3406,7 @@ mod tests {
         }
 
         let hook_id = core
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::Stop,
                 Arc::new(StopRecorder { log: log.clone() }),
@@ -3332,7 +3417,11 @@ mod tests {
             .id;
 
         let config = test_agent_config("f31x-stop-end-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -3351,10 +3440,10 @@ mod tests {
             .run_with_resume("Simple prompt", Vec::new(), |_| {}, &session, None)
             .await;
 
-        let _ = core.unregister_hook(&hook_id).await;
+        let _ = core.hooks().unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
-        // The global `ExtensionCore` is shared across tests; foreign
+        // The global `ToolingRuntime` is shared across tests; foreign
         // loops (e.g. trunk-receive manager tests) can fire Stop into
         // this recorder concurrently. Filter to this test's agent
         // before counting (same pattern as the AfterAgent tests).
@@ -3384,12 +3473,12 @@ mod tests {
         use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("THIS_SHOULD_NOT_BE_RETURNED");
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         #[derive(Debug)]
@@ -3421,6 +3510,7 @@ mod tests {
         }
 
         let hook_id = core
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::Stop,
                 Arc::new(StopRecorder { log: log.clone() }),
@@ -3431,7 +3521,11 @@ mod tests {
             .id;
 
         let config = test_agent_config("f31x-stop-interrupt-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
         let loop_ = AgenticLoop::new(
@@ -3454,7 +3548,7 @@ mod tests {
             .await
             .unwrap();
 
-        let _ = core.unregister_hook(&hook_id).await;
+        let _ = core.hooks().unregister_hook(&hook_id).await;
 
         assert!(result.interrupted, "result should be marked interrupted");
         let log_snapshot = log.lock().unwrap().clone();
@@ -3489,7 +3583,7 @@ mod tests {
         use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -3523,16 +3617,21 @@ mod tests {
 
         let agent_name = format!("f31x-after-agent-{}", uuid::Uuid::new_v4());
         let config = test_agent_config(&agent_name);
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
 
         // Register the hook on the agent's CAPTURED core (what
         // `Agent::stop` dispatches on), not the global: in test builds
-        // `init_global_core` REPLACES the global core, so a concurrent
+        // `runtime injection` REPLACES the global core, so a concurrent
         // core-building test can swap the global between registration
         // and `stop()` — the hook then never fires (pre-existing
         // full-suite flake, see the note in daemon::cron_engine tests).
         let hook_id = agent
-            .extension_core()
+            .tooling()
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::AfterAgent,
                 Arc::new(AfterAgentRecorder { log: log.clone() }),
@@ -3544,10 +3643,10 @@ mod tests {
 
         agent.stop().await.expect("stop should succeed");
 
-        let _ = agent.extension_core().unregister_hook(&hook_id).await;
+        let _ = agent.tooling().hooks().unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
-        // The global `ExtensionCore` is shared across tests; other tests
+        // The global `ToolingRuntime` is shared across tests; other tests
         // may have fired AfterAgent for their own agents. Filter to
         // events tagged with this test's agent_name before counting.
         let own_events: Vec<_> = log_snapshot
@@ -3584,7 +3683,7 @@ mod tests {
         use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
@@ -3594,7 +3693,7 @@ mod tests {
         mock.queue_tool_call("tc_2", "beta", serde_json::json!({"b": 2}));
         mock.queue_text("Done after two tool calls.");
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         #[derive(Debug)]
@@ -3631,6 +3730,7 @@ mod tests {
         }
 
         let hook_id = core
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::PreToolUse {
                     tool_name: "*".to_string(),
@@ -3643,7 +3743,11 @@ mod tests {
             .id;
 
         let config = test_agent_config("f31x-1-pre-wildcard-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -3668,7 +3772,7 @@ mod tests {
             )
             .await;
 
-        let _ = core.unregister_hook(&hook_id).await;
+        let _ = core.hooks().unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
         let names: Vec<String> = log_snapshot
@@ -3729,12 +3833,12 @@ mod tests {
         use crate::extensions::framework::types::ExtensionId;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Single text response.");
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         #[derive(Debug)]
@@ -3766,6 +3870,7 @@ mod tests {
         }
 
         let hook_id = core
+            .hooks()
             .register_hook(
                 crate::extensions::framework::core::HookPoint::AfterAgent,
                 Arc::new(AfterAgentLoopRecorder { log: log.clone() }),
@@ -3777,7 +3882,11 @@ mod tests {
 
         let agent_name = format!("f31x-1-loop-{}", uuid::Uuid::new_v4());
         let config = test_agent_config(&agent_name);
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -3796,14 +3905,14 @@ mod tests {
             .run_with_resume("Simple prompt", Vec::new(), |_| {}, &session, None)
             .await;
 
-        let _ = core.unregister_hook(&hook_id).await;
+        let _ = core.hooks().unregister_hook(&hook_id).await;
 
         // We discard the AgenticResult; the AfterAgent assertion
         // is on the hook log, not the loop result.
         let _ = result;
 
         let log_snapshot = log.lock().unwrap().clone();
-        // `global_core()` is shared across tests, and the `serial(core)`
+        // `the injected tooling runtime` is shared across tests, and the `serial(core)`
         // key only serializes tests that opt into it — a foreign loop
         // (e.g. a trunk-receive manager test) can fire AfterAgent into
         // this recorder concurrently. Filter to THIS loop's firing via
@@ -3838,66 +3947,43 @@ mod tests {
     // `codex-rs/core/src/tools/spec_plan.rs:928-949`.
     // ===================================================================
 
-    /// Register a no-op `HookHandler` for `ToolExecute` so `register_tool`
-    /// has something to attach to. The handler is never invoked — these
-    /// tests only exercise the catalog-enumeration path.
-    #[derive(Debug)]
-    struct F35NoopHandler;
-
+    struct F35Tool {
+        name: String,
+        exposure: peko_tools_core::ToolExposure,
+    }
     #[async_trait::async_trait]
-    impl crate::extensions::framework::core::HookHandler for F35NoopHandler {
-        async fn handle(
-            &self,
-            _ctx: crate::extensions::framework::core::HookContext,
-        ) -> crate::extensions::framework::types::HookResult {
-            crate::extensions::framework::types::HookResult::Continue(
-                crate::extensions::framework::types::HookOutput::Unit,
-            )
+    impl peko_tools_core::Tool for F35Tool {
+        fn name(&self) -> &str {
+            &self.name
         }
-
-        fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-            crate::extensions::framework::core::HookPoint::ToolExecute {
-                tool_name: String::new(),
-            }
+        fn description(&self) -> String {
+            "catalog fixture".to_string()
         }
-
-        fn priority(&self) -> i32 {
-            0
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object"})
         }
-
-        fn name(&self) -> String {
-            "F35Noop".to_string()
+        fn exposure(&self) -> peko_tools_core::ToolExposure {
+            self.exposure
+        }
+        async fn execute(&self, _: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::Value::Null)
         }
     }
-
-    /// Register a tool on the global core with a unique name and the
-    /// requested exposure. Returns the unique name so the caller can
-    /// unregister it on teardown.
     async fn f35_register_tool(
-        core: &Arc<ExtensionCore>,
-        exposure: crate::extensions::framework::types::ToolExposure,
+        core: &Arc<ToolingRuntime>,
+        exposure: peko_tools_core::ToolExposure,
         name_prefix: &str,
     ) -> String {
-        use crate::extensions::framework::types::{ExtensionId, ToolMetadata, ToolSource};
-
         let name = format!("{name_prefix}-{}", uuid::Uuid::new_v4());
-        let meta = ToolMetadata::new(
-            name.clone(),
-            format!("test {name_prefix}"),
-            serde_json::json!({"type": "object", "properties": {}}),
-            ToolSource::BuiltIn,
-        )
-        .with_exposure(exposure);
-
-        core.register_tool(
-            meta,
-            Arc::new(F35NoopHandler),
-            &ExtensionId::new(format!("test:f35:{name_prefix}")),
-            peko_subject::PrincipalId::system(),
-        )
-        .await
-        .expect("register f35 test tool");
-
+        core.catalog()
+            .register_system(
+                Arc::new(F35Tool {
+                    name: name.clone(),
+                    exposure,
+                }),
+                crate::extensions::framework::types::ToolSource::BuiltIn,
+            )
+            .await;
         name
     }
 
@@ -3905,11 +3991,11 @@ mod tests {
     #[serial_test::serial(core)]
     async fn build_tool_definitions_appends_search_stub_when_flag_and_deferred_present() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, _mock) = mock_provider();
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         // Register a Deferred tool under the system principal so it shows
         // up in `list_tools(principal_id)` for any agent.
         let tool_name = f35_register_tool(&core, ToolExposure::Deferred, "f35-deferred").await;
@@ -3917,7 +4003,11 @@ mod tests {
         let agent_name = format!("f35-stub-on-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
         config.enable_tool_search = true;
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -3959,7 +4049,8 @@ mod tests {
         // Teardown: remove the system-registered tool so subsequent
         // tests see a clean core.
         let _ = core
-            .unregister_tool(&tool_name, peko_subject::PrincipalId::system())
+            .catalog()
+            .unregister(&tool_name, peko_subject::PrincipalId::system())
             .await;
     }
 
@@ -3967,18 +4058,22 @@ mod tests {
     #[serial_test::serial(core)]
     async fn build_tool_definitions_omits_stub_when_flag_off() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, _mock) = mock_provider();
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         // Deferred tool registered, but the agent's flag is OFF.
         let tool_name = f35_register_tool(&core, ToolExposure::Deferred, "f35-deferred").await;
 
         let agent_name = format!("f35-stub-off-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
         config.enable_tool_search = false; // explicit even though it's the default
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -4004,7 +4099,8 @@ mod tests {
 
         // Teardown.
         let _ = core
-            .unregister_tool(&tool_name, peko_subject::PrincipalId::system())
+            .catalog()
+            .unregister(&tool_name, peko_subject::PrincipalId::system())
             .await;
     }
 
@@ -4012,11 +4108,11 @@ mod tests {
     #[serial_test::serial(core)]
     async fn build_tool_definitions_omits_stub_when_no_deferred_tools() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, _mock) = mock_provider();
 
-        let core = global_core().unwrap();
+        let core = tooling.clone();
         // Register only a Direct tool. With zero Deferred tools visible,
         // the stub must be omitted even when the flag is on.
         let tool_name = f35_register_tool(&core, ToolExposure::Direct, "f35-direct").await;
@@ -4024,7 +4120,11 @@ mod tests {
         let agent_name = format!("f35-no-deferred-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
         config.enable_tool_search = true;
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
         let loop_ = AgenticLoop::new(
         agent.clone(),
         provider.clone(),
@@ -4050,7 +4150,8 @@ mod tests {
 
         // Teardown.
         let _ = core
-            .unregister_tool(&tool_name, peko_subject::PrincipalId::system())
+            .catalog()
+            .unregister(&tool_name, peko_subject::PrincipalId::system())
             .await;
     }
 
@@ -4066,7 +4167,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_rt009_auth_failure_does_not_retry() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_error("HTTP error 401: invalid api key");
@@ -4075,8 +4176,12 @@ mod tests {
         mock.queue_text("should not reach here");
 
         let config = test_agent_config("rt009-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
             agent.clone(),
             provider.clone(),
@@ -4143,7 +4248,7 @@ mod tests {
         use peko_engine::AgenticError;
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         // Three transient errors — budget is 2, so the third attempt
@@ -4155,8 +4260,12 @@ mod tests {
         mock.queue_text("unreachable");
 
         let config = test_agent_config("rt010-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
             agent.clone(),
             provider.clone(),
@@ -4260,7 +4369,7 @@ mod tests {
         }
 
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         // The custom classifier must reject "account_deactivated"
@@ -4269,8 +4378,12 @@ mod tests {
         mock.queue_text("unreachable");
 
         let config = test_agent_config("rt011-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
             agent.clone(),
             provider.clone(),
@@ -4356,7 +4469,7 @@ mod tests {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
 
         // Capturing sink + a closure that flips its answer after
@@ -4382,8 +4495,12 @@ mod tests {
             let (provider, mock) = mock_provider();
             mock.queue_text("Hello first call.");
             let config = test_agent_config("audit-first-agent");
-            let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-            let extension_core = global_core().unwrap();
+            let agent = Arc::new(
+                Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                    .await
+                    .unwrap(),
+            );
+            let extension_core = tooling.clone();
             let loop_ = AgenticLoop::new(
                 agent.clone(),
                 provider.clone(),
@@ -4444,8 +4561,12 @@ mod tests {
             let (provider, mock) = mock_provider();
             mock.queue_text("Hello second call.");
             let config = test_agent_config("audit-second-agent");
-            let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-            let extension_core = global_core().unwrap();
+            let agent = Arc::new(
+                Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                    .await
+                    .unwrap(),
+            );
+            let extension_core = tooling.clone();
             let loop_ = AgenticLoop::new(
                 agent.clone(),
                 provider.clone(),
@@ -4504,13 +4625,17 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_no_audit_sink_means_no_audit_events() {
         peko_identity::init_test_env();
-        ensure_global_core();
+        let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
         mock.queue_text("Quiet run.");
         let config = test_agent_config("audit-none-agent");
-        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
-        let extension_core = global_core().unwrap();
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let extension_core = tooling.clone();
         let loop_ = AgenticLoop::new(
             agent.clone(),
             provider.clone(),

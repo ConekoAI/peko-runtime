@@ -134,6 +134,7 @@ async fn handle_completion_wake(ctx: Arc<WakeContext>, notice: CompletionWakeNot
         &resolver,
         Arc::clone(&ctx.observability),
         Some(pm.shared_inbox_registry()),
+        pm.tooling(),
     )
     .await
     {
