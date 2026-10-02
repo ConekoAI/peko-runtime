@@ -1,17 +1,13 @@
 //! Tool-related types
 //!
 //! Lifted from `src/extensions/framework/types/tool.rs` in Phase 7.
-//! `ToolMetadata::exposure` is typed against
-//! `peko_tools_core::ToolExposure` (the historical facade, also re-exported
-//! as `peko_tools_core::ToolExposure`); `to_tool_definition` produces
+//! `to_tool_definition` produces
 //! `peko_provider_api::ToolDefinition` (was `crate::providers::ToolDefinition`).
 //! `reserved_params` is the data-only `peko_extension_api::ReservedParamsConfig`
 //! from this crate (no resolution methods — those live in the host).
 
 use crate::reserved_params::ReservedParamsConfig;
-use crate::types::HookId;
 use peko_provider_api::ToolDefinition;
-use peko_tools_core::ToolExposure;
 use serde::{Deserialize, Serialize};
 
 /// Source of a tool (for metadata tracking)
@@ -35,11 +31,6 @@ impl ToolSource {
     }
 }
 
-// `ToolExposure` migrated to `peko-tools-core` in Phase 5 and is re-exported
-// here for the framework's own construction sites. The enum and its
-// `visible_in_prompt_section` / `visible_in_native_catalog` predicates live in
-// `peko_tools_core::ToolExposure`.
-
 /// Metadata for a registered tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMetadata {
@@ -51,17 +42,8 @@ pub struct ToolMetadata {
     pub parameters: serde_json::Value,
     /// Source of the tool
     pub source: ToolSource,
-    /// How this tool is exposed to the LLM (F34).
-    /// Defaults to [`ToolExposure::Direct`] (visible + callable).
-    #[serde(default)]
-    pub exposure: ToolExposure,
     /// Reserved parameters configuration
     pub reserved_params: ReservedParamsConfig,
-    /// Companion hook IDs registered alongside the primary execution hook.
-    /// Populated by `ToolingRuntime::register_tool()` and used during
-    /// `unregister_tool()` for atomic cleanup.
-    #[serde(skip)]
-    pub companion_hook_ids: Option<Vec<HookId>>,
 }
 
 impl ToolMetadata {
@@ -77,9 +59,7 @@ impl ToolMetadata {
             description: description.into(),
             parameters,
             source,
-            exposure: ToolExposure::default(),
             reserved_params: ReservedParamsConfig::new(),
-            companion_hook_ids: None,
         }
     }
 
@@ -87,20 +67,6 @@ impl ToolMetadata {
     #[must_use]
     pub fn with_reserved_params(mut self, config: ReservedParamsConfig) -> Self {
         self.reserved_params = config;
-        self
-    }
-
-    /// Set the LLM exposure (F34).
-    #[must_use]
-    pub fn with_exposure(mut self, exposure: ToolExposure) -> Self {
-        self.exposure = exposure;
-        self
-    }
-
-    /// Set companion hook IDs (used internally by `ToolingRuntime::register_tool`).
-    #[must_use]
-    pub fn with_companion_hook_ids(mut self, ids: Vec<HookId>) -> Self {
-        self.companion_hook_ids = Some(ids);
         self
     }
 
@@ -118,72 +84,17 @@ impl ToolMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_tool_source() {
-        assert_eq!(ToolSource::BuiltIn.description(), "built-in");
-        assert_eq!(
-            ToolSource::Mcp {
-                server: "test".to_string()
-            }
-            .description(),
-            "MCP server: test"
-        );
-    }
-
-    #[test]
-    fn test_tool_metadata() {
-        let meta = ToolMetadata::new(
-            "test_tool",
-            "A test tool",
-            serde_json::json!({"type": "object"}),
+    fn metadata_round_trips_without_exposure() {
+        let metadata = ToolMetadata::new(
+            "Read",
+            "Reads files",
+            serde_json::json!({"type":"object"}),
             ToolSource::BuiltIn,
         );
-        assert_eq!(meta.name, "test_tool");
-        assert!(meta.companion_hook_ids.is_none());
-    }
-
-    /// F34 — `ToolExposure::Direct` is the default. Every existing
-    /// tool that doesn't override `exposure()` gets `Direct`, which
-    /// means visible in both surfaces. Proves backward-compat.
-    #[test]
-    fn test_tool_exposure_default_is_direct() {
-        assert_eq!(ToolExposure::default(), ToolExposure::Direct);
-    }
-
-    /// F34 / F36 — exposure variants split cleanly across the catalog
-    /// surface. F36 collapsed the prompt-section surface: tool catalogs
-    /// are wire-only, and `Direct` / `DirectModelOnly` are equivalent
-    /// on the wire today. `Deferred` is discovered via `__tool_search`
-    /// (F35), not in the initial catalog. `Hidden` is telemetry /
-    /// sub-tool only — never visible to the model.
-    #[test]
-    fn test_tool_exposure_catalog_visibility() {
-        assert!(ToolExposure::Direct.visible_in_native_catalog());
-        assert!(ToolExposure::DirectModelOnly.visible_in_native_catalog());
-
-        assert!(
-            !ToolExposure::Deferred.visible_in_native_catalog(),
-            "Deferred is discovered via __tool_search (F35), not in the initial catalog"
-        );
-
-        assert!(!ToolExposure::Hidden.visible_in_native_catalog());
-    }
-
-    /// F34 — `ToolMetadata::new` defaults `exposure` to `Direct`,
-    /// matching the pre-F34 surface behavior (every tool was
-    /// visible-and-callable). The `with_exposure` builder chains.
-    #[test]
-    fn test_tool_metadata_default_exposure_is_direct() {
-        let meta = ToolMetadata::new(
-            "alpha",
-            "alpha desc",
-            serde_json::json!({"type": "object"}),
-            ToolSource::BuiltIn,
-        );
-        assert_eq!(meta.exposure, ToolExposure::Direct);
-
-        let meta = meta.with_exposure(ToolExposure::DirectModelOnly);
-        assert_eq!(meta.exposure, ToolExposure::DirectModelOnly);
+        let encoded = serde_json::to_value(&metadata).unwrap();
+        assert!(encoded.get("exposure").is_none());
+        let decoded: ToolMetadata = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.to_tool_definition().name, "Read");
     }
 }

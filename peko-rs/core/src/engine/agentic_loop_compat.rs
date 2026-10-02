@@ -28,7 +28,6 @@ mod tests {
     use peko_quota::QuotaScope;
     use peko_session::manager::SessionManager;
     use peko_session::Session;
-    use peko_tools_core::ToolExposure;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use tokio::sync::RwLock;
@@ -111,10 +110,10 @@ mod tests {
         #[derive(Debug)]
         struct ContextBuildHandler;
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for ContextBuildHandler {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for ContextBuildHandler {
             async fn handle(
                 &self,
-                _ctx: crate::extensions::framework::core::HookContext,
+                _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 crate::extensions::framework::types::HookResult::Continue(
                     crate::extensions::framework::types::HookOutput::Text(
@@ -122,31 +121,17 @@ mod tests {
                     ),
                 )
             }
-
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::SessionContextBuild
-            }
-
-            fn priority(&self) -> i32 {
-                100
-            }
-
-            fn name(&self) -> String {
-                "TestSessionContextBuild".to_string()
-            }
         }
 
         let core = tooling.clone();
-        let hook_id = core
-            .hooks()
+        core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::SessionContextBuild,
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::SessionContextBuild,
                 Arc::new(ContextBuildHandler),
-                &crate::extensions::framework::types::ExtensionId::new("test-context-build"),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
 
         let agent_name = format!("session-ctx-agent-{}", uuid::Uuid::new_v4());
         let mut config = test_agent_config(&agent_name);
@@ -183,7 +168,6 @@ mod tests {
             .await;
 
         // Clean up the hook so later tests are not affected.
-        let _ = tooling.clone().hooks().unregister_hook(&hook_id).await;
 
         assert!(
             result.is_ok(),
@@ -1318,7 +1302,6 @@ mod tests {
             fn name(&self) -> &str {
                 self.label
             }
-
             fn description(&self) -> String {
                 format!("slow tool {}", self.label)
             }
@@ -2327,41 +2310,26 @@ mod tests {
         #[derive(Debug)]
         struct SleepHandler(&'static str, std::time::Duration);
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for SleepHandler {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for SleepHandler {
             async fn handle(
                 &self,
-                _ctx: crate::extensions::framework::core::HookContext,
+                _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 tokio::time::sleep(self.1).await;
                 crate::extensions::framework::types::HookResult::Continue(
                     crate::extensions::framework::types::HookOutput::Text(self.0.to_string()),
                 )
             }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::PromptSystemSection {
-                    section: self.0.to_string(),
-                    priority: 100,
-                }
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                format!("Sleep-{}", self.0)
-            }
         }
 
         for section in ["tools", "skills", "roles"] {
             core.hooks()
                 .register_hook(
-                    crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                    crate::extensions::workspace_dispatcher::WorkspaceHookPoint::PromptSection {
                         section: section.to_string(),
-                        priority: 100,
                     },
                     Arc::new(SleepHandler(section, std::time::Duration::from_millis(50))),
-                    &crate::extensions::framework::types::ExtensionId::new(format!(
-                        "sleep-{section}"
-                    )),
+                    peko_subject::PrincipalId::system(),
                 )
                 .await
                 .unwrap();
@@ -2446,10 +2414,10 @@ mod tests {
         #[derive(Debug)]
         struct StuckHandler;
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for StuckHandler {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for StuckHandler {
             async fn handle(
                 &self,
-                _ctx: crate::extensions::framework::core::HookContext,
+                _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 // Sleep far longer than the renderer's 2s timeout.
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -2457,28 +2425,15 @@ mod tests {
                     crate::extensions::framework::types::HookOutput::Text("never".to_string()),
                 )
             }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::PromptSystemSection {
-                    section: "skills".to_string(),
-                    priority: 100,
-                }
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                "Stuck".to_string()
-            }
         }
 
         core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::PromptSystemSection {
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::PromptSection {
                     section: "skills".to_string(),
-                    priority: 100,
                 },
                 Arc::new(StuckHandler),
-                &crate::extensions::framework::types::ExtensionId::new("stuck"),
+                peko_subject::PrincipalId::system(),
             )
             .await
             .unwrap();
@@ -3230,8 +3185,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn pre_post_tool_use_hooks_fire_in_order() {
-        use crate::extensions::framework::types::ExtensionId;
-
         peko_identity::init_test_env();
         let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
@@ -3248,67 +3201,47 @@ mod tests {
         #[derive(Debug)]
         struct NamedRecorder {
             label: &'static str,
-            point: crate::extensions::framework::core::HookPoint,
             log: Arc<Mutex<Vec<&'static str>>>,
         }
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for NamedRecorder {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for NamedRecorder {
             async fn handle(
                 &self,
-                _ctx: crate::extensions::framework::core::HookContext,
+                _ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 self.log.lock().unwrap().push(self.label);
                 crate::extensions::framework::types::HookResult::Continue(
                     crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                self.point.clone()
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                format!("NamedRecorder({})", self.label)
-            }
         }
 
-        let pre_id = core
-            .hooks()
+        core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::PreToolUse {
-                    tool_name: "echo".to_string(),
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::PreToolUse {
+                    tool_name: Some("echo".to_string()),
                 },
                 Arc::new(NamedRecorder {
                     label: "pre_tool_use",
-                    point: crate::extensions::framework::core::HookPoint::PreToolUse {
-                        tool_name: "echo".to_string(),
-                    },
                     log: log.clone(),
                 }),
-                &ExtensionId::new("f31x-pre"),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
-        let post_id = core
-            .hooks()
+            .unwrap();
+        core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::PostToolUse {
-                    tool_name: "echo".to_string(),
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::PostToolUse {
+                    tool_name: Some("echo".to_string()),
                 },
                 Arc::new(NamedRecorder {
                     label: "post_tool_use",
-                    point: crate::extensions::framework::core::HookPoint::PostToolUse {
-                        tool_name: "echo".to_string(),
-                    },
                     log: log.clone(),
                 }),
-                &ExtensionId::new("f31x-post"),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
 
         let config = test_agent_config("f31x-pre-post-agent");
         let agent = Arc::new(
@@ -3335,8 +3268,6 @@ mod tests {
             .await;
 
         // Clean up so other tests aren't affected.
-        let _ = core.hooks().unregister_hook(&pre_id).await;
-        let _ = core.hooks().unregister_hook(&post_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
         assert!(
@@ -3366,8 +3297,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn stop_hook_fires_on_clean_end_with_reason_end() {
-        use crate::extensions::framework::types::ExtensionId;
-
         peko_identity::init_test_env();
         let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
@@ -3382,10 +3311,10 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for StopRecorder {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for StopRecorder {
             async fn handle(
                 &self,
-                ctx: crate::extensions::framework::core::HookContext,
+                ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
@@ -3394,27 +3323,16 @@ mod tests {
                     crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::Stop
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                "StopRecorder".to_string()
-            }
         }
 
-        let hook_id = core
-            .hooks()
+        core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::Stop,
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::Stop,
                 Arc::new(StopRecorder { log: log.clone() }),
-                &ExtensionId::new("f31x-stop-end"),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
 
         let config = test_agent_config("f31x-stop-end-agent");
         let agent = Arc::new(
@@ -3439,8 +3357,6 @@ mod tests {
         let _ = loop_
             .run_with_resume("Simple prompt", Vec::new(), |_| {}, &session, None)
             .await;
-
-        let _ = core.hooks().unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
         // The global `ToolingRuntime` is shared across tests; foreign
@@ -3470,8 +3386,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn stop_hook_fires_on_soft_interrupt_with_reason_interrupted() {
-        use crate::extensions::framework::types::ExtensionId;
-
         peko_identity::init_test_env();
         let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
@@ -3486,10 +3400,10 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for StopRecorder {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for StopRecorder {
             async fn handle(
                 &self,
-                ctx: crate::extensions::framework::core::HookContext,
+                ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
@@ -3498,27 +3412,16 @@ mod tests {
                     crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::Stop
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                "StopRecorderInterrupt".to_string()
-            }
         }
 
-        let hook_id = core
-            .hooks()
+        core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::Stop,
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::Stop,
                 Arc::new(StopRecorder { log: log.clone() }),
-                &ExtensionId::new("f31x-stop-interrupt"),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
 
         let config = test_agent_config("f31x-stop-interrupt-agent");
         let agent = Arc::new(
@@ -3547,8 +3450,6 @@ mod tests {
             .run_with_resume("Will be interrupted", Vec::new(), |_| {}, &session, None)
             .await
             .unwrap();
-
-        let _ = core.hooks().unregister_hook(&hook_id).await;
 
         assert!(result.interrupted, "result should be marked interrupted");
         let log_snapshot = log.lock().unwrap().clone();
@@ -3580,8 +3481,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn after_agent_hook_fires_from_agent_stop_with_agent_name() {
-        use crate::extensions::framework::types::ExtensionId;
-
         peko_identity::init_test_env();
         let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
@@ -3592,10 +3491,10 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for AfterAgentRecorder {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for AfterAgentRecorder {
             async fn handle(
                 &self,
-                ctx: crate::extensions::framework::core::HookContext,
+                ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
@@ -3603,15 +3502,6 @@ mod tests {
                 crate::extensions::framework::types::HookResult::Continue(
                     crate::extensions::framework::types::HookOutput::Unit,
                 )
-            }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::AfterAgent
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                "AfterAgentRecorder".to_string()
             }
         }
 
@@ -3629,21 +3519,18 @@ mod tests {
         // core-building test can swap the global between registration
         // and `stop()` — the hook then never fires (pre-existing
         // full-suite flake, see the note in daemon::cron_engine tests).
-        let hook_id = agent
+        agent
             .tooling()
             .hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::AfterAgent,
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::AfterAgent,
                 Arc::new(AfterAgentRecorder { log: log.clone() }),
-                &ExtensionId::new("f31x-after-agent"),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
 
         agent.stop().await.expect("stop should succeed");
-
-        let _ = agent.tooling().hooks().unregister_hook(&hook_id).await;
 
         let log_snapshot = log.lock().unwrap().clone();
         // The global `ToolingRuntime` is shared across tests; other tests
@@ -3672,23 +3559,16 @@ mod tests {
         );
     }
 
-    /// F31x.1 test: wildcard pattern `tool.pre.*` matches any tool
-    /// name through the registry's `get_hooks_for_point`. Mirrors
-    /// the `tool.execute.*` pattern that was wired in the original
-    /// registry — F31x.1 adds the same logic for `PreToolUse` and
-    /// `PostToolUse`.
+    /// An observer without a tool selector fires for each tool call.
     #[tokio::test]
     #[serial_test::serial(core)]
-    async fn pre_tool_use_wildcard_dispatch_matches_specific_tool() {
-        use crate::extensions::framework::types::ExtensionId;
-
+    async fn pre_tool_use_without_selector_observes_every_tool() {
         peko_identity::init_test_env();
         let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
 
-        // Two distinct tool calls. The wildcard handler fires for
-        // both via the registry's prefix-match path.
+        // Two distinct calls exercise the absent-selector observer.
         mock.queue_tool_call("tc_1", "alpha", serde_json::json!({"a": 1}));
         mock.queue_tool_call("tc_2", "beta", serde_json::json!({"b": 2}));
         mock.queue_text("Done after two tool calls.");
@@ -3697,14 +3577,14 @@ mod tests {
         let log: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         #[derive(Debug)]
-        struct WildcardPreRecorder {
+        struct AllToolsPreRecorder {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for WildcardPreRecorder {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for AllToolsPreRecorder {
             async fn handle(
                 &self,
-                ctx: crate::extensions::framework::core::HookContext,
+                ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 if let crate::extensions::framework::types::HookInput::ToolCall {
                     tool_name, ..
@@ -3716,33 +3596,20 @@ mod tests {
                     crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::PreToolUse {
-                    tool_name: "*".to_string(),
-                }
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                "WildcardPreRecorder".to_string()
-            }
         }
 
-        let hook_id = core
-            .hooks()
+        core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::PreToolUse {
-                    tool_name: "*".to_string(),
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::PreToolUse {
+                    tool_name: None,
                 },
-                Arc::new(WildcardPreRecorder { log: log.clone() }),
-                &ExtensionId::new("f31x-1-pre-wildcard"),
+                Arc::new(AllToolsPreRecorder { log: log.clone() }),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
 
-        let config = test_agent_config("f31x-1-pre-wildcard-agent");
+        let config = test_agent_config("f31x-1-pre-all-tools-agent");
         let agent = Arc::new(
             Agent::new_for_test(config, temp_dir.path(), tooling.clone())
                 .await
@@ -3761,7 +3628,7 @@ mod tests {
     )
     .await;
 
-        let session = test_session("f31x-1-pre-wildcard-agent", temp_dir.path()).await;
+        let session = test_session("f31x-1-pre-all-tools-agent", temp_dir.path()).await;
         let _ = loop_
             .run_with_resume(
                 "Trigger both alpha and beta",
@@ -3772,8 +3639,6 @@ mod tests {
             )
             .await;
 
-        let _ = core.hooks().unregister_hook(&hook_id).await;
-
         let log_snapshot = log.lock().unwrap().clone();
         let names: Vec<String> = log_snapshot
             .iter()
@@ -3781,44 +3646,11 @@ mod tests {
             .collect();
         assert!(
             names.iter().any(|n| n == "alpha"),
-            "Wildcard Pre must dispatch to tool \"alpha\" via the registry; got: {names:?}"
+            "All-tools Pre must dispatch to tool \"alpha\" via the dispatcher; got: {names:?}"
         );
         assert!(
             names.iter().any(|n| n == "beta"),
-            "Wildcard Pre must dispatch to tool \"beta\" via the registry; got: {names:?}"
-        );
-    }
-
-    /// F31x.1 test: wildcard grammar sanity-check (pure unit test,
-    /// no registry). Documents the `HookPoint::matches()` contract
-    /// for `tool.pre.<name>` so future per-segment changes don't
-    /// silently regress the wildcard resolution.
-    #[test]
-    fn pre_tool_use_wildcard_grammar_matches_specific_tool() {
-        use crate::extensions::framework::core::HookPoint;
-
-        let wildcard = HookPoint::PreToolUse {
-            tool_name: "*".to_string(),
-        };
-        assert_eq!(wildcard.name(), "tool.pre.*");
-
-        let target = HookPoint::PreToolUse {
-            tool_name: "mcp:identity:echo".to_string(),
-        };
-        assert_eq!(target.name(), "tool.pre.mcp:identity:echo");
-        assert!(
-            target.matches("tool.pre.*"),
-            "PreToolUse target must match the per-segment `*` wildcard; \
-         target.name() = {}, pattern = `tool.pre.*`",
-            target.name()
-        );
-        assert!(
-            target.matches("tool.pre.mcp:identity:echo"),
-            "PreToolUse target must match its exact-name pattern"
-        );
-        assert!(
-            !target.matches("tool.execute.*"),
-            "PreToolUse target must not match a `tool.execute.*` pattern"
+            "All-tools Pre must dispatch to tool \"beta\" via the dispatcher; got: {names:?}"
         );
     }
 
@@ -3830,8 +3662,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn after_agent_hook_fires_from_loop_with_agent_name_and_did() {
-        use crate::extensions::framework::types::ExtensionId;
-
         peko_identity::init_test_env();
         let tooling = test_tooling().await;
         let temp_dir = TempDir::new().unwrap();
@@ -3846,10 +3676,10 @@ mod tests {
             log: Arc<Mutex<Vec<serde_json::Value>>>,
         }
         #[async_trait::async_trait]
-        impl crate::extensions::framework::core::HookHandler for AfterAgentLoopRecorder {
+        impl crate::extensions::workspace_dispatcher::WorkspaceHookHandler for AfterAgentLoopRecorder {
             async fn handle(
                 &self,
-                ctx: crate::extensions::framework::core::HookContext,
+                ctx: crate::extensions::workspace_dispatcher::WorkspaceHookContext,
             ) -> crate::extensions::framework::types::HookResult {
                 if let crate::extensions::framework::types::HookInput::Json(v) = &ctx.input {
                     self.log.lock().unwrap().push(v.clone());
@@ -3858,27 +3688,16 @@ mod tests {
                     crate::extensions::framework::types::HookOutput::Unit,
                 )
             }
-            fn hook_point(&self) -> crate::extensions::framework::core::HookPoint {
-                crate::extensions::framework::core::HookPoint::AfterAgent
-            }
-            fn priority(&self) -> i32 {
-                100
-            }
-            fn name(&self) -> String {
-                "AfterAgentLoopRecorder".to_string()
-            }
         }
 
-        let hook_id = core
-            .hooks()
+        core.hooks()
             .register_hook(
-                crate::extensions::framework::core::HookPoint::AfterAgent,
+                crate::extensions::workspace_dispatcher::WorkspaceHookPoint::AfterAgent,
                 Arc::new(AfterAgentLoopRecorder { log: log.clone() }),
-                &ExtensionId::new("f31x-1-after-agent-loop"),
+                peko_subject::PrincipalId::system(),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
 
         let agent_name = format!("f31x-1-loop-{}", uuid::Uuid::new_v4());
         let config = test_agent_config(&agent_name);
@@ -3904,8 +3723,6 @@ mod tests {
         let result = loop_
             .run_with_resume("Simple prompt", Vec::new(), |_| {}, &session, None)
             .await;
-
-        let _ = core.hooks().unregister_hook(&hook_id).await;
 
         // We discard the AgenticResult; the AfterAgent assertion
         // is on the hook log, not the loop result.
@@ -3937,222 +3754,6 @@ mod tests {
             "AfterAgent payload must carry the same `reason` field that Stop saw; got: {}",
             mine[0]
         );
-    }
-
-    // ===================================================================
-    // F35 — `build_tool_definitions` appends synthetic `__tool_search`
-    // when `AgentConfig.enable_tool_search` is true AND at least one
-    // `ToolExposure::Deferred` tool is visible to the principal.
-    // Mirrors codex's `append_tool_search_executor` at
-    // `codex-rs/core/src/tools/spec_plan.rs:928-949`.
-    // ===================================================================
-
-    struct F35Tool {
-        name: String,
-        exposure: peko_tools_core::ToolExposure,
-    }
-    #[async_trait::async_trait]
-    impl peko_tools_core::Tool for F35Tool {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn description(&self) -> String {
-            "catalog fixture".to_string()
-        }
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type":"object"})
-        }
-        fn exposure(&self) -> peko_tools_core::ToolExposure {
-            self.exposure
-        }
-        async fn execute(&self, _: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-            Ok(serde_json::Value::Null)
-        }
-    }
-    async fn f35_register_tool(
-        core: &Arc<ToolingRuntime>,
-        exposure: peko_tools_core::ToolExposure,
-        name_prefix: &str,
-    ) -> String {
-        let name = format!("{name_prefix}-{}", uuid::Uuid::new_v4());
-        core.catalog()
-            .register_system(
-                Arc::new(F35Tool {
-                    name: name.clone(),
-                    exposure,
-                }),
-                crate::extensions::framework::types::ToolSource::BuiltIn,
-            )
-            .await;
-        name
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[serial_test::serial(core)]
-    async fn build_tool_definitions_appends_search_stub_when_flag_and_deferred_present() {
-        peko_identity::init_test_env();
-        let tooling = test_tooling().await;
-        let temp_dir = TempDir::new().unwrap();
-        let (provider, _mock) = mock_provider();
-
-        let core = tooling.clone();
-        // Register a Deferred tool under the system principal so it shows
-        // up in `list_tools(principal_id)` for any agent.
-        let tool_name = f35_register_tool(&core, ToolExposure::Deferred, "f35-deferred").await;
-
-        let agent_name = format!("f35-stub-on-{}", uuid::Uuid::new_v4());
-        let mut config = test_agent_config(&agent_name);
-        config.enable_tool_search = true;
-        let agent = Arc::new(
-            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
-                .await
-                .unwrap(),
-        );
-        let loop_ = AgenticLoop::new(
-        agent.clone(),
-        provider.clone(),
-        core.clone(),
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-    .await;
-
-        let defs = loop_.build_tool_definitions().await;
-
-        // The stub is appended last. Its description matches the
-        // synthetic-description formatter.
-        let stub = defs
-            .iter()
-            .find(|d| d.name == peko_engine::TOOL_SEARCH_TOOL_NAME);
-        assert!(
-            stub.is_some(),
-            "expected `__tool_search` in tool definitions; got {:?}",
-            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
-        assert_eq!(
-            stub.unwrap().description,
-            peko_engine::synthetic_description()
-        );
-
-        // The Deferred tool itself MUST NOT appear in the catalog
-        // (`visible_in_native_catalog()` returns false for Deferred per
-        // F34). The stub is the only thing added.
-        assert!(
-            !defs.iter().any(|d| d.name == tool_name),
-            "Deferred tool {tool_name} must remain hidden from the native catalog"
-        );
-
-        // Teardown: remove the system-registered tool so subsequent
-        // tests see a clean core.
-        let _ = core
-            .catalog()
-            .unregister(&tool_name, peko_subject::PrincipalId::system())
-            .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[serial_test::serial(core)]
-    async fn build_tool_definitions_omits_stub_when_flag_off() {
-        peko_identity::init_test_env();
-        let tooling = test_tooling().await;
-        let temp_dir = TempDir::new().unwrap();
-        let (provider, _mock) = mock_provider();
-
-        let core = tooling.clone();
-        // Deferred tool registered, but the agent's flag is OFF.
-        let tool_name = f35_register_tool(&core, ToolExposure::Deferred, "f35-deferred").await;
-
-        let agent_name = format!("f35-stub-off-{}", uuid::Uuid::new_v4());
-        let mut config = test_agent_config(&agent_name);
-        config.enable_tool_search = false; // explicit even though it's the default
-        let agent = Arc::new(
-            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
-                .await
-                .unwrap(),
-        );
-        let loop_ = AgenticLoop::new(
-        agent.clone(),
-        provider.clone(),
-        core.clone(),
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-    .await;
-
-        let defs = loop_.build_tool_definitions().await;
-
-        assert!(
-            !defs
-                .iter()
-                .any(|d| d.name == peko_engine::TOOL_SEARCH_TOOL_NAME),
-            "stub must NOT be appended when enable_tool_search=false; got {:?}",
-            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
-
-        // Teardown.
-        let _ = core
-            .catalog()
-            .unregister(&tool_name, peko_subject::PrincipalId::system())
-            .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[serial_test::serial(core)]
-    async fn build_tool_definitions_omits_stub_when_no_deferred_tools() {
-        peko_identity::init_test_env();
-        let tooling = test_tooling().await;
-        let temp_dir = TempDir::new().unwrap();
-        let (provider, _mock) = mock_provider();
-
-        let core = tooling.clone();
-        // Register only a Direct tool. With zero Deferred tools visible,
-        // the stub must be omitted even when the flag is on.
-        let tool_name = f35_register_tool(&core, ToolExposure::Direct, "f35-direct").await;
-
-        let agent_name = format!("f35-no-deferred-{}", uuid::Uuid::new_v4());
-        let mut config = test_agent_config(&agent_name);
-        config.enable_tool_search = true;
-        let agent = Arc::new(
-            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
-                .await
-                .unwrap(),
-        );
-        let loop_ = AgenticLoop::new(
-        agent.clone(),
-        provider.clone(),
-        core.clone(),
-        std::sync::Arc::new(
-            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
-                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
-            ),
-        ),
-        peko_engine::CompactionConfig::default(),
-    )
-    .await;
-
-        let defs = loop_.build_tool_definitions().await;
-
-        assert!(
-            !defs
-                .iter()
-                .any(|d| d.name == peko_engine::TOOL_SEARCH_TOOL_NAME),
-            "stub must NOT be appended when no Deferred tools are visible; got {:?}",
-            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
-
-        // Teardown.
-        let _ = core
-            .catalog()
-            .unregister(&tool_name, peko_subject::PrincipalId::system())
-            .await;
     }
 
     // ===================================================================

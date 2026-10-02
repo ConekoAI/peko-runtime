@@ -1336,7 +1336,7 @@ impl AgenticLoop {
             // ADR-022 Phase 3: Compaction with Extension Hooks
             // ============================================================
             compaction_driver
-                .check_and_compact(&mut messages, session, &*self.tooling, &on_event, &run_id)
+                .check_and_compact(&mut messages, session, &on_event, &run_id)
                 .await?;
 
             // Fold the compaction summarization LLM call's usage
@@ -2091,14 +2091,7 @@ impl AgenticLoop {
                         mid_turn_estimated
                     );
                     let _ = compaction_driver
-                        .compact_mid_turn(
-                            &mut messages,
-                            session,
-                            &*self.tooling,
-                            &on_event,
-                            &run_id,
-                            snapshot,
-                        )
+                        .compact_mid_turn(&mut messages, session, &on_event, &run_id, snapshot)
                         .await?;
                 }
 
@@ -2207,33 +2200,9 @@ impl AgenticLoop {
     /// ADR-066 P2 removed the capability-grant filter — presence in the
     /// registry is visibility.
     ///
-    /// F35 — when the agent's [`AgentConfig::enable_tool_search`] is true
-    /// AND there is at least one `ToolExposure::Deferred` tool visible to
-    /// the principal, appends a synthetic `__tool_search` `ToolDefinition`
-    /// so the model can resolve deferred tools on demand. Mirrors codex
-    /// `tools/spec_plan.rs:928-949 append_tool_search_executor`.
     pub async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
         let principal_id = peko_subject::PrincipalId(self.agent_principal_id.clone());
-        let mut defs = self.tooling.list_tool_definitions(&principal_id).await;
-
-        // F35 — append the synthetic `__tool_search` stub only when both
-        // gates pass: (a) the agent opted in via
-        // `AgentConfig::enable_tool_search`, and (b) at least one
-        // `Deferred` tool is registered for this principal. The second
-        // gate avoids bloating the catalog when there's nothing to
-        // discover — `Deferred` tools aren't visible in
-        // `list_tool_definitions_for` (F34) so we walk the
-        // unfiltered `list_tools` to count them.
-        if self.agent.config_enable_tool_search() {
-            let has_deferred = self.tooling.has_deferred_tools(&principal_id).await;
-            if has_deferred {
-                defs.push(ToolDefinition {
-                    name: crate::tool_search_metadata::TOOL_SEARCH_TOOL_NAME.to_string(),
-                    description: crate::tool_search_metadata::synthetic_description(),
-                    parameters: crate::tool_search_metadata::synthetic_parameters(),
-                });
-            }
-        }
+        let defs = self.tooling.list_tool_definitions(&principal_id).await;
 
         info!(
             "Dynamically built {} tool definitions from ToolingRuntime: {:?}",

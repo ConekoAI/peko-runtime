@@ -5,13 +5,11 @@
 //! execution timeout and panic isolation + background detach (the
 //! behavior kept from `transport::async_router`), bridges abort
 //! signals, fires the observe-only `PreToolUse` / `PostToolUse` hooks
-//! (workspace hooks from `<workspace>/hooks/` — P4 re-homes them onto
-//! the minimal dispatcher), and emits the `tool.call` audit event.
+//! through the workspace dispatcher, and emits the `tool.call` audit event.
 //!
-//! Replaces the P2 stack (`BuiltinExecuteHandler` + `HookRegistry`
+//! Replaces the P2 stack (`BuiltinExecuteHandler` + `WorkspaceHookDispatcher`
 //! priority dispatch + companion-hook codegen) for the execution path:
-//! tools dispatch straight from the [`ToolCatalog`]; the hook registry
-//! is only used for the observe-only Pre/Post points.
+//! tools dispatch straight from the [`ToolCatalog`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,12 +23,12 @@ use tracing::{debug, warn};
 use peko_extension_api::ToolCallSpec;
 use peko_tools_core::ToolInterruptNotice;
 
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::transport::async_router::{
     AsyncExecutionRouter, ToolExecutionContext,
 };
 use crate::extensions::framework::types::HookInput;
+use crate::extensions::workspace_dispatcher::WorkspaceHookDispatcher;
+use crate::extensions::workspace_dispatcher::WorkspaceHookPoint;
 use crate::tools::catalog::ToolCatalog;
 
 /// The single tool-execution point. Cheap to clone (every field is an
@@ -38,7 +36,7 @@ use crate::tools::catalog::ToolCatalog;
 #[derive(Clone)]
 pub struct ToolDispatcher {
     catalog: Arc<ToolCatalog>,
-    hooks: Arc<HookRegistry>,
+    hooks: Arc<WorkspaceHookDispatcher>,
     router: Arc<AsyncExecutionRouter>,
     audit: Option<Arc<peko_observability::Observability>>,
 }
@@ -59,7 +57,7 @@ impl ToolDispatcher {
     #[must_use]
     pub fn new(
         catalog: Arc<ToolCatalog>,
-        hooks: Arc<HookRegistry>,
+        hooks: Arc<WorkspaceHookDispatcher>,
         router: Arc<AsyncExecutionRouter>,
         audit: Option<Arc<peko_observability::Observability>>,
     ) -> Self {
@@ -91,16 +89,16 @@ impl ToolDispatcher {
     pub async fn execute(&self, call: ToolCallSpec) -> Result<(String, Value, bool)> {
         let start = Instant::now();
         self.fire_observe(
-            HookPoint::PreToolUse {
-                tool_name: call.tool_name.clone(),
+            WorkspaceHookPoint::PreToolUse {
+                tool_name: Some(call.tool_name.clone()),
             },
             &call,
         )
         .await;
         let result = self.execute_inner(&call).await;
         self.fire_observe(
-            HookPoint::PostToolUse {
-                tool_name: call.tool_name.clone(),
+            WorkspaceHookPoint::PostToolUse {
+                tool_name: Some(call.tool_name.clone()),
             },
             &call,
         )
@@ -243,10 +241,8 @@ impl ToolDispatcher {
 
     /// Fire an observe-only hook point for the call (PreToolUse /
     /// PostToolUse). The result is discarded by design; the 2s
-    /// soft-fail lives in `HookRegistry`'s timeout wrapper upstream —
-    /// here we bound the wait directly so a stuck workspace hook can't
-    /// stall the dispatch.
-    async fn fire_observe(&self, point: HookPoint, call: &ToolCallSpec) {
+    /// soft-fail budget applies to each handler in `WorkspaceHookDispatcher`.
+    async fn fire_observe(&self, point: WorkspaceHookPoint, call: &ToolCallSpec) {
         let input = HookInput::ToolCall {
             tool_name: call.tool_name.clone(),
             params: call.params.clone(),
@@ -258,11 +254,7 @@ impl ToolDispatcher {
             principal_name: call.principal_name.clone(),
             abort_signal: None,
         };
-        let _ = tokio::time::timeout(
-            peko_tools_core::HOOK_TIMEOUT,
-            self.hooks.invoke_hook(point, input),
-        )
-        .await;
+        let _ = self.hooks.invoke_hook(point, input).await;
     }
 
     /// Emit the `tool.call` audit event (Info severity). Tool name,
@@ -370,7 +362,6 @@ fn apply_workspace_injection(params: &mut Value, tool_name: &str, workspace: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::ExtensionServices;
     use crate::extensions::framework::types::ToolSource;
     use peko_tools_core::{Tool, ToolContext};
 
@@ -411,9 +402,7 @@ mod tests {
             .await;
         let dispatcher = ToolDispatcher::new(
             catalog,
-            Arc::new(HookRegistry::with_services(Arc::new(
-                ExtensionServices::new(),
-            ))),
+            Arc::new(WorkspaceHookDispatcher::new()),
             Arc::new(AsyncExecutionRouter::new()),
             Some(Arc::clone(&audit)),
         );

@@ -9,10 +9,7 @@
 //! system entries on read.
 //!
 //! Presence = visibility = executability (ADR-066 D1): there is no
-//! capability filter anywhere in the catalog. The F34 `ToolExposure`
-//! filter survives until P4: `Hidden` / `Deferred` tools are excluded
-//! from the native wire catalog; `Deferred` tools resolve via
-//! `__tool_search` (`list_deferred_tool_definitions`).
+//! capability or exposure filter anywhere in the catalog.
 //!
 //! The catalog is shared state explicitly threaded from the daemon's
 //! composition root (`daemon::state`) through `PrincipalManager` →
@@ -71,8 +68,7 @@ impl ToolCatalog {
             tool.description(),
             tool.parameters(),
             source,
-        )
-        .with_exposure(tool.exposure());
+        );
         self.tools
             .insert(
                 (metadata.name.clone(), principal_id.clone()),
@@ -144,8 +140,7 @@ impl ToolCatalog {
         names
     }
 
-    /// All tools visible to `principal_id` as metadata (unfiltered by
-    /// exposure — the deferred-search path needs the `Deferred` rows).
+    /// All tools visible to `principal_id` as metadata.
     pub async fn list_tools(&self, principal_id: &PrincipalId) -> Vec<ToolMetadata> {
         let names = self.list_tool_names(principal_id).await;
         let mut out = Vec::with_capacity(names.len());
@@ -158,69 +153,13 @@ impl ToolCatalog {
     }
 
     /// The native wire catalog (`tools[]` JSON-schema array) for
-    /// `principal_id`: every visible tool minus `Hidden`/`Deferred`
-    /// (the F34 exposure filter — itself deleted in P4).
+    /// `principal_id`: every tool registered in its scope.
     pub async fn tool_definitions(&self, principal_id: &PrincipalId) -> Vec<ToolDefinition> {
         self.list_tools(principal_id)
             .await
             .into_iter()
-            .filter(|m| m.exposure.visible_in_native_catalog())
             .map(|m| m.to_tool_definition())
             .collect()
-    }
-
-    /// Search the principal's `ToolExposure::Deferred` catalog, ranked
-    /// by the word-overlap backend at
-    /// [`crate::extensions::framework::core::scoring`]. Empty query /
-    /// `limit == 0` returns an empty vec (validated upstream in
-    /// `ToolSearchTool::execute`).
-    pub async fn list_deferred_tool_definitions(
-        &self,
-        principal_id: &PrincipalId,
-        query: &str,
-        limit: usize,
-    ) -> Vec<ToolDefinition> {
-        if query.trim().is_empty() || limit == 0 {
-            return Vec::new();
-        }
-
-        let deferred: Vec<_> = self
-            .list_tools(principal_id)
-            .await
-            .into_iter()
-            .filter(|m| matches!(m.exposure, peko_tools_core::ToolExposure::Deferred))
-            .collect();
-
-        let mut scored: Vec<_> = deferred
-            .iter()
-            .map(|m| {
-                let s = crate::extensions::framework::core::scoring::score(
-                    query,
-                    &m.name,
-                    &m.description,
-                );
-                (m, s)
-            })
-            .filter(|(_, s)| *s > 0)
-            .collect();
-        // Stable sort: score desc, name asc for tie-break.
-        scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name.cmp(&b.0.name)));
-
-        scored
-            .into_iter()
-            .take(limit)
-            .map(|(m, _)| m.to_tool_definition())
-            .collect()
-    }
-
-    /// `true` if at least one `ToolExposure::Deferred` tool is visible
-    /// to `principal_id` — gates the synthetic `__tool_search` stub in
-    /// the engine's `build_tool_definitions` (F35).
-    pub async fn has_deferred_tools_for(&self, principal_id: &PrincipalId) -> bool {
-        self.list_tools(principal_id)
-            .await
-            .iter()
-            .any(|m| matches!(m.exposure, peko_tools_core::ToolExposure::Deferred))
     }
 
     /// Number of tools visible to `principal_id`.
@@ -242,11 +181,10 @@ impl ToolCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_tools_core::{ToolContext, ToolExposure};
+    use peko_tools_core::ToolContext;
 
     struct StubTool {
         name: &'static str,
-        exposure: ToolExposure,
     }
 
     #[async_trait::async_trait]
@@ -260,9 +198,7 @@ mod tests {
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
-        fn exposure(&self) -> ToolExposure {
-            self.exposure
-        }
+
         async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
             Ok(serde_json::json!({"ok": true}))
         }
@@ -276,8 +212,8 @@ mod tests {
         }
     }
 
-    fn stub(name: &'static str, exposure: ToolExposure) -> Arc<dyn Tool> {
-        Arc::new(StubTool { name, exposure })
+    fn stub(name: &'static str) -> Arc<dyn Tool> {
+        Arc::new(StubTool { name })
     }
 
     #[tokio::test]
@@ -285,14 +221,10 @@ mod tests {
         let catalog = ToolCatalog::new();
         let p1 = PrincipalId::generate();
         catalog
-            .register_system(stub("Read", ToolExposure::Direct), ToolSource::BuiltIn)
+            .register_system(stub("Read"), ToolSource::BuiltIn)
             .await;
         catalog
-            .register(
-                stub("Agent", ToolExposure::Direct),
-                ToolSource::BuiltIn,
-                &p1,
-            )
+            .register(stub("Agent"), ToolSource::BuiltIn, &p1)
             .await;
 
         assert!(catalog.get("Read", &p1).await.is_some());
@@ -302,31 +234,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wire_catalog_hides_hidden_and_deferred() {
+    async fn wire_catalog_contains_every_registered_tool_in_owner_scope() {
         let catalog = ToolCatalog::new();
+        let p1 = PrincipalId::generate();
+        let p2 = PrincipalId::generate();
         catalog
-            .register_system(stub("Read", ToolExposure::Direct), ToolSource::BuiltIn)
+            .register_system(stub("Read"), ToolSource::BuiltIn)
             .await;
         catalog
-            .register_system(stub("Secret", ToolExposure::Hidden), ToolSource::BuiltIn)
+            .register(stub("OwnerTool"), ToolSource::BuiltIn, &p1)
             .await;
-        catalog
-            .register_system(stub("Lazy", ToolExposure::Deferred), ToolSource::BuiltIn)
-            .await;
-
-        let defs = catalog.tool_definitions(PrincipalId::system()).await;
-        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert!(names.contains(&"Read"));
-        assert!(!names.contains(&"Secret"));
-        assert!(!names.contains(&"Lazy"));
-
-        // The deferred tool is searchable by presence.
-        assert!(catalog.has_deferred_tools_for(PrincipalId::system()).await);
-        let found = catalog
-            .list_deferred_tool_definitions(PrincipalId::system(), "lazy", 5)
-            .await;
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].name, "Lazy");
+        let own = catalog.tool_definitions(&p1).await;
+        assert_eq!(
+            own.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["OwnerTool", "Read"]
+        );
+        assert_eq!(
+            catalog
+                .tool_definitions(&p2)
+                .await
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Read"]
+        );
     }
 
     #[tokio::test]
@@ -334,7 +265,7 @@ mod tests {
         let catalog = ToolCatalog::new();
         for name in ["Grep", "Read", "Bash", "Write", "Agent", "Edit", "Glob"] {
             catalog
-                .register_system(stub(name, ToolExposure::Direct), ToolSource::BuiltIn)
+                .register_system(stub(name), ToolSource::BuiltIn)
                 .await;
         }
         let first = catalog.tool_definitions(PrincipalId::system()).await;

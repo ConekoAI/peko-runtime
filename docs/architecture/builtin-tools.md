@@ -5,6 +5,10 @@ It is organized around the Claude Code core tool parity program: tools that
 match Claude's name and schema exactly are marked ✅; peko extensions are
 marked 🔧.
 
+Every registered tool is included in the native wire catalog (ADR-066 P4).
+The exposure enum, deferred-tool discovery, and `__tool_search` were removed;
+workspace tool registration remains principal-scoped.
+
 ## Legend
 
 - **✅ Claude parity** — name, schema, and return shape match Claude Code's

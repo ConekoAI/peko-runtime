@@ -1015,43 +1015,13 @@ impl Agent {
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping agent: {}", self.config.name);
 
-        // Invoke AgentShutdown hook so extensions can clean up
-        let shutdown_result = self
-            .tooling
-            .hooks()
-            .invoke_hook(
-                crate::extensions::framework::core::HookPoint::AgentShutdown,
-                crate::extensions::framework::types::HookInput::Unit,
-            )
-            .await;
-        tracing::info!(
-            "AgentShutdown hook result: {:?}",
-            std::mem::discriminant(&shutdown_result)
-        );
-
-        // F31x: fire AfterAgent (per-turn completion notification).
-        // Distinct from AgentShutdown (process-level teardown): a
-        // single agent process can run many turns, but each
-        // `run_with_resume` that ends (success or soft-interrupt)
-        // gets its own AfterAgent signal. Observe-only
-        // — loop continues regardless of handler output.
-        //
-        // Note: this site is currently dead code (no production
-        // caller invokes `Agent::stop()`); wiring it into the
-        // daemon's teardown path is deferred to a follow-up PR.
         let after_agent_payload = serde_json::json!({
             "role_name": self.config.name,
             "agent_did": self.identity.did,
             "principal_id": self.subagent_executor.principal_id().to_string(),
             "workspace": self.principal_workspace.as_ref().map(|path| path.to_string_lossy().into_owned()),
         });
-        let _ = self
-            .tooling
-            .hooks()
-            .invoke_hook(
-                crate::extensions::framework::core::HookPoint::AfterAgent,
-                crate::extensions::framework::types::HookInput::Json(after_agent_payload),
-            )
+        peko_extension_api::EngineHooks::fire_after_agent_hook(&*self.tooling, after_agent_payload)
             .await;
 
         Ok(())
@@ -1619,37 +1589,12 @@ impl Agent {
             }
         }
 
-        // F35 — register the synthetic `__tool_search` stub if the agent
-        // opted in via `enable_tool_search`. Registered per-agent so the
-        // tool's Weak<ToolingRuntime> points at the shared core without
-        // extending its lifetime.
-        if self.config.enable_tool_search {
-            let search_tool = Arc::new(crate::tools::builtin::ToolSearchTool::new(Arc::downgrade(
-                &tooling,
-            )));
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_tool_search_tool(
-                    tooling.catalog(),
-                    search_tool,
-                    &self.principal_id,
-                )
-                .await
-            {
-                warn!("Failed to register per-agent ToolSearchTool: {e}");
-            }
-        } else {
-            tracing::debug!(
-                "Tool search disabled by config for agent '{}'",
-                self.config.name
-            );
-        }
-
         // Phase 2 of `feature/multi-model-subagents`: register the
         // `model_list` builtin when both the agent's config opts in
         // (`enable_model_list`) AND a principal catalog is reachable.
         // The CLI one-shot path binds neither (no resolver); the
         // build surfaces silently skip the tool. Same Weak-downgrade
-        // pattern as `ToolSearchTool` so the tool never extends the
+        // pattern so the tool never extends the
         // catalog's lifetime past the daemon.
         if self.config.enable_model_list {
             if let Some(ref catalog) = self.model_catalog {
@@ -1754,24 +1699,11 @@ impl Agent {
         Ok(loop_)
     }
 
-    /// Prepare agent for execution by initializing built-in tools and invoking `AgentInit` hooks.
+    /// Prepare agent for execution by initializing built-in tools.
     async fn prepare_execution(&self) -> anyhow::Result<()> {
         if let Err(e) = self.init_builtins_async().await {
             return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
         }
-
-        let init_result = self
-            .tooling
-            .hooks()
-            .invoke_hook(
-                crate::extensions::framework::core::HookPoint::AgentInit,
-                crate::extensions::framework::types::HookInput::Unit,
-            )
-            .await;
-        tracing::info!(
-            "AgentInit hook result: {:?}",
-            std::mem::discriminant(&init_result)
-        );
 
         Ok(())
     }
@@ -2190,10 +2122,6 @@ impl peko_engine::AgentView for Agent {
 
     fn conversation_peer(&self) -> Option<&str> {
         Agent::conversation_peer(self)
-    }
-
-    fn config_enable_tool_search(&self) -> bool {
-        self.config.enable_tool_search
     }
 
     fn config_prompt_body(&self) -> Option<String> {

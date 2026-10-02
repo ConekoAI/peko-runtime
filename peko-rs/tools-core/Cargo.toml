@@ -3,7 +3,7 @@ name = "peko-tools-core"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Tool execution API — owns Tool, ToolContext, AbortSignal, ToolResult, ToolError, ToolProgressEvent, ToolWithContext, ToolInterruptNotice, ContextSource, ToolContextAdapter, ToolExposure"
+description = "Tool execution API — owns Tool, ToolContext, AbortSignal, ToolResult, ToolError, ToolProgressEvent, ToolWithContext, ToolInterruptNotice, ContextSource, ToolContextAdapter"
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 

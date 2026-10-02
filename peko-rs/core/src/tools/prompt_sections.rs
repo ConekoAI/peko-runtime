@@ -2,12 +2,10 @@
 //!
 //! The built-in per-turn prompt sections (`identity`, `roles`,
 //! `skills`, `workflows`, `session_context`) are plain providers
-//! registered on the [`crate::tools::runtime::ToolingRuntime`] — no
-//! `HookHandler` impls, no priority dispatch through the hook
-//! registry. The funnel's `render_prompt_sections` aggregates them;
-//! workspace-hook `PromptSection` binds (`<workspace>/hooks/`) still
-//! ride the hook registry inside the same aggregation until P4 unifies
-//! them.
+//! registered on the [`crate::tools::runtime::ToolingRuntime`]. Its prompt
+//! rendering aggregates providers and workspace-hook `PromptSection` output.
+//! Workspace hooks run in registration order; provider priority retains the
+//! existing ordering of built-in session-context components.
 //!
 //! A provider's file-walking / mtime-cache internals are its own
 //! business — this module only defines the seam.

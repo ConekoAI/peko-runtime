@@ -2,14 +2,13 @@
 
 **Date:** 2026-10-02
 **Branch:** `adr-066-pure-workspace-tooling` (off `master`)
-**Status:** P1 + P2 landed; P3 implemented using the saved WIP and
-subsequent fixes, with all standard gates green. Docker integration is
-unverified because the local Docker server did not respond within a
-15-second preflight. P4–P6 are not started.
+**Status:** P1–P4 landed, with all standard gates green. P4's final unit
+run passed 2,845 tests with zero failures and three existing ignored tests.
+Docker integration remains unverified: the local server timed out in the
+15-second preflight. P5–P6 are not started.
 
-The original [`adr-066-p3-wip.patch`](adr-066-p3-wip.patch) is retained as
-historical recovery material for the P2 base; do not apply it over P3.
 
+The landed P3 recovery patch was removed in P4; its history remains in Git.
 
 This document is the complete context needed to resume the work. Read
 [ADR-066](adr/ADR-066-pure-workspace-tooling.md) first — it is the decision
@@ -29,7 +28,8 @@ Ten decisions (D1–D10), six phases (P1–P6), each phase a tree-green commit.
 ## 2. Commit state
 
 ```
-P3        This phase: tooling catalog / dispatcher / explicit runtime
+P4        This phase: workspace hook dispatcher / exposure deletion
+49720c79  P3: tooling catalog / dispatcher / explicit runtime
 74578be3  docs: ADR-066 implementation handover + P3 WIP patch
 23ba4c26  P2 (ADR-066): delete the capability gate
 7d6dbe04  P1 (ADR-066): re-home async_exec, delete inert extension framework
@@ -154,21 +154,38 @@ not start: the local server timed out in the bounded preflight. Run
 before merging.
 
 `API_SURFACE.md`, `CHANGELOG.md`, source docs, and the ignored local
-`AGENTS.md` are updated for P3. P4 is the next implementation phase.
+`AGENTS.md` are updated for P3. P4 follows below.
 
-## 6. P4 — not started
+## 6. P4 — landed
 
-ADR §2 D3/D5, §3 P4. `WorkspaceHookDispatcher` (~6 fired points:
-PreToolUse/PostToolUse observe-only 2 s soft-fail, Stop, AfterAgent,
-PromptSection, SessionContextBuild — a `Vec` fired in registration
-order; no priorities/wildcards/companion codegen) replaces
-`HookRegistry` for workspace hooks; rewire `workspace_hooks.rs` +
-`command_handler.rs`. Delete `HookRegistry` and the 790-LOC `HookPoint`
-zoo (companion-hook codegen was removed with P3's execution path). Delete
-`ToolExposure` (all tools are Direct), the exposure filter in the
-catalog, `AgentConfig::enable_tool_search`, `tools/builtin/tool_search.rs`,
-`framework/core/scoring.rs`. Verify hook integration tests (observe-only
-fires, soft-fail, PromptSection bind renders a tail section).
+- `extensions/workspace_dispatcher.rs` replaces HookRegistry with a vector
+  of handlers at six points. Principal ownership is typed; no ExtensionId /
+  HookId bookkeeping, wildcard matching, or hook priorities remain.
+- Each handler runs in registration order with a two-second soft-fail budget;
+  handled/error/panic/timeout results cannot veto execution or skip observers.
+- The scanner loads sorted directories, preserves manifest bind order, and
+  validates the whole manifest before registering. Tool selectors are exact
+  or absent (all tools); old wildcard manifests are rejected with guidance.
+  Legacy priority fields are tolerated and ignored. SessionContextBuild can
+  now be bound in a workspace manifest.
+- Command hooks use explicit principal/workspace/session/agent context and
+  kill subprocesses on drop. Prompt aggregation, built-in augmentation,
+  custom tail sections, and retraction remain intact. A session_context
+  PromptSection binding augments SessionContextBuild output in registration order.
+- Deleted HookRegistry, HookPoint, handler/context/binding scaffolding, hook
+  telemetry, ToolExposure, catalog filters, enable_tool_search, __tool_search,
+  discovery metadata, and scoring. Removed inert AgentInit/Shutdown and
+  compaction/session-state seams; the compaction backend/cache behavior stays.
+- Removed the landed P3 WIP patch. Updated API_SURFACE, DATA_MODEL, workspace
+  and tool docs, source comments, CHANGELOG, and local ignored AGENTS.md.
+- Verification: formatting, all-target clippy, 2,845 workspace unit tests
+  (zero failures; three existing ignored tests), module boundaries, and all
+  81 forbidden dependency-edge rules pass. Hook regressions cover observe-only
+  execution despite handled/error/panic/timeout results, owner identity,
+  registration order, all six command points, prompt aggregation (including
+  session_context augmentation), and existing renderer retraction behavior.
+  Docker again failed the bounded preflight; integration remains unverified
+  before merge. P5 is the next implementation phase.
 
 ## 7. P5 — not started
 

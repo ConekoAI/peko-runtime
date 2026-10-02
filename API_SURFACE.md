@@ -21,7 +21,7 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
-## Module: `tools` — ADR-066 P3
+## Module: `tools` — ADR-066 P3/P4
 
 The daemon constructs one `ToolingRuntime` and passes it explicitly to
 `PrincipalManager`, root/peer/cron turns, agents, and their children.
@@ -29,7 +29,7 @@ Standalone callers and tests construct isolated runtimes.
 
 | Contract | Module | Behavior |
 |---|---|---|
-| `ToolCatalog::{register, get, tool_definitions}` | `tools::catalog` | Stores executable `Arc<dyn Tool>` plus metadata by `(name, PrincipalId)`; principal entries shadow system entries; definitions sorted by name; exposure retained until P4 |
+| `ToolCatalog::{register, get, tool_definitions}` | `tools::catalog` | Stores executable `Arc<dyn Tool>` plus metadata by `(name, PrincipalId)`; principal entries shadow system entries; definitions sorted by name; every registered tool included |
 | `ToolDispatcher::execute(ToolCallSpec)` | `tools::dispatcher` | Validates args, builds identity/abort context, injects workspace paths, routes timeout/detach and panic isolation, fires observe-only Pre/Post hooks, emits one `tool.call` audit event |
 | `ToolingRuntime::{catalog, dispatcher, hooks, services, session_keys}` | `tools::runtime` | Named composition; workspace tools installed per principal and prompt providers installed once |
 | `PromptSectionProvider::{section, priority, render}` | `tools::prompt_sections` | Plain per-turn provider for identity, roles, skills, workflows, and session context |
@@ -38,7 +38,7 @@ Standalone callers and tests construct isolated runtimes.
 `peko_extension_api::ToolFunnel` has exactly three methods:
 `execute(ToolCallSpec)`, `list_tool_definitions(&PrincipalId)`, and
 `render_prompt_sections(&PromptSectionRequest)`. `EngineHooks` carries
-lifecycle/compaction hooks, session-key bookkeeping, and catalog probes;
+Stop/AfterAgent hooks, session-key bookkeeping, and the parallel-execution probe;
 `ToolingSeam` combines both traits without a root dependency in the engine.
 `ToolCallSpec` carries tool name, params, workspace, agent/session/caller/
 principal identity, principal name, and abort receiver. Execution returns
@@ -55,65 +55,31 @@ The `extensions::framework` module contains the **generic extension framework** 
 
 ### `extensions::framework::core`
 
-#### `HookRegistry` (ADR-066 P3 survivor)
+`ExtensionServices` retains channel, model-resolver, and cross-runtime
+adapter handles. The hook registry, point zoo, bindings, handler factories,
+priority/wildcard dispatch, and hook telemetry scaffolding were deleted in P4.
 
-Workspace and lifecycle hook handlers register on `HookRegistry`. Its
-`register_hook(point, handler, extension_id)` returns a `RegisteredHook`;
-`invoke_hook(point, input)` returns a `HookResult`. Execution is no longer
-hook-dispatched. Principal-scoped handlers run only with their owner's
-`ToolRuntimeContext`. P4 replaces this registry.
+### `extensions::workspace_dispatcher` (ADR-066 P4)
 
-#### `HookPoint`
+`WorkspaceHookDispatcher::register_hook(point, handler, principal_id)` appends
+an owner-scoped handler to a `Vec`. `invoke_hook` / `invoke_hook_with_context`
+run matching handlers in registration order with a two-second budget per
+handler; errors, panics, timeouts, and `Handled` never prevent later handlers.
+`WorkspaceHookHandler::handle(WorkspaceHookContext)` receives the input and
+an explicit `ToolRuntimeContext`; there are no hook ids or priorities.
 
-All 22 extension hook points:
+The six `WorkspaceHookPoint` variants are `PreToolUse { tool_name: Option<String> }`,
+`PostToolUse { tool_name: Option<String> }`, `Stop`, `AfterAgent`,
+`PromptSection { section: String }`, and `SessionContextBuild`. Tool selectors
+are exact names; `None` observes all tools. Workspace manifests with wildcard
+selectors are rejected with migration guidance. Text results append to the
+named runtime-context section. Directory names are sorted before loading,
+then each manifest's binds retain their order; legacy `priority` is ignored.
 
-```rust
-pub enum HookPoint {
-    // Prompt lifecycle
-    PromptSystemSection { section: String, priority: i32 },
-    PromptPreProcess,
-    PromptPostProcess,
-    
-    // Tool lifecycle
-    ToolRegister,
-    ToolExecute { tool_name: String },
-    ToolExecuteAsync { tool_name: String },
-    ToolCheckStatus { tool_name: String },
-    ToolCancel { tool_name: String },
-    ToolResultTransform,
-    
-    // Session lifecycle
-    SessionStateChange,
-    SessionCompaction,
-    SessionContextBuild,
-    
-    // I/O lifecycle
-    ChannelInput,
-    ChannelOutput,
-    MessagePreSend,
-    MessagePostReceive,
-    
-    // Event lifecycle
-    EventSubscribe { topic_pattern: String },
-    EventEmit,
-    
-    // Agent lifecycle
-    AgentShutdown,
-    AgentIteration { iteration: usize },
-}
-```
-
-#### `HookHandler` Trait
-
-```rust
-#[async_trait]
-pub trait HookHandler: Send + Sync + std::fmt::Debug {
-    async fn handle(&self, ctx: HookContext) -> HookResult;
-    fn hook_point(&self) -> HookPoint;
-    fn priority(&self) -> i32 { 100 }
-    fn name(&self) -> String;
-}
-```
+`Tool::exposure`, `ToolMetadata::exposure`, `ToolExposure`, tool-search config /
+probes, `__tool_search`, and its metadata/scoring backend were deleted. The
+compaction driver calls its built-in backend directly; the unused compaction /
+session-state hooks were removed from `EngineHooks`.
 
 ---
 
@@ -332,61 +298,6 @@ pub fn standard_types() -> Vec<&'static str>;
 See the `tools` contracts below. `ExtensionCore`, its process-global
 accessors, tool-instance side table, companion-hook codegen, and
 `ExtensionAsyncAdapter` have been deleted.
-
-#### `HookPoint`
-
-All 22 extension hook points:
-
-```rust
-pub enum HookPoint {
-    // Prompt lifecycle
-    PromptSystemSection { section: String, priority: i32 },
-    PromptPreProcess,
-    PromptPostProcess,
-    
-    // Tool lifecycle
-    ToolRegister,
-    ToolExecute { tool_name: String },
-    ToolExecuteAsync { tool_name: String },
-    ToolCheckStatus { tool_name: String },
-    ToolCancel { tool_name: String },
-    ToolResultTransform,
-    
-    // Session lifecycle
-    SessionStateChange,
-    SessionCompaction,
-    SessionContextBuild,
-    
-    // I/O lifecycle
-    ChannelInput,
-    ChannelOutput,
-    MessagePreSend,
-    MessagePostReceive,
-    
-    // Event lifecycle
-    EventSubscribe { topic_pattern: String },
-    EventEmit,
-    
-    // Agent lifecycle
-    AgentInit,
-    AgentShutdown,
-    AgentIteration { iteration: usize },
-}
-```
-
-#### `HookHandler` Trait
-
-```rust
-#[async_trait]
-pub trait HookHandler: Send + Sync + std::fmt::Debug {
-    async fn handle(&self, ctx: HookContext) -> HookResult;
-    fn hook_point(&self) -> HookPoint;
-    fn priority(&self) -> i32 { 100 }
-    fn name(&self) -> String;
-}
-```
-
----
 
 ## Module: `principal` / `subject`
 
@@ -702,8 +613,8 @@ sanitizers remain in `peko_session::key`.
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
 | `ToolingRuntime` | `tools::runtime` | ⚠️ Changed | Explicit daemon tooling composition; no process-global accessor |
-| `HookPoint` (17 variants post-PR-E #4) | `extensions::framework::core` | ✅ New | Extension hook points |
-| `HookHandler` trait | `extensions::framework::core` | ✅ New | Hook implementation |
+| `WorkspaceHookPoint` (six variants) | `extensions::workspace_dispatcher` | ⚠️ Changed | Principal-owned workspace hook points (ADR-066 P4) |
+| `WorkspaceHookHandler` trait | `extensions::workspace_dispatcher` | ⚠️ Changed | Registration-order observe-only hook handler |
 | `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
 
 > **PR-E #1–#5 deletions (2026-08-26):** the `ExtensionManager`,
@@ -714,7 +625,7 @@ sanitizers remain in `peko_session::key`.
 > extension-removal series (commit `224e4162` + earlier). The
 > runtime now relies on workspace-resident extensions driven by
 > `EngineChannelResponder` (peko-channel) and the F37 funnel gate
-> (`peko_engine::funnel`); no adapter registry remains. HookPoint
+> (`peko_engine::funnel`); no adapter registry remains. Legacy HookPoint
 > dropped from 22 to 17 variants in PR-E #4.
 >
 > **ADR-066 P1 (2026-10-01):** `ExtensionStore`,
@@ -995,7 +906,7 @@ items:
 | `TurnPromptContext.project_instructions` / `AgenticLoop::build_turn_context` `focus_dir` param | `peko_engine::prompt::context`, `peko_engine::agentic_loop` | ⚠️ Changed | D5 (T2): the loop tracks the last directory a path-bearing tool call touched (per-run state) and the context carries the discovered `(path-label, content)`; `build_turn_context` gains a `focus_dir: Option<&Path>` parameter |
 | `SectionSlot::ProjectContext` ("project instructions" tail section) | `peko_engine::prompt::renderer` | ✅ New | D5 (T2): renders `## Project instructions (<path>)` + environment-provided provenance note; full D2 update/retraction semantics (rides once, update notice on project/file change, retracts when leaving all AGENTS.md scopes) |
 | `ToolFunnel::render_prompt_sections` | `peko_extension_api::tool_funnel` (impl: `tools::runtime`) | ⚠️ Changed | Returns `PromptSections` aggregating built-in providers and workspace-hook sections visible to the requested principal; retains empty custom sections for retraction |
-| `BindSpec.{section, priority}` + `PromptSection` bind point | `extensions::workspace_hooks` | ✅ New | D6: `hook.toml` binds may name `point = "PromptSection"` with a non-empty `section` (control chars/newlines rejected) and optional `priority` (default 100) → `HookPoint::PromptSystemSection`; the command's stdout becomes a `## <name>` runtime-context tail section |
+| `BindSpec.section` + `PromptSection` bind point | `extensions::workspace_hooks` | ⚠️ Changed | Commands render named tail sections; nonempty section names cannot contain control characters. Registration order replaces legacy priority in ADR-066 P4 |
 | `RuntimeContextState` custom-section map + `take_changed_custom` | `peko_engine::prompt::renderer` | ✅ New | D6: open `HashMap<String, String>` change tracker for workspace-hook sections; shares the D2 notice-decision helper (`take_changed_cell`) with the fixed slots — notices always on, label = section name. `render_runtime_context` dedupes `registered_prompt_sections` against the built-in dispatches and renders sorted for byte-stable ordering |
 
 ### Channel-binding wake collision → queued steering (2026-09-12)

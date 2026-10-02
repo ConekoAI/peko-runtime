@@ -618,9 +618,8 @@ impl AppState {
             path_resolver.audit_dir(),
         )?);
         let services = Arc::new(crate::extensions::framework::core::ExtensionServices::new());
-        let hooks = Arc::new(
-            crate::extensions::framework::core::HookRegistry::with_services(Arc::clone(&services)),
-        );
+        let hooks =
+            Arc::new(crate::extensions::workspace_dispatcher::WorkspaceHookDispatcher::new());
         let router = crate::extensions::framework::transport::async_router::AsyncExecutionRouter::with_transport(
             crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox(Arc::clone(&inbox_registry)),
         );

@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Pure workspace tooling: workspace hook dispatcher (ADR-066 P4, 2026-10-02)
+
+- Replaced `HookRegistry` and the hook-point zoo with six principal-owned
+  workspace hook points, run in registration order. Each handler soft-fails
+  after two seconds; errors, panics, and handled results never veto tool calls
+  or skip subsequent observers. Command processes are killed when dropped.
+- Preserved prompt-section aggregation and retraction, lifecycle context,
+  and principal isolation. Scanning sorts directories and validates all binds
+  before registering a manifest. Tool selectors are exact or absent (all
+  tools); wildcard selectors are rejected with migration guidance. Legacy
+  priorities are ignored.
+- Deleted tool exposure/filtering, `enable_tool_search`, `__tool_search`, and
+  discovery metadata/scoring. Every registered tool is in the wire catalog.
+- Removed inert agent-init/shutdown and compaction/session-state hooks;
+  compaction uses the built-in backend directly. Removed the landed P3 WIP patch.
+
 ### Pure workspace tooling: funnel split (ADR-066 P3, 2026-10-02)
 
 - Replaced `ExtensionCore` and its process-global accessors with an

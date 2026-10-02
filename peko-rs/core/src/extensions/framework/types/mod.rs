@@ -30,9 +30,4 @@ pub use peko_extension_api::{
     ReservedParamsService, SessionSnapshot, ToolMetadata, ToolRegistryAccess, ToolSource,
 };
 
-// `ToolExposure` migrated to `peko-tools-core` in Phase 5. Re-export
-// from here so existing `crate::extensions::framework::types::ToolExposure`
-// paths keep resolving unchanged.
-pub use peko_tools_core::ToolExposure;
-
 pub mod hook_io;

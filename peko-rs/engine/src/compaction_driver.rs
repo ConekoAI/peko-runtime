@@ -1,25 +1,9 @@
 //! Compaction driver for the agentic loop.
 //!
-//! Encapsulates the entire compaction lifecycle:
-//! - Pre-compaction hook invocation
-//! - Background compactor coordination
-//! - Post-compaction hook invocation
-//! - Session recording and cache updates
-//!
-//! Phase 9b.N.4 lifted this file from `src/engine/compaction_orchestrator.rs`
-//! into `peko-engine`. The lift relied on three trait ports so the
-//! driver can talk to root-only types without a direct dependency:
-//!
-//! - **`ToolFunnel`** (`peko-extension-host`) — abstracted `ToolingRuntime`
-//!   for hook firing. Three new methods added in 9b.N.4 cover the
-//!   compaction / session-state hooks (`invoke_session_compaction_pre_hook`,
-//!   `invoke_session_compaction_post_hook`, `invoke_session_state_change_hook`).
-//! - **`SessionView`** (`peko-engine`) — extended in 9b.N.4 with
-//!   `record_compaction`, `load_previous_compaction_summary`, and
-//!   `update_context_cache` for the driver's session writes.
-//! - **`CompactorBackend`** (`peko-session::compaction`) — new in 9b.N.4,
-//!   abstracts `BackgroundCompactor` so the driver holds a
-//!   `Box<dyn CompactorBackend>` instead of a concrete impl.
+//! Coordinates the background compactor, records session changes, and updates
+//! context caches. `SessionView` supplies persistence; `CompactorBackend`
+//! supplies the summarization worker. ADR-066 P4 removes the inert extension
+//! compaction hook path, so the driver always calls the built-in backend.
 //!
 //! The driver no longer owns a "model context registry". The
 //! single source of truth for the model's max context length is
@@ -31,21 +15,17 @@
 use crate::events::AgenticEvent;
 use crate::SessionView;
 use anyhow::Result;
-use peko_extension_api::hook_io::{CompactionPreparationPayload, CompactionResultPayload};
-use peko_extension_api::session::SessionSnapshot;
-use peko_extension_api::EngineHooks;
 use peko_message::LlmMessage;
 use peko_session::compaction::{
     CompactionConfig, CompactionPhase, CompactionRequest, CompactionResponse, CompactionResult,
     CompactorBackend,
 };
-use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 /// Drives one compaction cycle within the agentic loop.
 ///
 /// The loop just calls `check_and_compact()` at the start of each iteration.
-/// All complexity (hooks, background tasks, session updates) is encapsulated here.
+/// Background tasks and session updates are encapsulated here.
 pub struct CompactionDriver {
     /// Trait object over the root-owned `BackgroundCompactor`. The
     /// driver calls `should_request` to gate the trigger and
@@ -60,7 +40,7 @@ pub struct CompactionDriver {
     pending_compaction: Option<tokio::sync::oneshot::Receiver<CompactionResponse>>,
     /// Whether compaction was performed this iteration
     compaction_performed: bool,
-    /// Last compaction result for post-hook
+    /// Last completed result, used to detect an applied mid-turn summary.
     last_compaction_result: Option<CompactionResult>,
     /// Usage consumed by the most recent compaction's summarization
     /// LLM call(s). The engine loop reads this via
@@ -140,7 +120,6 @@ impl CompactionDriver {
     /// 3. Pre-compaction hook invocation
     /// 4. Background compaction initiation
     /// 5. Polling for background compaction completion
-    /// 6. Post-compaction hook invocation
     /// 7. Session recording and cache updates
     ///
     /// Returns `Ok(true)` if messages were modified by compaction.
@@ -148,7 +127,6 @@ impl CompactionDriver {
         &mut self,
         messages: &mut Vec<LlmMessage>,
         session: &S,
-        hooks: &dyn EngineHooks,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
         run_id: &str,
     ) -> Result<bool>
@@ -227,8 +205,7 @@ impl CompactionDriver {
                 });
             }
 
-            self.invoke_pre_hook(messages, session, hooks, effective_tokens, phase)
-                .await;
+            self.start_compaction(messages, session, phase).await;
         }
 
         // Check if background compaction has completed
@@ -236,8 +213,7 @@ impl CompactionDriver {
 
         // Post-compaction hook and cleanup
         if self.compaction_performed {
-            self.invoke_post_hook(messages, session, hooks, run_id)
-                .await;
+            self.update_context_cache(messages, session).await;
             self.compaction_performed = false;
             self.last_compaction_result = None;
             // `last_compaction_usage` is intentionally NOT cleared
@@ -255,7 +231,7 @@ impl CompactionDriver {
     /// important differences:
     ///
     /// 1. **Phase tag** — the resulting `CompactionEntry.phase` and
-    ///    `CompactionDetails.phase` are tagged `MidTurn` so hooks
+    ///    `CompactionDetails.phase` are tagged `MidTurn` so consumers
     ///    can tell a post-tool-result summary from a top-of-iteration
     ///    one.
     /// 2. **Snapshot splice** — the worker's compacted list
@@ -279,7 +255,6 @@ impl CompactionDriver {
         &mut self,
         messages: &mut Vec<LlmMessage>,
         session: &S,
-        hooks: &dyn EngineHooks,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
         run_id: &str,
         snapshot: peko_session::EnvironmentSnapshot,
@@ -321,19 +296,9 @@ impl CompactionDriver {
             signature: None,
         });
 
-        // Pre-hook fires the same way as `check_and_compact`. The
-        // hook may cancel compaction (Handled) or hand back
-        // pre-baked messages (ReplaceMessages). Both cases are
-        // honoured.
-        let effective_tokens = estimate_context_tokens(messages).tokens;
-        self.invoke_pre_hook(
-            messages,
-            session,
-            hooks,
-            effective_tokens,
-            CompactionPhase::MidTurn,
-        )
-        .await;
+        // Start the built-in backend with the current mid-turn messages.
+        self.start_compaction(messages, session, CompactionPhase::MidTurn)
+            .await;
 
         // Wait for the background worker. `compact_mid_turn` is
         // synchronous from the agentic loop's perspective — the
@@ -395,10 +360,7 @@ impl CompactionDriver {
         }
 
         self.compaction_performed = false;
-        // Post-hook fires the same as pre-turn — let handlers see
-        // the result and mutate `messages` further if they want.
-        self.invoke_post_hook(messages, session, hooks, run_id)
-            .await;
+        self.update_context_cache(messages, session).await;
 
         Ok(true)
     }
@@ -470,106 +432,27 @@ impl CompactionDriver {
         }
     }
 
-    async fn invoke_pre_hook<S>(
+    async fn start_compaction<S>(
         &mut self,
-        messages: &mut Vec<LlmMessage>,
-        _session: &S,
-        hooks: &dyn EngineHooks,
-        estimated_tokens: usize,
+        messages: &[LlmMessage],
+        session: &S,
         phase: CompactionPhase,
     ) where
         S: SessionView + ?Sized,
     {
-        let _ = estimated_tokens;
-        let threshold_tokens = self
-            .context_window
-            .saturating_sub(self.config.reserve_tokens);
-        let _keep_recent_tokens = self.config.keep_recent_tokens;
-
-        let _ = threshold_tokens;
-
-        // The driver used to import root's
-        // `crate::session::compaction::turn_boundaries` here for the
-        // message-selection + split-turn extraction. Those helpers are
-        // still root-only (they don't belong on the driver's
-        // trait-port surface — the boundary rule says the driver
-        // decides "should we compact", not "which messages do we
-        // compact"). For the pre-hook payload we now pass the full
-        // message list and let the hook / compactor decide.
-        //
-        // Pre-9b.N.4 behavior: the driver called
-        // `turn_boundaries::select_messages_respecting_boundaries` to
-        // build a `messages_to_summarize` slice and a
-        // `turn_prefix_messages` slice for split-turn compaction. The
-        // hook handler could then mutate the slice. Post-9b.N.4: we
-        // still pass a `messages_to_summarize` slice — root's
-        // `BackgroundCompactor` does the selection internally — and
-        // the driver's pre-hook payload uses the full message
-        // list as the summary slice. The hook contract is unchanged
-        // (handlers see `serde_json::Value` blobs and can do whatever
-        // they want). If a future phase reintroduces turn-boundary
-        // helpers in `peko-engine`, the pre-hook can be tightened.
-        let messages_to_summarize = messages.clone();
-
-        let is_split_turn = false;
-        let turn_prefix_messages: Vec<LlmMessage> = vec![];
-
-        let prev_summary = _session
+        let previous_summary = session
             .load_previous_compaction_summary()
             .await
             .ok()
             .flatten();
-
-        // File-ops extraction lived in root's `summary_format` and is
-        // not lifted in 9b.N.4 — pass `serde_json::Value::Null` to
-        // signal "no file-ops data". Hooks that depend on this field
-        // see `Null` and should degrade gracefully. Future phase can
-        // lift `summary_format` if a hook really needs it.
-        let file_ops = serde_json::Value::Null;
-
-        let payload = CompactionPreparationPayload {
-            messages_to_summarize: messages_to_summarize.clone(),
-            turn_prefix_messages: turn_prefix_messages.clone(),
-            is_split_turn,
-            previous_summary: prev_summary.clone(),
-            file_ops,
-            estimated_tokens,
-            threshold_tokens,
-            model_context_limit: self.context_window,
-            settings: serde_json::to_value(&self.config).unwrap_or(serde_json::Value::Null),
+        let request = CompactionRequest {
+            messages: messages.to_vec(),
+            previous_summary,
+            phase,
         };
-
-        let decision = hooks.session_compaction_pre_hook(payload).await;
-
-        match decision {
-            peko_extension_api::hook_io::HookDecision::ReplaceMessages(custom_messages) => {
-                info!(
-                    "SessionCompaction hook replaced messages: {} → {}",
-                    messages.len(),
-                    custom_messages.len()
-                );
-                *messages = custom_messages;
-                self.compaction_performed = true;
-            }
-            peko_extension_api::hook_io::HookDecision::Handled => {
-                info!("SessionCompaction hook cancelled compaction");
-            }
-            peko_extension_api::hook_io::HookDecision::PassThrough => {
-                // PassThrough or other — run built-in background compactor
-                let request = CompactionRequest {
-                    messages: messages.clone(),
-                    previous_summary: prev_summary,
-                    phase,
-                };
-                match self.backend.request(request).await {
-                    Ok(receiver) => {
-                        self.pending_compaction = Some(receiver);
-                    }
-                    Err(e) => {
-                        warn!("Failed to start background compaction: {}", e);
-                    }
-                }
-            }
+        match self.backend.request(request).await {
+            Ok(receiver) => self.pending_compaction = Some(receiver),
+            Err(error) => warn!(%error, "Failed to start background compaction"),
         }
     }
 
@@ -661,65 +544,10 @@ impl CompactionDriver {
         }
     }
 
-    async fn invoke_post_hook<S>(
-        &mut self,
-        messages: &mut Vec<LlmMessage>,
-        session: &S,
-        hooks: &dyn EngineHooks,
-        _run_id: &str,
-    ) where
+    async fn update_context_cache<S>(&self, messages: &[LlmMessage], session: &S)
+    where
         S: SessionView + ?Sized,
     {
-        // The post-hook fires `HookPoint::SessionCompactionPost`. We
-        // dispatch either `HookInput::CompactionResult` (when we have a
-        // fresh compaction) or `HookInput::SessionState` (fallback).
-        // Pre-9b.N.4 code constructed `HookInput::SessionState` with a
-        // `SessionSnapshot { session_id, message_count, context_tokens,
-        // metadata }`. The session_id was fetched via `s.id.clone()`
-        // (a root-only field on `crate::session::Session`).
-        //
-        // Post-9b.N.4 the `SessionView` trait doesn't expose `id()` —
-        // the agentic loop already supplies `run_id` for hook stamping,
-        // and `session_id` is the same as `run_id` for non-parallel
-        // sessions. We use `_run_id` as the session_id stand-in.
-        let session_id = _run_id.to_string();
-
-        if let Some(ref result) = self.last_compaction_result {
-            let payload = CompactionResultPayload {
-                summary: result.entry.summary.clone(),
-                messages_compacted: result.entry.messages_compacted,
-                tokens_before: result.entry.tokens_before,
-                tokens_after: result.entry.tokens_after,
-                compaction_number: result.entry.compaction_number,
-                details: result.entry.details.clone(),
-                messages_after: messages.clone(),
-            };
-
-            let decision = hooks.session_compaction_post_hook(payload).await;
-
-            if let peko_extension_api::hook_io::HookDecision::ReplaceMessages(modified) = decision {
-                info!(
-                    "SessionCompactionPost hook modified messages: {} → {}",
-                    messages.len(),
-                    modified.len()
-                );
-                *messages = modified;
-            }
-        } else {
-            // SessionState fallback
-            let snapshot = SessionSnapshot {
-                session_id,
-                message_count: messages.len(),
-                // F21: same hybrid estimator as the pre-hook check. Extension
-                // hooks see real provider-reported usage counts after the
-                // first assistant turn instead of a chars/4 heuristic.
-                context_tokens: estimate_context_tokens(messages).tokens,
-                metadata: HashMap::new(),
-            };
-
-            let _ = hooks.session_state_change_hook(snapshot).await;
-        }
-
         // Update context cache after compaction
         if let Err(e) = session.update_context_cache(messages).await {
             warn!("Failed to update context cache: {}", e);
@@ -730,7 +558,7 @@ impl CompactionDriver {
 // ----------------------------------------------------------------------
 // F21 hybrid token estimator — local copy from `src/session/compaction.rs`.
 // Phase 9b.N.4 keeps this in peko-engine because the driver's
-// pre-hook + post-hook both need it. The root-owned `Compactor` also
+// compaction gates need it. The root-owned `Compactor` also
 // uses it (the `compact` call). Duplication is the lesser evil here
 // vs lifting the entire `Compactor` (which depends on `Provider`).
 // ----------------------------------------------------------------------
@@ -782,7 +610,7 @@ pub struct ContextUsageEstimate {
 /// conversation when no usage data is available.
 ///
 /// Mirrors `crate::session::compaction::Compactor::estimate_context_tokens`
-/// (root) — duplicated here so the driver's pre-hook + post-hook
+/// (root) — duplicated here so the driver's compaction gates
 /// can run without a root dep. The two implementations are
 /// behaviour-equivalent; any future change must update both.
 /// Public re-export of the hybrid estimator for the agentic loop's
@@ -1079,44 +907,6 @@ mod tests {
         }
     }
 
-    /// No-op `EngineHooks` — every hook passes through / returns empty.
-    struct EmptyFunnel;
-
-    #[async_trait]
-    impl EngineHooks for EmptyFunnel {
-        async fn is_parallelizable(
-            &self,
-            _tool_name: &str,
-            _principal_id: &peko_subject::PrincipalId,
-        ) -> bool {
-            true
-        }
-        async fn fire_stop_hook(&self, _payload: serde_json::Value) {}
-        async fn fire_after_agent_hook(&self, _payload: serde_json::Value) {}
-        async fn session_compaction_pre_hook(
-            &self,
-            _payload: CompactionPreparationPayload,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn session_compaction_post_hook(
-            &self,
-            _payload: CompactionResultPayload,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn session_state_change_hook(
-            &self,
-            _snapshot: SessionSnapshot,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
-        async fn has_deferred_tools(&self, _principal_id: &peko_subject::PrincipalId) -> bool {
-            false
-        }
-    }
-
     struct Fixture {
         driver: CompactionDriver,
         backend: Arc<StubBackend>,
@@ -1195,7 +985,7 @@ mod tests {
         // Iteration 1: the armed flag fires compaction even below
         // threshold, tagged StandaloneTurn.
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
 
@@ -1226,7 +1016,7 @@ mod tests {
         // Iteration 2 while still pending: the pending gate holds — no
         // second compaction.
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
         assert_eq!(
@@ -1246,7 +1036,7 @@ mod tests {
         tx.send(completed_response(small_messages(), 2))
             .expect("driver receiver alive");
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
         assert!(
@@ -1257,7 +1047,7 @@ mod tests {
         // Iteration 4: the flag is consumed — with the token gate
         // closed, no further compaction fires.
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
         assert_eq!(
@@ -1274,7 +1064,7 @@ mod tests {
         let on_event = event_sink(&f.events);
 
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
 
@@ -1290,7 +1080,7 @@ mod tests {
         let on_event = event_sink(&f.events);
 
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
 
@@ -1331,7 +1121,7 @@ mod tests {
         f.session.last_total.store(90_000, Ordering::SeqCst);
 
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
 
@@ -1362,7 +1152,7 @@ mod tests {
         f.session.last_total.store(0, Ordering::SeqCst);
 
         f.driver
-            .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
 
@@ -1437,14 +1227,8 @@ mod tests {
             permission_policy_summary: vec!["tool:read".to_string()],
         };
         let (driven, ()) = tokio::join!(
-            f.driver.compact_mid_turn(
-                messages,
-                &f.session,
-                &EmptyFunnel,
-                &on_event,
-                "run-1",
-                snapshot,
-            ),
+            f.driver
+                .compact_mid_turn(messages, &f.session, &on_event, "run-1", snapshot,),
             responder
         );
         driven
@@ -1576,7 +1360,7 @@ mod tests {
         let on_event = event_sink(&f.events);
         for _ in 0..2 {
             f.driver
-                .check_and_compact(&mut messages, &f.session, &EmptyFunnel, &on_event, "run-1")
+                .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
                 .await
                 .unwrap();
         }

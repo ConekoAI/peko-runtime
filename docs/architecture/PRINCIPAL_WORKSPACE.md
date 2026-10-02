@@ -57,7 +57,7 @@ For the trust-and-audit posture that makes this safe, see
 | `memory/sessions/*.jsonl`  | Session history                                                           |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
-| `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
+| `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection, SessionContextBuild]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
 | `plugins/<id>/`            | Opaque plugin — any shape, runtime does not parse                         |
 | `peers.json`               | Peer→session routing index (lives in `local/sessions/`; ADR-056: travels with the sessions layer in snapshots) |
 
@@ -66,6 +66,12 @@ directory and no `peko ext install` flow. Workspace-resident tooling is
 the only source of tools the peko can use.
 
 ---
+
+ADR-066 P4 runs workspace hooks in registration order (sorted directory names,
+then manifest binds), with a two-second budget per handler. Tool observers
+accept an exact `tool_name` or no selector (all tools); wildcard names are
+rejected. Legacy `priority` is ignored. Prompt-section output appends to the
+named runtime-context section.
 
 ## Managing workspace tooling
 

@@ -1075,7 +1075,6 @@ fn render_soft_cancel_section() -> String {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use peko_extension_api::session::SessionSnapshot;
     use peko_extension_api::{EngineHooks, ToolFunnel, ToolingSeam};
     use peko_subject::PrincipalId;
     use std::path::PathBuf;
@@ -1180,28 +1179,8 @@ mod tests {
         }
         async fn fire_stop_hook(&self, _payload: serde_json::Value) {}
         async fn fire_after_agent_hook(&self, _payload: serde_json::Value) {}
-        async fn session_compaction_pre_hook(
-            &self,
-            _payload: peko_extension_api::hook_io::CompactionPreparationPayload,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn session_compaction_post_hook(
-            &self,
-            _payload: peko_extension_api::hook_io::CompactionResultPayload,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn session_state_change_hook(
-            &self,
-            _snapshot: SessionSnapshot,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
+
         async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
-        async fn has_deferred_tools(&self, _principal_id: &PrincipalId) -> bool {
-            false
-        }
     }
 
     fn empty_funnel() -> Arc<dyn ToolingSeam> {

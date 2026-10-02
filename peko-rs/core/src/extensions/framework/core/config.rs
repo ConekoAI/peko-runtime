@@ -1,39 +1,12 @@
-//! Extension services, configuration, and telemetry
-//!
-//! This module defines the service locator [`ExtensionServices`] passed to hook
-//! handlers, along with [`ExtensionConfig`] and [`TelemetryService`].
+//! Host service handles for channel, model, and cross-runtime adapters.
 
-use crate::extensions::framework::core::hook_points::HookPoint;
-use crate::extensions::framework::types::HookId;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Extension services available to hook handlers
 ///
 /// This provides access to shared services like logging, configuration,
 /// and other cross-cutting concerns.
-#[allow(dead_code)] // tool_execution + reserved_params stay until 8c services/ lifts
 pub struct ExtensionServices {
-    /// Configuration service
-    config: ExtensionConfig,
-
-    /// Telemetry/metrics service
-    telemetry: TelemetryService,
-
-    /// Tool execution service (handles parameter injection).
-    ///
-    /// Type-erased to `Arc<dyn Any + Send + Sync>` in Phase 8a. No
-    /// method on this service is called — ADR-066 P1 deleted the
-    /// concrete `services::ToolExecutionService`; the slot stays
-    /// until the `ExtensionServices` collapse (P3).
-    tool_execution: Arc<dyn std::any::Any + Send + Sync>,
-
-    /// Reserved parameters service.
-    ///
-    /// Type-erased for the same reason as `tool_execution`. The
-    /// concrete `services::ReservedParamsService` lives in root.
-    reserved_params: Arc<dyn std::any::Any + Send + Sync>,
-
     // Sprint 9 Commit 4: `principal_message_service` slot retired.
     // `StatelessAgentService` was the sole
     // `PrincipalMessageService` impl; its only caller was the
@@ -68,8 +41,6 @@ pub struct ExtensionServices {
 impl std::fmt::Debug for ExtensionServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExtensionServices")
-            .field("config", &self.config)
-            .field("telemetry", &self.telemetry)
             .field(
                 "cross_runtime_a2a_ctx",
                 &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>",
@@ -89,10 +60,6 @@ impl ExtensionServices {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            config: ExtensionConfig::default(),
-            telemetry: TelemetryService::new(),
-            tool_execution: Arc::new(()),
-            reserved_params: Arc::new(()),
             // Issue #29: cross-runtime a2a ctx starts as None and
             // is filled in by the daemon-state after the tunnel
             // client is wired. Until then, every per-agent
@@ -102,16 +69,6 @@ impl ExtensionServices {
             llm_resolver: std::sync::RwLock::new(None),
             channel_port: std::sync::RwLock::new(None),
         }
-    }
-
-    /// Get configuration
-    pub fn config(&self) -> &ExtensionConfig {
-        &self.config
-    }
-
-    /// Get telemetry service
-    pub fn telemetry(&self) -> &TelemetryService {
-        &self.telemetry
     }
 
     // Sprint 9 Commit 4: `set_principal_message_service` and
@@ -173,144 +130,10 @@ impl ExtensionServices {
     pub fn channel_port(&self) -> Option<Arc<dyn peko_channel::ChannelPort>> {
         self.channel_port.read().ok().and_then(|g| g.clone())
     }
-
-    /// Record a hook invocation
-    pub fn record_invocation(&self, hook_id: &HookId, point: &HookPoint, duration_ms: u64) {
-        self.telemetry
-            .record_hook_invocation(hook_id, point, duration_ms);
-    }
 }
 
 impl Default for ExtensionServices {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Configuration for extensions
-#[derive(Debug, Default)]
-pub struct ExtensionConfig {
-    /// Maximum hook execution time in milliseconds
-    pub max_hook_duration_ms: u64,
-
-    /// Enable hook tracing
-    pub enable_tracing: bool,
-
-    /// Extension-specific configuration
-    pub extension_settings: HashMap<String, serde_json::Value>,
-}
-
-impl ExtensionConfig {
-    /// Create default configuration
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            max_hook_duration_ms: 5000, // 5 seconds default
-            enable_tracing: false,
-            extension_settings: HashMap::new(),
-        }
-    }
-
-    /// Get a setting for a specific extension
-    #[must_use]
-    pub fn get_extension_setting(
-        &self,
-        extension_id: &str,
-        key: &str,
-    ) -> Option<&serde_json::Value> {
-        self.extension_settings
-            .get(extension_id)
-            .and_then(|v| v.get(key))
-    }
-}
-
-/// Telemetry service for hook metrics
-#[derive(Debug)]
-pub struct TelemetryService {
-    /// Invocation counts by hook point
-    invocation_counts: std::sync::Mutex<HashMap<String, u64>>,
-
-    /// Total execution time by hook point
-    execution_times: std::sync::Mutex<HashMap<String, u64>>,
-}
-
-impl TelemetryService {
-    /// Create new telemetry service
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            invocation_counts: std::sync::Mutex::new(HashMap::new()),
-            execution_times: std::sync::Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Record a hook invocation
-    pub fn record_hook_invocation(&self, _hook_id: &HookId, point: &HookPoint, duration_ms: u64) {
-        let name = point.name();
-
-        if let Ok(mut counts) = self.invocation_counts.lock() {
-            *counts.entry(name.clone()).or_insert(0) += 1;
-        }
-
-        if let Ok(mut times) = self.execution_times.lock() {
-            *times.entry(name).or_insert(0) += duration_ms;
-        }
-    }
-
-    /// Get invocation count for a hook point
-    pub fn get_invocation_count(&self, point: &HookPoint) -> u64 {
-        if let Ok(counts) = self.invocation_counts.lock() {
-            counts.get(&point.name()).copied().unwrap_or(0)
-        } else {
-            0
-        }
-    }
-
-    /// Get average execution time for a hook point
-    pub fn get_average_execution_time(&self, point: &HookPoint) -> u64 {
-        let name = point.name();
-
-        let count = if let Ok(counts) = self.invocation_counts.lock() {
-            counts.get(&name).copied().unwrap_or(0)
-        } else {
-            0
-        };
-
-        if count == 0 {
-            return 0;
-        }
-
-        let total_time = if let Ok(times) = self.execution_times.lock() {
-            times.get(&name).copied().unwrap_or(0)
-        } else {
-            0
-        };
-
-        total_time / count
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extension_config() {
-        let config = ExtensionConfig::new();
-        assert_eq!(config.max_hook_duration_ms, 5000);
-        assert!(!config.enable_tracing);
-    }
-
-    #[test]
-    fn test_telemetry_service() {
-        let telemetry = TelemetryService::new();
-        let point = HookPoint::ToolRegister;
-        let hook_id = HookId::new();
-
-        telemetry.record_hook_invocation(&hook_id, &point, 100);
-        telemetry.record_hook_invocation(&hook_id, &point, 200);
-
-        assert_eq!(telemetry.get_invocation_count(&point), 2);
-        assert_eq!(telemetry.get_average_execution_time(&point), 150);
     }
 }

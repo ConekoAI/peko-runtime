@@ -5,9 +5,9 @@
 //! async control (spawn/output/status/list/stop), session introspection,
 //! skill + YAML frontmatter + dynamic context preprocessor, messaging
 //! (Agent), tasks (create/get/list/update), and a couple of root-only
-//! tools (Bash, AgentCatalog, tool_search). All lifted from
+//! tools (Bash, AgentCatalog). All lifted from
 //! `peko-tools-builtin` in this foldback; the sat now retains only the
-//! cron port (`cron/`) + `tool_search_metadata` + `paths.rs` helpers
+//! cron port (`cron/`) + `paths.rs` helpers
 //! + re-exports for the engine that doesn't depend on root.
 //!
 //! ## What stays in `peko-tools-builtin`
@@ -18,10 +18,6 @@
 //!   and `peko_core::daemon::cron_runtime` implements the port trait;
 //!   lifting the trait into root would reverse the leaf-crate dep
 //!   direction.
-//! - `tool_search_metadata` — pure-data helpers for the
-//!   `__tool_search` stub. Engine reaches these via
-//!   `peko_tools_builtin::tool_search_metadata::*` so it doesn't have
-//!   to depend on root for static metadata.
 //! - `paths` — tilde-expansion + similar path utilities. Lifted but
 //!   mirrored as a thin re-export in the sat for engine consumers.
 
@@ -41,7 +37,6 @@ pub mod tasks;
 pub mod model_call;
 pub mod model_list;
 pub mod role_catalog;
-pub mod tool_search;
 pub mod workflow;
 
 // Re-exports of every tool *struct* at the canonical namespace so
@@ -68,7 +63,6 @@ pub use session::caller_aware::CallerAwareSessionTool;
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
 pub use tasks::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, Todo, TodoStatus};
-pub use tool_search::{ToolSearchTool, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME};
 pub use workflow::{
     WorkflowTool, WorkspaceWorkflowsPromptHandler, MAX_WORKFLOW_DEPTH,
     WORKFLOW_CATALOG_HOOK_PRIORITY, WORKFLOW_TOOL_NAME,

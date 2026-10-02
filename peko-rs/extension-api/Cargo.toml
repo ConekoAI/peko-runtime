@@ -2,7 +2,7 @@
 name = "peko-extension-api"
 version = "0.1.0"
 edition = "2021"
-description = "Extension framework API contracts (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result, ExtensionManifest, Capability, Capabilities, ActiveExtensionSet, ToolMetadata, ToolSource, ToolRuntimeContext, AsyncReceipt, AsyncTaskStatus, MessageEnvelope, SessionSnapshot, PromptBuildState, ToolRegistryAccess, and the data parts of ReservedParamsConfig / ParamSource. Re-exports ContentBlock / LlmMessage / MessageRole / TokenUsage from peko-message, ToolDefinition / ThinkingEffort / ServiceTier from peko-provider-api, and ToolExposure / ToolResult from peko-tools-core. Phase 3a (ADR-047 §2.5) adds Authority, NetworkAccess, TunnelAccess."
+description = "Extension framework API contracts (Phase 7) — owns ExtensionId, HookId, HookInput/Output/Result, ExtensionManifest, Capability, Capabilities, ActiveExtensionSet, ToolMetadata, ToolSource, ToolRuntimeContext, AsyncReceipt, AsyncTaskStatus, MessageEnvelope, SessionSnapshot, PromptBuildState, ToolRegistryAccess, and the data parts of ReservedParamsConfig / ParamSource. Re-exports ContentBlock / LlmMessage / MessageRole / TokenUsage from peko-message, ToolDefinition / ThinkingEffort / ServiceTier from peko-provider-api, and ToolResult from peko-tools-core. Phase 3a (ADR-047 §2.5) adds Authority, NetworkAccess, TunnelAccess."
 
 [dependencies]
 peko-message = { path = "../message" }
@@ -11,7 +11,7 @@ peko-provider-api = { path = "../provider-api" }
 # Phase F2 foldback: `ToolFunnel` trait moved here from
 # `peko-extension-host` (deleted). Engine depends on this crate but NOT
 # on root, so the trait's home is a leaf sat. `PrincipalId` is used in
-# `has_deferred_tools_for` / `list_tool_definitions_with_allowlist`.
+# tooling trait seams.
 # No cycle: peko-subject has no inbound edge from peko-extension-api.
 peko-subject = { path = "../subject" }
 serde = { version = "1.0", features = ["derive"] }

@@ -95,20 +95,6 @@ impl BuiltinToolAdapter {
         Self::register_tool(catalog, tool, principal_id).await
     }
 
-    /// F35 — register the synthetic `__tool_search` stub for per-agent
-    /// deferred-tool discovery.
-    ///
-    /// Registered under the calling agent's `principal_id` (not the
-    /// system scope) so each agent gets its own `__tool_search` instance
-    /// whose execute() runs against the agent's principal scope.
-    pub async fn register_tool_search_tool(
-        catalog: &ToolCatalog,
-        tool: Arc<crate::tools::builtin::ToolSearchTool>,
-        principal_id: &PrincipalId,
-    ) -> Result<()> {
-        Self::register_tool(catalog, tool, principal_id).await
-    }
-
     /// Phase 2 of `feature/multi-model-subagents`: register the
     /// `model_list` builtin so the parent agent can discover what
     /// models the principal has configured before picking which one

@@ -17,8 +17,7 @@
 //!
 //! Each method has a single real consumer today: the
 //! `src/engine/agentic_loop.rs` field access / method call. Two are
-//! field access (not method) sites, hence the `config_prompt_body()` and
-//! `config_enable_tool_search()` accessors — the engine must not reach
+//! field access (not method) sites, hence `config_prompt_body()` — the engine must not reach
 //! into `agent.config.prompt` directly. `identity_did()` mirrors the
 //! `self.agent.identity.did` direct field access at line 812.
 //!
@@ -108,11 +107,6 @@ pub trait AgentView: Send + Sync + 'static {
     /// Peer-conversation peer subject in wire form (conversation
     /// runs only), rendered into the `{{session_context}}` section.
     fn conversation_peer(&self) -> Option<&str>;
-
-    /// Whether to enable F35's `__tool_search` synthetic built-in.
-    /// Field access at `agentic_loop.rs:1892` —
-    /// `self.agent.config.enable_tool_search`.
-    fn config_enable_tool_search(&self) -> bool;
 
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).
     /// Field access at `agentic_loop.rs:1934` —

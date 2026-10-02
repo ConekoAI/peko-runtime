@@ -58,7 +58,7 @@ peko-subject = { path = "../subject" }
 peko-quota = { path = "../quota" }
 # Workspace member providing the tool execution API (Tool trait,
 # ToolContext, AbortSignal, ToolResult, ToolError, ToolInterruptNotice,
-# ContextSource, ToolExposure — F34). The extension framework, the
+# ContextSource). The extension framework, the
 # built-in tools, and the agentic loop all import from this crate;
 # it depends on nothing except serde/anyhow/tokio. The root
 # re-exports it through `crate::tools::core` for backwards

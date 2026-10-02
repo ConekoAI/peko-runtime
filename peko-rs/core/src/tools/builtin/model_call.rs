@@ -63,7 +63,6 @@ use peko_quota::QuotaMeter;
 use peko_tools_core::{Tool, ToolContext, ToolError};
 
 use crate::agents::subagent_executor::estimate_spawn_cost_usd;
-use crate::extensions::framework::types::ToolExposure;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::Principal;
 
@@ -380,10 +379,6 @@ impl Tool for ModelCallTool {
             },
             "additionalProperties": false
         })
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
     }
 
     fn parallelizable(&self) -> bool {
@@ -1237,13 +1232,12 @@ mod tests {
         assert!(format!("{err:#}").contains("ToolContext"));
     }
 
-    /// Metadata pins: name, exposure, parallelism, and the schema's
+    /// Metadata pins: name, parallelism, and the schema's
     /// mode exclusivity surface.
     #[tokio::test]
     async fn metadata_and_schema_shape() {
         let tool = ModelCallTool::new(Weak::new());
         assert_eq!(tool.name(), MODEL_CALL_TOOL_NAME);
-        assert_eq!(tool.exposure(), ToolExposure::Direct);
         assert!(tool.parallelizable());
         let schema = tool.parameters();
         let props = schema["properties"].as_object().expect("properties");

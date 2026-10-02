@@ -79,7 +79,6 @@ pub mod stream_orchestrator;
 pub mod stream_types;
 pub mod synthetic_stream;
 pub mod tool_executor;
-pub mod tool_search_metadata;
 pub mod tool_stream;
 
 // Convenience re-exports at the crate root. Mirrors the surface that
@@ -135,9 +134,6 @@ pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrat
 pub use stream_types::{default_process_stream, ChannelOutput, EventStream, StreamingConfig};
 pub use synthetic_stream::synthesize_stream_from_blocking;
 pub use tool_executor::{ToolExecutionResult, ToolExecutor};
-pub use tool_search_metadata::{
-    synthetic_description, synthetic_parameters, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_TOOL_NAME,
-};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
 };

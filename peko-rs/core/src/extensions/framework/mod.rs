@@ -105,13 +105,3 @@ pub mod vault;
 // ============================================================================
 // Prelude
 // ============================================================================
-
-/// Prelude for convenient imports
-pub mod prelude {
-    pub use crate::extensions::framework::core::{
-        common, HookContext, HookHandler, HookPoint, HookPointBuilder, HookRegistry,
-    };
-    pub use crate::extensions::framework::types::{
-        ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookResult,
-    };
-}

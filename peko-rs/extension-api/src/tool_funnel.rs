@@ -16,11 +16,9 @@
 //! the seam stays a trait in this contract crate.
 //!
 //! The non-execution surface the engine also needs (lifecycle hook
-//! firing, session-key bookkeeping, the F33/F35 probes) moved to
+//! firing, session-key bookkeeping, the parallel-execution probe) moved to
 //! [`EngineHooks`] below rather than growing the funnel.
 
-use crate::hook_io::{CompactionPreparationPayload, CompactionResultPayload, HookDecision};
-use crate::session::SessionSnapshot;
 use anyhow::Result;
 
 /// One tool call, fully attributed (ADR-066 D2). Identity fields feed
@@ -118,8 +116,7 @@ pub trait ToolFunnel: Send + Sync + 'static {
     async fn execute(&self, call: ToolCallSpec) -> Result<(String, serde_json::Value, bool)>;
 
     /// The wire catalog for `principal_id` (`tools[]` JSON-schema
-    /// array shape). Presence = visibility (ADR-066 D1); the F34
-    /// `ToolExposure` filter still applies until P4.
+    /// array shape). Every registered tool is visible (ADR-066 D1/D5).
     async fn list_tool_definitions(
         &self,
         principal_id: &peko_subject::PrincipalId,
@@ -133,12 +130,9 @@ pub trait ToolFunnel: Send + Sync + 'static {
 
 /// The engine-facing lifecycle/bookkeeping seam (ADR-066 D2 split).
 ///
-/// Everything the engine used to drive through the 12-method
-/// `ToolFunnel` that is *not* tool execution: observe-only hook firing
-/// (Stop / AfterAgent / session-compaction / session-state), per-agent
-/// session-key bookkeeping, and the F33/F35 catalog probes. Implemented
-/// by the same root-side runtime object as [`ToolFunnel`]. P4 replaces
-/// the hook firing with the minimal workspace-hook dispatcher.
+/// Observe-only Stop/AfterAgent hooks, per-agent session keys, and the
+/// parallel-execution catalog probe. Implemented by the root-side runtime
+/// using the minimal workspace hook dispatcher (ADR-066 P4).
 #[async_trait::async_trait]
 pub trait EngineHooks: Send + Sync + 'static {
     /// F33 gate probe: is the named tool parallelizable for
@@ -151,33 +145,12 @@ pub trait EngineHooks: Send + Sync + 'static {
         principal_id: &peko_subject::PrincipalId,
     ) -> bool;
 
-    /// Fire `HookPoint::Stop` (observe-only; return value discarded).
+    /// Fire the Stop workspace point (observe-only; return value discarded).
     async fn fire_stop_hook(&self, payload: serde_json::Value);
 
-    /// Fire `HookPoint::AfterAgent` (observe-only; return value
+    /// Fire the AfterAgent workspace point (observe-only; return value
     /// discarded).
     async fn fire_after_agent_hook(&self, payload: serde_json::Value);
-
-    /// Fire `HookPoint::SessionCompaction` with
-    /// `HookInput::CompactionPreparation`. The lifted
-    /// `CompactionDriver` calls this at the start of each compaction
-    /// iteration. Returns a [`HookDecision`]: `ReplaceMessages` swaps
-    /// the orchestrator's `messages` vec in place, `Handled` skips the
-    /// built-in compaction this iteration, `PassThrough` falls through
-    /// to the default behavior.
-    async fn session_compaction_pre_hook(
-        &self,
-        payload: CompactionPreparationPayload,
-    ) -> HookDecision;
-
-    /// Fire `HookPoint::SessionCompactionPost` with
-    /// `HookInput::CompactionResult` after a successful background
-    /// compaction. `ReplaceMessages` is the documented valid return.
-    async fn session_compaction_post_hook(&self, payload: CompactionResultPayload) -> HookDecision;
-
-    /// Fire `HookPoint::SessionStateChange` with
-    /// `HookInput::SessionState(SessionSnapshot)`.
-    async fn session_state_change_hook(&self, snapshot: SessionSnapshot) -> HookDecision;
 
     /// Set the per-agent session key (issue #68 — concurrent agents
     /// use distinct session keys on the shared runtime). The lifted
@@ -185,17 +158,9 @@ pub trait EngineHooks: Send + Sync + 'static {
     /// `(self.agent.identity_did(), Some(session_id))`. Passing `None`
     /// clears the entry.
     async fn set_session_key(&self, agent_id: &str, key: Option<String>);
-
-    /// Quick `Deferred`-exposure probe: does the principal see any tool
-    /// with `ToolExposure::Deferred`? Gates the synthetic F35
-    /// `__tool_search` stub in `AgenticLoop::build_tool_definitions`.
-    async fn has_deferred_tools(&self, principal_id: &peko_subject::PrincipalId) -> bool;
 }
 
-/// The engine's single tooling handle: [`ToolFunnel`] (execution +
-/// catalog + prompt sections) plus [`EngineHooks`] (lifecycle firing +
-/// bookkeeping). Blanket-implemented by any type implementing both —
-/// root's `ToolingRuntime` is the production one.
+/// Combined execution and lifecycle seam.
 pub trait ToolingSeam: ToolFunnel + EngineHooks {}
 
 impl<T: ToolFunnel + EngineHooks> ToolingSeam for T {}

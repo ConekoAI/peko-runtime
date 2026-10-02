@@ -3,9 +3,7 @@
 //! agent against.
 //!
 //! Phase 2 of `feature/multi-model-subagents`. Sister of the F35
-//! `ToolSearchTool` (`tools/builtin/tool_search.rs`): same shape —
-//! per-agent registration via `Weak<ModelCatalog>`, `ToolExposure::Direct`,
-//! `parallelizable() == true`, schema-driven `execute()`.
+//! Registered per agent with a weak model-catalog handle.
 //!
 //! ## Why a tool
 //!
@@ -45,8 +43,6 @@ use serde_json::{json, Value};
 
 use peko_providers::catalog::ModelCatalog;
 use peko_tools_core::{Tool, ToolError};
-
-use crate::extensions::framework::types::ToolExposure;
 
 /// Synthetic tool name surfaced to the LLM. Single source of truth
 /// so registration sites (root) and tests don't drift.
@@ -112,12 +108,6 @@ impl Tool for ModelListTool {
             },
             "additionalProperties": false
         })
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        // Mirror ToolSearchTool — Direct, never Deferred/Hidden.
-        // Discovery is the entire point.
-        ToolExposure::Direct
     }
 
     fn parallelizable(&self) -> bool {
@@ -514,7 +504,6 @@ mod tests {
         let cat = catalog_with_entry(entry("alpha", "Alpha", Some(text_only_spec()), None)).await;
         let tool = ModelListTool::new(Arc::downgrade(&cat));
         assert_eq!(tool.name(), MODEL_LIST_TOOL_NAME);
-        assert_eq!(tool.exposure(), ToolExposure::Direct);
         assert!(tool.parallelizable());
     }
 

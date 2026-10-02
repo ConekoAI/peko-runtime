@@ -9,6 +9,21 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Workspace hook manifests (ADR-066 P4)
+
+`<workspace>/hooks/<id>/hook.toml` supports six bind points:
+`PreToolUse`, `PostToolUse`, `Stop`, `AfterAgent`, `PromptSection`, and
+`SessionContextBuild`. For tool observers, omit `tool_name` to match all tools,
+or provide an exact name. Wildcard selectors are rejected with guidance to
+omit the field. `PromptSection` requires a nonempty `section` without control
+characters. Legacy `priority` is parsed as an unknown field and ignored.
+Hooks load by sorted directory name, then manifest bind order, and run only
+for their owning principal. Every handler has a two-second soft-fail budget.
+Commands receive principal/workspace/session/agent context through the
+`PEKO_*` environment variables; prompt output retains tail-message change /
+retraction semantics. Invalid binds reject the entire manifest; other hooks
+still load.
+
 ## Table of Contents
 
 1. [Conventions](#1-conventions)

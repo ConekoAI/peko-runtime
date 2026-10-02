@@ -229,3 +229,6 @@ mod tests {
         assert!(!types.contains(&"general"));
     }
 }
+
+/// Principal-owned workspace hook dispatch (ADR-066 D3).
+pub mod workspace_dispatcher;
