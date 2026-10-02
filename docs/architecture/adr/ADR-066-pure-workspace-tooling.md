@@ -1,6 +1,7 @@
 # ADR-066: Pure Workspace Tooling — Extension Framework, Capability Gate, and Registry Client Retired
 
 **Status:** Accepted
+**Implementation:** P1–P6 complete (2026-10-02)
 **Date:** 2026-10-01
 **Author:** rlsn (with WorkBuddy)
 **Related:** [ADR-046](ADR-046-trust-and-audit.md) (the audit-as-security-model
@@ -107,9 +108,10 @@ The capability gate is deleted, not relaxed:
 - `principal.toml` `[capabilities].grants` is ignored on load with a
   one-time deprecation warning; newly created principals carry no
   grants section.
-- IPC wire fields carrying `capabilities: Vec<String>` are deprecated —
-  parsed-and-ignored for one release window, then removed (pre-launch
-  posture makes this short).
+- The P2 parsed-and-ignored IPC grant fields were removed in P6, along
+  with import selection/negotiation fields and empty extension previews.
+  Unknown legacy JSON fields still deserialize; no grant set is retained
+  in runtime state or emitted on the wire.
 
 ### D2 — The funnel collapses to a catalog + dispatcher
 
@@ -129,8 +131,8 @@ The capability gate is deleted, not relaxed:
 
 The engine seam (`ToolFunnel`, 12 methods) shrinks to three: `execute`,
 `list_tool_definitions`, `render_prompt_sections`. The dep-graph rule
-(engine must not depend on root) is preserved — the seam stays a trait
-in the contract crate.
+(engine must not depend on root) is preserved — the engine owns the
+trait ports and root implements them.
 
 `HookRegistry`, the 790-LOC `HookPoint` zoo, priority sorting, wildcard
 point matching, companion-hook auto-generation (`tool_registration.rs`),
@@ -252,7 +254,7 @@ the retired crate's 12 forbidden edges leaves 20 members and 69 rules.
 
 ## 3. Migration plan
 
-Six phases, each a separate PR, each leaving the tree green. Standard
+Six phases, each a separate commit, each leaving the tree green. Standard
 gate for every phase: `cargo fmt --all -- --check && cargo clippy
 --all-targets -- -D warnings && cargo test --lib && python3
 scripts/check_workspace_deps.py` (+ `scripts/check_module_boundaries.sh`
@@ -295,6 +297,82 @@ when `core/src/**` moves).
   `config.example.toml` swept; CHANGELOG entries per landed phase.
   *Verification:* full CI including `lint-workspace`.
 
+### Implementation record (2026-10-02)
+
+All six phases are complete. The phase commits are:
+
+| Phase | Commit | Result |
+|---|---|---|
+| P1 | `7d6dbe04` | Async runtime moved out; inert store, discovery, adapters and services deleted |
+| P2 | `23ba4c26` | Capability gate deleted; filesystem ownership and Security audit retained |
+| P3 | `49720c79` | Explicit catalog, dispatcher, runtime and prompt providers replace the singleton |
+| P4 | `1c97cd78` | Six workspace observer points replace generic hook dispatch; exposure/search deleted |
+| P5 | `e0e50ce2` | Flat local snapshots replace OCI packaging; remote registry retired |
+| P6 | `eec02ef5` | Contract crate folded into consumers; capability and wire shells removed |
+
+Implementation details that refine the decisions above:
+
+- **Dispatch and attribution:** `tools/catalog.rs` keys executable tools
+  by name and principal; principal registrations shadow system tools.
+  `tools/dispatcher.rs` preserves schema validation, workspace injection,
+  abort/interrupt bridging, timeout/detach and panic isolation. One durable
+  `tool.call` event covers success, tool errors, unknown tools, validation
+  failures and panics, with agent/caller/principal/session attribution and
+  a SHA-256 parameter digest instead of raw parameters.
+- **Explicit runtime:** `tools/runtime.rs` is composed in `daemon/state.rs`
+  and passed through principal contexts into root, peer, cron,
+  completion-wake and recursive subagent turns. Workspace tools install
+  once per principal under a serialized guard; prompt providers install
+  once per runtime. Tests construct isolated runtimes. `EngineHooks`
+  carries Stop/AfterAgent observation, session keys and the parallel-tool
+  probe; compaction calls its built-in backend directly.
+- **Workspace observers:** typed principal ownership scopes all six points.
+  Handled/error/panic/timeout results cannot veto execution or skip later
+  observers. Scanning sorts hook directories, preserves manifest bind order
+  and validates every bind before registration. Tool selectors are exact
+  or absent (all tools); wildcards fail with guidance and legacy priority
+  fields are ignored. Commands receive explicit runtime context and are
+  killed on drop. Prompt sections retain aggregation, session-context
+  augmentation, custom tail sections and retraction.
+- **Ownership and compatibility:** principal writes compare against the
+  target's on-disk DID, accounting for runtime ids and DID references.
+  Crossings fail closed with `OwnershipDenied` and a durable
+  `principal.cross_principal_write_denied` Security event. Legacy config
+  grants are consumed only during deserialization, warned once and never
+  persisted. Capability-diff prompt state and compaction allowlists are gone.
+  Inbound peer ACLs, quota attribution, model metadata, MCP protocol
+  capabilities and runtime discovery metadata remain intact.
+- **Snapshot validation and audit:** the flat manifest uses
+  `format = "peko-snapshot-v1"` and a sorted file inventory. Corrupt,
+  missing, undeclared, duplicate, unsafe or non-file entries, malformed
+  config/keys and DID/key mismatches fail before writes; `--force` only
+  permits overwrites. The executable inventory preserves full hook/MCP
+  definitions, ids and paths plus sorted skill ids, DID and file count.
+  CLI preview and the durable `principal.snapshot_import` Security event
+  expose the same inventory. The preview's manifest checksum is carried
+  into import to reject intervening changes. Keyless packages retain
+  `peko create -s` guidance; `--yes` is an ignored compatibility flag.
+- **Remaining host utilities:** `extensions/framework/` retains live
+  service handles, map/schema utilities, transport, path and vault ports.
+  Generic extension types/services are deleted. Role discovery uses
+  `RoleMetadata`; MCP owns reserved-parameter configuration and resolution.
+  Session's existing spawn cleanup enum replaces the duplicate API enum.
+
+Final local verification passed formatting, all-target clippy, module
+boundaries and all 69 forbidden dependency-edge rules (20 workspace
+members, 54 edges). The final unit run passed **2,741 tests**, with zero
+failures and three existing ignored tests; **114 CLI unit tests** passed
+with `PEKO_UNLOCK_METHOD=passphrase` for the headless macOS test vault.
+The Docker mock-LLM tier passed **51 tests**: local snapshot/tar import,
+send, recursive subagents, filesystem/Bash round trips, multi-turn mock
+sequences, peer permissions, signed transport and the daemon tunnel chat.
+The test stack was torn down successfully. This resolves the earlier
+P3/P4 Docker-preflight verification gap. Real-LLM tests were not run.
+
+API_SURFACE, DATA_MODEL, workspace/tool docs, README, config example and
+CHANGELOG describe the implemented surface. `AGENTS.md` is gitignored;
+its local onboarding updates are not part of the committed documentation.
+
 ## 4. Consequences
 
 **Positive:**
@@ -327,7 +405,7 @@ when `core/src/**` moves).
 - **Audit is now the *only* control.** ADR-046's deferred follow-ups
   gain priority: tamper-evident hash chain (§7.2) and the in-session
   drift watcher (§7.1). Tool-call audit must be emitted at the single
-  `ToolDispatcher` point (today attribution is scattered) — part of P3.
+  `ToolDispatcher` point — implemented in P3.
 - **Old snapshots are rejected.** OCI-manifest `.peko` files from
   before P5 do not import; pre-launch posture makes this acceptable
   (re-export from source).
