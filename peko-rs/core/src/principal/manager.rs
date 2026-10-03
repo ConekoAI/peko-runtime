@@ -2245,18 +2245,21 @@ mod tests {
             sessions_dirs[0], sessions_dirs[1],
             "principals must not share a session store"
         );
-        for dir in &sessions_dirs {
-            let path = dir.to_string_lossy();
-            assert!(
-                path.contains("/principals/stressy/local/sessions")
-                    || path.contains("/principals/beta/local/sessions"),
-                "sessions dir must be scoped to its principal, got {path}"
-            );
-            assert!(
-                !path.contains("/principals/local/local/"),
-                "sessions must not collapse into the shared local/local store, got {path}"
-            );
-        }
+        let mut expected_dirs: Vec<_> = ["stressy", "beta"]
+            .iter()
+            .map(|name| {
+                manager
+                    .path_resolver
+                    .principal_layout(name)
+                    .local
+                    .sessions_dir
+            })
+            .collect();
+        expected_dirs.sort();
+        assert_eq!(
+            sessions_dirs, expected_dirs,
+            "sessions must use their principal's Local tier"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

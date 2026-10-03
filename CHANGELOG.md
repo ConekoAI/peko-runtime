@@ -4,6 +4,13 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Windows path and output regressions (2026-10-03)
+
+- Workflow refuses Windows rooted and drive-relative paths before resolving
+  scripts under the principal's workflows directory.
+- Session isolation and dispatcher audit tests use native paths; workflow tail
+  assertions accept Python's Windows line endings without changing captured output.
+
 ### CLI test credential isolation (2026-10-03)
 
 - CLI test fixtures explicitly select passphrase vault unlock: core is linked

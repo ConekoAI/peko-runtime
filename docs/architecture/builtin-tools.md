@@ -379,8 +379,9 @@ Return:
 }
 ```
 
-**Guardrails:** `path` is canonicalized inside `workflows/` (absolute, `..`,
-and symlink escapes refused; non-`.py` refused). The child env is minimal
+**Guardrails:** `path` must be relative and is canonicalized inside `workflows/`
+(absolute, Windows rooted or drive-prefixed paths, `..` and symlink escapes
+refused; non-`.py` refused). The child env is minimal
 (no daemon-env inheritance) with `PEKO_DAEMON_SOCK` / `PEKO_WORKSPACE` /
 `PEKO_PRINCIPAL_ID` / `PEKO_SESSION_KEY` / `PEKO_RUN_TOKEN` /
 `PEKO_WORKFLOW_DEPTH` injected — the workflow calls back through

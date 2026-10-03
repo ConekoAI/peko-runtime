@@ -396,6 +396,7 @@ mod tests {
     #[tokio::test]
     async fn attributed_dispatch_audits_success_validation_unknown_and_panic_once() {
         let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
         let audit = Arc::new(
             peko_observability::Observability::with_audit_dir("test", dir.path().to_path_buf())
                 .unwrap(),
@@ -425,11 +426,14 @@ mod tests {
             call.session_id = Some("session".into());
             call.principal_id = Some("principal".into());
             call.caller_id = Some("user:alice".into());
-            call.workspace = Some("/tmp/workspace".into());
+            call.workspace = Some(workspace.to_string_lossy().into_owned());
             let (_, result, success) = dispatcher.execute(call).await.unwrap();
             assert_eq!(success, expected);
             if success {
-                assert_eq!(result["file_path"], "/tmp/workspace/secret");
+                assert_eq!(
+                    result["file_path"],
+                    workspace.join("secret").to_string_lossy().as_ref()
+                );
             }
         }
         let events = audit.get_audit_log(10).await;
