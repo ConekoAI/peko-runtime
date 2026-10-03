@@ -30,10 +30,9 @@
 //! cron schedule again — the trunk is self-regulating (PEKO.md §K: it
 //! holds the cron tools and may retune or replace its own jobs). The
 //! runtime only guarantees that a heartbeat EXISTS; what it does is
-//! the trunk's business. The state flip to `organized` itself is the
-//! engine's job on the first successful trunk turn (a follow-up; the
-//! boot pass here is idempotent and re-checks on every boot until
-//! then).
+//! the trunk's business. The cron engine stamps `organized` after a
+//! successful genesis turn. Boot also recovers that transition from
+//! finalized run history if the daemon stopped before persisting it.
 //!
 //! ## No compat shim
 //!
@@ -102,7 +101,7 @@ This is your first self-turn — the trunk of a new principal.\n\n",
     }
     brief.push_str(
         "\nYour definition lives in `principal.toml` in your workspace; your agent \
-prompts live in `agents/`. Scratch and removal staging sessions `/tmp` \
+prompts live in `roles/`. Scratch and removal staging sessions `/tmp` \
 and `/trash` already exist under you. Your persistent knowledge base \
 lives in `kb/` — `kb/MEMORY.md` (hot memory, rides in every prompt), \
 `kb/index.md` (its map, also hot), `kb/CONVENTIONS.md` (the shared \
@@ -117,7 +116,7 @@ On this turn:\n\
 1. Read your own definition (`principal.toml`). If `[identity]` or \
 `[intent]` are empty placeholders, adopt a working self-description \
 and write it back — your creator will refine it later.\n\
-2. Survey your workspace (`agents/`, `skills/`, `tools/`, `kb/` if present) \
+2. Survey your workspace (`roles/`, `skills/`, `tools/`, `kb/` if present) \
 so you know what you can do and what you already know.\n\
 3. Organize: the `kb/` scaffold is a floor, not a mandate — keep what \
 fits, restructure what does not, and record the conventions you adopt \
@@ -298,17 +297,24 @@ fn job_base(
 
 /// Does `jobs` already carry an enabled RECURRING trunk-targeted send?
 ///
-/// Both `target: Some("trunk")` and `target: None` route to the trunk
-/// (Phase 7: the `Send` default target IS the trunk), so any enabled
-/// recurring `Send` job counts as a heartbeat. The one-shot genesis
-/// job (schedule `At`) deliberately does NOT count — it runs once and
-/// self-deletes.
+/// `Send` jobs route to their originating session when one is recorded;
+/// absent or trunk origins supervise the trunk. Both interval and cron
+/// cadence count. Disabled and self-deleting jobs do not count.
 #[must_use]
 pub fn has_recurring_trunk_send(jobs: &[CronJob]) -> bool {
+    let trunk = crate::principal::routers::root::trunk_session_id();
     jobs.iter().any(|job| {
         job.enabled
-            && matches!(job.schedule, ScheduleKind::Every { .. })
+            && !job.delete_after_run
+            && matches!(
+                job.schedule,
+                ScheduleKind::Every { .. } | ScheduleKind::Cron { .. }
+            )
             && matches!(job.action, CronJobAction::Send { .. })
+            && job
+                .origin_session
+                .as_deref()
+                .is_none_or(|origin| origin == trunk)
     })
 }
 
@@ -320,7 +326,8 @@ pub struct SeedReport {
     pub genesis_seeded: Vec<String>,
     /// Principals that got the recurring keepalive job.
     pub keepalive_seeded: Vec<String>,
-    /// Principals whose boot state was stamped `genesis_pending`.
+    /// Principals whose boot state advanced to `genesis_pending` or
+    /// recovered to `organized` from successful genesis history.
     pub state_flipped: Vec<String>,
     /// Principals whose legacy workspace-root `MEMORY.md` was moved
     /// into `kb/` (ADR-055 D4 one-time migration).
@@ -357,13 +364,12 @@ impl std::fmt::Display for SeedReport {
 /// For every loaded principal whose [`BootState`] is not yet
 /// `organized`:
 ///
-/// 1. Ensure the recurring keepalive job exists (any enabled
-///    recurring `Send` counts — the trunk may already have made its
-///    own).
+/// 1. Ensure the recurring keepalive job exists (any enabled,
+///    non-self-deleting trunk `Send` counts — the trunk may have its own).
 /// 2. Ensure the one-shot genesis job exists — only for principals
-///    that have not had their genesis turn seeded yet (`provisioned`
-///    / `defined` states; a `genesis_pending` principal whose
-///    one-shot already fired simply has neither job re-added).
+///    that have not completed initialization, including a missing or
+///    failed one-shot in `genesis_pending`. Successful finalized run
+///    history recovers `organized` before touching the heartbeat.
 /// 3. Stamp `boot_state = genesis_pending` and persist.
 ///
 /// Additionally — and for every principal regardless of boot state —
@@ -452,8 +458,26 @@ pub async fn seed_boot_defaults(
         let jobs = scheduler
             .list_jobs(true)
             .with_context(|| format!("cron job listing for '{name}'"))?;
+        let history = scheduler
+            .get_run_history(GENESIS_JOB_ID, 1)
+            .with_context(|| format!("genesis history for '{name}'"))?;
+        if history
+            .first()
+            .is_some_and(|run| run.finished_at.is_some() && run.status == "success")
+        {
+            // A crash may have interrupted one-shot reaping after the
+            // successful run was finalized. Retire only that bootstrap
+            // job before handing cadence to the principal.
+            scheduler.delete_job(GENESIS_JOB_ID)?;
+            manager
+                .persist_boot_state(&name, BootState::Organized)
+                .await
+                .with_context(|| format!("genesis completion recovery for '{name}'"))?;
+            report.state_flipped.push(name);
+            continue;
+        }
         let has_heartbeat = has_recurring_trunk_send(&jobs);
-        let has_genesis = jobs.iter().any(|job| job.id == GENESIS_JOB_ID);
+        let genesis = jobs.iter().find(|job| job.id == GENESIS_JOB_ID);
 
         let config_snapshot = principal.config.read().await.clone();
 
@@ -471,7 +495,18 @@ pub async fn seed_boot_defaults(
             report.keepalive_seeded.push(name.clone());
         }
 
-        if !has_genesis && matches!(state, BootState::Provisioned | BootState::Defined) {
+        // Re-arm a failed one-shot left behind by a crash between
+        // schedule advancement and reaping. A freshly scheduled retry
+        // has no last_status, so repeated boot passes leave it alone.
+        let failed_genesis = genesis.is_some_and(|job| {
+            job.last_status
+                .as_deref()
+                .is_some_and(|status| status != "success" && status != "running")
+        });
+        if genesis.is_none() || failed_genesis {
+            if failed_genesis {
+                scheduler.delete_job(GENESIS_JOB_ID)?;
+            }
             let job = genesis_job(&config_snapshot, now)
                 .with_context(|| format!("genesis job build for '{name}'"))?;
             scheduler
@@ -486,9 +521,7 @@ pub async fn seed_boot_defaults(
 
         if state != BootState::GenesisPending {
             manager
-                .update_config(&name, |config| {
-                    config.set_boot_state(BootState::GenesisPending);
-                })
+                .persist_boot_state(&name, BootState::GenesisPending)
                 .await
                 .with_context(|| format!("boot state stamp for '{name}'"))?;
             report.state_flipped.push(name);
@@ -631,7 +664,29 @@ mod tests {
         // A disabled keepalive is not.
         let mut disabled = keepalive;
         disabled.enabled = false;
+        assert!(!has_recurring_trunk_send(std::slice::from_ref(&disabled)));
+        disabled.enabled = true;
+        disabled.delete_after_run = true;
         assert!(!has_recurring_trunk_send(&[disabled]));
+    }
+
+    #[test]
+    fn heartbeat_detection_requires_trunk_origin_and_accepts_cron_cadence() {
+        let mut job = keepalive_job(&defined_config(), Utc::now()).unwrap();
+        job.origin_session = Some(uuid::Uuid::new_v4().to_string());
+        assert!(
+            !has_recurring_trunk_send(std::slice::from_ref(&job)),
+            "peer reminders do not supervise the trunk"
+        );
+        job.origin_session = Some(crate::principal::routers::root::trunk_session_id());
+        assert!(has_recurring_trunk_send(std::slice::from_ref(&job)));
+        job.schedule = ScheduleKind::Cron {
+            expr: "0 */10 * * * *".into(),
+            tz: None,
+        };
+        assert!(has_recurring_trunk_send(std::slice::from_ref(&job)));
+        job.origin_session = None;
+        assert!(has_recurring_trunk_send(&[job]));
     }
 
     #[test]
@@ -768,5 +823,97 @@ mod tests {
         assert!(report2.is_empty(), "idempotent: {report2}");
         let jobs2 = scheduler.list_jobs(true).unwrap();
         assert_eq!(jobs2.len(), 2, "no duplicate jobs");
+
+        // A missing one-shot without success evidence must be restored
+        // even after the principal has entered genesis_pending.
+        scheduler.delete_job(GENESIS_JOB_ID).unwrap();
+        let retry = seed_boot_defaults(&manager, &path_resolver).await.unwrap();
+        assert_eq!(retry.genesis_seeded, vec!["seedling"]);
+
+        // Reaping a failed run cannot strand initialization on restart.
+        scheduler
+            .record_run(&peko_cron::CronRun {
+                id: "failed-genesis".into(),
+                job_id: GENESIS_JOB_ID.into(),
+                started_at: Utc::now(),
+                finished_at: None,
+                status: "running".into(),
+                output: None,
+                error: None,
+            })
+            .unwrap();
+        scheduler
+            .finalize_run(
+                "failed-genesis",
+                "failed",
+                None,
+                Some("provider unavailable".into()),
+            )
+            .unwrap();
+        scheduler.delete_job(GENESIS_JOB_ID).unwrap();
+        let retry = seed_boot_defaults(&manager, &path_resolver).await.unwrap();
+        assert_eq!(retry.genesis_seeded, vec!["seedling"]);
+        assert_eq!(
+            principal.config.read().await.boot_state(),
+            BootState::GenesisPending
+        );
+        assert!(seed_boot_defaults(&manager, &path_resolver)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // A crash between schedule advancement and reaping also needs
+        // a retry, rather than leaving the one-shot's far-future sentinel.
+        scheduler
+            .update_job_after_run(
+                GENESIS_JOB_ID,
+                "failed",
+                Utc::now() + chrono::Duration::days(36500),
+            )
+            .unwrap();
+        let retry = seed_boot_defaults(&manager, &path_resolver).await.unwrap();
+        assert_eq!(retry.genesis_seeded, vec!["seedling"]);
+        let job = scheduler.get_job(GENESIS_JOB_ID).unwrap().unwrap();
+        assert!(job.next_run < Utc::now() + chrono::Duration::minutes(2));
+        assert!(job.last_status.is_none());
+
+        // Finalized success recovers a crash before the organized write.
+        // The principal's deliberate cadence change must survive recovery.
+        scheduler
+            .record_run(&peko_cron::CronRun {
+                id: "successful-genesis".into(),
+                job_id: GENESIS_JOB_ID.into(),
+                started_at: Utc::now() + chrono::Duration::seconds(1),
+                finished_at: None,
+                status: "running".into(),
+                output: None,
+                error: None,
+            })
+            .unwrap();
+        scheduler
+            .finalize_run(
+                "successful-genesis",
+                "success",
+                Some("initialized".into()),
+                None,
+            )
+            .unwrap();
+        scheduler.delete_job(KEEPALIVE_JOB_ID).unwrap();
+        let recovered = seed_boot_defaults(&manager, &path_resolver).await.unwrap();
+        assert_eq!(recovered.state_flipped, vec!["seedling"]);
+        assert!(recovered.genesis_seeded.is_empty());
+        assert!(recovered.keepalive_seeded.is_empty());
+        assert_eq!(
+            principal.config.read().await.boot_state(),
+            BootState::Organized
+        );
+        let persisted =
+            std::fs::read_to_string(principal.workspace_path.join("principal.toml")).unwrap();
+        assert!(persisted.contains("boot_state = \"organized\""));
+        assert!(scheduler.list_jobs(true).unwrap().is_empty());
+        assert!(seed_boot_defaults(&manager, &path_resolver)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

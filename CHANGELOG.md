@@ -4,6 +4,38 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Windows path and output regressions (2026-10-03)
+
+- Workflow refuses Windows rooted and drive-relative paths before resolving
+  scripts under the principal's workflows directory.
+- Session isolation and dispatcher audit tests use native paths; workflow tail
+  assertions accept Python's Windows line endings without changing captured output.
+
+### CLI test credential isolation (2026-10-03)
+
+- CLI test fixtures explicitly select passphrase vault unlock: core is linked
+  without `cfg(test)`, so setting a master passphrase alone could still probe
+  the OS keychain. Model and credential tests now share one initialized test
+  passphrase, and parallel credential fixtures use distinct directories.
+- Added a dependency-path vault regression and set passphrase mode in CI for
+  test-spawned CLI/daemon processes.
+
+### Genesis completion and prompt recovery (2026-10-03)
+
+- `create` now requires finalized successful genesis history and a persisted
+  `organized` marker. A reaped or missing one-shot no longer implies success;
+  failed runs report their recorded error and retry at the next daemon boot.
+- The cron engine persists `organized` after successful genesis. Boot recovers
+  interrupted completion from history before cadence handoff. Boot-state writes
+  preserve the current authored definition instead of replacing it from cache.
+- Heartbeat detection requires a trunk-targeted recurring Send and accepts both
+  interval and cron schedules; peer reminders no longer suppress trunk seeding.
+- Pre-turn and mid-turn compaction reset section change tracking, restoring
+  current identity, conventions, memory, and catalogs before the next model call.
+  `CompactionDriver::check_and_compact` reports true only for applied compaction.
+- Updated genesis workspace paths and the default root role's supervision,
+  delegation, and cron instructions; added lifecycle and prompt regressions.
+
 ### Principal-wide agent run admission (ADR-067, 2026-10-03)
 
 - Replaced delegation depth restrictions and executor-local concurrency caps

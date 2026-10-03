@@ -78,6 +78,7 @@ env:
   CARGO_TERM_COLOR: always
   PEKO_IDENTITY_PASSPHRASE: ci-test-passphrase-do-not-use-in-production
   PEKO_MASTER_PASSPHRASE: ci-test-passphrase-do-not-use-in-production
+  PEKO_UNLOCK_METHOD: passphrase
 
 jobs:
   # ── Path-aware change detector ────────────────────────────────────────

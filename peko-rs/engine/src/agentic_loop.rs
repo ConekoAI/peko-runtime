@@ -1218,6 +1218,16 @@ impl AgenticLoop {
             // never references it (F36 wire-only catalogs).
             let tool_defs = self.build_tool_definitions().await;
 
+            // Compact before assembling fresh runtime sections. The
+            // summary can omit unchanged identity, conventions or memory,
+            // so materialize their current sources again after replacement.
+            if compaction_driver
+                .check_and_compact(&mut messages, session, &on_event, &run_id)
+                .await?
+            {
+                runtime_ctx_state = crate::RuntimeContextState::default();
+            }
+
             // Frozen system prompt + tail runtime-context injection
             // (2026-09-10 prompt-caching fix). Both Anthropic explicit
             // `cache_control` breakpoints and OpenAI/DeepSeek automatic
@@ -1313,13 +1323,6 @@ impl AgenticLoop {
                     messages.push(LlmMessage::user(runtime_context));
                 }
             }
-
-            // ============================================================
-            // ADR-022 Phase 3: Compaction with Extension Hooks
-            // ============================================================
-            compaction_driver
-                .check_and_compact(&mut messages, session, &on_event, &run_id)
-                .await?;
 
             // Fold the compaction summarization LLM call's usage
             // into the run's `total_usage`. Previously dropped on
@@ -2067,9 +2070,12 @@ impl AgenticLoop {
                         "AgenticLoop: mid-turn threshold hit ({} tokens); firing compaction",
                         mid_turn_estimated
                     );
-                    let _ = compaction_driver
+                    if compaction_driver
                         .compact_mid_turn(&mut messages, session, &on_event, &run_id, snapshot)
-                        .await?;
+                        .await?
+                    {
+                        runtime_ctx_state = crate::RuntimeContextState::default();
+                    }
                 }
 
                 // Continue to next iteration

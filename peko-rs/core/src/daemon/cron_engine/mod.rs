@@ -534,6 +534,24 @@ impl CronEngine {
             scheduler.delete_job(&job.id)?;
         }
 
+        // Finalize history and retire the one-shot before handing cadence
+        // to the principal. A crash before this stamp is recoverable from
+        // history; an organized principal cannot retain a due genesis job.
+        if status == "success"
+            && job.id == crate::principal::genesis::GENESIS_JOB_ID
+            && job.origin_session.is_none()
+            && matches!(job.action, CronJobAction::Send { .. })
+        {
+            if let Some(manager) = &self.principal_manager {
+                if let Some(principal) = resolve_principal(manager, &job.principal_id).await {
+                    let name = principal.name().await;
+                    manager
+                        .persist_boot_state(&name, crate::principal::config::BootState::Organized)
+                        .await?;
+                }
+            }
+        }
+
         info!("✅ Job '{}' completed with status: {}", job.name, status);
         Ok(())
     }
@@ -1385,6 +1403,81 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let engine = engine_from_tmp(&tmp);
         assert!(engine.check_idle().await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn genesis_completion_persists_success_and_leaves_failure_retryable() {
+        peko_identity::init_test_env();
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let paths = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let engine = CronEngine::new(
+            paths.clone(),
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            Arc::new(AsyncExecutor::new(
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )),
+            Weak::new(),
+        );
+
+        for (name, model, expected_status, expected_state) in [
+            (
+                "ready",
+                "mock",
+                "success",
+                crate::principal::config::BootState::Organized,
+            ),
+            (
+                "retry",
+                "missing-model",
+                "failed",
+                crate::principal::config::BootState::GenesisPending,
+            ),
+        ] {
+            let mut config = test_config(name);
+            config.preferred_model_id = Some(model.into());
+            let principal = manager.create(config).await.unwrap();
+            crate::principal::genesis::seed_boot_defaults(&manager, &paths)
+                .await
+                .unwrap();
+            let scheduler = CronScheduler::new(paths.cron_schedule(name)).unwrap();
+            let job = scheduler
+                .get_job(crate::principal::genesis::GENESIS_JOB_ID)
+                .unwrap()
+                .unwrap();
+            engine.execute_job(job).await.unwrap();
+
+            let runs = scheduler
+                .get_run_history(crate::principal::genesis::GENESIS_JOB_ID, 1)
+                .unwrap();
+            assert_eq!(runs[0].status, expected_status, "{name}: {:?}", runs[0]);
+            assert!(runs[0].finished_at.is_some());
+            assert!(scheduler
+                .get_job(crate::principal::genesis::GENESIS_JOB_ID)
+                .unwrap()
+                .is_none());
+            assert_eq!(principal.config.read().await.boot_state(), expected_state);
+            let persisted: PrincipalConfig = toml::from_str(
+                &std::fs::read_to_string(principal.workspace_path.join("principal.toml")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(persisted.boot_state(), expected_state);
+
+            let report = crate::principal::genesis::seed_boot_defaults(&manager, &paths)
+                .await
+                .unwrap();
+            assert_eq!(
+                report.genesis_seeded.contains(&name.to_string()),
+                expected_status == "failed"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

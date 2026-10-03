@@ -1208,6 +1208,183 @@ mod tests {
     // ===================================================================
     #[tokio::test]
     #[serial_test::serial(core)]
+    async fn loop_restores_current_runtime_context_after_compaction() {
+        use peko_session::compaction::{
+            BackgroundCompactorFactory, CompactionConfig, CompactionEntry, CompactionPhase,
+            CompactionRequest, CompactionResponse, CompactionResult, CompactionState,
+            CompactorBackend,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Factory {
+            phase: CompactionPhase,
+            phases: Arc<Mutex<Vec<CompactionPhase>>>,
+        }
+        struct Backend {
+            phase: CompactionPhase,
+            gate_calls: AtomicUsize,
+            phases: Arc<Mutex<Vec<CompactionPhase>>>,
+        }
+        impl BackgroundCompactorFactory for Factory {
+            fn build(&self, _meter: Arc<peko_quota::QuotaMeter>) -> Box<dyn CompactorBackend> {
+                Box::new(Backend {
+                    phase: self.phase,
+                    gate_calls: AtomicUsize::new(0),
+                    phases: self.phases.clone(),
+                })
+            }
+        }
+        #[async_trait::async_trait]
+        impl CompactorBackend for Backend {
+            async fn should_request(&self, _: usize, _: usize, _: &CompactionConfig) -> bool {
+                self.phase == CompactionPhase::PreTurn
+                    && self.gate_calls.fetch_add(1, Ordering::SeqCst) == 1
+            }
+            async fn request(
+                &self,
+                request: CompactionRequest,
+            ) -> anyhow::Result<tokio::sync::oneshot::Receiver<CompactionResponse>> {
+                self.phases.lock().unwrap().push(request.phase);
+                // Deliberately omit runtime sections from the summary and
+                // kept history. The loop must reload their original sources.
+                let mut messages: Vec<_> = request
+                    .messages
+                    .into_iter()
+                    .filter(|message| {
+                        !message.content.iter().any(|block| {
+                            matches!(block,
+                        ContentBlock::Text { text } if text.contains("<runtime-context>"))
+                        })
+                    })
+                    .collect();
+                messages.insert(
+                    1,
+                    LlmMessage::system("[Conversation Summary]: work in progress"),
+                );
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                tx.send(CompactionResponse::Completed(CompactionResult {
+                    messages,
+                    entry: CompactionEntry {
+                        timestamp: chrono::Utc::now(),
+                        summary: "work in progress".into(),
+                        first_kept_entry_id: String::new(),
+                        messages_compacted: 1,
+                        tokens_before: 1000,
+                        tokens_after: 100,
+                        compaction_number: 1,
+                        phase: request.phase,
+                        details: None,
+                    },
+                    state: CompactionState::default(),
+                    usage: Default::default(),
+                }))
+                .unwrap();
+                Ok(rx)
+            }
+        }
+
+        peko_identity::init_test_env();
+        for phase in [CompactionPhase::PreTurn, CompactionPhase::MidTurn] {
+            let tooling = test_tooling().await;
+            tooling.register_prompt_section(Arc::new(
+                crate::principal::identity_prompt::WorkspaceIdentityPromptHandler::new(),
+            ));
+            let temp = TempDir::new().unwrap();
+            std::fs::create_dir(temp.path().join("kb")).unwrap();
+            std::fs::write(
+                temp.path().join("principal.toml"),
+                "[identity]\ndescription = 'Keep the release reliable'\n",
+            )
+            .unwrap();
+            std::fs::write(
+                temp.path().join("kb/MEMORY.md"),
+                "The release deadline is Friday.",
+            )
+            .unwrap();
+            std::fs::write(
+                temp.path().join("kb/CONVENTIONS.md"),
+                "Verify completion before closing commitments.",
+            )
+            .unwrap();
+            std::fs::write(
+                temp.path().join("kb/index.md"),
+                "Release evidence lives in kb/release.md.",
+            )
+            .unwrap();
+            let (provider, mock) = mock_provider();
+            mock.queue_tool_call(
+                "read-1",
+                "Read",
+                serde_json::json!({ "file_path": temp.path().join("kb/index.md") }),
+            );
+            mock.queue_text("Checked the release evidence.");
+            let agent = Arc::new(
+                Agent::new_for_test(
+                    test_agent_config("context-recovery"),
+                    temp.path(),
+                    tooling.clone(),
+                )
+                .await
+                .unwrap()
+                .with_principal_workspace(temp.path().to_path_buf()),
+            );
+            let phases = Arc::new(Mutex::new(Vec::new()));
+            let config = CompactionConfig {
+                // Force mid-turn compaction after the first tool result;
+                // the backend separately gates pre-turn compaction.
+                enabled: phase == CompactionPhase::MidTurn,
+                auto_threshold_percent: 0,
+                ..Default::default()
+            };
+            let loop_ = AgenticLoop::new(
+                agent,
+                provider,
+                tooling,
+                Arc::new(Factory {
+                    phase,
+                    phases: phases.clone(),
+                }),
+                config,
+            )
+            .await;
+            let session = test_session("context-recovery", temp.path()).await;
+            loop_
+                .run_with_resume("Check the release", Vec::new(), |_| {}, &session, None)
+                .await
+                .unwrap();
+
+            assert_eq!(*phases.lock().unwrap(), vec![phase]);
+            let requests = mock.recorded_requests();
+            assert_eq!(requests.len(), 2);
+            for request in &requests {
+                let tail = request.messages.last().unwrap();
+                assert_eq!(tail.role, MessageRole::User);
+                let text = tail
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                for expected in [
+                    "Keep the release reliable",
+                    "The release deadline is Friday.",
+                    "Verify completion before closing commitments.",
+                    "Release evidence lives in kb/release.md.",
+                ] {
+                    assert!(text.contains(expected), "{phase:?} lost {expected}: {text}");
+                }
+            }
+            assert_eq!(
+                requests[0].messages[0], requests[1].messages[0],
+                "system prefix stays stable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_tool_call_iteration() {
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.

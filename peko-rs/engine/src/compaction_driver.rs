@@ -212,7 +212,8 @@ impl CompactionDriver {
         self.poll_background_compaction(messages, session).await;
 
         // Post-compaction hook and cleanup
-        if self.compaction_performed {
+        let applied = self.compaction_performed;
+        if applied {
             self.update_context_cache(messages, session).await;
             self.compaction_performed = false;
             self.last_compaction_result = None;
@@ -222,7 +223,7 @@ impl CompactionDriver {
             // `total_usage` for this iteration.
         }
 
-        Ok(true)
+        Ok(applied)
     }
 
     /// PR 3: fire a mid-turn compaction.
@@ -1062,11 +1063,16 @@ mod tests {
         let mut messages = small_messages();
         let on_event = event_sink(&f.events);
 
-        f.driver
+        let applied = f
+            .driver
             .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
             .await
             .unwrap();
 
+        assert!(
+            !applied,
+            "no compaction must not invalidate runtime context"
+        );
         assert_eq!(f.backend.request_calls.load(Ordering::SeqCst), 0);
         assert!(f.driver.pending_compaction.is_none());
         assert!(f.events.lock().expect("events mutex poisoned").is_empty());
@@ -1180,6 +1186,41 @@ mod tests {
             state: peko_session::compaction::CompactionState::default(),
             usage: peko_message::TokenUsage::default(),
         })
+    }
+
+    #[tokio::test]
+    async fn check_reports_only_installed_compaction() {
+        let mut f = fixture(true, false);
+        let mut messages = small_messages();
+        let on_event = event_sink(&f.events);
+        assert!(
+            !f.driver
+                .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
+                .await
+                .unwrap(),
+            "pending work has not replaced context"
+        );
+        let tx = f.backend.senders.lock().unwrap().pop().unwrap();
+        tx.send(completed_response(
+            vec![
+                LlmMessage::system("[Conversation Summary]: summary"),
+                LlmMessage::user("continue"),
+            ],
+            1,
+        ))
+        .unwrap();
+        assert!(f
+            .driver
+            .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
+            .await
+            .unwrap());
+        assert!(
+            !f.driver
+                .check_and_compact(&mut messages, &f.session, &on_event, "run-1")
+                .await
+                .unwrap(),
+            "report the replacement once"
+        );
     }
 
     fn tool_result_message() -> LlmMessage {

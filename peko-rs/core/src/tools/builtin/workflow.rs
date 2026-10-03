@@ -57,7 +57,7 @@
 //! agents/skills handlers (ADR-050).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -407,11 +407,12 @@ impl Tool for WorkflowTool {
 }
 
 /// Resolve `rel` to a canonical path inside `<workspace>/workflows/`,
-/// refusing absolute paths, `..` traversal, symlink escapes, missing
+/// refusing rooted or drive-prefixed paths, `..` traversal, symlink escapes, missing
 /// files, and non-`.py` targets.
 fn resolve_workflow_path(workspace: &Path, rel: &str) -> anyhow::Result<PathBuf> {
-    if Path::new(rel).is_absolute() {
-        bail!("Workflow: `path` must be relative to the workspace workflows/ directory, got absolute '{rel}'");
+    let path = Path::new(rel);
+    if path.has_root() || matches!(path.components().next(), Some(Component::Prefix(_))) {
+        bail!("Workflow: `path` must be relative to the workspace workflows/ directory, got non-relative '{rel}'");
     }
     let root = workspace.join("workflows");
     let canonical_root = root.canonicalize().map_err(|_| {
@@ -916,10 +917,28 @@ mod tests {
         let fx = fixture("guard").await;
         let err = fx
             .tool
-            .execute_with_context(json!({"path": "/etc/passwd.py"}), &ctx_for("guard", None))
+            .execute_with_context(
+                json!({"path": fx.workspace.join("outside.py")}),
+                &ctx_for("guard", None),
+            )
             .await
             .expect_err("absolute path must be refused");
         assert!(format!("{err:#}").contains("relative"), "got: {err:#}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn path_guard_refuses_rooted_and_drive_relative_paths() {
+        let fx = fixture("guard").await;
+        for path in ["/outside.py", r"\outside.py", r"C:outside.py"] {
+            let err = fx
+                .tool
+                .execute_with_context(json!({"path": path}), &ctx_for("guard", None))
+                .await
+                .expect_err("rooted and drive-relative paths must be refused");
+            assert!(format!("{err:#}").contains("relative"), "got: {err:#}");
+        }
     }
 
     #[cfg(unix)]
@@ -1208,7 +1227,7 @@ print("argv:" + ",".join(sys.argv[1:]))
         assert_eq!(out["stdout_truncated"], true, "got: {out}");
         let stdout = out["stdout"].as_str().unwrap();
         assert!(stdout.starts_with(TRUNCATION_MARKER), "marker missing");
-        assert!(stdout.ends_with("TAIL-MARKER\n"), "tail missing");
+        assert_eq!(stdout.lines().last(), Some("TAIL-MARKER"), "tail missing");
         assert!(
             stdout.len() <= TRUNCATION_MARKER.len() + OUTPUT_CAP_BYTES + 16,
             "len: {}",

@@ -804,31 +804,18 @@ async fn boot_principal(
     // ── P2 wait: block until the genesis turn is done ───────────────
     println!("Waiting for the genesis turn (the trunk's first self-turn)…");
     let schedule_path = paths.resolver().cron_schedule(name);
+    let config_path = paths.resolver().principal_layout(name).shared.config_file;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_timeout);
-    loop {
+    let state = loop {
         let scheduler = peko_cron::CronScheduler::new(&schedule_path)
             .with_context(|| format!("open cron schedule for '{name}'"))?;
-        let jobs = scheduler
-            .list_jobs(true)
-            .with_context(|| format!("read cron schedule for '{name}'"))?;
-        // Done when the one-shot is gone (fired + self-deleted) or its
-        // run finalized successfully.
-        let genesis = jobs
-            .iter()
-            .find(|j| j.id == peko_core::principal::genesis::GENESIS_JOB_ID);
-        match genesis {
-            None => break,
-            Some(job) if job.run_count >= 1 && job.last_status.as_deref() == Some("success") => {
-                break
+        if genesis_completed(&scheduler)? {
+            // History is finalized before the daemon stamps completion.
+            // Wait for both persisted writes, not this CLI's stale cache.
+            let config: PrincipalConfig = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
+            if config.boot_state() == peko_core::principal::config::BootState::Organized {
+                break config.boot_state();
             }
-            Some(job) if job.last_status.as_deref() == Some("error") => {
-                anyhow::bail!(
-                    "genesis turn failed ({}) — inspect the daemon log; \
-                     the principal stays seeded and retries at the next boot",
-                    job.last_status.as_deref().unwrap_or("error")
-                );
-            }
-            Some(_) => {}
         }
         if std::time::Instant::now() > deadline {
             anyhow::bail!(
@@ -838,11 +825,6 @@ async fn boot_principal(
             );
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
-
-    let state = match manager.get_by_name(name).await {
-        Some(p) => p.config.read().await.boot_state(),
-        None => peko_core::principal::config::BootState::GenesisPending,
     };
     println!(
         "🎉 Principal '{name}' is alive (boot state: {state:?}). \
@@ -850,6 +832,27 @@ async fn boot_principal(
     );
 
     Ok(())
+}
+
+/// One-shot jobs are reaped even on failure. Only a finalized run is
+/// evidence of initialization; a missing job without history is pending.
+fn genesis_completed(scheduler: &peko_cron::CronScheduler) -> Result<bool> {
+    let runs = scheduler.get_run_history(peko_core::principal::genesis::GENESIS_JOB_ID, 1)?;
+    let Some(run) = runs.first().filter(|run| run.finished_at.is_some()) else {
+        return Ok(false);
+    };
+    if run.status == "success" {
+        return Ok(true);
+    }
+    anyhow::bail!(
+        "genesis turn failed ({}): {}. Inspect the daemon log; restart the daemon \
+         to retry initialization",
+        run.status,
+        run.error
+            .as_deref()
+            .or(run.output.as_deref())
+            .unwrap_or("no detail recorded")
+    )
 }
 
 async fn list_principals(paths: &GlobalPaths, json: bool) -> Result<()> {
@@ -1594,6 +1597,55 @@ mod tests {
     use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
     use peko_auth::Permission;
+
+    #[test]
+    fn genesis_wait_requires_finalized_success_after_oneshot_reaping() {
+        let temp = tempfile::tempdir().unwrap();
+        let scheduler = peko_cron::CronScheduler::new(temp.path().join("cron.json")).unwrap();
+        let job = peko_core::principal::genesis::genesis_job(
+            &default_principal_config("seedling"),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        scheduler.add_job(&job).unwrap();
+        scheduler.delete_job(&job.id).unwrap();
+        assert!(
+            !genesis_completed(&scheduler).unwrap(),
+            "absence proves nothing"
+        );
+
+        for (index, status) in ["failed", "error", "cancelled", "success"]
+            .iter()
+            .enumerate()
+        {
+            let run_id = format!("genesis-run-{index}");
+            scheduler
+                .record_run(&peko_cron::CronRun {
+                    id: run_id.clone(),
+                    job_id: job.id.clone(),
+                    started_at: chrono::Utc::now() + chrono::Duration::seconds(index as i64),
+                    finished_at: None,
+                    status: "running".into(),
+                    output: None,
+                    error: None,
+                })
+                .unwrap();
+            assert!(
+                !genesis_completed(&scheduler).unwrap(),
+                "running is pending"
+            );
+            scheduler
+                .finalize_run(&run_id, status, None, Some("provider unavailable".into()))
+                .unwrap();
+            if *status == "success" {
+                assert!(genesis_completed(&scheduler).unwrap());
+            } else {
+                let error = genesis_completed(&scheduler).unwrap_err().to_string();
+                assert!(error.contains(status), "{error}");
+                assert!(error.contains("provider unavailable"), "{error}");
+            }
+        }
+    }
 
     #[test]
     fn parse_permission_maps_common_names() {

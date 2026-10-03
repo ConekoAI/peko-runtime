@@ -23,6 +23,8 @@ use crate::commands::{
 // after the lift it lives in the cli crate itself.
 mod commands;
 mod summary;
+#[cfg(test)]
+mod test_support;
 
 /// Peko - Lightweight Multi-Agent Runtime
 #[tokio::main]

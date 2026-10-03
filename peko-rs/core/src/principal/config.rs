@@ -34,8 +34,9 @@ pub enum Status {
 ///   custom root prompt) is present.
 /// - `genesis_pending` — P2 seeding done: the daemon has scheduled the
 ///   one-shot genesis turn and the default keepalive job.
-/// - `organized` — P3/P4: the trunk owns its own cadence; the runtime
-///   no longer touches its cron schedule at boot.
+/// - `organized` — the genesis run finalized successfully; the trunk
+///   owns its cadence and boot no longer seeds its cron schedule.
+///   This records execution completion, not verified self-organization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BootState {

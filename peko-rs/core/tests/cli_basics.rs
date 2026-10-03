@@ -70,6 +70,25 @@ fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 // rewritten.
 
 #[test]
+fn test_subprocesses_require_passphrase_vault_unlock() {
+    let cli = PekoCli::new();
+    let command = cli.cmd();
+    let method = command
+        .get_envs()
+        .find(|(key, _)| *key == "PEKO_UNLOCK_METHOD")
+        .and_then(|(_, value)| value);
+    assert_eq!(method, Some(std::ffi::OsStr::new("passphrase")));
+    let passphrase = command
+        .get_envs()
+        .find(|(key, _)| *key == "PEKO_MASTER_PASSPHRASE")
+        .and_then(|(_, value)| value);
+    assert_eq!(
+        passphrase,
+        Some(std::ffi::OsStr::new(cli.vault_passphrase()))
+    );
+}
+
+#[test]
 fn principal_create_list_show() {
     let cli = PekoCli::new();
 

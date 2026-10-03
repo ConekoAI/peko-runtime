@@ -1,6 +1,6 @@
 # The Peko Prompt Model
 
-**Version:** 1.0 (2026-09-29)
+**Version:** 1.1 (2026-10-03)
 **Status:** Current — describes the as-built prompt assembly.
 **Related:** [ADR-050](adr/ADR-050-capabilities-as-workspace-files.md)
 (presence = visibility), [ADR-052](adr/ADR-052-tiered-system-prompt.md)
@@ -20,6 +20,8 @@ Every LLM call in the agentic loop sees a three-part prompt:
    sections are not re-injected, changed sections re-inject with an
    `_Updated — replaces…_` notice, and a section that turns empty
    retracts once with `_… no longer applies._`.
+   After applied compaction, change tracking resets and current sections
+   render again before the next model call; summaries are not their source.
 3. **The conversation** — user/assistant/tool messages as usual.
 
 Spawned children additionally receive a spawn-time wrapper (§5).
@@ -91,7 +93,6 @@ derived by the runtime; **hook** = dispatched to a registered handler
 | 14 | Iteration budget | T2 | computed | every iteration (heartbeat) | every agent |
 | 15 | Quota-tripped banner | T2 | computed | rising edge only | every agent |
 | 16 | Soft-cancel banner | T2 | computed | event-edged | every agent |
-| 17 | Capability diff | T2 | computed | on change | every agent |
 
 **Section names are a registry key.** Built-in dispatched names:
 `identity`, `roles`, `skills`, `workflows` (deduped — a workspace hook
@@ -102,18 +103,27 @@ rendering). Everything else registered renders as a custom section.
 section edited *between* runs re-injects plainly on the next run without
 the update notice; content is always fresh, only the notice is missing.
 
+**Compaction boundary:** pre-turn compaction applies before assembling the
+fresh tail. Applied pre-turn and mid-turn compactions reset
+`RuntimeContextState`, so unchanged identity, conventions, memory, and catalogs
+are re-materialized from current sources. Pending, skipped, or failed attempts
+do not reset tracking. The frozen prefix remains byte-stable.
+
 ## 6. Spawn-time wrapper
 
 When the `Agent` tool spawns a child:
 
 - **Named role** (`role: "coder"`): the child's system prompt body is the
   role file's body (ADR-052 D3) — resolved from `roles/` (directory
-  `ROLE.md` or flat `.md`), capability-gated on `role:<name>` (legacy
-  `agent:<name>` grants accepted).
-- **Unnamed spawn**: the child inherits the root persona body (the
+  `ROLE.md` or flat `.md`). Workspace presence makes it available
+  (ADR-066); there is no role grant check.
+- **Unnamed internal context**: the child inherits the root persona body (the
   default T1) — the `[Subagent Context]` wrapper (parent/child session
   keys, diagnostic depth `d`, task, rules: no busy-polling, respond with text)
   rides as the task message.
+- The `Agent` tool requires a role, path, and task prompt for all four
+  actions: `new`, `resume`, `compact` (immediate compact-and-continue),
+  and `branch` (snapshot then run).
 - Delegation depth is unrestricted. All live runs share a per-principal
   concurrency limit (default 20); a capacity refusal suggests trying again
   after an existing run finishes (ADR-067).
@@ -122,11 +132,10 @@ When the `Agent` tool spawns a child:
 
 | Variable | Gates |
 |---|---|
-| Role name (spawn / binding) | T1 body, role note, capability check |
+| Role name (spawn / binding) | T1 body, role note |
 | Channel binding | Binding note, conversation context |
 | Focus directory (last path-bearing tool call) | Which `AGENTS.md` rides as project instructions |
 | Principal workspace | All `kb/` hot files, `principal.toml` identity, catalogs, hooks |
-| Capabilities | Tool allowlist (`tool:*`), capability diff, role-spawn grant |
 | Model / sandbox / thinking level | Runtime + sandbox sections, model aliases |
 | Quota / cancel state | Event banners |
 | Spawn depth / concurrency | Wrapper rules, refusal errors |
@@ -168,4 +177,4 @@ peko-rs/core/src/
 
 ---
 
-*Version 1.0 · Prompt Model · 2026-09-29*
+*Version 1.1 · Prompt Model · 2026-10-03*
