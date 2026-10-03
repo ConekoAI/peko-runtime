@@ -723,6 +723,46 @@ impl PrincipalManager {
         Ok(principal)
     }
 
+    /// Stamp a runtime boot transition without overwriting definition
+    /// edits authored by the genesis turn or creator since this manager
+    /// loaded its config. Publish in-memory state only after persistence.
+    pub(crate) async fn persist_boot_state(
+        &self,
+        name: &str,
+        state: super::config::BootState,
+    ) -> Result<(), PrincipalManagerError> {
+        let principal = self
+            .get_by_name(name)
+            .await
+            .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
+        let path = principal.workspace_path.join("principal.toml");
+        let _file_lock = peko_fs_persistence::WorkspaceFileLock::acquire_in(
+            self.path_resolver.runtime_locks_dir(),
+            &path,
+            peko_fs_persistence::DEFAULT_WORKSPACE_LOCK_TIMEOUT_MS,
+        )
+        .await
+        .map_err(|error| PrincipalManagerError::Config(error.to_string()))?;
+        let mut config = principal.config.write().await;
+        let mut current: PrincipalConfig = toml::from_str(&tokio::fs::read_to_string(&path).await?)
+            .map_err(|error| PrincipalManagerError::Config(error.to_string()))?;
+        // A stale CLI seeding pass must not rewind a daemon's completed
+        // genesis transition. Organized is the terminal runtime state.
+        if current.boot_state() != super::config::BootState::Organized {
+            current.set_boot_state(state);
+        }
+        let content = toml::to_string(&current)
+            .map_err(|error| PrincipalManagerError::Config(error.to_string()))?;
+        let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        tokio::fs::write(&temp_path, content).await?;
+        if let Err(error) = tokio::fs::rename(&temp_path, &path).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error.into());
+        }
+        *config = current;
+        Ok(())
+    }
+
     async fn persist_config(
         &self,
         workspace_path: &Path,
@@ -2258,6 +2298,71 @@ mod tests {
         assert!(
             toml.contains("public"),
             "updated exposure should be persisted"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn boot_state_stamp_preserves_authored_definition_and_publishes_after_persist() {
+        use super::super::config::BootState;
+        let (_temp, manager, _adapter, id) = setup().await;
+        let principal = manager.get(id).await.unwrap();
+        let path = principal.workspace_path.join("principal.toml");
+        let original = tokio::fs::read_to_string(&path).await.unwrap();
+        let mut authored: PrincipalConfig = toml::from_str(&original).unwrap();
+        authored.identity.description = Some("Maintain the release evidence".into());
+        authored.intent.goals = vec!["Close verified commitments".into()];
+        tokio::fs::write(&path, toml::to_string(&authored).unwrap())
+            .await
+            .unwrap();
+        manager
+            .persist_boot_state("stressy", BootState::Organized)
+            .await
+            .unwrap();
+        let persisted: PrincipalConfig =
+            toml::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(
+            persisted.identity.description,
+            authored.identity.description
+        );
+        assert_eq!(persisted.intent.goals, authored.intent.goals);
+        assert_eq!(persisted.boot_state(), BootState::Organized);
+        assert_eq!(
+            principal.config.read().await.boot_state(),
+            BootState::Organized
+        );
+        assert_eq!(
+            principal.config.read().await.identity.description,
+            authored.identity.description
+        );
+
+        // A seeder with stale state cannot rewind successful completion.
+        manager
+            .persist_boot_state("stressy", BootState::GenesisPending)
+            .await
+            .unwrap();
+        let persisted: PrincipalConfig =
+            toml::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(persisted.boot_state(), BootState::Organized);
+
+        // Invalid authored config stays intact; no success is published.
+        principal
+            .config
+            .write()
+            .await
+            .set_boot_state(BootState::GenesisPending);
+        tokio::fs::write(&path, "invalid = [").await.unwrap();
+        assert!(manager
+            .persist_boot_state("stressy", BootState::Organized)
+            .await
+            .is_err());
+        assert_eq!(
+            principal.config.read().await.boot_state(),
+            BootState::GenesisPending
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "invalid = ["
         );
     }
 

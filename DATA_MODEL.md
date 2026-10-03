@@ -9,6 +9,26 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Principal bootstrap completion (ADR-054)
+
+`principal.toml` retains the existing `boot_state` values: `provisioned`,
+`defined`, `genesis_pending`, and `organized`. `organized` records a finalized
+successful genesis run; it does not certify the quality of self-organization.
+The cron engine writes it after finalizing history and reaping the bootstrap
+one-shot. The transition reads the current authored configuration under the
+workspace file lock, replaces it atomically, then publishes the in-memory
+boot state. A stale seeding pass cannot rewind `organized`.
+
+The CLI waits for both successful finalized `genesis` history and the persisted
+marker. One-shot deletion alone is not completion evidence: cron still reaps
+one-shots on all outcomes. At boot, unfinished principals with missing or failed
+genesis jobs get a fresh one-shot. Finalized success recovers an interrupted
+completion write and removes any remaining bootstrap job before handing cadence
+to the principal. Organized principals' authored schedules are not re-seeded.
+Before completion, an enabled, non-self-deleting recurring Send counts as a heartbeat only when
+targeted at the trunk (`origin_session` absent or the trunk id); both `Every`
+and `Cron` schedules count. Peer-session reminders do not count.
+
 ## Principal agent run limit (ADR-067)
 
 `principal.toml` configures admission in the existing governance table:

@@ -560,15 +560,16 @@ mod tests {
     /// `fresh_paths` helper in `commands::model::tests` so credential
     /// and model tests can share an isolated config directory.
     fn fresh_paths() -> GlobalPaths {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let temp = std::env::temp_dir().join(format!(
             "PEKO_cred_test_{}_{}",
             std::process::id(),
-            AtomicU64::new(0).fetch_add(1, Ordering::SeqCst)
+            COUNTER.fetch_add(1, Ordering::SeqCst)
         ));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).unwrap();
 
-        std::env::set_var("PEKO_MASTER_PASSPHRASE", "test-cred-cmd");
+        crate::test_support::init_credentials();
         let cli = Cli::parse_from([
             "peko",
             "--config-dir",

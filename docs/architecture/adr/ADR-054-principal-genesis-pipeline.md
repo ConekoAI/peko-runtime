@@ -106,9 +106,9 @@ leak them as separate verbs (an earlier iteration of this ADR shipped
   knows the principal (spawns the sidecar when none is running; sends
   the idempotent `PrincipalReload` IPC when one is), seeds the genesis
   + keepalive jobs immediately (not at next boot), and **blocks until
-  the one-shot genesis run finalizes successfully** — polling the
-  schedule for the job's `run_count >= 1 && last_status == "success"`
-  or its post-run self-deletion. `--detach` opts out (scripts/CI);
+  the one-shot genesis run finalizes successfully** — polling finalized
+  run history and waiting for persisted `boot_state = organized`.
+  Post-run self-deletion alone is not success evidence. `--detach` opts out (scripts/CI);
   `--wait-timeout` (default 300s) bounds the wait; a timeout or a
   failed run exits non-zero with the principal left fully seeded (it
   will genesis at the next daemon boot). Direct file edits remain
@@ -120,7 +120,8 @@ At daemon boot, `principal::genesis::seed_boot_defaults` runs for every
 loaded principal whose boot state is not `organized`:
 
 1. Ensure a **recurring trunk-targeted `Send` job exists** (any enabled
-   recurring `Send` counts — the trunk may already have made its own;
+   recurring trunk-targeted `Send` counts, with interval or cron cadence
+   and absent/trunk `origin_session` — the trunk may already have made its own;
    the default carries id `keepalive`, every 10 minutes — well above
    the 60s `TRUNK_MIN_INTERVAL_MS` floor). This closes PEKO §K's "no
    cron firing into the root at all" anti-pattern at the runtime level:
@@ -135,12 +136,20 @@ loaded principal whose boot state is not `organized`:
    the seeded jobs set it explicitly (`at` for the one-shot; one full
    cadence out for the keepalive).
 2. Ensure the **one-shot genesis job** exists for principals that have
-   not had their genesis turn seeded yet (`provisioned`/`defined`
-   states): id `genesis`, `At now + 60s`, `delete_after_run`, message
+   not completed genesis (`provisioned`/`defined`/`genesis_pending`
+   states): missing or failed jobs are re-armed at boot. Id `genesis`,
+   `At now + 60s`, `delete_after_run`, message
    = the runtime-authored **genesis brief** — pointing the trunk at
    its own definition and workspace and instructing it to verify,
    survey, and organize (bounded: a setup turn, not a work sprint).
 3. Stamp `boot_state = genesis_pending` and persist.
+
+The cron engine stamps `organized` only after a successful genesis run,
+finalized history, and one-shot cleanup. Boot recovers interrupted completion
+from successful history before seeding any heartbeat. Boot-state transitions
+read the current authored configuration rather than the manager's cached
+definition. The marker records execution completion, not a semantic check of
+the resulting organization.
 
 Seeding is idempotent, per-principal fail-soft (warn-and-continue, the
 `default_nodes` posture), and stops touching a principal's cron
@@ -221,10 +230,10 @@ surfaces, it gets its own design pass (same rule as ADR-041 §3.2).
 
 ## 5. Deferred (tracked follow-ups, not promised)
 
-- **`organized` flip at the engine**: after the first successful
-  trunk-targeted turn, the engine stamps `organized` (needs cron
-  engine → manager config-write plumbing). Until then the boot pass
-  re-checks idempotently every boot.
+- **Shipped 2026-10-03 — `organized` flip at the engine:** successful
+  genesis completion persists the marker; history-based boot recovery and
+  missing/failed genesis retries are implemented. An ordinary keepalive
+  turn does not substitute for genesis completion.
 - **P3 induction budgeting**: wire `budget_per_cycle` /
   `cost_per_call_max` as the genesis/induction turn ceiling
   (AGENT_SESSION_PARADIGM §4's standing recommendation).

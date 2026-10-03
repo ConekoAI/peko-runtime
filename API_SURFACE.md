@@ -76,6 +76,15 @@ principal identity, principal name, and abort receiver. Execution returns
 
 ---
 
+## Compaction application result
+
+`peko_engine::compaction_driver::CompactionDriver::check_and_compact` returns
+`Ok(true)` only when a completed compaction replaces the live message context.
+Skipped, pending, or failed attempts return `Ok(false)`. The agentic loop uses
+this result, and the equivalent mid-turn result, to reset runtime-section change
+tracking and materialize current source content before the next model request.
+The frozen system prefix remains unchanged within the run.
+
 ## Module: `extensions::framework`
 
 **Status:** Shared host utilities (ADR-066)

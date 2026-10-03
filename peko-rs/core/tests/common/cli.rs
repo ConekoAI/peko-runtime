@@ -207,6 +207,7 @@ impl PekoCli {
             .env("USERPROFILE", self.home.path())
             .env("PEKO_HOME", self.peko_dir())
             .env("PEKO_MASTER_PASSPHRASE", &self.vault_passphrase)
+            .env("PEKO_UNLOCK_METHOD", "passphrase")
             .env("PEKO_IDENTITY_PASSPHRASE", &self.vault_passphrase)
             .current_dir(self.home.path());
 

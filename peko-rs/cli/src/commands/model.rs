@@ -1309,7 +1309,7 @@ mod tests {
     use clap::Parser;
 
     /// Build a `GlobalPaths` rooted at a fresh tempdir, with a
-    /// `PEKO_MASTER_PASSPHRASE` set so the vault can be written.
+    /// explicitly passphrase-only test vault (core is a normal dependency).
     fn fresh_paths() -> GlobalPaths {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1322,7 +1322,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).unwrap();
 
-        std::env::set_var("PEKO_MASTER_PASSPHRASE", "test-model-cmd");
+        crate::test_support::init_credentials();
         let cli = Cli::parse_from([
             "peko",
             "--config-dir",
@@ -1484,8 +1484,12 @@ mod tests {
             .expect("credential_id should be set");
 
         // 2. Key landed in the vault under the `llm` namespace.
-        let passphrase = SecretString::new("test-model-cmd".to_string().into());
+        let passphrase = SecretString::new(crate::test_support::MASTER_PASSPHRASE.into());
         let vault = Vault::load_with_passphrase(paths.resolver().vault(), &passphrase).unwrap();
+        assert_eq!(
+            vault.unlock_method(),
+            peko_core::common::vault::UnlockMethod::Passphrase
+        );
         let stored = vault.get_credential(&cid).expect("credential should exist");
         assert_eq!(stored.namespace, "llm");
         assert_eq!(stored.material.expose_secret(), "sk-ant-test-key");
