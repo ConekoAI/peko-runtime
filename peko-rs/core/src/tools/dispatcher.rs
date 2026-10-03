@@ -227,7 +227,11 @@ impl ToolDispatcher {
                         Value::String(s) => s.clone(),
                         other => other.to_string(),
                     };
-                    (text, value, true)
+                    // Agent admission refusals retain their structured envelope,
+                    // but are failures for audit, async dispatch and cron history.
+                    let success =
+                        !(tool_name == "Agent" && value["error_type"] == "ConcurrentLimitExceeded");
+                    (text, value, success)
                 }
                 Err(e) => {
                     let text = format!("Error: {e}");

@@ -192,6 +192,10 @@ impl PeerChildTurns {
     ) -> Result<Self> {
         let (name, owner, agent_config, preferred_model_id, available_agents) = {
             let config = principal.config.read().await;
+            tooling
+                .agent_runs()
+                .for_principal(&principal.id)
+                .set_limit(config.governance.max_running_agents);
             // Same `available_agents` projection
             // `PrincipalManager::build_router_context` computes for
             // the root-agent path — the `role_catalog` tool's
@@ -239,18 +243,11 @@ impl PeerChildTurns {
         // `SubagentExecutor::new`'s agent name keys the GLOBAL async
         // task registry — see "Registry key" in the module docs.
         //
-        // `max_concurrent` is 64, not the subagent-default 5: this
-        // executor drives PEER INGRESS turns, where distinct peers
-        // legitimately run in parallel (per-child serialization is the
-        // `InboxRegistry` run permit + the registry's
-        // `has_active_subagent_run_for_child` cross-check). The shared
-        // "root"-keyed registry counts the trunk's own subagent spawns
-        // here too, so the cap is a runaway guard, not a throttle.
+        // Peer ingress and recursive spawns share principal-wide admission.
         let registry_key = default_root_prompt().name;
         let executor = SubagentExecutor::new(
             Arc::clone(&session_manager),
             registry_key,
-            64,
             principal.id.clone(),
             Arc::clone(&tooling),
         )
@@ -492,11 +489,10 @@ impl PeerChildTurns {
             // Peer ingress is a CONVERSATION, not a delegated task:
             // no subagent framing, the session's prior history is
             // loaded, and the peer-facing agent may itself delegate
-            // (depth 3, like the root agent the prompt describes).
+            // using the same principal-wide run admission.
             conversation: true,
             conversation_channel,
             conversation_peer,
-            max_depth: 3,
             ..ExecutionConfig::default()
         };
         self.executor
@@ -979,7 +975,6 @@ mod tests {
         let executor = SubagentExecutor::new(
             Arc::clone(&session_manager),
             "root",
-            5,
             principal_id.clone(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         );

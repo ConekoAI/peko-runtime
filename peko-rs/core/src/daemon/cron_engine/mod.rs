@@ -802,6 +802,9 @@ impl CronEngine {
         // `principal_name` for tools that want the display string.
         let (snapshot_principal_id, snapshot_principal_name) = {
             let config = principal.config.read().await;
+            core.agent_runs()
+                .for_principal(&principal.id)
+                .set_limit(config.governance.max_running_agents);
             (principal.id.0.clone(), config.name.clone())
         };
 
@@ -1904,6 +1907,116 @@ mod tests {
         );
 
         drop(principal);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn principal_capacity_refuses_cron_agent_and_trunk_turns() {
+        let tmp = TempDir::new().unwrap();
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
+        let paths = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let (resolver, adapter) =
+            LlmResolver::mock(MockAdapter::new(), tmp.path().join("models.toml")).await;
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                paths,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_tooling(core.clone())
+            .with_resolver(resolver),
+        );
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "limited-cron").await;
+        principal.config.write().await.governance.max_running_agents =
+            std::num::NonZeroUsize::new(1).unwrap();
+        tokio::fs::create_dir_all(principal.workspace_path.join("roles"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            principal.workspace_path.join("roles/worker.md"),
+            "---\nname: worker\ndescription: test worker\n---\nComplete the task.",
+        )
+        .await
+        .unwrap();
+        let pool = core.agent_runs().for_principal(&principal.id);
+        let parent = pool.try_acquire().unwrap();
+        let paths = PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(paths.cron_schedule("limited-cron")).unwrap());
+        let engine = CronEngine::new(
+            paths,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager),
+            Arc::new(AsyncExecutor::new(
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )),
+            Arc::downgrade(&core),
+        );
+        let mut job = CronJob {
+            id: "capacity-agent".into(),
+            name: "capacity-agent".into(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::SpawnTool {
+                tool_name: "Agent".into(),
+                tool_params: serde_json::json!({"prompt": "work", "role": "worker", "path": "scheduled-worker"}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(10),
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: None,
+        };
+        scheduler.add_job(&job).unwrap();
+        engine.execute_job(job.clone()).await.unwrap();
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+        assert_eq!(runs[0].status, "failed");
+        assert!(runs[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("ConcurrentLimitExceeded"));
+        assert!(runs[0].error.as_deref().unwrap().contains("Try again"));
+        assert!(scheduler.get_job(&job.id).unwrap().unwrap().enabled);
+        assert!(adapter.recorded_requests().is_empty());
+        assert_eq!(pool.active(), 1);
+        // Cron Send starts an actual trunk agent run and shares the same pool.
+        job.id = "capacity-trunk".into();
+        job.action = CronJobAction::Send {
+            message: "work".into(),
+            target: Some("trunk".into()),
+        };
+        scheduler.add_job(&job).unwrap();
+        engine.execute_job(job.clone()).await.unwrap();
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+        assert_eq!(runs[0].status, "failed");
+        assert!(runs[0]
+            .error
+            .as_deref()
+            .or(runs[0].output.as_deref())
+            .unwrap()
+            .contains("Try again"));
+        assert!(adapter.recorded_requests().is_empty());
+        assert_eq!(pool.active(), 1);
+        drop(parent);
+        assert_eq!(pool.active(), 0);
     }
 
     /// Phase 7 (2026-08-17): `target = "trunk"` stays accepted and is

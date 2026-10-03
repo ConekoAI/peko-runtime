@@ -16,7 +16,6 @@ pub fn build_subagent_system_prompt(
     task: &str,
     label: Option<&str>,
     depth: u32,
-    max_depth: u32,
 ) -> String {
     let label_part = label
         .map(|l| format!(" with label '{l}'"))
@@ -24,7 +23,7 @@ pub fn build_subagent_system_prompt(
 
     format!(
         r"[Subagent Context]
-You are running as a subagent (depth {depth}/{max_depth}).
+You are running as a subagent (depth {depth}).
 
 **Your Task:** {task}
 
@@ -35,7 +34,7 @@ You are running as a subagent (depth {depth}/{max_depth}).
 
 **Important Instructions:**
 1. Focus solely on the task provided above
-2. Do NOT spawn additional subagents unless absolutely necessary (you are at depth {depth} of {max_depth} max)
+2. Delegated runs share your principal's concurrency limit; if a request is refused, try again after an existing run finishes
 3. Complete your task efficiently and provide clear output
 4. Do NOT busy-poll for status - the system will handle result announcement automatically
 5. ALWAYS respond with text output after completing your task - empty responses cannot be captured
@@ -51,14 +50,14 @@ When you complete your work, the result will be automatically sent back to your 
 ///
 /// This is the actual user message that contains the task.
 #[must_use]
-pub fn build_subagent_task_message(task: &str, depth: u32, max_depth: u32) -> String {
+pub fn build_subagent_task_message(task: &str, depth: u32) -> String {
     format!(
         r"[Subagent Task]
 
 {task}
 
 ---
-Remember: You are running as a subagent (depth {depth}/{max_depth}). Results auto-announce to your requester; do not busy-poll for status."
+Remember: You are running as a subagent (depth {depth}). Results auto-announce to your requester; do not busy-poll for status."
     )
 }
 
@@ -74,10 +73,9 @@ mod tests {
             "Summarize this conversation",
             Some("summarizer"),
             1,
-            3,
         );
 
-        assert!(prompt.contains("depth 1/3"));
+        assert!(prompt.contains("depth 1"));
         assert!(prompt.contains("Summarize this conversation"));
         assert!(prompt.contains("summarizer"));
         assert!(prompt.contains("child:session:key"));
@@ -86,9 +84,9 @@ mod tests {
 
     #[test]
     fn test_build_subagent_task_message() {
-        let message = build_subagent_task_message("Analyze data", 2, 3);
+        let message = build_subagent_task_message("Analyze data", 2);
         assert!(message.contains("Analyze data"));
-        assert!(message.contains("depth 2/3"));
+        assert!(message.contains("depth 2"));
         assert!(message.contains("Results auto-announce"));
     }
 }

@@ -175,20 +175,6 @@ pub trait SubagentRuntime: Send + Sync {
     /// Required: no default body.
     fn principal_name(&self) -> Option<String>;
 
-    /// Maximum spawn depth the runtime enforces on incoming
-    /// `ExecutionConfig.max_depth` calls. The production adapter
-    /// reads this from the executor's principal config; test
-    /// fixtures override to assert the tool projects the value
-    /// onto the spawn request.
-    ///
-    /// Required: no default body. A previous default of `3` was
-    /// silently inherited by every production caller, masking the
-    /// fact that `SubagentExecutorRuntime` (the sole production
-    /// implementor) never actually plumbed the per-principal cap
-    /// through — depth was a constant 3 everywhere regardless of
-    /// configuration. Implementors MUST override.
-    fn max_depth(&self) -> u32;
-
     /// The spawning principal's workspace (the `<workspace>/agents/`
     /// resolution root). `None` means global agents only
     /// (standalone / test paths).

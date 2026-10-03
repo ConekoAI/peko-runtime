@@ -112,9 +112,11 @@ When the `Agent` tool spawns a child:
   `agent:<name>` grants accepted).
 - **Unnamed spawn**: the child inherits the root persona body (the
   default T1) — the `[Subagent Context]` wrapper (parent/child session
-  keys, depth `d/3`, task, rules: no busy-polling, respond with text)
+  keys, diagnostic depth `d`, task, rules: no busy-polling, respond with text)
   rides as the task message.
-- Spawn depth is capped at 3; concurrent subagent runs at 5.
+- Delegation depth is unrestricted. All live runs share a per-principal
+  concurrency limit (default 20); a capacity refusal suggests trying again
+  after an existing run finishes (ADR-067).
 
 ## 7. Variables that gate content
 

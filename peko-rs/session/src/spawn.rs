@@ -43,7 +43,7 @@ pub struct SpawnOverlay {
     pub timeout_seconds: Option<u64>,
     /// Cleanup policy
     pub cleanup: SpawnCleanupPolicy,
-    /// Spawn depth (for limiting nesting)
+    /// Diagnostic spawn depth (does not limit nesting)
     pub depth: u32,
     /// Run ID assigned by the execution engine
     pub run_id: Option<String>,

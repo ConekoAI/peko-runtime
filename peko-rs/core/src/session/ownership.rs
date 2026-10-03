@@ -119,20 +119,13 @@ fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
     caller_context(id, metas).ancestors
 }
 
-/// Depth of `target` in the spawn tree: the number of
-/// `trigger == "spawn"` sessions in the parent chain from `target`
-/// up to (and including) `target`. `0` for user roots and for any
-/// session whose metadata is missing — a dangling target is treated
-/// as depth 0 so a spawn against it falls open to the lowest
-/// allowed depth rather than being silently infinite.
+/// Diagnostic depth of `target`: the number of `trigger == "spawn"`
+/// sessions in its persisted parent chain, including the target. Missing
+/// targets and user roots have depth zero. Depth does not gate admission
+/// (ADR-067); live runs share a principal-wide concurrency limit.
 ///
-/// B8c.3: unified depth source-of-truth. The transient
-/// `AsyncTaskRegistry`-based answer (lost on daemon restart, aged
-/// out by `cleanup_completed`) and the resume path's per-ancestor
-/// walk both collapse onto this single walk — same shape, same
-/// durable answer. The spawn path adds `1` for the hypothetical
-/// new subagent; the resume path returns this value directly
-/// (re-attach keeps the target's existing depth).
+/// Spawn adds one for the new child; resume preserves the target's depth.
+/// Registry cleanup and daemon restarts do not change this durable answer.
 #[must_use]
 pub fn subagent_depth_of(target: &str, metas: &[SessionMetadata]) -> u32 {
     let canonical = peko_session::SessionId::from(target).to_string();

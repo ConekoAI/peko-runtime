@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Principal-wide agent run admission (ADR-067, 2026-10-03)
+
+- Replaced delegation depth restrictions and executor-local concurrency caps
+  with atomic admission shared by all live agent runs of one principal.
+  `[governance].max_running_agents` defaults to 20; zero is invalid.
+- Root, peer/group, cron and recursive runs share slots. Waiting parents and
+  detached agents count until execution exits; idle sessions do not count.
+  Capacity refusals fail immediately and suggest requesting again later.
+- Removed depth config/port/error/prompt restrictions. Legacy
+  `max_delegation_depth` is ignored; depth remains diagnostic metadata.
+- Added admission, lifetime, principal-isolation, deep-delegation, configuration
+  and cron regression coverage; updated API/data/tool docs.
+
 ### Pure workspace tooling: contract fold and cleanup (ADR-066 P6, 2026-10-02)
 
 - Deleted `peko-extension-api` and moved live tooling ports to the engine,

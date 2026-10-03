@@ -1,13 +1,47 @@
 # Peko — Data Model Specification
 
 **Version:** 0.1.0
-**Date:** 2026-10-02 (ADR-066 P6)
+**Date:** 2026-10-03 (ADR-067)
 **Status:** Current
 **Companion docs:** [`AGENTS.md`](AGENTS.md) (build & module rules), [`API_SURFACE.md`](API_SURFACE.md) (public Rust API), [`docs/architecture/adr/`](docs/architecture/adr/) (decisions)
 
 This document defines every on-disk and in-memory data format used by the Peko runtime. It is the authoritative reference for anyone implementing the filesystem loader, session manager, image builder, or any component that reads or writes Peko data. All formats described here must be treated as stable contracts — breaking changes require a version increment.
 
 ---
+
+## Principal agent run limit (ADR-067)
+
+`principal.toml` configures admission in the existing governance table:
+
+```toml
+[governance]
+max_running_agents = 20
+```
+
+The positive integer defaults to 20 when omitted, including when the entire
+`governance` table is absent. Zero is rejected. Legacy `max_delegation_depth`
+is ignored on load and never written back. There is no depth restriction.
+The in-memory admission pool is keyed by stable `PrincipalId` in the shared
+runtime and is not persisted: live execution futures do not survive restart.
+Idle session metadata and completed/cancelled registry records do not determine
+capacity. Diagnostic subagent `depth` metadata remains unchanged.
+
+Agent capacity refusals use the existing error envelope:
+
+```json
+{
+  "status": "forbidden",
+  "error_type": "ConcurrentLimitExceeded",
+  "current_concurrent": 20,
+  "max_concurrent": 20,
+  "error": "Principal concurrent agent run limit reached: 20 (max: 20). Try again after an existing run finishes.",
+  "note": "Principal concurrent agent run limit reached. Try again after an existing run finishes."
+}
+```
+
+The tool funnel marks this structured result as a failure; no run or target
+session mutation is admitted. Cron records the failure using normal history
+and schedule handling. There is no automatic admission retry or queue.
 
 ## Workspace hook manifests (ADR-066 P4)
 

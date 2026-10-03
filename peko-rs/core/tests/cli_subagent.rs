@@ -7,7 +7,7 @@
 //! | PS script                  | Rust tests                                                                                                |
 //! |----------------------------|-----------------------------------------------------------------------------------------------------------|
 //! | `subagent_blocking.ps1`    | `subagent_blocking_t1_write_file`, `subagent_blocking_t2_isolated`, `subagent_blocking_t4_inline_read`      |
-//! | `subagent_nesting.ps1`     | `subagent_nesting_t1_depth2_writes_file`, `subagent_nesting_t2_depth_limit`                               |
+//! | `subagent_nesting.ps1`     | `subagent_nesting_t1_depth2_writes_file`, `subagent_nesting_t2_recursive_dispatch`                               |
 //! | `subagent_isolation.ps1`   | `subagent_isolation_t1_shared_workspace`, `subagent_isolation_t2_isolated_writes_file`                     |
 //! | `subagent_async.ps1`       | (deferred — `_async` path requires a populated `AsyncTaskRegistry`, not directly seedable from a test)    |
 //! | `subagent_status_list.ps1` | (deferred — same reason: `task` tool reads from in-process registry)                                      |
@@ -466,9 +466,7 @@ async fn subagent_blocking_t4_inline_read() {
 
 /// `subagent_nesting.ps1` TEST 1: a 3-level chain (parent → child-A
 /// → grandchild-B) where grandchild-B writes a file. The production
-/// default `max_depth` for `AgentSpawnTool` is 3 (see
-/// `src/tools/builtin/messaging/agent.rs`), so this chain
-/// stays within budget. Each LLM call has its own unique needle.
+/// concurrency budget admits this chain. Each LLM call has its own unique needle.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
@@ -554,22 +552,12 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     assert_eq!(actual, file_content);
 }
 
-/// `subagent_nesting.ps1` TEST 2: depth-limit enforcement (smoke).
-///
-/// With production default `max_depth = 3` (see
-/// `src/tools/builtin/messaging/agent.rs`), a chain of
-/// 4 levels (parent=0 → child=1 → grandchild=2 → great-grandchild=3)
-/// fits, and a 5th-level spawn attempt is rejected. This test
-/// exercises the 3-level chain's parent→A→B→C path; the depth-limit
-/// code path itself is unit-tested in
-/// `src/agent/tests/subagent_integration_tests.rs::test_depth_limit_enforcement`,
-/// which directly calls `spawn_and_execute` with explicit
-/// `ExecutionConfig { max_depth: 2 }`. We keep this test as a smoke
-/// test for the multi-level dispatch plumbing through the CLI.
+/// `subagent_nesting.ps1` TEST 2: multi-level dispatch through the CLI.
+/// Delegation depth is unrestricted; live runs share principal admission.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
-async fn subagent_nesting_t2_depth_limit() {
+async fn subagent_nesting_t2_recursive_dispatch() {
     if mock_llm_url().is_none() {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
@@ -586,12 +574,12 @@ async fn subagent_nesting_t2_depth_limit() {
          Embed '{child_a_needle}' in your tool_call task arg so the mock \
          can route your LLM call. Embed '{grandchild_needle}' in the task \
          string you pass to Subagent-B. \
-         (test=subagent_nesting_T2_depth_limit)"
+         (test=subagent_nesting_T2_recursive_dispatch)"
     );
     let task_for_grandchild = format!(
         "You are Subagent-B at depth 2. Spawn a great-grandchild Subagent-C. \
          Substring '{grandchild_needle}' for mock routing. \
-         (test=subagent_nesting_T2_depth_limit)"
+         (test=subagent_nesting_T2_recursive_dispatch)"
     );
 
     let script = serde_json::json!({

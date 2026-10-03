@@ -273,7 +273,6 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     ) -> anyhow::Result<SubagentRunView> {
         let _ = agent; // validated tool-side; the run continues the session's own agent
         let root_config = crate::agents::subagent_executor::ExecutionConfig {
-            max_depth: self.max_depth(),
             force_compact: true,
             ..Default::default()
         };
@@ -306,7 +305,6 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     ) -> anyhow::Result<SubagentRunView> {
         let _ = agent; // validated tool-side; the run uses the resolved role prompt
         let root_config = crate::agents::subagent_executor::ExecutionConfig {
-            max_depth: self.max_depth(),
             page_limit,
             ..Default::default()
         };
@@ -330,16 +328,6 @@ impl SubagentRuntime for SubagentExecutorRuntime {
     }
     fn principal_name(&self) -> Option<String> {
         self.executor.principal_name().map(str::to_owned)
-    }
-
-    /// B8a.3: explicit override. The trait previously defaulted to
-    /// `3` and `SubagentExecutorRuntime` silently inherited it; the
-    /// executor never plumbed a per-principal cap through, so the
-    /// historical cap was effectively a constant 3. Preserve that
-    /// exact value here; a future phase that wires a per-principal
-    /// `SubagentConfig.max_depth` should replace this body.
-    fn max_depth(&self) -> u32 {
-        3
     }
 
     /// B8a.3: explicit override. The trait previously defaulted to
@@ -367,7 +355,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
 /// `agents::subagent_executor::ExecutionConfig` shared by the spawn
 /// and resume branches of `execute_and_wait`.
 ///
-/// The fields (timeout, max_depth, model_override, …) project verbatim.
+/// The fields (timeout, model_override, …) project verbatim.
 ///
 /// ADR-052 D3: the resolved role body (`request.subagent_config.body`)
 /// rides `role_prompt` so the spawned child runs the named agent's
@@ -393,7 +381,6 @@ fn build_root_execution_config(
 
     crate::agents::subagent_executor::ExecutionConfig {
         timeout_seconds: request.config.timeout_seconds,
-        max_depth: request.config.max_depth,
         model_override,
         page_limit: request.config.page_limit,
         // Agent tool `name` → the child session's slug (stamped by

@@ -15,6 +15,15 @@ traits and async statuses live in `peko-tools-core`. Legacy principal grant
 strings never reach tools, subagents, or prompts (ADR-066 P6). Peer and session
 ownership checks remain in their respective domains.
 
+Agent actions (`new`, `resume`, `compact`, `branch`) reserve a slot in the
+principal-wide live-run pool (ADR-067). The default limit is 20, configured by
+`[governance].max_running_agents` in `principal.toml`. Peer, trunk, cron and
+recursive runs share it; waiting parents and detached runs count until their
+execution exits. Idle sessions consume no slots. Delegation depth is unrestricted.
+At capacity the call fails immediately with `ConcurrentLimitExceeded`, current
+and maximum counts, and guidance to try again after an existing run finishes.
+No run is queued and no target session is created or reseeded by a refused call.
+
 ## Legend
 
 - **✅ Claude parity** — name, schema, and return shape match Claude Code's

@@ -859,14 +859,13 @@ impl BoundTurnDriver for SubagentResumeDriver {
     async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
         // No completion announcement: the reply goes to the CHANNEL,
         // not the parent session's inbox. Conversation mode (no
-        // subagent framing, prior history loaded, delegation allowed
-        // to depth 3) — a channel-driven turn is a turn in the peer's
-        // ongoing conversation, same as the streaming ingress path.
+        // subagent framing, prior history loaded, shared run admission).
+        // A channel-driven turn is part of the peer's ongoing conversation,
+        // same as the streaming ingress path.
         // Everything else defaults (cleanup: Keep — bound sessions
         // outlive their runs; timeout 300s).
         let config = ExecutionConfig {
             conversation: true,
-            max_depth: 3,
             ..ExecutionConfig::default()
         };
         let wait_timeout =
@@ -2640,7 +2639,6 @@ mod tests {
         let executor = SubagentExecutor::new(
             Arc::clone(&manager),
             &agent_name,
-            5,
             PrincipalId::generate(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         );
@@ -2678,7 +2676,6 @@ mod tests {
         let executor = SubagentExecutor::new(
             Arc::clone(&manager),
             &agent_name,
-            5,
             PrincipalId::generate(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         );
