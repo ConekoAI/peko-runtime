@@ -15,9 +15,9 @@
 
 use crate::common::paths::PathResolver;
 use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::tools::builtin::BashTool;
 use crate::tools::builtin::{ChannelReadTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
+use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
 use peko_channel::{ChannelPort, NoopChannelPort};
 use peko_cron::{
@@ -43,7 +43,7 @@ use tracing::info;
 /// accessors below cover the diagnostic surfaces.
 #[derive(Clone)]
 pub struct ToolRuntime {
-    extension_core: Arc<ExtensionCore>,
+    tooling: Arc<ToolingRuntime>,
     path_resolver: PathResolver,
     workspace: PathBuf,
 }
@@ -72,23 +72,23 @@ impl ToolRuntime {
         Self::with_workspace_channel_port(path_resolver, workspace, channel_port).await
     }
 
-    /// Create with a specific workspace and an existing ExtensionCore.
+    /// Create with a specific workspace and an existing tooling runtime.
     /// Channel port defaults to [`NoopChannelPort`]; production daemon
     /// code uses [`Self::with_workspace_and_core_and_channel_port`]
     /// (the three-arg shape) to wire the real adapter in.
     ///
-    /// Used by the daemon to register tools with the global
-    /// ExtensionCore so that agents created later can find them.
+    /// Used by the daemon to register tools with the shared
+    /// `ToolingRuntime` so that agents created later can find them.
     pub async fn with_workspace_and_core(
         path_resolver: PathResolver,
         workspace: impl Into<PathBuf>,
-        extension_core: Arc<ExtensionCore>,
+        tooling: Arc<ToolingRuntime>,
     ) -> Result<Self> {
         let channel_port: Arc<dyn ChannelPort> = Arc::new(NoopChannelPort);
         Self::with_workspace_and_core_and_channel_port(
             path_resolver,
             workspace,
-            extension_core,
+            tooling,
             channel_port,
         )
         .await
@@ -96,21 +96,21 @@ impl ToolRuntime {
 
     /// Three-arg variant that wires a real `ChannelPort` adapter in
     /// so `ChannelRead` works through this runtime. Production daemon
-    /// start path uses this (`daemon/state.rs:685`).
+    /// start path uses this (`daemon/state.rs`).
     ///
     /// # Errors
     /// Returns an error if built-in tool registration fails.
     pub async fn with_workspace_and_core_and_channel_port(
         path_resolver: PathResolver,
         workspace: impl Into<PathBuf>,
-        extension_core: Arc<ExtensionCore>,
+        tooling: Arc<ToolingRuntime>,
         channel_port: Arc<dyn ChannelPort>,
     ) -> Result<Self> {
         let workspace = workspace.into();
-        Self::register_builtins(&extension_core, &path_resolver, channel_port).await?;
+        Self::register_builtins(tooling.catalog(), &path_resolver, channel_port).await?;
 
         Ok(Self {
-            extension_core,
+            tooling,
             path_resolver,
             workspace,
         })
@@ -126,58 +126,28 @@ impl ToolRuntime {
         channel_port: Arc<dyn ChannelPort>,
     ) -> Result<Self> {
         let workspace = workspace.into();
-        let extension_core = Arc::new(ExtensionCore::new());
-        Self::register_builtins(&extension_core, &path_resolver, channel_port).await?;
+        let tooling = ToolingRuntime::standalone();
+        Self::register_builtins(tooling.catalog(), &path_resolver, channel_port).await?;
 
         Ok(Self {
-            extension_core,
+            tooling,
             path_resolver,
             workspace,
         })
     }
 
-    /// Create a new `ToolRuntime` with custom extension services
-    ///
-    /// This is useful when the caller wants to inject a pre-configured
-    /// `ExtensionServices` (e.g. with a custom `AsyncExecutionRouter`).
-    pub async fn with_services(
-        path_resolver: PathResolver,
-        services: Arc<ExtensionServices>,
-    ) -> Result<Self> {
-        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self::with_services_and_workspace(path_resolver, services, workspace).await
-    }
-
-    /// Create with custom services and workspace
-    pub async fn with_services_and_workspace(
-        path_resolver: PathResolver,
-        services: Arc<ExtensionServices>,
-        workspace: impl Into<PathBuf>,
-    ) -> Result<Self> {
-        let workspace = workspace.into();
-        let extension_core = Arc::new(ExtensionCore::with_services(services));
-        let channel_port: Arc<dyn ChannelPort> = Arc::new(NoopChannelPort);
-        Self::register_builtins(&extension_core, &path_resolver, channel_port).await?;
-
-        Ok(Self {
-            extension_core,
-            path_resolver,
-            workspace,
-        })
-    }
-
-    /// Register built-in tools with the given `ExtensionCore`
+    /// Register built-in tools with the given catalog
     ///
     /// This logic is extracted from `Agent::init_builtins_async()`.
     ///
     /// `AsyncSpawn` and `AsyncOutput` are **NOT** registered here. They
-    /// depend on per-agent state (AsyncExecutor + ExtensionCore for
+    /// depend on per-agent state (AsyncExecutor + ToolingRuntime for
     /// spawn-side lookups). Each agent registers its own via
     /// `BuiltinToolAdapter::register_async_spawn_tool` and
     /// `BuiltinToolAdapter::register_async_output_tool` once the agent
     /// has constructed its executor and completion queue.
     pub async fn register_builtins(
-        extension_core: &ExtensionCore,
+        catalog: &crate::tools::catalog::ToolCatalog,
         path_resolver: &PathResolver,
         channel_port: Arc<dyn ChannelPort>,
     ) -> Result<()> {
@@ -205,18 +175,14 @@ impl ToolRuntime {
             Arc::new(
                 WriteTool::new()
                     .with_workspace(workspace.clone())
-                    .with_lock_dir(
-                        crate::extensions::framework::paths::default_data_dir().join("locks"),
-                    ),
+                    .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
             ),
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
             Arc::new(
                 EditTool::new()
                     .with_workspace(workspace.clone())
-                    .with_lock_dir(
-                        crate::extensions::framework::paths::default_data_dir().join("locks"),
-                    ),
+                    .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
             ),
             Arc::new(CronCreateTool::new()),
             Arc::new(CronDeleteTool::new()),
@@ -244,17 +210,15 @@ impl ToolRuntime {
         // once per process under PrincipalId::system(). The `register_builtins`
         // call shape is the daemon-init path.
         for tool in &tools {
-            if let Err(e) =
-                BuiltinToolAdapter::register_tool_system(extension_core, tool.clone()).await
-            {
+            if let Err(e) = BuiltinToolAdapter::register_tool_system(catalog, tool.clone()).await {
                 tracing::warn!(
-                    "Failed to register built-in tool '{}' with ExtensionCore: {}",
+                    "Failed to register built-in tool '{}' with the catalog: {}",
                     tool.name(),
                     e
                 );
             } else {
                 tracing::debug!(
-                    "Registered built-in tool '{}' with ExtensionCore",
+                    "Registered built-in tool '{}' with the catalog",
                     tool.name()
                 );
             }
@@ -264,10 +228,10 @@ impl ToolRuntime {
         Ok(())
     }
 
-    /// Get a reference to the underlying `ExtensionCore`
+    /// Get the shared tooling runtime.
     #[must_use]
-    pub fn extension_core(&self) -> &Arc<ExtensionCore> {
-        &self.extension_core
+    pub fn tooling(&self) -> &Arc<ToolingRuntime> {
+        &self.tooling
     }
 
     /// Get the path resolver
@@ -281,10 +245,6 @@ impl ToolRuntime {
     /// # Arguments
     /// * `tool_name` - Name of the tool to execute
     /// * `params` - JSON parameters for the tool
-    /// * `capabilities` - Optional per-call capability grants. When `None`,
-    ///   the execution gate is fail-closed.
-    /// * `active_extensions` - Optional active extension IDs for the current
-    ///   Principal; when present, the tool's owning extension must be active.
     ///
     /// # Returns
     /// The JSON result of the tool execution
@@ -292,17 +252,9 @@ impl ToolRuntime {
         &self,
         tool_name: &str,
         params: serde_json::Value,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
-        self.execute_tool_with_workspace(
-            tool_name,
-            params,
-            &self.workspace,
-            capabilities,
-            active_extensions,
-        )
-        .await
+        self.execute_tool_with_workspace(tool_name, params, &self.workspace)
+            .await
     }
 
     /// Execute a tool with an explicit workspace override
@@ -311,20 +263,9 @@ impl ToolRuntime {
         tool_name: &str,
         params: serde_json::Value,
         workspace: &std::path::Path,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
         let (display, json, success) = self
-            .execute_tool_full_with_workspace(
-                tool_name,
-                params,
-                workspace,
-                None,
-                None,
-                None,
-                capabilities,
-                active_extensions,
-            )
+            .execute_tool_full_with_workspace(tool_name, params, workspace, None, None, None)
             .await?;
 
         if !success {
@@ -349,15 +290,13 @@ impl ToolRuntime {
     /// a transport error.
     ///
     /// `session_id` / `principal_id` / `principal_name` carry the
-    /// **server-resolved** calling context (phase 2a/2b): the gate
-    /// probes the principal-scoped registration before falling back to
-    /// the system scope, and principal-scoped tools (`ModelCall`,
+    /// **server-resolved** calling context (phase 2a/2b):
+    /// principal-scoped tools (`ModelCall`,
     /// `Workflow`, cron) read the identity off the resulting
     /// `ToolContext`. On the `ExecuteTool` path `session_id` carries
     /// the packet's `session_key` (the workflow's attribution anchor —
     /// e.g. `agent:<principal>:workflow:<uuid>`), not a session UUID.
-    /// All three are `None` for unattributed standalone calls
-    /// (fail-closed downstream).
+    /// All three are `None` for unattributed standalone calls.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_tool_full_with_workspace(
         &self,
@@ -367,11 +306,9 @@ impl ToolRuntime {
         session_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
-        capabilities: Option<Vec<String>>,
-        active_extensions: Option<Vec<String>>,
     ) -> Result<(String, serde_json::Value, bool)> {
         peko_engine::funnel::execute_tool_via_core_with_context(
-            &*self.extension_core,
+            &*self.tooling,
             tool_name,
             params,
             Some(workspace.to_string_lossy().to_string()),
@@ -380,8 +317,6 @@ impl ToolRuntime {
             None,
             principal_id,
             principal_name,
-            capabilities,
-            active_extensions,
             None,
         )
         .await
@@ -389,11 +324,12 @@ impl ToolRuntime {
 
     /// List all registered tools visible to the system scope
     /// (built-ins, MCP). The daemon has a single shared
-    /// `ExtensionCore` and `ToolRuntime` is process-scoped, so
+    /// The runtime is shared across the daemon, so
     /// `PrincipalId::system()` is the right scope here.
     #[must_use]
-    pub async fn list_tools(&self) -> Vec<crate::extensions::framework::types::ToolMetadata> {
-        self.extension_core
+    pub async fn list_tools(&self) -> Vec<crate::tools::metadata::ToolMetadata> {
+        self.tooling
+            .catalog()
             .list_tools(peko_subject::PrincipalId::system())
             .await
     }
@@ -401,8 +337,9 @@ impl ToolRuntime {
     /// Check if a tool is registered under the system scope.
     #[must_use]
     pub async fn has_tool(&self, tool_name: &str) -> bool {
-        self.extension_core
-            .get_tool_metadata(tool_name, peko_subject::PrincipalId::system())
+        self.tooling
+            .catalog()
+            .get(tool_name, peko_subject::PrincipalId::system())
             .await
             .is_some()
     }
@@ -454,12 +391,7 @@ mod tests {
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
         let result = runtime
-            .execute_tool(
-                "Bash",
-                json!({"command": "echo hello"}),
-                Some(vec!["tool:Bash".to_string()]),
-                None,
-            )
+            .execute_tool("Bash", json!({"command": "echo hello"}))
             .await;
 
         assert!(
@@ -471,14 +403,47 @@ mod tests {
         assert!(output.get("stdout").is_some() || output.get("result").is_some());
     }
 
+    /// ADR-066 D1 (P2): presence = visibility = executability. A fresh
+    /// principal carries no grants (`principal.toml` never persists a
+    /// `[capabilities]` section), so this path exercises exactly what a
+    /// fresh principal gets: the full wire catalog, and `Bash` runs.
+    #[tokio::test]
+    async fn test_no_grant_context_full_catalog_and_bash_executes() {
+        let resolver = PathResolver::new();
+        let runtime = ToolRuntime::new(resolver).await.unwrap();
+
+        // The wire catalog contains the built-ins with no capability
+        // set anywhere in the call path.
+        let defs = runtime
+            .tooling()
+            .catalog()
+            .tool_definitions(peko_subject::PrincipalId::system())
+            .await;
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        for expected in ["Bash", "Read", "Write", "Glob", "Grep", "Edit"] {
+            assert!(
+                names.contains(&expected),
+                "fresh principal sees {expected} in the wire catalog: {names:?}"
+            );
+        }
+
+        // And execution works — the funnel is called with no grant
+        // context at all (`execute_tool` carries no capabilities).
+        let result = runtime
+            .execute_tool("Bash", json!({"command": "echo hello"}))
+            .await;
+        assert!(
+            result.is_ok(),
+            "Bash executes without any grant context: {result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_tool_runtime_execute_unknown_tool() {
         let resolver = PathResolver::new();
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
-        let result = runtime
-            .execute_tool("nonexistent_tool", json!({}), None, None)
-            .await;
+        let result = runtime.execute_tool("nonexistent_tool", json!({})).await;
 
         assert!(result.is_err());
     }

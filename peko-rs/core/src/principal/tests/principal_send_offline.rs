@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::engine::tool_runtime::ToolRuntime;
-use crate::extensions::framework::core::init_global_core;
+
 use crate::principal::config::Exposure;
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
@@ -81,7 +81,6 @@ async fn create_test_principal(
         governance: Default::default(),
         memory: Default::default(),
         routing: Default::default(),
-        capabilities: Default::default(),
         exposure: Exposure::Public,
         status: None,
         boot_state: None,
@@ -137,7 +136,6 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
     let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
         .await
         .expect("tool runtime should initialize");
-    init_global_core(tool_runtime.extension_core().clone());
 
     let workspace = temp.path().join("principals");
     let workspace_ref = workspace.clone();
@@ -164,8 +162,9 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         )
+        .with_tooling(tool_runtime.tooling().clone())
         .with_resolver(resolver)
         .with_channel_port(channel_port.clone()),
     );

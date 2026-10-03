@@ -1870,7 +1870,7 @@ impl TunnelDispatcher {
 mod tests {
     use super::*;
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
-    use crate::extensions::framework::types::Capabilities;
+
     use crate::principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
@@ -1983,7 +1983,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::default(),
             exposure,
             status: None,
             boot_state: None,

@@ -21,9 +21,7 @@ pub mod log;
 pub mod model;
 pub mod principal;
 pub mod quota;
-pub mod registry;
 pub mod runtime;
-pub mod search;
 pub mod send;
 pub mod stop;
 pub mod system;
@@ -79,10 +77,6 @@ pub struct Cli {
     /// Show debug information including stack traces
     #[arg(long, global = true, env = "PEKO_DEBUG")]
     pub debug: bool,
-
-    /// Default registry URL for push/pull commands
-    #[arg(long, global = true, env = "PEKO_REGISTRY")]
-    pub registry: Option<String>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -166,14 +160,6 @@ pub enum Commands {
     #[command(subcommand)]
     Model(model::ModelCommands),
 
-    /// Search the PekoHub registry for pekos and extensions
-    #[command(subcommand)]
-    Search(search::SearchCommands),
-
-    /// Registry management (advanced / hidden)
-    #[command(subcommand, hide = true)]
-    Registry(registry::RegistryCommands),
-
     /// Runtime identity and registry management (advanced / hidden)
     #[command(subcommand, hide = true)]
     Runtime(runtime::RuntimeCommands),
@@ -195,7 +181,7 @@ pub enum Commands {
     #[command(subcommand)]
     Quota(quota::QuotaCommands),
 
-    /// Log in to the PekoHub registry
+    /// Log in to PekoHub
     Login {
         /// Registry host (default: from config or pekohub.ai)
         #[arg(long)]
@@ -205,7 +191,7 @@ pub enum Commands {
         api_key: Option<String>,
     },
 
-    /// Log out from the PekoHub registry
+    /// Log out from PekoHub
     Logout {
         /// Registry host to log out from (default: from config or pekohub.ai)
         #[arg(long)]

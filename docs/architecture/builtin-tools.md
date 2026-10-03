@@ -5,6 +5,16 @@ It is organized around the Claude Code core tool parity program: tools that
 match Claude's name and schema exactly are marked ✅; peko extensions are
 marked 🔧.
 
+Every registered tool is included in the native wire catalog (ADR-066 P4).
+The exposure enum, deferred-tool discovery, and `__tool_search` were removed;
+workspace tool registration remains principal-scoped.
+
+Tool execution uses `ToolDispatcher` through the engine's three-method
+`ToolFunnel` port. Catalog metadata lives in root's `tools::metadata`; tool
+traits and async statuses live in `peko-tools-core`. Legacy principal grant
+strings never reach tools, subagents, or prompts (ADR-066 P6). Peer and session
+ownership checks remain in their respective domains.
+
 ## Legend
 
 - **✅ Claude parity** — name, schema, and return shape match Claude Code's

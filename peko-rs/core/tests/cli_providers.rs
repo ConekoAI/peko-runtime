@@ -102,10 +102,8 @@ fn minimax_api_key() -> Option<String> {
 /// entry first and passes its configured model id — model-first
 /// create requires `--model` and validates it against the catalog.
 ///
-/// New Principals ship the `tool:*` / `agent:*` / `skill:*` wildcards via
-/// `Capabilities::starter_bundle`, so [`grant_tools_to_principal`] is no
-/// longer required for built-in tools — it remains for tests that want an
-/// explicit grant list recorded in `principal.toml`.
+/// ADR-066 P2: no grants are recorded any more — a fresh principal
+/// sees every tool (presence = executability).
 ///
 /// Must be called BEFORE `DaemonGuard::spawn`: `peko create`
 /// writes files directly and needs no daemon.
@@ -121,32 +119,6 @@ fn create_provider_principal(cli: &PekoCli, name: &str, model_id: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-}
-
-/// Grant additional tools to a Principal created by
-/// [`create_provider_principal`].
-///
-/// Tools are written into `principals/<name>/principal.toml` under
-/// `[capabilities] grants` as `tool:<name>` (e.g. `tool:Read`).
-fn grant_tools_to_principal(cli: &PekoCli, name: &str, tools: &[&str]) {
-    let path = cli
-        .peko_dir()
-        .join("principals")
-        .join(name)
-        .join("principal.toml");
-    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
-    let mut cfg: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&raw).expect("parse principal.toml");
-
-    for tool in tools {
-        cfg.capabilities.push(format!("tool:{tool}"));
-    }
-
-    std::fs::write(
-        &path,
-        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
-    )
-    .expect("write principal.toml");
 }
 
 /// Run a `peko …` command and return (stdout, stderr, status).
@@ -253,10 +225,6 @@ async fn cli_providers_kimi_smoke() {
 /// emits a native Anthropic-format `tool_use`/`tool_result` exchange,
 /// executing `Read` and surfacing the file content in its final answer.
 ///
-/// The explicit `Read` grant below is belt-and-braces: freshly created
-/// Principals already carry the `tool:*` wildcard from
-/// `Capabilities::starter_bundle`, so the extra `tool:Read` entry in
-/// `principal.toml` is redundant but harmless.
 ///
 /// Skips when `MINIMAX_API_KEY` is unset.
 #[tokio::test]
@@ -271,7 +239,6 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     let principal = "providers_minimax_anthropic_tool_call";
     common::agent::seed_minimax_provider_in_catalog(cli.home());
     create_provider_principal(&cli, principal, "minimax");
-    grant_tools_to_principal(&cli, principal, &["Read"]);
 
     // The daemon's `Read` resolves relative paths against the shared
     // workspaces root, so place the sentinel file there.

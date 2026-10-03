@@ -8,7 +8,6 @@ members = [
     "peko-rs/cron",
     "peko-rs/engine",
     "peko-rs/events",
-    "peko-rs/extension-api",
     "peko-rs/fs-persistence",
     "peko-rs/identity",
     "peko-rs/message",

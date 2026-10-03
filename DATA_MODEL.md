@@ -1,13 +1,47 @@
 # Peko — Data Model Specification
 
 **Version:** 0.1.0
-**Date:** 2026-06-23 (review pass)
+**Date:** 2026-10-02 (ADR-066 P6)
 **Status:** Current
 **Companion docs:** [`AGENTS.md`](AGENTS.md) (build & module rules), [`API_SURFACE.md`](API_SURFACE.md) (public Rust API), [`docs/architecture/adr/`](docs/architecture/adr/) (decisions)
 
 This document defines every on-disk and in-memory data format used by the Peko runtime. It is the authoritative reference for anyone implementing the filesystem loader, session manager, image builder, or any component that reads or writes Peko data. All formats described here must be treated as stable contracts — breaking changes require a version increment.
 
 ---
+
+## Workspace hook manifests (ADR-066 P4)
+
+`<workspace>/hooks/<id>/hook.toml` supports six bind points:
+`PreToolUse`, `PostToolUse`, `Stop`, `AfterAgent`, `PromptSection`, and
+`SessionContextBuild`. For tool observers, omit `tool_name` to match all tools,
+or provide an exact name. Wildcard selectors are rejected with guidance to
+omit the field. `PromptSection` requires a nonempty `section` without control
+characters. Legacy `priority` is parsed as an unknown field and ignored.
+Hooks load by sorted directory name, then manifest bind order, and run only
+for their owning principal. Every handler has a two-second soft-fail budget.
+Commands receive principal/workspace/session/agent context through the
+`PEKO_*` environment variables; prompt output retains tail-message change /
+retraction semantics. Invalid binds reject the entire manifest; other hooks
+still load.
+
+## Runtime contract cleanup (ADR-066 P6)
+
+Principal configuration, summary, agent context, and import IPC no longer carry
+capability grants. Older `principal.toml` files may contain `[capabilities]`;
+deserialization consumes it, warns once for nonempty grants, and saving drops it.
+Inbound `permissions` remain the authorization policy for peer access.
+
+`principal_import` carries file path, optional name, force, and optional expected
+manifest checksum. `principal_import_previewed` carries snapshot metadata,
+roles (`agents`), executable inventory, checksum, validation errors and warnings.
+The retired `selected_capabilities`, `required_capabilities`, and `extensions`
+fields are omitted from serialization; unknown legacy JSON fields are ignored.
+
+Mid-turn `EnvironmentSnapshot` contains `runtime_environment` only. The old
+`permission_policy_summary` JSON field is ignored on read; rendered snapshots
+no longer advertise an empty capability allowlist. Completion and steering
+payload shapes remain unchanged and are owned by `peko-session`; background
+task statuses remain unchanged and are owned by `peko-tools-core`.
 
 ## Table of Contents
 
@@ -24,10 +58,10 @@ This document defines every on-disk and in-memory data format used by the Peko r
    - [5.6 Compaction](#56-compaction)
    5½. [Chat Log — Consumer-Visible Conversation History (RETIRED)](#5½-chat-log--consumer-visible-conversation-history-retired)
    5¾. [Channel Store — Multi-Principal Chat Event Log](#5¾-channel-store--multi-principal-chat-event-log)
-6. [Agent Package Format (.agent) (RETIRED)](#6-agent-package-format-agent-retired)
+6. [Principal Snapshot Format (.peko)](#6-principal-snapshot-format-peko)
 7. [Team Package Format (.team) (RETIRED)](#7-team-package-format-team-retired)
-8. [Extension Package Format (.ext)](#8-extension-package-format-ext)
-9. [Local Registry Store](#9-local-registry-store)
+8. [Extension Package Format (.ext) (RETIRED)](#8-extension-package-format-ext-retired)
+9. [Local Registry Store (RETIRED)](#9-local-registry-store-retired)
 10. [Instance State](#10-instance-state)
 11. [Markdown Files](#11-markdown-files)
 12. [mcp.json — MCP Server Config](#12-mcpjson--mcp-server-config)
@@ -35,7 +69,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
    13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
    13¾. [`ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)](#13¾-modelcall--one-shot-inference--the-judgment-wire-adr-061-phase-2a)
    13⅞. [`Workflow` runner + the `workflows/` directory (ADR-061 phase 2b)](#13⅞-workflow-runner--the-workflows-directory-adr-061-phase-2b)
-14. [Extension Manifest](#14-extension-manifest)
+14. [Extension Manifest (RETIRED)](#14-extension-manifest-retired)
 15. [Type Reference](#15-type-reference)
 16. [Changelog](#16-changelog)
 
@@ -223,7 +257,7 @@ deleted the deprecated field entirely (PR #43 follow-up).
 When `[base]` is specified, the runtime loads the base image's `config.toml` first, then merges the local config on top. Merge rules:
 
 - Scalar fields: local value overwrites base.
-- Array fields (`capabilities.tools`, `capabilities.mcps`, etc.): local array is **appended** to base array, then deduplicated.
+- Workspace tooling is supplied by plain files; capability arrays are retired.
 - `[[hooks]]`: local hooks are appended to base hooks. Base hooks cannot be removed, only added to.
 - `[provider]`: entire section replaced by local if present; otherwise base provider is used.
 
@@ -299,19 +333,7 @@ log_level   = "info"             # Optional. "error"|"warn"|"info"|"debug"|"trac
 log_format  = "text"             # Optional. "text"|"json". Default: "text"
 pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 
-# ── Registry ───────────────────────────────────────────────────────────────
-
-[registry]
-default = "pekohub.com"          # Optional. Default: "pekohub.com"
-
-[[registry.sources]]
-url      = "pekohub.com"
-priority = 1                     # Lower = checked first
-
-[[registry.sources]]
-url      = "registry.internal.example.com"
-priority = 2
-auth     = { type = "token", env = "INTERNAL_REGISTRY_TOKEN" }
+# Remote registry settings are retired (ADR-066).
 
 # ── Provider credentials ───────────────────────────────────────────────────
 # API keys are resolved at runtime from environment variables.
@@ -321,11 +343,7 @@ auth     = { type = "token", env = "INTERNAL_REGISTRY_TOKEN" }
 anthropic_api_key_env = "ANTHROPIC_API_KEY"   # Optional. Default: "ANTHROPIC_API_KEY"
 openai_api_key_env    = "OPENAI_API_KEY"       # Optional. Default: "OPENAI_API_KEY"
 
-# ── Capabilities ───────────────────────────────────────────────────────────
-
-[capabilities]
-auto_install    = false           # Optional. Default: false (safe for prod)
-install_dir     = "~/.peko/capabilities"  # Optional. Default: as shown
+# Tooling is supplied by workspace files; no capability installation settings.
 
 # ── Principal workspace ──────────────────────────────────────────────────────
 #
@@ -336,15 +354,12 @@ install_dir     = "~/.peko/capabilities"  # Optional. Default: as shown
 # tables and their `workspace_root` keys no longer exist.
 ```
 
-### 3.2 Auth Types for Registry Sources
+### 3.2 Registry settings (retired)
 
-| `type` | Fields | Description |
-|--------|--------|-------------|
-| `token` | `env` | Bearer token read from the named env var |
-| `basic` | `user_env`, `password_env` | HTTP Basic, credentials from env vars |
-| `none` | — | Unauthenticated (public registries) |
+Remote registry configuration and source credentials are retired in ADR-066 P5.
+Local `.peko` snapshots need no registry connection. PekoHub login remains a
+separate credential flow.
 
----
 
 ## 4. team.toml — Team Definition (RETIRED)
 
@@ -1397,8 +1412,7 @@ the trunk exists.
 Creation surface: the `CronCreate` tool's `target` param (valid only
 together with `message`). The legacy `peko cron add / at / every /
 add-idle / add-event` CLI subcommands were retired on 2026-08-25
-when cron became a fully internal principal tool gated by
-`tool:Cron{Create,List,Delete}` grants.
+when cron became a fully internal principal tool.
 
 **SpawnTool wake attribution (Phase 3b, 2026-08-15).** `SpawnTool`
 jobs take no `target` param; their `wake_on_completion` steer message
@@ -1932,99 +1946,62 @@ for search.
 
 ---
 
-## 6. Agent Package Format (.agent) (RETIRED)
+## 6. Principal Snapshot Format (.peko)
 
-> **RETIRED.** The `.agent` package format was superseded by the `.principal` package (ADR-041); agents are now thin Markdown prompts bundled inside a Principal, not standalone portable packages. The schema below is preserved only as historical reference.
+A `.peko` file is a runtime-local tar.gz snapshot, inspectable with
+`tar -tf snapshot.peko` and `tar -xOf snapshot.peko manifest.toml`.
+The former `.agent` package and OCI manifest/layer format are retired (ADR-066 P5).
 
-A `.agent` file was a gzip-compressed tar archive containing a portable agent package. It could be built from a source directory, exported from a running agent, pushed to/pulled from a registry, and imported into a new runtime.
-
-### 6.1 Package Structure
-
-```
-my-agent.agent (gzip-compressed tar)
-├── manifest.toml          # Package metadata and layer digests
-├── config/
-│   ├── agent.toml         # Agent configuration (SSOT for behaviour)
-│   └── (no other files — prompts are built dynamically at runtime)
-├── identity/
-│   ├── did.json           # DID document
-│   └── keys.enc           # Encrypted private keys
-├── skills/
-│   └── {name}/
-│       └── SKILL.md
-├── workspace/
-│   └── SYSTEM.md
-└── sessions/              # Optional (can be large)
+```text
+manifest.toml
+config/principal.toml
+identity/did.json
+identity/keys.enc              # plaintext KeyPairExport JSON
+roles/                         # role prompts
+sessions/                      # JSONL pages + routing/ownership indexes
+cron/                          # authored schedule and run history
+plans/                         # plan DAGs
+tools/ skills/ mcp/ hooks/ kb/  # workspace files
 ```
 
-### 6.2 Manifest Schema (TOML)
-
-The manifest contains **only packaging metadata**. Agent behaviour configuration (tools, MCP, skills, extensions) lives in `config/agent.toml` — the single source of truth.
+The flat TOML manifest is packaging metadata, never behavior configuration:
 
 ```toml
-[agent]
+format = "peko-snapshot-v1"
 name = "researcher"
-version = "1.0.0"
-description = "A web research agent"
-created_at = "2026-05-08T10:00:00Z"
-export_format = "1.1"
-did = "did:peko:local:researcher:abc123"
+did = "did:peko:local:researcher:0123456789abcdef"
+created_at = "2026-10-02T08:00:00Z"
 peko_version = "0.1.0"
+description = "Optional description"
 
-[identity]
-key_algorithm = "ed25519"
-encrypted = false
-
-[layers]
-config = "sha256:1a2b3c4d..."
-identity = "sha256:5e6f7g8h..."
-skills = "sha256:9i0j1k2l..."
-workspace = "sha256:3m4n5o6p..."
-
-[packaging]
-files = [
-  "config/agent.toml",
-
-  "identity/did.json",
-  "identity/keys.enc",
-  "skills/web-search/SKILL.md",
-  "workspace/SYSTEM.md",
-]
-checksums = {
-  "config/agent.toml" = "sha256:abc...",
-  "identity/did.json" = "sha256:def...",
-}
-compression = "gzip"
-archive_format = "tar"
-
-[signatures]
-manifest = "base64url_signature..."
-algorithm = "ed25519"
+[files]
+"config/principal.toml" = "sha256:<64 lowercase hex digits>"
+"identity/did.json" = "sha256:<64 lowercase hex digits>"
+"identity/keys.enc" = "sha256:<64 lowercase hex digits>"
 ```
 
-### 6.3 Clean Manifest Principle
+Every payload file must appear exactly once in `files`; `manifest.toml` itself is
+excluded. Missing files, checksum mismatches, undeclared payload files, unsafe
+paths, duplicate archive entries, and non-file entries fail before restore.
+Directories in a tar are skipped. `--force` permits overwrites, never corruption.
+`PrincipalManifest::from_toml` rejects old `[principal]`/`[layers]` manifests with
+“re-export from the source runtime” guidance. No layer tarballs, signatures,
+TOFU pins, registry blobs, or embedded `.ext` archives are consumed.
 
-`AgentManifest` explicitly does **NOT** contain:
-- `capabilities` — removed; extension framework is the single source of truth
-- `tools` — lives in `agent.toml` / extension whitelist
-- `mcp` — lives in `agent.toml` / extension configuration
-- `tool_sources` — lives in `agent.toml`
-- `memory` — lives in the sessions layer or external stores
+Snapshot collection excludes `cache/`, `locks/`, and `memory_index.json`. Import
+preserves DID and verbatim boot state when the package carries Local state;
+cron jobs are rebound to the imported principal's effective id. A package with
+no Local state resets boot inference; a keyless package directs the operator to
+`peko create <name> -s <seed.toml>`. Seeds remain plain TOML, grounded with a new DID.
 
-This ensures packaging metadata never competes with `agent.toml` as a source of truth.
-
-### 6.4 Layer Types
-
-| Layer | Source Directory | Required | Contents |
-|-------|------------------|----------|----------|
-| `config` | `config/` | Yes | `agent.toml` (SSOT) |
-| `identity` | `identity/` | Yes | `did.json`, `keys.enc` |
-| `skills` | `skills/` | No | Skill directories with `SKILL.md` |
-| `workspace` | `workspace/` | No | Workspace files (`SYSTEM.md`, etc.) |
-| `sessions` | `sessions/` | No | Session history (optional, can be large) |
-| `mcp` | `mcp/` | No | MCP configuration files |
-
-Each layer is stored as a gzip-compressed tar archive in the local registry, deduplicated by SHA-256 digest.
+Before local CLI import, the preview prints DID, payload file count, every hook
+id and complete `hook.toml` (binds, command, args), every MCP id and complete
+server manifest (commands/args included), and skill ids. The optional request
+`expected_manifest_checksum` matches the preview's `manifest_checksum` to prevent
+changing the displayed manifest before import. Checksums then bind payload bytes.
+`principal.snapshot_import` records the same `ExecutableInventory` as a Security
+event with caller attribution, before writes. Definitions are retained verbatim,
+including malformed ones; preview does not execute them. There is no approval UI.
 
 ---
 
@@ -2157,7 +2134,11 @@ Registry storage grows with **unique agent count**, not team count. The existing
 
 ---
 
-## 8. Extension Package Format (.ext)
+## 8. Extension Package Format (.ext) (RETIRED)
+
+Historical schema only. ADR-066 P5 removed embedded-extension import and the
+remaining packaging model. Workspace skills/MCP/hooks travel as plain files in
+the `.peko` snapshot; there is no extension archive install path.
 
 A `.ext` file is a gzip-compressed tar archive containing an installed extension.
 
@@ -2198,49 +2179,11 @@ archive_format = "tar"
 
 ---
 
-## 9. Local Registry Store
+## 9. Local Registry Store (RETIRED)
 
-The local registry is a content-addressable store for `.principal` layers and manifests.
-
-### 9.1 Storage Layout
-
-```
-~/.peko/registry/
-├── layers/
-│   └── sha256-abc123.../
-│       └── layer.tar.gz
-├── manifests/
-│   └── sha256-xyz789.../
-│       └── manifest.toml
-├── registry_manifests/
-│   └── sha256-xyz789.../
-│       └── manifest.json    # JSON wire format for registry push/pull
-└── tags/
-    └── my-agent_v1.0        # file contains manifest digest
-```
-
-### 9.2 Registry Manifest (JSON Wire Format)
-
-Used for HTTP push/pull protocol. Converted to/from `AgentManifest` at the boundaries.
-
-```json
-{
-  "schema_version": 1,
-  "name": "researcher",
-  "version": "1.0.0",
-  "ref": "pekohub.com/agents/researcher:v1.0",
-  "digest": "sha256:abc123...",
-  "created_at": "2026-05-08T10:00:00Z",
-  "source": "local",
-  "layers": [
-    {
-      "digest": "sha256:1a2b3c4d...",
-      "type": "config",
-      "size_bytes": 512
-    }
-  ]
-}
-```
+ADR-066 P5 deleted runtime registry storage, the remote client, OCI wire
+manifests, and push/pull/search. Snapshots are local files (§6); PekoHub
+distributes plain seed TOML outside the runtime. Peer tunnel transport remains.
 
 ---
 
@@ -2504,17 +2447,16 @@ removed 2026-09-27; the CLI never executed tools, ADR-021).
 ```
 
 The wire carries *where the call lands* (`session_key`), never *who the caller
-claims to be* (ADR-057): the daemon parses the key, resolves the owning
-principal server-side, and derives capability grants and active extensions
-from it — grants in the packet are never accepted. An unknown key fails closed
-to deny-all.
+claims to be* (ADR-057): the daemon parses the key and resolves the owning
+principal server-side. ADR-066 P2 deleted the capability gate — there are no
+grants to derive; an unknown key simply yields an unattributed call.
 
 **`run_token`** (phase 2b, ADR-061 D6): when present, the token must validate
 against the daemon's in-memory `RunTokenRegistry` (unknown or expired fails
 closed) AND its recorded `session_key` / `principal_name` must match the
 packet's `session_key` — a mismatch fails closed. Validation failure answers
 with a transport-level `{"type": "error", ...}` (not a `success: false`
-result). The token only *authenticates*: grants still derive from the
+result). The token only *authenticates*: identity still derives from the
 session key, never from the token. Tokens are minted by the `Workflow` tool
 at spawn (32 random bytes, base64url, TTL = run timeout + 60 s) and injected
 into the workflow process as `PEKO_RUN_TOKEN`; the registry is in-memory and
@@ -2554,7 +2496,7 @@ session with missing metadata does on the agent path.
 
 - `content` — the display string the agentic loop would feed the model.
 - `result` — the structured value (`null` when truncated).
-- `success` — `false` for tool errors **and** capability-gate denials alike
+- `success` — `false` for tool errors and dispatcher validation failures
   (the fail-closed path surfaces as data, not a transport error; the denial
   text in `content` reads `Error: Tool '<name>' is currently disabled…`).
 - `truncated` — when the serialized payload would exceed the datagram budget,
@@ -2746,71 +2688,12 @@ guard cannot be spoofed from the wire.
 
 ---
 
-## 14. Extension Manifest
+## 14. Extension Manifest (RETIRED)
 
-> **Note:** The pre-extension `capability.toml` / `AgentCapability` system has been removed. The extension framework (`extensions.enabled` whitelist, `ExtensionManager`) is the single mechanism for controlling tool/MCP/skill access.
-
-Every installable extension includes a manifest that describes it.
-
-### 14.1 Extension Types
-
-| Type | Description | Manifest File |
-|------|-------------|---------------|
-| `skill` | Markdown-based skill | `SKILL.md` with YAML frontmatter |
-| `mcp` | MCP server adapter | `manifest.yaml` |
-| `gateway` | Gateway adapter | `manifest.yaml` |
-| `builtin` | Built-in tool | Embedded in runtime |
-| `general` | General extension | `manifest.yaml` |
-
-> The `universal` (universal tool adapter) extension type was retired in
-> ADR-062; historical `universal-tool` manifests are rejected as invalid
-> types.
-
-### 14.2 SKILL.md Frontmatter (Skill Extensions)
-
-> **Note (2026-09):** the skill *extension-manifest* context below is
-> retired (ADR-047/050) — skills are no longer installed extensions. A
-> skill is a plain workspace file at `<workspace>/skills/<name>/SKILL.md`;
-> the current format reference is
-> [`docs/architecture/SKILLS.md`](docs/architecture/SKILLS.md).
-
-```yaml
----
-name: docker-skill
-description: Manage Docker containers
-version: 1.0.0
----
-
-# Docker Skill
-
-Skill content in Markdown...
-```
-
-### 14.3 Extension Package Layout
-
-```
-~/.peko/extensions/
-├── skill/
-│   └── docker-skill/
-│       ├── SKILL.md
-│       └── templates/
-└── mcp/
-    └── filesystem/
-        └── manifest.yaml
-```
-
-### 14.3 Extension Package Layout
-
-```
-~/.peko/extensions/
-├── skill/
-│   └── docker-skill/
-│       ├── SKILL.md
-│       └── templates/
-└── mcp/
-    └── filesystem/
-        └── manifest.yaml
-```
+The extension manifest and id model was retired by ADR-066. Roles and skills
+are ordinary Markdown files; MCP servers use their workspace manifests; hooks
+use `hook.toml` with the six observer points documented above. `.peko` is a
+flat local snapshot, described in §6.
 
 ---
 

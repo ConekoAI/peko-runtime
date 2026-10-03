@@ -18,8 +18,8 @@ pub struct AsyncSpawnTool {
 impl AsyncSpawnTool {
     /// Construct with an async runtime.
     ///
-    /// The runtime holds the per-agent `Weak<ExtensionCore>`,
-    /// `principal_id`, and capabilities snapshot internally — agents
+    /// The runtime holds the per-agent `Weak<ToolingRuntime>`,
+    /// `principal_id` internally — agents
     /// construct the runtime once and share it across the Async*
     /// family. This matches the F37+F38 funnel: the runtime's
     /// `spawn` calls `AsyncExecutor::dispatch_tool` which builds the
@@ -125,8 +125,8 @@ impl AsyncSpawnTool {
             .unwrap_or(true);
         let timeout_secs = params.get("timeout_secs").and_then(|v| v.as_u64());
 
-        // The runtime encapsulates the per-agent snapshot (ExtensionCore,
-        // principal_id, capabilities). The tool body has no opinions about
+        // The runtime encapsulates the per-agent snapshot (ToolingRuntime,
+        // principal_id). The tool body has no opinions about
         // them — agents construct the runtime with whatever their
         // principal context requires, and the runtime handles routing
         // through the F37 canonical funnel.
@@ -146,8 +146,8 @@ impl AsyncSpawnTool {
             parent_session_id: parent_session_id.filter(|s| !s.is_empty()),
         };
 
-        // The runtime adapter wraps the per-agent ExtensionCore snap and
-        // overlays the right principal_id + capabilities. We hand it a
+        // The runtime adapter wraps the per-agent ToolingRuntime snap and
+        // overlays the right principal_id. We hand it a
         // minimal SpawnRequest here so the public tool API doesn't leak
         // those concepts; the adapter fills them in. (If a caller ever
         // needs to override per-call, an optional fields API can come

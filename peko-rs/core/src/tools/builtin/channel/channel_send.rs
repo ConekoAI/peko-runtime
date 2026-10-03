@@ -14,7 +14,7 @@
 //!
 //! Symmetric counterpart of `ChannelReadTool`
 //! (`tools/builtin/channel/channel_read.rs`). The principal boundary
-//! is enforced by the F37 funnel + capability gate; this tool itself
+//! is enforced at the `ChannelPort` call site; this tool itself
 //! dispatches to:
 //!
 //! - `ChannelPort::post` for Bare / Group / Principal (the
@@ -52,7 +52,7 @@ use crate::principal::Principal;
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentResolution, DirectoryError, ResolvedExposure};
 
-/// Wire name registered with the ExtensionCore.
+/// Wire name registered with the ToolingRuntime.
 pub const CHANNEL_SEND_TOOL_NAME: &str = "ChannelSend";
 
 // ---------------------------------------------------------------------------

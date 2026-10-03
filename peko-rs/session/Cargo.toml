@@ -3,21 +3,16 @@ name = "peko-session"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@peko.ai>"]
-description = "Peko session persistence (Phase 7) — owns the session overlay architecture, JSONL storage, atomic-append compaction persistence, context-window tracking, and the InboxRegistry (per-session async inbox + run permits). Compaction orchestration stays in peko-engine via CompactorBackend trait port; persistence impls (BackgroundCompactor + Compactor LLM summarization helper) live here. InboxRegistry holds Arc<dyn AsyncInboxLike> from peko-extension-api so the session crate is downstream of the API crate, not the host."
+description = "Session JSONL persistence, ownership, inbox contracts, and compaction storage"
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
 [dependencies]
-# Crate hierarchy: peko-session is downstream of peko-message / peko-subject /
-# peko-events / peko-quota / peko-extension-api / peko-provider-api /
-# peko-tools-core. It MUST NOT depend on peko-engine, peko-agents,
-# peko-extension-host, or root. Engine re-exports the compaction data types +
-# CompactorBackend trait + drop_oldest_respecting_pairs helper from here so
-# pre-Phase-7 import paths keep compiling.
+# Contract and persistence dependencies; no host/root dependency.
+
 peko-message = { path = "../message" }
 peko-subject = { path = "../subject" }
 peko-quota = { path = "../quota" }
-peko-extension-api = { path = "../extension-api" }
 peko-tools-core = { path = "../tools-core" }
 peko-providers = { path = "../providers" }
 peko-fs-persistence = { path = "../fs-persistence" }

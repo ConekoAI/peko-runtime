@@ -6,15 +6,11 @@
 //!
 //! - the principal's own memory, inbox, and session-creation lock
 //! - the principal's workspace path and provider resolver
-//! - the principal's allowed extension list
 //! - the principal's resolved (provider, model) preference
 //!
-//! It also owns a lazily-built, **per-principal** [`ExtensionCore`]
-//! shared by every agent of that principal. The core is *not* privileged
-//! over subagent cores — the root agent and every subagent resolve the
-//! exact same core through this struct. Per-agent visibility is enforced
-//! by each agent's own extension whitelist; the core just hosts the
-//! tool *instances*.
+//! The explicitly injected tooling runtime is shared across principals and
+//! their agents. Its catalog scopes workspace tools by principal; its prompt
+//! providers resolve the workspace and session from each render request.
 //!
 //! This is the post-Phase-1 realisation of the design rule "the root
 //! agent is but another agent of the principal, simply user-facing".
@@ -24,10 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::extensions::framework::core::{global_core, ExtensionCore, HookHandler, HookPoint};
-use crate::extensions::framework::types::ExtensionId;
-use crate::extensions::role::{WorkspaceRolesPromptHandler, ROLE_HOOK_PRIORITY};
-use crate::extensions::skill::{WorkspaceSkillsPromptHandler, SKILL_CATALOG_HOOK_PRIORITY};
+
+use crate::extensions::role::WorkspaceRolesPromptHandler;
+use crate::extensions::skill::WorkspaceSkillsPromptHandler;
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
 use crate::principal::seen_models::{seen_models_path, SeenModels};
@@ -37,16 +32,13 @@ use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_subject::PrincipalId;
 
-use peko_extension_api::Capabilities;
-
 /// Per-principal runtime state shared by the root agent and its
 /// subagents.
 ///
 /// Constructed once per principal at startup, cached on the
 /// `RootRouter`, and passed by reference into the principal's
-/// root-agent runner. Subagents don't need a fresh context — they read
-/// the principal's tools off this struct's core, and their own
-/// extension whitelist filters what's actually visible to them.
+/// root-agent runner. Subagents share this context and use the tooling
+/// catalog with the same principal scope.
 pub struct PrincipalContext {
     /// Principal's on-disk workspace root
     /// (`{config_dir}/principals/{name}`).
@@ -65,14 +57,15 @@ pub struct PrincipalContext {
     /// handle into `Agent::with_principal_plan_port` so the seven
     /// `Plan*` tools are registered on the principal's agents.
     pub plan_port: Arc<dyn peko_plan::PlanPort>,
+    /// The shared tooling runtime (ADR-066 P3): catalog + dispatcher +
+    /// hooks + prompt providers. Threaded from the daemon's
+    /// composition root via `RouterContext`.
+    pub tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     /// Shared inbox the dispatcher pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
     /// Held during root-agent session creation so concurrent peers
     /// don't race on shared session metadata.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Principal's capability grants — what tools/skills/mcps/agents are
-    /// enabled for this principal.
-    pub capabilities: Arc<Capabilities>,
     /// LLM resolver used to validate provider hints and surface
     /// catalog defaults.
     pub resolver: Option<Arc<LlmResolver>>,
@@ -110,12 +103,6 @@ pub struct PrincipalContext {
     /// Optional observability hub. Set from the `RouterContext` by the root
     /// router so subagent spawns can be audited under the parent principal.
     observability: OnceLock<Arc<Observability>>,
-    /// Snapshot of the extension IDs that are active for this principal on
-    /// this message. Derived from the `RouterContext::active_extensions`
-    /// snapshot and consulted by the agent's tool gate so a tool is only
-    /// callable when both its capability is granted and its owning extension
-    /// is active.
-    active_extensions: OnceLock<peko_extension_api::ActiveExtensionSet>,
     // F19 (revised 2026-08-01 v2): the engine loop never managed to
     // fetch the principal's meter directly — the dispatcher boundary
     // is the only point with a `PrincipalManager` reference in scope,
@@ -148,7 +135,6 @@ impl PrincipalContext {
         memory: Arc<dyn PrincipalMemory>,
         inbox_registry: Arc<InboxRegistry>,
         session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-        capabilities: Arc<Capabilities>,
         resolver: Option<Arc<LlmResolver>>,
         provider_hint: Option<String>,
         // Per-message configured model override. Mirrored from
@@ -157,6 +143,7 @@ impl PrincipalContext {
         principal_id: PrincipalId,
         // PR #2 wiring: per-principal plan DAG port.
         plan_port: Arc<dyn peko_plan::PlanPort>,
+        tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Self {
         let sessions_dir = memory.sessions_dir().clone();
         // Phase 4: load per-principal `seen_models.json`. A missing
@@ -181,17 +168,16 @@ impl PrincipalContext {
             memory,
             inbox_registry,
             session_creation_lock,
-            capabilities,
             resolver,
             provider_hint,
             message_override,
             plan_port,
+            tooling,
             root_prompt: OnceLock::new(),
             principal_id,
             caller_principal_did: OnceLock::new(),
             caller_runtime_id: OnceLock::new(),
             observability: OnceLock::new(),
-            active_extensions: OnceLock::new(),
             quota_meter: OnceLock::new(),
             seen_models: Arc::new(Mutex::new(initial_seen.models)),
         }
@@ -270,23 +256,6 @@ impl PrincipalContext {
     #[must_use]
     pub fn observability(&self) -> Option<&Arc<Observability>> {
         self.observability.get()
-    }
-
-    /// Bind the active extension snapshot for this principal context.
-    /// Idempotent.
-    pub fn set_active_extensions(
-        &self,
-        active_extensions: peko_extension_api::ActiveExtensionSet,
-    ) -> Result<(), peko_extension_api::ActiveExtensionSet> {
-        self.active_extensions.set(active_extensions)
-    }
-
-    /// Snapshot of extension IDs active for this principal. Returns an empty
-    /// set if no snapshot has been bound.
-    #[must_use]
-    pub fn active_extensions(&self) -> &peko_extension_api::ActiveExtensionSet {
-        self.active_extensions
-            .get_or_init(peko_extension_api::ActiveExtensionSet::empty)
     }
 
     /// Bind the principal's quota meter (Bug A, 2026-08-01 v2). Set
@@ -378,20 +347,24 @@ impl PrincipalContext {
         fresh
     }
 
-    /// Get the daemon-global `ExtensionCore` and ensure the
+    /// Get the shared `ToolingRuntime` and ensure the
     /// principal's tool bag is wired onto it.
     ///
-    /// There is one daemon-wide [`ExtensionCore`]. The principal's
-    /// discovered `<workspace>/agents/*` entries are installed on that
-    /// core on first call via [`install_principal_tool_bag`];
-    /// subsequent callers observe the same global core and the same
-    /// tool bag.
+    /// The shared tooling runtime. The principal's discovered
+    /// `<workspace>/roles/*` + `<workspace>/skills/*` + MCP + hook
+    /// entries are installed on it on first call via
+    /// [`install_principal_tool_bag`]; subsequent callers observe the
+    /// same runtime and the same tool bag.
     ///
-    /// Visibility to any single agent is still governed by the agent's
-    /// own extension whitelist; this method does not assume
-    /// privilege.
-    pub async fn core(&self) -> Arc<ExtensionCore> {
-        ensure_principal_tool_bag(&self.workspace_path, &self.principal_id).await
+    /// ADR-066 D1: presence = visibility — no allowlist.
+    pub async fn tooling(&self) -> Arc<crate::tools::runtime::ToolingRuntime> {
+        ensure_principal_tool_bag(
+            Arc::clone(&self.tooling),
+            &self.workspace_path,
+            &self.principal_id,
+        )
+        .await;
+        Arc::clone(&self.tooling)
     }
 
     /// Get the principal's resolved root agent prompt.
@@ -427,32 +400,24 @@ impl PrincipalContext {
     }
 }
 
-/// Ensure the daemon-global [`ExtensionCore`] carries the principal
+/// Ensure the shared [`crate::tools::runtime::ToolingRuntime`] carries the principal
 /// tool bag: built-ins, the principal-scoped `Skill` tool, workspace
 /// MCP servers / hooks, and the `{{agents}}` /
 /// `{{skills}}` prompt-section handlers.
 ///
-/// Shared by [`PrincipalContext::core`] (the root-agent path) and
+/// Shared by [`PrincipalContext::tooling`] (the root-agent path) and
 /// `PeerChildTurns::build` (the peer-ingress path, which builds no
 /// `PrincipalContext`) so peer-child turns see the same tool bag as
-/// the root agent. Honors the core's `tool_bag_installed`
-/// once-gate: the first caller performs the install; the prompt
-/// handlers resolve the workspace from the hook context at invoke
-/// time, so one registration serves every principal.
+/// the root agent. Installs workspace tools and hooks once per principal;
+/// shared prompt providers resolve the workspace from each render request.
 pub(crate) async fn ensure_principal_tool_bag(
+    runtime: Arc<crate::tools::runtime::ToolingRuntime>,
     workspace_path: &Path,
     principal_id: &peko_subject::PrincipalId,
-) -> Arc<ExtensionCore> {
-    let core = global_core().unwrap_or_else(|| {
-        // Fall back to a freshly-allocated core if the daemon
-        // hasn't initialised the global core yet. The
-        // `Agent::new_*` callers depend on `global_core()` being
-        // populated by `init_global_core` at app startup; this
-        // branch is mostly a safety net for unit tests that
-        // construct an `Agent` directly.
-        Arc::new(ExtensionCore::new())
-    });
-    if !core.tool_bag_installed() {
+) -> Arc<crate::tools::runtime::ToolingRuntime> {
+    let core = runtime;
+    let mut installed = core.installed_principals.lock().await;
+    if !installed.contains(principal_id) {
         // Phase 2 PR 1 (ADR-047): skills live under
         // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
         // runtime reads from that directory.
@@ -463,7 +428,7 @@ pub(crate) async fn ensure_principal_tool_bag(
         // `McpManager` (lazy — servers start on first tool call)
         // and wraps the manager's running tools as
         // `McpToolProxy` / `InjectableMcpToolProxy` instances
-        // onto the global core.
+        // onto the shared catalog under this principal's scope.
         let mcp_dir = workspace_path.join("mcp");
         // Phase 4 (ADR-047 §5): workspace hooks live under
         // `<workspace>/hooks/<id>/hook.toml`. See
@@ -495,11 +460,14 @@ pub(crate) async fn ensure_principal_tool_bag(
         .await
         {
             tracing::warn!(
-                "failed to install principal-scoped tools on the global core: {e}. \
+                "failed to install principal-scoped tools on the shared tooling runtime: {e}. \
                  Falling back to built-in tools only."
             );
+        } else {
+            installed.insert(principal_id.clone());
         }
     }
+    drop(installed);
     core
 }
 
@@ -514,7 +482,7 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
     peko_channel::global_channel_port().unwrap_or_else(|| Arc::new(peko_channel::NoopChannelPort))
 }
 
-/// Wire the principal's tool bag onto the daemon-global `ExtensionCore`.
+/// Wire the principal's tool bag onto the shared `ToolingRuntime`.
 ///
 /// Built-ins (Read, Bash, glob, grep, Cron*, Task*, Async*, …) are
 /// registered, along with the workspace-scanning prompt handlers that
@@ -542,23 +510,30 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 /// have a real adapter wired up — `ChannelRead` will surface
 /// `Adapter` errors instead of silently zero-returning.
 async fn install_principal_tool_bag(
-    core: Arc<ExtensionCore>,
+    core: Arc<crate::tools::runtime::ToolingRuntime>,
     skills_dir: &Path,
     mcp_dir: &Path,
     hooks_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
-    // Built-in tools.
-    let path_resolver = crate::common::paths::PathResolver::new();
-    if let Err(e) = crate::engine::tool_runtime::ToolRuntime::register_builtins(
-        &core,
-        &path_resolver,
-        channel_port,
-    )
-    .await
+    // Standalone contexts install defaults; preserve daemon-configured tools.
+    if core
+        .catalog()
+        .tool_count(peko_subject::PrincipalId::system())
+        .await
+        == 0
     {
-        tracing::warn!("ToolRuntime::register_builtins failed during core build: {e}");
+        let path_resolver = crate::common::paths::PathResolver::new();
+        if let Err(e) = crate::engine::tool_runtime::ToolRuntime::register_builtins(
+            core.catalog(),
+            &path_resolver,
+            channel_port,
+        )
+        .await
+        {
+            tracing::warn!("ToolRuntime::register_builtins failed during core build: {e}");
+        }
     }
 
     // Register the singleton `Skill` tool once on the global core.
@@ -571,7 +546,7 @@ async fn install_principal_tool_bag(
     // no adapter. The principal is responsible for installation; the
     // runtime's only job is to point the SkillTool at SKILL.md files.
     if let Err(e) = BuiltinToolAdapter::register_tool(
-        core.as_ref(),
+        core.catalog(),
         Arc::new(SkillTool::new(std::sync::Arc::new(
             crate::extensions::skill::WorkspaceSkillRuntime::new(skills_dir.to_path_buf()),
         ))),
@@ -583,106 +558,55 @@ async fn install_principal_tool_bag(
     }
 
     // Part B (dynamic per-turn workspace catalog): register the
-    // workspace-scanning `identity` / `agents` / `skills`
-    // prompt-section handlers once on the daemon-global core. The
-    // handlers resolve the workspace from the hook context at invoke
-    // time; the catalog handlers re-scan `<workspace>/agents/` /
+    // workspace-scanning `identity` / `agents` / `skills` / `workflows`
+    // prompt-section providers once on the shared runtime. The
+    // providers resolve the workspace from the render input at invoke
+    // time; the catalog providers re-scan `<workspace>/roles/` /
     // `<workspace>/skills/` whenever a scanned file's `(mtime, len)`
-    // changes, and the identity handler re-reads
+    // changes, and the identity provider re-reads
     // `<workspace>/principal.toml` on the same file-level key, so
     // edits to any principal's workspace appear in the per-turn
     // prompt suffix on the next iteration (ADR-052 D2/D4). Presence
     // in the workspace = visible (ADR-047) — no capability or
     // active-extension filter.
-    let catalog_hooks: [(HookPoint, Arc<dyn HookHandler>, ExtensionId); 4] = [
-        (
-            HookPoint::PromptSystemSection {
-                section: "identity".to_string(),
-                priority: crate::principal::identity_prompt::IDENTITY_HOOK_PRIORITY,
-            },
+    if !core.tool_bag_installed() {
+        let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 4] = [
             Arc::new(crate::principal::identity_prompt::WorkspaceIdentityPromptHandler::new()),
-            ExtensionId::new("principal:workspace-identity"),
-        ),
-        (
-            HookPoint::PromptSystemSection {
-                section: "roles".to_string(),
-                priority: ROLE_HOOK_PRIORITY,
-            },
             Arc::new(WorkspaceRolesPromptHandler::new()),
-            ExtensionId::new("role:workspace-catalog"),
-        ),
-        (
-            HookPoint::PromptSystemSection {
-                section: "skills".to_string(),
-                priority: SKILL_CATALOG_HOOK_PRIORITY,
-            },
             Arc::new(WorkspaceSkillsPromptHandler::new()),
-            ExtensionId::new("skill:workspace-catalog"),
-        ),
-        // ADR-061 phase 2b (D1): the `workflows/` catalog rides the
-        // same per-turn tail message — dropping a `.py` file into
-        // `<workspace>/workflows/` makes it visible next iteration.
-        (
-            HookPoint::PromptSystemSection {
-                section: "workflows".to_string(),
-                priority: crate::tools::builtin::WORKFLOW_CATALOG_HOOK_PRIORITY,
-            },
             Arc::new(crate::tools::builtin::WorkspaceWorkflowsPromptHandler::new()),
-            ExtensionId::new("workflow:workspace-catalog"),
-        ),
-    ];
-    for (point, handler, extension_id) in catalog_hooks {
-        if let Err(e) = core.register_hook(point, handler, &extension_id).await {
-            tracing::warn!("workspace catalog hook registration failed for {extension_id}: {e}");
+        ];
+        for provider in section_providers {
+            core.register_prompt_section(provider);
         }
-    }
 
-    // Self-position (ADR-052 D5, 2026-09-11): render the agent's OWN
-    // session slug path + role into the `{{session_context}}` section,
-    // aggregated above the peer list below (the hook registry
-    // concatenates multiple SessionContextBuild handlers' text
-    // outputs, higher priority first).
-    if let Err(e) = core
-        .register_hook(
-            HookPoint::SessionContextBuild,
-            Arc::new(crate::principal::child_turns::SelfPositionSessionContextHandler),
-            &ExtensionId::new("principal:self-position-context"),
-        )
-        .await
-    {
-        tracing::warn!("self-position session-context hook registration failed: {e}");
-    }
+        // Self-position (ADR-052 D5, 2026-09-11): render the agent's OWN
+        // session slug path + role into the `{{session_context}}` section,
+        // aggregated above the peer list below (the aggregator sorts by
+        // descending provider priority).
+        core.register_prompt_section(Arc::new(
+            crate::principal::child_turns::SelfPositionSessionContextHandler,
+        ));
 
-    // Peer discovery (2026-09-08): render the principal's peer sessions
-    // + DM channels into the `{{session_context}}` section so the model
-    // can address any peer directly (Agent path / ChannelSend target)
-    // instead of guessing the `user-<id>` slug convention.
-    if let Err(e) = core
-        .register_hook(
-            HookPoint::SessionContextBuild,
-            Arc::new(crate::principal::child_turns::PeersSessionContextHandler),
-            &ExtensionId::new("principal:peers-context"),
-        )
-        .await
-    {
-        tracing::warn!("peers session-context hook registration failed: {e}");
-    }
+        // Peer discovery (2026-09-08): render the principal's peer sessions
+        // + DM channels into the `{{session_context}}` section so the model
+        // can address any peer directly (Agent path / ChannelSend target)
+        // instead of guessing the `user-<id>` slug convention.
+        core.register_prompt_section(Arc::new(
+            crate::principal::child_turns::PeersSessionContextHandler,
+        ));
 
-    // Channel-activity digest (2026-09-12): render "N new messages on
-    // #channel" for posts that land on the session's bound channels
-    // without a wake (same-principal posts by other agents, threaded
-    // replies, other principals' group posts, human CLI posts). Rides
-    // the same ADR-052 change-detection as the handlers above; the
-    // digest's read marks live in each channel's `read_marks.json`.
-    if let Err(e) = core
-        .register_hook(
-            HookPoint::SessionContextBuild,
-            Arc::new(crate::principal::channel_digest::ChannelDigestSessionContextHandler),
-            &ExtensionId::new("principal:channel-digest-context"),
-        )
-        .await
-    {
-        tracing::warn!("channel-digest session-context hook registration failed: {e}");
+        // Channel-activity digest (2026-09-12): render "N new messages on
+        // #channel" for posts that land on the session's bound channels
+        // without a wake (same-principal posts by other agents, threaded
+        // replies, other principals' group posts, human CLI posts). Rides
+        // the same ADR-052 change-detection as the providers above; the
+        // digest's read marks live in each channel's `read_marks.json`.
+        core.register_prompt_section(Arc::new(
+            crate::principal::channel_digest::ChannelDigestSessionContextHandler,
+        ));
+
+        core.mark_tool_bag_installed();
     }
 
     // Phase 2 PR 2 (ADR-047 §2.3): MCP servers are workspace-resident.
@@ -725,7 +649,7 @@ async fn install_principal_tool_bag(
         drop(mgr);
         for tool in proxy_tools {
             if let Err(e) =
-                BuiltinToolAdapter::register_tool(core.as_ref(), tool, principal_id).await
+                BuiltinToolAdapter::register_tool(core.catalog(), tool, principal_id).await
             {
                 tracing::warn!("MCP tool registration failed during core build: {e}");
             }
@@ -756,7 +680,7 @@ async fn install_principal_tool_bag(
     if hooks_dir.exists() {
         match crate::extensions::workspace_hooks::load_workspace_hooks(
             hooks_dir,
-            core.as_ref(),
+            core.hooks().as_ref(),
             principal_id,
         )
         .await
@@ -786,8 +710,6 @@ async fn install_principal_tool_bag(
     // Mark the core as having run the tool-bag install pass so
     // the lazy guard in `PrincipalContext::core` does not re-install
     // on every call.
-    core.mark_tool_bag_installed();
-
     Ok(())
 }
 
@@ -795,18 +717,17 @@ async fn install_principal_tool_bag(
 ///
 /// The catalog is the *only* per-call tool — its contents are the
 /// currently-available `AgentPromptSummary` list, which can change
-/// between messages if the principal's `capabilities` was
-/// edited. Everything else on the core is stable. Scoped to the
+/// when workspace role files change. Everything else on the core is stable. Scoped to the
 /// owning principal_id so the catalog lives under each principal's
 /// row in the registry and re-registration on each call idempotently
 /// replaces the prior entry.
 pub(crate) async fn install_role_catalog(
-    core: &ExtensionCore,
+    core: &crate::tools::runtime::ToolingRuntime,
     available_agents: Vec<AgentPromptSummary>,
     principal_id: &peko_subject::PrincipalId,
 ) -> anyhow::Result<()> {
     BuiltinToolAdapter::register_tool(
-        core,
+        core.catalog(),
         Arc::new(AgentCatalogTool::new(available_agents)),
         principal_id,
     )
@@ -818,7 +739,7 @@ mod tests {
     use super::*;
     use crate::principal::memory::DefaultPrincipalMemory;
     use crate::principal::seen_models::seen_models_path;
-    use peko_extension_api::Capabilities;
+
     use peko_subject::PrincipalId;
     use serial_test::serial;
     use std::sync::Arc;
@@ -832,54 +753,35 @@ mod tests {
         Arc::new(peko_plan::PlanStorage::new(plans_dir))
     }
 
-    /// `core()` returns the daemon-global `ExtensionCore`. After the
-    /// Phase-2 redo there is no per-principal core; the global core
-    /// is shared across principals and the principal's tool bag is
-    /// installed on first call via `install_principal_tool_bag`.
-    ///
-    /// The assertion is intentionally relaxed: the global core may
-    /// have been pre-populated by a previous test that ran in the
-    /// same process. Both outcomes prove the singleton semantics —
-    /// `core()` returns *whatever* the daemon-global is, never a
-    /// fresh per-call instance.
+    /// The context returns the injected runtime without process-global state.
     #[tokio::test]
     #[serial]
-    async fn core_returns_global_singleton() {
+    async fn tooling_returns_explicit_shared_runtime() {
         let dir = tempfile::tempdir().unwrap();
         let memory: Arc<dyn PrincipalMemory> =
             Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
 
-        // Initialise the global core for this test, then read it back
-        // through `ctx.core()` and confirm pointer identity. If another
-        // test in this binary already populated the global (the only
-        // valid state in our process-shared design), accept that too —
-        // the singleton semantics are still proven because `core()`
-        // returns the daemon-global, not a fresh instance.
-        let our_core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(Arc::clone(&our_core));
+        let our_core = crate::tools::runtime::ToolingRuntime::standalone();
 
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
             PrincipalId::generate(),
             test_plan_port(dir.path()),
+            Arc::clone(&our_core),
         );
 
-        let returned = ctx.core().await;
-        let global = crate::extensions::framework::core::global_core()
-            .expect("we just initialized the global");
+        let returned = ctx.tooling().await;
         assert!(
-            Arc::ptr_eq(&returned, &global),
-            "ctx.core() must return the same Arc as global_core()"
+            Arc::ptr_eq(&returned, &our_core),
+            "context must return the injected runtime"
         );
     }
 
@@ -930,16 +832,15 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
             PrincipalId::generate(),
             test_plan_port(dir.path()),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         // `set_root_prompt` requires an `AgentPrompt`; constructing one
@@ -969,16 +870,15 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
             id.clone(),
             test_plan_port(dir.path()),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
         assert_eq!(ctx.principal_id(), &id);
     }
@@ -995,16 +895,15 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
             PrincipalId::generate(),
             port.clone(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
         assert!(Arc::ptr_eq(ctx.plan_port(), &port));
     }
@@ -1023,16 +922,15 @@ mod tests {
             dir.path().to_path_buf(),
             memory.clone(),
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
             PrincipalId::generate(),
             test_plan_port(dir.path()),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         // First call for `claude-sonnet-4-6`: fresh → `true`.
@@ -1070,16 +968,15 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
             PrincipalId::generate(),
             test_plan_port(dir.path()),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         // The pre-existing model should be reported as seen
@@ -1107,16 +1004,15 @@ mod tests {
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new(
-                crate::extensions::framework::async_exec::executor::executor::default_inbox_factory(
-                ),
+                crate::async_exec::executor::executor::default_inbox_factory(),
             )),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(Capabilities::default()),
             None,
             None,
             None,
             PrincipalId::generate(),
             test_plan_port(dir.path()),
+            crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         // The set is empty, so this is a first-use → `true`.
@@ -1124,5 +1020,65 @@ mod tests {
         // The file is now valid JSON containing the model.
         let reloaded = SeenModels::load(&path).unwrap();
         assert!(reloaded.contains("claude-sonnet-4-6"));
+    }
+}
+
+#[cfg(test)]
+mod tooling_install_tests {
+    use super::*;
+    use peko_engine::{PromptSectionRequest, ToolFunnel};
+
+    #[tokio::test]
+    async fn shared_runtime_installs_each_principal_without_duplicate_prompt_sections() {
+        peko_identity::init_test_env();
+        let runtime = crate::tools::runtime::ToolingRuntime::standalone();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let p1 = PrincipalId::generate();
+        let p2 = PrincipalId::generate();
+        for (dir, name) in [
+            (first.path(), "first-skill"),
+            (second.path(), "second-skill"),
+        ] {
+            let skill = dir.join("skills").join(name);
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name} description\n---\n{name} body\n"),
+            )
+            .unwrap();
+        }
+        let (r1, r2) = tokio::join!(
+            ensure_principal_tool_bag(runtime.clone(), first.path(), &p1),
+            ensure_principal_tool_bag(runtime.clone(), second.path(), &p2),
+        );
+        assert!(Arc::ptr_eq(&r1, &r2));
+        let (t1, _) = runtime.catalog().get("Skill", &p1).await.unwrap();
+        let (t2, _) = runtime.catalog().get("Skill", &p2).await.unwrap();
+        assert!(
+            !Arc::ptr_eq(&t1, &t2),
+            "workspace skill tools belong to their principal"
+        );
+        for (dir, principal_id, own, foreign) in [
+            (first.path(), &p1, "first-skill", "second-skill"),
+            (second.path(), &p2, "second-skill", "first-skill"),
+        ] {
+            ensure_principal_tool_bag(runtime.clone(), dir, principal_id).await;
+            let sections = runtime
+                .render_prompt_sections(&PromptSectionRequest {
+                    principal_id: principal_id.to_string(),
+                    workspace: dir.to_string_lossy().into_owned(),
+                    session_id: String::new(),
+                })
+                .await;
+            let skills = sections.get("skills").unwrap();
+            assert!(skills.contains(own));
+            assert!(!skills.contains(foreign));
+            assert_eq!(
+                skills.lines().filter(|line| line.starts_with("- ")).count(),
+                1,
+                "providers must register once across principals and repeated turns"
+            );
+        }
     }
 }

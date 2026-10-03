@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::principal::config::{
     PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
 };
-use peko_extension_api::Capabilities;
+
 use peko_message::LlmMessage;
 use peko_observability::Observability;
 use peko_session::InboxRegistry;
@@ -74,6 +74,7 @@ pub fn recalled_context_messages(injections: &[ContextInjection]) -> Vec<LlmMess
 
 /// Context passed to a `PrincipalRouter`.
 pub struct RouterContext {
+    pub tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     pub principal_id: super::PrincipalId,
     pub principal_name: String,
     pub peer: peko_auth::Subject,
@@ -83,16 +84,8 @@ pub struct RouterContext {
     pub routing: PrincipalRoutingConfig,
     pub recalled_context: Vec<ContextInjection>,
     pub available_agents: Vec<AgentPromptSummary>,
-    pub capabilities: Capabilities,
     pub intent: PrincipalIntentConfig,
     pub governance: PrincipalGovernanceConfig,
-    /// Per-principal snapshot of all detected tooling/agents and their
-    /// authority state.
-    pub catalog: crate::principal::catalog::PrincipalCatalog,
-    /// Set of catalog IDs that are currently active for this Principal.
-    /// Derived from `catalog.active_extensions()` and carried here so
-    /// routers can thread it into `PrincipalContext` without recomputing.
-    pub active_extensions: peko_extension_api::ActiveExtensionSet,
     /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
@@ -134,11 +127,8 @@ impl std::fmt::Debug for RouterContext {
             .field("routing", &self.routing)
             .field("recalled_context", &self.recalled_context)
             .field("available_agents", &self.available_agents)
-            .field("capabilities", &self.capabilities)
             .field("intent", &self.intent)
             .field("governance", &self.governance)
-            .field("catalog", &self.catalog)
-            .field("active_extensions", &self.active_extensions)
             .field("inbox_registry", &"<InboxRegistry>")
             .field("session_creation_lock", &"<Mutex>")
             .field("observability", &self.observability)
@@ -154,6 +144,7 @@ impl std::fmt::Debug for RouterContext {
 impl Clone for RouterContext {
     fn clone(&self) -> Self {
         Self {
+            tooling: Arc::clone(&self.tooling),
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
             peer: self.peer.clone(),
@@ -162,11 +153,8 @@ impl Clone for RouterContext {
             routing: self.routing.clone(),
             recalled_context: self.recalled_context.clone(),
             available_agents: self.available_agents.clone(),
-            capabilities: self.capabilities.clone(),
             intent: self.intent.clone(),
             governance: self.governance.clone(),
-            catalog: self.catalog.clone(),
-            active_extensions: self.active_extensions.clone(),
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: Arc::clone(&self.session_creation_lock),
             observability: self.observability.clone(),

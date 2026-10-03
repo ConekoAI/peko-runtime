@@ -14,7 +14,7 @@
 #    src/daemon/.
 # 6. src/extensions/framework/ must NOT import from src/principal/.
 # 7. src/agents/ must NOT import from src/principal/ (breaks the principal<->agents
-#    cycle; actor ids from subject/, capability types from extensions::framework::types).
+#    cycle; actor ids from subject/, tooling ports from peko-engine).
 # 8. src/principal/ must NOT import from src/tunnel/ (principal owns its
 #    exposure/status/transport enums; tunnel converts at the edge via From).
 # 9. src/tunnel/ must NOT import from src/daemon/ in production code (the

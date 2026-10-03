@@ -4,8 +4,7 @@
 //! `PrincipalGet`, `PrincipalSend`, `PrincipalSendStream`,
 //! `PrincipalStop`, `PrincipalLog`, `PrincipalLogWatch`,
 //! `PrincipalExport`,
-//! `PrincipalImportPreview`, `PrincipalImport`, `PrincipalPush`,
-//! `PrincipalPullPreview`, `PrincipalPull`, `PrincipalGrantPermission`,
+//! `PrincipalImportPreview`, `PrincipalImport`, `PrincipalGrantPermission`,
 //! `PrincipalRevokePermission`, `PrincipalPermissions`,
 //! `PrincipalSetStatus`, `PrincipalSetExposure`. This is the largest
 //! F6 domain — it owns the root-agent streaming machinery, the
@@ -35,7 +34,6 @@ use std::sync::{Arc, Mutex};
 use crate::agents::subagent_executor::StreamingResumeOutcome;
 use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
-use crate::extensions::framework::store::ExtensionStore;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
     PrincipalLogMessage, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry,
@@ -48,9 +46,7 @@ use crate::principal::manager::{IngressError, IngressMode, IngressOutcome, Princ
 use crate::principal::peer_dm::{find_peer_dm_channel, post_peer_dm_inbound, post_peer_dm_reply};
 use crate::principal::router::{ChannelContext, ChannelKind};
 use crate::principal::Principal;
-use crate::registry::packaging::TrustStore;
 use crate::tunnel::TunnelDispatcher;
-use anyhow::Context;
 use async_trait::async_trait;
 use chrono::Utc;
 use peko_auth::caller::CallerContext;
@@ -63,10 +59,9 @@ use peko_engine::AgenticEvent;
 use peko_protocol::channel::ChannelEvent;
 use peko_protocol::ipc::HEARTBEAT_INTERVAL_SECS;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tracing::warn;
 
-use peko_extension_api::SteeringMessage;
+use peko_session::SteeringMessage;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
 
@@ -79,9 +74,8 @@ pub struct PrincipalImportPreview {
     did: String,
     description: Option<String>,
     agents: Vec<String>,
-    extensions: Vec<String>,
-    required_capabilities: Vec<String>,
-    signed: bool,
+    inventory: crate::registry::packaging::ExecutableInventory,
+    manifest_checksum: String,
     validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
 }
@@ -184,15 +178,6 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// steering drain at the end of a send run.
     fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry>;
 
-    /// On-disk extension store used by `PrincipalImport`'s
-    /// embedded-extension install path and by `PrincipalExport`'s
-    /// `with_extensions_from_store`.
-    fn extension_store(&self) -> &Arc<ExtensionStore>;
-
-    /// Trust store consulted during `PrincipalImport` to enforce the
-    /// trust policy (TOFU vs. AllowUntrusted).
-    fn trust_store(&self) -> &Arc<RwLock<TrustStore>>;
-
     /// Daemon config dir, used by helpers that build a `PathResolver`
     /// for principal/identity paths.
     fn config_dir(&self) -> std::path::PathBuf;
@@ -205,8 +190,7 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// Daemon data dir.
     fn data_dir(&self) -> std::path::PathBuf;
 
-    /// Daemon cache dir (used by `PrincipalPullPreview` / `PrincipalPull`
-    /// for temp-package staging).
+    /// Daemon cache directory used by principal runtime paths.
     fn cache_dir(&self) -> std::path::PathBuf;
 
     /// Bump last-seen / activity counter for the principal; called
@@ -238,7 +222,14 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// `https://pekohub.org` if the runtime has no configured hub.
     fn pekohub_base_url(&self) -> String;
 
-    /// **Phase C.** Build a per-call authority that projects this
+    /// Observability hub for the ADR-066 D9 `Security` audit event a
+    /// denied cross-principal write emits. Default `None` (test hosts)
+    /// skips the event — the denial still fails closed.
+    fn observability(&self) -> Option<Arc<peko_observability::Observability>> {
+        None
+    }
+
+    /// Build a per-call authority that projects this
     /// handler's caller subject. Handlers MUST call this when they
     /// intend to write — the returned authority is the only one
     /// entitled to clear the Shared-write actor gate (peer-as-User
@@ -246,12 +237,14 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// constructs the authority from the caller's subject via
     /// `RuntimeAuthority::for_caller`; production hosts inherit this
     /// default because `for_caller` already accepts any verified
-    /// `Subject`.
+    /// `Subject`. ADR-066 D9: the authority also carries the host's
+    /// audit sink so ownership denials emit a `Security` event.
     fn authority_for(&self, caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
         crate::common::authority::RuntimeAuthority::for_caller(
             self.path_resolver(),
             caller.subject().clone(),
         )
+        .with_audit_sink(self.observability())
     }
 }
 
@@ -289,9 +282,6 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalExport { .. }
                 | RequestPacket::PrincipalImportPreview { .. }
                 | RequestPacket::PrincipalImport { .. }
-                | RequestPacket::PrincipalPush { .. }
-                | RequestPacket::PrincipalPullPreview { .. }
-                | RequestPacket::PrincipalPull { .. }
                 | RequestPacket::PrincipalGrantPermission { .. }
                 | RequestPacket::PrincipalRevokePermission { .. }
                 | RequestPacket::PrincipalPermissions { .. }
@@ -506,7 +496,6 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 file_path,
                 name,
-                allow_unsigned: _,
                 force: _,
             } => {
                 match preview_principal_import(host, std::path::Path::new(&file_path), name.clone())
@@ -520,9 +509,8 @@ impl RequestHandler for PrincipalHandler {
                             did: preview.did,
                             description: preview.description,
                             agents: preview.agents,
-                            extensions: preview.extensions,
-                            required_capabilities: preview.required_capabilities,
-                            signed: preview.signed,
+                            inventory: preview.inventory,
+                            manifest_checksum: preview.manifest_checksum,
                             validation_errors: preview.validation_errors,
                             validation_warnings: preview.validation_warnings,
                         };
@@ -542,10 +530,8 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 file_path,
                 name,
-                allow_unsigned,
                 force,
-                confirmed,
-                selected_capabilities,
+                expected_manifest_checksum,
             } => {
                 // The `name` field is the caller's chosen rename for an
                 // imported principal; it flows into filesystem paths
@@ -564,27 +550,13 @@ impl RequestHandler for PrincipalHandler {
                         return Ok(());
                     }
                 }
-                if !confirmed {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "Principal import was not confirmed. Use the preview flow or pass --yes.".to_string(),
-                    };
-                    send_response(sink, response).await?;
-                    return Ok(());
-                }
-                let trust_policy = if force {
-                    crate::registry::packaging::TrustPolicy::AllowUntrusted
-                } else {
-                    crate::registry::packaging::TrustPolicy::Tofu
-                };
                 match import_principal_package(
                     host,
                     caller,
                     std::path::Path::new(&file_path),
                     name.clone(),
-                    allow_unsigned,
-                    trust_policy,
-                    selected_capabilities,
+                    force,
+                    expected_manifest_checksum,
                 )
                 .await
                 {
@@ -600,144 +572,6 @@ impl RequestHandler for PrincipalHandler {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Principal import failed: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::PrincipalPush {
-                request_id,
-                name,
-                registry_host,
-                registry_token,
-            } => match push_principal_package(host, &name, registry_host, registry_token).await {
-                Ok(digest) => {
-                    let response = ResponsePacket::PrincipalPushed {
-                        request_id,
-                        name,
-                        digest,
-                    };
-                    send_response(sink, response).await?;
-                }
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("Principal push failed: {e}"),
-                    };
-                    send_response(sink, response).await?;
-                }
-            },
-
-            RequestPacket::PrincipalPullPreview {
-                request_id,
-                registry_ref,
-                name,
-                force,
-                registry_host,
-                registry_token,
-            } => {
-                match preview_principal_pull(
-                    host,
-                    &registry_ref,
-                    name.clone(),
-                    force,
-                    registry_host,
-                    registry_token,
-                )
-                .await
-                {
-                    Ok(preview) => {
-                        let response = ResponsePacket::PrincipalPullPreviewed {
-                            request_id,
-                            name: preview.name,
-                            version: preview.version,
-                            did: preview.did,
-                            description: preview.description,
-                            agents: preview.agents,
-                            extensions: preview.extensions,
-                            required_capabilities: preview.required_capabilities,
-                            signed: preview.signed,
-                            validation_errors: preview.validation_errors,
-                            validation_warnings: preview.validation_warnings,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal pull preview failed: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::PrincipalPull {
-                request_id,
-                registry_ref,
-                name,
-                force,
-                confirmed,
-                selected_capabilities,
-                allow_unsigned,
-                registry_host,
-                registry_token,
-            } => {
-                // The caller-supplied `name` is the local rename for the
-                // pulled principal; it flows into filesystem paths
-                // downstream via `import_principal_package`. Reject
-                // path-traversal spellings early so we never touch the
-                // filesystem with bad input. The unpackager re-validates
-                // for defense in depth (it also covers the manifest's own
-                // `principal.name`).
-                if let Some(ref proposed) = name {
-                    use crate::common::identifiers::validate_agent_name;
-                    if let Err(e) = validate_agent_name(proposed) {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("[unsafe_name] invalid principal name: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                }
-                if !confirmed {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message:
-                            "Principal pull was not confirmed. Use the preview flow or pass --yes."
-                                .to_string(),
-                    };
-                    send_response(sink, response).await?;
-                    return Ok(());
-                }
-                match pull_principal_package(
-                    host,
-                    caller,
-                    &registry_ref,
-                    name.clone(),
-                    force,
-                    selected_capabilities,
-                    allow_unsigned,
-                    registry_host,
-                    registry_token,
-                )
-                .await
-                {
-                    Ok((imported_name, version, digest)) => {
-                        let response = ResponsePacket::PrincipalPulled {
-                            request_id,
-                            name: imported_name,
-                            version,
-                            digest,
-                        };
-                        send_response(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal pull failed: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
@@ -793,20 +627,18 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                // Phase C: WriteSide gate. The capabilities on the
-                // principal's own config must include
-                // `principal:write_config` before we touch shared
-                // state — `update_config` rewrites `principal.toml`.
-                // Actor + tier gate already fired inside
-                // `shared_config_write` via `for_caller(caller)` in
-                // `authority_for`.
-                let caps = config.capabilities.clone();
+                // ADR-066 D9: ownership gate — `update_config`
+                // rewrites `principal.toml`, so the actor must own
+                // this principal (or be the operator). The tier gate
+                // fires inside `shared_config_write_for_name` via
+                // `for_caller(caller)` in `authority_for`.
                 drop(config);
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalGrantPermission capability denied: {e}");
+                    warn!("PrincipalGrantPermission write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1032,29 +864,15 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                // Phase C: WriteSide gate. The principal's own
-                // capabilities must include `principal:write_config`
-                // before we let `update_config` rewrite
-                // `principal.toml`. Load the principal just to read
-                // its capabilities — `update_config` will validate
-                // ownership again on its own path.
-                let principal_for_gate = match load_principal(host, &name).await {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal '{}' not found", name),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-                let caps = principal_for_gate.capabilities().await;
+                // ADR-066 D9: ownership gate — `update_config`
+                // rewrites `principal.toml`, so the actor must own
+                // this principal (or be the operator).
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalSetStatus capability denied: {e}");
+                    warn!("PrincipalSetStatus write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1135,27 +953,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                // Phase C: WriteSide gate. Capabilities on the
-                // principal's own config must include
-                // `principal:write_config` before `update_config`
-                // rewrites `principal.toml`.
-                let principal_for_gate = match load_principal(host, &name).await {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal '{}' not found", name),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-                let caps = principal_for_gate.capabilities().await;
+                // ADR-066 D9: ownership gate.
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalSetExposure capability denied: {e}");
+                    warn!("PrincipalSetExposure write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1419,24 +1223,19 @@ impl RequestHandler for PrincipalHandler {
                     .principal_layout(&name)
                     .shared
                     .roles_dir;
-                // Phase C: WriteSide gate. The fresh principal's
-                // `starter_bundle()` capabilities already include
-                // `principal:write_agents` (see
-                // `Capabilities::starter_bundle`), so this gate
-                // passes for any caller with a Shared-tier
-                // entitlement (User or Principal) when the bundle
-                // hasn't been mutated. The principal doesn't exist
-                // yet — we use the name-keyed variant
+                // ADR-066 D9: ownership gate. The principal doesn't
+                // exist yet — we use the name-keyed variant
                 // `shared_roles_dir_write_for_name` because the
                 // `PrincipalId` is generated inside
-                // `PrincipalManager::create`.
-                let capabilities =
-                    crate::extensions::framework::types::Capabilities::starter_bundle();
+                // `PrincipalManager::create`. The operator may create
+                // principals; a principal-typed actor may not create
+                // other principals (fail closed).
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_roles_dir_write_for_name(&name, Some(&capabilities))
+                    .shared_roles_dir_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalCreate capability denied: {e}");
+                    warn!("PrincipalCreate write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -1487,7 +1286,6 @@ impl RequestHandler for PrincipalHandler {
                     governance: PrincipalGovernanceConfig::default(),
                     memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
-                    capabilities: capabilities.clone(),
                     exposure: Exposure::Private,
                     status: None,
                     boot_state: None,
@@ -1570,19 +1368,17 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                // Phase C: WriteSide gate. The principal's own
-                // capabilities must include `principal:write_config`
-                // before we let `update_config` rewrite
-                // `principal.toml`. The check sits below the
+                // ADR-066 D9: ownership gate. Sits below the
                 // `Permission::ManageSettings` PekoHub ACL check —
                 // both layers must pass.
-                let caps = config.capabilities.clone();
+                // ADR-066 D9: ownership gate.
                 drop(config);
                 if let Err(e) = host
                     .authority_for(caller)
-                    .shared_config_write_for_name(&name, Some(&caps))
+                    .shared_config_write_for_name(&name)
+                    .await
                 {
-                    warn!("PrincipalUpdate capability denied: {e}");
+                    warn!("PrincipalUpdate write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -2649,9 +2445,7 @@ async fn run_principal_send(
                     &session_id,
                     peer.clone(),
                     caller.subject(),
-                    SteeringMessage::new(
-                        crate::extensions::framework::async_exec::executor::wake::WAKE_TURN_MARKER,
-                    ),
+                    SteeringMessage::new(crate::async_exec::executor::wake::WAKE_TURN_MARKER),
                     override_model.clone(),
                     channel_port.clone(),
                     dm_channel.clone(),
@@ -3013,13 +2807,7 @@ async fn load_principal_identity(
     .await?
 }
 
-/// Build a `PrincipalPackager` for export/push.
-///
-/// Phase 5 (ADR-047 §2.1): the legacy `with_extensions` flag that
-/// embedded extensions from the global `ExtensionStore` is gone.
-/// Workspace-resident plugins are scoped to their workspace and are
-/// not part of the portable bundle yet (Phase 7 packaging format
-/// bump will add a `workspace/` layer).
+/// Build a snapshot packager from the principal's typed tier layout.
 async fn build_principal_packager(
     host: &dyn PrincipalHost,
     name: &str,
@@ -3143,33 +2931,28 @@ async fn preview_principal_import(
     );
     let (manifest, files, validation) = unpackager.inspect_detailed().await?;
 
-    let signed = !manifest.signatures.manifest.trim().is_empty();
-    let name = new_name.unwrap_or_else(|| manifest.principal.name.clone());
+    let inventory =
+        crate::registry::packaging::ExecutableInventory::from_files(&manifest.did, &files);
+    let manifest_checksum =
+        crate::registry::packaging::PrincipalManifest::compute_checksum(&files["manifest.toml"]);
+    let name = new_name.unwrap_or_else(|| manifest.name.clone());
     let agents = extract_agent_names_from_package(&files);
-    let extensions: Vec<String> = manifest.extensions.iter().map(|r| r.id.clone()).collect();
-    let (required_capabilities, cap_warnings) =
-        crate::registry::packaging::PrincipalUnpackager::extract_extension_capabilities(
-            &manifest, &files,
-        );
-
     let validation_errors: Vec<String> =
         validation.errors.iter().map(|e| format!("{e:?}")).collect();
     let validation_warnings: Vec<String> = validation
         .warnings
         .iter()
         .map(|w| format!("{w:?}"))
-        .chain(cap_warnings.into_iter())
         .collect();
 
     Ok(PrincipalImportPreview {
         name,
-        version: manifest.principal.version,
-        did: manifest.principal.did,
-        description: manifest.principal.description,
+        version: manifest.peko_version,
+        did: manifest.did,
+        description: manifest.description,
         agents,
-        extensions,
-        required_capabilities,
-        signed,
+        inventory,
+        manifest_checksum,
         validation_errors,
         validation_warnings,
     })
@@ -3181,49 +2964,26 @@ async fn import_principal_package(
     caller: &peko_auth::caller::CallerContext,
     file_path: &std::path::Path,
     new_name: Option<String>,
-    allow_unsigned: bool,
-    trust_policy: crate::registry::packaging::TrustPolicy,
-    selected_capabilities: Vec<String>,
+    force: bool,
+    expected_manifest_checksum: Option<String>,
 ) -> anyhow::Result<crate::registry::packaging::PrincipalImportResult> {
     let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
         file_path,
         host.config_dir(),
         host.data_dir(),
     );
-    // Phase C: project the caller's subject and capability snapshot
-    // into the unpackager so the agent-prompt + identity writes gate
-    // through `RuntimeAuthority::shared_*_write_for_name`. We use
-    // `Capabilities::starter_bundle()` widened by the caller-chosen
-    // `selected_capabilities` because the new principal doesn't exist
-    // yet on disk — the gate fires against the post-merge cap set
-    // (what the principal will actually carry once persisted).
-    let mut caller_caps = peko_extension_api::Capabilities::starter_bundle();
-    for cap in &selected_capabilities {
-        caller_caps.push(cap.clone());
-    }
+    // ADR-066 P2/D1: no capability negotiation — the caller's subject
+    // is projected into the unpackager so the agent-prompt + identity
+    // writes use ownership checks through RuntimeAuthority.
     let opts = crate::registry::packaging::PrincipalImportOptions {
         new_name,
-        allow_unsigned,
-        force: trust_policy == crate::registry::packaging::TrustPolicy::AllowUntrusted,
-        trust_store: Some(host.trust_store().clone()),
-        trust_policy,
-        selected_capabilities,
+        force,
+        expected_manifest_checksum,
         caller_subject: caller.subject().clone(),
-        caller_capabilities: caller_caps,
+        observability: host.observability(),
         ..Default::default()
     };
-    let mut result = unpackager.import(opts).await?;
-
-    // Install any embedded extension packages.
-    let (manifest, _validation) = unpackager.inspect().await?;
-    if !manifest.extensions.is_empty() {
-        let store = host.extension_store();
-        let installed = unpackager
-            .import_extensions(&manifest, store)
-            .await
-            .with_context(|| "Failed to install embedded extensions")?;
-        result.installed_extensions = installed.into_iter().map(|id| id.0).collect();
-    }
+    let result = unpackager.import(opts).await?;
 
     // Load the freshly imported principal into the in-memory manager.
     let resolver = PathResolver::with_dirs(host.config_dir(), host.data_dir(), host.cache_dir());
@@ -3236,238 +2996,6 @@ async fn import_principal_package(
     }
 
     Ok(result)
-}
-
-/// Push a Principal to a registry, returning the pushed manifest digest.
-async fn push_principal_package(
-    host: &dyn PrincipalHost,
-    name: &str,
-    registry_host: Option<String>,
-    registry_token: Option<String>,
-) -> anyhow::Result<String> {
-    let packager = build_principal_packager(host, name).await?;
-    let version = "1.0.0".to_string();
-
-    let descriptor = packager
-        .export_for_registry(crate::registry::packaging::PrincipalExportOptions {
-            ..Default::default()
-        })
-        .await?;
-
-    let host_url = registry_host.unwrap_or_else(|| "pekohub.org".to_string());
-    let mut reg_config = crate::registry::config::load_from_workspace(host.data_dir());
-
-    if let Some(token) = registry_token {
-        reg_config.add_source(crate::registry::config::RegistrySource {
-            url: host_url.clone(),
-            priority: 1,
-            auth: None,
-            token: Some(token),
-        });
-    }
-
-    let agent_registry =
-        crate::registry::AgentRegistry::new(crate::registry::AgentRegistry::default_path());
-    agent_registry.init().await?;
-
-    let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
-    let remote_ref = format!("{host_url}/peko/principals/{name}:{version}");
-    let manifest = client
-        .push_principal(&descriptor, name, &version, &remote_ref, |_| {})
-        .await?;
-
-    // Best-effort cleanup of the temporary local package file.
-    let _ = std::fs::remove_file(&descriptor.package_path);
-
-    Ok(manifest.digest)
-}
-
-/// Preview a remote Principal package before pulling it.
-async fn preview_principal_pull(
-    host: &dyn PrincipalHost,
-    registry_ref: &str,
-    new_name: Option<String>,
-    _force: bool,
-    registry_host: Option<String>,
-    registry_token: Option<String>,
-) -> anyhow::Result<PrincipalImportPreview> {
-    let host_url = registry_host.unwrap_or_else(|| {
-        crate::registry::client::RegistryRef::parse_with_default(
-            registry_ref,
-            None,
-            Some(crate::registry::client::ResourceType::Principal),
-        )
-        .map(|r| r.host)
-        .unwrap_or_else(|_| "pekohub.org".to_string())
-    });
-
-    let mut reg_config = crate::registry::config::load_from_workspace(host.data_dir());
-    if let Some(token) = registry_token {
-        reg_config.add_source(crate::registry::config::RegistrySource {
-            url: host_url.clone(),
-            priority: 1,
-            auth: None,
-            token: Some(token),
-        });
-    }
-
-    let agent_registry =
-        crate::registry::AgentRegistry::new(crate::registry::AgentRegistry::default_path());
-    agent_registry.init().await?;
-
-    let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
-
-    let temp_path = host.cache_dir().join(format!(
-        "peko-pull-principal-preview-{}",
-        std::process::id()
-    ));
-    let _manifest = client
-        .pull_principal(registry_ref, &temp_path, |_| {})
-        .await?;
-
-    // ADR-056: a pulled seed is a plain TOML file, ground via
-    // `peko create -s` — not an importable package.
-    if is_seed_artifact(&temp_path) {
-        let kept = keep_seed_artifact(host, &temp_path)?;
-        anyhow::bail!(
-            "This registry artifact is a seed (plain TOML), not a snapshot. \
-             Ground it with: peko create <name> -s {}",
-            kept.display()
-        );
-    }
-
-    let preview = preview_principal_import(host, &temp_path, new_name).await;
-    let _ = std::fs::remove_file(&temp_path);
-    preview
-}
-
-/// ADR-056: a pulled seed artifact is a plain TOML file (a
-/// stripped `principal.toml`) rather than a `.peko` snapshot package.
-/// Distinguish by shape: a snapshot's config blob is a
-/// `PrincipalManifest` (with a `principal` metadata section); a
-/// seed is a bare `PrincipalConfig`.
-fn is_seed_artifact(path: &std::path::Path) -> bool {
-    use crate::principal::config::PrincipalConfig;
-    use crate::registry::packaging::principal_manifest::PrincipalManifest;
-
-    let Ok(bytes) = std::fs::read(path) else {
-        return false;
-    };
-    let Ok(text) = std::str::from_utf8(&bytes) else {
-        return false;
-    };
-    if PrincipalManifest::from_toml(text).is_ok() {
-        return false;
-    }
-    toml::from_str::<PrincipalConfig>(text).is_ok()
-}
-
-/// Move a pulled seed artifact out of the transient preview path
-/// into a stable cache location the user can ground from.
-fn keep_seed_artifact(
-    host: &dyn PrincipalHost,
-    temp_path: &std::path::Path,
-) -> anyhow::Result<std::path::PathBuf> {
-    let kept = host.cache_dir().join(format!(
-        "pulled-seed-{}.toml",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or_default()
-    ));
-    std::fs::rename(temp_path, &kept)?;
-    Ok(kept)
-}
-
-/// Pull a Principal from a registry and import it.
-async fn pull_principal_package(
-    host: &dyn PrincipalHost,
-    caller: &peko_auth::caller::CallerContext,
-    registry_ref: &str,
-    new_name: Option<String>,
-    force: bool,
-    selected_capabilities: Vec<String>,
-    allow_unsigned: bool,
-    registry_host: Option<String>,
-    registry_token: Option<String>,
-) -> anyhow::Result<(String, String, String)> {
-    let host_url = registry_host.unwrap_or_else(|| {
-        crate::registry::client::RegistryRef::parse_with_default(
-            registry_ref,
-            None,
-            Some(crate::registry::client::ResourceType::Principal),
-        )
-        .map(|r| r.host)
-        .unwrap_or_else(|_| "pekohub.org".to_string())
-    });
-
-    let mut reg_config = crate::registry::config::load_from_workspace(host.data_dir());
-    if let Some(token) = registry_token {
-        reg_config.add_source(crate::registry::config::RegistrySource {
-            url: host_url.clone(),
-            priority: 1,
-            auth: None,
-            token: Some(token),
-        });
-    }
-
-    let agent_registry =
-        crate::registry::AgentRegistry::new(crate::registry::AgentRegistry::default_path());
-    agent_registry.init().await?;
-
-    let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
-
-    let temp_path = host
-        .cache_dir()
-        .join(format!("peko-pull-principal-{}", std::process::id()));
-    let manifest = client
-        .pull_principal(registry_ref, &temp_path, |_| {})
-        .await?;
-
-    // ADR-056: a pulled seed is a plain TOML file, ground via
-    // `peko create -s` — not an importable package.
-    if is_seed_artifact(&temp_path) {
-        let kept = keep_seed_artifact(host, &temp_path)?;
-        anyhow::bail!(
-            "This registry artifact is a seed (plain TOML), not a snapshot. \
-             Ground it with: peko create <name> -s {}",
-            kept.display()
-        );
-    }
-
-    let import_result = import_principal_package(
-        host,
-        caller,
-        &temp_path,
-        new_name,
-        // Pulled packages are signed at export; honor force for
-        // overwrite and trust pinning override.
-        allow_unsigned,
-        if force {
-            crate::registry::packaging::TrustPolicy::AllowUntrusted
-        } else {
-            crate::registry::packaging::TrustPolicy::Tofu
-        },
-        selected_capabilities,
-    )
-    .await;
-    let _ = std::fs::remove_file(&temp_path);
-
-    let result = match import_result {
-        Ok(r) => r,
-        Err(e) => {
-            if force {
-                return Err(anyhow::anyhow!("Import after pull failed: {e}"));
-            }
-            return Err(e);
-        }
-    };
-
-    Ok((
-        result.name,
-        manifest.version.clone(),
-        manifest.digest.clone(),
-    ))
 }
 
 // ─── peko log read path ───────────────────────────────────────────────
@@ -4059,12 +3587,7 @@ mod tests {
             fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
                 unimplemented!("not reached by read_principal_log")
             }
-            fn extension_store(&self) -> &Arc<ExtensionStore> {
-                unimplemented!("not reached by read_principal_log")
-            }
-            fn trust_store(&self) -> &Arc<RwLock<TrustStore>> {
-                unimplemented!("not reached by read_principal_log")
-            }
+
             fn config_dir(&self) -> std::path::PathBuf {
                 unimplemented!("not reached by read_principal_log")
             }
@@ -4115,7 +3638,6 @@ mod tests {
                 governance: PrincipalGovernanceConfig::default(),
                 memory: PrincipalMemoryConfig::default(),
                 routing: PrincipalRoutingConfig::default(),
-                capabilities: peko_extension_api::Capabilities::starter_bundle(),
                 exposure: peko_auth::Exposure::Private,
                 status: None,
                 boot_state: None,
@@ -4149,7 +3671,7 @@ mod tests {
                 path_resolver,
                 Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
                 Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             );
             let manager = if with_port {
                 manager.with_channel_port(store.clone())
@@ -4166,7 +3688,7 @@ mod tests {
             // read path only needs them to exist).
             let owner = Subject::User("test-owner".to_string());
             let peer = Subject::User("alice".to_string());
-            let session_manager = Arc::new(RwLock::new(
+            let session_manager = Arc::new(tokio::sync::RwLock::new(
                 peko_session::manager::SessionManager::new()
                     .with_sessions_dir_internal(principal.memory.sessions_dir()),
             ));

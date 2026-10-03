@@ -8,9 +8,9 @@
 #                           key material in the OS keychain vault
 #                           (`peko credential set` for manual management)
 #   per-peko settings ..... the peko's own principal.toml (identity, quota,
-#                           capabilities, routing) — edit directly, or use
+#                           permissions, routing) — edit directly, or use
 #                           `peko quota set` / `peko model` where a CLI exists
-#   workspace capabilities  plain files under the peko's workspace
+#   workspace tooling ..... plain files under the peko's workspace
 #                           (roles/, skills/, mcp/, hooks/, workflows/)
 #
 # Only two TOML files are read by the runtime, and every block in both is
@@ -69,5 +69,8 @@
 #   not a config key.
 # - There are no [agent], [memory], [tools], [channels], [security], or
 #   [debug] blocks — those belonged to retired subsystems (agent CRUD,
-#   sqlite memory, registry-downloaded tools, chat-platform adapters).
+#   sqlite memory, workspace tools, chat-platform adapters).
 #   Unknown keys are ignored, so old config files keep parsing.
+# - Tool grants and remote registry settings are retired (ADR-066).
+#   Legacy principal.toml [capabilities].grants is ignored, warns once,
+#   and is omitted when saved. Peer [[permissions]] remains authoritative.

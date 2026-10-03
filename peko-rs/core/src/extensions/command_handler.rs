@@ -9,10 +9,10 @@
 //! `hooks/session-start` prints JSON containing `additionalContext`, which is
 //! then injected into the system prompt via `{{session_context}}`.
 
-use crate::extensions::framework::core::{
-    context::HookContext, handler::HookHandler, hook_points::HookPoint,
+use crate::extensions::workspace_dispatcher::{
+    WorkspaceHookContext, WorkspaceHookHandler, WorkspaceHookPoint,
 };
-use crate::extensions::framework::types::{HookInput, HookOutput, HookResult};
+use crate::extensions::workspace_io::{HookInput, HookOutput, HookResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,7 +39,7 @@ pub enum CommandOutputFormat {
 impl CommandOutputFormat {
     /// Resolve a format string. Unrecognized values fall back to JSON.
     #[must_use]
-    pub fn from_str_opt(s: Option<&str>, point: &HookPoint) -> Self {
+    pub fn from_str_opt(s: Option<&str>, point: &WorkspaceHookPoint) -> Self {
         match s {
             Some("text") => Self::Text,
             Some("json") => Self::Json,
@@ -49,7 +49,7 @@ impl CommandOutputFormat {
             }
             None => {
                 // Default to JSON for session.start; text everywhere else.
-                if matches!(point, HookPoint::SessionStart) {
+                if matches!(point, WorkspaceHookPoint::SessionContextBuild) {
                     Self::Json
                 } else {
                     Self::Text
@@ -84,7 +84,7 @@ pub struct CommandHookConfig {
 pub struct CommandHookHandler {
     config: CommandHookConfig,
     extension_dir: PathBuf,
-    hook_point: HookPoint,
+    hook_point: WorkspaceHookPoint,
 }
 
 impl CommandHookHandler {
@@ -93,7 +93,7 @@ impl CommandHookHandler {
     pub fn new(
         config: CommandHookConfig,
         extension_dir: impl Into<PathBuf>,
-        hook_point: HookPoint,
+        hook_point: WorkspaceHookPoint,
     ) -> Self {
         Self {
             config,
@@ -115,11 +115,11 @@ impl CommandHookHandler {
     }
 
     /// Build the environment for the child process.
-    fn build_env(&self, ctx: &HookContext) -> HashMap<String, String> {
+    fn build_env(&self, ctx: &WorkspaceHookContext) -> HashMap<String, String> {
         let mut env: HashMap<String, String> = std::env::vars().collect();
 
         // Standard Peko hook variables.
-        env.insert("PEKO_HOOK_POINT".to_string(), self.hook_point.name());
+        env.insert("PEKO_HOOK_POINT".to_string(), ctx.point.name());
         env.insert(
             "PEKO_EXTENSION_DIR".to_string(),
             self.extension_dir.to_string_lossy().to_string(),
@@ -134,13 +134,17 @@ impl CommandHookHandler {
             env.insert("PEKO_WORKSPACE".to_string(), workspace);
         }
 
-        // Principal id from tool context state if available.
-        if let Some(tc) =
-            ctx.get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
-        {
-            if let Some(pid) = &tc.principal_id {
-                env.insert("PEKO_PRINCIPAL_ID".to_string(), pid.clone());
-            }
+        if let Some(pid) = &ctx.runtime.principal_id {
+            env.insert("PEKO_PRINCIPAL_ID".into(), pid.clone());
+        }
+        if let Some(workspace) = &ctx.runtime.workspace {
+            env.insert("PEKO_WORKSPACE".into(), workspace.clone());
+        }
+        if let Some(session_id) = &ctx.runtime.session_id {
+            env.insert("PEKO_SESSION_ID".into(), session_id.clone());
+        }
+        if let Some(agent_id) = &ctx.runtime.agent_id {
+            env.insert("PEKO_AGENT_ID".into(), agent_id.clone());
         }
 
         // Superpowers compatibility: the upstream script branches on this.
@@ -158,7 +162,10 @@ impl CommandHookHandler {
     }
 
     /// Pull event/workspace out of the hook input when possible.
-    fn extract_event_and_workspace(&self, ctx: &HookContext) -> (Option<String>, Option<String>) {
+    fn extract_event_and_workspace(
+        &self,
+        ctx: &WorkspaceHookContext,
+    ) -> (Option<String>, Option<String>) {
         // PR-E #4: `HookInput::PromptBuild(state)` branch retired alongside
         // the variant — it was the only consumer of the deleted
         // `PromptBuildState` type and produced a workspace string the
@@ -184,7 +191,7 @@ impl CommandHookHandler {
 
     /// Run the configured command and return its stdout as a string, or
     /// `None` if the command failed or timed out.
-    async fn run_command(&self, ctx: &HookContext) -> Option<String> {
+    async fn run_command(&self, ctx: &WorkspaceHookContext) -> Option<String> {
         let program = self.resolve_command_path();
         let env = self.build_env(ctx);
 
@@ -197,6 +204,7 @@ impl CommandHookHandler {
         let mut cmd = Command::new(&program);
         cmd.args(&self.config.args)
             .current_dir(&self.extension_dir)
+            .kill_on_drop(true)
             .env_clear()
             .envs(&env);
 
@@ -266,8 +274,8 @@ impl CommandHookHandler {
 }
 
 #[async_trait]
-impl HookHandler for CommandHookHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
+impl WorkspaceHookHandler for CommandHookHandler {
+    async fn handle(&self, ctx: WorkspaceHookContext) -> HookResult {
         match self.run_command(&ctx).await {
             Some(stdout) => match self.parse_output(&stdout) {
                 Some(text) if !text.is_empty() => {
@@ -288,22 +296,6 @@ impl HookHandler for CommandHookHandler {
                 HookResult::PassThrough
             }
         }
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        self.hook_point.clone()
-    }
-
-    fn priority(&self) -> i32 {
-        100
-    }
-
-    fn name(&self) -> String {
-        format!(
-            "{}:command:{}",
-            self.extension_dir.display(),
-            self.config.command
-        )
     }
 }
 
@@ -336,15 +328,18 @@ mod tests {
     #[test]
     fn output_format_defaults() {
         assert_eq!(
-            CommandOutputFormat::from_str_opt(None, &HookPoint::SessionStart),
+            CommandOutputFormat::from_str_opt(None, &WorkspaceHookPoint::SessionContextBuild),
             CommandOutputFormat::Json
         );
         assert_eq!(
-            CommandOutputFormat::from_str_opt(None, &HookPoint::AgentInit),
+            CommandOutputFormat::from_str_opt(None, &WorkspaceHookPoint::Stop),
             CommandOutputFormat::Text
         );
         assert_eq!(
-            CommandOutputFormat::from_str_opt(Some("text"), &HookPoint::SessionStart),
+            CommandOutputFormat::from_str_opt(
+                Some("text"),
+                &WorkspaceHookPoint::SessionContextBuild
+            ),
             CommandOutputFormat::Text
         );
     }
@@ -352,11 +347,9 @@ mod tests {
     #[cfg(unix)]
     mod unix {
         use super::*;
-        use crate::extensions::framework::core::ExtensionServices;
-        use crate::extensions::framework::types::SessionSnapshot;
+        use peko_session::SessionSnapshot;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
-        use std::sync::Arc;
         use tempfile::TempDir;
 
         fn write_script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
@@ -368,7 +361,7 @@ mod tests {
             path
         }
 
-        fn session_ctx(event: &str, workspace: &str) -> HookContext {
+        fn session_ctx(event: &str, workspace: &str) -> WorkspaceHookContext {
             let mut metadata = std::collections::HashMap::new();
             metadata.insert("event".to_string(), serde_json::json!(event));
             metadata.insert("workspace".to_string(), serde_json::json!(workspace));
@@ -378,10 +371,9 @@ mod tests {
                 context_tokens: 0,
                 metadata,
             };
-            HookContext::new(
-                HookPoint::SessionStart,
+            WorkspaceHookContext::new(
+                WorkspaceHookPoint::SessionContextBuild,
                 HookInput::SessionState(snapshot),
-                Arc::new(ExtensionServices::new()),
             )
         }
 
@@ -405,7 +397,7 @@ echo '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContex
                     output_format: CommandOutputFormat::Json,
                 },
                 tmp.path(),
-                HookPoint::SessionStart,
+                WorkspaceHookPoint::SessionContextBuild,
             );
 
             let result = handler.handle(session_ctx("startup", "/tmp/ws")).await;
@@ -431,7 +423,7 @@ echo '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContex
                     output_format: CommandOutputFormat::Json,
                 },
                 tmp.path(),
-                HookPoint::SessionStart,
+                WorkspaceHookPoint::SessionContextBuild,
             );
 
             let result = handler.handle(session_ctx("startup", "/tmp/ws")).await;
@@ -460,7 +452,7 @@ echo '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContex
                     output_format: CommandOutputFormat::Text,
                 },
                 tmp.path(),
-                HookPoint::SessionStart,
+                WorkspaceHookPoint::SessionContextBuild,
             );
 
             let result = handler.handle(session_ctx("startup", "/tmp/ws")).await;
@@ -487,7 +479,7 @@ echo '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContex
                     output_format: CommandOutputFormat::Text,
                 },
                 tmp.path(),
-                HookPoint::SessionStart,
+                WorkspaceHookPoint::SessionContextBuild,
             );
 
             let start = std::time::Instant::now();

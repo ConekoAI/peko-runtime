@@ -3,8 +3,8 @@
 //! Mirrors the shape of `PlanGetTool` (`plan/get.rs`):
 //!   `pub struct X { port: Arc<dyn ...> }` with `execute_with_context`
 //!   pulling `PrincipalId` out of the `ToolContext`. The principal
-//!   boundary is enforced by the caller (the F37 funnel + capability
-//!   gate); this tool itself is a thin wrapper around `ChannelPort::peek`.
+//!   membership boundary is enforced by ChannelPort; this tool is a thin
+//!   wrapper around `ChannelPort::peek`.
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use peko_channel::{ChannelError, ChannelId, ChannelPort, Checkpoint};
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::json;
 
-/// Wire name registered with the ExtensionCore.
+/// Wire name registered with the ToolingRuntime.
 pub const CHANNEL_READ_TOOL_NAME: &str = "ChannelRead";
 
 /// Read events from a channel the calling principal is a member of.

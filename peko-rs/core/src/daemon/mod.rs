@@ -137,7 +137,7 @@ impl Daemon {
         // The cron engine is constructed later in `Daemon::run` once
         // `AppState` is available — the engine needs the shared
         // `InboxRegistry`, the `PrincipalManager`, and the daemon's
-        // global `ExtensionCore` (weak), none of which exist at
+        // global `ToolingRuntime` (weak), none of which exist at
         // construction time.
 
         Ok(Self {
@@ -253,16 +253,12 @@ impl Daemon {
         // shared `InboxRegistry` so completion events and steer
         // messages land in the same inboxes the in-flight `AgenticLoop`
         // drains. The executor resolves tools via the daemon-global
-        // `ExtensionCore` (`Arc::downgrade` so the cron engine does not
+        // `ToolingRuntime` (`Arc::downgrade` so the cron engine does not
         // extend the core's lifetime).
-        let cron_async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                app_state.inbox_registry.clone(),
-            ),
-        );
-        let cron_extension_core = crate::extensions::framework::core::global_core()
-            .map(|arc| std::sync::Arc::downgrade(&arc))
-            .unwrap_or_else(std::sync::Weak::new);
+        let cron_async_executor = Arc::new(crate::async_exec::executor::AsyncExecutor::new(
+            app_state.inbox_registry.clone(),
+        ));
+        let cron_tooling = std::sync::Arc::downgrade(app_state.tool_runtime.tooling());
 
         // Build the cron engine wired to the real PrincipalManager,
         // shared idle detector, and cron-owned executor. Phase A: the
@@ -279,7 +275,7 @@ impl Daemon {
             )?),
             Some(app_state.principal_manager().clone()),
             cron_async_executor,
-            cron_extension_core,
+            cron_tooling,
         ));
         // Hand the engine to AppState so the `CronTrigger` tool (via
         // `DaemonCronAdapter::trigger_job`) can dispatch manual fires

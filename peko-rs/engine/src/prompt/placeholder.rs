@@ -69,8 +69,6 @@ pub enum Placeholder {
     QuotaTripped,
     /// Soft-cancel pending flag - {{soft_cancel}}
     SoftCancel,
-    /// Capability-diff since last render - {{capability_diff}}
-    CapabilityDiff,
 }
 
 impl Placeholder {
@@ -96,7 +94,6 @@ impl Placeholder {
             Self::IterationBudget => "{{iteration_budget}}",
             Self::QuotaTripped => "{{quota_tripped}}",
             Self::SoftCancel => "{{soft_cancel}}",
-            Self::CapabilityDiff => "{{capability_diff}}",
         }
     }
 }
@@ -140,7 +137,6 @@ mod tests {
         );
         assert_eq!(Placeholder::QuotaTripped.marker(), "{{quota_tripped}}");
         assert_eq!(Placeholder::SoftCancel.marker(), "{{soft_cancel}}");
-        assert_eq!(Placeholder::CapabilityDiff.marker(), "{{capability_diff}}");
     }
 
     /// Retired markers (`{{tools}}`, `{{quota_state}}`) have no enum

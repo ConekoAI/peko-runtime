@@ -8,7 +8,7 @@
 //!    a. **Canonical implementations that need root-only deps** —
 //!       `bash.rs`, `agent.rs` (`Agent`), `skill/` (the skill tool wrapper),
 //!       `role_catalog.rs`, `tool_search.rs`. These can't lift into
-//!       `peko-tools-builtin` because they reach into `ExtensionCore` or
+//!       `peko-tools-builtin` because they reach into `ToolingRuntime` or
 //!       other root types.
 //!    b. **Compat shims with hosted tests** — `async_list.rs`,
 //!       `async_output.rs`, `async_status.rs`, `async_stop.rs`. Each is
@@ -40,13 +40,20 @@
 //! `transport`/`services`/`protocols/shared` parts were lifted into the
 //! `peko-extension-host` workspace crate in Phase 8 (PRs #292, #293,
 //! follow-ups #294-#297). Root keeps `src/extensions/framework/` as a
-//! compat-shim layer (`async_exec/`, `types/`) until Phase 15 deletes it;
+//! compat-shim layer (`types/`) until Phase 15 deletes it;
 //! those shims re-export from `peko_extension_host` and pin type identity
 //! via `TypeId::of` assertions — see
-//! `extensions/framework/async_exec/executor/completion_queue.rs:78`.
+//! `async_exec/executor/completion_queue.rs:78`.
 //!
 //! Heavy tools (web_search, fetch, http, browser, memory) are provided via external MCP servers
 //! or the extension system.
 
 pub mod builtin;
+pub mod catalog;
+pub mod dispatcher;
+pub mod prompt_sections;
 pub mod registry;
+pub mod runtime;
+pub mod session_keys;
+
+pub mod metadata;

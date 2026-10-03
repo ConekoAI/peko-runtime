@@ -1,30 +1,5 @@
-//! `peko-session` — Peko session persistence (Phase 7).
-//!
-//! Phase 7.1 lands the scaffold + the compaction data types / trait
-//! ports. Phase 7.2+ will move the remaining session modules from
-//! root's `src/session/` into this crate.
-//!
-//! # Crate boundary
-//!
-//! - Allowed deps: `peko-message`, `peko-subject`, `peko-events`,
-//!   `peko-quota`, `peko-extension-api`, `peko-provider-api`,
-//!   `peko-tools-core`, `peko-providers`, `peko-fs-persistence`.
-//! - Forbidden deps: `peko-engine`, `peko-agents`, `peko-extension-host`,
-//!   root.
-//!
-//! # Compaction split
-//!
-//! - **Persistence** (this crate) — data types + `CompactorBackend`
-//!   trait port + `BackgroundCompactorFactory` + eviction helper.
-//!   Phase 7.2+ adds the `BackgroundCompactor` mpsc worker, the
-//!   `Compactor` LLM summarization helper, `summary_format`,
-//!   `turn_boundaries`, `cli`.
-//! - **Orchestration** (`peko-engine::compaction_driver`) —
-//!   `CompactionDriver` holds a `Box<dyn CompactorBackend>`
-//!   supplied by the daemon.
-//!
-//! `peko-engine` re-exports the data types + trait port + eviction
-//! helper from this crate so pre-Phase-7 import paths keep compiling.
+//! Session persistence, ownership, inbox contracts, and compaction storage.
+//! Engine orchestration consumes these contracts without a session → engine edge.
 
 // Noise lints, consistent with the root crate's curated allow-list.
 #![allow(clippy::too_many_arguments)]
@@ -193,3 +168,10 @@ pub struct ToolCall {
     /// Tool parameters.
     pub parameters: serde_json::Value,
 }
+
+pub mod async_inbox;
+pub mod completion_event;
+pub mod snapshot;
+pub use async_inbox::{AsyncInboxItem, AsyncInboxLike, CompletionEnvelope, SteeringEnvelope};
+pub use completion_event::{CompletionEvent, InboxItem, SteeringMessage};
+pub use snapshot::SessionSnapshot;

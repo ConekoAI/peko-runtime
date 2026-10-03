@@ -12,8 +12,8 @@ A peko's workspace contains everything the peko uses: identity,
 config, agent prompts, session history, and the tooling (tools, skills,
 MCP servers, hooks, plugins) the peko has chosen to install. The
 runtime's job is to scan the workspace on peko boot and dispatch by
-tool name; there is no extension registry, no canonical funnel, and no
-manifest validation beyond presence.
+tool name through an explicit `ToolCatalog` / `ToolDispatcher` / `ToolingRuntime`.
+Workspace hook binds and MCP configurations are validated before loading.
 
 This replaces the legacy "extension" model (ADR-017, ADR-024, ADR-026,
 ADR-036) where every plugin passed through a single `ExtensionCore`
@@ -51,13 +51,13 @@ For the trust-and-audit posture that makes this safe, see
 
 | Path                       | Contents                                                                  |
 |----------------------------|---------------------------------------------------------------------------|
-| `principal.toml`           | Owner, permissions, exposure, capabilities, root prompt                    |
+| `principal.toml`           | Owner, permissions, exposure, quota, root prompt                    |
 | `roles/<name>.md`         | Role prompts (per-peko) — T1 role bodies (ADR-064)                   |
 | `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` + `CONVENTIONS.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `roles/<name>.md` for the named role |
 | `memory/sessions/*.jsonl`  | Session history                                                           |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
-| `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
+| `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection, SessionContextBuild]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |
 | `plugins/<id>/`            | Opaque plugin — any shape, runtime does not parse                         |
 | `peers.json`               | Peer→session routing index (lives in `local/sessions/`; ADR-056: travels with the sessions layer in snapshots) |
 
@@ -66,6 +66,12 @@ directory and no `peko ext install` flow. Workspace-resident tooling is
 the only source of tools the peko can use.
 
 ---
+
+ADR-066 P4 runs workspace hooks in registration order (sorted directory names,
+then manifest binds), with a two-second budget per handler. Tool observers
+accept an exact `tool_name` or no selector (all tools); wildcard names are
+rejected. Legacy `priority` is ignored. Prompt-section output appends to the
+named runtime-context section.
 
 ## Managing workspace tooling
 
@@ -98,9 +104,8 @@ There are exactly two grounding paths, with two artifact shapes:
 
 - **Grow** — `peko create [-s <seed.toml>]`: a seed
   is a **plain TOML file** (a `principal.toml` with `id`/`did`/
-  `boot_state` stripped). This is also the registry artifact
-  (`peko push` distributes DNA, not creatures; a pulled
-  seed is ground with `create -s` and a freshly minted identity).
+  `boot_state` stripped). PekoHub distributes seeds outside the runtime;
+  downloaded seeds ground with `create -s` and a freshly minted identity.
   Because the identity is always minted fresh, the artifact is a
   seed rather than a template (ADR-060).
 - **Wake** — `peko import <name>.peko`: a full-existence
@@ -121,36 +126,51 @@ my-principal.peko (tar.gz)          # cryogenic transport
 ├── sessions/                       # incl. peers.json
 ├── cron/
 ├── plans/
-├── tools/ skills/ mcp/ hooks/ kb/
-└── plugins/
+└── tools/ skills/ mcp/ hooks/ kb/
 ```
 
-Legacy packages that still ship an `extensions/<id>.ext` layer are
-accepted on import; new exports omit it.
+ADR-066 P5 uses a flat `manifest.toml` with metadata and a `path → sha256`
+file map. Legacy OCI snapshots are rejected with re-export guidance.
+`tar -tf` lists the payload directly. Import displays every hook/MCP manifest
+and skill id and records the inventory at Security severity before writes.
+Checksums cannot be bypassed with `--force`; imports have no confirmation UI.
 
-See [ADR-056](adr/ADR-056-full-existence-peko-snapshot.md),
-[ADR-047 §5](adr/ADR-047-peko-workspace-as-tooling-trust-boundary.md)
+See [ADR-056](adr/ADR-056-full-existence-principal-snapshot.md),
+[ADR-047 §5](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md)
 and [ADR-027 §3](adr/ADR-027-unified-packaging.md) for the format
 history.
 
 ---
 
+## Contract ownership (ADR-066 P6)
+
+The `peko-extension-api` crate and extension manifests are retired. The engine
+owns the three-method tooling port; session owns inbox/completion contracts;
+tools-core owns async status and fallback paths. Root owns catalog metadata and
+workspace observer payloads, while MCP owns reserved injection. Principals and
+agents carry no tool grant state. The compaction snapshot contains runtime
+context only. Import previews report executable inventory without capability
+negotiation or embedded-extension lists.
+
 ## Discovery & dispatch
 
-1. **Discovery**: at peko boot, scan
-   `<workspace>/{skills,mcp,hooks,plugins}` and build a
-   `PrincipalCatalog` keyed by tool name.
-2. **Dispatch**: `tool_runtime::dispatch(tool_name, args)` looks up the
-   catalog entry and invokes. No funnel, no `execute_tool_via_hook`
-   registry.
-3. **Discovery metadata for the model**: the catalog is exposed to the
-   prompt builder exactly once, as a list of
-   `(tool_name, description, source_path)`.
+1. Built-ins and MCP proxies register in `ToolCatalog`; principal-scoped
+   entries shadow system entries. Every registered tool is in the native
+   wire `tools[]` catalog.
+2. The engine uses `peko_engine::tooling::ToolFunnel` for execution, catalog
+   definitions, and prompt sections. Its host implementation routes execution
+   through `ToolDispatcher`, which validates parameters, propagates identity
+   and cancellation, handles async detach, and emits one attributed audit event.
+3. Roles, skills, and workflows are rescanned with change-aware caches each
+   iteration; their prompt catalogs ride the tail runtime-context message.
+4. Workspace hooks run only for their owner, at six observer points, in
+   registration order with a two-second soft-fail budget. Hook errors, panics,
+   timeouts, and handled results cannot veto tool execution. Tool selectors
+   are exact or absent; wildcard manifests fail with migration guidance.
 
-The runtime does not validate plugin contents. Whatever the peko
-has installed is what the model sees. Per ADR-046, the audit log records
-every tool install/remove and every tool call — the audit log is the
-safety net, not a permission layer.
+Filesystem ownership governs cross-principal writes. Inbound peer permissions
+and quotas remain independent runtime boundaries. Audit records installs,
+removals, denied writes, local snapshot imports, and tool calls.
 
 ---
 
@@ -198,7 +218,7 @@ flow.
 
 ## Related documentation
 
-- [ADR-047: Peko Workspace as the Tooling Trust Boundary](adr/ADR-047-peko-workspace-as-tooling-trust-boundary.md) — design rationale
+- [ADR-047: Peko Workspace as the Tooling Trust Boundary](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) — design rationale
 - [ADR-050: Capabilities as Workspace Files](adr/ADR-050-capabilities-as-workspace-files.md) — file-only management + per-turn prompt catalog
 - [ADR-046: Trust and Audit](adr/ADR-046-trust-and-audit.md) — audit posture
 - [ADR-027: Unified Packaging](adr/ADR-027-unified-packaging.md) — `plugins/` layer

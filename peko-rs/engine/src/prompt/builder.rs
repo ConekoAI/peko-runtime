@@ -7,15 +7,15 @@
 //! renders the system prompt fresh every iteration from a
 //! [`super::context::TurnPromptContext`]. The renderer dispatches all
 //! hook-driven sections (`tools`, `skills`, `agents`, `mcp_context`,
-//! `SessionContextBuild`) via [`ExtensionCore`] and threads the four
+//! `SessionContextBuild`) via [`ToolingRuntime`] and threads the four
 //! long-horizon control surfaces (`iteration_budget`, `quota_tripped`,
-//! `soft_cancel`, `capability_diff`) into the body.
+//! `soft_cancel`) into the body.
 //!
 //! This module survives as a **test-only** static renderer — a pure
 //! function from `(body, memory, session_context, agent_name, ...)`
 //! to a Markdown body with `{{placeholder}}` substitution and no hook
 //! dispatch. Tests that exercise the placeholder-replacement path
-//! without standing up an `ExtensionCore` (e.g. `memory_placeholder_*`,
+//! without standing up an `ToolingRuntime` (e.g. `memory_placeholder_*`,
 //! `session_context_placeholder_*`) live here.
 //!
 //! Production callers should never use `SystemPromptBuilder`. If you
@@ -158,7 +158,6 @@ impl SystemPromptBuilder {
         // the renderer populates these from `TurnPromptContext`.
         values.insert(Placeholder::IterationBudget, String::new());
         values.insert(Placeholder::SoftCancel, String::new());
-        values.insert(Placeholder::CapabilityDiff, String::new());
 
         replace_placeholders(&template, &values, true)
     }

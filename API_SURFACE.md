@@ -9,7 +9,7 @@ This document defines the public API surface for Peko, including the new Unified
 
 ## Table of Contents
 
-1. [Module: `extensions::framework`](#module-extensionsframework) - Generic Extension Framework (ADR-017)
+1. [Module: `extensions::framework`](#module-extensionsframework) - Shared host utilities (ADR-066)
 2. [Module: `extensions`](#module-extensions) - Extension Type Implementations
 3. [Module: `principal` / `subject`](#module-principal--subject) - Principal container & actor (ADR-039/041)
 4. [Module: `agent`](#module-agent)
@@ -18,419 +18,137 @@ This document defines the public API surface for Peko, including the new Unified
 7. [Module: `tools::factory`](#module-toolsfactory)
 8. [Module: `session::context`](#module-sessioncontext)
 9. [Compatibility Notes](#compatibility-notes)
+10. [Local Snapshot Packaging](#module-registrypackaging--adr-066-p5)
+
+---
+
+## Module: `registry::packaging` — ADR-066 P5
+
+`registry` now contains only runtime-local snapshot packaging. `PrincipalPackager`
+exports one full-existence `.peko` tar.gz; `PrincipalUnpackager` restores the same
+identity, sessions, authored cron/plans, and workspace tooling. The constructor
+`PrincipalManifest::new(name, did)` creates a flat inventory with `format`, `name`,
+`did`, `created_at`, `peko_version`, optional `description`, and a sorted `files`
+map of archive path to SHA-256. Legacy OCI snapshots fail with re-export guidance.
+
+`PrincipalImportOptions` retains rename, rotation, session/local-state selection,
+caller, and observability; `force` permits overwriting existing principals, never
+checksum bypass. Optional `expected_manifest_checksum` binds a displayed preview
+to the manifest that is actually imported. `ExecutableInventory` contains DID,
+payload file count, hook and MCP ids/paths/verbatim definitions, and sorted skill
+ids. `principal.snapshot_import` records this inventory durably at Security
+severity before writes; the CLI prints it before import without a confirmation
+prompt. The boot-time drift canary remains.
+
+Deleted: registry client/config/cache, OCI manifests/media types/blob layers,
+`PrincipalLayers`, signatures/trust stores, embedded-extension packaging, registry
+export descriptors, and CLI `push`/`pull`/`search`/`registry` (including global
+`--registry` for push/pull). `DaemonClient::{principal_push,principal_pull_preview,
+principal_pull}` and their request/response variants are gone. Local import wire
+packets shed `allow_unsigned` and `confirmed`; preview responses replace `signed`
+with `inventory` and `manifest_checksum`. Import packets and preview responses no longer carry capability negotiation or
+embedded-extension fields (P6). PekoHub login and signed peer transport are unchanged.
+
+---
+
+## Module: `tools` — ADR-066 P3–P6
+
+The daemon constructs one `ToolingRuntime` and passes it explicitly to
+`PrincipalManager`, root/peer/cron turns, agents, and their children.
+Standalone callers and tests construct isolated runtimes.
+
+| Contract | Module | Behavior |
+|---|---|---|
+| `ToolCatalog::{register, get, tool_definitions}` | `tools::catalog` | Stores executable `Arc<dyn Tool>` plus metadata by `(name, PrincipalId)`; principal entries shadow system entries; definitions sorted by name; every registered tool included |
+| `ToolDispatcher::execute(ToolCallSpec)` | `tools::dispatcher` | Validates args, builds identity/abort context, injects workspace paths, routes timeout/detach and panic isolation, fires observe-only Pre/Post hooks, emits one `tool.call` audit event |
+| `ToolingRuntime::{catalog, dispatcher, hooks, services, session_keys}` | `tools::runtime` | Named composition; workspace tools installed per principal and prompt providers installed once |
+| `PromptSectionProvider::{section, priority, render}` | `tools::prompt_sections` | Plain per-turn provider for identity, roles, skills, workflows, and session context |
+| `SessionKeys::{set, get}` | `tools::session_keys` | Per-agent DID session-key table |
+
+`peko_engine::tooling::ToolFunnel` has exactly three methods:
+`execute(ToolCallSpec)`, `list_tool_definitions(&PrincipalId)`, and
+`render_prompt_sections(&PromptSectionRequest)`. `EngineHooks` carries
+Stop/AfterAgent hooks, session-key bookkeeping, and the parallel-execution probe;
+`ToolingSeam` combines both traits without a root dependency in the engine.
+`ToolCallSpec` carries tool name, params, workspace, agent/session/caller/
+principal identity, principal name, and abort receiver. Execution returns
+`Result<(String, Value, bool)>`; tool failures are data with `false`.
 
 ---
 
 ## Module: `extensions::framework`
 
-**Status:** ACTIVE  
-**ADR:** ADR-017: Unified Extension Architecture
+**Status:** Shared host utilities (ADR-066)
 
-The `extensions::framework` module contains the **generic extension framework** — hook points, registries, types, managers, and shared services. It has **zero dependencies** on extension type implementations (which live under the sibling `extensions::<type>/` modules).
+The extension registration and lifecycle framework is retired. This directory
+retains service handles, async routing/transport, schema utilities, registry
+maps, and host path/vault ports. It has no concrete adapter dependencies.
 
 ### `extensions::framework::core`
 
-#### `ExtensionCore`
+`ExtensionServices` retains channel, model-resolver, and cross-runtime
+adapter handles. The hook registry, point zoo, bindings, handler factories,
+priority/wildcard dispatch, and hook telemetry scaffolding were deleted in P4.
 
-Central registry for all extension hooks.
+### `extensions::workspace_dispatcher` (ADR-066 P4)
 
-```rust
-pub struct ExtensionCore { ... }
+`WorkspaceHookDispatcher::register_hook(point, handler, principal_id)` appends
+an owner-scoped handler to a `Vec`. `invoke_hook` / `invoke_hook_with_context`
+run matching handlers in registration order with a two-second budget per
+handler; errors, panics, timeouts, and `Handled` never prevent later handlers.
+`WorkspaceHookHandler::handle(WorkspaceHookContext)` receives the input and
+an explicit `ToolRuntimeContext`; there are no hook ids or priorities.
 
-impl ExtensionCore {
-    /// Register a hook handler
-    pub async fn register_hook(
-        &self,
-        point: HookPoint,
-        handler: Arc<dyn HookHandler>,
-        extension_id: &ExtensionId,
-    ) -> Result<HookId>
-    
-    /// Unregister a hook
-    pub async fn unregister_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Enable/disable hooks
-    pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()>
-    pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Invoke hooks at a specific point
-    pub async fn invoke_hooks(
-        &self,
-        point: HookPoint,
-        context: HookContext,
-    ) -> Result<Vec<HookResult>>
-    
-    /// List all registered tools
-    pub async fn list_tools(&self) -> Vec<ToolMetadata>
-    
-    /// List tool definitions for LLM API
-    pub async fn list_tool_definitions(&self) -> Vec<ToolDefinition>
-}
-```
+The six `WorkspaceHookPoint` variants are `PreToolUse { tool_name: Option<String> }`,
+`PostToolUse { tool_name: Option<String> }`, `Stop`, `AfterAgent`,
+`PromptSection { section: String }`, and `SessionContextBuild`. Tool selectors
+are exact names; `None` observes all tools. Workspace manifests with wildcard
+selectors are rejected with migration guidance. Text results append to the
+named runtime-context section. Directory names are sorted before loading,
+then each manifest's binds retain their order; legacy `priority` is ignored.
 
-#### `HookPoint`
-
-All 22 extension hook points:
-
-```rust
-pub enum HookPoint {
-    // Prompt lifecycle
-    PromptSystemSection { section: String, priority: i32 },
-    PromptPreProcess,
-    PromptPostProcess,
-    
-    // Tool lifecycle
-    ToolRegister,
-    ToolExecute { tool_name: String },
-    ToolExecuteAsync { tool_name: String },
-    ToolCheckStatus { tool_name: String },
-    ToolCancel { tool_name: String },
-    ToolResultTransform,
-    
-    // Session lifecycle
-    SessionStateChange,
-    SessionCompaction,
-    SessionContextBuild,
-    
-    // I/O lifecycle
-    ChannelInput,
-    ChannelOutput,
-    MessagePreSend,
-    MessagePostReceive,
-    
-    // Event lifecycle
-    EventSubscribe { topic_pattern: String },
-    EventEmit,
-    
-    // Agent lifecycle
-    AgentShutdown,
-    AgentIteration { iteration: usize },
-}
-```
-
-#### `HookHandler` Trait
-
-```rust
-#[async_trait]
-pub trait HookHandler: Send + Sync + std::fmt::Debug {
-    async fn handle(&self, ctx: HookContext) -> HookResult;
-    fn hook_point(&self) -> HookPoint;
-    fn priority(&self) -> i32 { 100 }
-    fn name(&self) -> String;
-}
-```
+`Tool::exposure`, `ToolMetadata::exposure`, `ToolExposure`, tool-search config /
+probes, `__tool_search`, and its metadata/scoring backend were deleted. The
+compaction driver calls its built-in backend directly; the unused compaction /
+session-state hooks were removed from `EngineHooks`.
 
 ---
 
-### `extensions::framework::manager`
+## Contract ownership (ADR-066 P6)
 
-#### `ExtensionManager`
+`peko-extension-api` is deleted. Live contracts now live with their consumers:
 
-Unified lifecycle management for all extension types.
+| Contracts | Home |
+|---|---|
+| `ToolFunnel`, `ToolCallSpec`, `EngineHooks`, `ToolingSeam`, prompt requests/results | `peko_engine::tooling` |
+| `AsyncTaskStatus`, task id/result aliases, default data/workspace paths | `peko_tools_core::{async_status, paths}` |
+| `AsyncInboxLike`, inbox envelopes, completion events, steering messages | `peko_session::{async_inbox, completion_event}` |
+| `SessionSnapshot`, `SpawnCleanupPolicy` | `peko_session::{snapshot, types}` |
+| `ToolMetadata`, `ToolSource` | `tools::metadata` |
+| `HookInput`, `HookOutput`, `HookResult`, `ToolRuntimeContext` | `extensions::workspace_io` |
+| Reserved parameter configuration and runtime/vault resolution | `extensions::mcp::reserved_params` |
+| Workspace role id, name, description | `extensions::role::adapter::RoleMetadata` |
 
-```rust
-pub struct ExtensionManager { ... }
-
-impl ExtensionManager {
-    /// Create new manager
-    pub fn new() -> Self
-    
-    /// Install extension from path
-    pub async fn install(&mut self, path: &Path) -> Result<ExtensionId>
-    
-    /// List all loaded extensions
-    pub fn list_extensions(&self) -> Vec<&LoadedExtension>
-    
-    /// Enable/disable extensions
-    pub async fn enable(&mut self, id: &ExtensionId) -> Result<()>
-    pub async fn disable(&mut self, id: &ExtensionId) -> Result<()>
-    
-    /// Uninstall extension
-    pub async fn uninstall(&mut self, id: &ExtensionId) -> Result<()>
-    
-    /// Create extension bundle
-    pub fn create_bundle(&self, ids: Vec<ExtensionId>, name: &str) -> Result<ExtensionBundle>
-    
-    /// Install bundle
-    pub async fn install_bundle(&mut self, bundle: ExtensionBundle) -> Result<Vec<ExtensionId>>
-    
-    /// Scan directory for extensions
-    pub async fn scan_directory(&self, path: &Path) -> Result<Vec<DiscoveredExtension>>
-    
-    /// Load extensions from directory
-    pub async fn load_from_directory(&mut self, path: &Path) -> Result<Vec<ExtensionId>>
-}
-```
-
----
-
-### `extensions::framework::adapters`
-
-#### `ExtensionTypeAdapter` Trait
-
-```rust
-#[async_trait]
-pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
-    fn extension_type(&self) -> &'static str;
-    fn manifest_format(&self) -> ManifestFormat;
-    fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding>;
-    async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState>;
-    async fn shutdown(&self, state: ExtensionState) -> Result<()>;
-    async fn is_healthy(&self, state: &ExtensionState) -> bool;
-    async fn register_tools(&self, core: &ExtensionCore, manifest: &ExtensionManifest) -> Result<usize>;
-}
-```
-
-#### `BuiltInAdapters`
-
-```rust
-pub struct BuiltInAdapters;
-
-impl BuiltInAdapters {
-    pub fn new() -> Self;
-    pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>>;
-}
-```
-
-#### `ManifestFormat`
-
-```rust
-pub enum ManifestFormat {
-    YamlFrontmatterMarkdown { required_fields: Vec<&'static str>, file_name: &'static str },
-    Yaml { schema: String, file_name: &'static str },
-    Json { schema: String, file_name: &'static str },
-    Toml { schema: String, file_name: &'static str },
-    Custom { detector: fn(&Path) -> bool },
-}
-```
-
----
-
-### `extensions::framework::types`
-
-#### Core Types
-
-```rust
-pub struct ExtensionManifest { ... }
-pub struct ExtensionId(pub String);
-pub struct HookId(pub String);
-pub enum HookResult { ... }
-pub enum HookOutput { ... }
-pub struct HookInput { ... }
-pub struct ToolMetadata { ... }
-pub enum ToolSource { ... }
-```
-
----
-
-### `extensions::framework::services`
-
-#### `ToolExecutionService`
-
-```rust
-pub struct ToolExecutionService { ... }
-pub struct ToolExecutionConfig { ... }
-pub struct ReservedParamsConfig { ... }
-pub enum ParamSource { ... }
-```
-
----
-
-### `extensions::framework::protocols::shared`
-
-#### Process Transport
-
-```rust
-pub struct ProcessTransport { ... }
-pub struct ProcessTransportBuilder { ... }
-pub struct ProcessConfig { ... }
-```
-
-#### Validation
-
-```rust
-pub fn filter_reserved_params(schema: &Value, reserved: &[String]) -> Result<Value>
-pub fn validate_no_reserved_params_leak(params: &Value, reserved: &[String]) -> Result<()>
-```
-
----
+The workspace observer payloads contain only the live tool, session, JSON, and
+prompt-text shapes. Extension ids/manifests, hook priorities, receipts and
+compaction-hook payloads are deleted. Tool metadata no longer carries an empty
+reserved-parameter configuration; MCP injection belongs to its proxy.
 
 ## Module: `extensions`
 
-**Status:** ACTIVE (New in 0.1.0)  
-**ADR:** ADR-017: Unified Extension Architecture
-
-The `extensions` module (plural) contains **extension type implementations**. Each extension type lives in its own directory with its adapter, runtime, and protocol code.
-
-### Extension Type Directory Layout
-
-```
-src/extensions/
-├── mcp/           # MCP server integration
-│   ├── adapter.rs
-│   ├── runtime/
-│   │   ├── adapter.rs
-│   │   ├── starter.rs
-│   │   ├── tool_proxy.rs
-│   │   └── injectable_proxy.rs
-│   └── protocol/
-│       ├── client.rs
-│       ├── transport.rs
-│       ├── types.rs
-│       ├── config.rs
-│       ├── discovery.rs
-│       └── manager.rs
-├── gateway/       # Platform gateways
-│   ├── adapter.rs
-│   ├── protocol.rs
-│   └── runtime/
-│       ├── adapter.rs
-│       ├── starter.rs
-│       └── router.rs
-├── skill/         # SKILL.md capabilities (workspace files — no adapter)
-│   ├── mod.rs          # re-exports (SkillFrontmatter, parser, runtime, handler)
-│   ├── prompt.rs       # WorkspaceSkillsPromptHandler — per-turn skills catalog
-│   └── reader.rs       # WorkspaceSkillRuntime — resolves <workspace>/skills/<name>/SKILL.md
-├── builtin/       # Core built-in tools
-│   └── adapter.rs
-└── general/       # Multi-hook extensions
-    └── adapter.rs
-```
-
-### `extensions::<type>::adapter`
-
-Each extension type provides an adapter implementing `ExtensionTypeAdapter`:
-
-| Adapter | Module Path | Type |
-|---------|-------------|------|
-| `McpAdapter` | `extensions::mcp::adapter` | `mcp` |
-| `BuiltinToolAdapter` | `extensions::builtin::adapter` | `builtin` |
-| `GatewayAdapter` | `extensions::gateway::adapter` | `gateway` |
-| `GeneralExtensionAdapter` | `extensions::general::adapter` | `general` |
-
-> `universal-tool` is retired (ADR-062): the `UniversalToolAdapter` and
-> the whole `extensions::universal` module are gone. External code
-> reaches the catalog through MCP servers or the `Workflow` builtin
-> (ADR-061).
-
-> `skill` is **not** an adapter-backed extension type any more (ADR-047
-> Phase 2 PR 1). Skills are plain workspace files
-> (`<workspace>/skills/<name>/SKILL.md`): `WorkspaceSkillRuntime`
-> (`extensions::skill::reader`) resolves them for the `Skill` tool and
-> `WorkspaceSkillsPromptHandler` (`extensions::skill::prompt`) renders
-> the per-turn catalog. See `docs/architecture/SKILLS.md`.
-
-### `extensions::extension_types`
-
-```rust
-pub const SKILL: &str = "skill";
-pub const MCP: &str = "mcp";
-pub const GATEWAY: &str = "gateway";
-pub const CUSTOM_PREFIX: &str = "custom:";
-
-pub fn is_valid_type(ext_type: &str) -> bool;
-pub fn standard_types() -> Vec<&'static str>;
-```
-
-#### `ExtensionCore`
-
-Central registry for all extension hooks.
-
-```rust
-pub struct ExtensionCore { ... }
-
-impl ExtensionCore {
-    /// Register a hook handler
-    pub async fn register_hook(
-        &self,
-        point: HookPoint,
-        handler: Arc<dyn HookHandler>,
-        extension_id: &ExtensionId,
-    ) -> Result<HookId>
-    
-    /// Unregister a hook
-    pub async fn unregister_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Enable/disable hooks
-    pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()>
-    pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()>
-    
-    /// Invoke hooks at a specific point
-    pub async fn invoke_hooks(
-        &self,
-        point: HookPoint,
-        context: HookContext,
-    ) -> Result<Vec<HookResult>>
-    
-    /// List all registered hooks
-    pub async fn list_hooks(&self) -> Vec<HookInfo>
-    
-    /// Get hooks for a specific extension
-    pub async fn get_hooks_for_extension(&self, ext_id: &ExtensionId) -> Vec<HookInfo>
-}
-```
-
-#### `HookPoint`
-
-All 22 extension hook points:
-
-```rust
-pub enum HookPoint {
-    // Prompt lifecycle
-    PromptSystemSection { section: String, priority: i32 },
-    PromptPreProcess,
-    PromptPostProcess,
-    
-    // Tool lifecycle
-    ToolRegister,
-    ToolExecute { tool_name: String },
-    ToolExecuteAsync { tool_name: String },
-    ToolCheckStatus { tool_name: String },
-    ToolCancel { tool_name: String },
-    ToolResultTransform,
-    
-    // Session lifecycle
-    SessionStateChange,
-    SessionCompaction,
-    SessionContextBuild,
-    
-    // I/O lifecycle
-    ChannelInput,
-    ChannelOutput,
-    MessagePreSend,
-    MessagePostReceive,
-    
-    // Event lifecycle
-    EventSubscribe { topic_pattern: String },
-    EventEmit,
-    
-    // Agent lifecycle
-    AgentInit,
-    AgentShutdown,
-    AgentIteration { iteration: usize },
-}
-```
-
-#### `HookHandler` Trait
-
-```rust
-#[async_trait]
-pub trait HookHandler: Send + Sync + std::fmt::Debug {
-    async fn handle(&self, ctx: HookContext) -> HookResult;
-    fn hook_point(&self) -> HookPoint;
-    fn priority(&self) -> i32 { 100 }
-    fn name(&self) -> String;
-}
-```
-
----
+Workspace adapters live under `builtin/`, `role/`, `skill/`, and `mcp/`.
+`BuiltinToolAdapter` registers executable tools in `ToolCatalog`; role and
+skill scanners supply plain prompt providers. MCP owns protocol/runtime,
+reserved injection, tool proxies, and sampling. `workspace_hooks` loads the
+six observer points documented above, using `command_handler` for subprocesses.
+There is no adapter trait, extension manager, global store, or enable/disable API.
 
 ## Module: `principal` / `subject`
 
 **Status:** ACTIVE  
 **ADRs:** ADR-039 (Principal model), ADR-041 (Principal-as-container & session blackboxing), ADR-042 (no external `session` concept in CLI/IPC)
 
-A `Principal` is the top-level container: it owns identity (DID + keys), configuration, capability grants, memory, and the agent prompts that run inside it. A `Subject` is an addressable actor (a Principal or a human user) used for routing and authorization. Sessions are an internal concern of the Principal and are not exposed on the CLI/IPC surface (the only read path is `peko log`).
+A `Principal` is the top-level container: it owns identity (DID + keys), configuration, workspace tooling, memory, and the agent prompts that run inside it. A `Subject` is an addressable actor (a Principal or a human user) used for routing and authorization. Sessions are an internal concern of the Principal and are not exposed on the CLI/IPC surface (the only read path is `peko log`).
 
 ### Public Types
 
@@ -448,16 +166,17 @@ The loaded runtime instance of a Principal container, produced by the `Principal
 pub struct PrincipalManager { ... }
 ```
 
-Owns the lifecycle of Principal containers on disk and in memory — create/load/list and resolution of a session to its owning Principal. Capability checks resolve against the Principal that owns the session (ADR-042); grants are never accepted from the IPC packet.
+Owns principal lifecycle on disk and in memory and resolves sessions to their principal for attribution, quotas, and ownership checks.
 
-#### `principal::PrincipalConfig` / `principal::Capabilities` (ACTIVE)
+#### `principal::PrincipalConfig` (ACTIVE)
 
 ```rust
 pub struct PrincipalConfig { ... }
-pub struct Capabilities { ... }
 ```
 
-On-disk configuration and the capability grants derived from it. An empty/absent grant set is fail-closed (deny-all) — see the `*_fail_closed_without_principal_id` tests.
+On-disk identity, intent, governance, routing, quota, boot state, and inbound
+permissions. There is no `Capabilities` field or runtime grant set. Legacy grant
+bytes are handled only during deserialization (ADR-066 P6).
 
 #### `subject::Subject` (ACTIVE)
 
@@ -738,10 +457,9 @@ sanitizers remain in `peko_session::key`.
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `ExtensionCore` | `extensions::framework::core` | ✅ New | Central hook registry |
-| `ExtensionStore` | `extensions::framework` | ✅ New | Extension lifecycle + on-disk persistence |
-| `HookPoint` (17 variants post-PR-E #4) | `extensions::framework::core` | ✅ New | Extension hook points |
-| `HookHandler` trait | `extensions::framework::core` | ✅ New | Hook implementation |
+| `ToolingRuntime` | `tools::runtime` | ⚠️ Changed | Explicit daemon tooling composition; no process-global accessor |
+| `WorkspaceHookPoint` (six variants) | `extensions::workspace_dispatcher` | ⚠️ Changed | Principal-owned workspace hook points (ADR-066 P4) |
+| `WorkspaceHookHandler` trait | `extensions::workspace_dispatcher` | ⚠️ Changed | Registration-order observe-only hook handler |
 | `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
 
 > **PR-E #1–#5 deletions (2026-08-26):** the `ExtensionManager`,
@@ -752,8 +470,17 @@ sanitizers remain in `peko_session::key`.
 > extension-removal series (commit `224e4162` + earlier). The
 > runtime now relies on workspace-resident extensions driven by
 > `EngineChannelResponder` (peko-channel) and the F37 funnel gate
-> (`peko_engine::funnel`); no adapter registry remains. HookPoint
+> (`peko_engine::funnel`); no adapter registry remains. Legacy HookPoint
 > dropped from 22 to 17 variants in PR-E #4.
+>
+> **ADR-066 P1–P6 (2026-10-02):** The extension store, adapter trait,
+> capability evaluator, exposure filters, remote registry, and contract crate
+> are retired. Async execution lives in `async_exec`; tooling uses the explicit
+> catalog/dispatcher/runtime composition above. Legacy `[capabilities].grants`
+> is consumed only during configuration deserialization, warned once, and
+> omitted on serialization; no grant state reaches agents, prompts, or
+> compaction. Cross-principal writes are governed by filesystem ownership and
+> emit a Security audit event on denial. `RuntimeAuthority::*_write` is async.
 
 ### Agent-Owned Session Management (2026-08-09; revised 2026-08-13)
 
@@ -776,7 +503,7 @@ oversized transcripts page in place. New/changed public items:
 | `SubagentExecutor::{resume_and_execute, resume_and_wait, compact_and_execute, validate_context_parent}` | `agents::subagent_executor` | ✅ New | Persistent subagents (`Agent` `action:"resume"`) + immediate compact-and-continue (`action:"compact"`; replaced `request_compaction` 2026-09-05) |
 | `SpawnRequest` (+`resume_session`, +`caller_session_key`) | `tools::builtin::messaging` | ✅ Extended | Agent tool port input |
 | `SubagentRuntime::compact_and_execute` | `tools::builtin::messaging` | ✅ New | Agent tool compact-action port method (replaced `request_compaction` 2026-09-05) |
-| `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `extensions::framework::async_exec::executor` | ✅ New | Subagent active-run detection |
+| `SubagentMetadata.child_session_id` / `AsyncTaskRegistry::has_active_subagent_run_for_child` | `async_exec::executor` | ✅ New | Subagent active-run detection |
 
 ### Agent–Session Paradigm Sprint (2026-08-15)
 
@@ -835,7 +562,6 @@ tool name. Deleted/changed public items:
 | `tunnel::principal_send_tool` (`SendPeerTool`, `SendPeerArgs`, `PrincipalSendResult`, `build_tool`) | `tunnel::principal_send_tool` | ❌ Deleted | Whole module retired (1775 lines); consolidated into `tools::builtin::channel::ChannelSendTool` with typed-prefix dispatch |
 | `ChannelSendTool::new` (single-arg constructor) | `tools::builtin::channel::channel_send` | ❌ Deleted | Replaced by `new_with_peer(port, did, ctx)` (per-agent, full principal / cross-runtime support) and `new_local_only(port, did)` (bare / group / user only). The global `Arc::new(ChannelSendTool::new(port))` registration in `engine/tool_runtime.rs` is removed — the tool is now per-agent only. |
 | `SendPeerArgs` / `PrincipalSendResult` | (renamed) | ⚠️ Renamed | `ChannelSendArgs` / `ChannelSendResult` in `tools::builtin::channel`. JSON wire shape `{ channel, text, parent?, label? }` — no `target` / `message` fields; the wire form of `channel` carries the routing identity. |
-| `tool:send_peer` capability grant | `peko-extension-api::capabilities` | ❌ Removed | Retired outright (no compat alias). `Capabilities::starter_bundle()` no longer includes the grant; `starter_bundle_does_not_grant_send_peer` pins the absence. Use `tool:ChannelSend` with a typed channel id. |
 | `ChannelSend` registration | `peko::runtime::builtin_tools` | ⚠️ Moved | Was in `GLOBAL_TOOL_NAMES` (singleton, no caller DID); now in `AGENT_SPECIFIC_TOOL_NAMES` (per-agent, caller DID bound at construction). `send_peer` removed. |
 | `ExtensionServices::channel_port()` / `set_channel_port` | `extensions::framework::core::config` | ✅ New | Lets the per-agent `ChannelSendTool` constructor find the file-backed `ChannelPort`. `daemon/state.rs` installs it on the same path as `set_cross_runtime_a2a_ctx`. |
 | `ChannelId` constructors | `peko_protocol::channel` | ✅ New | `ChannelId::for_principal(did)`, `for_user(id)`, `for_group(slug)`. `parse()` accepts any of the four wire forms; `kind()` returns the dispatch kind. |
@@ -964,7 +690,7 @@ format is unchanged. New/changed public items:
 | `SessionPage` / `SearchHit` (`pages::SearchHit`) | `peko_session::pages` | ✅ New | Page catalog entry + page-tagged search hit DTOs (serializable) |
 | `Session::{list_pages, read_page, search_pages}` | `peko_session::unified` | ✅ New | Thin wrappers: `load_events` + delegate to the pure `pages` functions |
 | `SessionRuntime::{list_pages, read_page, search_pages}` | `tools::builtin::session` | ✅ Extended | Session tool port: page catalog / windowed page render / page search. Production adapter resolves + ownership-gates (same read gate as `get_history`), then delegates to `peko_session::pages` |
-| `SessionTool` actions `list_pages` / `read_page` / `search_pages` (10 actions total) | `tools::builtin::session::tool` | ✅ Extended | Agent-facing page retrieval, gated by the existing `tool:session` grant — no new capabilities |
+| `SessionTool` actions `list_pages` / `read_page` / `search_pages` (10 actions total) | `tools::builtin::session::tool` | ✅ Extended | Agent-facing page retrieval, subject to session ownership checks |
 | `pages::render_page_catalog` | `peko_session::pages` | ✅ New | `<archived-pages>` footer renderer shared by the live + resume paths (derived, never stored) |
 | `compaction_summary_message(events, boundary_idx)` | `peko_session::message_conversion` | ⚠️ Changed | Signature takes the full event list + boundary index (was `&SessionEvent`) so the resume path can enumerate pages for the footer |
 | `COMPACTION_SUMMARY_PREFIX` | `peko_session::message_conversion` | ✅ New | Shared `"[Conversation Summary"` prefix for both summary construction sites + the driver's summary-message locator |
@@ -992,8 +718,8 @@ items:
 | `discover_project_instructions` / `PROJECT_INSTRUCTIONS_MAX_BYTES` | `peko_engine::prompt::memory` | ✅ New | D5 (T2): walk up from the run's focus directory to the nearest `AGENTS.md` — no workspace cap; stops after a `.git`-owning directory or at the filesystem root; non-empty only; 32 KiB cap with notice |
 | `TurnPromptContext.project_instructions` / `AgenticLoop::build_turn_context` `focus_dir` param | `peko_engine::prompt::context`, `peko_engine::agentic_loop` | ⚠️ Changed | D5 (T2): the loop tracks the last directory a path-bearing tool call touched (per-run state) and the context carries the discovered `(path-label, content)`; `build_turn_context` gains a `focus_dir: Option<&Path>` parameter |
 | `SectionSlot::ProjectContext` ("project instructions" tail section) | `peko_engine::prompt::renderer` | ✅ New | D5 (T2): renders `## Project instructions (<path>)` + environment-provided provenance note; full D2 update/retraction semantics (rides once, update notice on project/file change, retracts when leaving all AGENTS.md scopes) |
-| `ToolFunnel::registered_prompt_sections` | `peko_extension_api::tool_funnel` (impl: `extensions::framework::tool_funnel_impl`) | ✅ New | D6: enumerates prompt-section names with a registered handler visible to a principal (workspace-hook `principal:<pid>/hook:<id>` ids scope to their principal; all other ids are system scope). Default trait impl returns `vec![]` so test doubles keep compiling |
-| `BindSpec.{section, priority}` + `PromptSection` bind point | `extensions::workspace_hooks` | ✅ New | D6: `hook.toml` binds may name `point = "PromptSection"` with a non-empty `section` (control chars/newlines rejected) and optional `priority` (default 100) → `HookPoint::PromptSystemSection`; the command's stdout becomes a `## <name>` runtime-context tail section |
+| `ToolFunnel::render_prompt_sections` | `peko_engine::tooling` (impl: `tools::runtime`) | ⚠️ Changed | Returns `PromptSections` aggregating built-in providers and workspace-hook sections visible to the requested principal; retains empty custom sections for retraction |
+| `BindSpec.section` + `PromptSection` bind point | `extensions::workspace_hooks` | ⚠️ Changed | Commands render named tail sections; nonempty section names cannot contain control characters. Registration order replaces legacy priority in ADR-066 P4 |
 | `RuntimeContextState` custom-section map + `take_changed_custom` | `peko_engine::prompt::renderer` | ✅ New | D6: open `HashMap<String, String>` change tracker for workspace-hook sections; shares the D2 notice-decision helper (`take_changed_cell`) with the fixed slots — notices always on, label = section name. `render_runtime_context` dedupes `registered_prompt_sections` against the built-in dispatches and renders sorted for byte-stable ordering |
 
 ### Channel-binding wake collision → queued steering (2026-09-12)
@@ -1067,7 +793,7 @@ New/changed public items:
 
 Branch `feat/agent-workflows`. Synchronous, attributed tool execution for
 external workflow processes: the daemon resolves the principal from
-`session_key` server-side, derives grants/extensions from it (never from the
+`session_key` server-side and resolves principal attribution from it (never from the
 wire, fail-closed to deny-all), and executes through the F37 funnel.
 Wire shape documented in `DATA_MODEL.md` §13½. New/changed public items:
 
@@ -1077,7 +803,7 @@ Wire shape documented in `DATA_MODEL.md` §13½. New/changed public items:
 | `ResponsePacket::ToolExecuted` (`tool_executed`) | `ipc::packet` | ✅ New | `{request_id, content, result, success, truncated}` — the funnel's `(display, json, success)` triplet + datagram-budget truncation flag |
 | `DaemonClient::execute_tool` | `ipc::client` | ✅ New | Single request/response call mirroring `spawn_async_task`'s structure |
 | `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ New | Triplet-returning execution variant; `execute_tool_with_workspace` now delegates to it |
-| `ToolHandler::resolve_session_grants` | `ipc::handlers::tool` (crate-internal) | ✅ New | The `AsyncSpawn`/`ExecuteTool` shared attribution path |
+| `ToolHandler::resolve_execution_attribution` | `ipc::handlers::tool` (crate-internal) | ✅ New | The `AsyncSpawn`/`ExecuteTool` shared attribution path |
 | `peko_workflow` Python SDK (`tools.call`) | `sdks/python/peko_workflow` | ✅ New | Stdlib-only unix-socket client for workflow processes |
 
 ### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
@@ -1128,7 +854,7 @@ delivery stack. New/changed public items:
 | `executor::{install_shared_inbox_registry, shared_inbox_registry, DEFAULT_MAX_CONCURRENT_TASKS}` | `async_exec::executor` | ✅ New | Process-global daemon inbox registry slot (installed by `AppState::new`); default task concurrency bound |
 | `AsyncExecutor::{execute_cancellable, enable_completion_delivery, with_max_concurrent}` | `async_exec::executor` | ✅ New | Watch-channel cancel wiring for non-dispatch spawns (background `Bash`); detach-time delivery flip; bound override |
 | `AsyncExecutor::with_registries` | `async_exec::executor` | ⚠️ Signature | The `queue_manager` parameter is gone with the queue delivery stack |
-| `AsyncInboxLike::drain_steering` | `peko_extension_api::async_inbox` | ✅ Extended | Defaulted trait method; `SessionInbox` overrides atomically. Post-run drains no longer destroy completions |
+| `AsyncInboxLike::drain_steering` | `peko_session::async_inbox` | ✅ Extended | Defaulted trait method; `SessionInbox` overrides atomically. Post-run drains no longer destroy completions |
 | `AsyncTaskTransport::deliver_on_completion` | `framework::transport::async_transport` | ✅ Extended | Defaulted; `LocalAsyncTransport` delegates to the executor |
 | **Removed** | — | ❌ Deleted | `RequestPacket::AsyncSpawn`/`AsyncCancel`, `ResponsePacket::AsyncReceipt` (wire change), `DaemonClient::{spawn_async_task,cancel_async_task}`, `DaemonIpcTransport`, `UnavailableAsyncTransport`, `DaemonTransport`, `ipc::create_transport`, `AsyncResultQueue{,Manager}`, `QueueDelivery`/`ChannelDelivery`/`CallbackDelivery`, `AsyncTaskEventBus`, `ExtensionAsyncTool`, `TaskFileWriter::read`, `AsyncResultDeliveryMode`/`DeliveryTarget`/`SessionMessageType` (+ `async_control` mirrors) |
 
@@ -1164,7 +890,7 @@ The following operations must be tested:
    - Delete session
 
 5. **Tool Operations**
-   - Register tools via ExtensionCore
+   - Register tools via ToolCatalog
    - Execute built-in tools
    - Execute MCP tools
 

@@ -1,50 +1,20 @@
-//! Extensions module — Extension Framework + Type Implementations
-//!
-//! Contains both the **generic extension framework** (under `framework/`)
-//! and the **extension type implementations** (MCP, Skill, Builtin,
-//! Agent). The framework is generic and dependency-free; type
-//! implementations sit beside it and depend on the framework.
-//!
-//! # Module Boundaries
-//!
-//! Each extension type lives in its own directory with its adapter, runtime,
-//! and protocol code. Cross-extension dependencies should go through the
-//! framework (`crate::extensions::framework`), not directly between extension types.
-//!
-//! Extension types must NOT be added to this module's submodules without
-//! also providing an `ExtensionTypeAdapter` implementation.
-//!
-//! # Directory Layout
-//!
-//! ```text
-//! src/extensions/
-//! ├── framework/   # Generic framework: core, adapters, manager, types, transport, services, protocols, scaffold, async_exec
-//! ├── builtin/     # Built-in tool adapter
-//! ├── (gateway retired — Sprint 9 Commit 3: chat-gateway adapter
-//! │   framework removed; ingress is now exclusively through
-//! │   per-peer standing children under the agent-session paradigm)
-//! ├── (general retired — PR-C.5: the general adapter had no
-//! │   remaining production callers; command_handler was lifted out)
-//! ├── mcp/         # MCP adapter, protocol, runtime
-//! ├── agent/       # AGENT.md adapter
-//! └── skill/       # Skill adapter
-//! ```
+//! Workspace tooling adapters and observe-only hook dispatch.
+//! Shared host utilities remain under `framework`; executable dispatch lives in `tools`.
 
 // ============================================================================
 // Framework
 // ============================================================================
 
-/// Generic extension framework (core, adapters, manager, types, transport,
-/// services, protocols, scaffold, async_exec). Zero dependencies on
-/// extension type implementations. Extension type adapters depend on this;
-/// this module must not depend on its sibling extension type submodules.
+/// Generic extension framework (core, types, transport, services, protocols).
+/// Zero dependencies on extension type implementations; this module must not
+/// depend on its sibling extension type submodules.
 pub mod framework;
 
 // ============================================================================
 // Extension Type Submodules
 // ============================================================================
 
-/// Built-in tool adapter — registers native Tool trait implementations with ExtensionCore.
+/// Built-in tool adapter — registers native Tool trait implementations with ToolingRuntime.
 pub mod builtin;
 
 // Sprint 9 Commit 3: the gateway extension was retired. The
@@ -81,25 +51,19 @@ pub mod role;
 // framework `SlashAdapter` (Phase 2 PR 4) and the daemon-side
 // `SlashDispatcher` (the only consumer was `/help`, which is now
 // answered by the model itself from its visible prompt catalog).
-// Historical `COMMAND.md` ecosystem-standard files are skipped
-// silently at discovery: no adapter is registered for the "slash"
-// type, so `ExtensionStore::scan_directory` logs a debug line and
-// continues (there is no install-error path — `is_valid_type` has
-// no production callers).
+// Historical `COMMAND.md` ecosystem-standard files are inert: with
+// the extension store deleted (ADR-066 P1) nothing scans for them.
 
 // Universal tools retired (ADR-062, 2026-09-25): the JSON-RPC-over-stdio
 // tool protocol, workspace `<workspace>/tools/<id>/manifest.yaml` scanner,
 // and `peko_tool` SDK are gone. External code reaches the catalog through
 // MCP (schema'd tool servers) or the `Workflow` builtin (ADR-061 —
 // attributed Python subprocesses calling back through the tool funnel).
-// Historical "universal-tool" manifest bytes are skipped silently at
-// discovery for the same reason: no adapter is registered for the
-// retired type, so the scan logs a debug line and moves on — matching
-// the gateway/slash precedent.
+// Historical "universal-tool" manifest bytes are likewise inert.
 
 /// ADR-047 §5 Phase 4: workspace-resident hook scanner. Reads
 /// `<workspace>/hooks/<id>/hook.toml` and registers each binding
-/// against the canonical `ExtensionCore` hook registry.
+/// against the canonical `ToolingRuntime` hook registry.
 pub mod workspace_hooks;
 
 // PR-C: `extensions/validation.rs` (788 lines) deleted. The
@@ -160,11 +124,9 @@ pub mod extension_types {
     // ("universal-tool") removed alongside the protocol + scanner.
     // `GENERAL` ("general") was removed with the general adapter
     // (PR-C.5) — no directory and no adapter serve that type.
-    // Historical manifests of retired types are skipped silently at
-    // discovery: `ExtensionStore::scan_directory` only loads types it
-    // has a registered adapter for, so legacy "universal-tool",
-    // "gateway", "slash", and "general" bytes log a debug line and are
-    // ignored. `is_valid_type` below remains the declarative
+    // Historical manifests of retired types are inert: nothing scans
+    // for them since the extension store was deleted (ADR-066 P1).
+    // `is_valid_type` below remains the declarative
     // validation surface (currently test-only — no production caller).
 
     // Sprint 9 Commit 3: `GATEWAY` constant retired along with the
@@ -241,3 +203,8 @@ mod tests {
         assert!(!types.contains(&"general"));
     }
 }
+
+/// Principal-owned workspace hook dispatch (ADR-066 D3).
+pub mod workspace_dispatcher;
+
+pub mod workspace_io;

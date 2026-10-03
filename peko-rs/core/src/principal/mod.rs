@@ -5,8 +5,9 @@
 // direct deps. Reverse the half-extracted mess.
 //
 // Modules lifted back into root (under `crate::principal::*`):
-//   config, peer, memory, agent_prompt, capability_evaluator — pure
-//     data types + DTOs (F14.c.1 surface)
+//   config, peer, memory, agent_prompt, catalog — pure
+//     data types + DTOs (F14.c.1 surface; `capability_evaluator`
+//     was deleted in ADR-066 P2)
 //   runtime::{mod, builtin_tools} — shared const lists (F14.c.2a;
 //     `OutputFormat` enum was part of this lift and has since been
 //     retired post-slash-removal)
@@ -17,7 +18,6 @@
 
 pub mod agent_prompt;
 pub mod agent_runner;
-pub mod capability_evaluator;
 pub mod catalog;
 pub(crate) mod channel_digest;
 pub(crate) mod child_turns;
@@ -45,8 +45,7 @@ pub mod seen_models;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
-pub use capability_evaluator::CapabilityEvaluator;
-pub use catalog::{capability_kind_for_extension_type, CatalogEntry, PrincipalCatalog};
+pub use catalog::{CatalogEntry, PrincipalCatalog};
 pub use config::{
     ArtifactKind, AuditLevel, BootState, ChildDeclaration, ConsolidationConfig, DelegationGrant,
     MemoryTier, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
@@ -79,7 +78,7 @@ use tokio::sync::RwLock;
 // on `principal` (F3 cycle break).
 use peko_subject::{PrincipalDID, PrincipalId};
 // Phase 14.c.1/14.c.2a: pure-deps types lifted into `peko-principal`
-// (config, peer, memory, factory, agent_prompt, capability_evaluator,
+// (config, peer, memory, factory, agent_prompt,
 // catalog — formerly `extension_store`). The runtime-coupled files in root that compose
 // a `Principal` (manager, context, agent_runner, routers) continue
 // to live alongside the `Principal` struct definition here, so they
@@ -131,11 +130,6 @@ impl Principal {
         self.config.read().await.name.clone()
     }
 
-    /// The capabilities for this Principal.
-    pub async fn capabilities(&self) -> peko_extension_api::Capabilities {
-        self.config.read().await.capabilities.clone()
-    }
-
     /// The exposure level for this Principal.
     pub async fn exposure(&self) -> peko_auth::Exposure {
         self.config.read().await.exposure
@@ -158,7 +152,6 @@ impl Principal {
             exposure: config.exposure.clone(),
             status: config.status.clone(),
             preferred_model_id: config.preferred_model_id.clone(),
-            capabilities: config.capabilities.clone(),
             agent_prompt_count: self.agent_prompts.len(),
             workspace_path: self.workspace_path.display().to_string(),
         }
@@ -181,7 +174,6 @@ pub struct PrincipalSummary {
     pub exposure: peko_auth::Exposure,
     pub status: Option<crate::principal::config::Status>,
     pub preferred_model_id: Option<String>,
-    pub capabilities: peko_extension_api::Capabilities,
     pub agent_prompt_count: usize,
     pub workspace_path: String,
 }

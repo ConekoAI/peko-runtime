@@ -3,7 +3,7 @@
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::extensions::framework::core::{global_core, ExtensionCore};
+use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
 use peko_auth::Subject;
 use peko_engine::state::StateMachine;
@@ -50,10 +50,9 @@ pub struct Agent {
     subagent_executor: Arc<SubagentExecutor>,
     /// Current session ID for `session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
-    /// Daemon-global extension core shared by every agent in the process.
-    /// Per-agent/per-principal visibility is enforced via the per-call
-    /// `capabilities` allowlist, not by isolating cores.
-    extension_core: Arc<ExtensionCore>,
+    /// Explicitly shared tooling runtime. Catalog lookups scope workspace
+    /// tools by principal while retaining the system built-ins.
+    tooling: Arc<ToolingRuntime>,
     /// Optional external inbox registry. When set, the agentic loop drains
     /// this registry's session inbox instead of creating a per-call one,
     /// so external callers can push steering messages into a running agent.
@@ -82,39 +81,13 @@ pub struct Agent {
     /// Spawning principal's runtime id. Inherited by subagent spawns
     /// via `SubagentExecutor`. Threaded into `ToolContext` so tools
     /// such as `Skill` can resolve per-principal state at handle time
-    /// without re-registering themselves on the shared `ExtensionCore`
+    /// without re-registering themselves on the shared `ToolingRuntime`
     /// per principal.
     principal_id: peko_subject::PrincipalId,
     /// Spawning principal's human-readable name. Threaded into
     /// `ToolContext` so Principal-scoped tools (e.g. cron) can target
     /// jobs by name.
     principal_name: Option<String>,
-    /// Snapshot of the spawning principal's capability grants,
-    /// captured at construction from
-    /// `PrincipalContext::capabilities`. Used by
-    /// `init_builtins_async` to filter the tool registry down to
-    /// what this agent's principal can see.
-    ///
-    /// `None` means the agent is unbound from any principal and no
-    /// allowlist-based filtering is applied — every registered tool
-    /// stays visible. This preserves pre-Track-B behaviour for
-    /// test-only `Agent::new` callers and standalone agents.
-    ///
-    /// `Some(empty)` means the principal has an empty allowlist and
-    /// every tool is denied (fail-closed). This matches the
-    /// `AgentStateRegistry` / `ExtensionStateRegistry` semantics.
-    ///
-    /// **Track B**: this snapshot replaces
-    /// `AgentConfig::extensions`/`extension_whitelist` for the
-    /// runtime filter. Once `AgentConfig::extensions` is removed
-    /// the principal's allowlist is the *only* source of truth.
-    principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-    /// Snapshot of the spawning principal's active extension IDs.
-    ///
-    /// When `Some`, tool execution verifies that the tool's owning
-    /// extension is present in this set in addition to the capability
-    /// grant check. Subagents inherit the same snapshot.
-    principal_active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
     /// Spawning principal's plan DAG port. Populated via
     /// `with_principal_plan_port` from
     /// `PrincipalContext::plan_port().clone()` in `agent_runner.rs`
@@ -175,15 +148,13 @@ impl Clone for Agent {
             session_manager: Arc::clone(&self.session_manager),
             subagent_executor: Arc::clone(&self.subagent_executor),
             current_session_id: Arc::clone(&self.current_session_id),
-            extension_core: Arc::clone(&self.extension_core),
+            tooling: Arc::clone(&self.tooling),
             inbox_registry: self.inbox_registry.clone(),
             force_compact: self.force_compact,
             principal_workspace: self.principal_workspace.clone(),
             caller_principal_did: self.caller_principal_did.clone(),
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
-            principal_capabilities: self.principal_capabilities.clone(),
-            principal_active_extensions: self.principal_active_extensions.clone(),
             principal_plan_port: self.principal_plan_port.clone(),
             model_catalog: self.model_catalog.clone(),
             // Phase 4: Arc-cloned so the trait-object + closure
@@ -198,9 +169,9 @@ impl Clone for Agent {
 }
 
 impl Agent {
-    /// Initialize built-in tools and register them with `ExtensionCore`.
+    /// Initialize built-in tools and register them with `ToolingRuntime`.
     ///
-    /// Registers only agent-specific built-in tools with `ExtensionCore`.
+    /// Registers only agent-specific built-in tools with `ToolingRuntime`.
     /// Common built-in tools (Bash, Read, Write, etc.) are already
     /// registered by the daemon's `AppState` startup via `ToolRuntime`;
     /// MCP tools come from the workspace scanner in
@@ -209,17 +180,18 @@ impl Agent {
         use peko_tools_core::Tool;
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
-        // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
-        // all common built-ins on the global ExtensionCore before any Agent is created.
+        // `AppState::build` calls `ToolRuntime::register_builtins` on the
+        // shared runtime's catalog before any Agent is created.
         // Built-ins are under PrincipalId::system(), so the lookup is system-scoped.
         let has_bash = self
-            .extension_core
-            .get_tool_metadata("Bash", peko_subject::PrincipalId::system())
+            .tooling
+            .catalog()
+            .get("Bash", peko_subject::PrincipalId::system())
             .await
             .is_some();
         if !has_bash {
             tracing::error!(
-                "Built-in tools not pre-registered on ExtensionCore. \
+                "Built-in tools not pre-registered on ToolingRuntime. \
                  This indicates a startup ordering bug — AppState should initialize \
                  ToolRuntime before the StatelessAgentService path (Sprint 9 Commit 4)."
             );
@@ -348,14 +320,12 @@ impl Agent {
         // group / user branches work; principal targets return a
         // structured error.
         if let Some(caller_did) = self.caller_principal_did.as_ref() {
-            match crate::tools::builtin::channel::build_channel_send_tool(
-                &self.extension_core,
-                caller_did,
-            ) {
+            match crate::tools::builtin::channel::build_channel_send_tool(&self.tooling, caller_did)
+            {
                 Some(tool) => tools.push(tool),
                 None => {
                     tracing::warn!(
-                        "No ChannelPort on ExtensionCore services — \
+                        "No ChannelPort on the tooling runtime's services — \
                          ChannelSend will not be registered for agent {}",
                         self.config.name
                     );
@@ -369,34 +339,10 @@ impl Agent {
             );
         }
 
-        // Filter against the spawning principal's capabilities. The set
-        // is captured at construction from
-        // `PrincipalContext::capabilities` (see
-        // `with_principal_capabilities`).
-        //
-        // `None`    => no allowlist bound; every registered tool stays visible
-        //              (standalone / test behaviour).
-        // `Some(_)` => filter to the granted tools. An empty inner set means
-        //              deny-all (fail-closed), matching the semantics of
-        //              `AgentStateRegistry` / `ExtensionStateRegistry`.
-        if let Some(caps) = self.principal_capabilities.as_ref() {
-            let before_count = tools.len();
-            tools.retain(|tool| {
-                let required = crate::extensions::framework::types::Capability::new(format!(
-                    "tool:{}",
-                    tool.name()
-                ));
-                caps.is_granted(&required)
-            });
-            tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
-        }
+        // ADR-066 P2: no capability filter — every registered tool is
+        // visible (presence = visibility = executability).
 
-        // `ADR-020: Per-agent tool configuration is now carried on each
-        // `HookInput::ToolCall` via `capabilities` instead of a shared global
-        // whitelist. This eliminates a race where concurrent agents overwrite
-        // each other's capability set on the daemon-global `ExtensionCore`.
-
-        // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
+        // ADR-018/019: Register ONLY agent-specific built-in tools with ToolingRuntime
         // Common built-in tools are already registered via ToolRuntime::register_builtins
         // (MCP tools come from the workspace scanner in
         // `principal::context::install_principal_tool_bag`).
@@ -404,27 +350,27 @@ impl Agent {
         // owns its own Async* family scoped to its own principal_id.
         for tool in &tools {
             if let Err(e) = BuiltinToolAdapter::register_tool(
-                &self.extension_core,
+                self.tooling.catalog(),
                 tool.clone(),
                 &self.principal_id,
             )
             .await
             {
                 tracing::warn!(
-                    "Failed to register built-in tool '{}' with ExtensionCore: {}",
+                    "Failed to register built-in tool '{}' with ToolingRuntime: {}",
                     tool.name(),
                     e
                 );
             } else {
                 tracing::debug!(
-                    "Registered built-in tool '{}' with ExtensionCore",
+                    "Registered built-in tool '{}' with ToolingRuntime",
                     tool.name()
                 );
             }
         }
 
         tracing::info!(
-            "Registered {} agent-specific built-in tools with ExtensionCore",
+            "Registered {} agent-specific built-in tools with ToolingRuntime",
             tools.len()
         );
 
@@ -432,7 +378,7 @@ impl Agent {
     }
 
     /// Create a new agent with the given configuration
-    pub async fn new(config: AgentConfig) -> Result<Self> {
+    pub async fn new(config: AgentConfig, tooling: Arc<ToolingRuntime>) -> Result<Self> {
         // Initialize session manager with path resolver
         let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
             Arc::new(peko_session::DefaultPathResolver::new());
@@ -440,7 +386,7 @@ impl Agent {
             .with_path_resolver(path_resolver, &config.name)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
-        Self::new_with_session_manager_and_resolver(config, session_manager, None).await
+        Self::new_with_session_manager_and_resolver(config, session_manager, None, tooling).await
     }
 
     /// Create a new agent backed by a `LlmResolver` (v3+ path).
@@ -454,6 +400,7 @@ impl Agent {
     pub async fn new_with_resolver(
         config: AgentConfig,
         resolver: Arc<peko_providers::LlmResolver>,
+        tooling: Arc<ToolingRuntime>,
     ) -> Result<Self> {
         let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
             Arc::new(peko_session::DefaultPathResolver::new());
@@ -461,7 +408,13 @@ impl Agent {
             .with_path_resolver(path_resolver, &config.name)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
-        Self::new_with_session_manager_and_resolver(config, session_manager, Some(resolver)).await
+        Self::new_with_session_manager_and_resolver(
+            config,
+            session_manager,
+            Some(resolver),
+            tooling,
+        )
+        .await
     }
 
     /// Create a new agent with an existing session manager.
@@ -471,8 +424,9 @@ impl Agent {
     pub async fn new_with_session_manager(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
+        tooling: Arc<ToolingRuntime>,
     ) -> Result<Self> {
-        Self::new_with_session_manager_and_resolver(config, session_manager, None).await
+        Self::new_with_session_manager_and_resolver(config, session_manager, None, tooling).await
     }
 
     /// Like `new_with_session_manager`, but also accepts an optional
@@ -486,6 +440,7 @@ impl Agent {
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
+        tooling: Arc<ToolingRuntime>,
     ) -> Result<Self> {
         Self::new_with_session_manager_resolver(
             config,
@@ -495,6 +450,7 @@ impl Agent {
             peko_subject::PrincipalId::generate(),
             None,
             None,
+            tooling,
         )
         .await
     }
@@ -503,11 +459,8 @@ impl Agent {
     /// `LlmResolver`, the spawning principal's id, and an optional
     /// external `InboxRegistry`.
     ///
-    /// There is no per-agent `ExtensionCore` — the global
-    /// [`crate::extensions::framework::core::global_core`] is used for
-    /// every agent of the principal. Per-agent visibility is enforced
-    /// by each agent's own extension whitelist. `principal_id` is the
-    /// spawning principal's runtime id, carried so the agent's
+    /// Every agent receives the shared tooling runtime explicitly.
+    /// `principal_id` is the spawning principal's runtime id, carried so the agent's
     /// `SubagentExecutor` and any descendant spawns inherit the same
     /// principal scope. When `inbox_registry` is supplied, the agentic
     /// loop drains that registry's session inbox, allowing the
@@ -525,6 +478,9 @@ impl Agent {
         // Model-first: per-message configured model override
         // (`peko send --model`). `None` preserves the principal hint.
         message_override: Option<String>,
+        // ADR-066 P3: the shared tooling runtime (catalog + dispatcher
+        // + hooks), threaded explicitly — no process-global core.
+        tooling: Arc<ToolingRuntime>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
@@ -548,11 +504,10 @@ impl Agent {
             None => (None, None),
         };
 
-        // Single global ExtensionCore — every agent of the principal
-        // shares it. `principal_id` is the spawning principal's
+        // All agents share the daemon's tooling runtime, threaded
+        // explicitly. `principal_id` is the spawning principal's
         // runtime id; descendant subagents inherit it via the
         // shared `SubagentExecutor`.
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         // Initialize subagent executor
         let subagent_executor_base = SubagentExecutor::new(
@@ -560,6 +515,7 @@ impl Agent {
             config.name.clone(),
             5, // max_concurrent
             principal_id.clone(),
+            Arc::clone(&tooling),
         )
         // WS3 (implicit session management, 2026-08-11): share the
         // daemon-global inbox registry so subagent completions reach
@@ -589,15 +545,13 @@ impl Agent {
             session_manager,
             subagent_executor,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
-            extension_core,
+            tooling,
             inbox_registry,
             force_compact: false,
             principal_workspace: None,
             caller_principal_did: None,
             principal_id,
             principal_name: None,
-            principal_capabilities: None,
-            principal_active_extensions: None,
             principal_plan_port: None,
             // Phase 2 of `feature/multi-model-subagents`: the
             // standalone / CLI one-shot `Agent::new` path doesn't
@@ -707,51 +661,6 @@ impl Agent {
             .with_principal_name(name.clone());
         self.subagent_executor = Arc::new(executor);
         self.principal_name = Some(name);
-        self
-    }
-
-    /// Bind the spawning principal's capabilities for this agent's tool
-    /// filter.
-    ///
-    /// Captures a snapshot of `PrincipalContext::capabilities` at
-    /// construction time so `init_builtins_async` can prune the
-    /// registered tool bag down to what the principal is allowed to
-    /// see. Mutations to the principal's capabilities after construction
-    /// are not picked up by this agent — that is the intended
-    /// semantic (the principal-scoping rules bind per-session).
-    ///
-    /// `None` means unbound — no capability-based filtering is applied.
-    /// `Some(set)` filters to the granted tools; an empty inner set
-    /// means deny-all (fail-closed). This matches the
-    /// `AgentStateRegistry` / `ExtensionStateRegistry` semantics.
-    #[must_use]
-    pub fn with_principal_capabilities(
-        mut self,
-        capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-    ) -> Self {
-        let executor = (*self.subagent_executor)
-            .clone()
-            .with_principal_capabilities(capabilities.clone());
-        self.subagent_executor = Arc::new(executor);
-        self.principal_capabilities = capabilities;
-        self
-    }
-
-    /// Bind the active extension set for this agent's tool execution gate.
-    ///
-    /// When `Some`, every tool call also verifies that the tool's owning
-    /// extension is active. Propagated to the subagent executor so
-    /// descendant spawns inherit the same set.
-    #[must_use]
-    pub fn with_active_extensions(
-        mut self,
-        active_extensions: Option<crate::extensions::framework::types::ActiveExtensionSet>,
-    ) -> Self {
-        let executor = (*self.subagent_executor)
-            .clone()
-            .with_active_extensions(active_extensions.clone());
-        self.subagent_executor = Arc::new(executor);
-        self.principal_active_extensions = active_extensions;
         self
     }
 
@@ -951,30 +860,19 @@ impl Agent {
     /// resolved provider lets the child run its own LLM calls against the
     /// same provider/catalog entry.
     ///
-    /// Tools resolve from the daemon-global
-    /// [`crate::extensions::framework::core::global_core`] — there is no
-    /// per-agent core. The shared executor carries the spawning
-    /// principal's DID so descendant spawns inherit the same principal
-    /// scope; the agent's own `extension_core` field is initialised to
-    /// the global core for backward-compatible access by `extension_core()`
-    /// callers.
+    /// Tools resolve from the runtime carried by the shared executor;
+    /// descendant spawns inherit that runtime and the principal scope.
     pub async fn new_with_shared_executor(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<peko_providers::Provider>>,
-        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-        principal_active_extensions: Option<
-            crate::extensions::framework::types::ActiveExtensionSet,
-        >,
     ) -> Result<Self> {
         Self::new_with_shared_executor_with_model_override(
             config,
             session_manager,
             subagent_executor,
             inherited_provider,
-            principal_capabilities,
-            principal_active_extensions,
             None,
         )
         .await
@@ -997,10 +895,6 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<peko_providers::Provider>>,
-        principal_capabilities: Option<Arc<crate::extensions::framework::types::Capabilities>>,
-        principal_active_extensions: Option<
-            crate::extensions::framework::types::ActiveExtensionSet,
-        >,
         // Optional catalog id the caller stamped on the inherited
         // provider (Phase 1). `None` keeps the pre-Phase-1
         // behavior: `resolved_model_id` is `None` for the
@@ -1009,7 +903,9 @@ impl Agent {
         resolved_model_id_override: Option<String>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+        // ADR-066 P3: the tooling runtime rides the shared
+        // `SubagentExecutor` — every agent in a spawn tree shares it.
+        let tooling = Arc::clone(subagent_executor.tooling());
 
         let identity = Self::load_or_create_identity(&config).await?;
 
@@ -1028,10 +924,7 @@ impl Agent {
         };
         let llm_resolver: Option<Arc<peko_providers::LlmResolver>> = None;
 
-        // Subagents share the daemon-global ExtensionCore with every other
-        // agent in the process. There is no per-principal core; per-principal
-        // tool visibility is enforced by the per-call `capabilities`
-        // allowlist.
+        // Subagents inherit the explicit tooling runtime and principal scope.
 
         let principal_id = subagent_executor.principal_id().clone();
         let principal_name = subagent_executor.principal_name().map(String::from);
@@ -1049,15 +942,13 @@ impl Agent {
             session_manager,
             subagent_executor,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
-            extension_core,
+            tooling,
             inbox_registry: None,
             force_compact: false,
             principal_workspace: None,
             caller_principal_did: None,
             principal_id,
             principal_name,
-            principal_capabilities,
-            principal_active_extensions,
             principal_plan_port: None,
             model_catalog: None,
             // Phase 4: CLI one-shot path doesn't bind an audit
@@ -1090,40 +981,13 @@ impl Agent {
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping agent: {}", self.config.name);
 
-        // Invoke AgentShutdown hook so extensions can clean up
-        let shutdown_result = self
-            .extension_core
-            .invoke_hook(
-                crate::extensions::framework::core::HookPoint::AgentShutdown,
-                crate::extensions::framework::types::HookInput::Unit,
-            )
-            .await;
-        tracing::info!(
-            "AgentShutdown hook result: {:?}",
-            std::mem::discriminant(&shutdown_result)
-        );
-
-        // F31x: fire AfterAgent (per-turn completion notification).
-        // Distinct from AgentShutdown (process-level teardown): a
-        // single agent process can run many turns, but each
-        // `run_with_resume` that ends (success or soft-interrupt)
-        // gets its own AfterAgent signal. Observe-only
-        // — loop continues regardless of handler output.
-        //
-        // Note: this site is currently dead code (no production
-        // caller invokes `Agent::stop()`); wiring it into the
-        // daemon's teardown path is deferred to a follow-up PR.
         let after_agent_payload = serde_json::json!({
             "role_name": self.config.name,
             "agent_did": self.identity.did,
+            "principal_id": self.subagent_executor.principal_id().to_string(),
+            "workspace": self.principal_workspace.as_ref().map(|path| path.to_string_lossy().into_owned()),
         });
-        let _ = self
-            .extension_core
-            .invoke_hook(
-                crate::extensions::framework::core::HookPoint::AfterAgent,
-                crate::extensions::framework::types::HookInput::Json(after_agent_payload),
-            )
-            .await;
+        peko_engine::EngineHooks::fire_after_agent_hook(&*self.tooling, after_agent_payload).await;
 
         Ok(())
     }
@@ -1183,10 +1047,10 @@ impl Agent {
         self.resolved_model_id.as_deref()
     }
 
-    /// Get the extension core
+    /// The shared tooling runtime (catalog + dispatcher + hooks).
     #[must_use]
-    pub fn extension_core(&self) -> Arc<ExtensionCore> {
-        Arc::clone(&self.extension_core)
+    pub fn tooling(&self) -> Arc<ToolingRuntime> {
+        Arc::clone(&self.tooling)
     }
 
     /// Get the current session ID lock.
@@ -1557,7 +1421,7 @@ impl Agent {
     /// follow-up): each call to `Agent::execute_*` constructs a fresh
     /// `SessionInbox`, an `AsyncExecutor` that fans out to
     /// that queue, and `AsyncSpawn`/`AsyncOutput` tools bound to both.
-    /// The tools are re-registered on the `ExtensionCore` (overwriting any
+    /// The tools are re-registered on the `ToolingRuntime` (overwriting any
     /// prior instances), and the same queue is given to `AgenticLoop` so the
     /// loop drains it at iteration start.
     ///
@@ -1584,7 +1448,7 @@ impl Agent {
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Arc<peko_quota::QuotaMeter>,
     ) -> Result<peko_engine::agentic_loop::AgenticLoop> {
-        let extension_core = self.extension_core();
+        let tooling = self.tooling();
 
         // 1. Per-call completion queue (shared by executor + loop).
         //    The executor is wired to a per-call `InboxRegistry` that
@@ -1598,57 +1462,32 @@ impl Agent {
             // No shared registry bound (CLI one-shots, tests): a
             // per-call standalone registry stays consistent because
             // the executor below and the loop both read from it.
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry()
+            crate::async_exec::executor::standalone_inbox_registry()
         };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
         // 2. Per-call AsyncExecutor wired to the same registry.
-        let async_executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(
-                async_inbox_registry.clone(),
-            ),
-        );
+        let async_executor = Arc::new(crate::async_exec::executor::AsyncExecutor::new(
+            async_inbox_registry.clone(),
+        ));
 
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
         //    core. Uses Weak so the tools do not extend the core's lifetime
         //    past the core itself.
-        let core_weak = Arc::downgrade(&extension_core);
-        // F37: snapshot the spawning principal's capability grants.
-        // `AsyncExecutorRuntime::spawn` builds the F37 canonical
-        // funnel closure (`execute_tool_via_hook` with
-        // `ToolDispatchContext::for_principal(...)`) and dispatches
-        // it via `AsyncExecutor::dispatch_tool`. The capability gate
-        // at `registry.rs:260-277` evaluates against these snapshotted
-        // grants. Pre-F37, the gate was bypassed entirely.
-        let snapshot_capabilities: Arc<Vec<String>> = Arc::new(
-            self.principal_capabilities
-                .as_ref()
-                .map(|caps| caps.grants.iter().map(|c| c.0.clone()).collect())
-                .unwrap_or_default(),
-        );
-        let snapshot_active_extensions: Arc<Vec<String>> = Arc::new(
-            self.principal_active_extensions
-                .as_ref()
-                .map(|active| active.to_vec())
-                .unwrap_or_default(),
-        );
+        let core_weak = Arc::downgrade(&tooling);
         // Phase 10c: `AsyncExecutorRuntime` is the framework-host
         // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
-        // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ExtensionCore>` +
-        // principal_id + capabilities snapshot, so each Async* tool
+        // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ToolingRuntime>` +
+        // principal_id, so each Async* tool
         // can take just an `Arc<dyn AsyncRuntime>` rather than
         // reaching into the framework itself.
-        let runtime = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutorRuntime::new(
-                async_executor,
-                core_weak,
-                Some(self.identity.did.clone()),
-                self.principal_id.clone(),
-                snapshot_capabilities,
-                snapshot_active_extensions,
-            ),
-        );
+        let runtime = Arc::new(crate::async_exec::executor::AsyncExecutorRuntime::new(
+            async_executor,
+            core_weak,
+            Some(self.identity.did.clone()),
+            self.principal_id.clone(),
+        ));
         let runtime_handle = runtime.as_shared();
         let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
             runtime_handle.clone(),
@@ -1661,7 +1500,7 @@ impl Agent {
         //    instance). register_tool is idempotent — unregisters first.
         //    Per-agent async tools are scoped to the owning principal.
         if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
-            &extension_core,
+            tooling.catalog(),
             spawn_tool,
             &self.principal_id,
         )
@@ -1670,7 +1509,7 @@ impl Agent {
             warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
         }
         if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
-            &extension_core,
+            tooling.catalog(),
             output_tool,
             &self.principal_id,
         )
@@ -1703,7 +1542,7 @@ impl Agent {
             ),
         ] {
             if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-                &extension_core,
+                tooling.catalog(),
                 tool,
                 &self.principal_id,
             )
@@ -1713,37 +1552,12 @@ impl Agent {
             }
         }
 
-        // F35 — register the synthetic `__tool_search` stub if the agent
-        // opted in via `enable_tool_search`. Registered per-agent so the
-        // tool's Weak<ExtensionCore> points at the shared core without
-        // extending its lifetime.
-        if self.config.enable_tool_search {
-            let search_tool = Arc::new(crate::tools::builtin::ToolSearchTool::new(Arc::downgrade(
-                &extension_core,
-            )));
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_tool_search_tool(
-                    &extension_core,
-                    search_tool,
-                    &self.principal_id,
-                )
-                .await
-            {
-                warn!("Failed to register per-agent ToolSearchTool: {e}");
-            }
-        } else {
-            tracing::debug!(
-                "Tool search disabled by config for agent '{}'",
-                self.config.name
-            );
-        }
-
         // Phase 2 of `feature/multi-model-subagents`: register the
         // `model_list` builtin when both the agent's config opts in
         // (`enable_model_list`) AND a principal catalog is reachable.
         // The CLI one-shot path binds neither (no resolver); the
         // build surfaces silently skip the tool. Same Weak-downgrade
-        // pattern as `ToolSearchTool` so the tool never extends the
+        // pattern so the tool never extends the
         // catalog's lifetime past the daemon.
         if self.config.enable_model_list {
             if let Some(ref catalog) = self.model_catalog {
@@ -1752,7 +1566,7 @@ impl Agent {
                 ));
                 if let Err(e) =
                     crate::extensions::builtin::BuiltinToolAdapter::register_model_list_tool(
-                        &extension_core,
+                        tooling.catalog(),
                         model_list_tool,
                         &self.principal_id,
                     )
@@ -1777,9 +1591,7 @@ impl Agent {
         //    parent_session_key on every spawned task. The session key is
         //    keyed by this agent's DID on the shared core so concurrent
         //    agents in daemon mode do not clobber each other (issue #68).
-        extension_core
-            .set_session_key(&self.identity.did, session_key)
-            .await;
+        peko_engine::EngineHooks::set_session_key(&*tooling, &self.identity.did, session_key).await;
 
         // 6. Construct AgenticLoop with the queue.
         //
@@ -1803,7 +1615,7 @@ impl Agent {
         let mut loop_ = peko_engine::agentic_loop::AgenticLoop::new(
             agent_arc,
             provider,
-            extension_core,
+            tooling,
             compactor_factory,
             compaction_config,
         )
@@ -1845,30 +1657,18 @@ impl Agent {
         Ok(loop_)
     }
 
-    /// Prepare agent for execution by initializing built-in tools and invoking `AgentInit` hooks.
+    /// Prepare agent for execution by initializing built-in tools.
     async fn prepare_execution(&self) -> anyhow::Result<()> {
         if let Err(e) = self.init_builtins_async().await {
             return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
         }
-
-        let init_result = self
-            .extension_core
-            .invoke_hook(
-                crate::extensions::framework::core::HookPoint::AgentInit,
-                crate::extensions::framework::types::HookInput::Unit,
-            )
-            .await;
-        tracing::info!(
-            "AgentInit hook result: {:?}",
-            std::mem::discriminant(&init_result)
-        );
 
         Ok(())
     }
 
     /// Wait for background async tasks to complete
     pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
-        self.extension_core.wait_for_async_tasks(timeout).await;
+        self.tooling.wait_for_async_tasks(timeout).await;
     }
 
     /// Get agent DID
@@ -1896,33 +1696,6 @@ impl Agent {
     #[must_use]
     pub fn principal_name(&self) -> Option<&str> {
         self.principal_name.as_deref()
-    }
-
-    /// Snapshot of the principal's capabilities bound at construction.
-    ///
-    /// The engine consults this set when filtering the tool bag
-    /// during `init_builtins_async` and when computing per-call
-    /// tool definitions. **Track B**: replaces
-    /// `AgentConfig::extension_whitelist()` for runtime reads.
-    ///
-    /// `None` means the agent is unbound and no capability-based
-    /// filtering is applied.
-    #[must_use]
-    pub fn principal_capabilities(
-        &self,
-    ) -> Option<&Arc<crate::extensions::framework::types::Capabilities>> {
-        self.principal_capabilities.as_ref()
-    }
-
-    /// Snapshot of the principal's active extension IDs bound at construction.
-    ///
-    /// The engine consults this set at tool execution time to verify
-    /// that the tool's owning extension is active.
-    #[must_use]
-    pub fn principal_active_extensions(
-        &self,
-    ) -> Option<&crate::extensions::framework::types::ActiveExtensionSet> {
-        self.principal_active_extensions.as_ref()
     }
 
     // ---- Phase 2 inert field accessors ----
@@ -2051,7 +1824,11 @@ impl Agent {
     /// Uses a temporary directory for identity and session storage so tests
     /// do not conflict with each other or the user's real data.
     #[cfg(test)]
-    pub async fn new_for_test(config: AgentConfig, temp_dir: &std::path::Path) -> Result<Self> {
+    pub async fn new_for_test(
+        config: AgentConfig,
+        temp_dir: &std::path::Path,
+        tooling: Arc<ToolingRuntime>,
+    ) -> Result<Self> {
         use peko_identity::storage::KeyStorage;
 
         let path_resolver: Arc<dyn peko_subject::PathResolverLike> = Arc::new(
@@ -2075,13 +1852,12 @@ impl Agent {
                 None => (None, None),
             };
 
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
-
         let subagent_executor_base = SubagentExecutor::new(
             Arc::clone(&session_manager),
             config.name.clone(),
             5,
             peko_subject::PrincipalId::generate(),
+            Arc::clone(&tooling),
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
@@ -2102,15 +1878,13 @@ impl Agent {
             session_manager,
             subagent_executor,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
-            extension_core,
+            tooling,
             inbox_registry: None,
             force_compact: false,
             principal_workspace: None,
             caller_principal_did: None,
             principal_id: peko_subject::PrincipalId::generate(),
             principal_name: None,
-            principal_capabilities: None,
-            principal_active_extensions: None,
             principal_plan_port: None,
             // Phase 2 of `feature/multi-model-subagents`: the
             // test-only `Agent::new_for_test` path doesn't bind a
@@ -2256,21 +2030,6 @@ impl peko_engine::AgentView for Agent {
         Agent::principal_workspace(self)
     }
 
-    fn principal_capabilities(&self) -> Option<&Arc<peko_extension_api::Capabilities>> {
-        // `Agent::principal_capabilities` returns
-        // `Option<&Arc<Capabilities>>` (the Arc lets the agent cache
-        // a principal's capability snapshot across iterations); the
-        // trait surface keeps the `&Arc<...>` shape so callers can
-        // `.cloned()` straight into `Option<Arc<Capabilities>>` slots
-        // (e.g. `TurnPromptContext::capabilities`) without an extra
-        // `Arc::new(...)` wrap at every site.
-        Agent::principal_capabilities(self)
-    }
-
-    fn principal_active_extensions(&self) -> Option<&peko_extension_api::ActiveExtensionSet> {
-        Agent::principal_active_extensions(self)
-    }
-
     fn channel(&self) -> Option<&str> {
         Agent::channel(self)
     }
@@ -2295,10 +2054,6 @@ impl peko_engine::AgentView for Agent {
         Agent::conversation_peer(self)
     }
 
-    fn config_enable_tool_search(&self) -> bool {
-        self.config.enable_tool_search
-    }
-
     fn config_prompt_body(&self) -> Option<String> {
         self.config.prompt.clone()
     }
@@ -2316,23 +2071,19 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_creation() {
-        use crate::extensions::framework::core::ExtensionCore;
-
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale (Windows-headless
         // keyring panics).
         peko_identity::init_test_env();
 
-        // Initialize global ExtensionCore for the test
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
             ..Default::default()
         };
 
-        let agent = Agent::new(config).await;
+        let agent = Agent::new(config, tooling).await;
         assert!(agent.is_ok());
 
         let agent = agent.unwrap();
@@ -2343,22 +2094,18 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_has_session_manager() {
-        use crate::extensions::framework::core::ExtensionCore;
-
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
 
-        // Initialize global ExtensionCore for the test
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let config = AgentConfig {
             name: "test-agent-session".to_string(),
             ..Default::default()
         };
 
-        let agent = Agent::new(config).await.unwrap();
+        let agent = Agent::new(config, tooling).await.unwrap();
 
         // Agent should have a session manager
         let manager = agent.session_manager();
@@ -2369,7 +2116,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use crate::extensions::framework::core::ExtensionCore;
         use peko_auth::Subject;
         use peko_session::types::ChannelType;
 
@@ -2377,16 +2123,14 @@ mod tests {
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
 
-        // Initialize global ExtensionCore for the test
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let config = AgentConfig {
             name: "test-agent-router".to_string(),
             ..Default::default()
         };
 
-        let agent = Agent::new(config).await.unwrap();
+        let agent = Agent::new(config, tooling).await.unwrap();
 
         // Session manager should be able to route to sessions
         let peer = Subject::User("test_user".to_string());
@@ -2402,7 +2146,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use crate::extensions::framework::core::ExtensionCore;
         use peko_auth::Subject;
         use peko_session::types::ChannelType;
 
@@ -2410,16 +2153,14 @@ mod tests {
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
 
-        // Initialize global ExtensionCore for the test
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let config = AgentConfig {
             name: "test-agent-context".to_string(),
             ..Default::default()
         };
 
-        let agent = Agent::new(config).await.unwrap();
+        let agent = Agent::new(config, tooling).await.unwrap();
         let peer = Subject::User("alice".to_string());
 
         let resolved = agent
@@ -2434,23 +2175,20 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_tool_session() {
-        use crate::extensions::framework::core::ExtensionCore;
         use peko_auth::Subject;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
         peko_identity::init_test_env();
 
-        // Initialize global ExtensionCore for the test
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let config = AgentConfig {
             name: "test-agent-spawn".to_string(),
             ..Default::default()
         };
 
-        let agent = Agent::new(config).await.unwrap();
+        let agent = Agent::new(config, tooling).await.unwrap();
         let peer = Subject::User("bob".to_string());
 
         // Create a parent session first
@@ -2486,16 +2224,13 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_two_runtimes_same_name_different_did() {
-        use crate::extensions::framework::core::ExtensionCore;
-
         use tempfile::TempDir;
 
         // Force the encrypted-file identity fallback (Windows-headless
         // keyring panics otherwise).
         peko_identity::init_test_env();
 
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let _tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let make_config = |name: &str| AgentConfig {
             name: name.to_string(),
@@ -2506,12 +2241,20 @@ mod tests {
         let tmp_a = TempDir::new().expect("tempdir A");
         let tmp_b = TempDir::new().expect("tempdir B");
 
-        let agent_a = Agent::new_for_test(make_config("helper"), tmp_a.path())
-            .await
-            .expect("agent A");
-        let agent_b = Agent::new_for_test(make_config("helper"), tmp_b.path())
-            .await
-            .expect("agent B");
+        let agent_a = Agent::new_for_test(
+            make_config("helper"),
+            tmp_a.path(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
+        )
+        .await
+        .expect("agent A");
+        let agent_b = Agent::new_for_test(
+            make_config("helper"),
+            tmp_b.path(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
+        )
+        .await
+        .expect("agent B");
 
         let did_a = agent_a.did().to_string();
         let did_b = agent_b.did().to_string();
@@ -2538,19 +2281,21 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn agent_setters_round_trip() {
-        use crate::extensions::framework::core::ExtensionCore;
         use tempfile::TempDir;
 
         peko_identity::init_test_env();
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let _tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let tmp = TempDir::new().expect("tempdir");
         let mut config = AgentConfig::default();
         config.name = "phase2-setters".to_string();
-        let agent = Agent::new_for_test(config, tmp.path())
-            .await
-            .expect("agent");
+        let agent = Agent::new_for_test(
+            config,
+            tmp.path(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
+        )
+        .await
+        .expect("agent");
 
         let configured = agent
             .clone()
@@ -2582,19 +2327,21 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn agent_resolved_model_id_default_is_none() {
-        use crate::extensions::framework::core::ExtensionCore;
         use tempfile::TempDir;
 
         peko_identity::init_test_env();
-        let core = Arc::new(ExtensionCore::new());
-        crate::extensions::framework::core::init_global_core(core);
+        let _tooling = crate::tools::runtime::ToolingRuntime::standalone();
 
         let tmp = TempDir::new().expect("tempdir");
         let mut config = AgentConfig::default();
         config.name = "phase2-no-resolver".to_string();
-        let agent = Agent::new_for_test(config, tmp.path())
-            .await
-            .expect("agent");
+        let agent = Agent::new_for_test(
+            config,
+            tmp.path(),
+            crate::tools::runtime::ToolingRuntime::standalone(),
+        )
+        .await
+        .expect("agent");
         // `new_for_test` does not wire a resolver; the agent's cached
         // resolved id stays `None`. Callers must fall back to
         // `provider.model_id()`.

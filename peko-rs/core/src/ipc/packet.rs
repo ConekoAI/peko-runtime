@@ -616,14 +616,9 @@ pub enum RequestPacket {
         file_path: String,
         name: Option<String>,
         #[serde(default)]
-        allow_unsigned: bool,
-        #[serde(default)]
         force: bool,
         #[serde(default)]
-        confirmed: bool,
-        /// Capabilities selected by the user during the preview flow.
-        #[serde(default)]
-        selected_capabilities: Vec<String>,
+        expected_manifest_checksum: Option<String>,
     },
 
     /// Preview a `.peko` package before importing it.
@@ -633,48 +628,7 @@ pub enum RequestPacket {
         file_path: String,
         name: Option<String>,
         #[serde(default)]
-        allow_unsigned: bool,
-        #[serde(default)]
         force: bool,
-    },
-
-    /// Preview a remote Principal package before pulling it.
-    #[serde(rename = "principal_pull_preview")]
-    PrincipalPullPreview {
-        request_id: u64,
-        registry_ref: String,
-        name: Option<String>,
-        #[serde(default)]
-        force: bool,
-        registry_host: Option<String>,
-        registry_token: Option<String>,
-    },
-
-    #[serde(rename = "principal_push")]
-    PrincipalPush {
-        request_id: u64,
-        name: String,
-        registry_host: Option<String>,
-        registry_token: Option<String>,
-    },
-
-    #[serde(rename = "principal_pull")]
-    PrincipalPull {
-        request_id: u64,
-        registry_ref: String,
-        name: Option<String>,
-        #[serde(default)]
-        force: bool,
-        #[serde(default)]
-        confirmed: bool,
-        /// Capabilities selected by the user during the preview flow.
-        #[serde(default)]
-        selected_capabilities: Vec<String>,
-        /// Allow pulling an unsigned package.
-        #[serde(default)]
-        allow_unsigned: bool,
-        registry_host: Option<String>,
-        registry_token: Option<String>,
     },
 
     #[serde(rename = "principal_grant_permission")]
@@ -941,9 +895,6 @@ impl RequestPacket {
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalImportPreview { request_id, .. }
-            | Self::PrincipalPullPreview { request_id, .. }
-            | Self::PrincipalPush { request_id, .. }
-            | Self::PrincipalPull { request_id, .. }
             | Self::PrincipalGrantPermission { request_id, .. }
             | Self::PrincipalRevokePermission { request_id, .. }
             | Self::PrincipalSetStatus { request_id, .. }
@@ -1762,47 +1713,10 @@ pub enum ResponsePacket {
         did: String,
         description: Option<String>,
         agents: Vec<String>,
-        extensions: Vec<String>,
-        /// Capabilities required by the bundled extensions. Old daemons that
-        /// omit this field deserialize to an empty list.
-        #[serde(default)]
-        required_capabilities: Vec<String>,
-        signed: bool,
+        inventory: crate::registry::packaging::ExecutableInventory,
+        manifest_checksum: String,
         validation_errors: Vec<String>,
         validation_warnings: Vec<String>,
-    },
-
-    /// Result of previewing a remote Principal package before pulling it.
-    #[serde(rename = "principal_pull_previewed")]
-    PrincipalPullPreviewed {
-        request_id: u64,
-        name: String,
-        version: String,
-        did: String,
-        description: Option<String>,
-        agents: Vec<String>,
-        extensions: Vec<String>,
-        /// Capabilities required by the bundled extensions.
-        #[serde(default)]
-        required_capabilities: Vec<String>,
-        signed: bool,
-        validation_errors: Vec<String>,
-        validation_warnings: Vec<String>,
-    },
-
-    #[serde(rename = "principal_pushed")]
-    PrincipalPushed {
-        request_id: u64,
-        name: String,
-        digest: String,
-    },
-
-    #[serde(rename = "principal_pulled")]
-    PrincipalPulled {
-        request_id: u64,
-        name: String,
-        version: String,
-        digest: String,
     },
 
     #[serde(rename = "principal_permission_granted")]
@@ -2274,22 +2188,6 @@ pub struct RotationBindingWire {
     pub order: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtensionSummary {
-    pub id: String,
-    pub name: String,
-    pub ext_type: String,
-    pub version: String,
-    pub source: String, // "built-in" or "installed"
-    pub enabled: bool,
-    pub runtime: String, // "running", "stopped", or "n/a"
-    pub description: String,
-    /// Capabilities this extension declares it provides (e.g. `tool:Read`).
-    pub provides: Vec<String>,
-    /// Capabilities this extension requires to function.
-    pub requires: Vec<String>,
-}
-
 /// A single doctor check result
 /// Runtime metadata response for IPC (ADR-032)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2429,9 +2327,6 @@ impl ResponsePacket {
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalImportPreviewed { request_id, .. }
-            | Self::PrincipalPullPreviewed { request_id, .. }
-            | Self::PrincipalPushed { request_id, .. }
-            | Self::PrincipalPulled { request_id, .. }
             | Self::PrincipalPermissionGranted { request_id, .. }
             | Self::PrincipalPermissionRevoked { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
@@ -2508,9 +2403,6 @@ impl ResponsePacket {
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",
-            Self::PrincipalPullPreviewed { .. } => "PrincipalPullPreviewed",
-            Self::PrincipalPushed { .. } => "PrincipalPushed",
-            Self::PrincipalPulled { .. } => "PrincipalPulled",
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
             Self::PrincipalPermissionRevoked { .. } => "PrincipalPermissionRevoked",
             Self::PrincipalStatusUpdated { .. } => "PrincipalStatusUpdated",
@@ -2910,7 +2802,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             }],
@@ -2942,7 +2833,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
             }),
@@ -3370,7 +3260,6 @@ mod tests {
                 exposure: peko_auth::Exposure::Public,
                 status: Some(crate::principal::config::Status::Busy),
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3425,7 +3314,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3815,7 +3703,6 @@ mod tests {
             request_id: 303,
             file_path: "/tmp/test.peko".to_string(),
             name: Some("renamed".to_string()),
-            allow_unsigned: true,
             force: false,
         };
         let bytes = req.to_bytes().unwrap();
@@ -3830,29 +3717,12 @@ mod tests {
                 request_id,
                 file_path,
                 name,
-                allow_unsigned,
                 force,
             } => {
                 assert_eq!(request_id, 303);
                 assert_eq!(file_path, "/tmp/test.peko");
                 assert_eq!(name, Some("renamed".to_string()));
-                assert!(allow_unsigned);
                 assert!(!force);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_principal_import_request_confirmed_defaults_to_false() {
-        // Bare deserialization of the legacy wire shape (no `confirmed`
-        // field) must default to `false` so old CLI / daemon pairs don't
-        // accidentally bypass the confirmation gate.
-        let json = r#"{"type":"principal_import","request_id":304,"file_path":"/tmp/x.peko"}"#;
-        let decoded: RequestPacket = serde_json::from_str(json).unwrap();
-        match decoded {
-            RequestPacket::PrincipalImport { confirmed, .. } => {
-                assert!(!confirmed, "confirmed must default to false");
             }
             _ => panic!("Wrong variant"),
         }
@@ -3867,14 +3737,18 @@ mod tests {
             did: "did:peko:local:preview".to_string(),
             description: Some("A preview test principal".to_string()),
             agents: vec!["primary".to_string(), "researcher".to_string()],
-            extensions: vec!["ext-1".to_string()],
-            required_capabilities: vec!["tool:Read".to_string(), "network".to_string()],
-            signed: true,
+            inventory: crate::registry::packaging::ExecutableInventory::from_files(
+                "did:peko:local:preview",
+                &std::collections::HashMap::new(),
+            ),
+            manifest_checksum: "sha256:test".into(),
             validation_errors: vec![],
             validation_warnings: vec!["Unencrypted keys".to_string()],
         };
         let bytes = resp.to_bytes().unwrap();
         let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(!json.contains("required_capabilities"));
+        assert!(!json.contains("extensions"));
         assert!(
             json.contains("\"type\":\"principal_import_previewed\""),
             "expected principal_import_previewed wire tag, got: {json}"
@@ -3888,9 +3762,8 @@ mod tests {
                 did,
                 description,
                 agents,
-                extensions,
-                required_capabilities,
-                signed,
+                inventory,
+                manifest_checksum,
                 validation_errors,
                 validation_warnings,
             } => {
@@ -3903,17 +3776,35 @@ mod tests {
                     agents,
                     vec!["primary".to_string(), "researcher".to_string()]
                 );
-                assert_eq!(extensions, vec!["ext-1".to_string()]);
-                assert_eq!(
-                    required_capabilities,
-                    vec!["tool:Read".to_string(), "network".to_string()]
-                );
-                assert!(signed);
+                assert_eq!(inventory.did, "did:peko:local:preview");
+                assert_eq!(manifest_checksum, "sha256:test");
                 assert!(validation_errors.is_empty());
                 assert_eq!(validation_warnings, vec!["Unencrypted keys".to_string()]);
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    #[test]
+    fn principal_import_drops_legacy_negotiation_fields() {
+        let request = RequestPacket::from_bytes(
+            br#"{"type":"principal_import","request_id":1,"file_path":"/tmp/p.peko","name":null,"force":false,"selected_capabilities":["tool:Bash"],"expected_manifest_checksum":"sha256:preview"}"#,
+        )
+        .unwrap();
+        match &request {
+            RequestPacket::PrincipalImport {
+                expected_manifest_checksum,
+                ..
+            } => {
+                assert_eq!(
+                    expected_manifest_checksum.as_deref(),
+                    Some("sha256:preview")
+                );
+            }
+            _ => panic!("wrong packet"),
+        }
+        let encoded = String::from_utf8(request.to_bytes().unwrap()).unwrap();
+        assert!(!encoded.contains("selected_capabilities"));
     }
 
     #[test]
@@ -3968,7 +3859,6 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
-                capabilities: crate::extensions::framework::types::Capabilities::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             },
@@ -4825,9 +4715,11 @@ mod tests {
             did: "did:peko:local:p".to_string(),
             description: None,
             agents: vec![],
-            extensions: vec![],
-            required_capabilities: vec![],
-            signed: false,
+            inventory: crate::registry::packaging::ExecutableInventory::from_files(
+                "did:peko:local:preview",
+                &std::collections::HashMap::new(),
+            ),
+            manifest_checksum: "sha256:test".into(),
             validation_errors: vec![],
             validation_warnings: vec![],
         };

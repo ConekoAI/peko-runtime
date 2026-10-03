@@ -320,9 +320,7 @@ impl ToolFactory {
                     WriteTool::new()
                         .with_workspace(config.workspace_dir.clone())
                         // ADR-065 cross-agent per-file locking
-                        .with_lock_dir(
-                            crate::extensions::framework::paths::default_data_dir().join("locks"),
-                        ),
+                        .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
                 )
             },
         );
@@ -343,9 +341,7 @@ impl ToolFactory {
                     EditTool::new()
                         .with_workspace(config.workspace_dir.clone())
                         // ADR-065 cross-agent per-file locking
-                        .with_lock_dir(
-                            crate::extensions::framework::paths::default_data_dir().join("locks"),
-                        ),
+                        .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
                 )
             },
         );

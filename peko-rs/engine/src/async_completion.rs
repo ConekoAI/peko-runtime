@@ -9,16 +9,16 @@
 //! Phase 9b.N.1: lifted from `src/engine/async_completion.rs`. The two
 //! imports that couple this file to root — `AsyncTaskStatus` and
 //! `CompletionEvent` — are already workspace crate types
-//! (`peko_extension_api::AsyncTaskStatus` and
-//! `peko_extension_api::CompletionEvent`), and the remaining
+//! (`peko_tools_core::AsyncTaskStatus` and
+//! `peko_session::CompletionEvent`), and the remaining
 //! dependencies (`peko_message`, `peko_tools_core`) are already
 //! `peko-engine` deps. No trait ports or session-coupled shims needed.
 
 use crate::SessionView;
 use chrono::Utc;
-use peko_extension_api::AsyncTaskStatus;
 use peko_message::{ContentBlock, LlmMessage, MessageRole};
 use peko_session::events::MessageSource;
+use peko_tools_core::AsyncTaskStatus;
 use std::collections::HashMap;
 
 /// View trait over a completed async-task event used to build the
@@ -28,8 +28,8 @@ use std::collections::HashMap;
 /// `peko-engine::async_completion` to a single concrete
 /// `CompletionEvent` struct. Two structurally-identical types exist
 /// side-by-side because the Phase 8 split moved one copy to
-/// `peko-extension-host` (`peko_extension_api::CompletionEvent`)
-/// while `peko_extension_api::CompletionEvent`
+/// `host async runtime` (`peko_session::CompletionEvent`)
+/// while `peko_session::CompletionEvent`
 /// remains the legacy root-owned copy. Both implement this trait so the
 /// synthesis function works against either path without forcing the
 /// agentic loop to convert. Consolidating the two structs into one is
@@ -42,7 +42,7 @@ pub trait AsyncCompletionLike {
     fn parent_session_key(&self) -> &str;
 }
 
-impl AsyncCompletionLike for peko_extension_api::CompletionEvent {
+impl AsyncCompletionLike for peko_session::CompletionEvent {
     fn task_id(&self) -> &str {
         &self.task_id
     }
@@ -62,10 +62,10 @@ impl AsyncCompletionLike for peko_extension_api::CompletionEvent {
 
 /// Phase 7 envelope impl: `AsyncInboxItem::Completion` now carries the
 /// API crate's [`CompletionEnvelope`] (down from
-/// `peko_extension_api::CompletionEvent`). This impl lets
+/// `peko_session::CompletionEvent`). This impl lets
 /// `build_async_completion_message` consume envelope-form events
 /// directly without an intermediate conversion back to the host type.
-impl AsyncCompletionLike for peko_extension_api::CompletionEnvelope {
+impl AsyncCompletionLike for peko_session::CompletionEnvelope {
     fn task_id(&self) -> &str {
         &self.task_id
     }
@@ -135,9 +135,9 @@ pub fn truncate_for_preview(text: &str) -> String {
 /// with no pairing requirement, so the orphan class simply does not exist.
 ///
 /// Generic over [`AsyncCompletionLike`] so the function works against
-/// `peko_extension_api::CompletionEvent` (used directly in
+/// `peko_session::CompletionEvent` (used directly in
 /// `crates/engine` tests) and the legacy root-owned
-/// `peko_extension_api::CompletionEvent`
+/// `peko_session::CompletionEvent`
 /// (drained by `src/engine/agentic_loop.rs` from
 /// `SharedSessionInbox`). Both are structurally identical.
 pub fn build_async_completion_message<E: AsyncCompletionLike>(
@@ -242,8 +242,8 @@ mod tests {
         tool_name: &str,
         session_key: &str,
         status: AsyncTaskStatus,
-    ) -> peko_extension_api::CompletionEvent {
-        peko_extension_api::CompletionEvent {
+    ) -> peko_session::CompletionEvent {
+        peko_session::CompletionEvent {
             task_id: task_id.to_string(),
             tool_name: tool_name.to_string(),
             result: serde_json::json!({"exit_code": 0, "stdout": "hello"}),
@@ -258,7 +258,7 @@ mod tests {
         task_id: &str,
         tool_name: &str,
         session_key: &str,
-    ) -> peko_extension_api::CompletionEvent {
+    ) -> peko_session::CompletionEvent {
         make_completion_event_with_status(
             task_id,
             tool_name,
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_build_async_completion_message_no_events() {
-        let events: Vec<peko_extension_api::CompletionEvent> = vec![];
+        let events: Vec<peko_session::CompletionEvent> = vec![];
         let msg = build_async_completion_message(&events, "session_a");
         assert!(msg.is_none(), "Zero events should return None");
     }
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn test_build_async_completion_message_truncates_large_result() {
         let big = "x".repeat(MAX_RESULT_PREVIEW_BYTES + 500);
-        let events = vec![peko_extension_api::CompletionEvent {
+        let events = vec![peko_session::CompletionEvent {
             task_id: "shell:big".to_string(),
             tool_name: "shell".to_string(),
             result: serde_json::json!({"stdout": big}),
@@ -591,7 +591,7 @@ mod tests {
                 .await
                 .unwrap(),
         ));
-        let events: Vec<peko_extension_api::CompletionEvent> = vec![];
+        let events: Vec<peko_session::CompletionEvent> = vec![];
         persist_subagent_completions(&events, &session, session_id).await;
 
         // Nothing appended on the helper's side. `SessionCreated` /

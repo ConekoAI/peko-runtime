@@ -18,10 +18,10 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::process::Command;
 
-use crate::extensions::framework::async_exec::executor::{
+use crate::async_exec::executor::{
     get_or_create_registry_for_agent, shared_inbox_registry, AsyncExecutor,
 };
-use crate::extensions::framework::async_exec::AsyncToolConfig;
+use crate::async_exec::AsyncToolConfig;
 use peko_tools_core::{Tool, ToolContext};
 
 /// Platform-specific shell configuration

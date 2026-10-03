@@ -32,8 +32,9 @@ PR descriptions):
     ``peko-events`` MUST NOT depend on any other ``peko-*`` crate
     (pure value/type layers).
   - ``peko-quota`` MAY depend only on ``peko-message``.
-  - ``peko-extension-api`` MUST NOT depend on any implementation crate
-    (``peko-engine``, ``peko-protocol``).
+
+ADR-066 P6 removes the 12 rules touching the retired extension-api crate;
+all 69 rules protecting live crates remain.
 
 These are the documented plan rules. The script reports any new
 forbidden edge the moment it appears in a ``Cargo.toml``, before a
@@ -124,18 +125,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     (
         "peko-protocol",
-        "peko-extension-api",
-        "protocol is serde+serde_json only; extension hooks are downstream.",
-    ),
-    # B6: `peko-protocol → peko-extension-host` deleted — no crate
-    # named `peko-extension-host` exists. The extension host code
-    # lives at `peko-rs/core/src/extensions/framework/` (root crate,
-    # not a separate workspace member), and `peko-extension-api`
-    # is the only workspace member on the extension side. The
-    # `peko-protocol → peko-extension-api` rule above already
-    # forbids peko-protocol from depending on it.
-    (
-        "peko-protocol",
         "peko-quota",
         "protocol is serde+serde_json only; quota is a runtime concern.",
     ),
@@ -166,14 +155,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-tools-core",
         "subject is a pure value layer.",
     ),
-    (
-        "peko-subject",
-        "peko-extension-api",
-        "subject is a pure value layer.",
-    ),
-    # B6: `peko-subject → peko-extension-host` deleted — see note
-    # above on the `peko-extension-host` rename. `peko-subject →
-    # peko-extension-api` (above) covers the actual edge.
     (
         "peko-subject",
         "peko-provider-api",
@@ -212,11 +193,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     (
         "peko-message",
-        "peko-extension-api",
-        "message is a pure contract.",
-    ),
-    (
-        "peko-message",
         "peko-provider-api",
         "message is a pure contract.",
     ),
@@ -249,11 +225,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-tools-core",
         "peko-subject",
-        "tools-core is a pure API crate.",
-    ),
-    (
-        "peko-tools-core",
-        "peko-extension-api",
         "tools-core is a pure API crate.",
     ),
     # B6: `peko-tools-core → peko-extension-host` deleted.
@@ -298,11 +269,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-tools-core",
         "events is a neutral agentic event contract.",
     ),
-    (
-        "peko-events",
-        "peko-extension-api",
-        "events is a neutral agentic event contract.",
-    ),
     # B6: `peko-events → peko-extension-host` deleted.
     (
         "peko-events",
@@ -335,11 +301,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-tools-core",
         "quota depends only on peko-message.",
     ),
-    (
-        "peko-quota",
-        "peko-extension-api",
-        "quota depends only on peko-message.",
-    ),
     # B6: `peko-quota → peko-extension-host` deleted.
     (
         "peko-quota",
@@ -361,34 +322,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         "peko-engine",
         "quota depends only on peko-message.",
     ),
-    # peko-extension-api is the stable framework contract (Phase 7).
-    # B6: `peko-extension-api → peko-extension-host` deleted — no
-    # `peko-extension-host` crate exists; the framework code is in
-    # `peko-rs/core/src/extensions/framework/` (root crate). The
-    # other `peko-extension-api → ...` rules below forbid it from
-    # depending on any peko-engine/protocol/events/quota crate, which
-    # is what the original intent was.
-    (
-        "peko-extension-api",
-        "peko-engine",
-        "extension-api is a contract crate; engine is downstream.",
-    ),
-    (
-        "peko-extension-api",
-        "peko-protocol",
-        "extension-api is a contract crate; protocol is a separate wire contract.",
-    ),
-    (
-        "peko-extension-api",
-        "peko-events",
-        "extension-api is a contract crate; events is downstream.",
-    ),
-    (
-        "peko-extension-api",
-        "peko-quota",
-        "extension-api is a contract crate; quota is downstream.",
-    ),
-    # peko-fs-persistence is a leaf utility crate (Phase 5)
     (
         "peko-fs-persistence",
         "peko-subject",
@@ -402,11 +335,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-fs-persistence",
         "peko-tools-core",
-        "fs-persistence is leaf-utility; no peko-* deps allowed.",
-    ),
-    (
-        "peko-fs-persistence",
-        "peko-extension-api",
         "fs-persistence is leaf-utility; no peko-* deps allowed.",
     ),
     # B6: `peko-fs-persistence → peko-extension-host` deleted.
@@ -465,11 +393,6 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     (
         "peko-plan",
         "peko-tools-core",
-        "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
-    ),
-    (
-        "peko-plan",
-        "peko-extension-api",
         "plan is a leaf domain crate; only peko-subject + peko-fs-persistence allowed.",
     ),
     # B6: `peko-plan → peko-extension-host` deleted.

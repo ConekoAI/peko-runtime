@@ -18,7 +18,6 @@
 
 use crate::common::vault::Vault;
 use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
-use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient, ServerRequestHandler},
     config::{McpConfig, McpServerConfig, TransportType},
@@ -26,6 +25,7 @@ use crate::extensions::mcp::protocol::{
     transport::SseTransport,
     types::{GetPromptResult, Prompt, Resource, ResourceContents, Tool},
 };
+use crate::extensions::mcp::reserved_params::{ParamSource, ReservedParamsConfig};
 use crate::extensions::mcp::runtime::adapter::{McpClientRegistry, McpRuntimeAdapter};
 use std::collections::HashMap;
 use std::path::PathBuf;

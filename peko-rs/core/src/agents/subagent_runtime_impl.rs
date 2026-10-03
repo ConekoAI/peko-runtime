@@ -9,13 +9,12 @@
 //!
 //! Per the Phase 10 plan rule ("Built-ins must not import daemon
 //! state"), the built-in crate does NOT know about `SubagentExecutor`
-//! directly. It speaks to the four-method [`SubagentRuntime`] port,
+//! directly. It speaks to the [`SubagentRuntime`] port,
 //! and this adapter wires each call to the right executor entry
 //! point:
 //!
 //! | Port method                                | Executor entry point                                                                                              |
 //! |--------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
-//! | [`is_subagent_enabled`]                    | `principal_capabilities` snapshot → `Capability::is_granted("role:<name>")`; fail-closed when no snapshot is registered |
 //! | [`resolve_agent_config`]                   | workspace `<ws>/agents/<n>/AGENT.md` (dir) or `<ws>/agents/<n>.md` (flat). Workspace is required: the global TOML fallback (`{PEKO_HOME}/agents/<n>/config.toml`) was retired in Sprint 8 Commit 2 |
 //! | [`audit_spawn`]                            | `observability.audit("SubagentSpawn", ...)` — no-op when no hub is attached                                        |
 //! | [`execute_and_wait`]                       | `SubagentExecutor::execute_and_wait` — returns the projected `SubagentRunView`                                     |
@@ -33,7 +32,7 @@ use crate::tools::builtin::messaging::{
     SpawnAuditEvent, SpawnRequest, SubagentRunView, SubagentRuntime,
 };
 use anyhow::Context;
-use peko_extension_api::SpawnCleanupPolicy;
+use peko_session::SpawnCleanupPolicy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -116,17 +115,6 @@ impl SubagentExecutorRuntime {
 
 #[async_trait]
 impl SubagentRuntime for SubagentExecutorRuntime {
-    fn is_subagent_enabled(&self, agent: &str) -> bool {
-        // ADR-019/Track B: enforce the per-principal role capability
-        // before loading any on-disk config. Missing authorization context
-        // is denied, matching the canonical tool-execution funnel.
-        self.executor.principal_capabilities().is_some_and(|caps| {
-            let required =
-                crate::extensions::framework::types::Capability::new(format!("role:{agent}"));
-            caps.is_granted(&required)
-        })
-    }
-
     async fn resolve_agent_config(
         &self,
         name: &str,

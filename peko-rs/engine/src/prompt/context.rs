@@ -1,55 +1,7 @@
-//! Per-turn prompt context for the system-prompt renderer.
-//!
-//! `TurnPromptContext` carries the principal, session, iteration, and
-//! control-surface state the [`PromptRenderer`](super::renderer::PromptRenderer)
-//! consumes on every iteration. It is the single typed input the renderer
-//! reads — no environment variables, no hidden state. The renderer rebuilds
-//! the prompt fresh from this context every turn; the rebuilt prompt is the
-//! only source of truth for `messages[0]`.
-//!
-//! ## Control surfaces
-//!
-//! Four long-horizon control surfaces are first-class fields:
-//!
-//! - [`TurnPromptContext::iteration_budget`] — emitted at `{{iteration_budget}}`
-//! - [`TurnPromptContext::quota_tripped`] — emitted at `{{quota_tripped}}` (rising edge only)
-//! - [`TurnPromptContext::soft_cancel_pending`] — emitted at `{{soft_cancel}}`
-//! - [`TurnPromptContext::capability_diff`] — emitted at `{{capability_diff}}`
-//!
-//! Each is opt-in: a template that omits the placeholder simply drops the
-//! section, because [`replace_placeholders`](super::placeholder::replace_placeholders)
-//! with `remove_missing=true` strips unknown tokens.
-//!
-//! ## Capability diff tracking
-//!
-//! [`CapabilityDiffTracker`] lives on the [`AgenticLoop`](crate::AgenticLoop)
-//! and observes the principal's capability snapshot each iteration. The
-//! first render reports all grants as `granted` (baseline); subsequent
-//! renders return `None` when nothing changed and a diff when it did.
-//!
-//! Phase 1 ships the tracker stub and plumbing. Phase 3 wires the four
-//! control-surface placeholders to render real bodies from `ctx`.
-//!
-//! ## Capability diff types re-export
-//!
-//! `CapabilityChange`, `CapabilityChangeKind`, `CapabilityDiff`, and
-//! `CapabilityDiffTracker` are owned by [`peko_engine::iteration_state`]
-//! (Phase 9b.N.5a) but re-exported here so existing renderer / test
-//! paths that import `crate::prompt::context::Capability*` continue
-//! to compile unchanged. The loop itself still lives in root at
-//! `src/engine/agentic_loop.rs` (Phase 9b.N.5b.4 has not lifted it);
-//! once that happens the re-exports become vestigial.
+//! Per-turn prompt rendering context and control banners.
 
-use peko_extension_api::{ActiveExtensionSet, Capabilities};
 use peko_provider_api::ToolDefinition;
 use std::path::PathBuf;
-use std::sync::Arc;
-
-// Capability diff types live in `crate::iteration_state` (Phase 9b.N.5a).
-// Re-export here so renderer + tests keep their existing import paths.
-pub use crate::iteration_state::{
-    CapabilityChange, CapabilityChangeKind, CapabilityDiff, CapabilityDiffTracker,
-};
 
 /// Iteration counter state for the `{{iteration_budget}}` control surface.
 ///
@@ -106,10 +58,6 @@ pub struct TurnPromptContext {
     pub role_name: String,
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).
     pub body: String,
-    /// Per-agent capability snapshot (None ⇒ fail-closed empty set).
-    pub capabilities: Option<Arc<Capabilities>>,
-    /// Active extension IDs for the principal.
-    pub active_extensions: Option<ActiveExtensionSet>,
     /// Per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
     /// Rendered into the system prompt at the `{{memory}}` placeholder.
     pub principal_memory: Option<String>,
@@ -160,8 +108,6 @@ pub struct TurnPromptContext {
     pub quota_tripped: bool,
     /// Soft-cancel pending flag (`false` ⇒ `{{soft_cancel}}` not rendered).
     pub soft_cancel_pending: bool,
-    /// Capability diff vs last observation (`None` ⇒ `{{capability_diff}}` not rendered).
-    pub capability_diff: Option<CapabilityDiff>,
 
     /// Tool definitions resolved by the loop for this iteration. The
     /// renderer does NOT consume this field — tool catalogs travel
@@ -172,88 +118,9 @@ pub struct TurnPromptContext {
     pub tool_definitions: Vec<ToolDefinition>,
 }
 
-impl TurnPromptContext {
-    /// Borrow the principal's capability grant strings (empty when unset).
-    #[must_use]
-    pub fn capability_strings(&self) -> Vec<String> {
-        self.capabilities
-            .as_ref()
-            .map(|c| c.to_strings())
-            .unwrap_or_default()
-    }
-
-    /// Borrow the active extension ID list.
-    #[must_use]
-    pub fn active_extension_vec(&self) -> Vec<String> {
-        self.active_extensions
-            .as_ref()
-            .map(|a| a.to_vec())
-            .unwrap_or_default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn capability_diff_first_observe_is_none() {
-        let mut tracker = CapabilityDiffTracker::new();
-        let caps = Capabilities::with_grants(["tool:Read"]);
-        assert_eq!(tracker.observe(&caps), None);
-    }
-
-    #[test]
-    fn capability_diff_unchanged_returns_none() {
-        let mut tracker = CapabilityDiffTracker::new();
-        let caps = Capabilities::with_grants(["tool:Read", "tool:Write"]);
-        tracker.observe(&caps);
-        assert_eq!(tracker.observe(&caps), None);
-    }
-
-    #[test]
-    fn capability_diff_detects_grant() {
-        let mut tracker = CapabilityDiffTracker::new();
-        tracker.observe(&Capabilities::with_grants(["tool:Read"]));
-        let diff = tracker
-            .observe(&Capabilities::with_grants(["tool:Read", "tool:Write"]))
-            .expect("grant should produce a diff");
-        assert_eq!(diff.revoked.len(), 0);
-        assert_eq!(diff.granted.len(), 1);
-        assert_eq!(diff.granted[0].capability, "tool:Write");
-        assert_eq!(diff.granted[0].kind, CapabilityChangeKind::Granted);
-    }
-
-    #[test]
-    fn capability_diff_detects_revoke() {
-        let mut tracker = CapabilityDiffTracker::new();
-        tracker.observe(&Capabilities::with_grants(["tool:Read", "tool:Write"]));
-        let diff = tracker
-            .observe(&Capabilities::with_grants(["tool:Read"]))
-            .expect("revoke should produce a diff");
-        assert_eq!(diff.granted.len(), 0);
-        assert_eq!(diff.revoked.len(), 1);
-        assert_eq!(diff.revoked[0].capability, "tool:Write");
-        assert_eq!(diff.revoked[0].kind, CapabilityChangeKind::Revoked);
-    }
-
-    #[test]
-    fn capability_diff_render_empty_returns_empty_string() {
-        let diff = CapabilityDiff::default();
-        assert_eq!(diff.render(), "");
-    }
-
-    #[test]
-    fn capability_diff_render_includes_grants_and_revokes() {
-        let diff = CapabilityDiff {
-            granted: vec![CapabilityChange::granted("tool:Write")],
-            revoked: vec![CapabilityChange::revoked("tool:Bash")],
-        };
-        let rendered = diff.render();
-        assert!(rendered.contains("## Capability changes since last turn"));
-        assert!(rendered.contains("- tool:Write"));
-        assert!(rendered.contains("- tool:Bash"));
-    }
 
     #[test]
     fn iteration_budget_render_is_bare_counter() {

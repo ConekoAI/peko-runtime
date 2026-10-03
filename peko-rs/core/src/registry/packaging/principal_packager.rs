@@ -3,11 +3,10 @@
 //! Exports Principals to `.peko` files (tar.gz archives with manifest).
 
 use crate::principal::config::PrincipalConfig;
-use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
-use crate::registry::packaging::types::{compute_digest, Layer};
+use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use anyhow::Context;
 use peko_identity::Identity;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Export options for a Principal package.
@@ -18,12 +17,10 @@ use std::path::{Path, PathBuf};
 /// `include_sessions` hybrid flag are removed: cloning is
 /// `peko create -s <seed.toml>` (fresh DID, fresh genesis),
 /// and transporting a live principal is export → import of a
-/// snapshot (same DID, state verbatim). Registry distribution uses
-/// [`PrincipalPackager::export_for_registry`], which emits a
-/// DID-free, key-free template payload — never a snapshot.
+/// snapshot (same DID, state verbatim). Seeds are plain TOML files.
 #[derive(Debug, Clone)]
 pub struct PrincipalExportOptions {
-    /// Output path (defaults to `<name>.principal`)
+    /// Output path (defaults to `<name>.peko`)
     pub output_path: Option<String>,
     /// Optional description
     pub description: Option<String>,
@@ -36,22 +33,6 @@ impl Default for PrincipalExportOptions {
             description: None,
         }
     }
-}
-
-/// Registry-specific push descriptor produced alongside the local package.
-#[derive(Debug, Clone)]
-pub struct PrincipalRegistryDescriptor {
-    /// Package file path
-    pub package_path: PathBuf,
-    /// Principal manifest TOML bytes (used as the OCI config blob)
-    pub manifest_toml: Vec<u8>,
-    /// Layer descriptors for the registry manifest
-    pub layers: Vec<Layer>,
-    /// Layer content indexed by digest (includes the config blob)
-    pub layer_data: HashMap<String, Vec<u8>>,
-    /// Raw `identity/did.json` bytes, used to pre-validate the manifest
-    /// signature before pushing to a registry.
-    pub did_doc: Vec<u8>,
 }
 
 /// Packager for creating `.peko` packages.
@@ -74,19 +55,6 @@ pub struct PrincipalRegistryDescriptor {
 /// across live runtimes — cloning goes through a seed with a
 /// fresh identity.
 ///
-/// **Registry artifact (ADR-060):** [`PrincipalPackager::export_for_registry`]
-/// emits a *seed* payload — a plain `principal.toml` with
-/// `id`/`did`/`boot_state` stripped, and nothing else. No keys, no
-/// sessions, no agent prompts, and no workspace tooling ever leave the
-/// host through the registry; a pulled seed clones via a freshly
-/// minted identity. (The full `.peko` export above is the one that
-/// carries `skills/` and the rest of the workspace tooling.)
-///
-/// **Phase A/5/7 history:** the legacy `with_memory_dir` knob and the
-/// embedded-extension paths are gone; workspace tooling lives in the
-/// principal's workspace; the `plugins/` layer convention (always
-/// empty today) supersedes the legacy `extensions/` layer, which the
-/// unpackager still accepts on import.
 pub struct PrincipalPackager {
     config: PrincipalConfig,
     identity: Identity,
@@ -143,56 +111,6 @@ impl PrincipalPackager {
         self.create_archive(&files, &options).await
     }
 
-    /// Emit the seed payload for registry distribution (ADR-056).
-    ///
-    /// The registry distributes DNA, not creatures — and DNA is a
-    /// **plain TOML file** (a `principal.toml` with `id`, `did`, and
-    /// `boot_state` stripped), exactly the shape `peko create -s`
-    /// consumes. No package wrapper, no keys, no sessions, no
-    /// cron/plans ever leave the host through the registry: the TOML
-    /// is inspectable with `cat`, diffable, and groundable via a
-    /// freshly minted identity and genesis. The source principal's
-    /// public DID document rides along in the OCI descriptor as
-    /// publisher provenance; cryptographic endorsement of the file
-    /// bytes is a follow-up (registry credentials establish the
-    /// publisher for now).
-    pub async fn export_for_registry(
-        self,
-        options: PrincipalExportOptions,
-    ) -> anyhow::Result<PrincipalRegistryDescriptor> {
-        let seed_toml = self.seed_toml()?;
-        let seed_bytes = seed_toml.into_bytes();
-
-        // Write the TOML artifact to disk (the caller treats it as the
-        // pushed artifact and may clean it up).
-        let artifact_path = match &options.output_path {
-            Some(p) => PathBuf::from(p),
-            None => PathBuf::from(format!("{}.seed.toml", self.config.name)),
-        };
-        if let Some(parent) = artifact_path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("Failed to create output directory: {}", parent.display())
-            })?;
-        }
-        tokio::fs::write(&artifact_path, &seed_bytes).await?;
-
-        // OCI transport: the seed TOML IS the config blob; there
-        // are no content layers.
-        let mut layer_data: HashMap<String, Vec<u8>> = HashMap::new();
-        let config_digest = compute_digest(&seed_bytes);
-        layer_data.insert(config_digest.clone(), seed_bytes.clone());
-
-        let did_doc = serde_json::to_vec_pretty(&self.identity.to_did_document()?)?;
-
-        Ok(PrincipalRegistryDescriptor {
-            package_path: artifact_path,
-            manifest_toml: seed_bytes,
-            layers: Vec::new(),
-            layer_data,
-            did_doc,
-        })
-    }
-
     /// The stripped seed TOML (ADR-056): a `principal.toml` whose
     /// `id`, `did`, and `boot_state` are removed, so `peko create -s`
     /// mints a fresh identity and infers the boot state.
@@ -218,12 +136,12 @@ impl PrincipalPackager {
             .map(|d| d.0.clone())
             .unwrap_or_else(|| self.identity.did.clone());
 
-        let mut manifest = PrincipalManifest::new(&self.config.name, "1.0.0", &did);
+        let mut manifest = PrincipalManifest::new(&self.config.name, &did);
 
         if let Some(ref desc) = options.description {
-            manifest.principal.description = Some(desc.clone());
+            manifest.description = Some(desc.clone());
         } else if let Some(ref desc) = self.config.identity.description {
-            manifest.principal.description = Some(desc.clone());
+            manifest.description = Some(desc.clone());
         }
 
         let mut files: HashMap<String, Vec<u8>> = HashMap::new();
@@ -233,11 +151,6 @@ impl PrincipalPackager {
             .context("Failed to export identity")?;
         self.export_config(&mut files, &mut manifest)
             .context("Failed to export config")?;
-
-        // Phase 5/7 (ADR-047): no embedded-extension paths; the
-        // `plugins/` layer convention is emitted (always empty today)
-        // and the legacy `extensions/` prefix is dropped entirely
-        // from packager output.
 
         self.export_roles(&mut files, &mut manifest)
             .await
@@ -258,88 +171,10 @@ impl PrincipalPackager {
             .await
             .context("Failed to export workspace tooling")?;
 
-        manifest.layers = Some(Self::compute_layers(&files)?);
-        self.sign_manifest(&mut manifest)
-            .context("Failed to sign manifest")?;
-
         let manifest_toml = manifest.to_toml().context("Failed to serialize manifest")?;
         files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
 
         Ok((files, manifest))
-    }
-
-    fn compute_layers(files: &HashMap<String, Vec<u8>>) -> anyhow::Result<PrincipalLayers> {
-        let mut layers = PrincipalLayers::default();
-
-        // Phase 7 (ADR-047 §5): the canonical plugin layer is `plugins/`;
-        // the legacy `extensions/` prefix is no longer emitted by the
-        // packager. The unpackager still accepts it on import.
-        // ADR-056: full-snapshot layers (`cron`, `plans`, `tools`,
-        // `skills`, `mcp`, `hooks`, `kb`) are computed from whatever
-        // the collector packed.
-        let layer_prefixes = [
-            "config", "identity", "roles", "memory", "sessions", "cron", "plans", "tools",
-            "skills", "mcp", "hooks", "kb", "plugins",
-        ];
-
-        for prefix in layer_prefixes {
-            let mut layer_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-            for (path, content) in files {
-                if path.starts_with(&format!("{prefix}/")) {
-                    let layer_path = path.strip_prefix(&format!("{prefix}/")).unwrap_or(path);
-                    layer_files.insert(layer_path.to_string(), content.clone());
-                }
-            }
-
-            if !layer_files.is_empty() {
-                let digest = Self::build_layer_digest(&layer_files)?;
-                match prefix {
-                    "config" => layers.config = Some(digest),
-                    "identity" => layers.identity = Some(digest),
-                    "roles" => layers.roles = Some(digest),
-                    "memory" => layers.memory = Some(digest),
-                    "sessions" => layers.sessions = Some(digest),
-                    "cron" => layers.cron = Some(digest),
-                    "plans" => layers.plans = Some(digest),
-                    "tools" => layers.tools = Some(digest),
-                    "skills" => layers.skills = Some(digest),
-                    "mcp" => layers.mcp = Some(digest),
-                    "hooks" => layers.hooks = Some(digest),
-                    "kb" => layers.kb = Some(digest),
-                    "plugins" => layers.plugins = Some(digest),
-                    _ => {}
-                }
-            }
-        }
-
-        Ok(layers)
-    }
-
-    fn build_layer_digest(files: &BTreeMap<String, Vec<u8>>) -> anyhow::Result<String> {
-        let (digest, _bytes) = Self::build_layer_digest_and_bytes(files)?;
-        Ok(digest)
-    }
-
-    /// Build a deterministic gzip tar layer and return both its digest and bytes.
-    fn build_layer_digest_and_bytes(
-        files: &BTreeMap<String, Vec<u8>>,
-    ) -> anyhow::Result<(String, Vec<u8>)> {
-        let mut buf = Vec::new();
-        {
-            let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
-            let mut tar = tar::Builder::new(enc);
-            for (path, content) in files {
-                let mut header = tar::Header::new_gnu();
-                header.set_path(path)?;
-                header.set_size(content.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-                tar.append(&header, content.as_slice())?;
-            }
-            tar.finish()?;
-        }
-        let digest = compute_digest(&buf);
-        Ok((digest, buf))
     }
 
     async fn export_identity(
@@ -495,32 +330,6 @@ impl PrincipalPackager {
         Ok(())
     }
 
-    fn sign_manifest(&self, manifest: &mut PrincipalManifest) -> anyhow::Result<()> {
-        let manifest_for_signing = PrincipalManifest {
-            signatures: crate::registry::packaging::manifest::Signatures {
-                manifest: String::new(),
-                algorithm: "ed25519".to_string(),
-            },
-            ..manifest.clone()
-        };
-
-        let manifest_toml = manifest_for_signing.to_toml()?;
-
-        let keypair = self
-            .identity
-            .keypair
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Identity has no keypair"))?;
-        let signature = keypair.sign(manifest_toml.as_bytes());
-
-        use base64::Engine;
-        manifest.signatures.manifest =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
-        manifest.signatures.algorithm = "ed25519".to_string();
-
-        Ok(())
-    }
-
     async fn create_archive(
         &self,
         files: &HashMap<String, Vec<u8>>,
@@ -544,7 +353,7 @@ impl PrincipalPackager {
         let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
         let mut tar = tar::Builder::new(enc);
 
-        for (path, content) in files {
+        for (path, content) in files.iter().collect::<std::collections::BTreeMap<_, _>>() {
             let mut header = tar::Header::new_gnu();
             header.set_path(path)?;
             header.set_size(content.len() as u64);
@@ -553,7 +362,7 @@ impl PrincipalPackager {
             tar.append(&header, content.as_slice())?;
         }
 
-        tar.finish()?;
+        tar.into_inner()?.finish()?;
         Ok(output_path)
     }
 }
@@ -594,7 +403,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             boot_state: None,
@@ -636,7 +444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn principal_manifest_layers_computed() {
+    async fn principal_manifest_inventory_computed() {
         let identity = Identity::new("layers", DIDScope::Local).await.unwrap();
         let config = sample_config("layers", &identity.did);
 
@@ -651,11 +459,9 @@ mod tests {
             .await
             .unwrap();
 
-        let layers = manifest.layers.expect("layers computed");
-        assert!(layers.config.is_some(), "config layer present");
-        assert!(layers.identity.is_some(), "identity layer present");
-        assert!(layers.roles.is_some(), "roles layer present");
-        assert!(!manifest.signatures.manifest.is_empty(), "manifest signed");
+        assert!(manifest.files.contains_key("config/principal.toml"));
+        assert!(manifest.files.contains_key("identity/keys.enc"));
+        assert!(manifest.files.contains_key("roles/a.md"));
     }
 
     /// Build a realistic tier layout for snapshot tests: roles in the
@@ -706,7 +512,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_collects_local_and_tooling_layers() {
+    async fn snapshot_collects_local_state_and_tooling() {
         let identity = Identity::new("snapshot", DIDScope::Local).await.unwrap();
         let config = sample_config("snapshot", &identity.did);
 
@@ -727,6 +533,10 @@ mod tests {
         assert!(files.contains_key("sessions/s1.jsonl"), "sessions packed");
         assert!(files.contains_key("cron/schedule.toml"), "cron packed");
         assert!(files.contains_key("plans/p1.jsonl"), "plans packed");
+        assert_eq!(manifest.files.len() + 1, files.len());
+        for (path, checksum) in &manifest.files {
+            assert_eq!(checksum, &PrincipalManifest::compute_checksum(&files[path]));
+        }
         assert!(files.contains_key("tools/my-tool/manifest.yaml"));
         assert!(files.contains_key("skills/docker/SKILL.md"));
         assert!(files.contains_key("mcp/weather/server.json"));
@@ -745,22 +555,15 @@ mod tests {
             !files.contains_key("memory_index.json"),
             "memory index is derived state — not packaged"
         );
-
-        let layers = manifest.layers.expect("layers computed");
-        assert!(layers.cron.is_some(), "cron layer digest");
-        assert!(layers.plans.is_some(), "plans layer digest");
-        assert!(layers.tools.is_some(), "tools layer digest");
-        assert!(layers.kb.is_some(), "kb layer digest");
-        assert!(layers.sessions.is_some(), "sessions layer digest");
     }
 
-    /// ADR-056: the registry artifact is a plain TOML template — a
+    /// ADR-056: the seed artifact is a plain TOML template — a
     /// `principal.toml` stripped of `id`/`did`/`boot_state`. It is
     /// not a package at all: inspectable with `cat`, groundable via
     /// `peko create -s`, and incapable of carrying keys or lived
     /// state.
     #[tokio::test]
-    async fn registry_seed_is_a_plain_toml() {
+    async fn seed_is_plain_toml() {
         use crate::principal::config::BootState;
 
         let identity = Identity::new("template", DIDScope::Local).await.unwrap();
@@ -768,61 +571,10 @@ mod tests {
         config.id = Some(peko_subject::PrincipalId("prin_template_src".into()));
         config.set_boot_state(BootState::Organized);
 
-        let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("template.seed.toml");
-
         let packager = PrincipalPackager::new(config, identity);
-        let descriptor = packager
-            .export_for_registry(PrincipalExportOptions {
-                output_path: Some(out.display().to_string()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-
-        // The artifact on disk is the TOML itself — no keys, no
-        // source identity, no boot state.
-        let artifact = std::fs::read_to_string(&out).unwrap();
+        let artifact = packager.seed_toml().unwrap();
         assert!(!artifact.contains("prin_template_src"), "{artifact}");
         assert!(!artifact.contains("boot_state"), "{artifact}");
         assert!(!artifact.contains("keys"), "{artifact}");
-
-        // OCI transport: the TOML is the config blob; zero layers.
-        assert!(descriptor.layers.is_empty());
-        assert_eq!(descriptor.manifest_toml, artifact.as_bytes());
-        assert_eq!(descriptor.layer_data.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn export_for_registry_includes_layer_bytes() {
-        let identity = Identity::new("registry", DIDScope::Local).await.unwrap();
-        let config = sample_config("registry", &identity.did);
-
-        let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("registry.peko");
-        let packager = PrincipalPackager::new(config, identity);
-        let descriptor = packager
-            .export_for_registry(PrincipalExportOptions {
-                output_path: Some(out.display().to_string()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-
-        // The config blob is the manifest TOML and is present in layer_data.
-        let config_digest = compute_digest(&descriptor.manifest_toml);
-        assert!(descriptor.layer_data.contains_key(&config_digest));
-        // Every declared layer has its bytes available.
-        for layer in &descriptor.layers {
-            assert!(
-                descriptor.layer_data.contains_key(&layer.digest),
-                "missing bytes for layer {}",
-                layer.digest
-            );
-            assert_eq!(
-                layer.size_bytes,
-                descriptor.layer_data[&layer.digest].len() as u64
-            );
-        }
     }
 }

@@ -3,7 +3,7 @@ name = "peko-tools-core"
 version = "0.1.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
-description = "Tool execution API — owns Tool, ToolContext, AbortSignal, ToolResult, ToolError, ToolProgressEvent, ToolWithContext, ToolInterruptNotice, ContextSource, ToolContextAdapter, ToolExposure"
+description = "Leaf tool API, execution context, async task status, and runtime path helpers"
 license = "MIT"
 repository = "https://github.com/ConekoAI/peko-runtime"
 
@@ -20,6 +20,8 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # Used in `context_source.rs` to log unknown-field warnings during
 # runtime context resolution.
 tracing = "0.1"
+
+dirs = "5.0"
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["rt", "macros", "sync", "time", "rt-multi-thread"] }

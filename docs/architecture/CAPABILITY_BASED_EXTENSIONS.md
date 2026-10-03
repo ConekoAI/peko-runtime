@@ -1,5 +1,12 @@
 # North-Star Architecture: Capability-Based Extension Authority
 
+> **Historical design, superseded by ADR-066 (P1–P6 complete).** The grant
+> language, extension framework/store, manifest contracts, and registry flows
+> below are retired. Presence makes workspace tooling available; cross-principal
+> writes use ownership and audit. See [ADR-066](adr/ADR-066-pure-workspace-tooling.md)
+> and [Principal Workspace](PRINCIPAL_WORKSPACE.md) for the current design.
+
+
 **Status:** Implemented (Issue 021).  
 **Purpose:** Define the architecture for peko packaging and extension authority in peko. `Capability`, `Capabilities`, and `ActiveExtensionSet` now live in `extensions::framework::types`. The legacy global tool whitelist and `allowed_extensions` have been removed; `[capabilities] grants` in `principal.toml` is the single source of truth.
 

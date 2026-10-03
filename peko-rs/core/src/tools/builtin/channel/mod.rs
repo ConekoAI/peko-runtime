@@ -15,11 +15,8 @@
 //! principal boundary is enforced at the port call site (which has
 //! its own `NotMember` check).
 //!
-//! The capability gate is the standard `tool:ChannelRead` /
-//! `tool:ChannelSend` grant that the principal's capability set
-//! already enforces through the F37 funnel — these tools themselves
-//! do not check capabilities, the gate sits at execute-time on the
-//! caller's side.
+//! ADR-066 P2: no capability gate — the membership check at the
+//! port call site is the boundary; these tools do not gate further.
 
 pub mod channel_read;
 pub mod channel_send;
@@ -30,20 +27,20 @@ pub use channel_send::{
 
 /// Build the per-caller `ChannelSend` tool for `caller_did`, wiring the
 /// daemon-global channel port and (when present) the cross-runtime ctx
-/// from the shared `ExtensionCore` services. This is the same wiring
+/// from the shared tooling runtime's services. This is the same wiring
 /// `Agent::init_builtins_async` performs at run start, factored out so
 /// non-run dispatch paths (cron `SpawnTool`) can ensure the
 /// registration without booting an agent.
 ///
-/// Returns `None` when the core has no channel port installed — the
+/// Returns `None` when the runtime has no channel port installed — the
 /// tool is useless without one.
 #[must_use]
 pub fn build_channel_send_tool(
-    core: &crate::extensions::framework::core::ExtensionCore,
+    tooling: &crate::tools::runtime::ToolingRuntime,
     caller_did: &str,
 ) -> Option<std::sync::Arc<dyn peko_tools_core::Tool>> {
-    let port = core.services().channel_port()?;
-    let cross_ctx = core
+    let port = tooling.services().channel_port()?;
+    let cross_ctx = tooling
         .services()
         .cross_runtime_a2a_ctx()
         .and_then(|ctx| std::sync::Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());

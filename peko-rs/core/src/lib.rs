@@ -36,20 +36,9 @@
 //!
 //! ## Extension System
 //!
-//! Extensions use the Unified Extension Architecture (ADR-017):
-//!
-//! ```rust,ignore
-//! use peko::extensions::framework::{
-//!     ExtensionStore, ExtensionManifest,
-//! };
-//!
-//! async fn example() {
-//!     let store = ExtensionStore::new();
-//!     // Sprint 9 Commit 3: the gateway adapter framework was retired.
-//!     // Skills / MCP remain (universal tools retired in ADR-062).
-//!     store.install("./my-skill").await.unwrap();
-//! }
-//! ```
+//! Extensions use the Unified Extension Architecture (ADR-017): skills,
+//! roles, hooks, and MCP servers are plain files in the principal
+//! workspace (ADR-050); presence = visibility.
 //!
 //! ## Cargo Workspace
 //!
@@ -236,7 +225,7 @@ pub mod auth_compat;
 // post-slash-removal; PrincipalExtensionRow re-type also retired with
 // the slash module). The runtime cluster (manager/context/agent_runner/
 // routers) still in root pending 14.c.2b
-// port traits (RootAgentRunner + ExtensionCoreProvider).
+// port traits (RootAgentRunner + ToolingRuntimeProvider).
 pub mod principal;
 
 // (Phase 15: peko-quota shim deleted; callers use peko_quota::* directly)
@@ -255,6 +244,10 @@ pub mod observability;
 // ============================================================================
 // Infrastructure
 // ============================================================================
+
+// Background-task runtime (Bash background, AsyncSpawn/AsyncOutput, cron
+// firing, messaging) + the cross-boundary session inbox.
+pub mod async_exec;
 
 // [extract:phase-14] peko-cron — DONE (PR #301, 2026-07-24):
 // 4 root files moved to `peko-rs/cron/src/{lib,events,idle,event_trigger}.rs`.

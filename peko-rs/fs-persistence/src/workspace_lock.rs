@@ -45,9 +45,9 @@ pub const DEFAULT_WORKSPACE_LOCK_TIMEOUT_MS: u64 = 5_000;
 
 /// Default directory holding workspace lock files.
 ///
-/// Mirrors `peko_extension_api::paths::default_data_dir` (env override
+/// Mirrors `peko_tools_core::paths::default_data_dir` (env override
 /// first, platform data dir, `/tmp` fallback) and appends `locks/`.
-/// Kept in a leaf crate to avoid a `fs-persistence → extension-api`
+/// Kept in a leaf crate to avoid a `fs-persistence → tools-core`
 /// dependency edge; must stay in sync with it.
 #[must_use]
 pub fn default_workspace_lock_dir() -> PathBuf {

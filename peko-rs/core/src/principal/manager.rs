@@ -10,7 +10,6 @@ use super::{
     Principal, PrincipalId,
 };
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::store::ExtensionStore;
 use crate::extensions::role::RoleAdapter;
 use crate::principal::agent_prompt::load_agent_prompt;
 use crate::principal::child_turns::PeerChildIngress;
@@ -19,7 +18,6 @@ use crate::principal::AgentPrompt;
 use crate::principal::PrincipalConfig;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
-use peko_extension_api::SteeringMessage;
 use peko_identity::did::DIDScope;
 use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
@@ -27,6 +25,7 @@ use peko_plan::{PlanNodeStatus, PlanRecord};
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
 use peko_session::RunPermitGuard;
+use peko_session::SteeringMessage;
 use peko_subject::PrincipalDID;
 
 /// Maximum number of resumed plans injected into the router context at
@@ -115,6 +114,7 @@ impl std::error::Error for IngressError {}
 
 /// Owns all Principals in a runtime.
 pub struct PrincipalManager {
+    tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
     path_resolver: PathResolver,
@@ -138,10 +138,6 @@ pub struct PrincipalManager {
     /// Per-principal lock guarding first-time session creation/open so
     /// concurrent peers do not race on shared metadata/index writes.
     session_creation_locks: tokio::sync::RwLock<HashMap<PrincipalId, Arc<tokio::sync::Mutex<()>>>>,
-    /// Optional daemon extension store. When present, the per-message
-    /// `PrincipalCatalog` includes installed extensions as well as built-ins
-    /// and principal-scoped agents.
-    extension_store: Option<Arc<ExtensionStore>>,
     /// Optional observability hub. Threaded into `RouterContext` so the root
     /// agent and subagent spawns can emit audit events.
     observability: Option<Arc<Observability>>,
@@ -203,6 +199,7 @@ impl PrincipalManager {
         inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
         Self {
+            tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
             path_resolver,
@@ -211,7 +208,6 @@ impl PrincipalManager {
             resolver: None,
             inbox_registry,
             session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
-            extension_store: None,
             observability: None,
             peer_registry: None,
             peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
@@ -219,6 +215,15 @@ impl PrincipalManager {
             dm_subscriber_hook: std::sync::RwLock::new(None),
             identity_vault: None,
         }
+    }
+
+    pub fn tooling(&self) -> Arc<crate::tools::runtime::ToolingRuntime> {
+        Arc::clone(&self.tooling)
+    }
+
+    pub fn with_tooling(mut self, tooling: Arc<crate::tools::runtime::ToolingRuntime>) -> Self {
+        self.tooling = tooling;
+        self
     }
 
     pub fn with_resolver(mut self, resolver: Arc<LlmResolver>) -> Self {
@@ -231,15 +236,6 @@ impl PrincipalManager {
     /// that need model resolution outside a live turn.
     pub fn llm_resolver(&self) -> Option<Arc<LlmResolver>> {
         self.resolver.clone()
-    }
-
-    /// Attach a daemon extension store. When present, the per-message
-    /// `PrincipalCatalog` includes installed extensions alongside built-ins
-    /// and principal-scoped agents.
-    #[must_use]
-    pub fn with_extension_store(mut self, extension_store: Arc<ExtensionStore>) -> Self {
-        self.extension_store = Some(extension_store);
-        self
     }
 
     /// Attach an observability hub. When present, it is threaded into every
@@ -866,6 +862,7 @@ impl PrincipalManager {
             &resolver,
             observability,
             Some(self.shared_inbox_registry()),
+            Arc::clone(&self.tooling),
         )
         .await
         .map_err(|e| {
@@ -995,26 +992,6 @@ impl PrincipalManager {
         (Arc::clone(&self.inbox_registry), lock)
     }
 
-    /// Recompute the principal's active extension set for a capability
-    /// snapshot against the current global extension inventory.
-    pub(crate) async fn active_extensions_for(
-        &self,
-        principal: &Principal,
-        capabilities: &peko_extension_api::Capabilities,
-    ) -> peko_extension_api::ActiveExtensionSet {
-        let global_items = match self.extension_store.as_ref() {
-            Some(store) => store.global_items().await,
-            None => Vec::new(),
-        };
-        crate::principal::catalog::PrincipalCatalog::build(
-            &principal.workspace_path,
-            capabilities,
-            &principal.agent_prompts,
-            &global_items,
-        )
-        .active_extensions()
-    }
-
     /// Build the `RouterContext` for a message arriving at a Principal
     /// boundary. This is the single point of truth for permission checks,
     /// session recall, and the principal's per-message view of its
@@ -1128,18 +1105,10 @@ impl PrincipalManager {
             }
         }
 
-        let (
-            available_agents,
-            catalog,
-            active_extensions,
-            routing,
-            capabilities,
-            intent,
-            governance,
-            principal_name,
-        ) = {
+        let (available_agents, routing, intent, governance, principal_name) = {
             let config = principal.config.read().await;
-            let allowed = &config.capabilities;
+            // ADR-066 P2: presence = spawnability — every role file in
+            // the workspace is enabled.
             let available_agents: Vec<_> = principal
                 .agent_prompts
                 .iter()
@@ -1147,33 +1116,13 @@ impl PrincipalManager {
                     id: id.clone(),
                     name: p.name.clone(),
                     description: p.frontmatter.description.clone(),
-                    enabled: allowed
-                        .is_granted(&peko_extension_api::Capability::new(format!("agent:{id}")))
-                        || allowed.is_granted(&peko_extension_api::Capability::new(format!(
-                            "agent:{}",
-                            p.name
-                        ))),
+                    enabled: true,
                 })
                 .collect();
 
-            let global_items = match self.extension_store.as_ref() {
-                Some(store) => store.global_items().await,
-                None => Vec::new(),
-            };
-            let catalog_local = crate::principal::catalog::PrincipalCatalog::build(
-                &principal.workspace_path,
-                allowed,
-                &principal.agent_prompts,
-                &global_items,
-            );
-            let active_extensions = catalog_local.active_extensions();
-
             (
                 available_agents,
-                catalog_local,
-                active_extensions,
                 config.routing.clone(),
-                allowed.clone(),
                 config.intent.clone(),
                 config.governance.clone(),
                 config.name.clone(),
@@ -1181,6 +1130,7 @@ impl PrincipalManager {
         };
 
         Ok(RouterContext {
+            tooling: Arc::clone(&self.tooling),
             principal_id: principal.id.clone(),
             principal_name,
             peer,
@@ -1189,9 +1139,6 @@ impl PrincipalManager {
             routing,
             recalled_context,
             available_agents,
-            catalog,
-            active_extensions,
-            capabilities,
             intent,
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
@@ -1464,7 +1411,7 @@ async fn discover_role_prompts(
         let adapter = RoleAdapter::new();
         let discovered = adapter.discover_roles(roles_dir);
         for d in discovered {
-            let canonical_id = d.manifest.id.0.clone();
+            let canonical_id = d.manifest.id.clone();
             let prompt = load_agent_prompt(&d.file_path)
                 .map_err(|e| PrincipalManagerError::Config(format!("{}: {e}", canonical_id)))?;
             prompts.insert(canonical_id, prompt);
@@ -1546,7 +1493,7 @@ mod tests {
     use peko_auth::{Permission, PermissionGrant, Subject};
 
     use crate::engine::tool_runtime::ToolRuntime;
-    use crate::extensions::framework::core::init_global_core;
+
     use crate::principal::{
         router::{ChannelContext, ChannelKind},
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
@@ -1555,7 +1502,7 @@ mod tests {
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use peko_extension_api::Capabilities;
+
     use peko_providers::{LlmResolver, MockAdapter};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1573,7 +1520,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let workspace = temp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
@@ -1585,8 +1531,9 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver),
         );
 
@@ -1616,7 +1563,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let workspace = temp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
@@ -1634,8 +1580,9 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver)
             .with_channel_port(store.clone()),
         );
@@ -1742,7 +1689,6 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: Capabilities::starter_bundle(),
             exposure: peko_auth::Exposure::Private,
             status: None,
             boot_state: None,
@@ -2054,7 +2000,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+                crate::async_exec::executor::standalone_inbox_registry(),
             )
             .with_resolver(resolver),
         )
@@ -2177,7 +2123,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let catalog_path = temp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
@@ -2189,8 +2134,9 @@ mod tests {
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         )
+        .with_tooling(tool_runtime.tooling().clone())
         .with_resolver(resolver)
         .with_identity_vault(Arc::clone(&vault));
 
@@ -2394,25 +2340,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn build_router_context_marks_disabled_agents() {
+    async fn build_router_context_marks_all_agents_enabled() {
+        // ADR-066 P2: presence = spawnability — every role file in the
+        // workspace is enabled; no grant check.
         let (temp, manager, _adapter, _id) = setup().await;
 
-        // Re-create a principal with two agents, only one of which is allowed.
         manager.remove("stressy").await.unwrap();
 
         let principal = create_test_principal_with_agents(
             &manager,
             "stressy",
-            &["enabled_agent", "disabled_agent"],
+            &["first_agent", "second_agent"],
         )
         .await;
-        manager
-            .update_config("stressy", |config| {
-                config.capabilities =
-                    Capabilities::with_grants(["agent:enabled_agent", "tool:Read"]);
-            })
-            .await
-            .unwrap();
 
         let ctx = manager
             .build_router_context(
@@ -2425,28 +2365,14 @@ mod tests {
             .await
             .expect("build_router_context should succeed");
 
-        let enabled = ctx
-            .available_agents
-            .iter()
-            .find(|a| a.id == "enabled_agent")
-            .expect("enabled_agent should be in catalog");
-        assert!(enabled.enabled, "enabled_agent should be enabled");
-
-        let disabled = ctx
-            .available_agents
-            .iter()
-            .find(|a| a.id == "disabled_agent")
-            .expect("disabled_agent should be in catalog");
-        assert!(!disabled.enabled, "disabled_agent should be disabled");
-
-        // The PrincipalCatalog also surfaces the disabled agent.
-        let store_disabled = ctx
-            .catalog
-            .entries()
-            .iter()
-            .find(|i| i.id == "disabled_agent")
-            .expect("disabled_agent should be in catalog");
-        assert!(!store_disabled.enabled);
+        for id in ["first_agent", "second_agent"] {
+            let entry = ctx
+                .available_agents
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("{id} should be in catalog"));
+            assert!(entry.enabled, "{id} is enabled by presence");
+        }
 
         // Suppress unused warning for temp.
         let _ = temp;
@@ -3262,7 +3188,6 @@ mod tests {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        init_global_core(tool_runtime.extension_core().clone());
 
         let workspace = temp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
@@ -3275,8 +3200,9 @@ mod tests {
             path_resolver,
             Arc::new(DefaultPrincipalMemoryFactory),
             Arc::new(DefaultPrincipalRouterFactory),
-            crate::extensions::framework::async_exec::executor::standalone_inbox_registry(),
+            crate::async_exec::executor::standalone_inbox_registry(),
         )
+        .with_tooling(tool_runtime.tooling().clone())
         .with_resolver(resolver);
         let principal = create_test_principal(&manager, "stressy").await;
         let id = principal.id.clone();

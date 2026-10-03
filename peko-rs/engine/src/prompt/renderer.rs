@@ -10,7 +10,7 @@
 //! conversation. (The loop itself still lives in root
 //! at `src/engine/agentic_loop.rs`; this module lifted in Phase 9b.N.5b.4
 //! so the renderer can hold `Arc<dyn ToolFunnel>` instead of the concrete
-//! root `ExtensionCore` type — the trait port keeps the renderer free of
+//! root `ToolingRuntime` type — the trait port keeps the renderer free of
 //! root-only `HookPoint` / `HookInput` types.)
 //!
 //! ## Design
@@ -37,8 +37,8 @@
 //!   a single misbehaving extension can't stall the loop. The `tools`
 //!   section is intentionally not dispatched — tool catalogs travel on
 //!   the wire as the `tools[]` JSON-schema array (see
-//!   `crate::agentic_loop::build_tool_definitions` and the
-//!   `list_tool_definitions_with_allowlist` filter in
+//!   `crate::agentic_loop::build_tool_definitions` and
+//!   `list_tool_definitions_for` in
 //!   `peko_core::extensions::framework::core::registry`).
 //! - **`skills` / `roles` / `workflows` ride the tail.** These sections render
 //!   in the runtime-context message ([`PromptRenderer::render_runtime_context`]),
@@ -49,7 +49,7 @@
 //!   scan result actually changes.
 //! - **`mcp_context` normalized.** This section previously used plain
 //!   `invoke_hook_text`; the rest use the trait-port
-//!   [`ToolFunnel::invoke_prompt_section_hook`](peko_extension_api::ToolFunnel::invoke_prompt_section_hook).
+//!   [`ToolFunnel::render_prompt_sections`](crate::tooling::ToolFunnel::render_prompt_sections).
 //! - **`remove_missing=true` for placeholders.** Templates that omit
 //!   any of the four control-surface placeholders get no section.
 //!
@@ -65,18 +65,13 @@
 // `#[cfg(test)]` blocks below, so `--lib` builds (no `--tests`) flag
 // them as unused. Allow explicitly to keep `--lib` clean.
 #[allow(unused_imports)]
-use super::context::{
-    render_quota_tripped_section, CapabilityChange, CapabilityChangeKind, CapabilityDiff,
-    IterationBudgetState, TurnPromptContext,
-};
+use super::context::{render_quota_tripped_section, IterationBudgetState, TurnPromptContext};
 use super::placeholder::{replace_placeholders, Placeholder};
+use crate::tooling::{PromptSectionRequest, ToolingSeam};
 use async_trait::async_trait;
 use chrono::{Local, Utc};
-use peko_extension_api::session::SessionSnapshot;
-use peko_extension_api::ToolFunnel;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, warn};
 
 /// Per-hook timeout budget. Two seconds is generous for the prompt-section
 /// hooks (they only need to format a Markdown body from in-memory state)
@@ -123,32 +118,26 @@ impl McpPromptContextProvider for EmptyMcpPromptContextProvider {
 /// Renders the system prompt for one iteration.
 ///
 /// Constructed once per agentic loop and shared across iterations. Cheap
-/// to construct — just an `Arc` clone of the [`ToolFunnel`] trait object.
-///
-/// Phase 9b.N.5b.4 switched the field from `Arc<ExtensionCore>` (root-
-/// only concrete type) to `Arc<dyn ToolFunnel>` so the renderer lifts
-/// into `peko-engine` without dragging root `HookPoint` / `HookInput`
-/// types along. The trait port is the same one the tool executor and
-/// compaction orchestrator use (see `peko_extension_api::ToolFunnel`).
+/// to construct — just an `Arc` clone of the tooling seam (ADR-066 P3:
+/// `crate::tooling::ToolingSeam`, implemented by root's
+/// `ToolingRuntime`).
 ///
 /// Phase 2 PR 2 (ADR-047 §2.3) added the `mcp_context_provider`
-/// field. The `{{mcp_context}}` placeholder no longer fires a
-/// `PromptSystemSection` framework hook — the framework `McpAdapter`
-/// is gone — so the renderer calls the provider directly instead.
+/// field. The `{{mcp_context}}` placeholder is sourced from the
+/// provider directly.
 #[derive(Clone)]
 pub struct PromptRenderer {
-    extension_core: Arc<dyn ToolFunnel>,
+    tooling: Arc<dyn ToolingSeam>,
     mcp_context_provider: Arc<dyn McpPromptContextProvider>,
 }
 
 impl PromptRenderer {
-    /// Create a new renderer bound to an [`ExtensionCore`] via the
-    /// canonical [`ToolFunnel`] trait port, with a default
+    /// Create a new renderer bound to the tooling seam, with a default
     /// (empty) MCP context provider.
     #[must_use]
-    pub fn new(extension_core: Arc<dyn ToolFunnel>) -> Self {
+    pub fn new(tooling: Arc<dyn ToolingSeam>) -> Self {
         Self {
-            extension_core,
+            tooling,
             mcp_context_provider: Arc::new(EmptyMcpPromptContextProvider),
         }
     }
@@ -159,11 +148,11 @@ impl PromptRenderer {
     /// `peko_extensions_mcp::render_mcp_prompt_context`.
     #[must_use]
     pub fn with_mcp_context_provider(
-        extension_core: Arc<dyn ToolFunnel>,
+        tooling: Arc<dyn ToolingSeam>,
         mcp_context_provider: Arc<dyn McpPromptContextProvider>,
     ) -> Self {
         Self {
-            extension_core,
+            tooling,
             mcp_context_provider,
         }
     }
@@ -182,23 +171,24 @@ impl PromptRenderer {
             return format!("You are {}.", ctx.role_name);
         }
 
-        // Parallel hook dispatch. Each task is independent — a slow
-        // `skills` handler must not delay `agents`. Each is wrapped in a
-        // 2s timeout so a stuck handler cannot stall the loop; the
-        // handler that hits the timeout simply returns an empty string
-        // and the template's `remove_missing=true` strips any
-        // leftover placeholder.
+        // ADR-066 P3: one aggregated call renders the sections
+        // (providers + workspace-hook binds; 2s soft-fail per leg inside
+        // the impl).
         //
-        // Phase 2 PR 2: `mcp_context` no longer goes through
-        // `dispatch_text`; the framework McpAdapter was deleted, so
-        // the framework hook has no handler. The provider field on
-        // the renderer is the canonical source.
-        let (skills, agents, mcp, session_ctx) = tokio::join!(
-            self.dispatch_text("skills", ctx),
-            self.dispatch_text("roles", ctx),
+        // Phase 2 PR 2: `mcp_context` is sourced from the provider
+        // field on the renderer, not from a hook.
+        let section_request = PromptSectionRequest {
+            principal_id: ctx.principal_id.clone(),
+            workspace: ctx.workspace.to_string_lossy().to_string(),
+            session_id: ctx.session_id.clone(),
+        };
+        let (rendered, mcp) = tokio::join!(
+            self.tooling.render_prompt_sections(&section_request),
             self.mcp_context_provider.render_mcp_context(),
-            self.dispatch_session_context(ctx),
         );
+        let skills = rendered.get("skills").unwrap_or("").to_string();
+        let agents = rendered.get("roles").unwrap_or("").to_string();
+        let session_ctx = rendered.get("session_context").unwrap_or("").to_string();
 
         let values = build_placeholder_values(ctx, &skills, &agents, &mcp, &session_ctx);
         replace_placeholders(&ctx.body, &values, true)
@@ -212,7 +202,7 @@ impl PromptRenderer {
     /// mutates. Excludes per-iteration fields like `{{iteration_budget}}`,
     /// `{{quota_tripped}}`, `{{session_context}}`, `{{memory}}`,
     /// `{{current_time}}`, `{{soft_cancel}}`, and
-    /// `{{capability_diff}}` (those go in the tail runtime-context
+    /// control banners (those go in the tail runtime-context
     /// message — see [`render_runtime_context`]).
     /// `{{timezone}}` is retired from the per-turn context (redundant
     /// with `{{current_time}}`); it still resolves in
@@ -254,7 +244,7 @@ impl PromptRenderer {
     /// suffix (`{{current_time}}`, `{{memory}}`,
     /// `{{session_context}}`, `{{agents}}`, `{{skills}}`,
     /// `{{iteration_budget}}`, `{{quota_tripped}}`, `{{soft_cancel}}`,
-    /// `{{capability_diff}}`). The engine loop appends the returned
+    /// runtime sections). The engine loop appends the returned
     /// string as a user-role message at the TAIL of the conversation,
     /// so `messages[0]` stays byte-identical across iterations and the
     /// provider's front-anchored prefix cache (Anthropic explicit
@@ -277,7 +267,7 @@ impl PromptRenderer {
     ///   `PromptSection` binds) follow the same on-change policy under
     ///   their own names.
     /// - **Event-edged**: `quota_tripped`, `soft_cancel`,
-    ///   `capability_diff` — included only when the corresponding
+    ///   banners — included only when the corresponding
     ///   `TurnPromptContext` field fires (the loop computes the rising
     ///   edges upstream).
     ///
@@ -297,22 +287,27 @@ impl PromptRenderer {
         ctx: &TurnPromptContext,
         state: &mut RuntimeContextState,
     ) -> Option<String> {
-        // Parallel hook dispatch: the workspace-catalog sections
-        // (`identity`, `agents`, `skills`, `workflows`) and
-        // `SessionContextBuild` are independent, so fire them
-        // concurrently. Each `dispatch_text`
-        // carries its own 2s timeout. The handlers cache their scans
+        // ADR-066 P3: one aggregated call renders every section —
+        // built-in providers plus workspace-hook `PromptSection` binds
+        // (custom sections included). Each leg keeps its own 2s
+        // soft-fail inside the impl. The providers cache their scans
         // (keyed on file-level `(mtime, len)` stats), so rendering every
         // iteration purely for the change compare is cheap. `identity`
-        // soft-fails to empty when no handler is registered — the
+        // soft-fails to empty when no provider is registered — the
         // section then simply doesn't ride.
-        let (identity, agents, skills, workflows, session_ctx) = tokio::join!(
-            self.dispatch_text("identity", ctx),
-            self.dispatch_text("roles", ctx),
-            self.dispatch_text("skills", ctx),
-            self.dispatch_text("workflows", ctx),
-            self.dispatch_session_context(ctx),
-        );
+        let rendered = self
+            .tooling
+            .render_prompt_sections(&PromptSectionRequest {
+                principal_id: ctx.principal_id.clone(),
+                workspace: ctx.workspace.to_string_lossy().to_string(),
+                session_id: ctx.session_id.clone(),
+            })
+            .await;
+        let identity = rendered.get("identity").unwrap_or("").to_string();
+        let agents = rendered.get("roles").unwrap_or("").to_string();
+        let skills = rendered.get("skills").unwrap_or("").to_string();
+        let workflows = rendered.get("workflows").unwrap_or("").to_string();
+        let session_ctx = rendered.get("session_context").unwrap_or("").to_string();
 
         let mut sections: Vec<String> = Vec::new();
 
@@ -391,36 +386,20 @@ impl PromptRenderer {
 
         // ADR-052 D6: custom prompt sections contributed by workspace
         // hooks (`PromptSection` binds in `<workspace>/hooks/<id>/hook.toml`).
-        // Enumerate the section names registered for this principal,
-        // drop names already dispatched as built-ins (a hook augmenting
-        // "roles" rides the built-in dispatch above — no double
-        // dispatch), sort for byte-stable ordering, and dispatch each
-        // with the same 2s soft-fail budget as the built-ins. Each
-        // result rides the custom-section change tracker, so unchanged
-        // custom sections cost zero tokens after first injection, edits
-        // re-inject with the update notice, and a hook that stops
-        // producing output retracts once.
-        let mut custom_names = self
-            .extension_core
-            .registered_prompt_sections(
-                Some(ctx.principal_id.as_str()),
-                Some(ctx.active_extension_vec()),
-            )
-            .await;
-        custom_names.retain(|name| !BUILTIN_PROMPT_SECTIONS.contains(&name.as_str()));
-        custom_names.sort();
-        custom_names.dedup();
-        if !custom_names.is_empty() {
-            let dispatched =
-                futures::future::join_all(custom_names.iter().map(|name| async move {
-                    (name.clone(), self.dispatch_text(name, ctx).await)
-                }))
-                .await;
-            for (name, text) in dispatched {
-                let rendered = format_custom_section(&name, &text);
-                if let Some(section) = state.take_changed_custom(&name, rendered) {
-                    sections.push(section);
-                }
+        // They arrive pre-rendered in the aggregated `rendered` set
+        // (a hook augmenting a built-in name rides the built-in section
+        // — no double dispatch). Each result rides the custom-section
+        // change tracker, so unchanged custom sections cost zero tokens
+        // after first injection, edits re-inject with the update notice,
+        // and a hook that stops producing output retracts once.
+        for (name, text) in rendered
+            .sections
+            .iter()
+            .filter(|(name, _)| !BUILTIN_PROMPT_SECTIONS.contains(&name.as_str()))
+        {
+            let rendered = format_custom_section(name, text);
+            if let Some(section) = state.take_changed_custom(name, rendered) {
+                sections.push(section);
             }
         }
 
@@ -438,13 +417,6 @@ impl PromptRenderer {
         if ctx.soft_cancel_pending {
             sections.push(render_soft_cancel_section().trim_end().to_string());
         }
-        if let Some(diff) = ctx.capability_diff.as_ref() {
-            let rendered = diff.render();
-            if !rendered.is_empty() {
-                sections.push(rendered.trim_end().to_string());
-            }
-        }
-
         if sections.is_empty() {
             return None;
         }
@@ -452,96 +424,6 @@ impl PromptRenderer {
             "<runtime-context>\n{}\n</runtime-context>",
             sections.join("\n\n")
         ))
-    }
-
-    /// Dispatch a single `PromptSystemSection` hook with a 2s timeout.
-    /// Returns the empty string on timeout, missing handler, or error.
-    async fn dispatch_text(&self, section: &str, ctx: &TurnPromptContext) -> String {
-        // Phase 9b.N.5b.4 routes the hook firing through the trait port
-        // (`ToolFunnel::invoke_prompt_section_hook`) so the renderer
-        // never imports `HookPoint` / `HookInput` directly — those
-        // types remain root-only until Phase 8's bulk move. The trait
-        // impl (`src/engine/extension_core_funnel_compat.rs`) builds
-        // `HookPoint::PromptSystemSection { section, priority }` +
-        // `HookInput::Unit` internally and delegates to
-        // `ExtensionCore::invoke_hook_text_with_principal`.
-        let principal_id = Some(ctx.principal_id.as_str());
-        let capabilities = Some(ctx.capability_strings());
-        let active_extensions = Some(ctx.active_extension_vec());
-        let workspace = Some(ctx.workspace.to_string_lossy().to_string());
-
-        let core = Arc::clone(&self.extension_core);
-        let result = tokio::time::timeout(
-            HOOK_TIMEOUT,
-            core.invoke_prompt_section_hook(
-                section,
-                100,
-                principal_id,
-                capabilities,
-                active_extensions,
-                workspace,
-            ),
-        )
-        .await;
-
-        match result {
-            Ok(Some(text)) if !text.is_empty() => text,
-            Ok(Some(_)) => String::new(),
-            Ok(None) => {
-                debug!(
-                    section,
-                    "PromptSystemSection hook returned no text; rendering empty section"
-                );
-                String::new()
-            }
-            Err(_) => {
-                warn!(
-                    section,
-                    "PromptSystemSection hook exceeded 2s timeout; soft-failing to empty"
-                );
-                String::new()
-            }
-        }
-    }
-
-    /// Dispatch the per-turn `SessionContextBuild` hook. This is what
-    /// `{{session_context}}` renders from. Distinct from the old
-    /// `SessionStart` (now dormant) which only fired once.
-    async fn dispatch_session_context(&self, ctx: &TurnPromptContext) -> String {
-        let snapshot = SessionSnapshot {
-            // The real session id — the loop knows it and threads it
-            // through `TurnPromptContext` (previously `String::new()`).
-            session_id: ctx.session_id.clone(),
-            message_count: 0,
-            context_tokens: 0,
-            metadata: HashMap::new(),
-        };
-
-        // Phase 9b.N.5b.4: hook firing routes through the trait port
-        // (`ToolFunnel::invoke_session_context_build_hook`) for the
-        // same reason `dispatch_text` does — keeps the renderer free
-        // of root-only `HookPoint` / `HookInput` types.
-        let core = Arc::clone(&self.extension_core);
-        let result = tokio::time::timeout(
-            HOOK_TIMEOUT,
-            core.invoke_session_context_build_hook(
-                snapshot,
-                Some(ctx.principal_id.as_str()),
-                Some(ctx.capability_strings()),
-                Some(ctx.active_extension_vec()),
-                Some(ctx.workspace.to_string_lossy().to_string()),
-            ),
-        )
-        .await;
-
-        match result {
-            Ok(Some(text)) => text,
-            Ok(None) => String::new(),
-            Err(_) => {
-                warn!("SessionContextBuild hook exceeded 2s timeout; soft-failing to empty");
-                String::new()
-            }
-        }
     }
 }
 
@@ -806,14 +688,6 @@ fn build_placeholder_values(
             String::new()
         },
     );
-    values.insert(
-        Placeholder::CapabilityDiff,
-        ctx.capability_diff
-            .as_ref()
-            .map(CapabilityDiff::render)
-            .unwrap_or_default(),
-    );
-
     values
 }
 
@@ -827,7 +701,7 @@ fn build_placeholder_values(
 /// so new workspace files appear on the next iteration; the other
 /// volatile placeholders (`timezone`, `memory`, `session_context`,
 /// `iteration_budget`, `quota_tripped`, `soft_cancel`,
-/// `capability_diff`) are omitted as before — `remove_missing=true`
+/// control banners) are omitted as before — `remove_missing=true`
 /// strips them on render.
 fn build_stable_placeholder_values(
     ctx: &TurnPromptContext,
@@ -856,7 +730,6 @@ fn build_stable_placeholder_values(
     );
     values.insert(Placeholder::McpContext, mcp.to_string());
     // Memory, SessionContext, IterationBudget, QuotaTripped, SoftCancel,
-    // CapabilityDiff intentionally omitted — volatile.
 
     values
 }
@@ -944,7 +817,7 @@ fn format_workflows_section(text: &str) -> String {
     }
     format!(
         r"## Workflows
-Procedural scripts this principal has saved under `workflows/`. Run one with the `Workflow` tool (`path` = the listed file) instead of re-deriving the procedure turn by turn; a workflow can call tools back through the runtime with this principal's capabilities. When a task matches an existing workflow, prefer running it; when you repeat a procedure twice, consider writing it as a workflow.
+Procedural scripts this principal has saved under `workflows/`. Run one with the `Workflow` tool (`path` = the listed file) instead of re-deriving the procedure turn by turn; a workflow can call tools back through the runtime with this principal's attribution. When a task matches an existing workflow, prefer running it; when you repeat a procedure twice, consider writing it as a workflow.
 
 <available_workflows>
 {text}
@@ -1182,18 +1055,17 @@ fn render_soft_cancel_section() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tooling::{EngineHooks, ToolFunnel, ToolingSeam};
     use async_trait::async_trait;
-    use peko_extension_api::session::SessionSnapshot;
-    use peko_extension_api::ToolFunnel;
     use peko_subject::PrincipalId;
     use std::path::PathBuf;
 
     /// No-op `ToolFunnel` impl used by the renderer's unit tests.
     ///
-    /// Phase 9b.N.5b.4 can't import the root-owned `ExtensionCore` into
+    /// Phase 9b.N.5b.4 can't import the root-owned `ToolingRuntime` into
     /// `peko-engine` (it stays root until Phase 8's bulk move). The
     /// tests need a `ToolFunnel` that produces the same observable
-    /// behavior as `ExtensionCore::new()` — an empty registry where no
+    /// behavior as `ToolingRuntime::new()` — an empty registry where no
     /// handlers are registered, so every hook call returns `None`.
     /// That keeps the existing test assertions (placeholder stripping
     /// with no handlers) valid. `SessionContextBuild` snapshots are
@@ -1206,143 +1078,101 @@ mod tests {
     /// D6 custom sections additionally populate `registered_sections`
     /// with the section names the (real) hook registry would enumerate.
     #[derive(Default)]
-    struct EmptyExtensionCore {
-        session_context_snapshots: std::sync::Mutex<Vec<SessionSnapshot>>,
+    struct EmptyToolingRuntime {
+        /// Session ids the `render_prompt_sections` calls carried (the
+        /// session-id plumbing test inspects these).
+        session_context_snapshots: std::sync::Mutex<Vec<String>>,
         section_texts: std::sync::Mutex<HashMap<String, String>>,
         registered_sections: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait]
-    impl ToolFunnel for EmptyExtensionCore {
-        async fn is_parallelizable(&self, _tool_name: &str) -> bool {
-            true
-        }
-        async fn pre_tool_use(
+    impl ToolFunnel for EmptyToolingRuntime {
+        async fn execute(
             &self,
-            _tool_name: &str,
-            _params: serde_json::Value,
-            _workspace: Option<String>,
-            _agent_id: Option<String>,
-            _session_id: Option<String>,
-            _caller_id: Option<String>,
-            _principal_id: Option<String>,
-            _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
-        ) {
-        }
-        async fn post_tool_use(
-            &self,
-            _tool_name: &str,
-            _params: serde_json::Value,
-            _workspace: Option<String>,
-            _agent_id: Option<String>,
-            _session_id: Option<String>,
-            _caller_id: Option<String>,
-            _principal_id: Option<String>,
-            _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
-        ) {
-        }
-        async fn execute_tool_via_hook(
-            &self,
-            _tool_name: &str,
-            _params: serde_json::Value,
-            _workspace: Option<String>,
-            _agent_id: Option<String>,
-            _session_id: Option<String>,
-            _caller_id: Option<String>,
-            _principal_id: Option<String>,
-            _principal_name: Option<String>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
-            _abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+            _call: crate::tooling::ToolCallSpec,
         ) -> anyhow::Result<(String, serde_json::Value, bool)> {
-            anyhow::bail!("EmptyExtensionCore::execute_tool_via_hook not implemented")
+            anyhow::bail!("EmptyToolingRuntime::execute not implemented")
         }
-        async fn invoke_session_compaction_pre_hook(
+        async fn list_tool_definitions(
             &self,
-            _payload: peko_extension_api::hook_io::CompactionPreparationPayload,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn invoke_session_compaction_post_hook(
-            &self,
-            _payload: peko_extension_api::hook_io::CompactionResultPayload,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn invoke_session_state_change_hook(
-            &self,
-            _snapshot: SessionSnapshot,
-        ) -> peko_extension_api::hook_io::HookDecision {
-            peko_extension_api::hook_io::HookDecision::PassThrough
-        }
-        async fn invoke_stop_hook(&self, _merged: serde_json::Value) {}
-        async fn invoke_after_agent_hook(&self, _merged: serde_json::Value) {}
-        async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
-        async fn list_tool_definitions_with_allowlist(
-            &self,
-            _capabilities: &peko_extension_api::Capabilities,
-            _active_extensions: Option<&peko_extension_api::ActiveExtensionSet>,
             _principal_id: &PrincipalId,
         ) -> Vec<peko_provider_api::ToolDefinition> {
             Vec::new()
         }
-        async fn has_deferred_tools_for(&self, _principal_id: &PrincipalId) -> bool {
-            false
-        }
-        async fn invoke_prompt_section_hook(
+        async fn render_prompt_sections(
             &self,
-            section: &str,
-            _priority: i32,
-            _principal_id: Option<&str>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
-            _workspace: Option<String>,
-        ) -> Option<String> {
-            self.section_texts
-                .lock()
-                .expect("section_texts mutex poisoned")
-                .get(section)
-                .cloned()
-        }
-        async fn registered_prompt_sections(
-            &self,
-            _principal_id: Option<&str>,
-            _active_extensions: Option<Vec<String>>,
-        ) -> Vec<String> {
-            self.registered_sections
-                .lock()
-                .expect("registered_sections mutex poisoned")
-                .clone()
-        }
-        async fn invoke_session_context_build_hook(
-            &self,
-            _snapshot: SessionSnapshot,
-            _principal_id: Option<&str>,
-            _capabilities: Option<Vec<String>>,
-            _active_extensions: Option<Vec<String>>,
-            _workspace: Option<String>,
-        ) -> Option<String> {
+            request: &crate::tooling::PromptSectionRequest,
+        ) -> crate::tooling::PromptSections {
             self.session_context_snapshots
                 .lock()
                 .expect("snapshots mutex poisoned")
-                .push(_snapshot);
-            None
+                .push(request.session_id.clone());
+            let texts = self
+                .section_texts
+                .lock()
+                .expect("section_texts mutex poisoned")
+                .clone();
+            let registered = self
+                .registered_sections
+                .lock()
+                .expect("registered_sections mutex poisoned")
+                .clone();
+            let mut sections: Vec<(String, String)> = Vec::new();
+            for name in [
+                "identity",
+                "roles",
+                "skills",
+                "workflows",
+                "session_context",
+            ] {
+                if let Some(text) = texts.get(name) {
+                    sections.push((name.to_string(), text.clone()));
+                }
+            }
+            let mut customs: Vec<String> = registered
+                .into_iter()
+                .filter(|name| {
+                    ![
+                        "identity",
+                        "roles",
+                        "skills",
+                        "workflows",
+                        "session_context",
+                    ]
+                    .contains(&name.as_str())
+                })
+                .collect();
+            customs.sort();
+            customs.dedup();
+            for name in customs {
+                let text = texts.get(&name).cloned().unwrap_or_default();
+                sections.push((name, text));
+            }
+            crate::tooling::PromptSections { sections }
         }
     }
 
-    fn empty_funnel() -> Arc<dyn ToolFunnel> {
-        Arc::new(EmptyExtensionCore::default())
+    #[async_trait]
+    impl EngineHooks for EmptyToolingRuntime {
+        async fn is_parallelizable(&self, _tool_name: &str, _principal_id: &PrincipalId) -> bool {
+            true
+        }
+        async fn fire_stop_hook(&self, _payload: serde_json::Value) {}
+        async fn fire_after_agent_hook(&self, _payload: serde_json::Value) {}
+
+        async fn set_session_key(&self, _agent_id: &str, _key: Option<String>) {}
+    }
+
+    fn empty_funnel() -> Arc<dyn ToolingSeam> {
+        Arc::new(EmptyToolingRuntime::default())
     }
 
     /// Funnel with `agents` / `skills` prompt-section handlers that
     /// return fixed catalog text — mimics the workspace-scanning
     /// handlers registered in root.
-    fn catalog_funnel() -> Arc<dyn ToolFunnel> {
-        let core = EmptyExtensionCore::default();
+    fn catalog_funnel() -> Arc<dyn ToolingSeam> {
+        let core = EmptyToolingRuntime::default();
         {
             let mut texts = core.section_texts.lock().expect("section_texts poisoned");
             texts.insert(
@@ -1364,8 +1194,6 @@ mod tests {
             session_id: "test-session".to_string(),
             role_name: "test-agent".to_string(),
             body: "You are {{agent_name}} on {{workspace}}.".to_string(),
-            capabilities: None,
-            active_extensions: None,
             principal_memory: None,
             project_instructions: None,
             workspace: PathBuf::from("/tmp/workspace"),
@@ -1380,7 +1208,6 @@ mod tests {
             iteration_budget: None,
             quota_tripped: false,
             soft_cancel_pending: false,
-            capability_diff: None,
             tool_definitions: vec![],
         }
     }
@@ -1447,7 +1274,7 @@ mod tests {
     // single field on `ctx`, renders, and asserts on the resulting
     // Markdown body. Together these prove the renderer correctly wires
     // `{{iteration_budget}}`, `{{quota_tripped}}`, and
-    // `{{capability_diff}}` from `TurnPromptContext` into the
+    // control banners from `TurnPromptContext` into the
     // rendered prompt. (`{{soft_cancel}}` is already covered above.)
 
     #[tokio::test]
@@ -1500,37 +1327,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_emits_capability_diff_section_when_changed() {
+    async fn render_drops_retired_capability_diff_marker() {
         let renderer = PromptRenderer::new(empty_funnel());
         let mut ctx = empty_ctx();
         ctx.body = "{{capability_diff}}".to_string();
-        let diff = CapabilityDiff {
-            granted: vec![CapabilityChange {
-                capability: "tool:Write".to_string(),
-                kind: CapabilityChangeKind::Granted,
-            }],
-            revoked: vec![CapabilityChange {
-                capability: "tool:Bash".to_string(),
-                kind: CapabilityChangeKind::Revoked,
-            }],
-        };
-        ctx.capability_diff = Some(diff);
-        let rendered = renderer.render_for_iteration(&ctx).await;
-        assert!(rendered.contains("## Capability changes since last turn"));
-        assert!(rendered.contains("Granted:"));
-        assert!(rendered.contains("- tool:Write"));
-        assert!(rendered.contains("Revoked:"));
-        assert!(rendered.contains("- tool:Bash"));
-    }
-
-    #[tokio::test]
-    async fn render_omits_capability_diff_when_none() {
-        let renderer = PromptRenderer::new(empty_funnel());
-        let mut ctx = empty_ctx();
-        ctx.body = "{{capability_diff}}".to_string();
-        ctx.capability_diff = None;
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(!rendered.contains("## Capability changes"));
+        assert!(!rendered.contains("{{capability_diff}}"));
     }
 
     // ---------- Frozen system prompt + tail runtime context ----------
@@ -1773,7 +1576,7 @@ mod tests {
     }
 
     /// Event-edged sections ride only on the iteration they fire:
-    /// `quota_tripped` / `soft_cancel` / `capability_diff` are included
+    /// `quota_tripped` / `soft_cancel` are included
     /// when the ctx flags them and absent otherwise (the loop computes
     /// the rising edges upstream of the renderer).
     #[tokio::test]
@@ -1783,13 +1586,6 @@ mod tests {
         let mut ctx = empty_ctx();
         ctx.quota_tripped = true;
         ctx.soft_cancel_pending = true;
-        ctx.capability_diff = Some(CapabilityDiff {
-            granted: vec![CapabilityChange {
-                capability: "tool:Write".to_string(),
-                kind: CapabilityChangeKind::Granted,
-            }],
-            revoked: vec![],
-        });
 
         let fired = renderer
             .render_runtime_context(&ctx, &mut state)
@@ -1797,14 +1593,9 @@ mod tests {
             .expect("edged sections fire");
         assert!(fired.contains("## Quota tripped"), "got: {fired}");
         assert!(fired.contains("## Cancellation requested"), "got: {fired}");
-        assert!(
-            fired.contains("## Capability changes since last turn"),
-            "got: {fired}"
-        );
 
         ctx.quota_tripped = false;
         ctx.soft_cancel_pending = false;
-        ctx.capability_diff = None;
         // Nothing due at all now (no iteration budget set, on-change
         // sections unchanged) → the whole message is skipped.
         let quiet = renderer.render_runtime_context(&ctx, &mut state).await;
@@ -1885,8 +1676,8 @@ mod tests {
     /// to be a hardcoded `String::new()`).
     #[tokio::test]
     async fn session_context_hook_receives_real_session_id() {
-        let core = Arc::new(EmptyExtensionCore::default());
-        let funnel: Arc<dyn ToolFunnel> = core.clone();
+        let core = Arc::new(EmptyToolingRuntime::default());
+        let funnel: Arc<dyn ToolingSeam> = core.clone();
         let renderer = PromptRenderer::new(funnel);
         let mut ctx = empty_ctx();
         ctx.session_id = "root:user:alice".to_string();
@@ -1899,7 +1690,7 @@ mod tests {
             .lock()
             .expect("snapshots mutex poisoned");
         assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].session_id, "root:user:alice");
+        assert_eq!(snapshots[0], "root:user:alice");
     }
 
     // ---------- ADR-052 D2: change/removal notices ----------
@@ -2093,7 +1884,7 @@ mod tests {
     /// registered, and is absent otherwise.
     #[tokio::test]
     async fn runtime_context_identity_section() {
-        let core = EmptyExtensionCore::default();
+        let core = EmptyToolingRuntime::default();
         core.section_texts
             .lock()
             .expect("section_texts poisoned")
@@ -2127,8 +1918,8 @@ mod tests {
 
     /// Funnel stub with one custom prompt section ("status-board")
     /// registered, mimicking a workspace hook's `PromptSection` bind.
-    fn custom_section_funnel(initial_text: &str) -> Arc<EmptyExtensionCore> {
-        let core = EmptyExtensionCore::default();
+    fn custom_section_funnel(initial_text: &str) -> Arc<EmptyToolingRuntime> {
+        let core = EmptyToolingRuntime::default();
         core.registered_sections
             .lock()
             .expect("registered_sections poisoned")
@@ -2202,7 +1993,7 @@ mod tests {
     /// output into the built-in dispatch.
     #[tokio::test]
     async fn runtime_context_custom_section_dedupes_builtin_names() {
-        let core = EmptyExtensionCore::default();
+        let core = EmptyToolingRuntime::default();
         {
             let mut registered = core.registered_sections.lock().expect("poisoned");
             registered.push("agents".to_string());
@@ -2228,7 +2019,7 @@ mod tests {
     /// regardless of the order the registry enumerated them.
     #[tokio::test]
     async fn runtime_context_custom_sections_render_in_sorted_order() {
-        let core = EmptyExtensionCore::default();
+        let core = EmptyToolingRuntime::default();
         {
             let mut registered = core.registered_sections.lock().expect("poisoned");
             registered.push("zeta".to_string());

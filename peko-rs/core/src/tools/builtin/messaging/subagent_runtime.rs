@@ -10,9 +10,6 @@
 //!
 //! ## Methods
 //!
-//! - [`is_subagent_enabled`](SubagentRuntime::is_subagent_enabled) — capability
-//!   gate. Returns `true` only when the per-principal capability snapshot
-//!   grants `agent:<name>`; missing authorization context is denied.
 //! - [`resolve_agent_config`](SubagentRuntime::resolve_agent_config) —
 //!   workspace Markdown lookup. Two layouts supported:
 //!   `<workspace>/roles/<name>/ROLE.md` (directory) or
@@ -24,8 +21,8 @@
 //!
 //! Sprint 8: parameter names that took a `subagent_type: &str` are
 //! renamed to `agent: &str` to match the LLM-facing `AgentArgs::agent`
-//! field. The method names (`is_subagent_enabled`,
-//! `resolve_agent_config`) and the trait name (`SubagentRuntime`)
+//! field. The method name `resolve_agent_config` and the trait name
+//! (`SubagentRuntime`)
 //! keep their historical "subagent" framing — a subagent is what gets
 //! spawned, the `agent` value is its template name.
 //! - [`audit_spawn`](SubagentRuntime::audit_spawn) — observability hub
@@ -59,13 +56,6 @@ use crate::tools::builtin::messaging::dto::{ExecutionConfig, SubagentRunView};
 /// fixture provided in this module.
 #[async_trait]
 pub trait SubagentRuntime: Send + Sync {
-    /// Capability check.
-    ///
-    /// Returns `true` only when the registered principal capability snapshot
-    /// grants `agent:<agent>`. Missing context and missing grants are
-    /// both denied.
-    fn is_subagent_enabled(&self, agent: &str) -> bool;
-
     /// Resolve a subagent config from the principal's workspace.
     ///
     /// Sprint 8 Commit 2: the workspace is the single source of truth.

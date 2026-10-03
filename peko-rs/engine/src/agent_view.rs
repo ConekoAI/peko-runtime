@@ -17,8 +17,7 @@
 //!
 //! Each method has a single real consumer today: the
 //! `src/engine/agentic_loop.rs` field access / method call. Two are
-//! field access (not method) sites, hence the `config_prompt_body()` and
-//! `config_enable_tool_search()` accessors — the engine must not reach
+//! field access (not method) sites, hence `config_prompt_body()` — the engine must not reach
 //! into `agent.config.prompt` directly. `identity_did()` mirrors the
 //! `self.agent.identity.did` direct field access at line 812.
 //!
@@ -43,7 +42,7 @@ pub trait AgentView: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     /// Agent DID — used as the session-key namespace on the shared
-    /// `ExtensionCore` (issue #68) so concurrent agents don't clobber
+    /// `ToolingRuntime` (issue #68) so concurrent agents don't clobber
     /// each other.
     fn identity_did(&self) -> &str;
 
@@ -75,20 +74,6 @@ pub trait AgentView: Send + Sync + 'static {
     /// Field access at `agentic_loop.rs:1948` — `self.agent.principal_workspace()`.
     fn principal_workspace(&self) -> Option<&std::path::PathBuf>;
 
-    /// Per-principal capability snapshot (None ⇒ unscope).
-    ///
-    /// Returns `Option<&Arc<Capabilities>>` to match the `Agent`'s
-    /// internal cache shape — the loop's prompt context
-    /// (`TurnPromptContext::capabilities: Option<Arc<Capabilities>>`)
-    /// takes ownership via `.cloned()`, so exposing `&Arc<...>` keeps
-    /// the `.cloned()` call sites intact. Peeling the Arc out in the
-    /// trait would force every caller to do `.map(Arc::new)` which is
-    /// noise.
-    fn principal_capabilities(&self) -> Option<&std::sync::Arc<peko_extension_api::Capabilities>>;
-
-    /// Active extension IDs for the principal (None ⇒ no extensions).
-    fn principal_active_extensions(&self) -> Option<&peko_extension_api::ActiveExtensionSet>;
-
     /// Channel type (e.g. `"discord"`, `"cli"`). Defaults to `"cli"` when unset.
     fn channel(&self) -> Option<&str>;
 
@@ -111,11 +96,6 @@ pub trait AgentView: Send + Sync + 'static {
     /// Peer-conversation peer subject in wire form (conversation
     /// runs only), rendered into the `{{session_context}}` section.
     fn conversation_peer(&self) -> Option<&str>;
-
-    /// Whether to enable F35's `__tool_search` synthetic built-in.
-    /// Field access at `agentic_loop.rs:1892` —
-    /// `self.agent.config.enable_tool_search`.
-    fn config_enable_tool_search(&self) -> bool;
 
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).
     /// Field access at `agentic_loop.rs:1934` —

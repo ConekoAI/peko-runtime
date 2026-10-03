@@ -122,8 +122,6 @@ peko list [--long]                        # List all pekos
 peko show <NAME>                          # Show peko details
 peko export <NAME> [--output <PATH>]      # Export to .peko package
 peko import <FILE> [--name <NEW_NAME>]    # Import from .peko package
-peko push <NAME>:<TAG>                    # Push to registry
-peko pull <REF>                           # Pull from registry
 peko permit <NAME> <SUBJECT> <PERMISSION> # Grant permission
 peko revoke <NAME> <SUBJECT> <PERMISSION> # Revoke permission
 ```
@@ -163,7 +161,7 @@ peko model compare openai-gpt-4o claude-sonnet-4-5
 peko credential list --namespace llm
 peko model test openai-gpt-4o
 
-# PekoHub registry token (separate flow)
+# PekoHub login (separate flow)
 peko login --api-key ph_xxx --registry https://hub.example.com
 peko logout
 ```
@@ -203,7 +201,7 @@ peko daemon restart                               # Restart the daemon
 peko daemon check                                 # Trigger immediate check
 ```
 
-> **Note:** Advanced commands (`config`, `cron`, `registry`, `runtime`, `tunnel`, `vault`, and `auth apikey`) are hidden from `--help` because they expose operational internals. They remain functional for operators and scripts.
+> **Note:** Advanced commands (`config`, `runtime`, `tunnel`, `vault`, and `auth apikey`) are hidden from `--help` because they expose operational internals. They remain functional for operators and scripts.
 
 #### Model Management
 ```bash
@@ -306,13 +304,14 @@ peko import ./my-principal.peko --name imported-principal
 ```
 
 **Package Contents:**
-- Definition (the `principal.toml` seed — the only part sent to a registry)
-- Identity-bearing local state (private keys never leave the vault)
-- Workspace snapshot (roles, skills, mcp, hooks, workflows, kb) and session/cron state
+- Configuration and identity (DID document and exported private keys)
+- Roles, skills, MCP, hooks, knowledge base, sessions, cron, and plans
+- Flat `manifest.toml` inventory with SHA-256 checksums
 
 **Security:**
-- Ed25519-signed manifest for package integrity
-- Importers are warned when a package carries unencrypted key material
+- Import validates every payload checksum and rejects legacy OCI snapshots
+- Hook/MCP commands and skill ids are printed and audited before restore
+- Inspect snapshots with `tar -tf`; ground plain seed TOML with `peko create -s`
 
 ---
 
@@ -392,7 +391,6 @@ peko-rs/
 ├── events/             # Neutral agentic event contract (leaf)
 ├── protocol/           # IPC + tunnel wire contracts (serde only)
 ├── auth/  identity/  quota/  plan/  observability/  fs-persistence/
-├── extension-api/      # Framework contracts (no impl deps)
 ├── provider-api/       # Provider contract types
 └── peko-daemon/        # peko-daemon binary
 ```

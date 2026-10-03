@@ -174,33 +174,8 @@ Returns:
             })
             .unwrap_or_default();
 
-        // Resolve per-principal state from the execution context. Fail closed:
-        // no active skill entry means the skill is not enabled for this caller.
-        // Grants match exactly (`skill:docker`) or by prefix wildcard
-        // (`skill:*`), mirroring `Capability::matches` semantics — the
-        // context carries a plain `Vec<String>`, not `Capabilities`.
-        let enabled = ctx.capabilities.as_ref().map_or(false, |caps| {
-            let required = format!("skill:{name}").to_lowercase();
-            caps.iter().any(|c| {
-                let grant = c.to_lowercase();
-                grant == required
-                    || (grant
-                        .strip_suffix('*')
-                        .is_some_and(|prefix| required.starts_with(prefix)))
-            })
-        }) || ctx.active_extensions.as_ref().map_or(false, |active| {
-            active
-                .iter()
-                .any(|id| id.to_lowercase() == name.to_lowercase())
-        });
-
-        if !enabled {
-            return Ok(json!({
-                "error": "skill_not_enabled",
-                "skill": name,
-            }));
-        }
-
+        // ADR-066 P2: presence = executability — a skill resolvable in
+        // the workspace is invocable; there is no grant check.
         let Some(entry) = self.runtime.resolve_skill(&name) else {
             return Ok(json!({
                 "error": "unknown_skill",
@@ -430,10 +405,8 @@ mod tests {
         )
     }
 
-    fn test_ctx(allowlist: &[&str], workspace: &std::path::Path) -> ToolContext {
-        let caps: Vec<String> = allowlist.iter().map(|s| format!("skill:{s}")).collect();
+    fn test_ctx(workspace: &std::path::Path) -> ToolContext {
         ToolContext::for_hook_run("hook_run", "hook", "Skill")
-            .with_capabilities(caps)
             .with_workspace(workspace.to_string_lossy().to_string())
     }
 
@@ -492,7 +465,7 @@ mod tests {
                     "name": "fix",
                     "args": ["42", "main"],
                 }),
-                &test_ctx(&["fix"], tmp.path()),
+                &test_ctx(tmp.path()),
             )
             .await
             .unwrap();
@@ -504,15 +477,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_allows_skill_via_wildcard_grant() {
-        // `skill:*` (shipped by `Capabilities::starter_bundle`) must match
-        // any skill name, mirroring the tool gate's `tool:*` semantics.
+    async fn execute_runs_skill_present_in_workspace() {
+        // ADR-066 P2: presence = executability — no grant context needed.
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
         let tool = tool_with_workspace(tmp.path());
         let result = tool
-            .execute_with_context(json!({ "name": "fix" }), &test_ctx(&["*"], tmp.path()))
+            .execute_with_context(json!({ "name": "fix" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["name"], "fix");
@@ -520,33 +492,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_rejects_skill_not_in_allowlist() {
-        let _id = next_test_id();
-        let tmp = TempDir::new().unwrap();
-        // Skill exists on disk but the allowlist doesn't include it.
-        write_skill(tmp.path(), "fix", "body", &[]);
-        let tool = tool_with_workspace(tmp.path());
-        let result = tool
-            .execute_with_context(json!({ "name": "fix" }), &test_ctx(&["other"], tmp.path()))
-            .await
-            .unwrap();
-        assert_eq!(result["error"], "skill_not_enabled");
-        assert_eq!(result["skill"], "fix");
-    }
-
-    #[tokio::test]
     async fn execute_rejects_unknown_skill() {
-        // Allowlist is empty; even if a file existed, the name would
-        // be rejected. We don't create any files on disk here to confirm
-        // the allowlist check fires before any disk access.
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         let tool = tool_with_workspace(tmp.path());
         let result = tool
-            .execute_with_context(json!({ "name": "docker" }), &test_ctx(&[], tmp.path()))
+            .execute_with_context(json!({ "name": "docker" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
-        assert_eq!(result["error"], "skill_not_enabled");
+        assert_eq!(result["error"], "unknown_skill");
         assert_eq!(result["skill"], "docker");
     }
 
@@ -574,7 +528,7 @@ mod tests {
                     "name": "minimal",
                     "args": ["42"],
                 }),
-                &test_ctx(&["minimal"], tmp.path()),
+                &test_ctx(tmp.path()),
             )
             .await
             .unwrap();
@@ -589,10 +543,7 @@ mod tests {
         write_skill(tmp.path(), "Docker", "Docker body", &[]);
         let tool = tool_with_workspace(tmp.path());
         let result = tool
-            .execute_with_context(
-                json!({ "name": "Docker" }),
-                &test_ctx(&["docker"], tmp.path()),
-            )
+            .execute_with_context(json!({ "name": "Docker" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["name"], "Docker");
@@ -606,7 +557,7 @@ mod tests {
         write_skill(tmp.path(), "live", "CWD: !`pwd`", &[]);
         let tool = tool_with_workspace(tmp.path());
         let result = tool
-            .execute_with_context(json!({ "name": "live" }), &test_ctx(&["live"], tmp.path()))
+            .execute_with_context(json!({ "name": "live" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
         // `pwd` resolves to the workspace dir; the exact path varies by
@@ -630,10 +581,7 @@ mod tests {
         write_skill(tmp.path(), "fence", body_str, &[]);
         let tool = tool_with_workspace(tmp.path());
         let result = tool
-            .execute_with_context(
-                json!({ "name": "fence" }),
-                &test_ctx(&["fence"], tmp.path()),
-            )
+            .execute_with_context(json!({ "name": "fence" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
         let body = result["body"].as_str().unwrap();
@@ -656,10 +604,7 @@ mod tests {
         );
         let tool = tool_with_workspace(tmp.path());
         let result = tool
-            .execute_with_context(
-                json!({ "name": "guarded_block" }),
-                &test_ctx(&["guarded_block"], tmp.path()),
-            )
+            .execute_with_context(json!({ "name": "guarded_block" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
         let body = result["body"].as_str().unwrap();
@@ -681,17 +626,17 @@ mod tests {
         );
         let tool = tool_with_workspace(tmp.path());
         let result = tool
-            .execute_with_context(
-                json!({ "name": "guarded_allow" }),
-                &test_ctx(&["guarded_allow"], tmp.path()),
-            )
+            .execute_with_context(json!({ "name": "guarded_allow" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["body"], "Got: hello\n");
     }
 
     #[tokio::test]
-    async fn execute_fail_closed_without_principal_id() {
+    async fn execute_runs_skill_without_principal_context() {
+        // ADR-066 P2: no capability gate — a skill present in the
+        // workspace runs even when the caller context carries no
+        // principal identity at all.
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "fix", "body", &[]);
@@ -701,31 +646,14 @@ mod tests {
             .execute_with_context(json!({ "name": "fix" }), &ctx)
             .await
             .unwrap();
-        assert_eq!(result["error"], "skill_not_enabled");
-    }
-
-    #[tokio::test]
-    async fn execute_fail_closed_when_principal_not_registered() {
-        let _id = next_test_id();
-        let tmp = TempDir::new().unwrap();
-        write_skill(tmp.path(), "fix", "body", &[]);
-        let tool = tool_with_workspace(tmp.path());
-        // No capabilities or active extension provided for this caller.
-        let result = tool
-            .execute_with_context(
-                json!({ "name": "fix" }),
-                &ToolContext::for_hook_run("hook_run", "hook", "Skill"),
-            )
-            .await
-            .unwrap();
-        assert_eq!(result["error"], "skill_not_enabled");
+        assert_eq!(result["name"], "fix");
+        assert_eq!(result["body"], "body");
     }
 
     #[tokio::test]
     async fn execute_rejects_traversal_name_as_unknown_skill() {
         // `Skill {name: "../secret"}` must not escape the workspace
-        // skills dir — even under the `skill:*` wildcard grant, which
-        // prefix-matches the traversal string. The workspace runtime
+        // skills dir. The workspace runtime
         // refuses any name that is not a single plain path component,
         // so the tool surfaces `unknown_skill`.
         let _id = next_test_id();
@@ -737,10 +665,7 @@ mod tests {
         let tool = tool_with_workspace(&skills_dir);
 
         let result = tool
-            .execute_with_context(
-                json!({ "name": "../secret" }),
-                &test_ctx(&["*"], tmp.path()),
-            )
+            .execute_with_context(json!({ "name": "../secret" }), &test_ctx(tmp.path()))
             .await
             .unwrap();
         assert_eq!(result["error"], "unknown_skill");

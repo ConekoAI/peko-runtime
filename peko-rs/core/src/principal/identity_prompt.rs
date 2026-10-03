@@ -13,7 +13,7 @@
 //!
 //! Presence = visibility (ADR-050): a missing `principal.toml`, or one
 //! whose identity/intent fields are all empty, yields
-//! [`HookResult::PassThrough`] so the section is stripped from the
+//! `None` so the section is stripped from the
 //! prompt. There is deliberately **no** capability filter.
 //!
 //! The render result is cached in a `Mutex` keyed on the FILE's
@@ -31,8 +31,6 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{HookOutput, HookResult, ToolRuntimeContext};
 use crate::principal::config::{PrincipalIdentityConfig, PrincipalIntentConfig};
 
 /// Default priority for the principal-identity prompt section.
@@ -91,35 +89,24 @@ impl WorkspaceIdentityPromptHandler {
 }
 
 #[async_trait]
-impl HookHandler for WorkspaceIdentityPromptHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        let workspace = ctx
-            .get_state::<ToolRuntimeContext>("tool_context")
-            .and_then(|rtc| rtc.workspace.clone());
-
-        let Some(workspace) = workspace.filter(|w| !w.is_empty()) else {
-            return HookResult::PassThrough;
-        };
-
-        match self.render_section(&workspace) {
-            Some(text) => HookResult::Continue(HookOutput::Text(text)),
-            None => HookResult::PassThrough,
-        }
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::PromptSystemSection {
-            section: "identity".to_string(),
-            priority: IDENTITY_HOOK_PRIORITY,
-        }
+impl crate::tools::prompt_sections::PromptSectionProvider for WorkspaceIdentityPromptHandler {
+    fn section(&self) -> &'static str {
+        "identity"
     }
 
     fn priority(&self) -> i32 {
         IDENTITY_HOOK_PRIORITY
     }
 
-    fn name(&self) -> String {
-        "WorkspaceIdentityPromptHandler".to_string()
+    async fn render(
+        &self,
+        input: &crate::tools::prompt_sections::PromptSectionInput,
+    ) -> Option<String> {
+        let workspace = input.workspace.to_string_lossy().to_string();
+        if workspace.is_empty() {
+            return None;
+        }
+        self.render_section(&workspace)
     }
 }
 
@@ -175,9 +162,8 @@ fn render_identity_section(toml_content: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::framework::core::ExtensionServices;
-    use crate::extensions::framework::types::HookInput;
-    use std::sync::Arc;
+    use crate::tools::prompt_sections::PromptSectionProvider;
+
     use tempfile::TempDir;
 
     const PRINCIPAL_TOML: &str = r#"
@@ -193,30 +179,14 @@ values = ["Candor"]
 preferences = [" terse answers "]
 "#;
 
-    fn identity_hook_ctx(workspace: Option<&str>) -> HookContext {
-        let mut ctx = HookContext::new(
-            HookPoint::PromptSystemSection {
-                section: "identity".to_string(),
-                priority: IDENTITY_HOOK_PRIORITY,
-            },
-            HookInput::Unit,
-            Arc::new(ExtensionServices::new()),
-        );
-        if let Some(ws) = workspace {
-            ctx.set_state(
-                "tool_context",
-                ToolRuntimeContext::new()
-                    .with_workspace(ws)
-                    .with_principal_id("test-principal"),
-            );
-        }
-        ctx
-    }
-
-    fn handle_text(result: HookResult) -> Option<String> {
-        match result {
-            HookResult::Continue(HookOutput::Text(text)) => Some(text),
-            _ => None,
+    fn identity_input(
+        workspace: &std::path::Path,
+    ) -> crate::tools::prompt_sections::PromptSectionInput {
+        crate::tools::prompt_sections::PromptSectionInput {
+            principal_id: "test-principal".to_string(),
+            workspace: workspace.to_path_buf(),
+            session_id: String::new(),
+            channel_port: None,
         }
     }
 
@@ -226,12 +196,10 @@ preferences = [" terse answers "]
         std::fs::write(temp.path().join("principal.toml"), PRINCIPAL_TOML).unwrap();
 
         let handler = WorkspaceIdentityPromptHandler::new();
-        let text = handle_text(
-            handler
-                .handle(identity_hook_ctx(Some(&temp.path().to_string_lossy())))
-                .await,
-        )
-        .expect("expected identity section text");
+        let text = handler
+            .render(&identity_input(temp.path()))
+            .await
+            .expect("expected identity section text");
 
         assert!(text.contains("name: Peko Test"), "got: {text}");
         assert!(
@@ -253,19 +221,12 @@ preferences = [" terse answers "]
     #[tokio::test]
     async fn identity_handler_passes_through_without_workspace_or_file() {
         let handler = WorkspaceIdentityPromptHandler::new();
-        let result = handler.handle(identity_hook_ctx(None)).await;
-        assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected PassThrough without workspace, got {result:?}"
-        );
 
         let temp = TempDir::new().unwrap();
-        let result = handler
-            .handle(identity_hook_ctx(Some(&temp.path().to_string_lossy())))
-            .await;
+        let result = handler.render(&identity_input(temp.path())).await;
         assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected PassThrough without principal.toml, got {result:?}"
+            result.is_none(),
+            "Expected no section without principal.toml, got {result:?}"
         );
     }
 
@@ -275,12 +236,10 @@ preferences = [" terse answers "]
         std::fs::write(temp.path().join("principal.toml"), "name = \"bare\"\n").unwrap();
 
         let handler = WorkspaceIdentityPromptHandler::new();
-        let result = handler
-            .handle(identity_hook_ctx(Some(&temp.path().to_string_lossy())))
-            .await;
+        let result = handler.render(&identity_input(temp.path())).await;
         assert!(
-            matches!(result, HookResult::PassThrough),
-            "Expected PassThrough for empty identity/intent, got {result:?}"
+            result.is_none(),
+            "Expected no section for empty identity/intent, got {result:?}"
         );
     }
 
@@ -291,9 +250,11 @@ preferences = [" terse answers "]
         std::fs::write(&toml_path, PRINCIPAL_TOML).unwrap();
 
         let handler = WorkspaceIdentityPromptHandler::new();
-        let ws = temp.path().to_string_lossy().to_string();
+        let _ws = temp.path().to_string_lossy().to_string();
 
-        let first = handle_text(handler.handle(identity_hook_ctx(Some(&ws))).await)
+        let first = handler
+            .render(&identity_input(temp.path()))
+            .await
             .expect("expected identity text");
         assert!(first.contains("Peko Test"), "got: {first}");
 
@@ -307,7 +268,9 @@ preferences = [" terse answers "]
         )
         .unwrap();
 
-        let second = handle_text(handler.handle(identity_hook_ctx(Some(&ws))).await)
+        let second = handler
+            .render(&identity_input(temp.path()))
+            .await
             .expect("expected updated identity text");
         assert!(second.contains("Peko Edited Principal"), "got: {second}");
         assert!(!second.contains("name: Peko Test\n"), "got: {second}");

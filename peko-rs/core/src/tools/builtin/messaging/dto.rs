@@ -1,6 +1,6 @@
 //! Subagent DTOs lifted from root (`src/agents/{subagent_executor,
 //! subagent_types}.rs` and
-//! `src/extensions/framework/async_exec/executor/registry.rs`).
+//! `src/async_exec/executor/registry.rs`).
 //!
 //! Phase 10e hoists the **shapes** AgentTool needs through its
 //! `SubagentRuntime` port — the heavy `SubagentExecutor` itself
@@ -44,17 +44,8 @@ use serde::{Deserialize, Serialize};
 // existing call sites and tests are unaffected by the unification.
 pub use crate::agents::subagent_error::SpawnError;
 
-// ─── SpawnCleanupPolicy (re-export of peko_extension_api) ─────────
-//
-// The enum's canonical home moved from `peko_extension_host` to
-// `peko_extension_api` in Phase 8b to break the cycle that arose
-// when the host crate grew a `peko_tools_builtin` dep
-// (`async_exec/executor/async_runtime_impl.rs` adapts the host's
-// `AsyncExecutor` to the `AsyncRuntime` port). We re-export it here
-// so consumers of the messaging module can refer to one place;
-// root's `crate::tools::builtin::session::types::SpawnCleanupPolicy` shim is
-// preserved for backwards compat.
-pub use peko_extension_api::SpawnCleanupPolicy;
+// Session cleanup policy shared with the persistence layer.
+pub use peko_session::SpawnCleanupPolicy;
 
 // ─── ExecutionConfig (lifted from src/agents/subagent_executor.rs) ─
 
@@ -93,13 +84,13 @@ impl Default for ExecutionConfig {
     }
 }
 
-// ─── SubagentResult (lifted from src/extensions/framework/async_exec/executor/registry.rs)
+// ─── SubagentResult (lifted from src/async_exec/executor/registry.rs)
 
 /// Result of a subagent run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentResult {
     /// Final status
-    pub status: peko_extension_api::AsyncTaskStatus,
+    pub status: peko_tools_core::AsyncTaskStatus,
     /// Output content (if successful)
     pub output: Option<String>,
     /// Error message (if failed)
@@ -123,7 +114,7 @@ pub struct SubagentRunView {
     pub child_session_key: String,
     pub parent_session_key: String,
     pub task: String,
-    pub status: peko_extension_api::AsyncTaskStatus,
+    pub status: peko_tools_core::AsyncTaskStatus,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub cleanup: SpawnCleanupPolicy,

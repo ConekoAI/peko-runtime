@@ -11,7 +11,7 @@
 //! helpers out of `tool_runtime.rs`; `ToolRuntime` itself remains in
 //! root pending BashTool's lift into `peko-tools-builtin`. Phase
 //! 9b.N.3 lifted `tool_executor.rs` after introducing two trait ports:
-//! `ToolFunnel` (peko-extension-host) abstracts `ExtensionCore`'s
+//! `ToolFunnel` (peko-extension-host) abstracts `ToolingRuntime`'s
 //! engine-facing surface, and `SessionView` (peko-engine) abstracts
 //! the single `add_tool_result` write path. Phase 9b.N.4 lifts
 //! `compaction_driver.rs` after extending both trait ports
@@ -24,7 +24,7 @@
 //! `agentic_loop.rs` will consume in 9b.N.5b: `AgentView`
 //! (peko-engine) abstracts `Agent`'s engine-facing surface,
 //! `AsyncInboxLike` (peko-engine) abstracts `SharedSessionInbox`,
-//! `CapabilityDiffTracker` lifts into `peko-engine::iteration_state`,
+//! Capability grant tracking was retired in ADR-066 P6,
 //! and `ToolFunnel` gains `invoke_stop_hook` /
 //! `invoke_after_agent_hook`. The actual `agentic_loop.rs` lift is
 //! Phase 9b.N.5b. This module re-exports their public surface
@@ -37,7 +37,7 @@
 //! - [`agentic_loop_compat`] — root-side test module for the lifted
 //!   `peko_engine::AgenticLoop` (Phase 9b.N.5b.9). The actual production
 //!   loop now lives in `peko_engine::agentic_loop`. Tests stay in root
-//!   because they need root-only fixture types (`Agent`, `ExtensionCore`,
+//!   because they need root-only fixture types (`Agent`, `ToolingRuntime`,
 //!   `Subject`, `SessionManager`, etc.) that `peko-engine` cannot depend
 //!   on. Mirrors the `tool_executor_compat` precedent.
 //! - [`tool_runtime`] — `BuiltinToolAdapter` + concrete `tools::builtin::*`
@@ -60,6 +60,6 @@
 pub mod agentic_loop_compat;
 pub mod background_compactor_factory_compat;
 // `extension_core_funnel_compat` was removed in Phase 8a: the
-// `impl ToolFunnel for ExtensionCore` lives next to ExtensionCore in
+// `impl ToolFunnel for ToolingRuntime` lives next to ToolingRuntime in
 // `peko_extension_host::tool_funnel_impl`.
 pub mod tool_runtime;

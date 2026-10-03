@@ -28,9 +28,6 @@ use std::sync::Arc;
 use peko_channel::{ChannelPort, Checkpoint};
 use peko_protocol::channel::ChannelEvent;
 
-use crate::extensions::framework::core::{HookContext, HookHandler, HookPoint};
-use crate::extensions::framework::types::{HookInput, HookOutput, HookResult};
-
 /// Priority of the digest handler in the `SessionContextBuild`
 /// aggregation. Below `SelfPositionSessionContextHandler` (110) and
 /// `PeersSessionContextHandler` (100) — the digest is the most
@@ -63,59 +60,34 @@ const DIGEST_MAX_BYTES: usize = 2 * 1024;
 pub(crate) struct ChannelDigestSessionContextHandler;
 
 #[async_trait::async_trait]
-impl HookHandler for ChannelDigestSessionContextHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        let session_id = match &ctx.input {
-            HookInput::SessionState(snapshot) => {
-                peko_session::id::SessionId::parse(&snapshot.session_id)
-            }
-            _ => None,
-        };
-        let Some(session_id) = session_id else {
-            return HookResult::PassThrough;
-        };
-        let tool_ctx = ctx
-            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context");
-        let (workspace, principal_id) = match tool_ctx {
-            Some(rtc) => (rtc.workspace.clone(), rtc.principal_id.clone()),
-            None => (None, None),
-        };
-        let (Some(workspace), Some(principal_id)) = (workspace, principal_id) else {
-            return HookResult::PassThrough;
-        };
-        if workspace.is_empty() || principal_id.is_empty() {
-            return HookResult::PassThrough;
-        }
-        let Some(sessions_dir) =
-            crate::principal::child_turns::sessions_dir_for_workspace(&workspace)
-        else {
-            return HookResult::PassThrough;
-        };
-        let metas = peko_session::manager::SessionManager::new()
-            .with_sessions_dir_internal(sessions_dir)
-            .list_all_sessions(false)
-            .await
-            .unwrap_or_default();
-        let Some(port) = ctx.services.channel_port() else {
-            return HookResult::PassThrough;
-        };
-
-        match render_channel_digest(&port, &metas, session_id, &principal_id).await {
-            Some(text) => HookResult::Continue(HookOutput::Text(text)),
-            None => HookResult::PassThrough,
-        }
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::SessionContextBuild
+impl crate::tools::prompt_sections::PromptSectionProvider for ChannelDigestSessionContextHandler {
+    fn section(&self) -> &'static str {
+        "session_context"
     }
 
     fn priority(&self) -> i32 {
         CHANNEL_DIGEST_HOOK_PRIORITY
     }
 
-    fn name(&self) -> String {
-        "ChannelDigestSessionContextHandler".to_string()
+    async fn render(
+        &self,
+        input: &crate::tools::prompt_sections::PromptSectionInput,
+    ) -> Option<String> {
+        let session_id = peko_session::id::SessionId::parse(&input.session_id)?;
+        let workspace = input.workspace.to_string_lossy().to_string();
+        let principal_id = input.principal_id.clone();
+        if workspace.is_empty() || principal_id.is_empty() {
+            return None;
+        }
+        let sessions_dir = crate::principal::child_turns::sessions_dir_for_workspace(&workspace)?;
+        let metas = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(sessions_dir)
+            .list_all_sessions(false)
+            .await
+            .unwrap_or_default();
+        let port = input.channel_port.clone()?;
+
+        render_channel_digest(&port, &metas, session_id, &principal_id).await
     }
 }
 

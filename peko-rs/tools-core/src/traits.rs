@@ -2,7 +2,6 @@
 
 use crate::exec::{ToolContext, ToolError};
 use crate::interrupt::ToolInterruptNotice;
-use crate::ToolExposure;
 use async_trait::async_trait;
 
 /// Tool trait for agent capabilities
@@ -64,33 +63,11 @@ pub trait Tool: Send + Sync {
         true
     }
 
-    /// How this tool is exposed to the LLM (F34, audit section 3 row 4).
-    ///
-    /// Defaults to [`ToolExposure::Direct`] (visible in the native LLM
-    /// catalog; callable). F36 collapsed the prompt-section surface —
-    /// tool catalogs travel wire-only via the `tools[]` JSON-schema
-    /// array — so `Direct` and `DirectModelOnly` are equivalent on the
-    /// wire today. Override for:
-    ///
-    /// * `Deferred` — too large for the initial catalog; the model
-    ///   discovers it via the synthetic `__tool_search` stub (F35).
-    ///   The stub returns the tool's full `ToolDefinition` so the
-    ///   model can call it on the next iteration.
-    /// * `Hidden` — telemetry-only or sub-tool-of-other-tool; the
-    ///   model never sees or invokes it.
-    ///
-    /// The capability gate still applies on top — a tool without the
-    /// principal's `tool:<name>` grant is hidden from the wire
-    /// catalog regardless of this setting.
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::default()
-    }
-
     /// Execute the tool with parameters.
     ///
     /// ⚠️ **TEST-ONLY IN PRODUCTION CONTEXTS**
     ///
-    /// Production code must route tool execution through `ExtensionCore::invoke_hook`
+    /// Production code must route tool execution through `ToolingRuntime::invoke_hook`
     /// (or `ToolRuntime::execute_tool`) to ensure consistent behavior:
     /// - Workspace injection
     /// - Reserved parameter validation/injection
@@ -101,7 +78,7 @@ pub trait Tool: Send + Sync {
     ///
     /// Direct calls to this method are appropriate for:
     /// - Unit tests of individual tools
-    /// - The `BuiltinToolAdapter` wrapper (which bridges into ExtensionCore)
+    /// - The `BuiltinToolAdapter` wrapper (which bridges into ToolingRuntime)
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value>;
 
     /// Hook called by the framework when a tool call is cancelled.

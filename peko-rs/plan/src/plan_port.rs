@@ -18,8 +18,8 @@
 //! [`Principal`]: ../../../../core/src/principal/mod.rs
 //! [`ProviderView`]: ../../../../providers/src/provider_view.rs
 //! [`SessionView`]: ../../../../session/src/session_core.rs
-//! [`ToolFunnel`]: ../../../../extension-api/src/tool_funnel.rs
-//! [`AsyncInboxLike`]: ../../../../extension-api/src/async_inbox.rs
+//! [`ToolFunnel`]: ../../../../engine/src/tooling.rs
+//! [`AsyncInboxLike`]: ../../../../session/src/async_inbox.rs
 
 use crate::error::{PlanError, Result};
 use crate::schema::{NodeEvidence, NodeId, PlanNode, PlanNodeStatus, PlanRecord};

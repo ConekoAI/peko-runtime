@@ -13,8 +13,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crate::commands::{
     audit, auth, channel, config, credential, daemon, from_cli, init_logging, log, model,
-    principal, quota, registry, runtime, search, send, stop, system, tunnel, update, vault,
-    version, Cli, Commands, GlobalPaths,
+    principal, quota, runtime, send, stop, system, tunnel, update, vault, version, Cli, Commands,
+    GlobalPaths,
 };
 
 // `peko-rs/cli/` is a binary-only crate (no `src/lib.rs`), so the
@@ -35,7 +35,7 @@ async fn main() {
     // Set up global paths
     let paths = from_cli(&cli);
 
-    // No global `ExtensionCore` is pre-installed here (2026-09-27,
+    // No global `ToolingRuntime` is pre-installed here (2026-09-27,
     // ADR-063 (P0-1) + D1): the CLI never executes tools
     // (ADR-021), so the core's async router had no live consumer on
     // this side, and the pre-installed core actively *pre-empted* the
@@ -46,8 +46,7 @@ async fn main() {
     // daemon's own global core with the shared inbox registry.
 
     // Run the command and handle results/exit codes
-    let cli_registry = cli.registry.as_deref();
-    let result = run_command(cli.command, &paths, cli.json, cli_registry).await;
+    let result = run_command(cli.command, &paths, cli.json).await;
 
     match result {
         Ok(()) => std::process::exit(0),
@@ -73,12 +72,7 @@ async fn main() {
     }
 }
 
-async fn run_command(
-    command: Commands,
-    paths: &GlobalPaths,
-    json: bool,
-    _cli_registry: Option<&str>,
-) -> anyhow::Result<()> {
+async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
     match command {
         // ADR-059: the lifecycle verbs are top level (`peko create`, ...).
         Commands::Peko(cmd) => principal::handle_principal(cmd, paths, json).await,
@@ -93,18 +87,16 @@ async fn run_command(
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, json).await,
         Commands::Channel(cmd) => channel::handle_channel(cmd, paths).await,
         Commands::Model(cmd) => model::execute(cmd, paths).await,
-        Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,
-        Commands::Registry(cmd) => registry::handle_registry(cmd, paths, json),
         Commands::Runtime(cmd) => runtime::handle_runtime(cmd, paths, json).await,
         Commands::Tunnel(cmd) => tunnel::handle_tunnel(cmd, paths, json).await,
         Commands::Quota(cmd) => quota::handle_quota(cmd, paths, json).await,
         Commands::Audit(cmd) => audit::handle_audit(cmd, paths).await,
         Commands::Login { registry, api_key } => {
-            let host = registry.unwrap_or_else(|| paths.registry_config().default);
+            let host = registry.unwrap_or_else(|| "pekohub.ai".to_string());
             auth::handle_login(paths, &host, api_key)
         }
         Commands::Logout { registry } => {
-            let host = registry.unwrap_or_else(|| paths.registry_config().default);
+            let host = registry.unwrap_or_else(|| "pekohub.ai".to_string());
             auth::handle_logout(paths, &host)
         }
         Commands::Update { check, force } => update::handle_update(check, force).await,

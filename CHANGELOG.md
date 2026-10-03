@@ -4,6 +4,83 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Pure workspace tooling: contract fold and cleanup (ADR-066 P6, 2026-10-02)
+
+- Deleted `peko-extension-api` and moved live tooling ports to the engine,
+  inbox/completion/session contracts to session, task statuses and paths to
+  tools-core, and MCP reserved injection beside MCP. Workspace observers and
+  catalog metadata now live in root; role discovery uses plain role metadata.
+- Removed extension ids/manifests, unused hook payloads, duplicate spawn policy,
+  capability state threading, capability-diff prompts, and the compaction
+  allowlist. Legacy principal grants are consumed only at deserialization,
+  warned once, and never saved; inbound peer permissions remain intact.
+- Removed import IPC negotiation fields and empty extension previews; legacy
+  unknown JSON fields remain tolerated. Updated architecture/API/data/tool
+  docs and dependency rules: 20 crates, 69 forbidden edges.
+
+### Pure workspace tooling: local snapshot packaging (ADR-066 P5, 2026-10-02)
+
+- Replaced OCI snapshot layers and signatures with a flat `manifest.toml`
+  containing metadata and a path-to-SHA-256 inventory in an ordinary tar.gz.
+  Legacy snapshots require re-export from the source runtime. Corruption,
+  undeclared files, unsafe paths, and identity mismatches fail before writes;
+  `--force` only allows overwriting local principals.
+- Preserved full-existence restore: identity, role prompts, sessions, authored
+  cron (rebound ids), plans, and workspace tooling; boot state remains verbatim
+  for wakes. Keyless packages retain `create -s` guidance.
+- Import prints full hook/MCP definitions and skill ids and emits the same
+  inventory as a durable Security audit event. Preview bytes are bound to
+  restore by an optional manifest checksum; no confirmation prompt remains.
+- Deleted registry client/cache/config, OCI descriptors/media types, trust
+  stores, embedded-extension packaging, push/pull/search/registry CLI commands,
+  their IPC packets/client methods, and obsolete registry/signature tests.
+  Seeds remain plain TOML; PekoHub login and peer transport are unchanged.
+
+### Pure workspace tooling: workspace hook dispatcher (ADR-066 P4, 2026-10-02)
+
+- Replaced `HookRegistry` and the hook-point zoo with six principal-owned
+  workspace hook points, run in registration order. Each handler soft-fails
+  after two seconds; errors, panics, and handled results never veto tool calls
+  or skip subsequent observers. Command processes are killed when dropped.
+- Preserved prompt-section aggregation and retraction, lifecycle context,
+  and principal isolation. Scanning sorts directories and validates all binds
+  before registering a manifest. Tool selectors are exact or absent (all
+  tools); wildcard selectors are rejected with migration guidance. Legacy
+  priorities are ignored.
+- Deleted tool exposure/filtering, `enable_tool_search`, `__tool_search`, and
+  discovery metadata/scoring. Every registered tool is in the wire catalog.
+- Removed inert agent-init/shutdown and compaction/session-state hooks;
+  compaction uses the built-in backend directly. Removed the landed P3 WIP patch.
+
+### Pure workspace tooling: funnel split (ADR-066 P3, 2026-10-02)
+
+- Replaced `ExtensionCore` and its process-global accessors with an
+  explicitly shared `ToolingRuntime`: `ToolCatalog`, `ToolDispatcher`,
+  prompt-section providers, `SessionKeys`, and the surviving hook registry.
+- Reduced `ToolFunnel` to execution, catalog listing, and prompt rendering;
+  lifecycle/compaction/bookkeeping now use `EngineHooks`.
+- Tool execution dispatches directly from the catalog, retains validation,
+  workspace injection, abort, timeout/detach and panic isolation, and emits
+  one attributed `tool.call` audit event. Pre/Post hooks remain observe-only.
+- Installs workspace tools once per principal and prompt providers once per
+  runtime; scopes workspace hooks to their owning principal.
+- Migrated singleton-dependent tests to explicitly constructed runtimes.
+
+
+### Pure workspace tooling: ownership and audit (ADR-066 P2, 2026-10-01)
+
+- Deleted capability gates for tool visibility/execution, roles, skills,
+  subagents, and imports. Presence makes workspace tooling available.
+- Cross-principal writes now compare filesystem ownership and fail closed
+  with a durable Security audit event. Legacy grants warn once and are dropped.
+
+### Pure workspace tooling: async host cleanup (ADR-066 P1, 2026-10-01)
+
+- Moved async execution and session inbox to `async_exec`. Deleted the inert
+  extension store, discovery/storage, adapter trait, configuration services,
+  and tool execution service; re-homed live principal tooling and catalog glue.
+
+
 ### Iteration cap removed from the agentic loop (2026-09-30)
 
 The agentic loop's hard-coded `max_iterations = 10` ceiling

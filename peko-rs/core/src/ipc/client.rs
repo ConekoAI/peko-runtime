@@ -470,7 +470,6 @@ impl DaemonClient {
         &self,
         file_path: impl Into<String>,
         name: Option<String>,
-        allow_unsigned: bool,
         force: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
@@ -478,7 +477,6 @@ impl DaemonClient {
             request_id,
             file_path: file_path.into(),
             name,
-            allow_unsigned,
             force,
         };
         self.request_response(packet).await
@@ -489,85 +487,16 @@ impl DaemonClient {
         &self,
         file_path: impl Into<String>,
         name: Option<String>,
-        allow_unsigned: bool,
         force: bool,
-        confirmed: bool,
-        selected_capabilities: Vec<String>,
+        expected_manifest_checksum: Option<String>,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalImport {
             request_id,
             file_path: file_path.into(),
             name,
-            allow_unsigned,
             force,
-            confirmed,
-            selected_capabilities,
-        };
-        self.request_response(packet).await
-    }
-
-    /// Push a Principal package to a registry.
-    pub async fn principal_push(
-        &self,
-        name: impl Into<String>,
-        registry_host: Option<String>,
-        registry_token: Option<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::PrincipalPush {
-            request_id,
-            name: name.into(),
-            registry_host,
-            registry_token,
-        };
-        self.request_response(packet).await
-    }
-
-    /// Preview a remote Principal package before pulling it.
-    pub async fn principal_pull_preview(
-        &self,
-        registry_ref: impl Into<String>,
-        name: Option<String>,
-        force: bool,
-        registry_host: Option<String>,
-        registry_token: Option<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::PrincipalPullPreview {
-            request_id,
-            registry_ref: registry_ref.into(),
-            name,
-            force,
-            registry_host,
-            registry_token,
-        };
-        self.request_response(packet).await
-    }
-
-    /// Pull a Principal package from a registry and import it.
-    pub async fn principal_pull(
-        &self,
-        registry_ref: impl Into<String>,
-        name: Option<String>,
-        force: bool,
-        confirmed: bool,
-        selected_capabilities: Vec<String>,
-        allow_unsigned: bool,
-        registry_host: Option<String>,
-        registry_token: Option<String>,
-    ) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        let packet = RequestPacket::PrincipalPull {
-            request_id,
-            registry_ref: registry_ref.into(),
-            name,
-            force,
-            confirmed,
-            selected_capabilities,
-            allow_unsigned,
-            registry_host,
-            registry_token,
+            expected_manifest_checksum,
         };
         self.request_response(packet).await
     }

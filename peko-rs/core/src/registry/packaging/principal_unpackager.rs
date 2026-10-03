@@ -1,26 +1,20 @@
 //! Unpackager for importing portable Principal packages
 //!
 //! Extracts `.peko` files into the local peko runtime.
-#![allow(dead_code)]
 
 use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::store::ExtensionStore;
-use crate::extensions::framework::types::ExtensionId;
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::path_safety::safe_join;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
-use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
 use peko_auth::Subject;
-use peko_extension_api::Capabilities;
 use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
 use peko_subject::PrincipalDID;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Import options for a Principal package.
 #[derive(Debug, Clone)]
@@ -36,30 +30,19 @@ pub struct PrincipalImportOptions {
     /// rebinding, plan DAGs). Sessions are governed by
     /// `import_sessions` independently (ADR-056).
     pub import_local_state: bool,
-    /// Allow importing an unsigned package
-    pub allow_unsigned: bool,
-    /// Force overwrite an existing Principal
+    /// Force overwrite an existing Principal (never bypasses validation).
     pub force: bool,
-    /// Daemon-wide trust store used for TOFU pinning.
-    pub trust_store: Option<Arc<RwLock<TrustStore>>>,
-    /// How to handle trust pinning conflicts.
-    pub trust_policy: TrustPolicy,
-    /// Capability grants to add to the imported Principal's
-    /// `[capabilities] grants` list, deduplicated against existing grants.
-    pub selected_capabilities: Vec<String>,
-    /// Caller subject for the WriteSide gate. The IPC handler
-    /// passes `caller.subject().clone(); defaults to
+    /// Bind a displayed preview to these exact manifest bytes.
+    pub expected_manifest_checksum: Option<String>,
+    /// Caller subject for the ownership write gate (ADR-066 D9). The
+    /// IPC handler passes `caller.subject().clone()`; defaults to
     /// `Subject::User("local")` so library callers (tests, the CLI
     /// `import` subcommand if it ever bypasses the IPC layer) clear
     /// the Shared tier actor gate.
     pub caller_subject: Subject,
-    /// Caller capability snapshot for the WriteSide gate. The IPC
-    /// handler passes the post-merge `Capabilities` (starter bundle
-    /// plus any caller-selected grants) so the gate reflects what
-    /// the new principal will actually carry. Defaults to
-    /// `Capabilities::starter_bundle()` so existing tests don't
-    /// need to thread this through.
-    pub caller_capabilities: Capabilities,
+    /// Observability hub for the ADR-066 D9 `Security` audit event a
+    /// denied ownership-crossing write emits. `None` skips the event.
+    pub observability: Option<Arc<peko_observability::Observability>>,
 }
 
 impl Default for PrincipalImportOptions {
@@ -69,13 +52,10 @@ impl Default for PrincipalImportOptions {
             rotate_keys: false,
             import_sessions: true,
             import_local_state: true,
-            allow_unsigned: false,
             force: false,
-            trust_store: None,
-            trust_policy: TrustPolicy::Tofu,
-            selected_capabilities: Vec::new(),
+            expected_manifest_checksum: None,
             caller_subject: Subject::User("local".to_string()),
-            caller_capabilities: Capabilities::starter_bundle(),
+            observability: None,
         }
     }
 }
@@ -93,8 +73,6 @@ pub struct PrincipalImportResult {
     pub keys_rotated: bool,
     /// Validation result
     pub validation: ValidationResult,
-    /// IDs of embedded extensions that were installed during import.
-    pub installed_extensions: Vec<String>,
     /// Whether the package carried identity-bearing Local-tier state
     /// (`sessions/`, `cron/`, `plans/`). ADR-056: `true` ⇒ the import
     /// is a *wake* — boot state carried verbatim (an `organized`
@@ -157,11 +135,13 @@ impl PrincipalUnpackager {
         files: HashMap<String, Vec<u8>>,
         options: PrincipalImportOptions,
     ) -> anyhow::Result<PrincipalImportResult> {
-        let manifest_bytes = files
-            .get("manifest.toml")
-            .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml"))?
-            .clone();
         let manifest = self.parse_manifest(&files)?;
+        if let Some(expected) = &options.expected_manifest_checksum {
+            anyhow::ensure!(
+                *expected == PrincipalManifest::compute_checksum(&files["manifest.toml"]),
+                "Snapshot changed since preview; inspect it again before importing."
+            );
+        }
 
         // ADR-056: seeds are plain TOML files ground via
         // `peko create -s` — keyless packages are no longer a
@@ -174,67 +154,56 @@ impl PrincipalUnpackager {
             );
         }
 
-        // Signature verification
-        let did_doc_bytes = files
-            .get("identity/did.json")
-            .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?;
-        let (signature_status, public_key_multibase) = match verify_principal_signature(
-            &manifest_bytes,
-            did_doc_bytes,
-            options.allow_unsigned,
-            &manifest.principal.name,
-        ) {
-            Ok((SignatureStatus::Verified, pk)) => {
-                tracing::debug!(
-                    "principal manifest signature verified for '{}'",
-                    manifest.principal.name
-                );
-                (SignatureStatus::Verified, pk)
-            }
-            Ok((SignatureStatus::AllowedUnsigned, _)) => {
-                (SignatureStatus::AllowedUnsigned, String::new())
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "[signature_verification_failed] Manifest signature check failed: {e}"
-                ));
-            }
-        };
-
-        let trust_name = options
-            .new_name
-            .as_ref()
-            .unwrap_or(&manifest.principal.name)
-            .clone();
-        if signature_status == SignatureStatus::Verified {
-            let resolver = PathResolver::with_dirs(
-                self.config_dir.clone(),
-                self.data_dir.clone(),
-                self.data_dir.clone(),
-            );
-            enforce_trust_pinning(
-                options.trust_store.as_ref(),
-                options.trust_policy,
-                &resolver,
-                &trust_name,
-                &manifest.principal.did,
-                &public_key_multibase,
-            )
-            .await?;
-        }
-
         let validation = validate_package_for_principal(&manifest, &files);
-        if !validation.is_valid() && !options.force {
+        if !validation.is_valid() {
             return Err(anyhow::anyhow!(
-                "Package validation failed. Use --force to import anyway.\n{}",
+                "Package validation failed.\n{}",
                 validation.error_report()
             ));
         }
 
+        for path in files.keys() {
+            safe_join(Path::new("snapshot"), path)?;
+            anyhow::ensure!(
+                !path.contains('\\') && !path.split('/').any(|p| p == "." || p.is_empty()),
+                "[unsafe_path] non-canonical snapshot path: {path}"
+            );
+        }
+        let did_doc: peko_identity::DIDDocument =
+            serde_json::from_slice(&files["identity/did.json"])?;
+        let key_export: KeyPairExport = serde_json::from_slice(&files["identity/keys.enc"])?;
+        let source_identity = Identity::from_did_document_and_key(did_doc, key_export)?;
+        anyhow::ensure!(
+            source_identity.did == manifest.did,
+            "[identity_binding_failed] Snapshot DID does not match identity/did.json"
+        );
+        let public_key = source_identity
+            .keypair
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Snapshot has no keypair"))?
+            .public_key_bytes();
+        let parsed_did = Identity::parse_did(&manifest.did)?;
+        anyhow::ensure!(
+            parsed_did.key_hash == blake3::hash(&public_key).to_hex().to_string()[..16],
+            "[identity_binding_failed] Snapshot DID does not identify its keys"
+        );
+        let multibase = format!("z{}", bs58::encode(public_key).into_string());
+        anyhow::ensure!(
+            source_identity
+                .document
+                .verification_method
+                .first()
+                .is_some_and(|v| v.public_key_multibase == multibase),
+            "[identity_binding_failed] Snapshot DID document does not match its keys"
+        );
+        // Parse configuration before any identity or tooling writes.
+        let _: PrincipalConfig =
+            toml::from_str(std::str::from_utf8(&files["config/principal.toml"])?)?;
+
         let name = options
             .new_name
             .clone()
-            .unwrap_or_else(|| manifest.principal.name.clone());
+            .unwrap_or_else(|| manifest.name.clone());
 
         // Defense in depth: even though IPC handlers validate `name` early,
         // re-check here because anything reaching this point flows into
@@ -244,41 +213,52 @@ impl PrincipalUnpackager {
         crate::common::identifiers::validate_agent_name(&name)
             .map_err(|e| anyhow::anyhow!("[unsafe_name] {e}"))?;
 
-        // Embedded extension ids flow into `temp_dir/{id}.ext` paths during
-        // `import_extensions` (called separately by the IPC handler).
-        // Validate them here too so a caller that reaches this method
-        // directly — bypassing the IPC layer — also catches adversarial
-        // ids before any temp-dir collision can occur.
-        for ext_ref in &manifest.extensions {
-            crate::common::identifiers::validate_agent_name(&ext_ref.id)
-                .map_err(|e| anyhow::anyhow!("[unsafe_extension_id] {}: {e}", ext_ref.id))?;
-        }
-
-        // Phase C: Build a per-call authority that projects the IPC
-        // caller's subject and capability snapshot. The agent prompt
-        // and identity writes (Shared tier) gate on this authority;
-        // sessions writes (Local tier) rely on the actor gate alone
-        // (no per-resource capability exists for sessions — the
-        // actor's tier-entitlement is the only Layer 2 check).
+        // Build a per-call authority that projects the IPC
+        // caller's subject. The agent prompt
+        // and identity writes (Shared tier) gate on ownership via this
+        // authority; sessions writes (Local tier) rely on the actor gate
+        // alone (the actor's tier-entitlement is the only Layer 2
+        // check).
         let resolver = PathResolver::with_dirs(
             self.config_dir.clone(),
             self.data_dir.clone(),
             self.data_dir.clone(),
         );
-        let authority = RuntimeAuthority::for_caller(resolver, options.caller_subject.clone());
+        let authority = RuntimeAuthority::for_caller(resolver, options.caller_subject.clone())
+            .with_audit_sink(options.observability.clone());
 
+        anyhow::ensure!(
+            options.force
+                || !self
+                    .config_dir
+                    .join("principals")
+                    .join(&name)
+                    .join("principal.toml")
+                    .exists(),
+            "Principal already exists locally. Use --force to overwrite."
+        );
+        let inventory = super::inventory::ExecutableInventory::from_files(&manifest.did, &files);
+        if let Some(audit) = &options.observability {
+            audit
+                .audit_security_with_caller(
+                    Some(&options.caller_subject),
+                    "principal.snapshot_import",
+                    Some(&manifest.did),
+                    serde_json::to_value(&inventory)?,
+                )
+                .await?;
+        }
+        tracing::info!(inventory = %inventory.render(), "Importing principal snapshot");
         let identity = self
             .import_identity(&files, &manifest, &options, &name, &authority)
             .await?;
         let mut config = self.import_config(&files, &name, &identity)?;
 
-        // Apply any capabilities chosen during the preview/confirm flow.
-        for cap in &options.selected_capabilities {
-            if !config.capabilities.contains_str(cap) {
-                config.capabilities.push(cap.clone());
-            }
-        }
-
+        // ADR-066 P2: no capability negotiation — the wire's
+        // `selected_capabilities` was dropped from
+        // `PrincipalImportOptions`; imported principals carry no
+        // grants (the `[capabilities]` section is ignored on load
+        // and never persisted).
         // Update DID in config to match the imported/rotated identity
         config.did = Some(PrincipalDID(identity.did.clone()));
         config.name = name.clone();
@@ -314,8 +294,7 @@ impl PrincipalUnpackager {
             config.boot_state = None;
         }
 
-        self.import_roles(&files, &name, &options, &authority)
-            .await?;
+        self.import_roles(&files, &name, &authority).await?;
         // Phase A: the legacy `import_memory` is gone. The memory
         // index (`local/memory_index.json`) is derived state — never
         // packaged, rebuilt by the runtime (ADR-056).
@@ -347,7 +326,6 @@ impl PrincipalUnpackager {
             config_path,
             keys_rotated: options.rotate_keys,
             validation,
-            installed_extensions: Vec::new(),
             carried_local_state,
         })
     }
@@ -360,10 +338,22 @@ impl PrincipalUnpackager {
         let mut files = HashMap::new();
         for entry in archive.entries()? {
             let mut entry = entry?;
+            if entry.header().entry_type().is_dir() {
+                continue;
+            }
+            anyhow::ensure!(
+                entry.header().entry_type().is_file(),
+                "Snapshot contains a non-file archive entry"
+            );
             let path = entry.path()?;
             let path_str = path.to_string_lossy().to_string();
             let mut content = Vec::new();
             entry.read_to_end(&mut content)?;
+            anyhow::ensure!(
+                !files.contains_key(&path_str),
+                "Duplicate snapshot path: {path_str}"
+            );
+            safe_join(Path::new("snapshot"), &path_str)?;
             files.insert(path_str, content);
         }
         Ok(files)
@@ -398,32 +388,23 @@ impl PrincipalUnpackager {
         // `identity.json` (public DID) and `keys.enc` (private key
         // export); `KeyStorage::with_path` expects the directory.
         //
-        // Phase C: gate the directory on `principal:write_identity`
-        // via the caller-projected authority. Sponsor's `[[permissions]]`
-        // ACL is the lower-level PekoHub check; this is the per-resource
-        // gate.
+        // ADR-066 D9: gate the directory on ownership via the
+        // caller-projected authority. Sponsor's `[[permissions]]`
+        // ACL is the lower-level PekoHub check.
         let identity_dir = authority
-            .shared_identity_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
+            .shared_identity_dir_write_for_name(principal_name)
+            .await?
             .to_path_buf();
 
         if options.rotate_keys {
-            let new_identity = Identity::new(
-                &manifest.principal.name,
-                peko_identity::did::DIDScope::Local,
-            )
-            .await?;
+            let new_identity =
+                Identity::new(&manifest.name, peko_identity::did::DIDScope::Local).await?;
             let key_storage = KeyStorage::with_path(identity_dir)?;
             key_storage.store_identity(&new_identity).await?;
             return Ok(new_identity);
         }
 
-        let key_data = if manifest.identity.encrypted {
-            anyhow::bail!("Encrypted principal packages are not yet supported")
-        } else {
-            files["identity/keys.enc"].clone()
-        };
-
-        let key_export: KeyPairExport = serde_json::from_slice(&key_data)?;
+        let key_export: KeyPairExport = serde_json::from_slice(&files["identity/keys.enc"])?;
         let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
 
         let key_storage = KeyStorage::with_path(identity_dir)?;
@@ -461,7 +442,6 @@ impl PrincipalUnpackager {
         &self,
         files: &HashMap<String, Vec<u8>>,
         principal_name: &str,
-        options: &PrincipalImportOptions,
         authority: &RuntimeAuthority,
     ) -> anyhow::Result<()> {
         // Phase A: role files live under the Shared tier
@@ -471,11 +451,12 @@ impl PrincipalUnpackager {
         // `agents/` prefix are restored into `roles/` with their
         // directory-layout `AGENT.md` files renamed to `ROLE.md`.
         //
-        // Phase C: gate the directory on `principal:write_agents` via
-        // the caller-projected authority. Matches the
+        // ADR-066 D9: gate the directory on ownership via the
+        // caller-projected authority. Matches the
         // `PrincipalCreate` role-prompt write gate.
         let roles_dir = authority
-            .shared_roles_dir_write_for_name(principal_name, Some(&options.caller_capabilities))?
+            .shared_roles_dir_write_for_name(principal_name)
+            .await?
             .to_path_buf();
 
         for (path, content) in files {
@@ -533,10 +514,8 @@ impl PrincipalUnpackager {
     /// skipped this would hand the principal a silently gutted
     /// tool catalog on its next turn.
     ///
-    /// Prototype note: no per-directory capability gate yet. The
-    /// ADR-046 audit canary still covers `tools/`, `hooks/`, and
-    /// `mcp/` baseline drift on the next daemon boot, and the
-    /// production pass should gate this alongside `principal:write_agents`.
+    /// ADR-066 D8: command manifests are audited before restore; the
+    /// ADR-046 canary also covers executable-content drift at daemon boot.
     async fn import_workspace_tooling(
         &self,
         files: &HashMap<String, Vec<u8>>,
@@ -551,7 +530,7 @@ impl PrincipalUnpackager {
 
         const TOOLING_PREFIXES: [&str; 5] = ["tools", "skills", "mcp", "hooks", "kb"];
         for (path, content) in files {
-            let Some((prefix, rest)) = split_layer_path(path, &TOOLING_PREFIXES) else {
+            let Some((prefix, rest)) = split_snapshot_path(path, &TOOLING_PREFIXES) else {
                 continue;
             };
             let dest_dir = workspace_root.join(prefix);
@@ -589,7 +568,7 @@ impl PrincipalUnpackager {
 
         const LOCAL_PREFIXES: [&str; 2] = ["cron", "plans"];
         for (path, content) in files {
-            let Some((prefix, rest)) = split_layer_path(path, &LOCAL_PREFIXES) else {
+            let Some((prefix, rest)) = split_snapshot_path(path, &LOCAL_PREFIXES) else {
                 continue;
             };
             let dest_dir = match prefix {
@@ -611,143 +590,6 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
-    /// Extract the embedded `plugins/` (or legacy `extensions/`) layer and
-    /// route each bundle through `store`. Returns the IDs of installed
-    /// plugins.
-    ///
-    /// **Phase 5 (ADR-047 §2.1):** workspace-resident tooling
-    /// (tools/hooks/skills/MCP) lives in the principal's workspace and
-    /// is not embedded in `.peko` packages (the `--with-extensions`
-    /// flag was dropped in Phase 5c).
-    ///
-    /// **Phase 7 (ADR-047 §5):** new packages emit a `plugins/` layer
-    /// instead of `extensions/`. This method accepts both prefixes and
-    /// routes them through the same handler. As with Phase 5, no plugin
-    /// content is actually installed today — the method is preserved for
-    /// the IPC handler's call signature and future bundles.
-    pub async fn import_extensions(
-        &self,
-        manifest: &PrincipalManifest,
-        _store: &ExtensionStore,
-    ) -> anyhow::Result<Vec<ExtensionId>> {
-        if !manifest.extensions.is_empty() {
-            tracing::warn!(
-                "Principal package declares {} embedded extension(s) via the \
-                 legacy `extensions` layer; this is mapped to the new `plugins/` \
-                 convention (ADR-047 §5). Workspace plugins are not part of \
-                 the portable bundle.",
-                manifest.extensions.len()
-            );
-        }
-        Ok(Vec::new())
-    }
-
-    /// Extract the union of capabilities declared by the embedded plugins
-    /// (or legacy embedded extensions) in a `.peko` package.
-    ///
-    /// Returns `(required_capabilities, warnings)`. The required set is the
-    /// union of each embedded plugin manifest's `requires` list.
-    ///
-    /// **Phase 7 (ADR-047 §5):** accepts both `plugins/<id>.plugin` (new)
-    /// and `extensions/<id>.ext` (legacy) archive paths.
-    pub fn extract_extension_capabilities(
-        manifest: &PrincipalManifest,
-        files: &HashMap<String, Vec<u8>>,
-    ) -> (Vec<String>, Vec<String>) {
-        let mut required = BTreeSet::new();
-        let mut warnings = Vec::new();
-
-        for ext_ref in &manifest.extensions {
-            // Reject path-traversal spellings in the embedded extension id
-            // before formatting any path-like string from it.
-            if let Err(e) = crate::common::identifiers::validate_agent_name(&ext_ref.id) {
-                warnings.push(format!(
-                    "Unsafe extension id '{}' in manifest: {e}",
-                    ext_ref.id
-                ));
-                continue;
-            }
-
-            // Phase 7 (ADR-047 §5): prefer `plugins/<id>.plugin` (new
-            // exports); fall back to `extensions/<id>.ext` (legacy) so
-            // pre-Phase-7 packages still surface their capability union.
-            let plugin_path = format!("plugins/{}.plugin", ext_ref.id);
-            let legacy_path = format!("extensions/{}.ext", ext_ref.id);
-            let (resolved_path, bytes) = match files.get(&plugin_path) {
-                Some(b) => (plugin_path.as_str(), Some(b)),
-                None => match files.get(&legacy_path) {
-                    Some(b) => (legacy_path.as_str(), Some(b)),
-                    None => (legacy_path.as_str(), None),
-                },
-            };
-            let Some(bytes) = bytes else {
-                warnings.push(format!(
-                    "Principal package declares extension '{}' but has no embedded {}",
-                    ext_ref.id, resolved_path
-                ));
-                continue;
-            };
-
-            match Self::parse_embedded_extension_capabilities(bytes) {
-                Ok((_, reqs)) => {
-                    required.extend(reqs);
-                }
-                Err(e) => {
-                    warnings.push(format!(
-                        "Could not read capabilities for embedded extension '{}': {e}",
-                        ext_ref.id
-                    ));
-                }
-            }
-        }
-
-        (required.into_iter().collect(), warnings)
-    }
-
-    fn parse_embedded_extension_capabilities(
-        embedded_bytes: &[u8],
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
-        let cursor = std::io::Cursor::new(embedded_bytes);
-        let tar = flate2::read::GzDecoder::new(cursor);
-        let mut archive = tar::Archive::new(tar);
-
-        let mut manifest_yaml: Option<Vec<u8>> = None;
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.to_string_lossy().to_string();
-            if path == "extension/manifest.yaml" {
-                let mut content = Vec::new();
-                entry.read_to_end(&mut content)?;
-                manifest_yaml = Some(content);
-                break;
-            }
-        }
-
-        let content = manifest_yaml.ok_or_else(|| {
-            anyhow::anyhow!("extension/manifest.yaml not found in embedded .ext package")
-        })?;
-        let s = std::str::from_utf8(&content)?;
-        let value: serde_yaml::Value = serde_yaml::from_str(s)?;
-
-        let string_array = |value: &serde_yaml::Value, key: &str| -> Vec<String> {
-            value
-                .get(key)
-                .and_then(|v| v.as_sequence())
-                .map(|seq| {
-                    seq.iter()
-                        .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-
-        let mut provides = string_array(&value, "provides");
-        let mut requires = string_array(&value, "requires");
-        provides.sort();
-        requires.sort();
-        Ok((provides, requires))
-    }
-
     async fn save_config(&self, config: &PrincipalConfig, name: &str) -> anyhow::Result<PathBuf> {
         let principal_dir = self.config_dir.join("principals").join(name);
         tokio::fs::create_dir_all(&principal_dir).await?;
@@ -758,16 +600,10 @@ impl PrincipalUnpackager {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SignatureStatus {
-    Verified,
-    AllowedUnsigned,
-}
-
-/// Split a package path into `(layer_prefix, rest)` if it starts with
-/// one of the given layer prefixes (e.g. `cron/schedule.toml` →
+/// Split a package path into `(directory_prefix, rest)` if it starts with
+/// one of the given directory prefixes (e.g. `cron/schedule.toml` →
 /// `("cron", "schedule.toml")`).
-fn split_layer_path<'a>(path: &'a str, prefixes: &[&'a str]) -> Option<(&'a str, &'a str)> {
+fn split_snapshot_path<'a>(path: &'a str, prefixes: &[&'a str]) -> Option<(&'a str, &'a str)> {
     for prefix in prefixes {
         let with_slash = format!("{prefix}/");
         if let Some(rest) = path.strip_prefix(with_slash.as_str()) {
@@ -854,173 +690,11 @@ fn remap_cron_principal_ids(schedule_bytes: &[u8], new_principal_id: &str) -> Ve
     rewritten.unwrap_or_else(|| schedule_bytes.to_vec())
 }
 
-pub(crate) fn verify_principal_signature(
-    manifest_bytes: &[u8],
-    did_doc_bytes: &[u8],
-    allow_unsigned: bool,
-    name: &str,
-) -> anyhow::Result<(SignatureStatus, String)> {
-    use base64::Engine;
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    use peko_identity::DIDDocument;
-
-    let manifest_str = std::str::from_utf8(manifest_bytes)
-        .map_err(|e| anyhow::anyhow!("manifest is not utf-8: {e}"))?;
-    let manifest = PrincipalManifest::from_toml(manifest_str)
-        .map_err(|e| anyhow::anyhow!("failed to parse manifest for verification: {e}"))?;
-
-    let signature_b64 = manifest.signatures.manifest.trim();
-    if signature_b64.is_empty() {
-        if allow_unsigned {
-            tracing::warn!(
-                "principal package '{}' is not signed; importing anyway because allow_unsigned is set",
-                name
-            );
-            return Ok((SignatureStatus::AllowedUnsigned, String::new()));
-        }
-        anyhow::bail!("manifest is not signed");
-    }
-
-    if manifest.signatures.algorithm != "ed25519" {
-        anyhow::bail!(
-            "unsupported signature algorithm: {}",
-            manifest.signatures.algorithm
-        );
-    }
-
-    let manifest_for_verification = PrincipalManifest {
-        signatures: crate::registry::packaging::manifest::Signatures {
-            manifest: String::new(),
-            algorithm: "ed25519".to_string(),
-        },
-        ..manifest.clone()
-    };
-    let signed_bytes = manifest_for_verification
-        .to_toml()
-        .map_err(|e| anyhow::anyhow!("failed to reconstruct signed manifest bytes: {e}"))?
-        .into_bytes();
-
-    let signature_vec = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(signature_b64.as_bytes())
-        .map_err(|e| anyhow::anyhow!("signature is not valid base64url: {e}"))?;
-    if signature_vec.len() != 64 {
-        anyhow::bail!(
-            "signature has wrong length: expected 64, got {}",
-            signature_vec.len()
-        );
-    }
-    let mut signature = [0u8; 64];
-    signature.copy_from_slice(&signature_vec);
-
-    let did_doc: DIDDocument = serde_json::from_slice(did_doc_bytes)
-        .map_err(|e| anyhow::anyhow!("identity/did.json is malformed: {e}"))?;
-    let vm = did_doc
-        .verification_method
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("DID document has no verification methods"))?;
-    let multibase = &vm.public_key_multibase;
-    if !multibase.starts_with('z') {
-        anyhow::bail!("public key is not multibase z-base58");
-    }
-    let public_key = bs58::decode(&multibase[1..])
-        .into_vec()
-        .map_err(|e| anyhow::anyhow!("public key is not multibase z-base58: {e}"))?;
-    if public_key.len() != 32 {
-        anyhow::bail!(
-            "public key has wrong length: expected 32, got {}",
-            public_key.len()
-        );
-    }
-    let mut public_key_arr = [0u8; 32];
-    public_key_arr.copy_from_slice(&public_key);
-
-    // Binding check: the DID in the manifest must identify the public key
-    // shipped in the DID document. Without this, a replaced package can
-    // still self-verify by embedding any new keypair.
-    if did_doc.id != manifest.principal.did {
-        anyhow::bail!(
-            "[identity_binding_failed] DID document id '{}' does not match manifest principal DID '{}'",
-            did_doc.id,
-            manifest.principal.did
-        );
-    }
-    let parsed_did = Identity::parse_did(&manifest.principal.did)
-        .map_err(|e| anyhow::anyhow!("[identity_binding_failed] invalid manifest DID: {e}"))?;
-    let expected_key_hash = blake3::hash(&public_key).to_hex().to_string()[..16].to_string();
-    if parsed_did.key_hash != expected_key_hash {
-        anyhow::bail!(
-            "[identity_binding_failed] manifest DID key hash does not match the public key in identity/did.json"
-        );
-    }
-
-    let verifying_key = VerifyingKey::from_bytes(&public_key_arr)
-        .map_err(|e| anyhow::anyhow!("ed25519 signature verification failed: {e}"))?;
-    let sig = Signature::from_bytes(&signature);
-    verifying_key
-        .verify(&signed_bytes, &sig)
-        .map_err(|e| anyhow::anyhow!("ed25519 signature verification failed: {e}"))?;
-
-    Ok((SignatureStatus::Verified, multibase.clone()))
-}
-
-async fn enforce_trust_pinning(
-    trust_store: Option<&Arc<RwLock<TrustStore>>>,
-    trust_policy: TrustPolicy,
-    resolver: &PathResolver,
-    name: &str,
-    did: &str,
-    public_key_multibase: &str,
-) -> anyhow::Result<()> {
-    let Some(store) = trust_store else {
-        tracing::debug!("no trust store configured; skipping TOFU pinning");
-        return Ok(());
-    };
-
-    let mut store = store.write().await;
-    match store.is_trusted(name, did) {
-        TrustStatus::Unknown => {
-            store.pin(
-                name.to_string(),
-                did.to_string(),
-                Some(public_key_multibase.to_string()),
-            );
-            store.save(resolver)?;
-            tracing::info!("Pinned principal '{}' to DID {} on first import", name, did);
-        }
-        TrustStatus::Trusted => {
-            tracing::debug!("principal '{}' is already pinned to DID {}", name, did);
-        }
-        TrustStatus::Mismatch { expected, actual } => {
-            if trust_policy == TrustPolicy::AllowUntrusted {
-                store.pin(
-                    name.to_string(),
-                    actual.clone(),
-                    Some(public_key_multibase.to_string()),
-                );
-                store.save(resolver)?;
-                tracing::warn!(
-                    "Overriding trust pin for principal '{}' from {} to {}",
-                    name,
-                    expected,
-                    actual
-                );
-            } else {
-                anyhow::bail!(
-                    "[trust_pinning_failed] principal '{}' was previously imported with DID {expected}, but this package is signed by DID {actual}. Use --force to accept the new identity.",
-                    name
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn validate_package_for_principal(
     manifest: &PrincipalManifest,
     files: &HashMap<String, Vec<u8>>,
 ) -> ValidationResult {
-    use crate::registry::packaging::validation::{ValidationError, ValidationWarning};
+    use crate::registry::packaging::validation::ValidationError;
 
     let mut result = ValidationResult::success();
 
@@ -1041,7 +715,7 @@ fn validate_package_for_principal(
     }
 
     // Validate checksums for all manifest-listed files.
-    for (file_path, expected) in &manifest.packaging.checksums {
+    for (file_path, expected) in &manifest.files {
         match files.get(file_path) {
             Some(content) => {
                 let actual = PrincipalManifest::compute_checksum(content);
@@ -1059,13 +733,11 @@ fn validate_package_for_principal(
 
     // Warn about files present but not declared in the manifest.
     for file_path in files.keys() {
-        if file_path != "manifest.toml" && !manifest.packaging.files.contains(file_path) {
-            result.add_warning(ValidationWarning::UnknownFile(file_path.clone()));
+        if file_path != "manifest.toml" && !manifest.files.contains_key(file_path) {
+            result.add_error(ValidationError::InvalidManifest(format!(
+                "Undeclared file: {file_path}"
+            )));
         }
-    }
-
-    if !manifest.identity.encrypted {
-        result.add_warning(ValidationWarning::UnencryptedKeys);
     }
 
     result
@@ -1087,23 +759,10 @@ mod tests {
         assert!(opts.new_name.is_none());
         assert!(!opts.rotate_keys);
         assert!(opts.import_sessions);
-        assert!(!opts.allow_unsigned);
-        assert!(opts.selected_capabilities.is_empty());
-        // Phase C bootstrap: defaults clear the Shared tier gate so
-        // library callers (tests, future direct-call sites) don't
-        // have to thread `caller_subject` / `caller_capabilities`
-        // through every constructor.
+        // Defaults clear the Shared tier gate so library callers
+        // (tests, future direct-call sites) don't have to thread
+        // `caller_subject` through every constructor.
         assert!(matches!(opts.caller_subject, Subject::User(ref u) if u == "local"));
-        assert!(opts
-            .caller_capabilities
-            .is_granted(&peko_extension_api::Capability::new(
-                "principal:write_agents"
-            )));
-        assert!(opts
-            .caller_capabilities
-            .is_granted(&peko_extension_api::Capability::new(
-                "principal:write_identity"
-            )));
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
@@ -1117,7 +776,6 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
             exposure: Default::default(),
             status: None,
             boot_state: None,
@@ -1274,6 +932,10 @@ mod tests {
             .await
             .unwrap();
 
+        // Transport survives removal of the source workspace and authored state.
+        std::fs::remove_dir_all(&shared_root).unwrap();
+        std::fs::remove_dir_all(&local_root).unwrap();
+
         let config_dir = tmp.path().join("cfg");
         let data_dir = tmp.path().join("new-data");
         let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir.clone());
@@ -1411,71 +1073,6 @@ mod tests {
         );
     }
 
-    /// ADR-056: the registry artifact is a plain TOML seed —
-    /// `export_for_registry` emits a stripped `principal.toml`, not a
-    /// package. Seeds are ground via `peko create -s`, so a
-    /// keyless *package* is rejected with actionable guidance rather
-    /// than silently cloned.
-    #[tokio::test]
-    async fn registry_artifact_is_a_seed_toml() {
-        use crate::registry::packaging::principal_packager::PrincipalExportOptions;
-
-        let identity = Identity::new("tmpl-src", DIDScope::Local).await.unwrap();
-        let source_did = identity.did.clone();
-        let mut config = sample_config("tmpl-src", &source_did);
-        config.id = Some(peko_subject::PrincipalId("prin_tmpl_source".into()));
-        config.set_boot_state(BootState::Organized);
-
-        let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("tmpl-src.seed.toml");
-        let packager = PrincipalPackager::new(config, identity);
-        let descriptor = packager
-            .export_for_registry(PrincipalExportOptions {
-                output_path: Some(out.display().to_string()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-
-        // The artifact on disk is the seed TOML, not an archive.
-        let artifact = std::fs::read_to_string(&out).unwrap();
-        assert!(!artifact.contains("prin_tmpl_source"), "{artifact}");
-        assert!(!artifact.contains(&source_did), "{artifact}");
-        assert!(!artifact.contains("boot_state"), "{artifact}");
-        assert!(
-            !out.display().to_string().ends_with(".peko"),
-            "seeds are TOML files, not packages"
-        );
-
-        // The OCI config blob IS the seed TOML; no content layers.
-        assert!(descriptor.layers.is_empty());
-        let blob = std::str::from_utf8(&descriptor.manifest_toml).unwrap();
-        assert_eq!(blob, &artifact);
-
-        // A keyless *package* (wrong shape) is rejected with guidance.
-        let files: HashMap<String, Vec<u8>> = HashMap::from([
-            (
-                "manifest.toml".to_string(),
-                PrincipalManifest::new("tmpl-src", "1.0.0", &source_did)
-                    .to_toml()
-                    .unwrap()
-                    .into_bytes(),
-            ),
-            ("identity/did.json".to_string(), b"{}".to_vec()),
-        ]);
-        let unpackager =
-            PrincipalUnpackager::new(&out, tmp.path().join("cfg"), tmp.path().join("data"));
-        let err = unpackager
-            .import_from_files(files, PrincipalImportOptions::default())
-            .await
-            .expect_err("keyless packages are not a supported artifact shape");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("peko create") && msg.contains("-s"),
-            "expected create -s guidance, got: {msg}"
-        );
-    }
-
     /// ADR-056: `remap_cron_principal_ids` rewrites every job's
     /// `principal_id`, is idempotent, and passes malformed files
     /// through unchanged.
@@ -1555,182 +1152,8 @@ principal_id = "prin_old"
         assert_eq!(parsed["version"], 2);
     }
 
-    /// Build a minimal `.ext` archive in memory containing an
-    /// `extension/manifest.yaml` with the given `requires` list.
-    fn fake_ext_bytes(requires: &[&str]) -> Vec<u8> {
-        let mut manifest = String::from(
-            "id: test-ext\n\
-             name: Test Extension\n\
-             version: 1.0.0\n\
-             description: A test extension\n\
-             extension_type: skill\n",
-        );
-        if !requires.is_empty() {
-            manifest.push_str("requires:\n");
-            for req in requires {
-                manifest.push_str(&format!("  - {req}\n"));
-            }
-        }
-
-        let buf = Vec::new();
-        let enc = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
-        let mut tar = tar::Builder::new(enc);
-
-        let mut header = tar::Header::new_gnu();
-        header.set_path("extension/manifest.yaml").unwrap();
-        header.set_size(manifest.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append(&header, manifest.as_bytes()).unwrap();
-        tar.finish().unwrap();
-
-        let enc = tar.into_inner().unwrap();
-        enc.finish().unwrap()
-    }
-
-    #[test]
-    fn parse_embedded_extension_capabilities_reads_requires() {
-        let bytes = fake_ext_bytes(&["tool:Read", "network"]);
-        let (provides, requires) =
-            PrincipalUnpackager::parse_embedded_extension_capabilities(&bytes).unwrap();
-        assert!(provides.is_empty());
-        assert_eq!(
-            requires,
-            vec!["network".to_string(), "tool:Read".to_string()]
-        );
-    }
-
-    #[test]
-    fn extract_extension_capabilities_aggregates_required_caps() {
-        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
-        manifest.extensions = vec![
-            crate::registry::packaging::types::ExtensionRef {
-                id: "ext-a".to_string(),
-                registry_ref: "pekohub.com/ext/a".to_string(),
-            },
-            crate::registry::packaging::types::ExtensionRef {
-                id: "ext-b".to_string(),
-                registry_ref: "pekohub.com/ext/b".to_string(),
-            },
-        ];
-
-        let mut files = HashMap::new();
-        files.insert(
-            "extensions/ext-a.ext".to_string(),
-            fake_ext_bytes(&["tool:Read"]),
-        );
-        files.insert(
-            "extensions/ext-b.ext".to_string(),
-            fake_ext_bytes(&["tool:Write", "network"]),
-        );
-
-        let (required, warnings) =
-            PrincipalUnpackager::extract_extension_capabilities(&manifest, &files);
-
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-        assert_eq!(
-            required,
-            vec![
-                "network".to_string(),
-                "tool:Read".to_string(),
-                "tool:Write".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn extract_extension_capabilities_warns_on_missing_archive() {
-        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
-        manifest.extensions = vec![crate::registry::packaging::types::ExtensionRef {
-            id: "missing".to_string(),
-            registry_ref: "pekohub.com/ext/missing".to_string(),
-        }];
-
-        let (required, warnings) =
-            PrincipalUnpackager::extract_extension_capabilities(&manifest, &HashMap::new());
-
-        assert!(required.is_empty());
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("missing"));
-    }
-
-    /// Phase 7 (ADR-047 §5): new exports land plugin archives under
-    /// `plugins/<id>.plugin` and the unpackager surfaces their capability
-    /// union. The legacy `extensions/<id>.ext` path remains accepted but
-    /// `plugins/` wins when both are present.
-    #[test]
-    fn extract_extension_capabilities_reads_plugins_path() {
-        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
-        manifest.extensions = vec![
-            crate::registry::packaging::types::ExtensionRef {
-                id: "plugin-a".to_string(),
-                registry_ref: "pekohub.com/ext/a".to_string(),
-            },
-            crate::registry::packaging::types::ExtensionRef {
-                id: "plugin-b".to_string(),
-                registry_ref: "pekohub.com/ext/b".to_string(),
-            },
-        ];
-
-        let mut files = HashMap::new();
-        files.insert(
-            "plugins/plugin-a.plugin".to_string(),
-            fake_ext_bytes(&["tool:Read"]),
-        );
-        files.insert(
-            "plugins/plugin-b.plugin".to_string(),
-            fake_ext_bytes(&["tool:Write", "network"]),
-        );
-
-        let (required, warnings) =
-            PrincipalUnpackager::extract_extension_capabilities(&manifest, &files);
-
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-        assert_eq!(
-            required,
-            vec![
-                "network".to_string(),
-                "tool:Read".to_string(),
-                "tool:Write".to_string(),
-            ]
-        );
-    }
-
-    /// Phase 7 (ADR-047 §5): legacy `extensions/<id>.ext` archives are
-    /// still readable when no `plugins/<id>.plugin` companion is present.
-    #[test]
-    fn extract_extension_capabilities_falls_back_to_legacy_path() {
-        let mut manifest = PrincipalManifest::new("test", "1.0.0", "did:peko:test");
-        manifest.extensions = vec![crate::registry::packaging::types::ExtensionRef {
-            id: "ext-a".to_string(),
-            registry_ref: "pekohub.com/ext/a".to_string(),
-        }];
-
-        let mut files = HashMap::new();
-        files.insert(
-            "extensions/ext-a.ext".to_string(),
-            fake_ext_bytes(&["tool:Read"]),
-        );
-
-        let (required, warnings) =
-            PrincipalUnpackager::extract_extension_capabilities(&manifest, &files);
-
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-        assert_eq!(required, vec!["tool:Read".to_string()]);
-    }
-
-    /// PR 2: Phase C gate. A caller without `principal:write_agents`
-    /// cannot import a `.peko` package — the gate fires inside
-    /// `import_agents` before any agent prompt reaches disk.
-    /// `import_identity` runs first and also requires
-    /// `principal:write_identity`; either gate is acceptable here
-    /// (they're checked in order: identity first, then agents).
-    /// The test asserts the operation fails with a capability-denied
-    /// message rather than letting agent prompts land on disk.
     #[tokio::test]
-    async fn import_denied_when_caller_lacks_write_caps() {
-        use peko_extension_api::Capabilities;
-
+    async fn import_denied_for_non_operator_caller() {
         let identity = Identity::new("denied", DIDScope::Local).await.unwrap();
         let config = sample_config("denied", &identity.did);
 
@@ -1751,27 +1174,222 @@ principal_id = "prin_old"
 
         let config_dir = tmp.path().join("cfg");
         let data_dir = tmp.path().join("data");
-        let unpackager = PrincipalUnpackager::new(&out, config_dir, data_dir);
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir);
 
-        // Caller clears the Shared tier actor gate (Subject::User)
-        // but carries no capability grants — the first gate that
-        // fires (inside `import_identity` for
-        // `principal:write_identity`) returns a
-        // `CapabilityDenied{Shared}` wrapped in `anyhow::Error`.
+        let audit_dir = tmp.path().join("audit");
+        let observability = std::sync::Arc::new(
+            peko_observability::Observability::with_audit_dir("test", audit_dir.clone())
+                .expect("audit dir"),
+        );
+
         let opts = PrincipalImportOptions {
-            caller_capabilities: Capabilities::new(), // empty
+            caller_subject: peko_auth::Subject::Visitor("visitor-1".to_string()),
+            observability: Some(observability),
             ..PrincipalImportOptions::default()
         };
         let err = unpackager
             .import(opts)
             .await
-            .expect_err("import should be denied without capability grants");
+            .expect_err("import should be denied for a visitor caller");
         let msg = format!("{err}");
         assert!(
-            msg.contains("principal:write_identity")
-                || msg.contains("principal:write_agents")
-                || msg.contains("CapabilityDenied"),
-            "expected capability denial, got: {msg}"
+            msg.contains("cross-principal write denied"),
+            "expected ownership denial, got: {msg}"
         );
+
+        let today = chrono::Utc::now().date_naive();
+        let log = std::fs::read_to_string(audit_dir.join(format!("audit-{today}.jsonl")))
+            .expect("audit file written");
+        assert!(
+            log.contains("principal.cross_principal_write_denied"),
+            "audit log must carry the crossing event: {log}"
+        );
+    }
+    async fn valid_snapshot_files() -> HashMap<String, Vec<u8>> {
+        let identity = Identity::new("checked", DIDScope::Local).await.unwrap();
+        let config = sample_config("checked", &identity.did);
+        PrincipalPackager::new(config, identity)
+            .collect_files(PrincipalExportOptions::default())
+            .await
+            .unwrap()
+            .0
+    }
+
+    fn refresh_manifest(files: &mut HashMap<String, Vec<u8>>) {
+        let mut manifest =
+            PrincipalManifest::from_toml(std::str::from_utf8(&files["manifest.toml"]).unwrap())
+                .unwrap();
+        manifest.files.clear();
+        for (path, data) in files.iter().filter(|(p, _)| p.as_str() != "manifest.toml") {
+            manifest.add_file(path, data);
+        }
+        files.insert(
+            "manifest.toml".into(),
+            manifest.to_toml().unwrap().into_bytes(),
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_snapshots_fail_before_writes_even_with_force() {
+        let files = valid_snapshot_files().await;
+        let mut tampered = files.clone();
+        tampered.insert("config/principal.toml".into(), b"name = 'changed'".to_vec());
+        let mut undeclared = files.clone();
+        undeclared.insert(
+            "hooks/extra/hook.toml".into(),
+            b"command = '/bin/echo'".to_vec(),
+        );
+        let mut missing = files.clone();
+        missing.remove("config/principal.toml");
+        let mut traversal = files.clone();
+        traversal.insert("roles/../../escape.md".into(), b"escape".to_vec());
+        refresh_manifest(&mut traversal);
+        let mut mismatch = files.clone();
+        let mut m =
+            PrincipalManifest::from_toml(std::str::from_utf8(&mismatch["manifest.toml"]).unwrap())
+                .unwrap();
+        m.did = "did:peko:wrong".into();
+        mismatch.insert("manifest.toml".into(), m.to_toml().unwrap().into_bytes());
+        for files in [tampered, undeclared, missing, traversal, mismatch] {
+            let temp = tempfile::tempdir().unwrap();
+            let cfg = temp.path().join("cfg");
+            let data = temp.path().join("data");
+            let unpackager = PrincipalUnpackager::new("unused", cfg.clone(), data.clone());
+            unpackager
+                .import_from_files(
+                    files,
+                    PrincipalImportOptions {
+                        force: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect_err("invalid snapshot must fail");
+            assert!(!cfg.exists(), "no partial shared state");
+            assert!(!data.exists(), "no partial local state");
+        }
+    }
+
+    #[tokio::test]
+    async fn keyless_snapshot_points_to_create_seed() {
+        let mut files = valid_snapshot_files().await;
+        files.remove("identity/keys.enc");
+        refresh_manifest(&mut files);
+        let temp = tempfile::tempdir().unwrap();
+        let unpackager =
+            PrincipalUnpackager::new("unused", temp.path().join("cfg"), temp.path().join("data"));
+        let err = unpackager
+            .import_from_files(files, PrincipalImportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("peko create") && err.to_string().contains("-s"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_change_since_preview_fails_before_writes() {
+        let files = valid_snapshot_files().await;
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = temp.path().join("cfg");
+        let unpackager = PrincipalUnpackager::new("unused", cfg.clone(), temp.path().join("data"));
+        let err = unpackager
+            .import_from_files(
+                files,
+                PrincipalImportOptions {
+                    expected_manifest_checksum: Some("sha256:previous".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("changed since preview"));
+        assert!(!cfg.exists());
+    }
+
+    #[tokio::test]
+    async fn snapshot_import_audits_full_executable_inventory_at_security_severity() {
+        let mut files = valid_snapshot_files().await;
+        let hook =
+            "command = '/bin/echo'\nargs = ['full command']\nbinds = ['Stop', 'PreToolUse:Bash']\n";
+        let mcp = r#"{"name":"server","transport":{"type":"stdio","command":"node","args":["server.js"]}}"#;
+        files.insert("hooks/notice/hook.toml".into(), hook.as_bytes().to_vec());
+        files.insert("mcp/server/server.json".into(), mcp.as_bytes().to_vec());
+        files.insert("skills/skill-one/SKILL.md".into(), b"instructions".to_vec());
+        refresh_manifest(&mut files);
+        let manifest =
+            PrincipalManifest::from_toml(std::str::from_utf8(&files["manifest.toml"]).unwrap())
+                .unwrap();
+        let inventory =
+            super::super::inventory::ExecutableInventory::from_files(&manifest.did, &files);
+        assert!(inventory.render().contains(hook));
+        assert!(inventory.render().contains(mcp));
+        let temp = tempfile::tempdir().unwrap();
+        let audit_dir = temp.path().join("audit");
+        let observability = Arc::new(
+            peko_observability::Observability::with_audit_dir("test", audit_dir.clone()).unwrap(),
+        );
+        let unpackager =
+            PrincipalUnpackager::new("unused", temp.path().join("cfg"), temp.path().join("data"));
+        unpackager
+            .import_from_files(
+                files,
+                PrincipalImportOptions {
+                    observability: Some(observability),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let today = chrono::Utc::now().date_naive();
+        let log = std::fs::read_to_string(audit_dir.join(format!("audit-{today}.jsonl"))).unwrap();
+        let events: Vec<serde_json::Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let event = events
+            .iter()
+            .find(|e| e["event_type"] == "principal.snapshot_import")
+            .expect("import audit event");
+        assert_eq!(event["severity"], "security");
+        assert_eq!(event["details"], serde_json::to_value(&inventory).unwrap());
+    }
+    #[tokio::test]
+    async fn archive_rejects_duplicate_paths_and_symlinks() {
+        for symlink in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("invalid.peko");
+            let encoder = flate2::write::GzEncoder::new(
+                std::fs::File::create(&path).unwrap(),
+                flate2::Compression::default(),
+            );
+            let mut tar = tar::Builder::new(encoder);
+            for _ in 0..2 {
+                let mut header = tar::Header::new_gnu();
+                header.set_path("manifest.toml").unwrap();
+                header.set_mode(0o644);
+                if symlink {
+                    header.set_entry_type(tar::EntryType::Symlink);
+                    header.set_link_name("/tmp/outside").unwrap();
+                    header.set_size(0);
+                    header.set_cksum();
+                    tar.append(&header, std::io::empty()).unwrap();
+                } else {
+                    header.set_size(1);
+                    header.set_cksum();
+                    tar.append(&header, &b"x"[..]).unwrap();
+                }
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+            let unpackager =
+                PrincipalUnpackager::new(&path, temp.path().join("cfg"), temp.path().join("data"));
+            let error = unpackager.inspect().await.unwrap_err().to_string();
+            assert!(
+                error.contains(if symlink { "non-file" } else { "Duplicate" }),
+                "{error}"
+            );
+            assert!(!temp.path().join("cfg").exists());
+        }
     }
 }

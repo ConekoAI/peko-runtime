@@ -110,7 +110,7 @@ pub fn root_session_id_for_channel(kind: &crate::principal::router::ChannelKind)
 /// A Principal router powered by a root-agent agentic loop.
 ///
 /// Holds a cached `PrincipalContext` for the principal's lifetime; the
-/// shared per-principal `ExtensionCore` lives on the context and is
+/// shared per-principal `ToolingRuntime` lives on the context and is
 /// reused across messages.
 pub struct RootRouter {
     memory: Arc<dyn PrincipalMemory>,
@@ -207,7 +207,6 @@ impl RootRouter {
             Arc::clone(&self.memory),
             Arc::clone(&ctx.inbox_registry),
             Arc::clone(&ctx.session_creation_lock),
-            Arc::new(ctx.capabilities.clone()),
             self.resolver.clone(),
             self.principal_model_id.clone(),
             // Per-message configured model override from `RouterContext`
@@ -218,6 +217,7 @@ impl RootRouter {
             ctx.principal_id.clone(),
             // PR #2 wiring: per-Principal plan DAG port.
             Arc::clone(&self.plan_port),
+            Arc::clone(&ctx.tooling),
         );
         principal_ctx.set_root_prompt(self.root_prompt.clone());
         // Phase 4b: bind caller identity so `send_peer` is
@@ -234,10 +234,6 @@ impl RootRouter {
             if let Err(e) = principal_ctx.set_caller_runtime_id((*runtime_id).clone()) {
                 tracing::debug!("RootRouter::build_context: {e}");
             }
-        }
-        if let Err(e) = principal_ctx.set_active_extensions(ctx.active_extensions.clone()) {
-            tracing::debug!("RootRouter::build_context: active_extensions already set");
-            let _ = e;
         }
         if let Some(ref obs) = ctx.observability {
             if principal_ctx.set_observability(Arc::clone(obs)).is_err() {
