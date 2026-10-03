@@ -332,20 +332,33 @@ pub struct PrincipalIntentConfig {
     pub preferences: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalGovernanceConfig {
     #[serde(default)]
     pub audit: AuditLevel,
-    #[serde(default = "default_max_delegation_depth")]
-    pub max_delegation_depth: u32,
+    /// Maximum live agent runs across all entry paths and descendants.
+    /// Zero is invalid; legacy max_delegation_depth is ignored on load.
+    #[serde(default = "default_max_running_agents")]
+    pub max_running_agents: std::num::NonZeroUsize,
     #[serde(default)]
     pub auto_grant_tools: Vec<String>,
     #[serde(default)]
     pub delegations: Vec<DelegationGrant>,
 }
 
-fn default_max_delegation_depth() -> u32 {
-    3
+fn default_max_running_agents() -> std::num::NonZeroUsize {
+    crate::agents::run_limits::DEFAULT_MAX_RUNNING_AGENTS
+}
+
+impl Default for PrincipalGovernanceConfig {
+    fn default() -> Self {
+        Self {
+            audit: Default::default(),
+            max_running_agents: default_max_running_agents(),
+            auto_grant_tools: Vec::new(),
+            delegations: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -517,6 +530,39 @@ impl PrincipalResourceView for PrincipalConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_run_limit_defaults_and_legacy_depth_are_ignored() {
+        for text in [
+            "name = 'legacy'",
+            "name = 'legacy'\n[governance]\nmax_delegation_depth = 1",
+        ] {
+            let config: PrincipalConfig = toml::from_str(text).unwrap();
+            assert_eq!(config.governance.max_running_agents.get(), 20);
+            assert!(!toml::to_string(&config)
+                .unwrap()
+                .contains("max_delegation_depth"));
+        }
+        assert_eq!(
+            PrincipalGovernanceConfig::default()
+                .max_running_agents
+                .get(),
+            20
+        );
+    }
+
+    #[test]
+    fn agent_run_limit_round_trips_and_rejects_zero() {
+        let config: PrincipalConfig =
+            toml::from_str("name = 'limited'\n[governance]\nmax_running_agents = 7").unwrap();
+        let text = toml::to_string(&config).unwrap();
+        let restored: PrincipalConfig = toml::from_str(&text).unwrap();
+        assert_eq!(restored.governance.max_running_agents.get(), 7);
+        assert!(toml::from_str::<PrincipalConfig>(
+            "name = 'limited'\n[governance]\nmax_running_agents = 0"
+        )
+        .is_err());
+    }
 
     /// Existing `principal.toml` files in the wild must keep parsing —
     /// the new model field is `#[serde(default)]` so absence ==

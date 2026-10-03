@@ -59,8 +59,6 @@ pub use peko_session::SpawnCleanupPolicy;
 pub struct ExecutionConfig {
     /// Maximum execution time in seconds (0 = unlimited)
     pub timeout_seconds: u64,
-    /// Maximum spawn depth (0 = unlimited)
-    pub max_depth: u32,
     /// Phase 1 of `feature/multi-model-subagents`: optional
     /// catalog model id the parent picked for this spawn.
     /// Forwarded into `SpawnRequest.model` at the call site
@@ -77,7 +75,6 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             timeout_seconds: 300,
-            max_depth: 1,
             model_override: None,
             page_limit: None,
         }

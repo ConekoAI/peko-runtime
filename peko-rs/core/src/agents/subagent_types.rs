@@ -19,7 +19,7 @@ pub struct SubagentRunView {
     pub child_session_key: String,
     /// The child's durable session id (UUID) — the form `session list`
     /// shows, Agent's `action = "resume"` consumes, and the metadata-
-    /// chain depth check reads. `None` for legacy runs registered before
+    /// chain diagnostic reads. `None` for legacy runs registered before
     /// this field existed. Spawn-registered runs store the overlay key
     /// in `child_session_key`; callers that need to chain a follow-up
     /// spawn against the same child should use THIS field as the new

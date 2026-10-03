@@ -170,6 +170,11 @@ async fn run_root_agent_prompt_with_callback<F>(
 where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
 {
+    let _run_permit = ctx
+        .tooling
+        .agent_runs()
+        .for_principal(ctx.principal_id())
+        .try_acquire()?;
     let provider_hint = resolve_provider_hint(ctx).await;
     let config = build_agent_config(prompt, provider_hint);
 
@@ -403,7 +408,6 @@ where
         crate::agents::subagent_executor::SubagentExecutor::new(
             Arc::clone(&session_manager),
             &prompt.name,
-            5,
             ctx.principal_id().clone(),
             Arc::clone(&ctx.tooling),
         )

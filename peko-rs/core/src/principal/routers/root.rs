@@ -202,6 +202,10 @@ impl RootRouter {
     /// per-message pieces: inbox registry, session-creation lock, the
     /// current allowed extensions snapshot, and the principal's runtime id).
     fn build_context(&self, ctx: &RouterContext) -> PrincipalContext {
+        ctx.tooling
+            .agent_runs()
+            .for_principal(&ctx.principal_id)
+            .set_limit(ctx.governance.max_running_agents);
         let principal_ctx = PrincipalContext::new(
             self.workspace_path.clone(),
             Arc::clone(&self.memory),

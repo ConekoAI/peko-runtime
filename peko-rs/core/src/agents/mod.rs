@@ -27,6 +27,8 @@ pub use lifecycle::{ExecutionRecord, LifecycleManager};
 // Agent configuration types (lifted from src/types/agent.rs in issue #31e)
 pub mod agent_config;
 
+pub mod run_limits;
+
 // Subagent support
 pub mod subagent_announce;
 pub mod subagent_error;

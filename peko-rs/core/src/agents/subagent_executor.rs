@@ -77,8 +77,6 @@ pub struct StreamingResumeOutcome {
 pub struct ExecutionConfig {
     /// Maximum execution time in seconds (0 = unlimited)
     pub timeout_seconds: u64,
-    /// Maximum spawn depth (0 = unlimited)
-    pub max_depth: u32,
     /// Phase 1 of `feature/multi-model-subagents`: optional
     /// catalog model id the parent picked for this spawn. The
     /// adapter at `agents::subagent_runtime_impl.rs` projects this
@@ -153,7 +151,6 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             timeout_seconds: 300, // 5 minutes default
-            max_depth: 1,         // Default: no nested spawns
             model_override: None,
             slug: None,
             agent: None,
@@ -186,6 +183,7 @@ struct SubagentRunSpec {
     /// resume: the opened existing session with its prior history).
     child_base: Arc<RwLock<peko_session::Session>>,
     child_depth: u32,
+    run_permit: crate::agents::run_limits::AgentRunPermit,
     config: ExecutionConfig,
     parent_cancel: Option<tokio_util::sync::CancellationToken>,
     /// Streaming event sink (sprint 2 Phase 6). `Some` runs the child
@@ -202,6 +200,7 @@ struct SubagentRunSpec {
 /// (`resume_streaming`), and compact (`compact_and_execute`)
 /// re-attach paths.
 struct ResumePreflight {
+    run_permit: crate::agents::run_limits::AgentRunPermit,
     run_id: String,
     /// The path-resolved canonical target session id.
     session_id: String,
@@ -257,8 +256,6 @@ pub struct SubagentExecutor {
     unified_executor: AsyncExecutor,
     /// Agent name for the executor
     agent_name: String,
-    /// Maximum concurrent runs
-    max_concurrent: usize,
     /// Provider for LLM execution
     provider: Option<Arc<peko_providers::Provider>>,
     /// Agent configuration for creating subagents
@@ -342,7 +339,6 @@ impl SubagentExecutor {
     pub fn new(
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
-        max_concurrent: usize,
         principal_id: PrincipalId,
         tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Self {
@@ -356,7 +352,6 @@ impl SubagentExecutor {
         Self {
             unified_executor,
             agent_name,
-            max_concurrent,
             provider: None,
             agent_config: None,
             session_manager,
@@ -528,7 +523,6 @@ impl SubagentExecutor {
         async_registry: SharedAsyncTaskRegistry,
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
-        max_concurrent: usize,
         principal_id: PrincipalId,
         tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Self {
@@ -540,7 +534,6 @@ impl SubagentExecutor {
         Self {
             unified_executor,
             agent_name: agent_name.into(),
-            max_concurrent,
             provider: None,
             agent_config: None,
             session_manager,
@@ -818,16 +811,7 @@ impl SubagentExecutor {
             return Err(anyhow::anyhow!(err));
         }
 
-        // Check depth limits.
-        //
-        // B8c.3: read the durable metadata chain via the unified
-        // `subagent_depth_of` helper (same shape as the resume path
-        // at `resume_and_execute`) instead of the
-        // `AsyncTaskRegistry`'s in-memory task map. The registry
-        // entries are GC'd after `cleanup_completed` (5 minutes) and
-        // lost on daemon restart, so the depth check could let a
-        // deeper-than-allowed spawn through the moment a parent run
-        // aged out — the metadata chain is the durable answer.
+        // Record durable lineage depth for diagnostics only.
         let child_depth = {
             use crate::session::ownership::subagent_depth_of;
             let metas = self
@@ -839,27 +823,17 @@ impl SubagentExecutor {
             // The new subagent's depth = 1 + depth of its parent.
             // When the parent itself is a spawned subagent, the
             // helper counts it as 1, so spawning from a depth-N
-            // subagent yields depth N+1 — the test_spawn_depth_limit
-            // invariant. Absolute `new` retargets the parent to the
+            // subagent yields depth N+1. Absolute `new` retargets the parent to the
             // tree root, so its children are always depth 1.
             1 + subagent_depth_of(&effective_parent_key, &metas)
         };
 
-        if config.max_depth > 0 && child_depth > config.max_depth {
-            return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
-                current: child_depth,
-                max: config.max_depth,
-            }));
-        }
-
-        // Check concurrent run limits
-        let active_count = self.count_active_runs().await;
-        if active_count >= self.max_concurrent {
-            return Err(anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
-                current: active_count,
-                max: self.max_concurrent,
-            }));
-        }
+        // Reserve admission before any session is created, opened or reseeded.
+        let run_permit = self
+            .tooling
+            .agent_runs()
+            .for_principal(&self.principal_id)
+            .try_acquire()?;
 
         // Slug pre-flight (Agent tool `path` param): validate the
         // format and check per-parent uniqueness BEFORE spawning, so a
@@ -956,6 +930,7 @@ impl SubagentExecutor {
             child_session_id,
             child_base,
             child_depth,
+            run_permit,
             config,
             parent_cancel,
             stream_events: None,
@@ -1025,12 +1000,7 @@ impl SubagentExecutor {
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         let pre = self
-            .resume_preflight(
-                resume_session_id,
-                parent_session_key,
-                &config,
-                AttachKind::Resume,
-            )
+            .resume_preflight(resume_session_id, parent_session_key, AttachKind::Resume)
             .await?;
 
         info!(
@@ -1048,6 +1018,7 @@ impl SubagentExecutor {
             child_session_id: pre.session_id,
             child_base: pre.child_base,
             child_depth: pre.child_depth,
+            run_permit: pre.run_permit,
             config,
             parent_cancel,
             stream_events: None,
@@ -1093,12 +1064,7 @@ impl SubagentExecutor {
         };
 
         let pre = self
-            .resume_preflight(
-                resume_session_id,
-                parent_session_key,
-                &config,
-                AttachKind::Resume,
-            )
+            .resume_preflight(resume_session_id, parent_session_key, AttachKind::Resume)
             .await?;
 
         info!(
@@ -1117,6 +1083,7 @@ impl SubagentExecutor {
                 child_session_id: pre.session_id,
                 child_base: pre.child_base,
                 child_depth: pre.child_depth,
+                run_permit: pre.run_permit,
                 config,
                 parent_cancel,
                 stream_events: Some(on_event),
@@ -1152,7 +1119,6 @@ impl SubagentExecutor {
         &self,
         resume_session_id: &str,
         parent_session_key: &str,
-        config: &ExecutionConfig,
         kind: AttachKind,
     ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
@@ -1229,7 +1195,7 @@ impl SubagentExecutor {
         // directly, matching what cron fires could already do via the
         // trunk). The guards that remain are run-integrity guards:
         // spawn-trigger, no self/ancestor re-entry, no active run,
-        // depth, and the cost pre-flight. (The archived-session guard
+        // admission, and the cost pre-flight. (The archived-session guard
         // was removed with the archive flag itself, 2026-09-26.)
         // Guard: refuse while a run is in flight for the target.
         // Mechanism: subagent runs do NOT hold `InboxRegistry` run
@@ -1245,29 +1211,15 @@ impl SubagentExecutor {
             }
         }
 
-        // Depth comes from the target session's OWN persisted parent
-        // chain — not caller depth + 1: re-attaching keeps the
-        // session's original spawn depth, so the depth-limit check
-        // stays correct for the sub-tree below it even across daemon
-        // restarts and registry GC. B8c.3 unifies this onto
-        // `subagent_depth_of`, the same helper the spawn path uses,
-        // so the two answers cannot drift.
+        // Re-attaching preserves diagnostic depth from the target's lineage.
         let child_depth = crate::session::ownership::subagent_depth_of(&resume_session_id, &metas);
-        if config.max_depth > 0 && child_depth > config.max_depth {
-            return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
-                current: child_depth,
-                max: config.max_depth,
-            }));
-        }
 
-        // Check concurrent run limits
-        let active_count = self.count_active_runs().await;
-        if active_count >= self.max_concurrent {
-            return Err(anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
-                current: active_count,
-                max: self.max_concurrent,
-            }));
-        }
+        // Reserve admission before any session is created, opened or reseeded.
+        let run_permit = self
+            .tooling
+            .agent_runs()
+            .for_principal(&self.principal_id)
+            .try_acquire()?;
 
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
@@ -1285,6 +1237,7 @@ impl SubagentExecutor {
         };
 
         Ok(ResumePreflight {
+            run_permit,
             run_id,
             session_id: resume_session_id.clone(),
             child_base,
@@ -1324,7 +1277,7 @@ impl SubagentExecutor {
         };
 
         let pre = self
-            .resume_preflight(target, parent_session_key, &config, AttachKind::Compact)
+            .resume_preflight(target, parent_session_key, AttachKind::Compact)
             .await?;
 
         info!(
@@ -1343,6 +1296,7 @@ impl SubagentExecutor {
                 child_session_id: pre.session_id,
                 child_base: pre.child_base,
                 child_depth: pre.child_depth,
+                run_permit: pre.run_permit,
                 config: config.clone(),
                 parent_cancel,
                 stream_events: None,
@@ -1389,8 +1343,8 @@ impl SubagentExecutor {
     /// collision (user-triggered / peer-bound session) is refused
     /// outright.
     ///
-    /// Guards mirror the spawn stack: cost pre-flight, depth cap
-    /// (`1 + depth(effective_parent)`), concurrency cap, and — on the
+    /// Guards mirror the spawn stack: cost pre-flight, run admission
+    /// and — on the
     /// overwrite path only — the caller/ancestor refusal and an
     /// active-run check on the reused target. The run registers
     /// through the single [`Self::register_subagent_run`] gate, so
@@ -1585,21 +1539,13 @@ impl SubagentExecutor {
                 .await?;
             1 + subagent_depth_of(&effective_parent_key, &metas)
         };
-        if config.max_depth > 0 && child_depth > config.max_depth {
-            return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
-                current: child_depth,
-                max: config.max_depth,
-            }));
-        }
 
-        // Concurrency cap — identical to the spawn path.
-        let active_count = self.count_active_runs().await;
-        if active_count >= self.max_concurrent {
-            return Err(anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
-                current: active_count,
-                max: self.max_concurrent,
-            }));
-        }
+        // Reserve admission before any session is created, opened or reseeded.
+        let run_permit = self
+            .tooling
+            .agent_runs()
+            .for_principal(&self.principal_id)
+            .try_acquire()?;
 
         // Slug uniqueness pre-flight (same as the spawn path). Only
         // relevant on the fresh-mint path — a real overwrite reuses the
@@ -1832,6 +1778,7 @@ impl SubagentExecutor {
                 child_session_id,
                 child_base,
                 child_depth,
+                run_permit,
                 config: config.clone(),
                 parent_cancel,
                 stream_events: None,
@@ -1901,6 +1848,7 @@ impl SubagentExecutor {
             child_session_id,
             child_base,
             child_depth,
+            run_permit,
             config,
             parent_cancel,
             stream_events,
@@ -2054,6 +2002,7 @@ impl SubagentExecutor {
                 async_config,
                 metadata,
                 move || async move {
+                    let _run_permit = run_permit;
                     info!(
                         "Starting subagent execution: run_id={} session={}",
                         run_id_clone, child_session_key_clone
@@ -2075,12 +2024,10 @@ impl SubagentExecutor {
                                 &task_clone,
                                 None,
                                 child_depth,
-                                config.max_depth,
                             ),
                             build_subagent_task_message(
                                 &task_clone,
                                 child_depth,
-                                config.max_depth,
                             ),
                         )
                     };
@@ -2399,16 +2346,6 @@ impl SubagentExecutor {
         }
     }
 
-    /// Count total active subagent runs
-    async fn count_active_runs(&self) -> usize {
-        let registry = self.registry().read().await;
-        registry
-            .list_tasks(None)
-            .into_iter()
-            .filter(|e| e.tool_name == "Agent" && !e.status.is_terminal())
-            .count()
-    }
-
     /// Get a run by ID (projected view from unified registry)
     pub async fn get_run(&self, run_id: &str) -> Option<SubagentRunView> {
         let registry = self.registry().read().await;
@@ -2616,15 +2553,14 @@ async fn execute_subagent_task(
     // every other inherited field stays intact.
     apply_role_prompt_override(&mut config, role_prompt);
 
-    // Create a shared executor with the parent's registry so nested spawn depth
-    // is tracked correctly across the whole tree. Propagate the principal
+    // Create a shared executor with the parent's registry so run metadata
+    // is shared across the whole tree. Propagate the principal
     // workspace and `principal_id` so grandchildren (and deeper) resolve their
     // subagents from the same workspace and inherit the same principal scope.
     let mut shared_executor_builder = SubagentExecutor::with_registry(
         async_registry,
         Arc::clone(&session_manager),
         agent_name,
-        5,
         principal_id.clone(),
         Arc::clone(&tooling),
     )
@@ -3365,7 +3301,6 @@ mod tests {
         let executor = SubagentExecutor::new(
             manager,
             "test_agent",
-            5,
             peko_subject::PrincipalId::generate(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         );
@@ -3384,7 +3319,6 @@ mod tests {
         let executor = SubagentExecutor::new(
             manager,
             "test_agent",
-            5,
             peko_subject::PrincipalId::generate(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         );
@@ -3421,7 +3355,6 @@ mod tests {
     async fn test_execution_config_defaults() {
         let config = ExecutionConfig::default();
         assert_eq!(config.timeout_seconds, 300);
-        assert_eq!(config.max_depth, 1);
         // Conversation mode is opt-in (peer ingress); Agent-tool
         // spawns keep the task framing + fresh context.
         assert!(!config.conversation);
@@ -3435,13 +3368,19 @@ mod tests {
         let executor = SubagentExecutor::new(
             manager,
             "test_agent",
-            5,
             peko_subject::PrincipalId::generate(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         );
 
         // Initially empty
-        assert_eq!(executor.count_active_runs().await, 0);
+        assert_eq!(
+            executor
+                .tooling
+                .agent_runs()
+                .for_principal(&executor.principal_id)
+                .active(),
+            0
+        );
     }
 
     #[tokio::test]

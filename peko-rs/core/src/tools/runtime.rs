@@ -9,6 +9,7 @@
 //!   PreToolUse / PostToolUse / Stop / AfterAgent / PromptSection /
 //!   SessionContextBuild, executed in registration order);
 //! - [`SessionKeys`] — per-agent session-key bookkeeping;
+//! - `AgentRunLimits` — principal-wide live-run admission (ADR-067);
 //! - the prompt-section providers (`PromptSectionProvider`).
 //!
 //! Built once in `daemon::state` and threaded explicitly through
@@ -47,6 +48,7 @@ const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
 
 /// The daemon's shared tooling runtime — see the module doc.
 pub struct ToolingRuntime {
+    agent_runs: crate::agents::run_limits::AgentRunLimits,
     catalog: Arc<ToolCatalog>,
     dispatcher: Arc<ToolDispatcher>,
     hooks: Arc<WorkspaceHookDispatcher>,
@@ -89,6 +91,7 @@ impl ToolingRuntime {
             audit,
         ));
         Self {
+            agent_runs: Default::default(),
             catalog,
             dispatcher,
             hooks,
@@ -115,6 +118,11 @@ impl ToolingRuntime {
             Arc::new(AsyncExecutionRouter::new()),
             None,
         ))
+    }
+
+    /// Principal-scoped admission shared by root, peer, cron and child runs.
+    pub fn agent_runs(&self) -> &crate::agents::run_limits::AgentRunLimits {
+        &self.agent_runs
     }
 
     /// The tool catalog.

@@ -178,6 +178,25 @@ On-disk identity, intent, governance, routing, quota, boot state, and inbound
 permissions. There is no `Capabilities` field or runtime grant set. Legacy grant
 bytes are handled only during deserialization (ADR-066 P6).
 
+#### Agent run admission (ADR-067)
+
+`PrincipalGovernanceConfig.max_running_agents: NonZeroUsize` defaults to 20.
+`max_delegation_depth` is removed. `ToolingRuntime::agent_runs()` exposes the
+shared `agents::run_limits::AgentRunLimits`; `for_principal(&PrincipalId)`
+returns the shared `Arc<AgentRunLimiter>`. `try_acquire()` atomically returns
+an owned `AgentRunPermit` or `SpawnError::ConcurrentLimitExceeded`.
+`set_limit(NonZeroUsize)` changes new admission without interrupting live runs;
+`active()` includes startup, waiting parents and detached agent execution.
+Permit drop releases admission when the execution future exits.
+
+`SubagentExecutor::{new, with_registry}` no longer take a concurrency argument;
+they use the injected runtime's principal pool. Both execution-config DTOs and
+`SubagentRuntime` no longer carry `max_depth`; `SpawnError::DepthLimitExceeded`
+is removed. Diagnostic depth in run metadata/results remains available.
+Root/trunk runners and every Agent action share this admission mechanism.
+Agent capacity refusals retain their JSON fields and return `success: false`
+from the tool funnel, so async dispatch and cron record a failed invocation.
+
 #### `subject::Subject` (ACTIVE)
 
 ```rust

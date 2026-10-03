@@ -154,7 +154,6 @@ async fn test_e2e_spawn_and_complete() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -217,7 +216,6 @@ async fn subagent_inherits_parent_cancel() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -285,113 +283,53 @@ async fn subagent_child_token_does_not_cancel_sibling() {
 // e2e tests once a `principal interrupt` reaches the loop.
 
 #[tokio::test]
-async fn test_spawn_depth_limit() {
+async fn delegation_beyond_old_depth_limit_is_admitted() {
     let (session_manager, registry, agent_name) = create_test_components().await;
-
-    // Create a parent session context
-    let peer = Subject::User("alice".to_string());
-    // Scope the session-manager write lock so it's released before
-    // `spawn_and_execute`, which internally re-acquires the same write
-    // lock via `manager.spawn_session()` — holding the guard here would
-    // deadlock on the current-thread test runtime.
-    let (parent_key, _resolved) = {
-        let mut manager = session_manager.write().await;
-        let resolved = manager
-            .route(
-                &peer,
-                peko_session::types::ChannelType::Cli,
-                "default",
-                None,
-            )
-            .await
-            .unwrap();
-        (resolved.context.full_session_key.clone(), resolved)
-    };
-
-    // Create executor with max_depth = 1 (only one level allowed)
-    let executor = Arc::new(SubagentExecutor::with_registry(
+    create_linked_session(&session_manager, &agent_name, "depth-root", None, "manual").await;
+    let executor = SubagentExecutor::with_registry(
         registry.clone(),
         session_manager.clone(),
-        agent_name.clone(),
-        5,
+        agent_name,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
-    ));
-
-    // Create a config with max_depth = 1
-    let config = ExecutionConfig {
-        max_depth: 1,
-        ..Default::default()
-    };
-
-    // First spawn should succeed (depth 1 <= max_depth 1)
-    let run_id1 = executor
-        .spawn_and_execute("First task", &parent_key, config.clone(), None)
+    );
+    let mut parent = sid("depth-root");
+    // Keep failed/completed entries, then discard them: neither registry
+    // history nor session ancestry should affect admission.
+    for depth in 1..=8 {
+        let run_id = executor
+            .spawn_and_execute("Nested work", &parent, ExecutionConfig::default(), None)
+            .await
+            .unwrap();
+        // No provider is bound: execution fails, but admission and durable
+        // session linkage still run through the real production path.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if executor
+                    .tooling()
+                    .agent_runs()
+                    .for_principal(executor.principal_id())
+                    .active()
+                    == 0
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
         .await
         .unwrap();
-
-    // Wait for completion so the run is in registry with its depth
-    sleep(Duration::from_millis(500)).await;
-
-    // Verify the first run completed at depth 1, and grab its child_session_id.
-    // B8c.3: the depth check now reads the durable metadata chain
-    // (`subagent_depth_of`), so the parent_session_key we hand back to
-    // the executor must be the durable session id (UUID), not the
-    // spawn overlay key in `child_session_key`. The old registry-based
-    // check happened to index by overlay key — that's why the test
-    // passed `child_key` historically. `child_session_id` is the form
-    // the metadata chain can resolve.
-    let child_id = {
-        let registry_guard = registry.read().await;
-        let entry = registry_guard.get(&run_id1).unwrap();
-        let view = crate::agents::subagent_types::SubagentRunView::from_entry(entry)
-            .expect("Should be a subagent entry");
-        assert_eq!(view.depth, 1, "First run should be at depth 1");
-        view.child_session_id
-            .clone()
-            .expect("child_session_id is stamped at spawn time")
-    };
-
-    // Spawn from the *child* session of the first run. The metadata-chain
-    // depth check resolves `parent_session_key` against the session
-    // index, finds the child session's metadata (depth 1), and reports
-    // the new run as depth 2 — exceeding max_depth=1, must be rejected.
-    let result = executor
-        .spawn_and_execute("Nested task", &child_id, config, None)
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Spawning from child_key of a depth-1 subagent must fail with DepthLimitExceeded"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("DepthLimitExceeded") || err.contains("depth"),
-        "Expected depth-limit error, got: {err}"
-    );
-
-    // And spawning from a fresh, unrelated parent must still succeed —
-    // there's no spawn-triggered ancestor in the metadata chain for that
-    // key, so parent_depth stays 0 and the spawn is allowed.
-    let other_parent_key = peko_session::key::derive_base_session_key(
-        &agent_name,
-        &Subject::User("charlie".to_string()),
-    );
-    let result = executor
-        .spawn_and_execute(
-            "Independent task",
-            &other_parent_key,
-            ExecutionConfig {
-                max_depth: 1,
-                ..Default::default()
-            },
-            None,
-        )
-        .await;
-    assert!(
-        result.is_ok(),
-        "Spawning from a fresh parent (no prior runs) must succeed"
-    );
+        let view = executor.get_run(&run_id).await.unwrap();
+        assert_eq!(view.depth, depth);
+        parent = view.child_session_id.unwrap();
+        {
+            let mut tasks = registry.write().await;
+            let entry = tasks.get_mut(&run_id).unwrap();
+            entry.config.cleanup_after_delivery = true;
+            entry.completed_at = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+            assert_eq!(tasks.cleanup_completed(), 1);
+        }
+    }
 }
 
 #[tokio::test]
@@ -417,18 +355,16 @@ async fn test_isolated_vs_shared_session() {
         (resolved.context.full_session_key.clone(), resolved)
     };
 
-    // Use higher max_depth since we're spawning multiple runs
+    // Spawn multiple independent runs
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
-        max_depth: 10, // Allow multiple runs
         ..Default::default()
     };
 
@@ -504,7 +440,6 @@ async fn test_result_format_in_registry() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -552,13 +487,11 @@ async fn test_list_runs_functionality() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
-        max_depth: 10, // Allow multiple runs
         ..Default::default()
     };
 
@@ -635,13 +568,11 @@ async fn test_cleanup_policy_tracking() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
-        max_depth: 10, // Allow multiple runs
         ..Default::default()
     };
 
@@ -689,7 +620,6 @@ async fn test_parent_child_relationship() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -734,13 +664,11 @@ async fn test_runs_by_parent_filtering() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
-        max_depth: 10, // Allow multiple runs per parent
         ..Default::default()
     };
 
@@ -817,13 +745,11 @@ async fn test_concurrent_runs_counting() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
 
     let config = ExecutionConfig {
-        max_depth: 10,         // Allow multiple runs
         timeout_seconds: 3600, // Long timeout
         ..Default::default()
     };
@@ -888,7 +814,6 @@ async fn test_executor_get_status() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -940,7 +865,6 @@ async fn test_executor_get_run() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -964,7 +888,6 @@ async fn test_executor_cancel() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -1021,58 +944,152 @@ async fn test_executor_cancel() {
 }
 
 #[tokio::test]
-async fn test_max_concurrent_limit() {
-    let (session_manager, registry, agent_name) = create_test_components().await;
-
-    let peer = Subject::User("alice".to_string());
-    // Scope the session-manager write lock so it's released before
-    // `spawn_and_execute`, which internally re-acquires the same write
-    // lock via `manager.spawn_session()` — holding the guard here would
-    // deadlock on the current-thread test runtime.
-    let (parent_key, _resolved) = {
-        let mut manager = session_manager.write().await;
-        let resolved = manager
-            .route(
-                &peer,
-                peko_session::types::ChannelType::Cli,
-                "default",
+async fn principal_capacity_refuses_all_agent_actions_before_session_writes() {
+    let (sessions, registry, name) = create_test_components().await;
+    create_linked_session(&sessions, &name, "capacity-root", None, "manual").await;
+    create_linked_session(
+        &sessions,
+        &name,
+        "capacity-child",
+        Some("capacity-root"),
+        "spawn",
+    )
+    .await;
+    let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+    let principal = peko_subject::PrincipalId::generate();
+    let limiter = tooling.agent_runs().for_principal(&principal);
+    limiter.set_limit(std::num::NonZeroUsize::new(1).unwrap());
+    // A waiting parent consumes the only slot. Two separate executors
+    // (e.g. peer ingress and cron) must observe exactly the same pool.
+    let parent_permit = limiter.try_acquire().unwrap();
+    let direct = SubagentExecutor::with_registry(
+        registry.clone(),
+        sessions.clone(),
+        name.clone(),
+        principal.clone(),
+        tooling.clone(),
+    );
+    let scheduled = SubagentExecutor::with_registry(
+        registry.clone(),
+        sessions.clone(),
+        name,
+        principal,
+        tooling,
+    );
+    let parent = sid("capacity-root");
+    let cfg = ExecutionConfig {
+        slug: Some("new-child".into()),
+        ..Default::default()
+    };
+    let before = sessions
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .len();
+    let errors = [
+        direct
+            .spawn_and_execute("work", &parent, cfg.clone(), None)
+            .await
+            .unwrap_err(),
+        direct
+            .spawn_and_execute(
+                "attach",
+                &parent,
+                ExecutionConfig {
+                    slug: Some("capacity-child".into()),
+                    ..Default::default()
+                },
                 None,
             )
             .await
-            .unwrap();
-        (resolved.context.full_session_key.clone(), resolved)
-    };
+            .unwrap_err(),
+        scheduled
+            .resume_and_execute("work", "/capacity-child", &parent, cfg.clone(), None)
+            .await
+            .unwrap_err(),
+        scheduled
+            .resume_streaming(
+                "work",
+                "/capacity-child",
+                &parent,
+                cfg.clone(),
+                Arc::new(|_| {}),
+                None,
+            )
+            .await
+            .unwrap_err(),
+        direct
+            .compact_and_execute("/capacity-child", "work", &parent, cfg.clone(), None)
+            .await
+            .unwrap_err(),
+        scheduled
+            .branch_and_execute(
+                None,
+                "new-branch",
+                "work",
+                &parent,
+                false,
+                cfg.clone(),
+                None,
+            )
+            .await
+            .unwrap_err(),
+        scheduled
+            .branch_and_execute(None, "/capacity-child", "work", &parent, true, cfg, None)
+            .await
+            .unwrap_err(),
+    ];
+    for err in errors {
+        assert!(matches!(
+            err.downcast_ref::<crate::agents::SpawnError>(),
+            Some(crate::agents::SpawnError::ConcurrentLimitExceeded { current: 1, max: 1 })
+        ));
+        assert!(err.to_string().contains("Try again"));
+    }
+    assert_eq!(
+        sessions
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .unwrap()
+            .len(),
+        before
+    );
+    assert!(registry.read().await.list_tasks(None).is_empty());
+    assert_eq!(limiter.active(), 1);
+    drop(parent_permit);
+    direct
+        .spawn_and_execute("retry", &parent, ExecutionConfig::default(), None)
+        .await
+        .unwrap();
+}
 
-    // Create executor with max_concurrent = 1
-    let executor = Arc::new(SubagentExecutor::with_registry(
-        registry.clone(),
-        session_manager.clone(),
-        agent_name.clone(),
-        1, // Only 1 concurrent
-        peko_subject::PrincipalId::generate(),
-        crate::tools::runtime::ToolingRuntime::standalone(),
-    ));
-
-    // First spawn should succeed
-    let result1 = executor
+#[tokio::test]
+async fn failed_spawn_preflight_releases_reserved_capacity() {
+    let (sessions, registry, name) = create_test_components().await;
+    create_linked_session(&sessions, &name, "release-root", None, "manual").await;
+    let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+    let principal = peko_subject::PrincipalId::generate();
+    let limiter = tooling.agent_runs().for_principal(&principal);
+    limiter.set_limit(std::num::NonZeroUsize::new(1).unwrap());
+    let executor = SubagentExecutor::with_registry(registry, sessions, name, principal, tooling);
+    let result = executor
         .spawn_and_execute(
-            "Task 1",
-            &parent_key,
+            "work",
+            &sid("release-root"),
             ExecutionConfig {
-                timeout_seconds: 3600,
-                max_depth: 10,
+                slug: Some(" bad-slug".into()),
                 ..Default::default()
             },
             None,
         )
         .await;
-    assert!(result1.is_ok());
-
-    // Second spawn might fail or succeed depending on timing
-    // (if first run completes before second spawn, it will succeed)
-    let _result2 = executor
-        .spawn_and_execute("Task 2", &parent_key, ExecutionConfig::default(), None)
-        .await;
+    assert!(result.is_err());
+    assert_eq!(limiter.active(), 0);
+    assert!(limiter.try_acquire().is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -1132,7 +1149,6 @@ async fn resume_refuses_nonexistent_target() {
         registry,
         session_manager,
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1170,7 +1186,6 @@ async fn resume_refuses_non_spawn_target() {
         registry,
         session_manager,
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1204,7 +1219,6 @@ async fn resume_refuses_self_and_ancestor() {
         registry,
         session_manager,
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1265,7 +1279,6 @@ async fn resume_happy_path_preserves_history() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1387,7 +1400,6 @@ async fn new_with_name_attaches_to_standing_child() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1398,7 +1410,6 @@ async fn new_with_name_attaches_to_standing_child() {
             ExecutionConfig {
                 slug: Some("memory".to_string()),
                 agent: Some("archivist".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -1454,7 +1465,6 @@ async fn new_with_fresh_name_spawns_new_session() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1464,7 +1474,6 @@ async fn new_with_fresh_name_spawns_new_session() {
             "root-sess",
             ExecutionConfig {
                 slug: Some("about-user".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -1527,7 +1536,6 @@ async fn new_with_name_colliding_non_spawn_errors() {
         registry,
         session_manager,
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1537,7 +1545,6 @@ async fn new_with_name_colliding_non_spawn_errors() {
             "root-sess",
             ExecutionConfig {
                 slug: Some("notes".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -1568,7 +1575,6 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1581,7 +1587,6 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
             ExecutionConfig {
                 slug: Some("memory".to_string()),
                 agent: Some("writer".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -1603,7 +1608,6 @@ async fn new_with_name_attach_checks_declared_subagent_type() {
             ExecutionConfig {
                 slug: Some("memory".to_string()),
                 agent: Some("archivist".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -1633,7 +1637,6 @@ async fn compact_refuses_nonexistent_target() {
         registry,
         session_manager,
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1670,7 +1673,6 @@ async fn compact_refuses_self_and_ancestor() {
         registry,
         session_manager,
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1726,7 +1728,6 @@ async fn compact_happy_path_runs_session_without_trigger_requirement() {
         registry,
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1785,7 +1786,6 @@ async fn validate_context_parent_resolves_path() {
         registry,
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1835,7 +1835,6 @@ async fn spawn_with_name_stamps_child_slug() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -1969,7 +1968,7 @@ fn event_collector() -> (
 }
 
 /// Short-turn config for streaming tests: a real timeout (so a wedged
-/// run can't hang the suite for the 300s default) with depth defaults.
+/// run can't hang the suite for the 300s default) with default admission.
 fn streaming_test_config() -> ExecutionConfig {
     ExecutionConfig {
         timeout_seconds: 30,
@@ -2001,7 +2000,6 @@ async fn streaming_resume_happy_path_streams_and_returns_final_text() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     )
@@ -2099,7 +2097,6 @@ async fn streaming_resume_registers_active_run_in_registry() {
             registry.clone(),
             session_manager.clone(),
             agent_name,
-            5,
             peko_subject::PrincipalId::generate(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         )
@@ -2181,7 +2178,6 @@ async fn streaming_resume_cancellation_stops_the_run() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     )
@@ -2233,7 +2229,6 @@ async fn streaming_resume_enforces_guard_stack() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -2328,7 +2323,6 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
         registry.clone(),
         session_manager.clone(),
         format!("{agent_name}-streaming"),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -2387,7 +2381,6 @@ async fn streaming_resume_sequential_turns_keep_history() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     )
@@ -2478,7 +2471,6 @@ async fn peer_bound_run_delivers_reply_via_surface() {
         registry.clone(),
         session_manager,
         &agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     )
@@ -2555,7 +2547,6 @@ async fn resume_allows_cross_subtree_target() {
         registry,
         session_manager,
         &agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -2566,10 +2557,7 @@ async fn resume_allows_cross_subtree_target() {
             "cross-subtree turn",
             path!("user-b"),
             &sid("user-a"),
-            ExecutionConfig {
-                max_depth: 10,
-                ..Default::default()
-            },
+            ExecutionConfig::default(),
             None,
         )
         .await
@@ -2605,7 +2593,6 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
         registry.clone(),
         session_manager.clone(),
         &agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     );
@@ -2618,7 +2605,6 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
             &sid("user-a"),
             ExecutionConfig {
                 slug: Some("/user-b".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -2652,7 +2638,6 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
             &sid("user-a"),
             ExecutionConfig {
                 slug: Some("/fresh-top".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -2683,7 +2668,6 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
             &sid("user-a"),
             ExecutionConfig {
                 slug: Some("/no/such/deep".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,
@@ -2734,7 +2718,6 @@ async fn test_e2e_branch_copies_source_context() {
         registry.clone(),
         session_manager.clone(),
         agent_name,
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -2836,7 +2819,6 @@ async fn test_branch_overwrite_reseeds_in_place() {
         registry.clone(),
         session_manager.clone(),
         agent_name.clone(),
-        5,
         peko_subject::PrincipalId::generate(),
         crate::tools::runtime::ToolingRuntime::standalone(),
     ));
@@ -2849,7 +2831,6 @@ async fn test_branch_overwrite_reseeds_in_place() {
             &source_key,
             ExecutionConfig {
                 slug: Some("briefing".to_string()),
-                max_depth: 10,
                 ..Default::default()
             },
             None,

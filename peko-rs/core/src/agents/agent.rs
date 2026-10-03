@@ -513,7 +513,6 @@ impl Agent {
         let subagent_executor_base = SubagentExecutor::new(
             Arc::clone(&session_manager),
             config.name.clone(),
-            5, // max_concurrent
             principal_id.clone(),
             Arc::clone(&tooling),
         )
@@ -1855,7 +1854,6 @@ impl Agent {
         let subagent_executor_base = SubagentExecutor::new(
             Arc::clone(&session_manager),
             config.name.clone(),
-            5,
             peko_subject::PrincipalId::generate(),
             Arc::clone(&tooling),
         );

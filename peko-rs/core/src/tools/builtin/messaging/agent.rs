@@ -300,18 +300,8 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
 /// Creates a subagent session and executes a task in the background.
 /// Results are announced back to the parent when complete.
 pub struct AgentTool {
-    /// Runtime port — the only seam between the tool and the
-    /// daemon/agent state. Sprint 7 collapsed the previous
-    /// `workspace` / `session_provider` / `max_depth` /
-    /// `max_concurrent` fields onto the port: workspace is the
-    /// runtime's bound principal workspace, the caller session
-    /// id comes from `ToolContext::session_id` (with the runtime
-    /// port's `session_id()` accessor as the fallback), and the
-    /// depth / concurrency caps live in the executor itself
-    /// (`SubagentExecutor::max_concurrent`). The tool reads the
-    /// spawn-depth cap via [`SubagentRuntime::max_depth`] and
-    /// forwards it onto `ExecutionConfig.max_depth` so the
-    /// executor's per-spawn gate sees it.
+    /// Runtime port for workspace resolution and run execution. Admission
+    /// is shared by all live runs of the principal behind this port.
     runtime: SharedSubagentRuntime,
 }
 
@@ -426,7 +416,6 @@ impl AgentTool {
                 parent_session_key: caller_session_key.clone().unwrap_or_default(),
                 config: crate::tools::builtin::messaging::dto::ExecutionConfig {
                     timeout_seconds,
-                    max_depth: self.runtime.max_depth(),
                     model_override: model.clone(),
                     page_limit,
                 },
@@ -479,8 +468,8 @@ impl AgentTool {
     /// + `parse_one_u32`) was a workaround for the async-exec layer's
     /// stringification at
     /// `extensions/async_exec/executor.rs:353`, which destroyed the
-    /// typed chain. Every pre-flight refusal (`DepthLimitExceeded`,
-    /// `ConcurrentLimitExceeded`, `CostCeilingExceeded`,
+    /// typed chain. Every pre-flight refusal (`ConcurrentLimitExceeded`,
+    /// `CostCeilingExceeded`,
     /// `SpecGateFailed`) preserves the typed chain through the
     /// executor's `anyhow::anyhow!(SpawnError::*)` wraps and reaches
     /// us intact. Post-task failures that the async-exec layer
@@ -519,17 +508,6 @@ impl AgentTool {
         spawn_err: &crate::tools::builtin::messaging::dto::SpawnError,
     ) -> anyhow::Result<serde_json::Value> {
         Ok(match spawn_err {
-            crate::tools::builtin::messaging::dto::SpawnError::DepthLimitExceeded {
-                current,
-                max,
-            } => json!({
-                "status": "forbidden",
-                "error_type": "DepthLimitExceeded",
-                "current_depth": current,
-                "max_depth": max,
-                "error": spawn_err.to_string(),
-                "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
-            }),
             crate::tools::builtin::messaging::dto::SpawnError::ConcurrentLimitExceeded {
                 current,
                 max,
@@ -539,7 +517,7 @@ impl AgentTool {
                 "current_concurrent": current,
                 "max_concurrent": max,
                 "error": spawn_err.to_string(),
-                "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
+                "note": "Principal concurrent agent run limit reached. Try again after an existing run finishes."
             }),
             crate::tools::builtin::messaging::dto::SpawnError::Timeout { seconds } => json!({
                 "status": "timeout",
@@ -784,14 +762,12 @@ Sessions you spawn have `parent_session_id` set to your session; the `session` t
 resume refusals (structured errors naming the session): target must exist, be a spawned session (branches/live root sessions refuse), not be the session you are running in or an ancestor, and not have an active run. compact refusals: target must exist, not be the session you are running in or an ancestor (the engine compacts those automatically), be inside your subtree, and not have an active run. branch refusals: an existing non-spawned target always refuses (never overwrite user-created sessions); overwriting a spawned target additionally refuses while it has an active run, and never targets your own session or an ancestor.
 
 Limits:
-- Spawn depth is capped at 3 levels from the root. Attempting a deeper
-  chain returns `error_type: "DepthLimitExceeded"` with `current_depth`
-  and `max_depth` fields — count the depth of your current subagent
-  chain (root + every Agent call in the lineage) before spawning and
-  stop at depth 3 to avoid the rejection.
-- Up to 5 concurrent subagent runs are allowed; exceeding that returns
-  `error_type: "ConcurrentLimitExceeded"` with `current_concurrent` and
-  `max_concurrent` fields.
+- All live agent runs of your principal share one concurrency limit (default 20),
+  including peer turns, cron runs, waiting parents and detached agent runs.
+  Each action that starts a run reserves a slot; at capacity it immediately
+  returns `error_type: "ConcurrentLimitExceeded"` with `current_concurrent`
+  and `max_concurrent`. Try again after an existing run finishes; do not busy-poll.
+- Delegation depth is unrestricted. Idle persisted sessions use no slots.
 
 Examples:
 // Blocking spawn - parent waits for result (auto-detaches on timeout)
@@ -1012,12 +988,6 @@ struct TestSubagentState {
     /// the no-`ToolContext` path. Default `None` matches the trait
     /// default.
     session_id: Option<String>,
-    /// Spawn-depth cap returned by [`SubagentRuntime::max_depth`].
-    /// Tests override this to assert the tool projects the value
-    /// onto the spawn request. B8a.3 default was 3 (the round-7
-    /// historical cap); kept on the test fixture for backward
-    /// compat with the existing assertion at line 1095.
-    max_depth: u32,
 }
 
 #[cfg(test)]
@@ -1038,7 +1008,6 @@ impl TestSubagentRuntime {
                 principal_id: String::new(),
                 principal_name: None,
                 session_id: None,
-                max_depth: 3,
             }),
         }
     }
@@ -1219,13 +1188,6 @@ impl SubagentRuntime for TestSubagentRuntime {
             .clone()
     }
 
-    fn max_depth(&self) -> u32 {
-        self.inner
-            .lock()
-            .expect("TestSubagentRuntime mutex poisoned")
-            .max_depth
-    }
-
     fn workspace(&self) -> Option<&Path> {
         None
     }
@@ -1265,7 +1227,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
             label: None,
             result: None,
-            depth: request.config.max_depth,
+            depth: 1,
         })
     }
 
@@ -1436,47 +1398,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_default_max_depth() {
-        // Sprint 7: depth is no longer a tool-level constant — it lives
-        // on the runtime port. The runtime port's default is `3`.
-        let runtime = TestSubagentRuntime::new();
-        assert_eq!(runtime.max_depth(), 3);
-    }
-
-    #[test]
-    fn test_default_max_concurrent() {
-        // Sprint 7: `max_concurrent` moved off the tool onto the
-        // `SubagentExecutor` itself (principal-level knob —
-        // `SubagentExecutor::new` takes the cap as a constructor
-        // argument). The tool no longer carries the constant; this
-        // test is a placeholder documenting the move.
-    }
-
     #[tokio::test]
     async fn test_error_response_formatting() {
         // Sprint 7 Commit 4: the typed walk is the only classification
         // path. The pre-Sprint-7 string-parsing fallback is gone —
         // every typed `SpawnError` (including the two new variants)
         // round-trips through the anyhow chain.
-
-        // Test typed depth error
-        let depth_err = anyhow::anyhow!(
-            crate::tools::builtin::messaging::dto::SpawnError::DepthLimitExceeded {
-                current: 4,
-                max: 3
-            }
-        );
-        let response = AgentTool::format_error_response(&depth_err).unwrap();
-        assert_eq!(response["status"].as_str().unwrap(), "forbidden");
-        assert_eq!(
-            response["error_type"].as_str().unwrap(),
-            "DepthLimitExceeded"
-        );
-        assert_eq!(response["current_depth"].as_u64().unwrap(), 4);
-        assert_eq!(response["max_depth"].as_u64().unwrap(), 3);
-        assert!(response["note"].as_str().unwrap().contains("depth"));
-        assert!(response["error"].as_str().unwrap().contains('4'));
 
         // Test typed concurrent error
         let concurrent_err = anyhow::anyhow!(
@@ -1493,7 +1420,7 @@ mod tests {
         );
         assert_eq!(response["current_concurrent"].as_u64().unwrap(), 5);
         assert_eq!(response["max_concurrent"].as_u64().unwrap(), 5);
-        assert!(response["note"].as_str().unwrap().contains("concurrent"));
+        assert!(response["note"].as_str().unwrap().contains("Try again"));
 
         // Test typed timeout error
         let timeout_err =
