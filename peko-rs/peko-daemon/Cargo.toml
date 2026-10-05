@@ -26,3 +26,6 @@ anyhow = "1.0"
 tokio = { version = "1.35", features = ["full", "net", "macros", "rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.10"

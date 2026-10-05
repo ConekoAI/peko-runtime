@@ -436,6 +436,8 @@ impl Daemon {
 
         // Subscribe to shutdown signals from AppState
         let mut shutdown_rx = app_state.subscribe_shutdown();
+        let shutdown_signal = wait_for_shutdown_signal();
+        tokio::pin!(shutdown_signal);
 
         info!("✅ Daemon ready. Waiting for cron jobs...");
 
@@ -501,9 +503,12 @@ impl Daemon {
                     break;
                 }
 
-                // Handle Ctrl+C / SIGTERM
-                _ = tokio::signal::ctrl_c() => {
-                    info!("🛑 Daemon received Ctrl+C...");
+                // Handle Ctrl+C and, on Unix, SIGTERM.
+                result = &mut shutdown_signal => {
+                    if let Err(e) = result {
+                        warn!("shutdown signal listener failed: {e}");
+                    }
+                    info!("🛑 Daemon received shutdown signal...");
                     break;
                 }
             }
@@ -511,6 +516,10 @@ impl Daemon {
 
         // Mark daemon as not ready
         app_state.set_ready(false).await;
+
+        // Signal shutdown to IPC before joining its accept loop. API shutdown
+        // already broadcasts; OS-signal shutdown must take the same path.
+        app_state.request_shutdown(false).await;
 
         // Stop PekoHub tunnel
         app_state.stop_tunnel().await;
@@ -531,6 +540,20 @@ impl Daemon {
         info!("👋 Daemon shutdown complete");
         Ok(())
     }
+}
+
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 // ---------------------------------------------------------------------------

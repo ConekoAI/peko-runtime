@@ -17,7 +17,7 @@ serde_json = "1.0"
 # tokio for `task_local!` (QuotaScope), async file persistence
 # (QuotaState), and `time::sleep` in tests. `rt` enables the
 # single-threaded runtime required by the Scope tests.
-tokio = { version = "1.35", features = ["rt", "macros", "fs", "io-util", "time"] }
+tokio = { version = "1.35", features = ["rt", "macros", "fs", "io-util", "time", "sync"] }
 # Error derive + logging used in QuotaMeter / QuotaScope.
 thiserror = "1.0"
 tracing = "0.1"

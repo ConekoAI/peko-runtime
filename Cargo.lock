@@ -2445,6 +2445,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "peko",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
