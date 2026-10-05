@@ -54,10 +54,9 @@ template implies the output matches its source; `create` strips
 | **the registry** | pekohub; it distributes seeds, never creatures |
 
 `peko create -s <seed.toml>` is the current flag; `-f`/`--file` is a
-hidden compat alias. The word "template" survives in two unrelated
-senses that are **not** renames of this concept — provider/model
-presets (`template_id`, `peko model add --template anthropic`) and
-prompt templates (`peko-rs/engine/src/prompt/`).
+hidden compat alias. Prompt templates (`peko-rs/engine/src/prompt/`) retain
+that word. Provider/model presets were retired by ADR-068; legacy
+`template_id` values remain readable in saved model entries.
 
 Historical documents say "template" or `-f` for what this ADR calls a
 seed; per ADR-059's policy they are immutable records, and this table

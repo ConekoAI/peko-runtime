@@ -303,37 +303,32 @@ impl StatelessAgentService {
 
 ## Module: `providers`
 
-### Public Types
-
-#### `providers::openai_compatible` (ACTIVE)
+`peko_providers` provides three API adapters: `OpenAiAdapter`,
+`OpenAiResponsesAdapter`, and `AnthropicAdapter`. The factory selects by
+`ModelConfig.api_format`; endpoint vendors do not require separate implementations.
 
 ```rust
-pub struct OpenAICompatibleProvider { ... }
-pub struct OpenAICompatibleConfig { ... }
-
-impl OpenAICompatibleConfig {
-    pub fn groq(api_key: &str, model: &str) -> Self
-    pub fn together(api_key: &str, model: &str) -> Self
-    pub fn fireworks(api_key: &str, model: &str) -> Self
+impl ModelConfig {
+    pub fn new(id: impl Into<String>, api_format: ApiFormat,
+               base_url: impl Into<String>, model_id: impl Into<String>) -> Self;
+    pub fn validate(&self) -> anyhow::Result<()>;
 }
 ```
 
-#### `providers::kimi` (ACTIVE)
+`new` leaves limits, capabilities, pricing, and compatibility hints unset.
+`validate` checks required settings, HTTP(S) URL, nonzero limits, headers, and
+note length before add flows write credentials. Credentials remain vault references.
 
-```rust
-pub struct KimiProvider { ... }
+ADR-068 removes `templates`, `ProviderTemplate`, `ModelTemplate`,
+`find_template`, `iter_templates`, `ModelConfig::from_template`, and the
+vendor convenience constructors on `OpenAiCompatibleAdapter`.
+`OpenAiCompatibleAdapter::new(name, base_url)` remains available.
 
-impl KimiProvider {
-    pub fn from_env() -> Result<Self>
-    pub fn new(api_key: String) -> Self
-    pub fn with_model(self, model: &str) -> Self
-}
-```
-
-#### `providers::kimi_code` (REMOVED in 0.1.0)
-
-**Status:** ❌ REMOVED  
-**Replaced by:** `AnthropicProvider` or `KimiProvider`
+The CLI and IPC add surfaces accept explicit endpoint/model settings. IPC
+`ModelAddArgs` adds optional limits, headers, spec, compat, and note. Legacy
+`custom` is accepted without effect; legacy `template` produces a migration
+error. `ModelTemplates` remains a compatibility endpoint returning empty
+`presets`. Existing catalog entries and their credential references still load.
 
 ---
 

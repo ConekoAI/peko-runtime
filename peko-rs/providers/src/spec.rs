@@ -87,11 +87,8 @@ pub struct PricingHint {
 /// flows template → catalog → IPC, so a single source of truth
 /// drives them all.
 ///
-/// All fields are optional / default-friendly. `from_template` on
-/// `ModelConfig` populates them from the template when available;
-/// templates that haven't been audited yet keep `ModelSpec::default()`
-/// (text-only, no tools, no thinking, no streaming override) which
-/// is conservative — better to hide a feature than ship a broken one.
+/// Fields default conservatively within an explicitly supplied descriptor.
+/// `ModelConfig::spec == None` means unknown and leaves the engine gate inactive.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct ModelSpec {
     /// Whether the model accepts image inputs. Drives the chat UI
@@ -147,8 +144,7 @@ fn default_streaming_true() -> bool {
 // Manual Default so `streaming` defaults to `true` (the derive
 // would default it to `false`, which would silently hide the SSE
 // streaming button on every model). Also lets `ModelSpec::default()`
-// be callable from a const context (the `BUILT_IN_TEMPLATES` table
-// is a `const`).
+// be callable from const contexts.
 impl Default for ModelSpec {
     fn default() -> Self {
         Self::text_only()

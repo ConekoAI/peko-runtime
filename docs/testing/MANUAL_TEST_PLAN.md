@@ -96,7 +96,7 @@ Run these once before starting the tests below.
 |---|---|---|---|---|---|
 | T-001 | From `peko-runtime/`: `cargo build --release` | Build succeeds, binary at `./target/release/peko` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-002 | Move `peko` onto your PATH (or export it) | `which peko` prints a path | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | CLI only — used by T-003..T-005 for model/credential setup |
-| T-003 | `peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"` (or anthropic/kimi/etc.) | Model added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-003 | `peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"` (or anthropic/kimi/etc.) | Model added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-004 | `peko credential set llm openai-gpt-4o --kind api_key --material "$OPENAI_API_KEY"` | No error; key stored | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-005 | `peko model test openai-gpt-4o` | Prints success (✓ / ok) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-006 | From `peko-desktop/`: `pnpm install` | Install completes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |

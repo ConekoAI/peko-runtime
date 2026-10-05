@@ -12,10 +12,8 @@
 //!   URL, API format, headers), the wire model id, context-window
 //!   metadata, and a reference to a credential. There is no separate
 //!   provider layer.
-//! - **Templates vs. entries.** Preset templates
-//!   (`crate::templates`) describe a known provider with
-//!   curated model lists. They are static code. `ModelConfig` is the
-//!   runtime-owned instance of a configured model.
+//! - **Explicit settings.** Users supply the API format, endpoint, and wire
+//!   model id. Limits, capabilities, pricing, and compatibility are optional.
 //! - **No secrets on disk.** API keys live in the vault; the catalog
 //!   only stores public metadata and a `credential_id`.
 //! - **No runtime default.** Every Principal must be created with a
@@ -39,7 +37,6 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::spec::ModelSpec;
-use crate::templates::ProviderTemplate;
 use peko_provider_api::ProviderCompat;
 
 /// Top-level API format understood by the runtime.
@@ -107,8 +104,8 @@ pub struct ModelConfig {
     pub id: String,
     /// Human-readable display name.
     pub display_name: String,
-    /// Optional template id this entry was seeded from (e.g.
-    /// `"anthropic"`, `"openai"`). `None` for fully custom entries.
+    /// Legacy preset provenance. Preserved when loading old entries; new
+    /// entries have no template origin and never perform a preset lookup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
     /// Wire format used to talk to the model endpoint.
@@ -143,7 +140,7 @@ pub struct ModelConfig {
     pub created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
-    /// F29: per-provider adapter hints resolved from the template.
+    /// Optional adapter hints supplied by users or retained from legacy entries.
     /// `None` means "use the adapter's built-in F25 default" — the
     /// pre-F29 behaviour. When `Some`, the adapter projects
     /// `ChatOptions::thinking_effort` onto the wire shape named by
@@ -153,15 +150,8 @@ pub struct ModelConfig {
     /// pre-F29 entries keep loading without migration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<ProviderCompat>,
-    /// PR 1 / `feature/model-first-config`: declarative model
-    /// capability descriptor (vision, audio, tools, streaming,
-    /// thinking, json_mode, pricing). `None` for entries written
-    /// before PR 1; the engine falls back to conservative
-    /// `ModelSpec::default()` (text-only, no tools, no thinking,
-    /// streaming on). Templates that have been audited copy
-    /// `ModelSpec` from `ModelTemplate::spec` at create time;
-    /// users editing a custom entry via `peko model edit` can
-    /// override it directly.
+    /// Optional user-supplied capability/pricing descriptor. Absent means
+    /// unknown; the engine capability gate is inactive until supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<ModelSpec>,
     /// Phase 2 of `feature/multi-model-subagents`: free-text
@@ -172,8 +162,8 @@ pub struct ModelConfig {
     /// ("very cheap, use it for cron", "RPG model, use it to
     /// generate fictions", "very capable, use it for coding")
     /// that the spec cannot capture. `None` keeps the pre-Phase-2
-    /// behavior. Capped at 500 chars (validated in `from_template`
-    /// and `upsert`). `serde-default` skips the field on read so
+    /// behavior. Capped at 500 chars (validated before add writes
+    /// and in `upsert`). `serde-default` skips the field on read so
     /// entries written before Phase 2 still load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -204,59 +194,59 @@ fn default_true() -> bool {
 }
 
 impl ModelConfig {
-    /// Construct a `ModelConfig` from a preset template, with the
-    /// user-supplied configured model id and a chosen wire model id.
-    /// The template's curated metadata for that wire model is used when
-    /// available; otherwise the entry carries no context-window metadata.
+    /// Construct a configured model from explicit endpoint settings.
+    /// Capabilities, limits, pricing, and compatibility remain unknown until supplied.
     #[must_use]
-    pub fn from_template(
-        template: &ProviderTemplate,
+    pub fn new(
         id: impl Into<String>,
+        api_format: ApiFormat,
+        base_url: impl Into<String>,
         model_id: impl Into<String>,
     ) -> Self {
         let id = id.into();
-        let model_id = model_id.into();
-        let display_name = if let Some(m) = template.models.iter().find(|m| m.id == model_id) {
-            m.display_name
-                .map(str::to_string)
-                .unwrap_or_else(|| model_id.clone())
-        } else {
-            model_id.clone()
-        };
-        let (context_window, max_output_tokens, spec) = template
-            .models
-            .iter()
-            .find(|m| m.id == model_id)
-            .map(|m| (m.context_length, m.max_output_tokens, m.spec))
-            .unwrap_or((None, None, None));
         Self {
+            display_name: id.clone(),
             id,
-            display_name,
-            template_id: Some(template.id.to_string()),
-            api_format: template.api_format,
-            base_url: template.base_url.to_string(),
-            model_id,
-            context_window,
-            max_output_tokens,
-            headers: template
-                .headers
-                .iter()
-                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                .collect(),
+            template_id: None,
+            api_format,
+            base_url: base_url.into(),
+            model_id: model_id.into(),
+            context_window: None,
+            max_output_tokens: None,
+            headers: BTreeMap::new(),
             credential_id: None,
-            requires_key: template.requires_key,
+            requires_key: true,
             enabled: true,
             created_at: Utc::now(),
             updated_at: Utc::now(),
-            compat: template.compat,
-            spec,
-            // `from_template` is the only construction path that
-            // isn't already gated by `upsert()`'s note validation,
-            // so seed with `None`. Users add the note via
-            // `peko model edit --note ...`, which routes through
-            // `upsert`.
+            compat: None,
+            spec: None,
             note: None,
         }
+    }
+
+    /// Validate a new entry before any credential or catalog writes.
+    pub fn validate(&self) -> Result<()> {
+        if self.id.trim().is_empty() {
+            anyhow::bail!("configured model id must not be empty");
+        }
+        if self.model_id.trim().is_empty() {
+            anyhow::bail!("wire model id must not be empty");
+        }
+        let url = reqwest::Url::parse(&self.base_url).context("invalid base URL")?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            anyhow::bail!("base URL must be an absolute HTTP(S) URL");
+        }
+        if self.context_window == Some(0) || self.max_output_tokens == Some(0) {
+            anyhow::bail!("token limits must be greater than zero");
+        }
+        for (name, value) in &self.headers {
+            reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .context("invalid header name")?;
+            reqwest::header::HeaderValue::from_str(value).context("invalid header value")?;
+        }
+        validate_note(self.note.clone())?;
+        Ok(())
     }
 }
 
@@ -495,7 +485,6 @@ impl ModelCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::templates;
     use tempfile::tempdir;
 
     async fn temp_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {
@@ -550,8 +539,12 @@ mod tests {
     #[test]
     fn upsert_persists_to_disk() {
         let (dir, cat) = tokio_test::block_on(temp_catalog());
-        let tmpl = templates::find_template("anthropic").unwrap();
-        let entry = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
+        let entry = ModelConfig::new(
+            "anthropic-haiku",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-3-5-haiku-latest",
+        );
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
         let reloaded =
@@ -566,8 +559,12 @@ mod tests {
     #[test]
     fn remove_returns_true_then_false() {
         let (_dir, cat) = tokio_test::block_on(temp_catalog());
-        let tmpl = templates::find_template("openai").unwrap();
-        let entry = ModelConfig::from_template(tmpl, "openai-gpt-4o", "gpt-4o");
+        let entry = ModelConfig::new(
+            "openai-gpt-4o",
+            crate::catalog::ApiFormat::OpenaiCompletions,
+            "https://api.openai.com/v1",
+            "gpt-4o",
+        );
         tokio_test::block_on(cat.upsert(entry)).unwrap();
         assert!(tokio_test::block_on(cat.remove("openai-gpt-4o")).unwrap());
         assert!(!tokio_test::block_on(cat.remove("openai-gpt-4o")).unwrap());
@@ -576,8 +573,13 @@ mod tests {
     #[test]
     fn context_window_resolves_from_catalog() {
         let (_dir, cat) = tokio_test::block_on(temp_catalog());
-        let tmpl = templates::find_template("anthropic").unwrap();
-        let entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        let mut entry = ModelConfig::new(
+            "anthropic-sonnet",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+        );
+        entry.context_window = Some(200_000);
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
         assert_eq!(
@@ -593,8 +595,12 @@ mod tests {
     #[test]
     fn context_window_returns_none_for_disabled_entry() {
         let (_dir, cat) = tokio_test::block_on(temp_catalog());
-        let tmpl = templates::find_template("anthropic").unwrap();
-        let mut entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        let mut entry = ModelConfig::new(
+            "anthropic-sonnet",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+        );
         entry.enabled = false;
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
@@ -617,12 +623,18 @@ mod tests {
     }
 
     #[test]
-    fn entry_from_template_seeds_metadata() {
-        let tmpl = templates::find_template("anthropic").unwrap();
-        let entry = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
-        assert_eq!(entry.template_id.as_deref(), Some("anthropic"));
+    fn explicit_entry_keeps_metadata_unknown() {
+        let entry = ModelConfig::new(
+            "anthropic-haiku",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-3-5-haiku-latest",
+        );
+        assert!(entry.template_id.is_none());
         assert_eq!(entry.model_id, "claude-3-5-haiku-latest");
-        assert!(entry.context_window.is_some());
+        assert!(entry.context_window.is_none());
+        assert!(entry.spec.is_none());
+        assert!(entry.compat.is_none());
     }
 
     #[tokio::test]
@@ -633,8 +645,12 @@ mod tests {
 
         assert_eq!(cat.list_all().await.len(), 0);
 
-        let tmpl = templates::find_template("anthropic").unwrap();
-        let entry = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        let entry = ModelConfig::new(
+            "anthropic-sonnet",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+        );
         let file = ModelCatalogFile {
             entries: std::iter::once(("anthropic-sonnet".to_string(), entry)).collect(),
             ..Default::default()
@@ -658,10 +674,14 @@ mod tests {
         let path = dir.path().join("models.toml");
         let cat = ModelCatalog::load_or_init(&path).await.unwrap();
 
-        let tmpl = templates::find_template("ollama").unwrap();
-        cat.upsert(ModelConfig::from_template(tmpl, "ollama-llama", "llama3.1"))
-            .await
-            .unwrap();
+        cat.upsert(ModelConfig::new(
+            "ollama-llama",
+            crate::catalog::ApiFormat::OpenaiCompletions,
+            "http://localhost:11434/v1",
+            "llama3.1",
+        ))
+        .await
+        .unwrap();
         assert_eq!(cat.list_all().await.len(), 1);
 
         std::fs::write(&path, "this is not valid toml = = =").unwrap();
@@ -677,12 +697,26 @@ mod tests {
     #[tokio::test]
     async fn models_referencing_finds_matching_entries() {
         let (_dir, cat) = temp_catalog().await;
-        let tmpl = templates::find_template("anthropic").unwrap();
-        let mut a = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        let mut a = ModelConfig::new(
+            "anthropic-sonnet",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+        );
         a.credential_id = Some("cred-1".into());
-        let mut b = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
+        let mut b = ModelConfig::new(
+            "anthropic-haiku",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-3-5-haiku-latest",
+        );
         b.credential_id = Some("cred-1".into());
-        let mut c = ModelConfig::from_template(tmpl, "anthropic-opus", "claude-3-opus");
+        let mut c = ModelConfig::new(
+            "anthropic-opus",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-3-opus",
+        );
         c.credential_id = Some("cred-2".into());
         cat.upsert(a).await.unwrap();
         cat.upsert(b).await.unwrap();
@@ -705,12 +739,26 @@ mod tests {
     #[tokio::test]
     async fn rewire_credential_swaps_and_persists() {
         let (dir, cat) = temp_catalog().await;
-        let tmpl = templates::find_template("anthropic").unwrap();
-        let mut a = ModelConfig::from_template(tmpl, "anthropic-sonnet", "claude-sonnet-4-5");
+        let mut a = ModelConfig::new(
+            "anthropic-sonnet",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+        );
         a.credential_id = Some("old-id".into());
-        let mut b = ModelConfig::from_template(tmpl, "anthropic-haiku", "claude-3-5-haiku-latest");
+        let mut b = ModelConfig::new(
+            "anthropic-haiku",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-3-5-haiku-latest",
+        );
         b.credential_id = Some("old-id".into());
-        let mut c = ModelConfig::from_template(tmpl, "anthropic-opus", "claude-3-opus");
+        let mut c = ModelConfig::new(
+            "anthropic-opus",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
+            "claude-3-opus",
+        );
         c.credential_id = Some("other".into());
         cat.upsert(a).await.unwrap();
         cat.upsert(b).await.unwrap();
@@ -854,5 +902,46 @@ mod tests {
         let parsed: ModelCatalogFile = toml::from_str(toml).expect("legacy file parses");
         let entry = parsed.entries.get("legacy").expect("legacy entry present");
         assert!(entry.note.is_none(), "missing field must default to None");
+    }
+    #[tokio::test]
+    async fn legacy_entry_round_trips_without_preset_lookup() {
+        let (dir, catalog) = temp_catalog().await;
+        let text = r#"
+version = "4.0"
+[entries.legacy]
+id = "legacy"
+display_name = "Legacy model"
+template_id = "retired-vendor"
+api_format = "anthropic_messages"
+base_url = "https://example.com/anthropic"
+model_id = "old-model"
+credential_id = "saved-vault-id"
+context_window = 200000
+max_output_tokens = 8192
+[entries.legacy.compat]
+thinking_format = "Kimi"
+deferred_tools_mode = "Kimi"
+[entries.legacy.spec]
+image_input = true
+tool_support = "function_calling"
+"#;
+        std::fs::write(dir.path().join("models.toml"), text).unwrap();
+        catalog.reload().await.unwrap();
+        let entry = catalog.get("legacy").await.unwrap();
+        assert_eq!(entry.credential_id.as_deref(), Some("saved-vault-id"));
+        assert_eq!(entry.context_window, Some(200_000));
+        assert!(entry.spec.unwrap().image_input);
+        assert_eq!(
+            entry.compat.unwrap().thinking_format,
+            peko_provider_api::ThinkingFormat::Kimi
+        );
+        catalog.upsert(entry).await.unwrap();
+        let restored = ModelCatalog::load_or_init(dir.path().join("models.toml"))
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.get("legacy").await.unwrap().template_id.as_deref(),
+            Some("retired-vendor")
+        );
     }
 }

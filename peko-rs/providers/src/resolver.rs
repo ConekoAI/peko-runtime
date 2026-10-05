@@ -367,7 +367,7 @@ impl LlmResolver {
         // 3. Env-var bootstrap keyed by template_id or model id.
         if self.bootstrap_env_keys {
             for var in env_var_candidates(config) {
-                if let Ok(v) = std::env::var(var) {
+                if let Ok(v) = std::env::var(&var) {
                     if !v.trim().is_empty() {
                         return Ok(SecretString::from(v));
                     }
@@ -411,7 +411,7 @@ impl LlmResolver {
         }
         if self.bootstrap_env_keys {
             for var in env_var_candidates(config) {
-                if let Ok(v) = std::env::var(var) {
+                if let Ok(v) = std::env::var(&var) {
                     if !v.trim().is_empty() {
                         report.env_vars.insert(var.to_string(), true);
                     } else {
@@ -440,28 +440,11 @@ pub struct KeyProbeReport {
 }
 
 /// Conventional env-var names checked during the bootstrap fallback.
-fn env_var_candidates(config: &ModelConfig) -> Vec<&'static str> {
+fn env_var_candidates(config: &ModelConfig) -> Vec<String> {
+    // Bootstrap only: retain legacy provenance as a spelling hint, without a vendor table.
     let key = config.template_id.as_deref().unwrap_or(&config.id);
-    match key {
-        "openai" => vec!["OPENAI_API_KEY"],
-        "anthropic" => vec!["ANTHROPIC_API_KEY"],
-        "azure-openai" | "azure" => vec!["AZURE_OPENAI_API_KEY"],
-        "cohere" => vec!["COHERE_API_KEY"],
-        "deepseek" => vec!["DEEPSEEK_API_KEY"],
-        "fireworks" => vec!["FIREWORKS_API_KEY"],
-        "groq" => vec!["GROQ_API_KEY"],
-        "moonshot" => vec!["MOONSHOT_API_KEY", "KIMI_API_KEY"],
-        "openrouter" => vec!["OPENROUTER_API_KEY"],
-        "perplexity" => vec!["PERPLEXITY_API_KEY"],
-        "together" => vec!["TOGETHER_API_KEY"],
-        "xai" | "grok" => vec!["XAI_API_KEY"],
-        "kimi" => vec!["KIMI_API_KEY"],
-        "minimax" => vec!["MINIMAX_API_KEY"],
-        _ => {
-            let upper = key.to_uppercase().replace('-', "_");
-            vec![Box::leak(format!("{upper}_API_KEY").into_boxed_str())]
-        }
-    }
+    let upper = key.to_uppercase().replace('-', "_");
+    vec![format!("{upper}_API_KEY")]
 }
 
 impl LlmResolver {
@@ -575,7 +558,6 @@ impl peko_provider_api::credentials::CredentialProvider for StaticCredentialProv
 mod tests {
     use super::*;
     use crate::secret_store::InMemorySecretStore;
-    use crate::templates;
     use secrecy::SecretString;
     use tempfile::tempdir;
 
@@ -587,17 +569,19 @@ mod tests {
     }
 
     fn openai_config() -> ModelConfig {
-        ModelConfig::from_template(
-            templates::find_template("openai").unwrap(),
+        ModelConfig::new(
             "openai-gpt-4o",
+            crate::catalog::ApiFormat::OpenaiCompletions,
+            "https://api.openai.com/v1",
             "gpt-4o",
         )
     }
 
     fn anthropic_config() -> ModelConfig {
-        ModelConfig::from_template(
-            templates::find_template("anthropic").unwrap(),
+        ModelConfig::new(
             "anthropic-sonnet",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
             "claude-sonnet-4-5",
         )
     }
@@ -788,9 +772,10 @@ mod tests {
 
     #[tokio::test]
     async fn env_candidates_generic_fallback() {
-        let mut cfg = ModelConfig::from_template(
-            templates::find_template("openai").unwrap(),
+        let mut cfg = ModelConfig::new(
             "my-custom",
+            crate::catalog::ApiFormat::OpenaiCompletions,
+            "https://api.openai.com/v1",
             "my-model",
         );
         cfg.template_id = None;
@@ -831,34 +816,40 @@ mod tests {
         assert_eq!(choice.config.id, "anthropic-sonnet");
     }
 
-    // F29: compat-resolution regression pins. The templates seed
-    // compat annotations on the specialty providers; `from_template`
-    // must thread them through so the resolver-bound `ModelConfig`
-    // carries the same hints. Pre-F29 callers had no `compat` field
-    // and were unaffected — these pins fix the new shape.
+    // Explicit compatibility annotations survive resolution without a vendor preset.
 
     fn deepseek_config() -> ModelConfig {
-        ModelConfig::from_template(
-            templates::find_template("deepseek").unwrap(),
+        let mut config = ModelConfig::new(
             "deepseek-chat-v3",
+            crate::catalog::ApiFormat::OpenaiCompletions,
+            "https://api.deepseek.com/v1",
             "deepseek-chat",
-        )
+        );
+        config.compat = Some(peko_provider_api::ProviderCompat {
+            thinking_format: peko_provider_api::ThinkingFormat::DeepSeek,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Off,
+        });
+        config
     }
 
     fn kimi_anthropic_config() -> ModelConfig {
-        ModelConfig::from_template(
-            templates::find_template("kimi").unwrap(),
+        let mut config = ModelConfig::new(
             "kimi-coding",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.kimi.com/coding",
             "kimi-for-coding",
-        )
+        );
+        config.compat = Some(peko_provider_api::ProviderCompat {
+            thinking_format: peko_provider_api::ThinkingFormat::Kimi,
+            deferred_tools_mode: peko_provider_api::DeferredToolsMode::Kimi,
+        });
+        config
     }
 
     #[test]
-    fn f29_from_template_threads_deepseek_compat() {
+    fn explicit_config_preserves_deepseek_compat() {
         let cfg = deepseek_config();
-        let compat = cfg
-            .compat
-            .expect("deepseek template compat propagated into ModelConfig");
+        let compat = cfg.compat.expect("explicit compatibility metadata");
         assert_eq!(
             compat.thinking_format,
             peko_provider_api::ThinkingFormat::DeepSeek
@@ -870,11 +861,9 @@ mod tests {
     }
 
     #[test]
-    fn f29_from_template_threads_kimi_compat_with_deferred_tools() {
+    fn explicit_config_preserves_kimi_compat_with_deferred_tools() {
         let cfg = kimi_anthropic_config();
-        let compat = cfg
-            .compat
-            .expect("kimi Anthropic-compat template compat propagated");
+        let compat = cfg.compat.expect("explicit compatibility metadata");
         assert_eq!(
             compat.thinking_format,
             peko_provider_api::ThinkingFormat::Kimi
@@ -886,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn f29_from_template_threads_none_compat_for_generic_providers() {
+    fn explicit_config_preserves_none_compat_for_generic_providers() {
         // OpenAI ships no compat annotation — the resolver returns
         // `None` and the adapter falls back to F25's defaults.
         let cfg = openai_config();

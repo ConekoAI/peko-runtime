@@ -33,7 +33,7 @@ The easiest way to create a peko is with the `peko create` command:
 export OPENAI_API_KEY="sk-..."
 
 # Add a model entry to the runtime catalog and store the key in one command
-peko model add --template openai --model gpt-4o \
+peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o \
     --key "$OPENAI_API_KEY"
 
 # Create a peko
@@ -201,7 +201,7 @@ Manage provider API keys centrally. As of v3, the runtime owns a
 
 ```bash
 # Add a model entry, store the key in one command
-peko model add --template openai --model gpt-4o \
+peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o \
     --key "$OPENAI_API_KEY"
 
 # List which models have a stored key

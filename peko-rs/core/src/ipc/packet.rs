@@ -330,22 +330,12 @@ pub enum RequestPacket {
     #[serde(rename = "model_reload")]
     ModelReload { request_id: u64 },
 
-    /// Enumerate the built-in model presets the runtime ships
-    /// with. Sent by the desktop's "Add Model" modal so the
-    /// picker can show the curated list of known presets
-    /// (Anthropic, OpenAI, Groq, Ollama, …) with their default
-    /// base URL, API format, and curated model list. Mirrors the
-    /// CLI's `peko model presets` path, but over IPC so the
-    /// desktop doesn't shell out.
+    /// Legacy preset discovery. Returns an empty preset list (ADR-068).
     #[serde(rename = "model_templates")]
     ModelTemplates { request_id: u64 },
 
-    /// Add a model to the catalog — either from a built-in
-    /// preset (`args.template`) or fully custom
-    /// (`args.custom` + `api_format` + `base_url` + `model`).
-    /// Optionally stores a key in the vault in the same round-trip.
-    /// Mirrors `peko model add` so the desktop modal can do
-    /// the same thing without a shell-out.
+    /// Add a model using explicit endpoint settings and optional metadata.
+    /// Optionally stores a key in the vault in the same round trip.
     #[serde(rename = "model_add")]
     ModelAdd { request_id: u64, args: ModelAddArgs },
 
@@ -1954,16 +1944,7 @@ pub struct ModelPricingHint {
     pub output_per_million: Option<f64>,
 }
 
-/// One model declared by a built-in model preset.
-///
-/// This is the IPC mirror of `providers::templates::ModelTemplate` —
-/// a smaller, owned, serializable shape suitable for the desktop's
-/// "Add Model" modal. The static `&'static str` slices from the
-/// in-runtime template are projected into owned `String`s /
-/// optional `u32`s so the struct can be sent over the wire without a
-/// lifetime. `headers` from the in-runtime template are intentionally
-/// omitted — the modal doesn't need them, and the catalog entry the
-/// user creates from a preset starts with the preset's defaults intact.
+/// Legacy preset wire row, retained for decoding older IPC responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelTemplateInfo {
     pub id: String,
@@ -1975,15 +1956,7 @@ pub struct ModelTemplateInfo {
     pub max_output_tokens: Option<u32>,
 }
 
-/// One built-in model preset, projected from the in-runtime
-/// `BUILT_IN_TEMPLATES` array into an owned, serializable shape for
-/// the desktop's "Add Model" modal. The wire shape is intentionally
-/// richer than `ModelSummary` (which is the catalog-summary view) so
-/// the picker can show the curated model list and context length —
-/// the choices that actually drive a one-screen decision.
-///
-/// Field names are snake_case to match the rest of the IPC envelope;
-/// the Tauri command projects this into the camelCase TS surface.
+/// Legacy preset wire shape. ModelTemplates now returns an empty list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPresetInfo {
     pub id: String,
@@ -1999,37 +1972,23 @@ pub struct ModelPresetInfo {
     pub models: Vec<ModelTemplateInfo>,
 }
 
-/// Arguments for `RequestPacket::ModelAdd`.
-///
-/// This mirrors the CLI's `model add` args so the desktop
-/// modal can drive exactly the same surface that
-/// `peko model add` exposes. `template` and `custom` are
-/// mutually exclusive; the handler refuses bare invocations the
-/// same way the CLI does (per the F6/F7 symmetry rule — the
-/// "either --template or --custom is required" guard stays in
-/// both the CLI and the IPC so the two surfaces never disagree).
-///
-/// `key` is best-effort: if the user supplies it, the handler folds
-/// it into the same vault write the CLI would do.
+/// Explicit model endpoint settings, matching `peko model add`.
+/// Credentials are stored in the vault; optional metadata is user authored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelAddArgs {
-    /// Seed from a built-in preset (e.g. `"anthropic"`,
-    /// `"openai"`, `"ollama"`). Mutually exclusive with `custom`.
+    /// Retired preset selector; present requests receive migration guidance.
     #[serde(default)]
     pub template: Option<String>,
-    /// Override the catalog id (preset or custom). Defaults to
-    /// the preset id when omitted for a preset-mode add.
+    /// Configured id. Defaults to the wire model id.
     #[serde(default)]
     pub name: Option<String>,
     /// Override the catalog display name.
     #[serde(default)]
     pub display_name: Option<String>,
-    /// Add a fully custom (OpenAI-compatible or Anthropic-
-    /// compatible) model. Mutually exclusive with `template`.
+    /// Legacy compatibility flag, accepted without effect.
     #[serde(default)]
     pub custom: bool,
-    /// API format for a custom model. One of
-    /// `"openai_completions"` | `"anthropic_messages"`. Maps to
+    /// API format: openai_completions, openai_responses, or anthropic_messages. Maps to
     /// `ApiFormat::from_wire`.
     #[serde(default)]
     pub api_format: Option<String>,
@@ -2040,20 +1999,30 @@ pub struct ModelAddArgs {
     /// Defaults to `true` when omitted.
     #[serde(default)]
     pub requires_key: Option<bool>,
-    /// One or more wire model ids to declare. The first becomes the
-    /// entry's `model_id`. The CLI accepts the same vector and uses
-    /// the same defaulting rule.
+    /// Exactly one wire model id. The vector shape is retained for IPC compatibility.
     #[serde(default)]
     pub model: Vec<String>,
     /// Store an API key in the vault immediately. Equivalent to
-    /// `peko credential set <id>` after the add. Ignored when
-    /// the new entry does not require a key.
+    /// `peko credential set <id>` after the add. Rejected for keyless entries.
     #[serde(default)]
     pub key: Option<String>,
     /// Reference an existing vault credential by id instead of
     /// storing a new key. Mutually exclusive with `key`.
     #[serde(default)]
     pub credential_id: Option<String>,
+    /// Optional user-supplied limits and metadata; no vendor defaults.
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub spec: Option<ModelSpec>,
+    #[serde(default)]
+    pub compat: Option<peko_provider_api::ProviderCompat>,
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// Arguments for `RequestPacket::ModelUpdate`.
@@ -3008,6 +2977,7 @@ mod tests {
                 model: vec![],
                 key: Some("sk-test".to_string()),
                 credential_id: None,
+                ..Default::default()
             },
         };
         let bytes = req.to_bytes().unwrap();

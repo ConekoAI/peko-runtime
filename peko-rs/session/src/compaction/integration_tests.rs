@@ -22,7 +22,6 @@ use crate::compaction::{
 };
 use peko_message::{ContentBlock, LlmMessage, MessageRole};
 use peko_providers::catalog::{ModelCatalog, ModelConfig};
-use peko_providers::templates;
 
 // ============================================================================
 // Success Criterion: Built-in compactor triggers using dual-threshold
@@ -68,26 +67,29 @@ async fn test_catalog_known_models() {
     assert_eq!(catalog.context_window("nope").await, None);
 }
 
-/// Build a transient in-memory catalog seeded with the built-in OpenAI
-/// and Anthropic templates. Used by the integration tests below; not
+/// Build a transient catalog with explicit model context limits. Used by the integration tests below; not
 /// production code.
 async fn catalog_with_known_models() -> std::sync::Arc<ModelCatalog> {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("models.toml");
     let catalog = ModelCatalog::load_or_init(&path).await.expect("catalog");
 
-    let anthropic = ModelConfig::from_template(
-        templates::find_template("anthropic").expect("anthropic template"),
+    let mut anthropic = ModelConfig::new(
         "anthropic-sonnet",
+        peko_providers::catalog::ApiFormat::AnthropicMessages,
+        "https://api.anthropic.com",
         "claude-sonnet-4-5",
     );
+    anthropic.context_window = Some(200_000);
     catalog.upsert(anthropic).await.expect("upsert anthropic");
 
-    let openai = ModelConfig::from_template(
-        templates::find_template("openai").expect("openai template"),
+    let mut openai = ModelConfig::new(
         "openai-gpt-4o",
+        peko_providers::catalog::ApiFormat::OpenaiCompletions,
+        "https://api.openai.com/v1",
         "gpt-4o",
     );
+    openai.context_window = Some(128_000);
     catalog.upsert(openai).await.expect("upsert openai");
 
     catalog

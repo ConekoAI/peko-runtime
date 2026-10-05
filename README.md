@@ -76,11 +76,11 @@ cargo build --release
 ### Basic Usage
 
 ```bash
-# Add a model to the catalog (only needed once; pick a template + wire id)
-./target/release/peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
+# Add a model to the catalog (only needed once; specify the endpoint + wire id)
+./target/release/peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"
 
-# Create a peko (default model is the catalog default)
-./target/release/peko create myprincipal
+# Create a peko using the configured model
+./target/release/peko create myprincipal --model openai-gpt-4o
 
 # Send a message to a peko (primary interaction method)
 ./target/release/peko send myprincipal "Hello, what can you do?"
@@ -139,20 +139,17 @@ peko log <PEKO>                               # Read the thread
 peko log <PEKO> --watch                       # Follow the thread live
 ```
 
-#### Authentication (v3: catalog + vault)
+#### Authentication (model catalog + vault)
 ```bash
-# 1. Add a model entry to the runtime catalog (`~/.peko/models.toml`)
-peko model add --template openai --model gpt-4o
-peko model add --custom --id my-local \
+# 1. Configure the model and store its key in the vault (`~/.peko/models.toml` stores only a reference)
+peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"
+peko model add --no-key --id my-local \
                --api-format openai_completions \
-               --base-url http://localhost:8080 \
+               --base-url http://localhost:8080/v1 \
                --model llama-3.1-8b
 
-# 2. Store the API key in the encrypted vault (one per model)
-peko credential set llm openai-gpt-4o --kind api_key --material "$OPENAI_API_KEY"
-
-# 3. Create a peko — it inherits the catalog default model
-peko create alice
+# 2. Create a peko using the configured model
+peko create alice --model openai-gpt-4o
 
 # Inspect / manage the catalog and vault
 peko model list
@@ -211,8 +208,8 @@ peko model show <MODEL_ID>                        # Detail view (incl. spec + no
 peko model compare <MODEL_ID>...                  # Side-by-side capability matrix
 peko model search --vision --tools --thinking     # Filter by capability predicate
 peko model search --contains cron                 # Substring-match id, display_name, note
-peko model add --template <id> --model <wire-id>  # Add a model (catalog)
-peko model add --note "very cheap, use it for cron"  # Free-text annotation for the agent
+peko model add --api-format <fmt> --base-url <url> --model <wire-id>  # Add a model
+peko model edit <id> --note "very cheap, use it for cron"  # Free-text annotation for the agent
 peko model edit <MODEL_ID> --note "..."           # Update note; --note "" clears it
 peko model remove <MODEL_ID>                      # Remove a model from the catalog
 peko model test <MODEL_ID>                        # Live-test a model

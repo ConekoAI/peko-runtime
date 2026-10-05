@@ -6,8 +6,7 @@
 //! - **Transport** (`transport`): HTTP client and SSE parsing.
 //! - **Adapters** (`adapters`): Provider-specific API format conversion.
 //! - **Core** (`core`): Unified provider implementation.
-//! - **Catalog / Templates** (`catalog`, `templates`): On-disk model
-//!   metadata and built-in provider templates.
+//! - **Catalog** (`catalog`): Explicit endpoint settings and optional model metadata.
 //! - **Resolver** (`resolver`): `LlmResolver` plus rotation state for
 //!   automatic 401-driven credential rotation.
 //! - **Mock** (`mock`): `MockAdapter` for tests and CLI dry-runs.
@@ -20,11 +19,8 @@
 //!   `InMemorySecretStore` for tests; production impls (`VaultSecretStore`)
 //!   live in the root composition layer.
 //!
-//! Adding a new provider:
-//! 1. If OpenAI-compatible: Add entry to `templates` with a custom
-//!    base URL.
-//! 2. If unique API: Implement `peko_provider_api::ApiAdapter` and
-//!    add a `factory::create_provider_for_model` arm.
+//! New compatible endpoints need only a configured model entry. Add an adapter
+//! and factory arm only when the wire format itself differs.
 
 pub mod adapters;
 pub mod catalog;
@@ -36,7 +32,6 @@ pub mod resolver;
 pub mod rotating_auth;
 pub mod secret_store;
 pub mod spec;
-pub mod templates;
 pub mod transport;
 pub mod validator;
 
@@ -55,7 +50,6 @@ pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, R
 pub use rotating_auth::RotationState;
 pub use secret_store::{InMemorySecretStore, SecretStore, SecretStoreError};
 pub use spec::{ModelSpec, PricingHint, ThinkingMode, ToolSupport};
-pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 
 // Domain types re-exported from `peko-message` and `peko-provider-api`

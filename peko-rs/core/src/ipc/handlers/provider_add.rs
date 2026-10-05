@@ -3,8 +3,7 @@
 //! Owns the `RequestPacket::ModelAdd` IPC variant. The desktop's
 //! "Add Model" modal calls this so the picker can add a new
 //! model to the catalog without shelling out to the CLI.
-//! Mirrors `peko model add` — same preset + custom modes,
-//! same `--key` folding, same bare-invocation guard.
+//! Matches the CLI explicit endpoint settings and vault credential storage.
 //!
 //! The handler holds a narrow [`ModelAddHost`] port; the
 //! daemon-side implementation (`AppState`) is reached only through
@@ -77,23 +76,24 @@ impl RequestHandler for ProviderAddHandler {
     ) -> anyhow::Result<()> {
         match request {
             RequestPacket::ModelAdd { request_id, args } => {
-                // Bare-invocation guard — same shape as the CLI.
-                // Either `template` or `custom` must be supplied; an
-                // empty request is a user error, not a system error,
-                // so we reply with `ResponsePacket::Error` carrying
-                // the same hint string the CLI prints. This keeps the
-                // two surfaces symmetric (F6/F7 contract).
-                if args.template.is_none() && !args.custom {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: "either template or custom must be set.\n\n\
-                                  Quick start:\n\
-                                    model_add template=anthropic key=$ANTHROPIC_API_KEY\n\n\
-                                  List presets:\n\
-                                    model_templates"
-                            .to_string(),
+                if args.template.is_some()
+                    || args.model.is_empty()
+                    || args.api_format.is_none()
+                    || args.base_url.is_none()
+                {
+                    let message = if args.template.is_some() {
+                        "model templates have been retired; supply api_format, base_url, and model"
+                    } else {
+                        "api_format, base_url, and exactly one model id are required"
                     };
-                    send_response(sink, response).await?;
+                    send_response(
+                        sink,
+                        ResponsePacket::Error {
+                            request_id,
+                            message: message.to_string(),
+                        },
+                    )
+                    .await?;
                     return Ok(());
                 }
 
@@ -229,13 +229,13 @@ mod tests {
         );
         let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("");
         assert!(
-            message.contains("template") && message.contains("custom"),
+            message.contains("api_format") && message.contains("base_url"),
             "error message should mention both template and custom, got: {message}"
         );
     }
 
     #[tokio::test]
-    async fn model_add_template_emits_model_added() {
+    async fn model_add_explicit_settings_emits_model_added() {
         // Happy path: the host returns a ModelSummary, the handler
         // wraps it in `ResponsePacket::ModelAdded`. We assert
         // the wire shape so a future field addition (e.g. adding
@@ -250,7 +250,9 @@ mod tests {
                 RequestPacket::ModelAdd {
                     request_id: 72,
                     args: ModelAddArgs {
-                        template: Some("anthropic".to_string()),
+                        api_format: Some("anthropic_messages".into()),
+                        base_url: Some("https://api.anthropic.com".into()),
+                        model: vec!["claude-test".into()],
                         ..Default::default()
                     },
                 },
@@ -298,7 +300,9 @@ mod tests {
                 RequestPacket::ModelAdd {
                     request_id: 73,
                     args: ModelAddArgs {
-                        custom: true,
+                        api_format: Some("openai_responses".into()),
+                        base_url: Some("https://example.com/v1".into()),
+                        model: vec!["test-model".into()],
                         ..Default::default()
                     },
                 },

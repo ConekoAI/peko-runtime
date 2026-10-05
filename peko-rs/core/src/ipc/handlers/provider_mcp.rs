@@ -57,7 +57,7 @@ pub(crate) trait ModelMcpHost: Send + Sync {
     /// `ModelSummary` wire shape. Powers `ModelList`. Reads go
     /// through the daemon's `Arc<ModelCatalog>` so the response
     /// matches what the resolver sees — including any user-added
-    /// entries that don't appear in the static `BUILT_IN_TEMPLATES`.
+    /// all user-configured endpoints.
     async fn list_catalog_models(&self) -> Vec<ModelSummary>;
 }
 
@@ -344,7 +344,7 @@ mod tests {
         );
     }
 
-    /// A user-added catalog entry (one not in `BUILT_IN_TEMPLATES`)
+    /// A user-configured catalog entry
     /// must round-trip through the `ModelList` IPC.
     #[tokio::test]
     async fn model_list_emits_user_added_models() {

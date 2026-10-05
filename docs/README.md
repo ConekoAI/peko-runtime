@@ -114,6 +114,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-062](architecture/adr/ADR-062-retire-universal-tools.md) | Universal tools retired: stdio protocol + `<workspace>/tools/` scanner deleted; migration to MCP or `Workflow` (ADR-061) |
 | [ADR-063](architecture/adr/ADR-063-async-task-delivery-consolidation.md) | Async task delivery consolidation |
 | [ADR-064](architecture/adr/ADR-064-agents-to-roles-terminology.md) | `agents/` → `roles/` terminology unification: agent = live session actor, role = the initiating template; `role_catalog`, `role` param, `role:*` capabilities, packaging layer rename |
+| [ADR-068](architecture/adr/ADR-068-api-format-model-configuration.md) | Explicit endpoint/model configuration; vendor presets retired |
 | [ADR-066](architecture/adr/ADR-066-pure-workspace-tooling.md) | Pure workspace tooling: extension framework, capability gate, and registry client retired; principal gets all tools under trust-and-audit; packaging = runtime-local tar snapshot |
 
 ---

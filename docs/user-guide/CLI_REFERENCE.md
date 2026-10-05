@@ -357,26 +357,38 @@ peko model <COMMAND>
 | Subcommand | Description |
 |-----------|-------------|
 | `list [--detailed] [--json]` | List all configured models. |
-| `templates` | Print built-in preset templates (anthropic, openai, ollama, …). |
 | `show <id> [--json] [--copy-as-cli]` | Show one model in detail, or emit JSON, or render the `peko model add` invocation that would recreate it. |
 | `compare <id>... [--json]` | Side-by-side capability matrix (vision / tools / thinking / json_mode / pricing). |
 | `search [--vision] [--tools] [--thinking] [--json-mode] [--priced] [--no-key] [--enabled] [--contains <NEEDLE>] [--json]` | Filter by capability predicate (at least one required). |
-| `add [--template T --model M --key K] \| [--custom --id ID --api-format F --base-url U --model M]` | Add a model to the catalog. `--dry-run` skips the catalog + vault write. |
+| `add --api-format F --base-url U --model M [--id ID] [--key K] [--no-key]` | Add a model to the catalog. `--dry-run` skips the catalog + vault write. |
 | `remove <id> [--dry-run]` | Remove a model from the catalog (does not delete its credential). |
 | `test <id>` | Live-test a model: ping the endpoint with the stored credential. |
+
+`add` also accepts `--credential-id`, `--display-name`, `--context-window`,
+`--max-output-tokens`, repeated `--header NAME=VALUE`, `--spec JSON`,
+`--compat JSON`, and `--note`. The three API formats are
+`openai_completions`, `openai_responses`, and `anthropic_messages`.
+The configured id defaults to the wire model id. `--no-key` permits local
+endpoints without credentials. Omitted capability metadata is unknown;
+no model limits, pricing, or capabilities are inferred from a vendor name.
+
+Vendor presets are retired. Old `--custom` commands remain accepted, but
+`--custom` is unnecessary. Old `--template` commands report migration guidance.
+`show --copy-as-cli` emits explicit settings with shell quoting, including
+headers, limits, capability metadata, and compatibility hints.
 
 #### Examples
 
 ```bash
-# Seed from a built-in template (preferred — picks up curated spec/pricing)
-peko model add --template anthropic --model claude-sonnet-4-5 \
+# Configure a model with explicit endpoint settings
+peko model add --id anthropic-claude-sonnet-4-5 --api-format anthropic_messages --base-url https://api.anthropic.com --model claude-sonnet-4-5 \
                --key "$ANTHROPIC_API_KEY"
 
 # Self-hosted OpenAI-compatible endpoint
-peko model add --custom \
+peko model add --no-key \
     --id my-local \
     --api-format openai_completions \
-    --base-url http://localhost:8080 \
+    --base-url http://localhost:8080/v1 \
     --model llama-3.1-8b
 
 # Inspect / compare / search
@@ -852,7 +864,7 @@ peko search researcher
 peko search info acme/researcher
 
 # Provider setup
-peko model add --template anthropic --model claude-sonnet-4-5 \
+peko model add --id anthropic-claude-sonnet-4-5 --api-format anthropic_messages --base-url https://api.anthropic.com --model claude-sonnet-4-5 \
                --key "$ANTHROPIC_API_KEY"
 peko credential set llm anthropic-claude-sonnet-4-5 \
   --kind api_key --material "$ANTHROPIC_API_KEY"

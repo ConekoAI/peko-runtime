@@ -120,13 +120,13 @@ pub fn create_provider_for_model(
 mod tests {
     use super::*;
     use crate::catalog::ModelConfig;
-    use crate::templates;
     use peko_provider_api::ProviderRetryConfig;
 
     fn anthropic_config() -> ModelConfig {
-        ModelConfig::from_template(
-            templates::find_template("anthropic").unwrap(),
+        ModelConfig::new(
             "anthropic-haiku",
+            crate::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
             "claude-3-5-haiku-latest",
         )
     }

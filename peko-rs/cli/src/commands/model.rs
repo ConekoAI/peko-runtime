@@ -6,22 +6,10 @@
 //! context-window metadata, and an optional `credential_id` pointing
 //! into the vault. There is no separate provider layer.
 //!
-//! Every flow is fully non-interactive: agents and humans alike drive
-//! it from a shell. A typical first-time setup is one command:
-//!
+//! Models use explicit endpoint settings. API keys are stored in the vault.
 //! ```text
-//! peko model add --template anthropic \
-//!                --model claude-sonnet-4-5 \
-//!                --key "$ANTHROPIC_API_KEY"
-//! ```
-//!
-//! Custom (non-template) models are supported too:
-//!
-//! ```text
-//! peko model add --custom --id my-llama \
-//!                --api-format openai_completions \
-//!                --base-url http://localhost:8080/v1 \
-//!                --model llama-3.1-8b
+//! peko model add --id my-model --api-format anthropic_messages \
+//!   --base-url https://api.anthropic.com --model <wire-id> --key "$API_KEY"
 //! ```
 
 use crate::commands::GlobalPaths;
@@ -29,7 +17,6 @@ use anyhow::{Context, Result};
 use peko_core::common::vault::{Credential, CredentialKind, Vault};
 use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelConfig};
 use peko_providers::spec::{PricingHint, ThinkingMode, ToolSupport};
-use peko_providers::templates;
 use serde::Serialize;
 
 /// Vault namespace for model API keys.
@@ -51,7 +38,8 @@ pub enum ModelCommands {
         #[arg(long)]
         json: bool,
     },
-    /// List the built-in preset templates available with `model add`.
+    /// Retired preset discovery; prints migration guidance.
+    #[command(hide = true)]
     Templates,
     /// Show one configured model in detail.
     Show {
@@ -87,8 +75,7 @@ pub enum ModelCommands {
     /// `--json-mode` / `--no-key` / `--enabled` / `--disabled` is
     /// required; combining predicates ANDs them.
     Search(SearchArgs),
-    /// Add a model to the catalog. Either `--template` or `--custom`
-    /// plus the relevant flags must be supplied.
+    /// Add a model using its base URL, API format, and wire model id.
     Add(AddArgs),
     /// Edit an existing catalog entry. Only the supplied flags
     /// (`--note`) are touched; everything else is preserved.
@@ -164,36 +151,29 @@ pub struct SearchArgs {
 }
 
 /// Arguments for `peko model add`.
-#[derive(clap::Args)]
+#[derive(clap::Args, Default)]
 pub struct AddArgs {
-    /// Seed from a built-in preset template (e.g. `anthropic`,
-    /// `openai`, `ollama`). Mutually exclusive with `--custom`.
-    #[arg(long, conflicts_with = "custom")]
+    /// Retired: supply --api-format and --base-url explicitly.
+    #[arg(long, hide = true, conflicts_with = "custom")]
     template: Option<String>,
-    /// Configured model id to use in the catalog. If omitted with
-    /// `--template`, a default of `{template}-{model}` is used.
-    /// Required with `--custom`.
+    /// Configured model id. Defaults to the wire model id.
     #[arg(long)]
     id: Option<String>,
     /// Wire model id (the id the API expects on the wire, e.g.
     /// `gpt-4o`, `claude-sonnet-4-5`). Required.
     #[arg(long, value_name = "WIRE_MODEL_ID")]
     model: Option<String>,
-    /// Override the display name (otherwise the template's curated
-    /// name for the wire model is used, or the configured id for
-    /// `--custom`).
+    /// Display name. Defaults to the configured model id.
     #[arg(long)]
     display_name: Option<String>,
-    /// Add a fully custom model (OpenAI-compatible or
-    /// Anthropic-compatible endpoint).
-    #[arg(long, conflicts_with = "template")]
+    /// Compatibility flag; all models now use explicit endpoint settings.
+    #[arg(long, hide = true, conflicts_with = "template")]
     custom: bool,
-    /// API format for a custom model.
-    /// One of `openai_completions`, `anthropic_messages`.
-    #[arg(long, requires = "custom")]
+    /// API format: openai_completions, openai_responses, or anthropic_messages.
+    #[arg(long)]
     api_format: Option<String>,
-    /// Base URL for a custom model.
-    #[arg(long, requires = "custom")]
+    /// API base URL, including any required path prefix.
+    #[arg(long)]
     base_url: Option<String>,
     /// Store an API key for this model in the vault immediately and
     /// wire it as the model's `credential_id`. Mutually exclusive
@@ -204,14 +184,24 @@ pub struct AddArgs {
     /// new key.
     #[arg(long, value_name = "CREDENTIAL_ID")]
     credential_id: Option<String>,
-    /// Context window in tokens (custom models only; template models
-    /// inherit the curated value).
-    #[arg(long, requires = "custom", value_name = "TOKENS")]
+    /// Context window in tokens. Unknown when omitted.
+    #[arg(long, value_name = "TOKENS")]
     context_window: Option<u32>,
-    /// Max output tokens (custom models only; template models inherit
-    /// the curated value).
-    #[arg(long, requires = "custom", value_name = "TOKENS")]
+    /// Maximum output tokens. Unknown when omitted.
+    #[arg(long, value_name = "TOKENS")]
     max_output_tokens: Option<u32>,
+    /// Endpoint does not require an API key.
+    #[arg(long)]
+    no_key: bool,
+    /// Extra HTTP header; repeat for multiple headers.
+    #[arg(long = "header", value_name = "NAME=VALUE")]
+    headers: Vec<String>,
+    /// Optional capability and pricing descriptor as JSON.
+    #[arg(long, value_name = "JSON")]
+    spec: Option<String>,
+    /// Optional adapter compatibility hints as JSON.
+    #[arg(long, value_name = "JSON")]
+    compat: Option<String>,
     /// Print what would be added without touching the catalog or
     /// vault. Useful for double-checking `--key "$ENV_VAR"`
     /// expansions and `--credential-id` references before they
@@ -327,10 +317,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool, json: bool) -> Result<()>
 
     if entries.is_empty() {
         println!("No models in the catalog.");
-        println!("Add one with: peko model add --template <anthropic|openai|ollama|...> --model <wire-id>");
-        println!(
-            "Or:           peko model add --custom --id <id> --api-format <fmt> --base-url <url> --model <wire-id>"
-        );
+        println!("Add one with: peko model add --api-format <fmt> --base-url <url> --model <wire-id> [--id <name>] [--key <key>]");
         return Ok(());
     }
 
@@ -391,166 +378,83 @@ fn truncate_note(s: &str, max_chars: usize) -> String {
 }
 
 async fn templates_cmd() -> Result<()> {
-    println!("Available preset templates:\n");
-    for t in templates::iter_templates() {
-        let n_models = t.models.len();
-        println!(
-            "  {:<14} {:<28} ({} model{})",
-            t.id,
-            t.display_name,
-            n_models,
-            if n_models == 1 { "" } else { "s" }
-        );
-        for m in t.models {
-            let dn = m
-                .display_name
-                .map(|n| format!(" — {n}"))
-                .unwrap_or_default();
-            println!("      - {}{dn}", m.id);
-        }
-    }
-    println!("\nUse: peko model add --template <id> --model <wire-id>");
-    Ok(())
+    anyhow::bail!("model templates have been retired; use peko model add --api-format <fmt> --base-url <url> --model <wire-id>")
 }
 
 async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
-    // Bare invocation: refuse with a clear pointer rather than launching
-    // an interactive wizard. Agents must always get a deterministic,
-    // scriptable surface here.
-    if args.template.is_none() && !args.custom {
-        anyhow::bail!(
-            "either --template <id> or --custom is required.\n\
-             \n\
-             Quick start:\n\
-               peko model add --template anthropic --model claude-sonnet-4-5 --key \"$ANTHROPIC_API_KEY\"\n\
-             \n\
-             List templates:\n\
-               peko model templates"
-        );
+    if args.template.is_some() {
+        anyhow::bail!("model templates have been retired; supply --api-format, --base-url, and --model explicitly");
     }
-
-    let model_id = args
-        .model
-        .clone()
-        .with_context(|| "--model <wire-id> is required")?;
-    if model_id.is_empty() {
-        anyhow::bail!("--model must not be empty");
+    let model_id = args.model.clone().context("--model <wire-id> is required; use peko model add --api-format <fmt> --base-url <url> --model <wire-id> [--key <key>]")?;
+    let format = args.api_format.as_deref().context(
+        "--api-format is required (openai_completions | openai_responses | anthropic_messages)",
+    )?;
+    let api_format =
+        ApiFormat::from_wire(format).with_context(|| format!("unknown --api-format '{format}'"))?;
+    let base_url = args.base_url.clone().context("--base-url is required")?;
+    let id = args.id.clone().unwrap_or_else(|| model_id.clone());
+    let mut entry = ModelConfig::new(id, api_format, base_url, model_id);
+    if let Some(name) = &args.display_name {
+        entry.display_name = name.clone();
     }
-
+    entry.requires_key = !args.no_key;
+    entry.context_window = args.context_window;
+    entry.max_output_tokens = args.max_output_tokens;
+    entry.note = args.note.clone();
+    entry.spec = args
+        .spec
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .context("invalid --spec JSON")?;
+    entry.compat = args
+        .compat
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .context("invalid --compat JSON")?;
+    for header in &args.headers {
+        let (name, value) = header
+            .split_once('=')
+            .context("--header must have NAME=VALUE form")?;
+        entry.headers.insert(name.to_string(), value.to_string());
+    }
+    entry.validate()?;
+    if args.key.is_some() && args.credential_id.is_some() {
+        anyhow::bail!("--key and --credential-id are mutually exclusive");
+    }
+    if args.key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+        anyhow::bail!("--key must not be empty");
+    }
+    if args
+        .credential_id
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty())
+    {
+        anyhow::bail!("--credential-id must not be empty");
+    }
+    if !entry.requires_key && (args.key.is_some() || args.credential_id.is_some()) {
+        anyhow::bail!("model '{}' does not require a key", entry.id);
+    }
     let cat = open_catalog(paths).await?;
-
-    // Capture the wire model id BEFORE it's moved into the entry —
-    // the dry-run branch below renders it for the user.
-    let model_id_for_dry_run = model_id.clone();
-
-    let entry = if let Some(template_id) = args.template.as_deref() {
-        let tmpl = templates::find_template(template_id).with_context(|| {
-            format!(
-                "unknown template '{template_id}'. Run `peko model templates` to list available ones."
-            )
-        })?;
-        let id = args
-            .id
-            .clone()
-            .unwrap_or_else(|| format!("{}-{model_id}", tmpl.id));
-        let mut entry = ModelConfig::from_template(tmpl, id, model_id);
-        if let Some(dn) = args.display_name.clone() {
-            entry.display_name = dn;
-        }
-        if let Some(note) = args.note.clone() {
-            entry.note = Some(note);
-        }
-        entry
-    } else if args.custom {
-        let api_format_str = args.api_format.as_deref().with_context(|| {
-            "--api-format is required with --custom (openai_completions | anthropic_messages)"
-        })?;
-        let api_format = ApiFormat::from_wire(api_format_str)
-            .with_context(|| format!("unknown --api-format '{api_format_str}'"))?;
-        let base_url = args
-            .base_url
-            .clone()
-            .with_context(|| "--base-url is required with --custom")?;
-        let id = args
-            .id
-            .clone()
-            .with_context(|| "--id is required with --custom")?;
-        if id.is_empty() {
-            anyhow::bail!("--id must not be empty");
-        }
-        ModelConfig {
-            id: id.clone(),
-            display_name: args.display_name.clone().unwrap_or_else(|| id.clone()),
-            template_id: None,
-            api_format,
-            base_url,
-            model_id,
-            context_window: args.context_window,
-            max_output_tokens: args.max_output_tokens,
-            headers: Default::default(),
-            credential_id: None,
-            requires_key: true,
-            enabled: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            compat: None,
-            spec: None,
-            note: args.note.clone(),
-        }
-    } else {
-        unreachable!("guarded by the bare-invocation check above");
-    };
-
-    // PR 5: `--dry-run` short-circuits BEFORE the vault write so a
-    // dry-run with `--key "$ENV"` doesn't leak the key into the
-    // vault when the rest of the args were wrong. We capture the
-    // wire-model-id here (before `entry` is constructed and consumes
-    // it) so the dry-run output can still render it.
-    let dry_run_model_id = model_id_for_dry_run;
-    let dry_run_template = args.template.clone();
-    if args.dry_run {
-        let api_format_hint = dry_run_template
-            .as_deref()
-            .and_then(templates::find_template)
-            .map(|t| t.api_format.as_str())
-            .unwrap_or("(custom; --api-format would be required)");
-        let base_url_hint = dry_run_template
-            .as_deref()
-            .and_then(templates::find_template)
-            .map(|t| t.base_url)
-            .unwrap_or("(custom; --base-url would be required)");
-        let id_hint = args
-            .id
-            .clone()
-            .or_else(|| {
-                dry_run_template
-                    .as_deref()
-                    .map(|t| format!("{t}-{dry_run_model_id}"))
-            })
-            .unwrap_or_else(|| "(custom; --id would be required)".to_string());
-        let key_summary = match (&args.key, &args.credential_id) {
-            (Some(_), _) => "[--key supplied; vault write skipped under --dry-run]".to_string(),
-            (None, Some(cid)) => format!("[credential_id: {cid}]"),
-            (None, None) if args.custom || dry_run_template.is_none() => {
-                "[no credential needed]".to_string()
-            }
-            (None, None) => "[no credential; would print next-step hint]".to_string(),
-        };
-        println!(
-            "[dry-run] Would add model '{id_hint}' (template: {}).",
-            dry_run_template.as_deref().unwrap_or("(custom)")
+    if cat.get(&entry.id).await.is_some() {
+        anyhow::bail!(
+            "model id '{}' already exists; edit it or remove it before re-adding",
+            entry.id
         );
-        println!("           model_id:     {dry_run_model_id}");
-        println!("           api_format:   {api_format_hint}");
-        println!("           base_url:     {base_url_hint}");
-        println!("           credential:   {key_summary}");
+    }
+    if args.dry_run {
+        println!("[dry-run] Would add model '{}'.", entry.id);
+        println!("           model_id:     {}", entry.model_id);
+        println!("           api_format:   {}", entry.api_format);
+        println!("           base_url:     {}", entry.base_url);
+        println!("           requires_key: {}", entry.requires_key);
         return Ok(());
     }
 
     // Wire the credential: either reference an existing vault credential
     // by id, or store a new API key in the vault under `llm` and point
     // the entry at it.
-    let mut entry = entry;
     if let Some(cid) = args.credential_id.as_deref() {
         if cid.is_empty() {
             anyhow::bail!("--credential-id must not be empty");
@@ -595,19 +499,14 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
     let entry_id = entry.id.clone();
     let entry_display = entry.display_name.clone();
 
-    if cat.get(&entry_id).await.is_some() {
-        anyhow::bail!(
-            "model id '{entry_id}' already exists. Run `peko model edit {entry_id}` (not yet implemented) or `peko model remove {entry_id}` and re-add."
-        );
-    }
-
     cat.upsert(entry).await?;
     println!("Added model '{entry_id}' ({entry_display}).");
 
     if requires_key && !has_credential {
         println!(
             "Next: store its API key with: peko credential set llm {entry_id} --kind api_key --material \"$YOUR_KEY\"\n\
-             (or re-run `peko model add` with --key to store and wire it in one step)"
+             Then set this entry's credential_id in models.toml to the returned vault id.\n\
+             Supply --key when initially adding a model to store and wire it in one step."
         );
     }
 
@@ -775,10 +674,7 @@ struct ModelSummaryWire {
     credential_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     headers: Vec<(String, String)>,
-    /// Optional `ModelSpec` PR 1 descriptor. `None` for pre-PR-1
-    /// entries; the engine treats that as the conservative
-    /// `ModelSpec::default()` (text-only, no tools, no thinking,
-    /// streaming on).
+    /// Optional user-supplied capabilities. None means unknown.
     spec: Option<ModelSpecWire>,
     /// Phase 2 of `feature/multi-model-subagents`: free-text
     /// user note attached to this entry. Surfaced to the parent
@@ -968,7 +864,7 @@ fn print_detail(e: &ModelConfig) {
             }
         }
         None => {
-            println!("    spec:            (none — pre-PR-1 entry)");
+            println!("    spec:            (unknown — no capability metadata supplied)");
         }
     }
     if let Some(note) = &e.note {
@@ -982,31 +878,35 @@ fn print_detail(e: &ModelConfig) {
 /// entry verbatim (minus the credential material — we never echo
 /// the API key, only the `credential_id` reference).
 ///
-/// Used by `--copy-as-cli` for sharing configurations across
-/// machines and for sanity-checking what's actually persisted on
-/// disk. The render is intentionally minimal: no quoting tricks,
-/// no shell escaping magic — if a field contains characters that
-/// need quoting, the caller can wrap the whole command in single
-/// quotes on their end.
+/// Used by `--copy-as-cli` to share explicit settings with shell-safe arguments.
 fn render_add_command(e: &ModelConfig) -> String {
     let mut parts: Vec<String> = vec!["peko".to_string(), "model".to_string(), "add".to_string()];
-    if let Some(tmpl) = &e.template_id {
-        parts.push("--template".to_string());
-        parts.push(tmpl.clone());
-    } else {
-        parts.push("--custom".to_string());
-        parts.push("--api-format".to_string());
-        parts.push(e.api_format.as_str().to_string());
-        parts.push("--base-url".to_string());
-        parts.push(e.base_url.clone());
-        if let Some(ctx) = e.context_window {
-            parts.push("--context-window".to_string());
-            parts.push(ctx.to_string());
-        }
-        if let Some(mot) = e.max_output_tokens {
-            parts.push("--max-output-tokens".to_string());
-            parts.push(mot.to_string());
-        }
+    parts.push("--api-format".to_string());
+    parts.push(e.api_format.as_str().to_string());
+    parts.push("--base-url".to_string());
+    parts.push(e.base_url.clone());
+    if !e.requires_key {
+        parts.push("--no-key".to_string());
+    }
+    if let Some(ctx) = e.context_window {
+        parts.push("--context-window".to_string());
+        parts.push(ctx.to_string());
+    }
+    if let Some(mot) = e.max_output_tokens {
+        parts.push("--max-output-tokens".to_string());
+        parts.push(mot.to_string());
+    }
+    for (name, value) in &e.headers {
+        parts.push("--header".to_string());
+        parts.push(format!("{name}={value}"));
+    }
+    if let Some(spec) = &e.spec {
+        parts.push("--spec".to_string());
+        parts.push(serde_json::to_string(spec).expect("serializable spec"));
+    }
+    if let Some(compat) = &e.compat {
+        parts.push("--compat".to_string());
+        parts.push(serde_json::to_string(compat).expect("serializable compat"));
     }
     parts.push("--id".to_string());
     parts.push(e.id.clone());
@@ -1024,7 +924,22 @@ fn render_add_command(e: &ModelConfig) -> String {
         parts.push("--note".to_string());
         parts.push(note.clone());
     }
-    parts.join(" ")
+    parts
+        .iter()
+        .map(|part| shell_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_/.:=".contains(&b))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\"'\"'"))
+    }
 }
 
 /// Side-by-side capability matrix for 2+ configured models.
@@ -1263,9 +1178,8 @@ fn matches_predicate(e: &ModelConfig, args: &SearchArgs, needle_lower: Option<&s
     if args.vision && !e.spec.is_some_and(|s| s.image_input) {
         return false;
     }
-    // `--no-vision` matches entries whose spec declares
-    // image_input:false, plus pre-PR-1 entries (spec == None).
-    if args.no_vision && e.spec.is_some_and(|s| s.image_input) {
+    // Unknown metadata does not establish the absence of a capability.
+    if args.no_vision && e.spec.is_none_or(|s| s.image_input) {
         return false;
     }
     if args.tools && !e.spec.is_some_and(|s| s.tool_support != ToolSupport::None) {
@@ -1448,13 +1362,17 @@ mod tests {
         let paths = fresh_paths();
 
         let args = AddArgs {
-            template: Some("anthropic".into()),
-            id: None,
+            no_key: false,
+            headers: vec![],
+            spec: None,
+            compat: None,
+            template: None,
+            id: Some("anthropic-claude-3-5-haiku-latest".into()),
             model: Some("claude-3-5-haiku-latest".into()),
             display_name: None,
             custom: false,
-            api_format: None,
-            base_url: None,
+            api_format: Some("anthropic_messages".into()),
+            base_url: Some("https://api.anthropic.com".into()),
             key: Some("sk-ant-test-key".into()),
             credential_id: None,
             context_window: None,
@@ -1502,6 +1420,10 @@ mod tests {
     async fn bare_add_errors_with_actionable_hint() {
         let paths = fresh_paths();
         let args = AddArgs {
+            no_key: false,
+            headers: vec![],
+            spec: None,
+            compat: None,
             template: None,
             id: None,
             model: None,
@@ -1522,7 +1444,7 @@ mod tests {
         let err = add_cmd(args, &paths).await.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("--template") && msg.contains("--key"),
+            msg.contains("--api-format") && msg.contains("--key"),
             "expected pointer at the scriptable flags, got: {msg}"
         );
     }
@@ -1534,13 +1456,17 @@ mod tests {
     async fn key_flag_rejects_keyless_model() {
         let paths = fresh_paths();
         let args = AddArgs {
-            template: Some("ollama".into()),
-            id: None,
+            no_key: true,
+            headers: vec![],
+            spec: None,
+            compat: None,
+            template: None,
+            id: Some("ollama-llama3.1".into()),
             model: Some("llama3.1".into()),
             display_name: None,
             custom: false,
-            api_format: None,
-            base_url: None,
+            api_format: Some("openai_completions".into()),
+            base_url: Some("http://localhost:11434/v1".into()),
             key: Some("ignored".into()),
             credential_id: None,
             context_window: None,
@@ -1564,13 +1490,17 @@ mod tests {
     async fn credential_id_must_exist_in_vault() {
         let paths = fresh_paths();
         let args = AddArgs {
-            template: Some("anthropic".into()),
-            id: None,
+            no_key: false,
+            headers: vec![],
+            spec: None,
+            compat: None,
+            template: None,
+            id: Some("anthropic-claude-3-5-haiku-latest".into()),
             model: Some("claude-3-5-haiku-latest".into()),
             display_name: None,
             custom: false,
-            api_format: None,
-            base_url: None,
+            api_format: Some("anthropic_messages".into()),
+            base_url: Some("https://api.anthropic.com".into()),
             key: None,
             credential_id: Some("no-such-credential".into()),
             context_window: None,
@@ -1601,13 +1531,14 @@ mod tests {
         let paths = fresh_paths();
         add_cmd(
             AddArgs {
-                template: Some("anthropic".into()),
-                id: None,
+                no_key: false, headers: vec![], spec: Some(r#"{"image_input":true,"tool_support":"function_calling","thinking":"optional"}"#.into()), compat: None,
+                template: None,
+                id: Some("anthropic-claude-sonnet-4-5".into()),
                 model: Some("claude-sonnet-4-5".into()),
                 display_name: None,
                 custom: false,
-                api_format: None,
-                base_url: None,
+                api_format: Some("anthropic_messages".into()),
+                base_url: Some("https://api.anthropic.com".into()),
                 key: Some("sk-ant-test-key".into()),
                 credential_id: None,
                 context_window: None,
@@ -1623,13 +1554,17 @@ mod tests {
         .expect("anthropic add should succeed");
         add_cmd(
             AddArgs {
-                template: Some("ollama".into()),
-                id: None,
+                no_key: true,
+                headers: vec![],
+                spec: None,
+                compat: None,
+                template: None,
+                id: Some("ollama-llama3.1".into()),
                 model: Some("llama3.1".into()),
                 display_name: None,
                 custom: false,
-                api_format: None,
-                base_url: None,
+                api_format: Some("openai_completions".into()),
+                base_url: Some("http://localhost:11434/v1".into()),
                 key: None,
                 credential_id: None,
                 context_window: None,
@@ -1702,13 +1637,17 @@ mod tests {
         let paths = fresh_paths();
         add_cmd(
             AddArgs {
-                template: Some("anthropic".into()),
-                id: None,
+                no_key: false,
+                headers: vec![],
+                spec: None,
+                compat: None,
+                template: None,
+                id: Some("anthropic-claude-3-5-haiku-latest".into()),
                 model: Some("claude-3-5-haiku-latest".into()),
                 display_name: None,
                 custom: false,
-                api_format: None,
-                base_url: None,
+                api_format: Some("anthropic_messages".into()),
+                base_url: Some("https://api.anthropic.com".into()),
                 key: Some("sk-ant-test-key".into()),
                 credential_id: None,
                 context_window: None,
@@ -1751,13 +1690,17 @@ mod tests {
         let paths = fresh_paths();
         add_cmd(
             AddArgs {
-                template: Some("anthropic".into()),
-                id: None,
+                no_key: false,
+                headers: vec![],
+                spec: None,
+                compat: None,
+                template: None,
+                id: Some("anthropic-claude-3-5-haiku-latest".into()),
                 model: Some("claude-3-5-haiku-latest".into()),
                 display_name: None,
                 custom: false,
-                api_format: None,
-                base_url: None,
+                api_format: Some("anthropic_messages".into()),
+                base_url: Some("https://api.anthropic.com".into()),
                 key: Some("sk-ant-test-key".into()),
                 credential_id: None,
                 context_window: None,
@@ -1803,13 +1746,17 @@ mod tests {
         let paths = fresh_paths();
         add_cmd(
             AddArgs {
-                template: Some("anthropic".into()),
-                id: None,
+                no_key: false,
+                headers: vec![],
+                spec: None,
+                compat: None,
+                template: None,
+                id: Some("anthropic-claude-3-5-haiku-latest".into()),
                 model: Some("claude-3-5-haiku-latest".into()),
                 display_name: None,
                 custom: false,
-                api_format: None,
-                base_url: None,
+                api_format: Some("anthropic_messages".into()),
+                base_url: Some("https://api.anthropic.com".into()),
                 key: Some("sk-ant-test-key".into()),
                 credential_id: None,
                 context_window: None,
@@ -1854,13 +1801,14 @@ mod tests {
     async fn copy_as_cli_emits_recreatable_add_command() {
         // Construct a synthetic ModelConfig and verify the
         // rendered command round-trips into another add_cmd.
-        let entry = peko_providers::catalog::ModelConfig::from_template(
-            templates::find_template("anthropic").unwrap(),
+        let entry = peko_providers::catalog::ModelConfig::new(
             "anthropic-claude-sonnet-4-5",
+            peko_providers::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
             "claude-sonnet-4-5",
         );
         let cmd = render_add_command(&entry);
-        assert!(cmd.starts_with("peko model add --template anthropic "));
+        assert!(cmd.starts_with("peko model add --api-format anthropic_messages "));
         assert!(cmd.contains("--id anthropic-claude-sonnet-4-5"));
         assert!(cmd.contains("--model claude-sonnet-4-5"));
         assert!(
@@ -2053,13 +2001,14 @@ mod tests {
         let paths = fresh_paths();
         add_cmd(
             AddArgs {
-                template: Some("anthropic".into()),
-                id: None,
+                no_key: false, headers: vec![], spec: Some(r#"{"image_input":true,"tool_support":"function_calling","thinking":"optional"}"#.into()), compat: None,
+                template: None,
+                id: Some("anthropic-claude-sonnet-4-5".into()),
                 model: Some("claude-sonnet-4-5".into()),
                 display_name: None,
                 custom: false,
-                api_format: None,
-                base_url: None,
+                api_format: Some("anthropic_messages".into()),
+                base_url: Some("https://api.anthropic.com".into()),
                 // NB: this string is never persisted under
                 // --dry-run. The vault write happens AFTER the
                 // dry-run short-circuit returns Ok.
@@ -2113,5 +2062,166 @@ mod tests {
             cat.get("anthropic-claude-sonnet-4-5").await.is_some(),
             "dry-run must not actually remove the entry"
         );
+    }
+    fn generic_args() -> AddArgs {
+        AddArgs {
+            api_format: Some("responses".into()),
+            base_url: Some("https://example.com/v1".into()),
+            model: Some("new-model".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_add_defaults_id_and_preserves_optional_metadata() {
+        let paths = fresh_paths();
+        let mut args = generic_args();
+        args.no_key = true;
+        args.headers = vec!["X-Organization=example".into()];
+        args.context_window = Some(123_456);
+        args.max_output_tokens = Some(4096);
+        args.spec = Some(
+            r#"{"tool_support":"function_calling","pricing":{"input_per_million":0.5}}"#.into(),
+        );
+        add_cmd(args, &paths).await.unwrap();
+        let cat = open_catalog(&paths).await.unwrap();
+        let config = cat.get("new-model").await.unwrap();
+        assert_eq!(config.api_format, ApiFormat::OpenAiResponses);
+        assert_eq!(config.template_id, None);
+        assert!(!config.requires_key);
+        assert_eq!(config.headers.get("X-Organization").unwrap(), "example");
+        assert_eq!(config.context_window, Some(123_456));
+        assert_eq!(
+            config.spec.unwrap().tool_support,
+            ToolSupport::FunctionCalling
+        );
+        assert!(config.credential_id.is_none());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(vault_passphrase)]
+    async fn invalid_add_and_duplicate_id_do_not_write_credentials() {
+        let paths = fresh_paths();
+        let vault = Vault::load(paths.resolver().vault()).unwrap();
+        let before = vault.list_credentials(&Default::default()).len();
+        for invalid in ["bad-url", "long-note", "bad-header", "zero-limit"] {
+            let mut args = generic_args();
+            args.key = Some("sk-test-must-not-be-stored".into());
+            match invalid {
+                "bad-url" => args.base_url = Some("file:///tmp/model".into()),
+                "long-note" => args.note = Some("x".repeat(501)),
+                "bad-header" => args.headers = vec!["Bad Header=value".into()],
+                _ => args.context_window = Some(0),
+            }
+            assert!(add_cmd(args, &paths).await.is_err());
+        }
+        let mut original = generic_args();
+        original.no_key = true;
+        add_cmd(original, &paths).await.unwrap();
+        let mut duplicate = generic_args();
+        duplicate.key = Some("sk-test-must-not-be-stored".into());
+        assert!(add_cmd(duplicate, &paths)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+        let vault = Vault::load(paths.resolver().vault()).unwrap();
+        assert_eq!(vault.list_credentials(&Default::default()).len(), before);
+        assert_eq!(
+            open_catalog(&paths).await.unwrap().list_all().await.len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_writes_neither_catalog_nor_vault() {
+        let paths = fresh_paths();
+        let mut args = generic_args();
+        args.dry_run = true;
+        args.key = Some("sk-dry-run".into());
+        add_cmd(args, &paths).await.unwrap();
+        assert!(!catalog_path(&paths).exists());
+        assert!(!paths.resolver().vault().exists());
+    }
+
+    #[tokio::test]
+    async fn retired_template_returns_migration_guidance() {
+        let paths = fresh_paths();
+        let args = AddArgs {
+            template: Some("kimi".into()),
+            ..Default::default()
+        };
+        let error = add_cmd(args, &paths).await.unwrap_err().to_string();
+        assert!(error.contains("retired") && error.contains("--api-format"));
+        assert!(!catalog_path(&paths).exists());
+    }
+
+    #[test]
+    fn generic_flags_parse_without_custom_for_all_api_formats() {
+        for format in [
+            "openai_completions",
+            "openai_responses",
+            "anthropic_messages",
+        ] {
+            let cli = Cli::try_parse_from([
+                "peko",
+                "model",
+                "add",
+                "--api-format",
+                format,
+                "--base-url",
+                "https://example.com/v1",
+                "--model",
+                "wire-model",
+                "--no-key",
+            ])
+            .unwrap();
+            let crate::commands::Commands::Model(ModelCommands::Add(args)) = cli.command else {
+                panic!("model add")
+            };
+            assert!(!args.custom);
+            assert!(args.no_key);
+        }
+    }
+
+    #[test]
+    fn copied_legacy_model_uses_explicit_settings_and_quotes_metadata() {
+        let mut config = ModelConfig::new(
+            "local",
+            ApiFormat::OpenaiCompletions,
+            "http://localhost:8080/v1",
+            "new-model",
+        );
+        config.template_id = Some("retired-vendor".into());
+        config.requires_key = false;
+        config.note = Some("it's $(unsafe)".into());
+        config.headers.insert("X-Test".into(), "two words".into());
+        config.compat = Some(
+            serde_json::from_str(r#"{"thinking_format":"DeepSeek","deferred_tools_mode":"Off"}"#)
+                .unwrap(),
+        );
+        let command = render_add_command(&config);
+        assert!(!command.contains("--template") && !command.contains("--custom"));
+        assert!(command.contains("--no-key") && command.contains("--compat"));
+        assert!(command.contains("--header 'X-Test=two words'"));
+        assert_eq!(shell_quote("it's $(unsafe)"), "'it'\"'\"'s $(unsafe)'");
+    }
+
+    #[test]
+    fn unknown_capabilities_do_not_match_negative_filters() {
+        let config = ModelConfig::new(
+            "unknown",
+            ApiFormat::OpenaiCompletions,
+            "https://example.com/v1",
+            "model",
+        );
+        let cli = Cli::try_parse_from(["peko", "model", "search", "--no-vision"]).unwrap();
+        let crate::commands::Commands::Model(ModelCommands::Search(args)) = cli.command else {
+            panic!("model search")
+        };
+        assert!(!matches_predicate(&config, &args, None));
+        let mut declared = config;
+        declared.spec = Some(peko_providers::spec::ModelSpec::text_only());
+        assert!(matches_predicate(&declared, &args, None));
     }
 }
