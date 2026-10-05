@@ -41,8 +41,8 @@
 //! ## Streaming
 //!
 //! Intercepts `StreamEvent::Usage` events and charges each meter via
-//! the sync `try_charge_with_cost` (Phase 3 of
-//! `feature/multi-model-subagents`). Each meter sees the same usage
+//! async `charge_with_cost`, persisting before the event is forwarded.
+//! Each meter sees the same usage
 //! event with its USD cost folded in; if any meter rejects
 //! (exhausted), the error is folded into the stream. The cost is
 //! computed from the inner provider's `ModelSpec::pricing`
@@ -182,7 +182,7 @@ impl StackedMeteredProvider {
     /// Phase 3 — cost is computed from the inner provider's
     /// `ModelSpec::pricing` (`input_per_million * input / 1e6 +
     /// output_per_million * output / 1e6`) and folded into each
-    /// meter via `try_charge_with_cost`. When the inner provider
+    /// meter via `charge_with_cost` before forwarding the event. When the inner provider
     /// has no `PricingHint` (local / unpriced model), the cost
     /// is `0.0` and the cycle-budget check degenerates to a
     /// no-op for that dimension.
@@ -202,49 +202,52 @@ impl StackedMeteredProvider {
         // applies to every Usage event in this stream (we
         // delegate to one provider for the lifetime of the call).
         let pricing = self.inner.spec().and_then(|s| s.pricing);
-        let metered_stream = Box::pin(inner_stream.map(move |event_result| {
-            match event_result {
-                Ok(StreamEvent::Usage {
-                    input,
-                    output,
-                    total,
-                    cache_creation_input_tokens,
-                    cache_read_input_tokens,
-                    reasoning_output_tokens,
-                }) => {
-                    let usage = TokenUsage {
+        let metered_stream = Box::pin(inner_stream.then(move |event_result| {
+            let meters = meters.clone();
+            async move {
+                match event_result {
+                    Ok(StreamEvent::Usage {
                         input,
                         output,
                         total,
-                        cache_creation_input_tokens: Some(cache_creation_input_tokens),
-                        cache_read_input_tokens: Some(cache_read_input_tokens),
-                        reasoning_output_tokens: Some(reasoning_output_tokens),
-                    };
-                    let cost_usd = compute_cost_usd(pricing, input, output);
-                    // Charge innermost-first so a peer trip fires
-                    // before a principal trip. We `rev()` over the
-                    // captured stack (which is outer-first per
-                    // `QuotaScope::collect_stack`).
-                    let mut first_error: Option<String> = None;
-                    for meter in meters.iter().rev() {
-                        if let Err(e) = meter.try_charge_with_cost(&usage, cost_usd) {
-                            first_error = Some(e.to_string());
-                            break;
-                        }
-                    }
-                    match first_error {
-                        Some(msg) => Err(anyhow::anyhow!(msg)),
-                        None => Ok(StreamEvent::Usage {
+                        cache_creation_input_tokens,
+                        cache_read_input_tokens,
+                        reasoning_output_tokens,
+                    }) => {
+                        let usage = TokenUsage {
                             input,
                             output,
                             total,
-                            cache_creation_input_tokens,
-                            cache_read_input_tokens,
-                            reasoning_output_tokens,
-                        }),
+                            cache_creation_input_tokens: Some(cache_creation_input_tokens),
+                            cache_read_input_tokens: Some(cache_read_input_tokens),
+                            reasoning_output_tokens: Some(reasoning_output_tokens),
+                        };
+                        let cost_usd = compute_cost_usd(pricing, input, output);
+                        // Charge innermost-first so a peer trip fires
+                        // before a principal trip. We `rev()` over the
+                        // captured stack (which is outer-first per
+                        // `QuotaScope::collect_stack`).
+                        let mut first_error: Option<String> = None;
+                        for meter in meters.iter().rev() {
+                            if let Err(e) = meter.charge_with_cost(&usage, cost_usd).await {
+                                first_error = Some(e.to_string());
+                                break;
+                            }
+                        }
+                        match first_error {
+                            Some(msg) => Err(anyhow::anyhow!(msg)),
+                            None => Ok(StreamEvent::Usage {
+                                input,
+                                output,
+                                total,
+                                cache_creation_input_tokens,
+                                cache_read_input_tokens,
+                                reasoning_output_tokens,
+                            }),
+                        }
                     }
+                    other => other,
                 }
-                other => other,
             }
         }));
         Ok(metered_stream)
@@ -316,6 +319,137 @@ pub fn compute_cost_usd(
 mod tests {
     use super::*;
     use peko_providers::spec::{PricingHint, ToolSupport};
+
+    struct UsageProvider;
+
+    #[async_trait::async_trait]
+    impl ProviderView for UsageProvider {
+        fn name(&self) -> &str {
+            "usage-test"
+        }
+        fn model_id(&self) -> String {
+            "usage-test".into()
+        }
+        fn context_window(&self) -> Option<u32> {
+            None
+        }
+        fn supports_native_tools(&self) -> bool {
+            true
+        }
+        fn supports_prompt_cache_control(&self) -> bool {
+            true
+        }
+        fn spec(&self) -> Option<peko_providers::spec::ModelSpec> {
+            Some(spec_with_pricing(3.0, 15.0))
+        }
+        async fn chat_with_tools(
+            &self,
+            _: &str,
+            _: &[LlmMessage],
+            _: &[ToolDefinition],
+            _: &ChatOptions,
+        ) -> Result<ChatResponse> {
+            anyhow::bail!("this regression must use the streaming path")
+        }
+        async fn stream_with_tools(
+            &self,
+            _: &str,
+            _: &[LlmMessage],
+            _: &[ToolDefinition],
+            _: &ChatOptions,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+            Ok(Box::pin(
+                futures::stream::iter([Ok(StreamEvent::Usage {
+                    input: 1000,
+                    output: 100,
+                    total: 1100,
+                    cache_read_input_tokens: 500,
+                    cache_creation_input_tokens: 50,
+                    reasoning_output_tokens: 0,
+                })])
+                .chain(futures::stream::pending()),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_usage_survives_reload_before_stream_finishes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = peko_quota::QuotaConfig::default();
+        let mut meters = Vec::new();
+        for name in ["principal", "agent"] {
+            meters.push(Arc::new(
+                peko_quota::QuotaMeter::load_or_init(
+                    config.clone(),
+                    Some(dir.path().join(name)),
+                    chrono::Utc::now(),
+                )
+                .await
+                .unwrap(),
+            ));
+        }
+        let provider = StackedMeteredProvider {
+            inner: Arc::new(UsageProvider),
+            meters,
+        };
+        let mut stream = provider
+            .stream_with_tools("usage-test", &[], &[], &ChatOptions::default())
+            .await
+            .unwrap();
+        assert!(matches!(
+            stream.next().await.unwrap().unwrap(),
+            StreamEvent::Usage { .. }
+        ));
+        // No later blocking request or stream finalizer can rescue persistence.
+        drop(stream);
+        drop(provider);
+        for name in ["principal", "agent"] {
+            let restored = QuotaMeter::load_or_init(
+                config.clone(),
+                Some(dir.path().join(name)),
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+            let state = restored.snapshot();
+            assert_eq!(state.request_count, 1);
+            assert_eq!(state.input_tokens, 1000);
+            assert_eq!(state.output_tokens, 100);
+            assert_eq!(state.cache_read_tokens, 500);
+            assert_eq!(state.cache_creation_tokens, 50);
+            assert!((state.cost_usd.unwrap() - 0.0045).abs() < 1e-9);
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_rejected_streamed_usage_is_still_persisted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("quota.json");
+        let config = peko_quota::QuotaConfig {
+            request_count: Some(0),
+            ..Default::default()
+        };
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(config.clone(), Some(path.clone()), chrono::Utc::now())
+                .await
+                .unwrap(),
+        );
+        let provider = StackedMeteredProvider {
+            inner: Arc::new(UsageProvider),
+            meters: vec![meter],
+        };
+        let mut stream = provider
+            .stream_with_tools("usage-test", &[], &[], &ChatOptions::default())
+            .await
+            .unwrap();
+        assert!(stream.next().await.unwrap().is_err());
+        drop(stream);
+        let restored = QuotaMeter::load_or_init(config, Some(path), chrono::Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(restored.snapshot().request_count, 1);
+        assert!(restored.is_exhausted());
+    }
 
     fn pricing(input: f64, output: f64) -> PricingHint {
         PricingHint {

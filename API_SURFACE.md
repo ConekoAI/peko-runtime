@@ -20,6 +20,17 @@ This document defines the public API surface for Peko, including the new Unified
 9. [Compatibility Notes](#compatibility-notes)
 10. [Local Snapshot Packaging](#module-registrypackaging--adr-066-p5)
 
+### Quota accounting durability (2026-10-05)
+
+`QuotaMeter::charge` and `charge_with_cost` persist consumed usage before
+returning, including when the charge exceeds a limit. Writes through one shared
+meter are serialized; its snapshot is taken after acquiring the write lock.
+`StackedMeteredProvider::stream_with_tools` awaits this persistence for each
+usage event before forwarding it or yielding a quota error. The synchronous
+`try_charge` / `try_charge_with_cost` APIs remain in-memory operations and do
+not provide restart durability. Disk-write failures retain the existing warning
+behavior. Persisted formats and quota-limit semantics are unchanged.
+
 ---
 
 ## Module: `registry::packaging` — ADR-066 P5

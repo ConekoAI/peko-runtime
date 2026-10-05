@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Streaming quota durability and daemon shutdown (2026-10-05)
+
+- Streamed LLM usage persists its token, request, cache and cost counters before
+  being forwarded to the engine. Charges that exceed a quota are also persisted,
+  so restarting cannot erase already consumed usage or clear an exhausted quota.
+- Serialized quota state writes prevent concurrent principal/subagent calls from
+  racing on the atomic-write temporary file or overwriting a newer snapshot.
+- Ctrl+C now broadcasts shutdown to the IPC listener before joining it; Unix
+  SIGTERM follows the same shutdown path and removes PID/socket files.
+- Added streamed-usage reload, quota exhaustion, concurrent persistence and real
+  subprocess signal-shutdown regressions, using isolated passphrase vaults.
+
 ### API-format model configuration (ADR-068, 2026-10-05)
 
 - Removed the embedded vendor/model preset catalog and vendor convenience constructors.

@@ -122,6 +122,8 @@ jobs:
               # closes it for every current + future satellite.
               - 'src/**'
               - 'peko-rs/*/src/**'
+              # Native daemon lifecycle tests run without the Docker tier.
+              - 'peko-rs/peko-daemon/tests/**'
             crates:
               # Phase 12b: any workspace-member Cargo.toml change can
               # introduce a new forbidden crate-to-crate edge; the
@@ -227,7 +229,9 @@ jobs:
           workspaces: .
           shared-key: peko-runtime-rust
       - name: Run unit tests
-        run: cargo test --lib
+        run: |
+          cargo test --lib
+          cargo test -p peko-daemon --test shutdown
 
   # ── Tier 0d: Windows unit tests, gated ───────────────────────────────
   # Gates (existing):

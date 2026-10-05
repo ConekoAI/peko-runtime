@@ -53,6 +53,8 @@ pub struct QuotaMeter {
     config: Mutex<QuotaConfig>,
     state_path: Option<PathBuf>,
     state: Mutex<QuotaState>,
+    /// Serialize atomic temp-file writes and take snapshots after acquiring it.
+    persistence: tokio::sync::Mutex<()>,
 }
 
 impl QuotaMeter {
@@ -67,6 +69,7 @@ impl QuotaMeter {
             config: Mutex::new(QuotaConfig::default()),
             state_path: None,
             state: Mutex::new(QuotaState::fresh(QuotaCycle::Daily, Utc::now())),
+            persistence: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -86,6 +89,7 @@ impl QuotaMeter {
             config: Mutex::new(config),
             state_path,
             state: Mutex::new(state),
+            persistence: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -109,6 +113,7 @@ impl QuotaMeter {
             config: Mutex::new(config),
             state_path,
             state: Mutex::new(state),
+            persistence: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -203,11 +208,11 @@ impl QuotaMeter {
     /// into `input` and reasoning into `output` via
     /// [`TokenUsage::accumulate`], increments `request_count` by
     /// one, advances the window if needed, and returns the first
-    /// limit crossed (if any). On success, persists to disk.
+    /// limit crossed (if any). Persists even when consumed usage crosses a limit.
     pub async fn charge(&self, usage: &TokenUsage) -> Result<(), QuotaError> {
-        self.charge_inner(usage, None)?;
+        let result = self.charge_inner(usage, None);
         self.persist_state().await;
-        Ok(())
+        result
     }
 
     /// Forced reset — clears counters, keeps the cycle from the
@@ -229,16 +234,7 @@ impl QuotaMeter {
             state.cache_read_tokens = 0;
             state.cache_creation_tokens = 0;
         }
-        if let Some(path) = self.state_path.clone() {
-            let snapshot = self
-                .state
-                .lock()
-                .expect("quota state mutex poisoned")
-                .clone();
-            if let Err(e) = snapshot.save(&path).await {
-                tracing::warn!("failed to persist quota state to {}: {}", path.display(), e);
-            }
-        }
+        self.persist_state().await;
     }
 
     /// Snapshot of current counters + window bounds. Used by `peko
@@ -282,13 +278,9 @@ impl QuotaMeter {
         *self.config.lock().expect("quota config poisoned") = new_config;
     }
 
-    /// F19: sync version of [`Self::charge`]. Used by the streaming
-    /// metering path (the metered provider intercepts
-    /// `StreamEvent::Usage` events inside the stream `map` closure,
-    /// which is sync). Skips persistence — the next blocking
-    /// `charge` (e.g. the following iteration's LLM call) writes
-    /// the in-memory state to disk. The on-disk counters may lag by
-    /// one streaming call at most, which is acceptable.
+    /// Sync version of [`Self::charge`]. Does not persist.
+    /// Callers requiring restart-safe
+    /// accounting must use the async `charge` variant instead.
     ///
     /// Folds usage, advances the window, increments `request_count`,
     /// and returns the first limit crossed (if any). **No I/O.**
@@ -299,8 +291,7 @@ impl QuotaMeter {
     /// Phase 3 of `feature/multi-model-subagents`: streaming
     /// variant of [`try_charge`](Self::try_charge) that folds the
     /// per-call USD cost into the cycle budget. Sync, no I/O —
-    /// callers are the `StackedMeteredProvider` streaming path
-    /// that intercepts `StreamEvent::Usage` events. The pre-call
+    /// callers must arrange persistence themselves. The pre-call
     /// per-spawn ceiling (`cost_per_call_max`) is enforced at
     /// the spawn site, not here.
     ///
@@ -318,15 +309,15 @@ impl QuotaMeter {
     /// Blocking variant of [`try_charge_with_cost`](Self::try_charge_with_cost)
     /// for the `StackedMeteredProvider::chat_with_tools` path
     /// (the streaming variant mirrors it). Persists to disk on
-    /// success — same contract as [`charge`](Self::charge).
+    /// completion, including limit-crossing usage — same contract as [`charge`](Self::charge).
     pub async fn charge_with_cost(
         &self,
         usage: &TokenUsage,
         cost_usd: f64,
     ) -> Result<(), QuotaError> {
-        self.charge_inner(usage, Some(cost_usd))?;
+        let result = self.charge_inner(usage, Some(cost_usd));
         self.persist_state().await;
-        Ok(())
+        result
     }
 
     /// Shared advance + fold + check skeleton used by all four
@@ -380,12 +371,10 @@ impl QuotaMeter {
     }
 
     /// Persist the current `QuotaState` to disk, if a state path
-    /// was configured. Called only from async charge methods after
-    /// `charge_inner` returns `Ok` — the contract mirrors the
-    /// pre-refactor behavior where the lock was dropped before
-    /// the `await` point to keep the future `Send`.
+    /// was configured. State locks are released before file I/O.
     async fn persist_state(&self) {
         if let Some(path) = self.state_path.clone() {
+            let _write_guard = self.persistence.lock().await;
             let snapshot = self
                 .state
                 .lock()
@@ -404,6 +393,50 @@ mod tests {
     use chrono::TimeZone;
     use chrono::Timelike;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn concurrent_charges_persist_the_latest_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("quota.json");
+        let meter = std::sync::Arc::new(
+            QuotaMeter::load_or_init(QuotaConfig::default(), Some(path.clone()), Utc::now())
+                .await
+                .unwrap(),
+        );
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let meter = meter.clone();
+            tasks.push(tokio::spawn(async move {
+                meter.charge_with_cost(&usage(10, 1), 0.01).await.unwrap();
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let restored = QuotaMeter::load_or_init(QuotaConfig::default(), Some(path), Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(restored.snapshot(), meter.snapshot());
+        assert_eq!(restored.snapshot().request_count, 32);
+        assert_eq!(restored.snapshot().input_tokens, 320);
+        assert!((restored.snapshot().cost_usd.unwrap() - 0.32).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn blocking_limit_crossing_charge_survives_reload() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("quota.json");
+        let config = cfg(Some(5), None, None);
+        let meter = QuotaMeter::load_or_init(config.clone(), Some(path.clone()), Utc::now())
+            .await
+            .unwrap();
+        assert!(meter.charge(&usage(6, 1)).await.is_err());
+        let restored = QuotaMeter::load_or_init(config, Some(path), Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(restored.snapshot().input_tokens, 6);
+        assert!(restored.is_exhausted());
+    }
 
     fn ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
