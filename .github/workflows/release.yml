@@ -215,7 +215,7 @@ jobs:
           
           \`\`\`bash
           # Add a model to the catalog and store its API key in the vault
-          peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
+          peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"
           
           # Start the daemon, create a peko, talk to it
           peko daemon start

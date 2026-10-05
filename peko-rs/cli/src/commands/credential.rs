@@ -797,10 +797,10 @@ mod tests {
         let cat = ModelCatalog::load_or_init(paths.config_dir.join(ModelCatalog::FILENAME))
             .await
             .unwrap();
-        let tmpl = peko_providers::templates::find_template("anthropic").unwrap();
-        let mut entry = peko_providers::catalog::ModelConfig::from_template(
-            tmpl,
+        let mut entry = peko_providers::catalog::ModelConfig::new(
             "anthropic-sonnet",
+            peko_providers::catalog::ApiFormat::AnthropicMessages,
+            "https://api.anthropic.com",
             "claude-sonnet-4-5",
         );
         entry.credential_id = Some(cred_id.clone());

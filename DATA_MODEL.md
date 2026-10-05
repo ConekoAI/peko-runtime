@@ -263,44 +263,43 @@ session_timeout_seconds = 3600    # Optional. Idle session timeout. Default: no 
 max_session_tokens  = 200000      # Optional. Truncate context if exceeded
 ```
 
-### 2.2 Provider catalog (v3+)
+### 2.2 Model catalog (v4, ADR-068)
 
-As of v3, providers are not declared in `config.toml`. They live in
-the runtime-owned catalog at `~/.peko/providers.toml`:
+Models live in the runtime-owned `~/.peko/models.toml`. Each entry describes
+one endpoint/model combination; there is no vendor registry or preset list.
 
 ```toml
-# ~/.peko/providers.toml
-version = "3.0"
+version = "4.0"
 
-[entries.openai]
-display_name = "OpenAI"
-api_format   = "openai_completions"
-base_url     = "https://api.openai.com/v1"
-default_model_id = "gpt-4o-mini"
-models = [
-    { id = "gpt-4o",      context_length = 128000, capabilities = ["tool_use", "vision"] },
-    { id = "gpt-4o-mini", context_length = 128000 },
-]
-
-[entries.anthropic]
-display_name = "Anthropic"
-api_format   = "anthropic_messages"
-base_url     = "https://api.anthropic.com"
-default_model_id = "claude-sonnet-4-5"
-models       = [...]
-
-default_provider_id = "openai"
-default_model_id    = "gpt-4o-mini"
+[entries.my-model]
+id = "my-model"
+display_name = "My model"
+api_format = "anthropic_messages"
+base_url = "https://api.example.com/anthropic"
+model_id = "remote-model-id"
+requires_key = true
+enabled = true
+credential_id = "vault-credential-id"
 ```
 
-API keys are NOT in this file. They live in the OS keychain under
-service `"peko"` with the provider id as the account name. Manage
-them with:
+The API formats are `openai_completions`, `openai_responses`, and
+`anthropic_messages`. Credentials live in the vault; the catalog stores only
+references. Optional `context_window`, `max_output_tokens`, `headers`, `spec`
+(capabilities/pricing), `compat` (adapter hints), and `note` are user supplied.
+An absent `spec` means unknown capabilities and leaves the engine spec gate
+inactive; an explicit `spec` enforces declared capabilities. New entries have
+no `template_id`. Legacy entries retain that field and all copied settings so
+removing templates does not change their endpoint, credential, or metadata.
+The opt-in environment bootstrap uses `<ID>_API_KEY` (uppercased, hyphens
+changed to underscores), or the legacy `template_id` spelling when present;
+there is no vendor alias table. Normal operation uses the vault.
 
-```bash
-peko model add --template anthropic --model claude-sonnet-4-5   # seeds a catalog entry + stores the API key
-peko credential set llm anthropic-claude-sonnet-4-5 --kind api_key --material "$ANTHROPIC_API_KEY"  # OR store a key against an existing entry
-```
+`ModelAddArgs` accepts explicit `api_format`, `base_url`, and exactly one
+wire `model` id; `name` is optional and defaults to that wire id. Optional
+headers, limits, spec, compat, and note match the catalog. The legacy `custom`
+flag is ignored; `template` requests are rejected with migration guidance.
+The legacy `ModelTemplates` IPC response is retained with an empty `presets`
+list so old desktop clients can still use their custom-model form.
 
 Agent configs carry `preferred_model_id` only — never an inline
 `[provider]` block. The v3-cleanup series

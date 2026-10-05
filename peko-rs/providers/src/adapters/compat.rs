@@ -35,52 +35,6 @@ impl OpenAiCompatibleAdapter {
             name,
         }
     }
-
-    /// Create pre-configured adapters for common providers
-    #[must_use]
-    pub fn groq() -> Self {
-        Self::new("groq", "https://api.groq.com/openai/v1")
-    }
-
-    #[must_use]
-    pub fn together() -> Self {
-        Self::new("together", "https://api.together.xyz/v1")
-    }
-
-    #[must_use]
-    pub fn fireworks() -> Self {
-        Self::new("fireworks", "https://api.fireworks.ai/inference/v1")
-    }
-
-    #[must_use]
-    pub fn moonshot() -> Self {
-        Self::new("moonshot", "https://api.moonshot.cn/v1")
-    }
-
-    #[must_use]
-    pub fn deepseek() -> Self {
-        Self::new("deepseek", "https://api.deepseek.com/v1")
-    }
-
-    #[must_use]
-    pub fn perplexity() -> Self {
-        Self::new("perplexity", "https://api.perplexity.ai")
-    }
-
-    #[must_use]
-    pub fn openrouter() -> Self {
-        Self::new("openrouter", "https://openrouter.ai/api/v1")
-    }
-
-    #[must_use]
-    pub fn xai() -> Self {
-        Self::new("xai", "https://api.x.ai/v1")
-    }
-
-    #[must_use]
-    pub fn ollama() -> Self {
-        Self::new("ollama", "http://localhost:11434/v1")
-    }
 }
 
 impl super::ApiAdapter for OpenAiCompatibleAdapter {
@@ -145,28 +99,28 @@ mod tests {
 
     #[test]
     fn test_groq_adapter() {
-        let adapter = OpenAiCompatibleAdapter::groq();
+        let adapter = OpenAiCompatibleAdapter::new("groq", "https://api.groq.com/openai/v1");
         assert_eq!(adapter.name(), "groq");
         assert_eq!(adapter.base_url(), "https://api.groq.com/openai/v1");
     }
 
     #[test]
     fn test_together_adapter() {
-        let adapter = OpenAiCompatibleAdapter::together();
+        let adapter = OpenAiCompatibleAdapter::new("together", "https://api.together.xyz/v1");
         assert_eq!(adapter.name(), "together");
         assert_eq!(adapter.base_url(), "https://api.together.xyz/v1");
     }
 
     #[test]
     fn test_moonshot_adapter() {
-        let adapter = OpenAiCompatibleAdapter::moonshot();
+        let adapter = OpenAiCompatibleAdapter::new("moonshot", "https://api.moonshot.cn/v1");
         assert_eq!(adapter.name(), "moonshot");
         assert_eq!(adapter.base_url(), "https://api.moonshot.cn/v1");
     }
 
     #[test]
     fn test_ollama_adapter() {
-        let adapter = OpenAiCompatibleAdapter::ollama();
+        let adapter = OpenAiCompatibleAdapter::new("ollama", "http://localhost:11434/v1");
         assert_eq!(adapter.name(), "ollama");
         assert_eq!(adapter.base_url(), "http://localhost:11434/v1");
     }

@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### API-format model configuration (ADR-068, 2026-10-05)
+
+- Removed the embedded vendor/model preset catalog and vendor convenience constructors.
+- `model add` uses explicit API format, base URL, and wire model id; a configured
+  id defaults to the wire id. Added keyless endpoints and optional headers,
+  capability/pricing JSON, and compatibility JSON alongside limits and notes.
+- CLI and IPC validate settings before storing keys. Existing catalog metadata
+  and credentials still load; legacy custom flags work, template adds report
+  migration guidance, and preset discovery over IPC returns an empty list.
+- Copied CLI commands use explicit settings and quote metadata safely. Unknown
+  capabilities remain distinct from explicitly unsupported features.
+- Replaced vendor environment-key aliases with mechanically derived bootstrap
+  names; normal credential resolution remains vault-backed.
+
 ### Windows path and output regressions (2026-10-03)
 
 - Workflow refuses Windows rooted and drive-relative paths before resolving

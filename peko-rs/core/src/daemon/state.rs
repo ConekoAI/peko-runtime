@@ -2482,6 +2482,33 @@ fn model_spec_to_wire(spec: peko_providers::spec::ModelSpec) -> crate::ipc::pack
     }
 }
 
+fn model_spec_from_wire(spec: crate::ipc::packet::ModelSpec) -> peko_providers::spec::ModelSpec {
+    use crate::ipc::packet::{ModelThinkingMode, ModelToolSupport};
+    use peko_providers::spec::{ModelSpec, PricingHint, ThinkingMode, ToolSupport};
+    ModelSpec {
+        image_input: spec.image_input,
+        audio_input: spec.audio_input,
+        tool_support: match spec.tool_support {
+            ModelToolSupport::None => ToolSupport::None,
+            ModelToolSupport::FunctionCalling => ToolSupport::FunctionCalling,
+            ModelToolSupport::Full => ToolSupport::Full,
+        },
+        streaming: spec.streaming,
+        thinking: match spec.thinking {
+            ModelThinkingMode::Disabled => ThinkingMode::Disabled,
+            ModelThinkingMode::Optional => ThinkingMode::Optional,
+            ModelThinkingMode::Required => ThinkingMode::Required,
+            ModelThinkingMode::CustomBudget => ThinkingMode::CustomBudget,
+        },
+        json_mode: spec.json_mode,
+        decisions: spec.decisions,
+        pricing: spec.pricing.map(|p| PricingHint {
+            input_per_million: p.input_per_million,
+            output_per_million: p.output_per_million,
+        }),
+    }
+}
+
 /// F7 eleventh narrow handle: the port the `provider_mcp` IPC domain
 /// handler uses to live-reload the model catalog and MCP config
 /// from disk. Trait lives in `ipc::handlers::provider_mcp`. Both
@@ -2500,8 +2527,7 @@ impl crate::ipc::handlers::provider_mcp::ModelMcpHost for AppState {
     /// `ModelSummary` wire shape. Reads go through
     /// `self.resolver.catalog()` so the response matches what the
     /// resolver and every other daemon-side consumer see — including
-    /// user-added entries that don't appear in the static
-    /// `BUILT_IN_TEMPLATES`.
+    /// all user-configured endpoints.
     async fn list_catalog_models(&self) -> Vec<crate::ipc::packet::ModelSummary> {
         let catalog = self.resolver.catalog();
         catalog
@@ -2513,52 +2539,8 @@ impl crate::ipc::handlers::provider_mcp::ModelMcpHost for AppState {
     }
 }
 
-/// F7 fourteenth narrow handle: the port the `provider_templates`
-/// IPC domain handler uses (T-109b). Trait lives in
-/// `ipc::handlers::provider_templates`. Sync because the templates
-/// are a `&'static [ProviderTemplate]` — no I/O, no locking, no
-/// async work. Mirrors the credential-host shape (also a pure-read
-/// surface).
-impl crate::ipc::handlers::provider_templates::ModelTemplatesHost for AppState {
-    fn list_templates(&self) -> Vec<crate::ipc::packet::ModelPresetInfo> {
-        use peko_providers::catalog::ApiFormat;
-        peko_providers::templates::iter_templates()
-            .map(|t| crate::ipc::packet::ModelPresetInfo {
-                id: t.id.to_string(),
-                display_name: t.display_name.to_string(),
-                api_type: match t.api_format {
-                    ApiFormat::OpenaiCompletions => "openai",
-                    ApiFormat::AnthropicMessages => "anthropic",
-                    ApiFormat::OpenAiResponses => "responses",
-                }
-                .to_string(),
-                base_url: t.base_url.to_string(),
-                requires_key: t.requires_key,
-                default_model: t.default_model.to_string(),
-                models: t
-                    .models
-                    .iter()
-                    .map(|m| crate::ipc::packet::ModelTemplateInfo {
-                        id: m.id.to_string(),
-                        display_name: m.display_name.map(str::to_string),
-                        context_length: m.context_length,
-                        max_output_tokens: m.max_output_tokens,
-                    })
-                    .collect(),
-            })
-            .collect()
-    }
-}
-
-/// F7 fifteenth narrow handle: the port the `provider_add` IPC
-/// domain handler uses (T-109b). Trait lives in
-/// `ipc::handlers::provider_add`. Async because catalog mutations
-/// (`ModelCatalog::upsert`) and the vault write are I/O. The body is
-/// intentionally a 1:1 mirror of the CLI's `peko model add`
-/// (`commands/model.rs:add_cmd`) — same template vs. custom branch,
-/// same `--key` folding into an `llm`-namespace credential — so the
-/// IPC and CLI surfaces never disagree on the resulting catalog state
-/// (F6/F7 symmetry rule).
+/// Daemon-side model creation from explicit endpoint settings.
+/// Optional metadata is validated before any vault write, as in the CLI.
 #[async_trait::async_trait]
 impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
     async fn add_model(
@@ -2567,110 +2549,51 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
     ) -> anyhow::Result<crate::ipc::packet::ModelSummary> {
         use crate::common::vault::{Credential, CredentialKind};
         use peko_providers::catalog::{ApiFormat, ModelConfig};
-        use peko_providers::templates;
         use secrecy::SecretString;
 
-        // The wire id the API expects. Required in both modes, same
-        // as the CLI (`--model <wire-id>`).
-        let model_id = args
-            .model
-            .first()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("--model <wire-id> is required"))?;
-        if model_id.is_empty() {
-            anyhow::bail!("--model must not be empty");
+        if args.template.is_some() {
+            anyhow::bail!(
+                "model templates have been retired; supply api_format, base_url, and model"
+            );
+        }
+        if args.model.len() != 1 {
+            anyhow::bail!("exactly one wire model id is required");
+        }
+        let model_id = args.model[0].clone();
+        let api_format_str = args.api_format.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("api_format is required (openai_completions | openai_responses | anthropic_messages)"))?;
+        let api_format = ApiFormat::from_wire(api_format_str)
+            .ok_or_else(|| anyhow::anyhow!("unknown api_format '{api_format_str}'"))?;
+        let base_url = args
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("base_url is required"))?;
+        let id = args.name.clone().unwrap_or_else(|| model_id.clone());
+        let mut entry = ModelConfig::new(id, api_format, base_url, model_id);
+        if let Some(name) = args.display_name {
+            entry.display_name = name;
+        }
+        entry.requires_key = args.requires_key.unwrap_or(true);
+        entry.context_window = args.context_window;
+        entry.max_output_tokens = args.max_output_tokens;
+        entry.headers = args.headers.into_iter().collect();
+        entry.spec = args.spec.map(model_spec_from_wire);
+        entry.compat = args.compat;
+        entry.note = args.note;
+        entry.validate()?;
+        if self.resolver.catalog().get(&entry.id).await.is_some() {
+            anyhow::bail!("model id '{}' already exists", entry.id);
         }
 
-        let mut entry: ModelConfig = if let Some(template_id) = args.template.as_deref() {
-            // Template mode — mirror the CLI's `{template}-{model}`
-            // default id and display-name override.
-            let tmpl = templates::find_template(template_id).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown template '{template_id}'. Run `peko model templates` to list available ones."
-                )
-            })?;
-            let id = args
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("{}-{model_id}", tmpl.id));
-            let mut entry = ModelConfig::from_template(tmpl, id, model_id);
-            if let Some(dn) = args.display_name.clone() {
-                entry.display_name = dn;
-            }
-            entry
-        } else if args.custom {
-            // Custom mode — mirror the CLI's required-flag checks.
-            let api_format_str = args
-                .api_format
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!(
-                    "--api-format is required with --custom (openai_completions | anthropic_messages)"
-                ))?;
-            let api_format = ApiFormat::from_wire(api_format_str)
-                .ok_or_else(|| anyhow::anyhow!("unknown --api-format '{api_format_str}'"))?;
-            let base_url = args
-                .base_url
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("--base-url is required with --custom"))?;
-            let id = args
-                .name
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("--name is required with --custom"))?;
-            if id.is_empty() {
-                anyhow::bail!("--name must not be empty");
-            }
-            ModelConfig {
-                id: id.clone(),
-                display_name: args.display_name.clone().unwrap_or_else(|| id.clone()),
-                template_id: None,
-                api_format,
-                base_url,
-                model_id,
-                context_window: None,
-                max_output_tokens: None,
-                headers: Default::default(),
-                credential_id: None,
-                requires_key: args.requires_key.unwrap_or(true),
-                enabled: true,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                compat: None,
-                spec: None,
-                // Phase 2 of `feature/multi-model-subagents`: the
-                // IPC `models.upsert` accepts `note` via the CLI
-                // `--note` flag; this branch is the `--custom`
-                // non-template path where the IPC handler hasn't
-                // surfaced a note yet (only the CLI's `model
-                // add --custom --note ...` path does). `None`
-                // preserves the pre-Phase-2 default; users edit
-                // notes via `peko model edit --note ...`.
-                note: None,
-            }
-        } else {
-            // Bare-invocation guard. The handler also short-circuits
-            // before calling the host, so reaching this branch means
-            // a future caller (e.g. a direct host consumer) passed
-            // through without going through the IPC handler. Keep
-            // the same hint string so the surfaces stay symmetric.
-            anyhow::bail!(
-                "either --template <id> or --custom is required.\n\
-                 \n\
-                 Quick start:\n\
-                   peko model add --template anthropic --model claude-sonnet-4-5 --key \"$ANTHROPIC_API_KEY\"\n\
-                 \n\
-                 List templates:\n\
-                   peko model templates"
-            );
-        };
-
+        if !entry.requires_key && (args.key.is_some() || args.credential_id.is_some()) {
+            anyhow::bail!("model '{}' does not require a key", entry.id);
+        }
         // Fold in the optional key, same as the CLI: store the
         // material as a generic `llm`-namespace credential named
         // after the model and point the entry's `credential_id` at
-        // it. Silently refused for key-less models (e.g. Ollama
-        // presets) so a misconfigured request fails loudly instead
-        // of storing an orphaned key.
+        // it. Keyless models reject credential inputs before this point.
         if let Some(cid) = args.credential_id.as_deref() {
-            if cid.is_empty() {
+            if cid.trim().is_empty() {
                 anyhow::bail!("--credential-id must not be empty");
             }
             if args.key.is_some() {
@@ -2682,7 +2605,7 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
             entry.credential_id = Some(cid.to_string());
         }
         if let Some(key) = args.key.as_deref() {
-            if key.is_empty() {
+            if key.trim().is_empty() {
                 anyhow::bail!("--key must not be empty");
             }
             if !entry.requires_key {
@@ -3236,6 +3159,75 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn generic_model_add_round_trips_metadata_and_rejects_legacy_templates() {
+        use crate::ipc::handlers::provider_add::ModelAddHost;
+        use crate::ipc::packet::{ModelAddArgs, ModelSpec, ModelToolSupport};
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build_for_test(
+            dir.path().to_path_buf(),
+            "127.0.0.1".into(),
+            11435,
+            DaemonConfigSnapshot::default(),
+            dir.path().join("data"),
+            dir.path().join("config"),
+            dir.path().join("cache"),
+        )
+        .await
+        .unwrap();
+        let args = ModelAddArgs {
+            api_format: Some("responses".into()),
+            base_url: Some("https://example.com/v1".into()),
+            model: vec!["new-model".into()],
+            requires_key: Some(false),
+            context_window: Some(123_456),
+            max_output_tokens: Some(4096),
+            headers: vec![("X-Test".into(), "example".into())],
+            spec: Some(ModelSpec {
+                tool_support: ModelToolSupport::FunctionCalling,
+                ..Default::default()
+            }),
+            note: Some("use for cron".into()),
+            ..Default::default()
+        };
+        let summary = state.add_model(args.clone()).await.unwrap();
+        assert_eq!(summary.id, "new-model");
+        assert_eq!(summary.api_type, "responses");
+        assert!(!summary.requires_key);
+        assert!(summary.template_id.is_none());
+        assert_eq!(summary.context_window, Some(123_456));
+        assert_eq!(
+            summary.spec.unwrap().tool_support,
+            ModelToolSupport::FunctionCalling
+        );
+        let saved = state.resolver.catalog().get("new-model").await.unwrap();
+        assert_eq!(saved.headers.get("X-Test").unwrap(), "example");
+        assert_eq!(saved.note.as_deref(), Some("use for cron"));
+        assert!(state
+            .add_model(args.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+        let mut legacy = args.clone();
+        legacy.template = Some("kimi".into());
+        assert!(state
+            .add_model(legacy)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retired"));
+        let mut multiple = args;
+        multiple.model.push("another".into());
+        assert!(state
+            .add_model(multiple)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one"));
+        assert_eq!(state.resolver.catalog().list_all().await.len(), 1);
     }
 
     #[tokio::test]

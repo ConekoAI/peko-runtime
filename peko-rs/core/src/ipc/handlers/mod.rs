@@ -129,7 +129,7 @@ impl RequestDispatcher {
             // sit adjacent to `ProviderMcp` (catalog/reload) so all
             // model-mutation variants are colocated in the
             // dispatch table.
-            Arc::new(ProviderTemplatesHandler::new(host.clone())),
+            Arc::new(ProviderTemplatesHandler::new()),
             Arc::new(ProviderAddHandler::new(host.clone())),
             // RP6: model update / remove / test live next to
             // the add handler so the whole catalog-mutation surface is

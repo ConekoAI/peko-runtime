@@ -181,7 +181,7 @@ export KIMI_API_KEY="your-kimi-key"
 ### 2. Add a Model
 
 ```bash
-./target/release/peko model add --template openai --model gpt-4o --key "$OPENAI_API_KEY"
+./target/release/peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"
 ```
 
 ### 3. Create a Peko

@@ -49,7 +49,7 @@ export KIMI_API_KEY="your-kimi-key"
 ### 3. Add a Provider
 
 ```bash
-./target/release/peko model add --template anthropic --model claude-sonnet-4-5 \
+./target/release/peko model add --id anthropic-claude-sonnet-4-5 --api-format anthropic_messages --base-url https://api.anthropic.com --model claude-sonnet-4-5 \
     --key "$ANTHROPIC_API_KEY"
 ```
 
