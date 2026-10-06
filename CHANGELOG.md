@@ -4,7 +4,7 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
-### Runtime context duplication (2026-10-06)
+### Runtime context and memory locations (2026-10-06)
 
 - Render the built-in session context once per change. It previously also
   appeared under a custom `session_context` heading, adding duplicate prompt
@@ -17,6 +17,10 @@ All notable changes to Peko.
 - Clarify that genesis must leave the runtime-owned `boot_state` unchanged;
   a live diagnostic attempt invented an unsupported `ready` state and could
   not complete initialization.
+- Include the principal workspace and knowledge-base paths in the generated
+  runtime prompt, with absolute-path guidance for shared memory. Role files
+  without a workspace placeholder previously omitted the location; relative
+  notes landed in the tools' default directory instead of the principal kb.
 
 ### Unix IPC assignment size (2026-10-06)
 

@@ -85,6 +85,12 @@ Stop/AfterAgent hooks, session-key bookkeeping, and the parallel-execution probe
 principal identity, principal name, and abort receiver. Execution returns
 `Result<(String, Value, bool)>`; tool failures are data with `false`.
 
+The generated stable runtime prompt includes the principal workspace and its
+`kb/` path even when a role body has no workspace placeholder. Shared principal
+memory uses absolute paths under that knowledge base; filesystem tools can have
+a different default working directory. This prompt clarification does not
+change file-tool path resolution.
+
 ---
 
 ## Compaction application result
