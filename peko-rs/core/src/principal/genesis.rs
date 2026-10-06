@@ -115,7 +115,9 @@ restructure freely.\n\n\
 On this turn:\n\
 1. Read your own definition (`principal.toml`). If `[identity]` or \
 `[intent]` are empty placeholders, adopt a working self-description \
-and write it back — your creator will refine it later.\n\
+and write it back — your creator will refine it later. Leave `boot_state` \
+unchanged: it is runtime-owned, and the runtime marks this principal \
+`organized` after a successful genesis turn. Do not invent lifecycle states.\n\
 2. Survey your workspace (`roles/`, `skills/`, `tools/`, `kb/` if present) \
 so you know what you can do and what you already know.\n\
 3. Organize: the `kb/` scaffold is a floor, not a mandate — keep what \

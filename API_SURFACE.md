@@ -85,6 +85,12 @@ Stop/AfterAgent hooks, session-key bookkeeping, and the parallel-execution probe
 principal identity, principal name, and abort receiver. Execution returns
 `Result<(String, Value, bool)>`; tool failures are data with `false`.
 
+The generated stable runtime prompt includes the principal workspace and its
+`kb/` path even when a role body has no workspace placeholder. Shared principal
+memory uses absolute paths under that knowledge base; filesystem tools can have
+a different default working directory. This prompt clarification does not
+change file-tool path resolution.
+
 ---
 
 ## Compaction application result
@@ -317,6 +323,12 @@ impl StatelessAgentService {
 `peko_providers` provides three API adapters: `OpenAiAdapter`,
 `OpenAiResponsesAdapter`, and `AnthropicAdapter`. The factory selects by
 `ModelConfig.api_format`; endpoint vendors do not require separate implementations.
+
+`AnthropicAdapter` applies `ChatOptions.cache_retention` to the system block,
+last tool, and last message's trailing text. A plain-text tail becomes a single
+text-block array when caching is enabled so it can carry `cache_control`;
+disabled caching retains the string shortcut. Provider cache-hit behavior is
+observed through usage, not guaranteed by emitting a marker.
 
 ```rust
 impl ModelConfig {

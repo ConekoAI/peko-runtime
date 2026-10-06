@@ -9,6 +9,18 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Anthropic-compatible prompt cache markers
+
+With `ChatOptions.cache_retention` enabled, provider requests mark the system
+text block, final tool definition, and final message's trailing text block.
+A plain-text message tail is represented as
+`[{"type":"text","text":"…","cache_control":{"type":"ephemeral"}}]`
+so the breakpoint survives text-only conversion. Long retention also emits
+`"ttl":"1h"`. Disabled caching retains the plain-string tail and emits no
+markers. Earlier messages and tool-only tails retain their existing shapes.
+These are provider request fields; session JSONL remains unchanged. A marker
+requests caching but does not guarantee a hit from a compatible endpoint.
+
 ## Principal bootstrap completion (ADR-054)
 
 `principal.toml` retains the existing `boot_state` values: `provisioned`,

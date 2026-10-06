@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Runtime context and memory locations (2026-10-06)
+
+- Render the built-in session context once per change. It previously also
+  appeared under a custom `session_context` heading, adding duplicate prompt
+  text on owner, review and scheduled turns.
+- Extend the renderer regression to require a single session-context body.
+- Anthropic-compatible requests now retain the conversation cache breakpoint
+  on plain-text tails, materializing the text block when caching is enabled.
+  Previously the string shortcut silently skipped the marker on ordinary
+  user input and runtime-context messages. Disabled caching keeps its wire shape.
+- Clarify that genesis must leave the runtime-owned `boot_state` unchanged;
+  a live diagnostic attempt invented an unsupported `ready` state and could
+  not complete initialization.
+- Include the principal workspace and knowledge-base paths in the generated
+  runtime prompt, with absolute-path guidance for shared memory. Role files
+  without a workspace placeholder previously omitted the location; relative
+  notes landed in the tools' default directory instead of the principal kb.
+
 ### Unix IPC assignment size (2026-10-06)
 
 - Enlarge the CLI Unix datagram send buffer and the daemon receive buffer,

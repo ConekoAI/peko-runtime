@@ -449,7 +449,13 @@ enum SectionSlot {
 /// are deduped away — a workspace hook binding e.g. "roles" augments
 /// the built-in catalog via registry aggregation and must not cause a
 /// second dispatch under the custom-section path.
-const BUILTIN_PROMPT_SECTIONS: [&str; 4] = ["identity", "roles", "skills", "workflows"];
+const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
+    "identity",
+    "roles",
+    "skills",
+    "workflows",
+    "session_context",
+];
 
 impl SectionSlot {
     /// Human-readable section name used in the update/retraction
@@ -863,11 +869,17 @@ fn format_runtime_section(ctx: &TurnPromptContext) -> String {
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "unknown".to_string());
     format!(
-        "## Runtime\nAgent: {}\nHost: {hostname}\nOS: {}\nModel: {}\nChannel: {}",
+        "## Runtime\nAgent: {}\nHost: {hostname}\nOS: {}\nModel: {}\nChannel: {}\n\
+         Principal workspace: {}\nPrincipal knowledge base: {}\n\
+         Use absolute paths under the principal knowledge base for shared memory, \
+         including MEMORY.md and index.md. Filesystem tools' default working \
+         directory can differ from the principal workspace.",
         ctx.role_name,
         std::env::consts::OS,
         ctx.resolved_model,
         ctx.channel,
+        ctx.workspace.display(),
+        ctx.workspace.join(crate::prompt::memory::KB_DIR).display(),
     )
 }
 
@@ -1412,6 +1424,25 @@ mod tests {
             "prefix was: {prefix}"
         );
         assert!(prefix.contains("## Runtime"), "prefix was: {prefix}");
+        assert!(
+            prefix.contains(&format!("Principal workspace: {}", ctx.workspace.display())),
+            "prefix was: {prefix}"
+        );
+        assert!(
+            prefix.contains(&format!(
+                "Principal knowledge base: {}",
+                ctx.workspace.join("kb").display()
+            )),
+            "prefix was: {prefix}"
+        );
+        assert!(
+            prefix.contains("Use absolute paths"),
+            "prefix was: {prefix}"
+        );
+        assert!(
+            prefix.contains("default working directory can differ"),
+            "prefix was: {prefix}"
+        );
         // Empty generated sections stay out: sandbox disabled, no
         // aliases, no gateway in `empty_ctx()`.
         assert!(!prefix.contains("## Sandbox"), "prefix was: {prefix}");
@@ -1999,6 +2030,10 @@ mod tests {
             registered.push("agents".to_string());
             let mut texts = core.section_texts.lock().expect("poisoned");
             texts.insert("roles".to_string(), "- Reviewer: reviews code".to_string());
+            texts.insert(
+                "session_context".to_string(),
+                "Current session /watch".to_string(),
+            );
         }
         let renderer = PromptRenderer::new(Arc::new(core));
         let mut state = RuntimeContextState::default();
@@ -2013,6 +2048,12 @@ mod tests {
         assert_eq!(body.matches("## Available Roles").count(), 1, "got: {body}");
         assert!(!body.contains("## roles\n"), "got: {body}");
         assert!(body.contains("- Reviewer: reviews code"), "got: {body}");
+        assert_eq!(
+            body.matches("Current session /watch").count(),
+            1,
+            "got: {body}"
+        );
+        assert!(!body.contains("## session_context\n"), "got: {body}");
     }
 
     /// Two custom sections render in sorted (byte-stable) order
