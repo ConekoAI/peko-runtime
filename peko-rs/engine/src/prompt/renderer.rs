@@ -449,7 +449,13 @@ enum SectionSlot {
 /// are deduped away — a workspace hook binding e.g. "roles" augments
 /// the built-in catalog via registry aggregation and must not cause a
 /// second dispatch under the custom-section path.
-const BUILTIN_PROMPT_SECTIONS: [&str; 4] = ["identity", "roles", "skills", "workflows"];
+const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
+    "identity",
+    "roles",
+    "skills",
+    "workflows",
+    "session_context",
+];
 
 impl SectionSlot {
     /// Human-readable section name used in the update/retraction
@@ -1999,6 +2005,10 @@ mod tests {
             registered.push("agents".to_string());
             let mut texts = core.section_texts.lock().expect("poisoned");
             texts.insert("roles".to_string(), "- Reviewer: reviews code".to_string());
+            texts.insert(
+                "session_context".to_string(),
+                "Current session /watch".to_string(),
+            );
         }
         let renderer = PromptRenderer::new(Arc::new(core));
         let mut state = RuntimeContextState::default();
@@ -2013,6 +2023,12 @@ mod tests {
         assert_eq!(body.matches("## Available Roles").count(), 1, "got: {body}");
         assert!(!body.contains("## roles\n"), "got: {body}");
         assert!(body.contains("- Reviewer: reviews code"), "got: {body}");
+        assert_eq!(
+            body.matches("Current session /watch").count(),
+            1,
+            "got: {body}"
+        );
+        assert!(!body.contains("## session_context\n"), "got: {body}");
     }
 
     /// Two custom sections render in sorted (byte-stable) order

@@ -4,6 +4,13 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Runtime context duplication (2026-10-06)
+
+- Render the built-in session context once per change. It previously also
+  appeared under a custom `session_context` heading, adding duplicate prompt
+  text on owner, review and scheduled turns.
+- Extend the renderer regression to require a single session-context body.
+
 ### Unix IPC assignment size (2026-10-06)
 
 - Enlarge the CLI Unix datagram send buffer and the daemon receive buffer,
