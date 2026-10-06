@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Interrupted cron Send recovery (2026-10-06)
+
+- On first opening a principal's schedule in a new daemon, finalize abandoned
+  Send runs as failed. Previously a restart during a supervision turn left
+  history marked running, causing every later tick to coalesce indefinitely.
+- Recovery is once per schedule path across principal-id/DID aliases and
+  engine clones; current-lifetime Send runs and SpawnTool reconciliation are
+  preserved. Authored enablement and due times are unchanged. Failed history
+  warns that side effects may be partial; recovery does not certify or undo them.
+- Added persisted-history and mock-turn regressions for restart recovery,
+  unchanged disabled schedules, successful subsequent firing, and live-run
+  preservation through an alternate identity spelling.
+
 ### Runtime context and memory locations (2026-10-06)
 
 - Render the built-in session context once per change. It previously also

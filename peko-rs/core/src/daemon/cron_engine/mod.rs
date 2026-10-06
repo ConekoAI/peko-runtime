@@ -20,7 +20,8 @@ use peko_cron::{
 use peko_observability::Observability;
 use peko_subject::PrincipalId;
 use peko_tools_core::ToolResult;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -42,6 +43,10 @@ pub struct CronEngine {
     /// (`<resolver>.cron_schedule(name)`); we resolve DID → name
     /// through `PrincipalManager::get` before touching the file.
     schedulers: Arc<Mutex<HashMap<PrincipalId, Arc<CronScheduler>>>>,
+    /// First-open recovery is per schedule path, not principal-id spelling:
+    /// the generated id and DID can resolve to the same schedule. Clones
+    /// share this set so neither alias can close a current-lifetime run.
+    initialized_schedules: Arc<Mutex<HashSet<PathBuf>>>,
     path_resolver: PathResolver,
     /// **Phase C.** Engine-internal `RuntimeAuthority` for the
     /// `local_cron_schedule_runtime` accessor. The engine writes cron
@@ -85,6 +90,7 @@ impl CronEngine {
     ) -> Self {
         Self {
             schedulers: Arc::new(Mutex::new(HashMap::new())),
+            initialized_schedules: Arc::new(Mutex::new(HashSet::new())),
             path_resolver: path_resolver.clone(),
             authority: Arc::new(RuntimeAuthority::for_runtime(path_resolver)),
             idle_detector,
@@ -134,6 +140,11 @@ impl CronEngine {
             CronScheduler::new(&path)
                 .map_err(|e| anyhow::anyhow!("cron scheduler init for {principal_id}: {e}"))?,
         );
+        let mut initialized = self.initialized_schedules.lock().await;
+        if !initialized.contains(&path) {
+            recover_interrupted_send_runs(&scheduler)?;
+            initialized.insert(path);
+        }
         map.insert(principal_id.clone(), scheduler.clone());
         Ok(scheduler)
     }
@@ -361,9 +372,8 @@ impl CronEngine {
         // executor's `timeout_secs` enforcement), so without this guard
         // an `Every` job whose tool outlives one poll interval would
         // re-fire on every tick while the previous run is still open.
-        // A row stuck on "running" from a crashed daemon is closed by
-        // the janitor's `reconcile_running_runs`, unblocking the job on
-        // a later tick.
+        // First-open recovery closes Send rows from a previous daemon;
+        // the janitor reconciles SpawnTool rows with async task ids.
         if scheduler
             .list_running_runs()?
             .iter()
@@ -1136,6 +1146,33 @@ impl CronEngine {
     }
 }
 
+/// A Send turn belongs to one daemon lifetime and cannot still be executing
+/// when that daemon first opens the persisted schedule. Close abandoned rows
+/// as failures, retaining history and the authored cadence. This is not a
+/// periodic janitor operation: live Send rows also have no async task id.
+fn recover_interrupted_send_runs(scheduler: &CronScheduler) -> Result<usize> {
+    let mut recovered = 0;
+    for run in scheduler.list_running_runs()? {
+        let Some(job) = scheduler.get_job(&run.job_id)? else {
+            continue;
+        };
+        if !matches!(job.action, CronJobAction::Send { .. }) {
+            continue;
+        }
+        if scheduler.finalize_run(
+            &run.id,
+            "failed",
+            run.output,
+            Some("daemon restarted before cron Send completed; outcome may be partial".into()),
+        )? {
+            scheduler.set_job_last_status(&job.id, "failed")?;
+            recovered += 1;
+            warn!(run_id = %run.id, job_id = %job.id, "Recovered interrupted cron Send run");
+        }
+    }
+    Ok(recovered)
+}
+
 /// Translate a terminal `AsyncTaskStatus` into the wire string the cron
 /// `CronRun.status` field has historically used.
 ///
@@ -1243,6 +1280,152 @@ mod tests {
     use peko_subject::Subject;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    fn recovery_job(principal_id: PrincipalId) -> CronJob {
+        CronJob {
+            id: "send-recovery".into(),
+            name: "send-recovery".into(),
+            principal_id,
+            schedule: peko_cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::Send {
+                message: "check commitments".into(),
+                target: None,
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: None,
+        }
+    }
+
+    fn open_recovery_run(job_id: &str, id: &str) -> CronRun {
+        CronRun {
+            id: id.into(),
+            job_id: job_id.into(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: "running".into(),
+            output: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn interrupted_send_recovery_preserves_history_spawn_tasks_and_disabled_schedules() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("cron.json");
+        let scheduler = CronScheduler::new(&path).unwrap();
+        let mut send = recovery_job(PrincipalId("crony".into()));
+        send.enabled = false;
+        scheduler.add_job(&send).unwrap();
+        scheduler
+            .record_run(&open_recovery_run(&send.id, "abandoned"))
+            .unwrap();
+        let mut done = open_recovery_run(&send.id, "done");
+        done.status = "success".into();
+        done.finished_at = Some(Utc::now());
+        done.output = Some("previous reply".into());
+        scheduler.record_run(&done).unwrap();
+        let mut spawn = send.clone();
+        spawn.id = "spawn-recovery".into();
+        spawn.action = CronJobAction::SpawnTool {
+            tool_name: "Bash".into(),
+            tool_params: serde_json::json!({}),
+            wake_on_completion: Some(false),
+            timeout_secs: Some(60),
+        };
+        scheduler.add_job(&spawn).unwrap();
+        let mut task_run = open_recovery_run(&spawn.id, "spawn-active");
+        task_run.output = Some("task:existing".into());
+        scheduler.record_run(&task_run).unwrap();
+        assert_eq!(recover_interrupted_send_runs(&scheduler).unwrap(), 1);
+        assert_eq!(recover_interrupted_send_runs(&scheduler).unwrap(), 0);
+        let reopened = CronScheduler::new(path).unwrap();
+        let history = reopened.get_run_history(&send.id, 10).unwrap();
+        let failed = history.iter().find(|r| r.id == "abandoned").unwrap();
+        assert_eq!(failed.status, "failed");
+        assert!(failed.finished_at.is_some());
+        assert!(failed
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("outcome may be partial"));
+        let successful = history.iter().find(|r| r.id == "done").unwrap();
+        assert_eq!(successful.status, "success");
+        assert_eq!(successful.output, done.output);
+        assert_eq!(reopened.list_running_runs().unwrap()[0].id, "spawn-active");
+        let updated = reopened.get_job(&send.id).unwrap().unwrap();
+        assert!(!updated.enabled);
+        assert_eq!(updated.next_run, send.next_run);
+        assert_eq!(updated.run_count, 0);
+        assert_eq!(updated.consecutive_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn first_open_send_recovery_unblocks_fires_and_never_reaps_live_alias_runs() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let principal =
+            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let did = PrincipalId::from_did(&principal.did().await);
+        let resolver = PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = CronScheduler::new(resolver.cron_schedule("crony")).unwrap();
+        let job = recovery_job(did.clone());
+        scheduler.add_job(&job).unwrap();
+        scheduler
+            .record_run(&open_recovery_run(&job.id, "previous-daemon"))
+            .unwrap();
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager),
+            Arc::new(AsyncExecutor::new(
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )),
+            Weak::new(),
+        );
+        let loaded = engine.scheduler_for(&did).await.unwrap();
+        assert!(loaded.list_running_runs().unwrap().is_empty());
+        assert_eq!(
+            loaded.get_run_history(&job.id, 10).unwrap()[0].status,
+            "failed"
+        );
+        assert_eq!(loaded.due_jobs(Utc::now()).unwrap().len(), 1);
+        loaded
+            .record_run(&open_recovery_run(&job.id, "current-daemon"))
+            .unwrap();
+        let alias = engine.clone().scheduler_for(&principal.id).await.unwrap();
+        assert_eq!(alias.list_running_runs().unwrap()[0].id, "current-daemon");
+        assert_eq!(
+            alias
+                .get_job(&job.id)
+                .unwrap()
+                .unwrap()
+                .consecutive_failures,
+            1
+        );
+        loaded
+            .finalize_run("current-daemon", "cancelled", None, None)
+            .unwrap();
+        engine.execute_job(job.clone()).await.unwrap();
+        let history = loaded.get_run_history(&job.id, 10).unwrap();
+        assert!(
+            history.iter().any(|r| r.status == "success"),
+            "due Send must execute after first-open recovery"
+        );
+        assert!(loaded.list_running_runs().unwrap().is_empty());
+    }
     /// In-band tool failure must not record as cron success: a
     /// `Completed` task whose payload declares `success: false`
     /// (ChannelSendResult) or carries a non-empty `error` string (Agent
