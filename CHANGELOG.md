@@ -4,6 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Unix IPC assignment size (2026-10-06)
+
+- Enlarge the CLI Unix datagram send buffer and the daemon receive buffer,
+  allowing request packets up to the existing 60 KB protocol limit. macOS's
+  2 KiB client default previously rejected ordinary longer prompts with
+  `Message too long` before they reached the daemon.
+- Added a native connection regression that sends and decodes a 58 KB
+  assignment request without a model call or OS keychain access.
+
 ### Streaming quota durability and daemon shutdown (2026-10-05)
 
 - Streamed LLM usage persists its token, request, cache and cost counters before
