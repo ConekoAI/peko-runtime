@@ -12,6 +12,10 @@ All notable changes to Peko.
   `Message too long` before they reached the daemon.
 - Added a native connection regression that sends and decodes a 58 KB
   assignment request without a model call or OS keychain access.
+- Channel CLI commands now extract typed payloads from daemon replies instead
+  of attempting to decode the tagged envelope as a scalar/tuple/array. A
+  successful create no longer retries locally and reports a collision; daemon
+  errors and uncertain request failures also stop without local re-execution.
 
 ### Streaming quota durability and daemon shutdown (2026-10-05)
 
