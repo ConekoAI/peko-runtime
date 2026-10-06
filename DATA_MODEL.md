@@ -21,6 +21,19 @@ markers. Earlier messages and tool-only tails retain their existing shapes.
 These are provider request fields; session JSONL remains unchanged. A marker
 requests caching but does not guarantee a hit from a compatible endpoint.
 
+## Cron Send history after daemon restart
+
+When a new daemon first opens a principal's cron schedule, unfinished
+`running` rows whose owning job is a `Send` become `failed`, with
+`finished_at` and an error stating that the interrupted outcome may be partial.
+The owning job's last status and failure counter are updated; authored
+enablement, next due time and run count are retained. Existing terminal history
+and `SpawnTool` rows retain their existing lifecycle. Recovery is once per
+schedule path in that daemon, shared across principal-id/DID aliases and engine
+clones; subsequent opens cannot reap a live Send turn. There are no new wire
+or storage fields. This clears stale coalescing state so ordinary due polling
+can continue. It does not undo, certify, or deduplicate interrupted side effects.
+
 ## Principal bootstrap completion (ADR-054)
 
 `principal.toml` retains the existing `boot_state` values: `provisioned`,

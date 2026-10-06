@@ -7,6 +7,16 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Cron scheduler restart recovery
+
+`CronEngine` closes unfinished persisted `Send` runs as failed when it first
+loads their schedule in a new daemon lifetime. First-open recovery is shared
+by clones and principal-id/DID aliases of the same schedule path, so cached
+opens preserve live turns. `CronScheduler::new` and the periodic async-task
+reconciler retain their existing contracts; ordinary schedule-tool reads do
+not abandon running turns. No public signatures or wire types changed. See
+`DATA_MODEL.md` for persisted history and partial-outcome semantics.
+
 ## Table of Contents
 
 1. [Module: `extensions::framework`](#module-extensionsframework) - Shared host utilities (ADR-066)
