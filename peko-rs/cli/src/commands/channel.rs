@@ -553,15 +553,8 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
     }
 }
 
-/// Try the daemon first; on any error, fall back to the in-process
-/// `ChannelCliRouter`. Returns the typed result either way.
-///
-/// Type `T` is the caller's local-path return shape. For the daemon
-/// path we decode the wire `ResponsePacket` by serializing it and
-/// deserializing into T — the response shapes in
-/// `peko_channel::cli_handlers` and `peko_core::ipc::packet::ResponsePacket`
-/// overlap structurally (ChannelId ↔ ChannelId, Vec<Subject> ↔
-/// Vec<Subject>, etc.).
+/// Use the daemon when reachable, otherwise the in-process router. Once a
+/// request reaches the daemon, errors must not repeat a mutation locally.
 async fn run_daemon_or<'a, T, F>(
     paths: &'a GlobalPaths,
     packet: RequestPacket,
@@ -576,11 +569,8 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>,
 {
     if let Ok(client) = DaemonClient::connect().await {
-        if let Ok(resp) = client.request_response(packet).await {
-            if let Ok(v) = decode_daemon_response::<T>(resp) {
-                return Ok(v);
-            }
-        }
+        let resp = client.request_response(packet).await.context(err_label)?;
+        return decode_daemon_response::<T>(resp).context(err_label);
     }
     let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(ChannelConfig {
         runtime_dir: paths.runtime_dir(),
@@ -594,14 +584,28 @@ where
     local(port, paths).await.context(err_label)
 }
 
-/// Decode a `ResponsePacket` returned by the daemon into the
-/// caller's expected `T`. We do this by re-serializing the response
-/// and deserializing into T — both `ChannelCliRouter::handle_*`
-/// responses and the IPC `ResponsePacket::Channel*` variants carry
-/// the same wire fields.
+/// Extract each reply's payload into the local router's return shape. The
+/// tagged IPC envelope is not itself a ChannelId, tuple, or event array.
 fn decode_daemon_response<T: serde::de::DeserializeOwned>(resp: ResponsePacket) -> Result<T> {
-    let bytes = serde_json::to_vec(&resp).context("encode ResponsePacket for decode")?;
-    serde_json::from_slice(&bytes).context("decode ResponsePacket into T")
+    let value = match resp {
+        ResponsePacket::ChannelCreated { channel, .. } => serde_json::to_value(channel)?,
+        ResponsePacket::ChannelInvited {
+            channel, invitee, ..
+        } => serde_json::to_value((channel, invitee))?,
+        ResponsePacket::ChannelPosted { task_id, .. } => serde_json::to_value(task_id)?,
+        ResponsePacket::ChannelPeekResult { events, .. } => serde_json::to_value(events)?,
+        ResponsePacket::ChannelMembersResult { members, .. } => serde_json::to_value(members)?,
+        ResponsePacket::ChannelListResult { channels, .. } => serde_json::to_value(channels)?,
+        ResponsePacket::ChannelLeft {
+            channel, principal, ..
+        } => serde_json::to_value((channel, principal))?,
+        ResponsePacket::ChannelPinnedToShared { shared_path, .. } => {
+            serde_json::to_value(shared_path)?
+        }
+        ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
+        other => anyhow::bail!("unexpected channel response: {other:?}"),
+    };
+    serde_json::from_value(value).context("decode channel reply payload")
 }
 
 fn parse_channel_id(s: &str) -> Result<ChannelId> {
@@ -621,3 +625,95 @@ fn print_channel_id(ch: ChannelId, json: bool) -> Result<()> {
 // may exercise in future subcommands (e.g. `PinToShared`).
 #[allow(dead_code)]
 fn _unused(_: ChannelEvent, _: PostMsg, _: CreateOpts, _: ChannelMembership, _: PrincipalId) {}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn channel_mutation_replies_extract_scalar_and_tuple_payloads() {
+        let channel = ChannelId::for_group("review");
+        let created: ChannelId = decode_daemon_response(ResponsePacket::ChannelCreated {
+            request_id: 1,
+            channel: channel.clone(),
+        })
+        .unwrap();
+        assert_eq!(created, channel);
+        let user = Subject::from_str("user:local").unwrap();
+        let invited: (ChannelId, Subject) =
+            decode_daemon_response(ResponsePacket::ChannelInvited {
+                request_id: 2,
+                channel: channel.clone(),
+                invitee: user.clone(),
+            })
+            .unwrap();
+        assert_eq!(invited, (channel.clone(), user));
+        let task: String = decode_daemon_response(ResponsePacket::ChannelPosted {
+            request_id: 3,
+            channel: channel.clone(),
+            task_id: "task-test".into(),
+        })
+        .unwrap();
+        assert_eq!(task, "task-test");
+        let principal = PrincipalId::generate();
+        let left: (ChannelId, PrincipalId) = decode_daemon_response(ResponsePacket::ChannelLeft {
+            request_id: 4,
+            channel: channel.clone(),
+            principal: principal.clone(),
+        })
+        .unwrap();
+        assert_eq!(left, (channel.clone(), principal));
+        let path: std::path::PathBuf =
+            decode_daemon_response(ResponsePacket::ChannelPinnedToShared {
+                request_id: 5,
+                channel,
+                shared_path: "/tmp/shared".into(),
+            })
+            .unwrap();
+        assert_eq!(path, std::path::PathBuf::from("/tmp/shared"));
+    }
+
+    #[test]
+    fn daemon_denial_and_unexpected_replies_are_errors() {
+        let denied = decode_daemon_response::<ChannelId>(ResponsePacket::Error {
+            request_id: 1,
+            message: "not authorized".into(),
+        })
+        .unwrap_err();
+        assert!(denied.to_string().contains("not authorized"));
+        assert!(decode_daemon_response::<ChannelId>(ResponsePacket::Pong {
+            request_id: 1,
+            uptime_secs: 0,
+            version: "test".into(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn channel_read_replies_extract_arrays() {
+        let channel = ChannelId::for_group("review");
+        let principal = PrincipalId::generate();
+        let channels: Vec<ChannelId> = decode_daemon_response(ResponsePacket::ChannelListResult {
+            request_id: 1,
+            principal,
+            channels: vec![channel.clone()],
+        })
+        .unwrap();
+        assert_eq!(channels, vec![channel.clone()]);
+        let reply: ResponsePacket = serde_json::from_value(serde_json::json!({
+            "type": "channel_members_result", "request_id": 2,
+            "channel": channel.to_string(), "members": [Subject::from_str("user:local").unwrap()]
+        }))
+        .unwrap();
+        let members: Vec<Subject> = decode_daemon_response(reply).unwrap();
+        assert_eq!(members, vec![Subject::from_str("user:local").unwrap()]);
+        let reply: ResponsePacket = serde_json::from_value(serde_json::json!({
+            "type": "channel_peek_result", "request_id": 3,
+            "channel": channel.to_string(), "events": []
+        }))
+        .unwrap();
+        let events: Vec<peko_protocol::channel::ChannelEvent> =
+            decode_daemon_response(reply).unwrap();
+        assert!(events.is_empty());
+    }
+}

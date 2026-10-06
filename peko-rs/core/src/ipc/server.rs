@@ -135,7 +135,7 @@ impl PeerAddr {
 /// Returns `Err` only if `setsockopt` itself fails (e.g. invalid fd),
 /// not when the kernel clamps the request.
 #[cfg(unix)]
-fn bump_send_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
+pub(crate) fn bump_send_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
     let fd = socket.as_raw_fd();
     let buf_len = IPC_SEND_BUFFER_BYTES as libc::c_int;
     let buf_len_ptr = std::ptr::addr_of!(buf_len);
@@ -422,6 +422,13 @@ impl IpcServer {
                         warn!(
                             "Failed to set Unix datagram SO_SNDBUF to {} bytes ({}); \
                              responses larger than the platform default may fail with EMSGSIZE",
+                            IPC_SEND_BUFFER_BYTES, e
+                        );
+                    }
+                    if let Err(e) = bump_recv_buffer(&socket) {
+                        warn!(
+                            "Failed to set Unix datagram SO_RCVBUF to {} bytes ({}); \
+                             large requests may fail with ENOBUFS",
                             IPC_SEND_BUFFER_BYTES, e
                         );
                     }

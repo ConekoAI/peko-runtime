@@ -299,6 +299,15 @@ impl ConnectionManager {
         let socket = UnixDatagram::bind(&tmp_path)
             .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {e}"))?;
 
+        // The client also sends full request packets. macOS defaults to a
+        // 2048-byte SO_SNDBUF, rejecting even modest assignment prompts.
+        if let Err(e) = crate::ipc::server::bump_send_buffer(&socket) {
+            tracing::warn!(
+                "failed to bump client unix socket SO_SNDBUF to 256KiB: {e}; \
+                 large requests may hit EMSGSIZE"
+            );
+        }
+
         // Raise the receive buffer so a multi-KiB response (e.g.
         // `principal_log` returning a populated session JSONL) doesn't
         // hit `ENOBUFS` on macOS. The default SO_RCVBUF on macOS is
@@ -481,5 +490,75 @@ mod tests {
 
         let pid = default_pid_path();
         assert!(pid.to_string_lossy().contains("daemon.pid"));
+    }
+
+    /// Exercise the real CLI connection, not just a raw socket helper. macOS
+    /// otherwise rejects an ordinary prompt above its 2048-byte send default.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_client_sends_request_near_packet_limit() {
+        use crate::ipc::packet::{RequestPacket, ResponsePacket};
+        let dir = tempfile::Builder::new()
+            .prefix("ipc-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = dir.path().join("server.sock");
+        let server = UnixDatagram::bind(&path).unwrap();
+        crate::ipc::server::bump_recv_buffer(&server).unwrap();
+        let serve = tokio::spawn(async move {
+            let mut buf = vec![0; 65536];
+            let (len, peer) = server.recv_from(&mut buf).await.unwrap();
+            assert!(matches!(
+                RequestPacket::from_bytes(&buf[..len]).unwrap(),
+                RequestPacket::Ping { .. }
+            ));
+            let pong = ResponsePacket::Pong {
+                request_id: 0,
+                uptime_secs: 0,
+                version: "test".into(),
+            }
+            .to_bytes()
+            .unwrap();
+            server
+                .send_to(&pong, peer.as_pathname().unwrap())
+                .await
+                .unwrap();
+            let (len, _) = server.recv_from(&mut buf).await.unwrap();
+            RequestPacket::from_bytes(&buf[..len]).unwrap()
+        });
+        let connection = ConnectionManager::connect_unix_with_timeout(
+            path.to_str().unwrap(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let message = "x".repeat(58_000);
+        let packet = RequestPacket::PrincipalSendStream {
+            request_id: 1,
+            name: "test-principal".into(),
+            message: message.clone(),
+            override_model: None,
+        };
+        let bytes = packet.to_bytes().unwrap();
+        assert!(bytes.len() > 2048 && bytes.len() <= peko_protocol::ipc::MAX_PACKET_SIZE);
+        let send_result = connection.send(&bytes).await;
+        if send_result.is_err() {
+            serve.abort();
+            let _ = std::fs::remove_file(
+                std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id())),
+            );
+        }
+        send_result.unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(5), serve)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(received, RequestPacket::PrincipalSendStream { message: actual, .. } if actual == message)
+        );
+        drop(connection);
+        let _ = std::fs::remove_file(
+            std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id())),
+        );
     }
 }
