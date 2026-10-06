@@ -456,16 +456,25 @@ impl super::ApiAdapter for AnthropicAdapter {
             body["tool_choice"] = json!(tool_choice_anthropic(&options.tool_choice));
         }
 
-        // F23: stamp the marker on the last message's trailing cacheable block
-        // (skip `ToolUse`/`ToolResult` — Anthropic only honors the marker on
-        // `text` blocks for prefix caching).
+        // F23: stamp the marker on the last message's trailing text block.
+        // Plain text is flattened by convert_messages; materialize its block
+        // here so ordinary user turns and runtime-context tails retain the
+        // conversation breakpoint. Tool-only tails keep their existing shape.
         if let Some(marker) = cache_marker.as_ref() {
             if let Some(last_msg) = anthropic_messages.last_mut() {
-                if let Content::Blocks(blocks) = &mut last_msg.content {
-                    for block in blocks.iter_mut().rev() {
-                        if let AnthropicContentBlock::Text { cache_control, .. } = block {
-                            *cache_control = Some(marker.clone());
-                            break;
+                match &mut last_msg.content {
+                    Content::Text(text) => {
+                        last_msg.content = Content::Blocks(vec![AnthropicContentBlock::Text {
+                            text: std::mem::take(text),
+                            cache_control: Some(marker.clone()),
+                        }]);
+                    }
+                    Content::Blocks(blocks) => {
+                        for block in blocks.iter_mut().rev() {
+                            if let AnthropicContentBlock::Text { cache_control, .. } = block {
+                                *cache_control = Some(marker.clone());
+                                break;
+                            }
                         }
                     }
                 }
@@ -1563,6 +1572,49 @@ mod tests {
         assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
     }
 
+    #[test]
+    fn test_build_request_plain_text_tail_retains_cache_breakpoint() {
+        let adapter = AnthropicAdapter::new();
+        let text = "<runtime-context>Iteration 2.</runtime-context>";
+        for role in [MessageRole::User, MessageRole::Assistant] {
+            for retention in [
+                CacheRetention::None,
+                CacheRetention::Default,
+                CacheRetention::Long,
+            ] {
+                let messages = [
+                    LlmMessage::user("Earlier input"),
+                    LlmMessage::text(role, text),
+                ];
+                let options = ChatOptions {
+                    cache_retention: retention,
+                    ..Default::default()
+                };
+                let (_, body) = adapter
+                    .build_request("mimo-v2.6-flash", &messages, None, &options, true)
+                    .unwrap();
+                assert_eq!(body["messages"][0]["content"], "Earlier input");
+                let tail = &body["messages"][1]["content"];
+                if retention == CacheRetention::None {
+                    assert_eq!(tail, text);
+                } else {
+                    let blocks = tail
+                        .as_array()
+                        .expect("text tail must support its breakpoint");
+                    assert_eq!(blocks.len(), 1);
+                    assert_eq!(blocks[0]["text"], text);
+                    assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+                    assert_eq!(
+                        blocks[0]["cache_control"]
+                            .get("ttl")
+                            .and_then(Value::as_str),
+                        (retention == CacheRetention::Long).then_some("1h")
+                    );
+                }
+            }
+        }
+    }
+
     /// `CacheRetention::None` produces the pre-F23 wire shape — no
     /// `cache_control` on system, no `cache_control` on tools, no
     /// `cache_control` on any message block.
@@ -2171,8 +2223,7 @@ mod tests {
 
     // ---------- F28: multimodal image content (Anthropic) ----------
 
-    /// F28 baseline: a text-only user message keeps the pre-F28 wire
-    /// shape — Anthropic's `Content::Text("...")` shortcut.
+    /// Text-only input keeps the string shortcut when caching is disabled.
     #[test]
     fn test_build_request_text_only_user_keeps_text_content() {
         let adapter = AnthropicAdapter::new();
@@ -2181,14 +2232,14 @@ mod tests {
                 "claude-opus-4-6",
                 &[LlmMessage::user("hello")],
                 None,
-                &ChatOptions::default(),
+                &ChatOptions {
+                    cache_retention: CacheRetention::None,
+                    ..Default::default()
+                },
                 false,
             )
             .unwrap();
-        // Anthropic user-role messages are arrays of typed blocks; a
-        // shortcut `content: "..."` (string) is replaced on the wire
-        // by the API itself, but we emit it here so test/fixture
-        // round-trips stay byte-for-byte compatible.
+        // Without caching, no array is needed to hold a breakpoint.
         assert_eq!(body["messages"][0]["content"], "hello");
     }
 

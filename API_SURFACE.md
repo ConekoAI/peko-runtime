@@ -318,6 +318,12 @@ impl StatelessAgentService {
 `OpenAiResponsesAdapter`, and `AnthropicAdapter`. The factory selects by
 `ModelConfig.api_format`; endpoint vendors do not require separate implementations.
 
+`AnthropicAdapter` applies `ChatOptions.cache_retention` to the system block,
+last tool, and last message's trailing text. A plain-text tail becomes a single
+text-block array when caching is enabled so it can carry `cache_control`;
+disabled caching retains the string shortcut. Provider cache-hit behavior is
+observed through usage, not guaranteed by emitting a marker.
+
 ```rust
 impl ModelConfig {
     pub fn new(id: impl Into<String>, api_format: ApiFormat,
