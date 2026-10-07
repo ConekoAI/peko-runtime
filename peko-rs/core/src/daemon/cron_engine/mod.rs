@@ -1471,7 +1471,7 @@ mod tests {
         let mut job = recovery_job(did.clone());
         job.action = CronJobAction::SpawnTool {
             tool_name: "Bash".into(),
-            tool_params: serde_json::json!({"command": "printf cron-recovered"}),
+            tool_params: serde_json::json!({"command": "echo cron-recovered"}),
             wake_on_completion: Some(false),
             timeout_secs: Some(10),
         };
