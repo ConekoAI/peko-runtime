@@ -9,6 +9,12 @@ This document defines the public API surface for Peko, including the new Unified
 
 ## Cron interval completion policy
 
+`CronEngine::execute_job_for_id` (used by CronTrigger) returns the ID of the
+persisted run, reserving it before asynchronous execution. A coalesced trigger
+returns the existing open run ID. Timer/manual admission is shared across engine
+clones and does not hold its short lock while running tools. Public signatures
+and wire types are unchanged.
+
 Runs of the same job are coalesced while one is in flight. For `Every`, completion
 advances the scheduled grid to the first strictly future slot; overdue slots are
 skipped without catch-up. An interval is nominal, not a guarantee of observation

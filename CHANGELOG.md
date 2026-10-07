@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Truthful manual cron run identifiers (2026-10-07)
+
+- Reserve and persist a cron run before returning its ID from CronTrigger.
+  Previously the trigger returned a fresh UUID while execution stored another,
+  making the advertised run impossible to find in CronHistory. Timer/manual
+  admission shares a short lock across engine clones, so coalesced triggers
+  return the actual open run ID. Execution remains asynchronous.
+  Added a red-before/green-after history identity regression and concurrent
+  admission/coalesced-trigger coverage.
+
 ### Addressable trunk session reads (2026-10-07)
 
 - Return `sess:/` for the trunk in session listings and prompt context. The
