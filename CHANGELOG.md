@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Truthful cron reconciliation (2026-10-07)
+
+- A running cron row whose attached task disappears from the process-local
+  async registry now closes as failed with an unknown/partial-outcome warning,
+  retaining its task id. Absence previously fabricated a successful completion.
+- Reconcile vanished attached ids on first open, without waiting for the hourly
+  janitor. Preserve known terminal results, current live tasks and authored cadence.
+  Recovery does not replay uncertain effects. Added persisted restart coverage
+  proving partial effects survive and a subsequent due tool tick can execute.
+
 ### Interrupted cron tool recovery (2026-10-07)
 
 - Extend first-open recovery to abandoned SpawnTool runs without an attached
