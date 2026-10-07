@@ -1916,6 +1916,7 @@ impl SubagentExecutor {
         let principal_workspace_clone = self.principal_workspace.clone();
         let session_manager_clone = self.session_manager.clone();
         let principal_id_clone = self.principal_id.clone();
+        let principal_name_clone = self.principal_name.clone();
         let tooling_clone = Arc::clone(&self.tooling);
         let observability_clone = self.observability.clone();
         // F39: clone the parent's quota meter so the spawned task
@@ -2060,6 +2061,7 @@ impl SubagentExecutor {
                         session_manager_clone,
                         registry_for_task,
                         principal_id_clone,
+                        principal_name_clone,
                         principal_workspace_clone,
                         tooling_clone,
                         observability_clone,
@@ -2453,6 +2455,7 @@ async fn execute_subagent_task(
     session_manager: Arc<RwLock<SessionManager>>,
     async_registry: SharedAsyncTaskRegistry,
     principal_id: PrincipalId,
+    principal_name: Option<String>,
     principal_workspace: Option<std::path::PathBuf>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     observability: Option<Arc<Observability>>,
@@ -2576,6 +2579,12 @@ async fn execute_subagent_task(
     // inside the nested `execute_subagent_task`, matching pre-F39
     // behavior.
     .with_quota_meter(parent_quota_meter.clone());
+    // The reconstructed executor also owns recursive spawns. Keep the
+    // principal's display-name context alongside its stable id so tools
+    // such as Workflow can resolve the caller on every child turn.
+    if let Some(name) = principal_name {
+        shared_executor_builder = shared_executor_builder.with_principal_name(name);
+    }
     if let Some(ref ws) = principal_workspace {
         shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
     }

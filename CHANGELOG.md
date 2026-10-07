@@ -4,6 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Principal context on child turns (2026-10-07)
+
+- Preserve the principal name when reconstructing a child agent's shared
+  executor. Peer-ingress, spawned and resumed turns previously retained the
+  principal id but lost the name, causing the advertised Workflow tool to
+  reject valid calls before spawning Python. Recursive delegation inherits
+  the same context. Added actual Workflow execution through spawned and
+  streaming-resumed mock-provider agent loops.
+
 ### Observable nominal cron intervals (2026-10-07)
 
 - CronCreate explains that same-job runs do not overlap and overdue interval
