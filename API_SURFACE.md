@@ -39,11 +39,19 @@ not abandon running turns. No public signatures or wire types changed. See
 
 Cloning `ToolCallAccumulator` or a concrete API adapter starts an empty parser
 lifetime, retaining adapter configuration (URL/headers) but not partial tool
-calls. Anthropic adapter clones also start without pending usage. `Provider`
+calls. Anthropic adapter clones also start without pending usage or termination
+reason. `Provider`
 clones and the parser clone in `stream_with_tools` therefore isolate overlapping
 responses, including supervisor/subagent streams at identical content indexes.
 Mock adapter clones keep shared fixture queues and request capture. Public
 signatures and wire types are unchanged.
+
+`AnthropicAdapter` retains `message_delta.delta.stop_reason` (or a legacy
+top-level reason) even when the same delta returns a `Usage` event. The terminal
+`message_stop` emits one `Done`: `max_tokens` maps to `Length`, `tool_use` to
+`ToolUse`, and other or absent reasons to `Stop`. A new `message_start` clears
+pending termination state. This preserves provider termination information;
+the agent loop's tool-validation and retry behavior is unchanged.
 
 ## Table of Contents
 
