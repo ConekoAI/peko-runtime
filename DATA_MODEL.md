@@ -11,6 +11,11 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ## Cron interval audit timing
 
+CronTrigger's returned `run_id` is the persisted `CronRun.id`. Admission writes
+the open row before returning the ID or spawning work; timer/manual coalescing
+reuses that row. History and audit completion keep the same ID. Storage and
+wire shapes are unchanged.
+
 `cron.result` details retain status, error and execution `duration_ms`, and add
 RFC3339 `scheduled_at`, `finished_at`, `next_run_at`, and integer
 `skipped_interval_slots` for `Every` jobs (null otherwise). The slot count is the

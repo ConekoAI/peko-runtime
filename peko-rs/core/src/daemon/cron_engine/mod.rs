@@ -46,6 +46,9 @@ pub struct CronEngine {
     /// the generated id and DID can resolve to the same schedule. Clones
     /// share this set so neither alias can close a current-lifetime run.
     initialized_schedules: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Serialize admission across manual triggers and polling in this daemon.
+    /// Persist the run before returning its id or spawning its execution.
+    run_admission: Arc<Mutex<()>>,
     path_resolver: PathResolver,
     /// **Phase C.** Engine-internal `RuntimeAuthority` for the
     /// `local_cron_schedule_runtime` accessor. The engine writes cron
@@ -90,6 +93,7 @@ impl CronEngine {
         Self {
             schedulers: Arc::new(Mutex::new(HashMap::new())),
             initialized_schedules: Arc::new(Mutex::new(HashSet::new())),
+            run_admission: Arc::new(Mutex::new(())),
             path_resolver: path_resolver.clone(),
             authority: Arc::new(RuntimeAuthority::for_runtime(path_resolver)),
             idle_detector,
@@ -336,31 +340,29 @@ impl CronEngine {
                 break;
             }
         }
-        let Some((_principal_id, scheduler, job)) = found else {
+        let Some((_principal_id, _scheduler, job)) = found else {
             return Err(anyhow::anyhow!("job {job_id} not found"));
         };
 
         // Coalesce: if there is an in-flight run for this job, return
         // its run_id and do NOT spawn a duplicate execution.
-        let running = scheduler
-            .list_running_runs()
-            .map_err(|e| anyhow::anyhow!("cron lookup: {e}"))?;
-        if let Some(open) = running.into_iter().find(|r| r.job_id == job_id) {
+        let (run, admitted) = self.reserve_run(&job).await?;
+        if !admitted {
             info!(
                 "⏰ Job '{}' already running as run_id={}; coalescing manual trigger",
-                job.name, open.id
+                job.name, run.id
             );
-            return Ok(open.id);
+            return Ok(run.id);
         }
 
         // Spawn the execution. Same rationale as `check_and_run`:
         // a slow `Send` job must not block the IPC handler that
         // queued the trigger.
-        let run_id = Uuid::new_v4().to_string();
+        let run_id = run.id.clone();
         let engine = self.clone();
         let job_id_for_log = job.id.clone();
         tokio::spawn(async move {
-            if let Err(e) = engine.execute_job(job).await {
+            if let Err(e) = engine.execute_reserved_job(job, run).await {
                 error!("manual-trigger job {job_id_for_log} failed: {e}");
             }
         });
@@ -368,31 +370,49 @@ impl CronEngine {
     }
 
     async fn execute_job(&self, job: CronJob) -> Result<()> {
-        info!("🔄 Executing job '{}' ({})", job.name, job.id);
-
-        let run_id = Uuid::new_v4().to_string();
-        let started_at = Utc::now();
-
-        let scheduler = self.scheduler_for(&job.principal_id).await?;
-
-        // Coalesce with an in-flight run of the same job: SpawnTool
-        // jobs now AWAIT the tool's terminal outcome (bounded by the
-        // executor's `timeout_secs` enforcement), so without this guard
-        // an `Every` job whose tool outlives one poll interval would
-        // re-fire on every tick while the previous run is still open.
-        // First-open recovery closes Send and untracked SpawnTool rows from
-        // a previous daemon; the janitor reconciles attached async task ids.
-        if scheduler
-            .list_running_runs()?
-            .iter()
-            .any(|r| r.job_id == job.id)
-        {
+        let (run, admitted) = self.reserve_run(&job).await?;
+        if !admitted {
             info!(
                 "⏭️  Job '{}' already has a run in flight; skipping this fire",
                 job.name
             );
             return Ok(());
         }
+        self.execute_reserved_job(job, run).await
+    }
+
+    async fn reserve_run(&self, job: &CronJob) -> Result<(CronRun, bool)> {
+        // Manual triggers and timer fires share admission. Hold the short
+        // engine-local lock across lookup + persistence, never across tools.
+        let scheduler = self.scheduler_for(&job.principal_id).await?;
+        let _admission = self.run_admission.lock().await;
+        if let Some(run) = scheduler
+            .list_running_runs()?
+            .into_iter()
+            .find(|r| r.job_id == job.id)
+        {
+            return Ok((run, false));
+        }
+        let run = CronRun {
+            id: Uuid::new_v4().to_string(),
+            job_id: job.id.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: "running".to_string(),
+            output: None,
+            error: None,
+        };
+        scheduler.record_run(&run)?;
+        Ok((run, true))
+    }
+
+    async fn execute_reserved_job(&self, job: CronJob, run: CronRun) -> Result<()> {
+        info!("🔄 Executing job '{}' ({})", job.name, job.id);
+
+        let run_id = run.id.clone();
+        let started_at = run.started_at;
+
+        let scheduler = self.scheduler_for(&job.principal_id).await?;
 
         let _ = self
             .observability
@@ -409,17 +429,6 @@ impl CronEngine {
                 }),
             )
             .await;
-
-        let run = CronRun {
-            id: run_id.clone(),
-            job_id: job.id.clone(),
-            started_at,
-            finished_at: None,
-            status: "running".to_string(),
-            output: None,
-            error: None,
-        };
-        scheduler.record_run(&run)?;
 
         let result = match &job.action {
             CronJobAction::Send { .. } => self
@@ -3286,6 +3295,25 @@ mod tests {
             "manual trigger must reach a terminal status, got: {runs:?}"
         );
         assert!(runs[0].finished_at.is_some());
+        assert_eq!(
+            runs[0].id, run_id,
+            "returned trigger ID must identify its persisted run"
+        );
+
+        // Two admissions (including through engine clones) must share one
+        // persisted open run, rather than returning an unexecuted phantom id.
+        let clone = engine.clone();
+        let (first, second) = tokio::join!(engine.reserve_run(&job), clone.reserve_run(&job));
+        let (first, first_admitted) = first.unwrap();
+        let (second, second_admitted) = second.unwrap();
+        assert_eq!(first.id, second.id);
+        assert_ne!(first_admitted, second_admitted);
+        assert_eq!(scheduler.list_running_runs().unwrap().len(), 1);
+        assert_eq!(
+            engine.execute_job_for_id("job-abc").await.unwrap(),
+            first.id
+        );
+        assert_eq!(scheduler.get_run_history("job-abc", 10).unwrap().len(), 2);
 
         drop(principal);
     }
