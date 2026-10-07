@@ -1104,6 +1104,131 @@ mod tests {
 
     // ── Subprocess behavior (python3-gated) ──────────────────────────
 
+    /// Exercise the real child agent loop and dispatcher, rather than
+    /// supplying the Workflow tool's context by hand. Peer ingress and
+    /// cron Agent jobs use this same executor path.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn spawned_and_resumed_turns_can_execute_workflow() {
+        use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
+        use peko_providers::core::ProviderRuntimeOptions;
+
+        if !python3_available() {
+            eprintln!("skipping: python3 not on PATH");
+            return;
+        }
+        let fx = fixture("workflow-child-context").await;
+        let principal = fx
+            .manager
+            .get_by_name("workflow-child-context")
+            .await
+            .unwrap();
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+        crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+            tooling.catalog(),
+            Arc::new(WorkflowTool::new(
+                Arc::downgrade(&fx.manager),
+                fx.run_tokens.clone(),
+            )),
+            &principal.id,
+        )
+        .await
+        .unwrap();
+        let sessions = peko_session::manager::SessionManager::new()
+            .with_path_resolver(
+                Arc::new(peko_session::DefaultPathResolver::with_data_dir(
+                    fx._temp.path().join("child-data"),
+                )),
+                "workflow-child-context",
+            )
+            .await
+            .unwrap();
+        let sessions = Arc::new(tokio::sync::RwLock::new(sessions));
+        let parent = sessions
+            .write()
+            .await
+            .route(
+                &Subject::User("owner".into()),
+                peko_session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap()
+            .context
+            .session_id;
+        let mock = peko_providers::MockAdapter::new();
+        let provider = Arc::new(
+            peko_providers::Provider::new(
+                peko_providers::AnyAdapter::Mock(mock.clone()),
+                "mock-key",
+                ProviderRuntimeOptions {
+                    default_model_id: "mock-model".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        let executor = SubagentExecutor::new(
+            sessions,
+            "workflow-child-context",
+            principal.id.clone(),
+            tooling,
+        )
+        .with_principal_name("workflow-child-context")
+        .with_principal_workspace(fx.workspace.clone())
+        .with_provider(provider);
+        write_workflow(
+            &fx.workspace,
+            "marker.py",
+            r#"import os, sys
+from pathlib import Path
+assert os.environ["PEKO_PRINCIPAL_ID"] == sys.argv[2]
+Path(os.environ["PEKO_WORKSPACE"], sys.argv[1]).write_text("WORKFLOW_EXECUTED")
+"#,
+        );
+        let config = ExecutionConfig {
+            slug: Some("workflow-worker".into()),
+            timeout_seconds: 15,
+            ..Default::default()
+        };
+        mock.queue_tool_call(
+            "workflow-spawn",
+            "Workflow",
+            json!({"path":"marker.py", "args":["spawn.txt", principal.id.0]}),
+        );
+        mock.queue_text("done");
+        executor
+            .execute_and_wait("run the workflow", &parent, config.clone(), 20, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.workspace.join("spawn.txt")).unwrap(),
+            "WORKFLOW_EXECUTED"
+        );
+        mock.queue_tool_call(
+            "workflow-resume",
+            "Workflow",
+            json!({"path":"marker.py", "args":["resume.txt", principal.id.0]}),
+        );
+        mock.queue_text("done");
+        executor
+            .resume_streaming(
+                "run it again",
+                "/workflow-worker",
+                &parent,
+                config,
+                Arc::new(|_| {}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.workspace.join("resume.txt")).unwrap(),
+            "WORKFLOW_EXECUTED"
+        );
+    }
+
     /// A script runs to completion: identity env is injected, args pass
     /// through, and the daemon's own secrets do NOT leak (env_clear).
     #[tokio::test(flavor = "multi_thread")]

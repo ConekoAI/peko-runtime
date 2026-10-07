@@ -901,6 +901,12 @@ Wire shapes documented in `DATA_MODEL.md` §13¾. New/changed public items:
 
 ### ADR-061 phase 2b — `Workflow` runner + run tokens (2026-09-23)
 
+Child executor reconstruction preserves `SubagentExecutor::with_principal_name`
+alongside the stable principal id (2026-10-07). Spawned, resumed, peer-ingress
+and recursively delegated turns retain the same calling-principal tool context;
+`Workflow` no longer loses caller resolution at this boundary. No tool arguments
+or wire shapes change.
+
 Branch `feat/agent-workflows`. Agent-authored Python workflows
 (`<workspace>/workflows/*.py`) run as subprocesses with PEKO identity env
 injected; callbacks authenticate with a per-spawn run token. Wire shapes in
