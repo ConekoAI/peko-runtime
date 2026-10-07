@@ -189,8 +189,8 @@ impl ScheduleKind {
 ///   by the retired `peko cron add` CLI).
 /// - [`Self::SpawnTool`] — at fire time the daemon asks the
 ///   `AsyncExecutor` to run `tool_name` with `tool_params` (fixed
-///   behavior, no LLM cost per fire). Written by `CronCreate` with
-///   `tool` + `params`.
+///   dispatch; the invoked tool may itself call an LLM). Written by
+///   `CronCreate` with `tool` + `params`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CronJobAction {
