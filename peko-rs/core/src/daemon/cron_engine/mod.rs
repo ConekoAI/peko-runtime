@@ -19,7 +19,6 @@ use peko_cron::{
 };
 use peko_observability::Observability;
 use peko_subject::PrincipalId;
-use peko_tools_core::ToolResult;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
@@ -143,6 +142,15 @@ impl CronEngine {
         let mut initialized = self.initialized_schedules.lock().await;
         if !initialized.contains(&path) {
             recover_interrupted_runs(&scheduler)?;
+            // Reconcile attached ids immediately on a fresh lifetime. Waiting
+            // for the hourly janitor would suppress otherwise-due ticks.
+            for run in scheduler.list_running_runs()? {
+                if let Some(task_id) = run.output.as_ref() {
+                    if self.async_executor.check_status(task_id).await.is_none() {
+                        finalize_missing_task(&scheduler, &run, task_id)?;
+                    }
+                }
+            }
             initialized.insert(path);
         }
         map.insert(principal_id.clone(), scheduler.clone());
@@ -1018,23 +1026,22 @@ impl CronEngine {
                 continue;
             };
 
-            let status = match self.async_executor.check_status(&task_id).await {
-                Some(s) => s,
-                // Registry no longer holds this task. Treat it as a
-                // successful no-op so the cron row lands somewhere
-                // other than "running" forever.
-                None => AsyncTaskStatus::Completed {
-                    result: ToolResult::success(serde_json::json!({
-                        "note": "task disappeared from registry"
-                    })),
-                },
-            };
-
-            if !status.is_terminal() {
-                continue;
-            }
-
-            let (cron_status, output, error) = map_async_status(status);
+            let (cron_status, output, error) =
+                match self.async_executor.check_status(&task_id).await {
+                    Some(status) if status.is_terminal() => map_async_status(status),
+                    Some(_) => continue,
+                    // The registry is process-local and its janitor can also purge
+                    // terminal entries. Absence proves neither completion nor
+                    // failure of the tool's effects. Preserve the id for diagnosis
+                    // and release the running row without certifying success or
+                    // replaying the interrupted task.
+                    None => {
+                        let scheduler = self.scheduler_for(&principal_id).await?;
+                        finalized +=
+                            usize::from(finalize_missing_task(&scheduler, &run, &task_id)?);
+                        continue;
+                    }
+                };
             // Phase A: target the principal that owns this run so
             // the finalize + last_status writes land on the right
             // schedule file.
@@ -1179,6 +1186,23 @@ fn recover_interrupted_runs(scheduler: &CronScheduler) -> Result<usize> {
     Ok(recovered)
 }
 
+/// Missing process-local evidence never certifies the tool's external effects.
+fn finalize_missing_task(scheduler: &CronScheduler, run: &CronRun, task_id: &str) -> Result<bool> {
+    if !scheduler.finalize_run(
+        &run.id,
+        "failed",
+        Some(task_id.to_string()),
+        Some(format!(
+            "async task {task_id} missing from registry; outcome unknown and may be partial"
+        )),
+    )? {
+        return Ok(false);
+    }
+    scheduler.set_job_last_status(&run.job_id, "failed")?;
+    warn!(run_id = %run.id, job_id = %run.job_id, task_id, "Cron task outcome unavailable");
+    Ok(true)
+}
+
 /// Translate a terminal `AsyncTaskStatus` into the wire string the cron
 /// `CronRun.status` field has historically used.
 ///
@@ -1284,6 +1308,7 @@ mod tests {
     use peko_providers::mock::MockAdapter;
     use peko_providers::resolver::LlmResolver;
     use peko_subject::Subject;
+    use peko_tools_core::ToolResult;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -1514,6 +1539,91 @@ mod tests {
             "due tool must execute after first-open recovery: {history:?}"
         );
         assert!(loaded.list_running_runs().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn attached_task_restart_recovery_preserves_partial_effects_and_unblocks_future_ticks() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let principal =
+            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let did = PrincipalId::from_did(&principal.did().await);
+        let resolver = PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tooling = ToolRuntime::with_workspace(resolver.clone(), tmp.path())
+            .await
+            .unwrap();
+        let scheduler = CronScheduler::new(resolver.cron_schedule("crony")).unwrap();
+        let mut job = recovery_job(did.clone());
+        job.action = CronJobAction::SpawnTool {
+            tool_name: "Bash".into(),
+            tool_params: serde_json::json!({"command": "echo cron-recovered"}),
+            wake_on_completion: Some(false),
+            timeout_secs: Some(10),
+        };
+        scheduler.add_job(&job).unwrap();
+        // An effect happened before the previous daemon lost its result.
+        // Recovery must preserve it, never replay the old task, and never
+        // certify that the full operation completed.
+        let partial_effect = tmp.path().join("partial-effect.txt");
+        std::fs::write(&partial_effect, "one external effect").unwrap();
+        let mut abandoned = open_recovery_run(&job.id, "previous-daemon");
+        abandoned.output = Some("tool:previous-daemon".into());
+        scheduler.record_run(&abandoned).unwrap();
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager),
+            Arc::new(AsyncExecutor::new(
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )),
+            Arc::downgrade(tooling.tooling()),
+        );
+        let loaded = engine.scheduler_for(&did).await.unwrap();
+        // First-open recovery checks the fresh executor immediately rather
+        // than leaving a due job blocked until the hourly janitor.
+        assert!(loaded.list_running_runs().unwrap().is_empty());
+        assert_eq!(engine.reconcile_running_runs().await.unwrap(), 0);
+        let recovered = loaded.get_run_history(&job.id, 10).unwrap();
+        assert_eq!(recovered[0].status, "failed");
+        assert_eq!(recovered[0].output, abandoned.output);
+        assert!(recovered[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("may be partial"));
+        assert_eq!(
+            std::fs::read_to_string(&partial_effect).unwrap(),
+            "one external effect"
+        );
+        assert_eq!(loaded.due_jobs(Utc::now()).unwrap().len(), 1);
+        loaded
+            .record_run(&open_recovery_run(&job.id, "current-daemon"))
+            .unwrap();
+        let alias = engine.clone().scheduler_for(&principal.id).await.unwrap();
+        assert_eq!(alias.list_running_runs().unwrap()[0].id, "current-daemon");
+        loaded
+            .finalize_run("current-daemon", "cancelled", None, None)
+            .unwrap();
+        engine.execute_job(job.clone()).await.unwrap();
+        let history = loaded.get_run_history(&job.id, 10).unwrap();
+        assert!(
+            history.iter().any(|r| r.status == "success"
+                && r.output
+                    .as_deref()
+                    .is_some_and(|s| s.contains("cron-recovered"))),
+            "due tool must execute after first-open recovery: {history:?}"
+        );
+        assert!(loaded.list_running_runs().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&partial_effect).unwrap(),
+            "one external effect"
+        );
+        assert_eq!(engine.reconcile_running_runs().await.unwrap(), 0);
     }
 
     /// In-band tool failure must not record as cron success: a
@@ -1968,9 +2078,8 @@ mod tests {
     }
 
     /// When the AsyncTaskRegistry no longer holds the task (e.g. the
-    /// janitor already cleaned it up), the reconciler still finalizes
-    /// the cron row as `success` so it does not stay marked "running"
-    /// forever.
+    /// janitor already cleaned it up), finalization must report an
+    /// unknown/partial outcome rather than inventing success.
     #[tokio::test]
     async fn test_reconcile_finalizes_when_task_disappeared() {
         let tmp = TempDir::new().unwrap();
@@ -2007,9 +2116,7 @@ mod tests {
         };
         scheduler.add_job(&job).unwrap();
 
-        // Two rows: one with a real task id we will orphan, one with
-        // a task id that no longer exists in the registry. Both must
-        // become terminal in one reconcile pass.
+        // A persisted task id with no matching in-memory registry entry.
         scheduler
             .record_run(&CronRun {
                 id: "run-vanish".to_string(),
@@ -2056,8 +2163,15 @@ mod tests {
             .iter()
             .find(|r| r.id == "run-vanish")
             .expect("run should still be present");
-        assert_eq!(run.status, "success", "missing tasks finalize as success");
+        assert_eq!(run.status, "failed", "absence is not completion evidence");
         assert!(run.finished_at.is_some());
+        assert_eq!(run.output.as_deref(), Some("ghost:gone"));
+        assert!(run.error.as_deref().unwrap().contains("outcome unknown"));
+        let updated_job = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(updated_job.last_status.as_deref(), Some("failed"));
+        assert_eq!(updated_job.consecutive_failures, 1);
+        assert_eq!(updated_job.next_run, job.next_run);
+        assert_eq!(engine.reconcile_running_runs().await.unwrap(), 0);
     }
 
     /// Recursively find a file by exact file name under `dir`.
