@@ -592,7 +592,7 @@ Branch `feat/agent-session-paradigm`; see
 |-----------|--------|--------|---------|
 | `SessionMetadata`/`SessionEntry` (+`standing`, +`slug`) | `peko_session::{metadata,index}` | ✅ Extended | Durability flag (prune exemption) + per-parent-unique path segment |
 | `MetadataController::{set_parent, set_slug, set_standing}` / `SessionManager::{move_session, set_session_slug, set_standing}` | `peko_session::{metadata_controller,manager}` | ✅ New | Reparent / slug / standing writers |
-| `peko_session::path` (`resolve_path`, `compute_path`, `validate_slug`, `derive_branch_slug`) | `peko_session::path` | ✅ New | `/a/b/c` path addressing over the session tree |
+| `peko_session::path` (`resolve_path`, `compute_path`, `validate_slug`, `derive_branch_slug`) | `peko_session::path` | ✅ New | `/a/b/c` path addressing over the session tree; trunk display path is `sess:/`, reusable for history/status/page reads and list/find scopes (2026-10-07); mutation path validation is unchanged |
 | `SessionRuntime::move_session`; `rename_session` (+`slug`); `SessionInfo` (+`slug`, +`path`) | `tools::builtin::session` | ✅ Extended | Session tool 10th action + path-aware DTOs |
 | `ownership::{err_move_ancestor, err_move_cycle}` | `session::ownership` | ✅ New | Move guard refusals (incl. cycle prevention) |
 | `SpawnRequest.name` / `ExecutionConfig.{slug, subagent_type}` | `tools::builtin::messaging`, `agents` | ✅ Extended | Named spawns + standing-child attach |

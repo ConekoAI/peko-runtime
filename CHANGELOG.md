@@ -4,6 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Addressable trunk session reads (2026-10-07)
+
+- Return `sess:/` for the trunk in session listings and prompt context. The
+  previous `sess:/<trunk UUID>` display address was rejected by the resolver,
+  despite session tools instructing callers to reuse listed paths. Read scopes
+  accept the tree-root address; mutation path validation remains unchanged.
+  Added a real session-tool list → history/status/scoped-list regression from
+  a child caller, reproduced failing before the fix.
+
 ### Principal context on child turns (2026-10-07)
 
 - Preserve the principal name when reconstructing a child agent's shared

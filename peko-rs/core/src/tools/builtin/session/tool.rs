@@ -119,15 +119,17 @@ impl SessionTool {
     /// addressing as every other action). Shape-validated here
     /// (early-fail, mirrors `require_path`); resolved to a canonical
     /// session id at the runtime layer. Absent / empty ⇒ `None` (the
-    /// whole store). Bare `/` is refused like everywhere else — to
-    /// span the whole store, omit the parameter.
+    /// whole store). `sess:/` (or `/`) scopes reads to the caller's
+    /// tree root; mutation paths still require a nonempty slug segment.
     fn optional_subtree(params: &serde_json::Value) -> anyhow::Result<Option<String>> {
         match params.get("path").and_then(|v| v.as_str()) {
             None | Some("") => Ok(None),
             Some(path) => {
-                peko_session::path::validate_path(path).map_err(|e| {
-                    anyhow::anyhow!("'path' subtree scope is not a valid slug path: {e}")
-                })?;
+                if peko_session::path::strip_scheme_prefix(path) != "/" {
+                    peko_session::path::validate_path(path).map_err(|e| {
+                        anyhow::anyhow!("'path' subtree scope is not a valid slug path: {e}")
+                    })?;
+                }
                 Ok(Some(path.to_string()))
             }
         }
@@ -228,6 +230,8 @@ Per-action semantics (the action you choose determines which other params apply)
 - search_pages: case-insensitive substring search across ALL pages of a session including the live one (path optional, defaults to current; query required; max_results optional). Hits are page-tagged — follow up with read_page on the hit's page.
 
 Default nodes: the principal is seeded with two ordinary standing sessions at creation — `sess:/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `sess:/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `sess:/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
+
+The trunk's listed address is `sess:/`. Use it for history/status/page reads or as a list/find scope anchored at your tree root. Mutation paths still require a nonempty slug segment.
 
 The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`, `path` is an organizational SCOPE: results are limited to the named session and its descendants (e.g. action `list` with path `sess:/agent-b` lists that subtree); omit `path` to span the whole store.
 
@@ -898,7 +902,7 @@ mod tests {
         // Malformed scope paths fail at the tool boundary (early-fail,
         // same shape as the other actions' `path` validation).
         let err = tool
-            .execute(json!({"action": "list", "path": "/"}))
+            .execute(json!({"action": "list", "path": "/p//c1"}))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not a valid slug path"), "{err}");

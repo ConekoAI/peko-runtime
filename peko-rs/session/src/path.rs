@@ -43,9 +43,9 @@
 //!
 //! [`compute_path`] is the display-side inverse (used by
 //! `session list`): ancestors without a slug are skipped as
-//! intermediate segments, and a slugless target falls back to its raw
-//! id as the last segment. That fallback is display-only — the
-//! resolver never accepts it as input.
+//! intermediate segments. The trunk is `sess:/`; other slugless
+//! targets fall back to their raw id as the last segment. Those
+//! non-trunk fallbacks are display-only, not resolver inputs.
 
 use crate::id::SessionId;
 use crate::metadata::SessionMetadata;
@@ -289,7 +289,7 @@ pub fn resolve_path(
 /// [`SCHEME_PREFIX`] so it can never be mistaken for a filesystem
 /// path; ancestors without a slug are skipped as intermediate
 /// segments (the trunk session `parent_session_id == None` collapses
-/// into the leading `/`), and a slugless target falls back to its raw
+/// into the leading `/`). The trunk itself is `sess:/`. Other slugless targets fall back to their raw
 /// id as the last segment (`sess:/memory/550e8400-…`). The resolver
 /// never accepts that fallback as input. Cycle-safe; a session
 /// missing from `metas` yields `sess:/<id>`.
@@ -311,6 +311,9 @@ pub fn compute_path(metas: &[SessionMetadata], session_id: SessionId) -> String 
             }
             break;
         };
+        if is_target && meta.parent_session_id.is_none() {
+            return format!("{SCHEME_PREFIX}/");
+        }
         if is_target {
             // The final segment falls back to the raw id when the
             // target has no slug.
@@ -615,8 +618,10 @@ mod tests {
         let s_slugless = metas[4].session_id;
         assert_eq!(compute_path(&metas, s_task), "sess:/memory/task-b");
         assert_eq!(compute_path(&metas, s_memory), "sess:/memory");
-        // Root has no slug and no parent: bare "/<id>" fallback.
-        assert_eq!(compute_path(&metas, root), format!("sess:/{root}"));
+        // Root's display address is the resolver's existing tree-root form.
+        let root_path = compute_path(&metas, root);
+        assert_eq!(root_path, "sess:/");
+        assert_eq!(resolve_reference(&metas, s_task, &root_path).unwrap(), root);
         // Slugless target: raw id as the last segment.
         assert_eq!(
             compute_path(&metas, s_slugless),
