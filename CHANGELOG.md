@@ -4,6 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Preserve Anthropic streaming termination (2026-10-07)
+
+- Retain nested message-delta stop reasons alongside usage and emit them at
+  message_stop. Previously output-limited and tool-use streams were reported as
+  normal stops because the parser ignored nested reasons, returned usage early,
+  and then unconditionally emitted Stop. Keep clone/stream state isolated and
+  cover usage, legacy reasons, terminal emission, and interrupted-stream reset.
+  Tool execution and retry policy are unchanged.
+
 ### Truthful manual cron run identifiers (2026-10-07)
 
 - Reserve and persist a cron run before returning its ID from CronTrigger.

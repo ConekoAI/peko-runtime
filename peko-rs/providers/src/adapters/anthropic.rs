@@ -27,6 +27,9 @@ pub struct AnthropicAdapter {
     /// `message_delta` path can pair its `output_tokens` with the
     /// `input_tokens` / `cache_*_tokens` reported at stream start.
     pending_input_tokens: Arc<Mutex<Option<AnthropicUsage>>>,
+    /// Retain the message delta's termination reason until message_stop,
+    /// independently of the usage event returned from the same delta.
+    pending_stop_reason: Arc<Mutex<Option<StopReason>>>,
     /// Accumulates tool call parts during streaming
     tool_call_accumulator: ToolCallAccumulator,
 }
@@ -37,6 +40,7 @@ impl Clone for AnthropicAdapter {
             base_url: self.base_url.clone(),
             extra_headers: self.extra_headers.clone(),
             pending_input_tokens: Arc::new(Mutex::new(None)),
+            pending_stop_reason: Arc::new(Mutex::new(None)),
             tool_call_accumulator: self.tool_call_accumulator.clone(),
         }
     }
@@ -50,6 +54,7 @@ impl AnthropicAdapter {
             base_url: "https://api.anthropic.com".to_string(),
             extra_headers: vec![("anthropic-version".to_string(), "2023-06-01".to_string())],
             pending_input_tokens: Arc::new(Mutex::new(None)),
+            pending_stop_reason: Arc::new(Mutex::new(None)),
             tool_call_accumulator: ToolCallAccumulator::new(),
         }
     }
@@ -663,6 +668,7 @@ impl super::ApiAdapter for AnthropicAdapter {
             Some("message_start") => {
                 // Clear accumulator at start of new stream
                 self.tool_call_accumulator.reset();
+                *self.pending_stop_reason.lock().unwrap() = None;
                 // Store the full usage block (input + cache) for later
                 // combination with output tokens emitted in `message_delta`.
                 if let Some(usage) = event.message.and_then(|m| m.usage) {
@@ -778,7 +784,20 @@ impl super::ApiAdapter for AnthropicAdapter {
                 Ok(None)
             }
             Some("message_delta") => {
-                // Check for usage output tokens first
+                // The protocol nests stop_reason under delta. Some compatible
+                // providers use the legacy top-level form. Retain either before
+                // returning Usage, so accounting cannot hide the termination.
+                if let Some(reason) = event
+                    .delta
+                    .and_then(|delta| delta.stop_reason)
+                    .or(event.stop_reason)
+                {
+                    *self.pending_stop_reason.lock().unwrap() = Some(match reason.as_str() {
+                        "tool_use" => StopReason::ToolUse,
+                        "max_tokens" => StopReason::Length,
+                        _ => StopReason::Stop,
+                    });
+                }
                 if let Some(delta_usage) = event.usage {
                     // The cached `message_start` usage block carries
                     // input_tokens + cache_creation + cache_read. Pull
@@ -819,25 +838,18 @@ impl super::ApiAdapter for AnthropicAdapter {
                         reasoning_output_tokens: 0,
                     }));
                 }
-                if let Some(stop_reason) = event.stop_reason {
-                    let reason = match stop_reason.as_str() {
-                        "tool_use" => StopReason::ToolUse,
-                        "max_tokens" => StopReason::Length,
-                        _ => StopReason::Stop,
-                    };
-                    Ok(Some(StreamEvent::Done {
-                        stop_reason: reason,
-                    }))
-                } else {
-                    Ok(None)
-                }
+                Ok(None)
             }
             Some("message_stop") => {
                 // Clear accumulator at end of stream
                 self.tool_call_accumulator.reset();
-                Ok(Some(StreamEvent::Done {
-                    stop_reason: StopReason::Stop,
-                }))
+                let stop_reason = self
+                    .pending_stop_reason
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or(StopReason::Stop);
+                Ok(Some(StreamEvent::Done { stop_reason }))
             }
             _ => Ok(None),
         }
@@ -1097,6 +1109,8 @@ struct AnthropicDelta {
     partial_json: Option<String>,
     /// Thinking content for reasoning models (Kimi K2.5, Claude 3.7, etc.)
     thinking: Option<String>,
+    /// Message-level termination (message_delta, not content_block_delta).
+    stop_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -1110,6 +1124,95 @@ mod tests {
         assert_eq!(adapter.name(), "anthropic");
         assert_eq!(adapter.name(), "anthropic");
         assert_eq!(adapter.base_url(), "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn message_delta_preserves_stop_reason_with_usage_until_message_stop() {
+        for (wire_reason, expected) in [
+            ("max_tokens", StopReason::Length),
+            ("tool_use", StopReason::ToolUse),
+            ("end_turn", StopReason::Stop),
+        ] {
+            for with_usage in [true, false] {
+                let adapter = AnthropicAdapter::new();
+                let mut delta =
+                    json!({"type":"message_delta", "delta":{"stop_reason":wire_reason}});
+                if with_usage {
+                    delta["usage"] = json!({"output_tokens":64});
+                }
+                let event = adapter.parse_sse_event("test", &delta.to_string()).unwrap();
+                if with_usage {
+                    assert!(matches!(event, Some(StreamEvent::Usage { output: 64, .. })));
+                } else {
+                    assert!(event.is_none(), "Done belongs to the terminal message_stop");
+                }
+                let done = adapter
+                    .parse_sse_event("test", r#"{"type":"message_stop"}"#)
+                    .unwrap();
+                assert!(
+                    matches!(done, Some(StreamEvent::Done { stop_reason }) if stop_reason == expected)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_stop_reason_is_isolated_and_resets_between_messages() {
+        let adapter = AnthropicAdapter::new();
+        adapter
+            .parse_sse_event(
+                "test",
+                r#"{"type":"message_delta","stop_reason":"max_tokens"}"#,
+            )
+            .unwrap();
+        let clone = adapter.clone();
+        clone
+            .parse_sse_event(
+                "test",
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+            )
+            .unwrap();
+        assert!(matches!(
+            adapter
+                .parse_sse_event("test", r#"{"type":"message_stop"}"#)
+                .unwrap(),
+            Some(StreamEvent::Done {
+                stop_reason: StopReason::Length
+            })
+        ));
+        assert!(matches!(
+            clone
+                .parse_sse_event("test", r#"{"type":"message_stop"}"#)
+                .unwrap(),
+            Some(StreamEvent::Done {
+                stop_reason: StopReason::ToolUse
+            })
+        ));
+        assert!(matches!(
+            adapter
+                .parse_sse_event("test", r#"{"type":"message_stop"}"#)
+                .unwrap(),
+            Some(StreamEvent::Done {
+                stop_reason: StopReason::Stop
+            })
+        ));
+        adapter
+            .parse_sse_event(
+                "test",
+                r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}"#,
+            )
+            .unwrap();
+        adapter
+            .parse_sse_event("test", r#"{"type":"message_start","message":{}}"#)
+            .unwrap();
+        assert!(matches!(
+            adapter
+                .parse_sse_event("test", r#"{"type":"message_stop"}"#)
+                .unwrap(),
+            Some(StreamEvent::Done {
+                stop_reason: StopReason::Stop
+            })
+        ));
     }
 
     /// F40a: the Anthropic adapter must surface its
