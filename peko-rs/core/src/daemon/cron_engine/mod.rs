@@ -465,6 +465,27 @@ impl CronEngine {
             scheduler.finalize_run(&run_id, &status, output.clone(), error.clone())?;
         }
 
+        // Interval jobs anchor to the *scheduled* `next_run`, not the
+        // actual finish time — otherwise tick quantisation (up to one
+        // poll interval) plus execution time accumulate into permanent
+        // drift (60s job fired every ~75s; 2026-08-07 field test,
+        // Finding 6). Other schedule kinds compute absolute times and
+        // are immune.
+        let next_run = match &job.schedule {
+            peko_cron::ScheduleKind::Every { every_ms } => {
+                peko_cron::calculate_next_interval_anchored(job.next_run, *every_ms, finished_at)
+            }
+            _ => peko_cron::calculate_next_run(&job.schedule, finished_at)?,
+        };
+        // Count omitted interval slots, including execution overruns and late
+        // admission. This is not a count of failed turns or missed observations.
+        let skipped_slots = match &job.schedule {
+            peko_cron::ScheduleKind::Every { every_ms } if *every_ms > 0 => Some(
+                ((next_run - job.next_run).num_milliseconds().max(0) as u64 / every_ms)
+                    .saturating_sub(1),
+            ),
+            _ => None,
+        };
         let _ = self
             .observability
             .audit_with_caller(
@@ -478,22 +499,14 @@ impl CronEngine {
                     "status": &status,
                     "error": error,
                     "duration_ms": (finished_at - started_at).num_milliseconds(),
+                    "scheduled_at": job.next_run,
+                    "finished_at": finished_at,
+                    "next_run_at": next_run,
+                    "skipped_interval_slots": skipped_slots,
                 }),
             )
             .await;
 
-        // Interval jobs anchor to the *scheduled* `next_run`, not the
-        // actual finish time — otherwise tick quantisation (up to one
-        // poll interval) plus execution time accumulate into permanent
-        // drift (60s job fired every ~75s; 2026-08-07 field test,
-        // Finding 6). Other schedule kinds compute absolute times and
-        // are immune.
-        let next_run = match &job.schedule {
-            peko_cron::ScheduleKind::Every { every_ms } => {
-                peko_cron::calculate_next_interval_anchored(job.next_run, *every_ms, finished_at)
-            }
-            _ => peko_cron::calculate_next_run(&job.schedule, finished_at)?,
-        };
         scheduler.update_job_after_run(&job.id, &status, next_run)?;
 
         // Retry budget enforcement. `update_job_after_run` just bumped
@@ -2774,6 +2787,131 @@ mod tests {
         async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
             Ok(serde_json::json!({"ok": true}))
         }
+    }
+
+    struct CronGatedStubTool {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl peko_tools_core::Tool for CronGatedStubTool {
+        fn name(&self) -> &str {
+            "cron_gated_stub"
+        }
+        fn description(&self) -> String {
+            "controlled native cron dispatch, no model calls".into()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_interval_coalesces_native_dispatch_and_audits_skipped_slot() {
+        let tmp = TempDir::new().unwrap();
+        let resolver = PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        // No global tooling injection and no agent turns: the test dispatches
+        // an actual gated builtin through the engine and async executor.
+        let (llm_resolver, _) =
+            LlmResolver::mock(MockAdapter::new(), tmp.path().join("models.toml")).await;
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                resolver.clone(),
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(llm_resolver),
+        );
+        let principal =
+            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
+            core.catalog(),
+            Arc::new(CronGatedStubTool {
+                started: started.clone(),
+                release: release.clone(),
+                calls: calls.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let obs = Arc::new(Observability::new("daemon"));
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            obs.clone(),
+            Some(manager),
+            Arc::new(AsyncExecutor::new(
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )),
+            Arc::downgrade(&core),
+        );
+        let mut job = recovery_job(PrincipalId::from_did(&principal.did().await));
+        job.id = "gated-interval".into();
+        job.action = CronJobAction::SpawnTool {
+            tool_name: "cron_gated_stub".into(),
+            tool_params: serde_json::json!({}),
+            wake_on_completion: Some(false),
+            timeout_secs: Some(10),
+        };
+        // A fixed overdue anchor exercises completion after a slot boundary
+        // without sleeping for a real minute. It covers late admission as well
+        // as overrun advancement; the boundary arithmetic has a separate test.
+        job.next_run = Utc::now() - Duration::milliseconds(60_759);
+        scheduler.add_job(&job).unwrap();
+        let first_engine = engine.clone();
+        let first_job = job.clone();
+        let first = tokio::spawn(async move { first_engine.execute_job(first_job).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+            .await
+            .unwrap();
+        engine.execute_job(job.clone()).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(scheduler.get_run_history(&job.id, 10).unwrap().len(), 1);
+        assert_eq!(
+            scheduler.get_job(&job.id).unwrap().unwrap().next_run,
+            job.next_run
+        );
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let updated = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(updated.run_count, 1);
+        assert_eq!(updated.last_status.as_deref(), Some("success"));
+        assert_eq!(updated.next_run, job.next_run + Duration::seconds(120));
+        assert!(scheduler.due_jobs(Utc::now()).unwrap().is_empty());
+        let audit = obs.get_audit_log(50).await;
+        let result = audit
+            .iter()
+            .find(|e| e.event_type == "cron.result")
+            .unwrap();
+        assert_eq!(result.details["skipped_interval_slots"], 1);
+        assert_eq!(
+            result.details["scheduled_at"],
+            serde_json::json!(job.next_run)
+        );
+        assert_eq!(
+            result.details["next_run_at"],
+            serde_json::json!(updated.next_run)
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// Failing counterpart of `CronStubTool` — models the 2026-09-06

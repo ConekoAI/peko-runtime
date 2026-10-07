@@ -493,8 +493,9 @@ pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Resu
 /// tick quantisation slip (up to one poll interval, 15s by default) plus
 /// the execution time accumulate into permanent drift — a 60s job fired
 /// every ~75s (2026-08-07 field test, Finding 6). Anchoring to the
-/// scheduled `next_run` keeps the long-run period at `every_ms`; the
-/// catch-up loop skips past-due slots after downtime without bursting.
+/// scheduled `next_run` preserves the grid. Slots at or before completion
+/// are skipped after overruns or downtime without bursting; this does not
+/// guarantee one execution or observation per interval.
 pub fn calculate_next_interval_anchored(
     scheduled: DateTime<Utc>,
     every_ms: u64,
@@ -689,6 +690,25 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc)
         );
+    }
+
+    #[test]
+    fn anchored_interval_boundary_and_worker_overrun() {
+        let scheduled = DateTime::parse_from_rfc3339("2026-10-07T05:25:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // Finishing on the next slot counts as overdue, not a catch-up.
+        // The 60.759s live worker likewise loses a whole scheduled check.
+        for (finish_ms, next_ms) in [(59_999, 60_000), (60_000, 120_000), (60_759, 120_000)] {
+            assert_eq!(
+                calculate_next_interval_anchored(
+                    scheduled,
+                    60_000,
+                    scheduled + chrono::Duration::milliseconds(finish_ms),
+                ),
+                scheduled + chrono::Duration::milliseconds(next_ms)
+            );
+        }
     }
 
     #[test]

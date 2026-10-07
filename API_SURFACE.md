@@ -7,6 +7,16 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Cron interval completion policy
+
+Runs of the same job are coalesced while one is in flight. For `Every`, completion
+advances the scheduled grid to the first strictly future slot; overdue slots are
+skipped without catch-up. An interval is nominal, not a guarantee of observation
+frequency. `cron.result` audit details include `scheduled_at`, `finished_at`,
+`next_run_at`, and `skipped_interval_slots` (null for non-interval schedules).
+Skipped slots include late admission and execution overruns, not failed runs.
+Scheduling behavior and public signatures are unchanged.
+
 ## Cron scheduler restart recovery
 
 `CronEngine` closes unfinished persisted `Send` runs as failed when it first

@@ -143,7 +143,7 @@ impl Tool for CronCreateTool {
     }
 
     fn description(&self) -> String {
-        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (parameters verbatim, no scheduler model call; invoked tools such as Agent may call an LLM and consume tokens). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon.".to_string()
+        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (parameters verbatim, no scheduler model call; invoked tools such as Agent may call an LLM and consume tokens). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon. Runs of the same job do not overlap. Recurring intervals are nominal: after a run finishes, overdue slots are skipped and execution resumes at the first future slot; there is no catch-up burst. Keep the whole tool/agent turn shorter than the interval for timely checks.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -188,7 +188,7 @@ impl Tool for CronCreateTool {
                 },
                 "interval_ms": {
                     "type": "integer",
-                    "description": "Interval in milliseconds for recurring jobs"
+                    "description": "Nominal recurring interval in milliseconds. Same-job runs do not overlap; slots overdue at completion are skipped, not replayed. Whole-turn duration and daemon polling can delay checks."
                 },
                 "timezone": {
                     "type": "string",

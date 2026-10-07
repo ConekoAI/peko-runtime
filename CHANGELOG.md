@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Observable nominal cron intervals (2026-10-07)
+
+- CronCreate explains that same-job runs do not overlap and overdue interval
+  slots are skipped after completion. The authored interval does not guarantee
+  an observation every period.
+- `cron.result` records scheduled/finish/next times and skipped interval slots.
+  Added exact-boundary and 60.759s overrun coverage, plus controlled native
+  dispatch proving an open run coalesces and completion advances without replay.
+  The existing scheduling policy is preserved.
+
 ### Isolated concurrent provider streams (2026-10-07)
 
 - Give cloned API adapters independent tool-call accumulators and Anthropic
