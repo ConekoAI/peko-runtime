@@ -4,6 +4,12 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Truthful scheduled-tool cost guidance (2026-10-07)
+
+- CronCreate no longer promises that a scheduled tool call has no LLM cost.
+  Dispatch uses fixed parameters without a scheduler model call, while invoked
+  tools such as Agent can call models and consume the principal's quota.
+
 ### Truthful cron reconciliation (2026-10-07)
 
 - A running cron row whose attached task disappears from the process-local

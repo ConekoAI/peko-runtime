@@ -8,7 +8,7 @@
 //! Two job shapes:
 //! - `tool` + `params` → `SpawnTool` job: at fire time the daemon asks
 //!   the `AsyncExecutor` to run `tool_name` with `tool_params`. Fixed
-//!   behavior, no LLM cost per fire.
+//!   dispatch; the invoked tool may itself call an LLM.
 //! - `message` → `Send` job: at fire time the message lands in the
 //!   principal's trunk session and runs a full agent turn, so the agent
 //!   composes fresh output (and can use tools, e.g. ChannelSend) on
@@ -143,7 +143,7 @@ impl Tool for CronCreateTool {
     }
 
     fn description(&self) -> String {
-        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (no LLM cost, parameters verbatim; use for static actions). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon.".to_string()
+        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (parameters verbatim, no scheduler model call; invoked tools such as Agent may call an LLM and consume tokens). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -156,7 +156,7 @@ impl Tool for CronCreateTool {
                 },
                 "tool": {
                     "type": "string",
-                    "description": "Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"ChannelSend\"). The scheduled job calls this tool with `params` at every fire — fixed behavior, no LLM cost. Mutually exclusive with `message`."
+                    "description": "Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"ChannelSend\"). The scheduled job calls this tool with `params` at every fire — no scheduler model call. Invoked tools such as Agent may call an LLM and consume tokens. Mutually exclusive with `message`."
                 },
                 "params": {
                     "type": "object",
