@@ -142,7 +142,7 @@ impl CronEngine {
         );
         let mut initialized = self.initialized_schedules.lock().await;
         if !initialized.contains(&path) {
-            recover_interrupted_send_runs(&scheduler)?;
+            recover_interrupted_runs(&scheduler)?;
             initialized.insert(path);
         }
         map.insert(principal_id.clone(), scheduler.clone());
@@ -372,8 +372,8 @@ impl CronEngine {
         // executor's `timeout_secs` enforcement), so without this guard
         // an `Every` job whose tool outlives one poll interval would
         // re-fire on every tick while the previous run is still open.
-        // First-open recovery closes Send rows from a previous daemon;
-        // the janitor reconciles SpawnTool rows with async task ids.
+        // First-open recovery closes Send and untracked SpawnTool rows from
+        // a previous daemon; the janitor reconciles attached async task ids.
         if scheduler
             .list_running_runs()?
             .iter()
@@ -1146,28 +1146,34 @@ impl CronEngine {
     }
 }
 
-/// A Send turn belongs to one daemon lifetime and cannot still be executing
-/// when that daemon first opens the persisted schedule. Close abandoned rows
-/// as failures, retaining history and the authored cadence. This is not a
-/// periodic janitor operation: live Send rows also have no async task id.
-fn recover_interrupted_send_runs(scheduler: &CronScheduler) -> Result<usize> {
+/// Send turns and SpawnTool runs without an attached async task id belong to
+/// the previous daemon lifetime on first open. A SpawnTool start row has no id
+/// while awaiting completion; a restart in that window otherwise coalesces all
+/// future fires forever. Close these rows as partial-outcome failures, retaining
+/// history and cadence. Attached task ids remain with the async reconciler.
+/// This is not a periodic janitor operation: live runs also lack task ids.
+fn recover_interrupted_runs(scheduler: &CronScheduler) -> Result<usize> {
     let mut recovered = 0;
     for run in scheduler.list_running_runs()? {
         let Some(job) = scheduler.get_job(&run.job_id)? else {
             continue;
         };
-        if !matches!(job.action, CronJobAction::Send { .. }) {
-            continue;
-        }
+        let action = match job.action {
+            CronJobAction::Send { .. } => "Send",
+            CronJobAction::SpawnTool { .. } if run.output.is_none() => "SpawnTool",
+            CronJobAction::SpawnTool { .. } => continue,
+        };
         if scheduler.finalize_run(
             &run.id,
             "failed",
             run.output,
-            Some("daemon restarted before cron Send completed; outcome may be partial".into()),
+            Some(format!(
+                "daemon restarted before cron {action} completed; outcome may be partial"
+            )),
         )? {
             scheduler.set_job_last_status(&job.id, "failed")?;
             recovered += 1;
-            warn!(run_id = %run.id, job_id = %job.id, "Recovered interrupted cron Send run");
+            warn!(run_id = %run.id, job_id = %job.id, action, "Recovered interrupted cron run");
         }
     }
     Ok(recovered)
@@ -1317,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_send_recovery_preserves_history_spawn_tasks_and_disabled_schedules() {
+    fn interrupted_recovery_preserves_tracked_spawn_tasks_and_disabled_schedules() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("cron.json");
         let scheduler = CronScheduler::new(&path).unwrap();
@@ -1344,8 +1350,11 @@ mod tests {
         let mut task_run = open_recovery_run(&spawn.id, "spawn-active");
         task_run.output = Some("task:existing".into());
         scheduler.record_run(&task_run).unwrap();
-        assert_eq!(recover_interrupted_send_runs(&scheduler).unwrap(), 1);
-        assert_eq!(recover_interrupted_send_runs(&scheduler).unwrap(), 0);
+        scheduler
+            .record_run(&open_recovery_run(&spawn.id, "spawn-untracked"))
+            .unwrap();
+        assert_eq!(recover_interrupted_runs(&scheduler).unwrap(), 2);
+        assert_eq!(recover_interrupted_runs(&scheduler).unwrap(), 0);
         let reopened = CronScheduler::new(path).unwrap();
         let history = reopened.get_run_history(&send.id, 10).unwrap();
         let failed = history.iter().find(|r| r.id == "abandoned").unwrap();
@@ -1359,7 +1368,24 @@ mod tests {
         let successful = history.iter().find(|r| r.id == "done").unwrap();
         assert_eq!(successful.status, "success");
         assert_eq!(successful.output, done.output);
-        assert_eq!(reopened.list_running_runs().unwrap()[0].id, "spawn-active");
+        let running = reopened.list_running_runs().unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].id, "spawn-active");
+        let spawn_history = reopened.get_run_history(&spawn.id, 10).unwrap();
+        let failed_spawn = spawn_history
+            .iter()
+            .find(|r| r.id == "spawn-untracked")
+            .unwrap();
+        assert_eq!(failed_spawn.status, "failed");
+        assert!(failed_spawn.finished_at.is_some());
+        assert!(failed_spawn
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("cron SpawnTool"));
+        let updated_spawn = reopened.get_job(&spawn.id).unwrap().unwrap();
+        assert!(!updated_spawn.enabled);
+        assert_eq!(updated_spawn.next_run, spawn.next_run);
         let updated = reopened.get_job(&send.id).unwrap().unwrap();
         assert!(!updated.enabled);
         assert_eq!(updated.next_run, send.next_run);
@@ -1426,6 +1452,70 @@ mod tests {
         );
         assert!(loaded.list_running_runs().unwrap().is_empty());
     }
+    #[tokio::test]
+    async fn first_open_untracked_spawn_recovery_unblocks_tools_and_preserves_live_runs() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let principal =
+            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let did = PrincipalId::from_did(&principal.did().await);
+        let resolver = PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tooling = ToolRuntime::with_workspace(resolver.clone(), tmp.path())
+            .await
+            .unwrap();
+        let scheduler = CronScheduler::new(resolver.cron_schedule("crony")).unwrap();
+        let mut job = recovery_job(did.clone());
+        job.action = CronJobAction::SpawnTool {
+            tool_name: "Bash".into(),
+            tool_params: serde_json::json!({"command": "printf cron-recovered"}),
+            wake_on_completion: Some(false),
+            timeout_secs: Some(10),
+        };
+        scheduler.add_job(&job).unwrap();
+        scheduler
+            .record_run(&open_recovery_run(&job.id, "previous-daemon"))
+            .unwrap();
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager),
+            Arc::new(AsyncExecutor::new(
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )),
+            Arc::downgrade(tooling.tooling()),
+        );
+        let loaded = engine.scheduler_for(&did).await.unwrap();
+        assert!(loaded.list_running_runs().unwrap().is_empty());
+        assert_eq!(
+            loaded.get_run_history(&job.id, 10).unwrap()[0].status,
+            "failed"
+        );
+        assert_eq!(loaded.due_jobs(Utc::now()).unwrap().len(), 1);
+        loaded
+            .record_run(&open_recovery_run(&job.id, "current-daemon"))
+            .unwrap();
+        let alias = engine.clone().scheduler_for(&principal.id).await.unwrap();
+        assert_eq!(alias.list_running_runs().unwrap()[0].id, "current-daemon");
+        loaded
+            .finalize_run("current-daemon", "cancelled", None, None)
+            .unwrap();
+        engine.execute_job(job.clone()).await.unwrap();
+        let history = loaded.get_run_history(&job.id, 10).unwrap();
+        assert!(
+            history.iter().any(|r| r.status == "success"
+                && r.output
+                    .as_deref()
+                    .is_some_and(|s| s.contains("cron-recovered"))),
+            "due tool must execute after first-open recovery: {history:?}"
+        );
+        assert!(loaded.list_running_runs().unwrap().is_empty());
+    }
+
     /// In-band tool failure must not record as cron success: a
     /// `Completed` task whose payload declares `success: false`
     /// (ChannelSendResult) or carries a non-empty `error` string (Agent
