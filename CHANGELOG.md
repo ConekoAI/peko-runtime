@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Interrupted cron tool recovery (2026-10-07)
+
+- Extend first-open recovery to abandoned SpawnTool runs without an attached
+  async task id. A restart during the completion wait previously left these
+  rows running forever, suppressing every later task tick.
+- Preserve attached task ids for async reconciliation, current-lifetime runs
+  across identity aliases, authored due times and disabled schedules. Recovery
+  records failure with an explicit partial-outcome warning; it does not certify
+  side effects or resume the interrupted process.
+- Added persisted-history coverage and a model-free tool execution regression
+  proving a later due fire can run after recovery.
+
 ### Interrupted cron Send recovery (2026-10-06)
 
 - On first opening a principal's schedule in a new daemon, finalize abandoned
