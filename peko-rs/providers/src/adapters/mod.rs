@@ -30,7 +30,7 @@ pub use openai_responses::OpenAiResponsesAdapter;
 /// This component handles the stateful accumulation of tool call parts (id, name, arguments)
 /// that arrive in separate chunks from streaming LLM responses. It provides a clean
 /// separation between event parsing (adapter responsibility) and state accumulation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ToolCallAccumulator {
     /// Maps content index to partial tool call data
     buffer: Arc<Mutex<HashMap<usize, PartialToolCall>>>,
@@ -148,6 +148,14 @@ impl ToolCallAccumulator {
     }
 }
 
+// A clone starts a new parser lifetime. Sharing partial calls by content index
+// lets concurrent responses overwrite each other's tool identity and arguments.
+impl Clone for ToolCallAccumulator {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
 impl Default for ToolCallAccumulator {
     fn default() -> Self {
         Self::new()
@@ -157,8 +165,8 @@ impl Default for ToolCallAccumulator {
 /// API format adapter trait
 ///
 /// Implementations convert between unified internal types and provider-specific
-/// request/response formats. Each adapter is stateless and can be cheaply
-/// cloned.
+/// request/response formats. Cloning preserves configuration and starts fresh
+/// stream-parser state; concurrent requests must never share partial calls or usage.
 ///
 /// **Model is not stored on the adapter.** `model_id` is passed in to
 /// `build_request` per call so that the same adapter instance can serve
@@ -433,6 +441,70 @@ impl ApiAdapter for AnyAdapter {
             Self::Anthropic(a) => a.wire_classifier(),
             Self::OpenAiCompatible(a) => a.wire_classifier(),
             Self::Mock(a) => a.wire_classifier(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod stream_isolation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn cloned_openai_format_streams_preserve_partial_calls_across_other_stream_end() {
+        for base in [
+            AnyAdapter::OpenAi(OpenAiAdapter::new()),
+            AnyAdapter::OpenAiCompatible(OpenAiCompatibleAdapter::new(
+                "compatible",
+                "https://example.invalid/v1",
+            )),
+            AnyAdapter::OpenAiResponses(OpenAiResponsesAdapter::new()),
+        ] {
+            let responses = matches!(base, AnyAdapter::OpenAiResponses(_));
+            let a = base.clone();
+            let b = base.clone();
+            let parse = |adapter: &AnyAdapter, value: Value| {
+                adapter.parse_sse_event("test", &value.to_string()).unwrap()
+            };
+            for (adapter, id, name) in [(&a, "a-call", "Bash"), (&b, "b-call", "Read")] {
+                let start = if responses {
+                    json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":id,"delta":"{\"lane\":"})
+                } else {
+                    json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":id,"function":{"name":name,"arguments":"{\"lane\":"}}]}}]})
+                };
+                assert!(matches!(
+                    parse(adapter, start),
+                    Some(StreamEvent::ToolCallStart { .. })
+                ));
+            }
+            for (adapter, id, name, lane) in
+                [(&a, "a-call", "Bash", "a"), (&b, "b-call", "Read", "b")]
+            {
+                let partial = format!("\"{lane}\"}}");
+                let end = if responses {
+                    parse(
+                        adapter,
+                        json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":id,"delta":partial}),
+                    );
+                    parse(
+                        adapter,
+                        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":id,"name":name}}),
+                    )
+                } else {
+                    parse(
+                        adapter,
+                        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":partial}}]}}]}),
+                    )
+                };
+                assert!(matches!(end, Some(StreamEvent::ToolCallEnd {tool_call:
+                    ContentBlock::ToolCall {id: actual_id, name: actual_name, arguments}, ..})
+                    if actual_id == id && actual_name == name && arguments == json!({"lane":lane})));
+                if responses {
+                    parse(adapter, json!({"type":"response.completed","response":{}}));
+                } else {
+                    adapter.parse_sse_event("test", "[DONE]").unwrap();
+                }
+            }
         }
     }
 }

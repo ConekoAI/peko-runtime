@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Isolated concurrent provider streams (2026-10-07)
+
+- Give cloned API adapters independent tool-call accumulators and Anthropic
+  pending usage. Overlapping supervisor/worker streams previously shared mutable
+  parser buffers, overwriting tool identities, mixing arguments, dropping calls
+  and crossing input/cache accounting between responses.
+- Preserve provider URLs, headers and shared mock fixtures. Added deterministic
+  interleaved adapter coverage and concurrent HTTP/SSE coverage proving original
+  tool ids/names/arguments and per-response usage survive overlapping calls.
+
 ### Truthful scheduled-tool cost guidance (2026-10-07)
 
 - CronCreate no longer promises that a scheduled tool call has no LLM cost.
