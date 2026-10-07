@@ -17,6 +17,16 @@ reconciler retain their existing contracts; ordinary schedule-tool reads do
 not abandon running turns. No public signatures or wire types changed. See
 `DATA_MODEL.md` for persisted history and partial-outcome semantics.
 
+## Provider stream parser lifetimes
+
+Cloning `ToolCallAccumulator` or a concrete API adapter starts an empty parser
+lifetime, retaining adapter configuration (URL/headers) but not partial tool
+calls. Anthropic adapter clones also start without pending usage. `Provider`
+clones and the parser clone in `stream_with_tools` therefore isolate overlapping
+responses, including supervisor/subagent streams at identical content indexes.
+Mock adapter clones keep shared fixture queues and request capture. Public
+signatures and wire types are unchanged.
+
 ## Table of Contents
 
 1. [Module: `extensions::framework`](#module-extensionsframework) - Shared host utilities (ADR-066)

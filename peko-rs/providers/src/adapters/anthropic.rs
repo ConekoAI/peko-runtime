@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 /// Anthropic API adapter
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AnthropicAdapter {
     base_url: String,
     extra_headers: Vec<(String, String)>,
@@ -29,6 +29,17 @@ pub struct AnthropicAdapter {
     pending_input_tokens: Arc<Mutex<Option<AnthropicUsage>>>,
     /// Accumulates tool call parts during streaming
     tool_call_accumulator: ToolCallAccumulator,
+}
+
+impl Clone for AnthropicAdapter {
+    fn clone(&self) -> Self {
+        Self {
+            base_url: self.base_url.clone(),
+            extra_headers: self.extra_headers.clone(),
+            pending_input_tokens: Arc::new(Mutex::new(None)),
+            tool_call_accumulator: self.tool_call_accumulator.clone(),
+        }
+    }
 }
 
 impl AnthropicAdapter {
@@ -1222,6 +1233,76 @@ mod tests {
             ContentBlock::ToolCall { .. }
         ));
         assert!(matches!(parsed.stop_reason, StopReason::ToolUse));
+    }
+
+    #[test]
+    fn cloned_streams_preserve_tool_identity_arguments_and_usage() {
+        let base = AnthropicAdapter::new()
+            .with_base_url("https://example.invalid/anthropic")
+            .with_header("x-custom", "configured");
+        let worker = base.clone();
+        let supervisor = base.clone();
+        let parse = |adapter: &AnthropicAdapter, event: Value| {
+            adapter
+                .parse_sse_event("test-model", &event.to_string())
+                .unwrap()
+        };
+        for (adapter, input, cache, id, name) in [
+            (&worker, 11, 101, "worker-call", "Bash"),
+            (&supervisor, 22, 202, "supervisor-call", "Read"),
+        ] {
+            parse(
+                adapter,
+                json!({"type":"message_start", "message":{"usage":{
+                "input_tokens":input, "output_tokens":0, "cache_read_input_tokens":cache}}}),
+            );
+            parse(
+                adapter,
+                json!({"type":"content_block_start", "index":0, "content_block":{
+                "type":"tool_use", "id":id, "name":name, "input":{}}}),
+            );
+        }
+        for (adapter, id, name, arguments, input, cache) in [
+            (
+                &worker,
+                "worker-call",
+                "Bash",
+                json!({"command":"worker"}),
+                11,
+                101,
+            ),
+            (
+                &supervisor,
+                "supervisor-call",
+                "Read",
+                json!({"file_path":"supervisor"}),
+                22,
+                202,
+            ),
+        ] {
+            let event = parse(
+                adapter,
+                json!({"type":"content_block_delta", "index":0,
+                "delta":{"type":"input_json_delta", "partial_json":arguments.to_string()}}),
+            );
+            assert!(matches!(event, Some(StreamEvent::ToolCallEnd { tool_call:
+                ContentBlock::ToolCall { id: actual_id, name: actual_name, arguments: actual_args }, .. })
+                if actual_id == id && actual_name == name && actual_args == arguments));
+            let usage = parse(
+                adapter,
+                json!({"type":"message_delta", "usage":{"output_tokens":3}}),
+            );
+            assert!(
+                matches!(usage, Some(StreamEvent::Usage { input: actual_input,
+                cache_read_input_tokens: actual_cache, output:3, .. })
+                if actual_input == input && actual_cache == cache)
+            );
+            assert_eq!(adapter.base_url(), "https://example.invalid/anthropic");
+            assert!(adapter
+                .extra_headers()
+                .iter()
+                .any(|(k, v)| k == "x-custom" && v == "configured"));
+        }
     }
 
     #[test]

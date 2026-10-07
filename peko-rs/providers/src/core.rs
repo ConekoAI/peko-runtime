@@ -609,6 +609,163 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn concurrent_http_streams_keep_tool_calls_and_usage_separate() {
+        use std::io::{BufRead, Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::mpsc as control;
+        use std::time::Duration;
+
+        fn events(values: Vec<serde_json::Value>) -> String {
+            values
+                .into_iter()
+                .map(|v| format!("data: {v}\n\n"))
+                .collect()
+        }
+        fn accept(listener: &TcpListener) -> (TcpStream, String) {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            (
+                reader.into_inner(),
+                request["model"].as_str().unwrap().to_string(),
+            )
+        }
+        fn start(id: &str, name: &str, input: u64) -> String {
+            events(vec![
+                serde_json::json!({"type":"message_start","message":{"usage":{
+                "input_tokens":input,"output_tokens":0,"cache_read_input_tokens":input*10}}}),
+                serde_json::json!({"type":"content_block_start","index":0,"content_block":{
+                    "type":"tool_use","id":id,"name":name,"input":{}}}),
+            ])
+        }
+        fn finish(args: serde_json::Value) -> String {
+            events(vec![
+                serde_json::json!({"type":"content_block_delta","index":0,"delta":{
+                "type":"input_json_delta","partial_json":args.to_string()}}),
+                serde_json::json!({"type":"content_block_stop","index":0}),
+                serde_json::json!({"type":"message_delta","usage":{"output_tokens":3}}),
+                serde_json::json!({"type":"message_stop"}),
+            ])
+        }
+        async fn next(
+            stream: &mut Pin<Box<dyn futures::Stream<Item = anyhow::Result<StreamEvent>> + Send>>,
+        ) -> StreamEvent {
+            tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (advance, commands) = control::channel();
+        let server = std::thread::spawn(move || {
+            let (first, model) = accept(&listener);
+            let (second, _) = accept(&listener);
+            let (mut a, mut b) = if model == "a-stream" {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            let a_start = start("a-call", "Bash", 11);
+            let b_start = start("b-call", "Read", 22);
+            let a_finish = finish(serde_json::json!({"command":"worker"}));
+            let b_finish = finish(serde_json::json!({"file_path":"supervisor"}));
+            for (socket, length) in [
+                (&mut a, a_start.len() + a_finish.len()),
+                (&mut b, b_start.len() + b_finish.len()),
+            ] {
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+            }
+            a.write_all(a_start.as_bytes()).unwrap();
+            if commands.recv_timeout(Duration::from_secs(5)).is_err() {
+                return;
+            }
+            b.write_all(b_start.as_bytes()).unwrap();
+            if commands.recv_timeout(Duration::from_secs(5)).is_err() {
+                return;
+            }
+            a.write_all(a_finish.as_bytes()).unwrap();
+            if commands.recv_timeout(Duration::from_secs(5)).is_err() {
+                return;
+            }
+            b.write_all(b_finish.as_bytes()).unwrap();
+        });
+        let provider = Provider::new(
+            AnyAdapter::Anthropic(crate::adapters::AnthropicAdapter::new().with_base_url(url)),
+            "test-only-key",
+            runtime_options(),
+        )
+        .unwrap();
+        let options = ChatOptions::default();
+        // Poll the first request until its parser has cached identity/usage, then
+        // start the second. Server acceptance order is therefore deterministic.
+        let a_future = provider.stream_with_tools("a-stream", &[], &[], &options);
+        let b_future = provider.stream_with_tools("b-stream", &[], &[], &options);
+        let (a, b) = tokio::join!(a_future, b_future);
+        let (mut a, mut b) = (a.unwrap(), b.unwrap());
+        assert!(matches!(next(&mut a).await, StreamEvent::Start { .. }));
+        assert!(matches!(
+            next(&mut a).await,
+            StreamEvent::ToolCallStart { .. }
+        ));
+        advance.send(()).unwrap();
+        assert!(matches!(next(&mut b).await, StreamEvent::Start { .. }));
+        assert!(matches!(
+            next(&mut b).await,
+            StreamEvent::ToolCallStart { .. }
+        ));
+        advance.send(()).unwrap();
+        for (stream, id, name, args, input) in [
+            (
+                &mut a,
+                "a-call",
+                "Bash",
+                serde_json::json!({"command":"worker"}),
+                11,
+            ),
+            (
+                &mut b,
+                "b-call",
+                "Read",
+                serde_json::json!({"file_path":"supervisor"}),
+                22,
+            ),
+        ] {
+            assert!(
+                matches!(next(stream).await, StreamEvent::ToolCallEnd { tool_call:
+                ContentBlock::ToolCall { id: got_id, name: got_name, arguments: got_args }, .. }
+                if got_id == id && got_name == name && got_args == args)
+            );
+            assert!(
+                matches!(next(stream).await, StreamEvent::Usage { input: got_input,
+                cache_read_input_tokens: cache, output:3, .. } if got_input == input && cache == input*10)
+            );
+            assert!(matches!(next(stream).await, StreamEvent::Done { .. }));
+            if id == "a-call" {
+                advance.send(()).unwrap();
+            }
+        }
+        server.join().unwrap();
+    }
+
     #[test]
     fn test_provider_creation() {
         let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new());
