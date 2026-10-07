@@ -14,6 +14,8 @@ advances the scheduled grid to the first strictly future slot; overdue slots are
 skipped without catch-up. An interval is nominal, not a guarantee of observation
 frequency. `cron.result` audit details include `scheduled_at`, `finished_at`,
 `next_run_at`, and `skipped_interval_slots` (null for non-interval schedules).
+If an async completion wait ends with status `running`, `finished_at` is null;
+`wait_finished_at` and `duration_ms` describe the wait, not task completion.
 Skipped slots include late admission and execution overruns, not failed runs.
 Scheduling behavior and public signatures are unchanged.
 

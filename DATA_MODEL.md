@@ -20,6 +20,9 @@ admission or execution; it does not count failed turns or missed world reads.
 Run history and schedule storage formats are unchanged. A same-job in-flight
 fire does not create another history row; after completion overdue slots are
 skipped, not queued for replay.
+For an async run still `running` after the completion wait budget, `finished_at`
+is null. `wait_finished_at` marks the end of that wait; `duration_ms` is its
+duration. These fields do not fabricate task completion or full task duration.
 
 ## Anthropic-compatible prompt cache markers
 
