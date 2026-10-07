@@ -2111,13 +2111,41 @@ mod tests {
         assert_eq!(by_id("spawn1").path, "sess:/a");
         assert_eq!(by_id("child1").path, "sess:/a/b");
         assert_eq!(by_id("spawn2").path, "sess:/c");
-        // Slugless sessions fall back to their raw id (v5 UUID form
-        // after Sprint 6) as last segment.
+        // The trunk uses the resolver's root address, never an id-shaped slug.
         assert_eq!(by_id("root:user:alice").slug, None);
-        assert_eq!(
-            by_id("root:user:alice").path,
-            format!("sess:/{}", sid("root:user:alice"))
-        );
+        assert_eq!(by_id("root:user:alice").path, "sess:/");
+    }
+
+    #[tokio::test]
+    async fn listed_trunk_address_round_trips_through_session_reads() {
+        use crate::tools::builtin::session::SessionTool;
+        use peko_tools_core::traits::Tool;
+
+        let h = slug_tree_harness("spawn1").await;
+        let tool = SessionTool::new(h.runtime.clone());
+        let listed = tool
+            .execute(serde_json::json!({"action": "list"}))
+            .await
+            .unwrap();
+        let sessions = listed["sessions"].as_array().unwrap();
+        let trunk = sessions
+            .iter()
+            .find(|s| s["session_id"] == sid("root:user:alice"))
+            .unwrap();
+        let path = trunk["path"].as_str().unwrap();
+        let history = tool
+            .execute(serde_json::json!({"action": "history", "path": path}))
+            .await
+            .unwrap();
+        assert_eq!(history["path"], path);
+        tool.execute(serde_json::json!({"action": "status", "path": path}))
+            .await
+            .unwrap();
+        let scoped = tool
+            .execute(serde_json::json!({"action": "list", "path": path}))
+            .await
+            .unwrap();
+        assert_eq!(scoped["sessions"].as_array().unwrap().len(), sessions.len());
     }
 
     // ─── Sprint 5 + 6: path-only LLM-facing surface ─────────────────

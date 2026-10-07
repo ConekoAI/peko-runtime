@@ -1336,17 +1336,19 @@ segment.
   key everywhere else, and resolver input is slug-only on the
   LLM-facing surface — raw ids are never accepted there.
 - The trunk carries no slug and is addressable only as
-  `/` from inside its own tree (cross-tree access is refused by the
-  ownership guards anyway).
+  `sess:/` (legacy `/`) from inside its own tree. Listings and prompt context
+  return `sess:/`, which round-trips through read tools and list/find scopes.
+  Mutation path validation remains unchanged; storage ids and transcripts
+  are unchanged (2026-10-07).
 - `session list` defaults to the **caller's subtree** (no longer
   the whole principal's tree). Privileged trunk callers opt into a
   wider view with `scope: "principal"`; non-privileged callers who
   ask for the wider scope get ownership-clamped to their subtree
   with a structured warning. The `path` parameter scopes further to
   any subtree the caller has ownership access to.
-- `session list` entries carry `slug` and a computed absolute `path`
-  (display-only): ancestors without a slug are skipped as
-  intermediate segments, and a slugless target falls back to its raw
+- `session list` entries carry `slug` and a computed absolute `path`:
+  ancestors without a slug are skipped as
+  intermediate segments; the trunk is `sess:/`, and other slugless targets fall back to their raw
   id as the last segment (e.g. `/memory/550e8400-…`).
 - `Agent` `action = "new"` REQUIRES a `name` slug (validated
   upfront via `validate_slug`); standing-child attach by name still
