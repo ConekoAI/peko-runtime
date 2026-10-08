@@ -1,12 +1,10 @@
 //! `ToolCatalog` — the runtime's tool registry (ADR-066 D2).
 //!
-//! A `name → (Arc<dyn Tool>, ToolMetadata)` map, keyed by
-//! `(tool_name, PrincipalId)` with a system-scope fallback: built-ins
-//! and MCP proxies register under
-//! [`PrincipalId::system`](peko_subject::PrincipalId::system) (visible
-//! to every principal); per-agent tools (Agent, ChannelSend, Async*)
-//! register under the owning principal's id and shadow same-named
-//! system entries on read.
+//! Executable bindings and metadata keyed by `(tool_name, PrincipalId)`.
+//! Runtime defaults use the system scope; workspace tools and stable services
+//! use principal scope. A private run overlay adds executor/config bindings
+//! while inheriting live parent registrations. Principal bindings take precedence
+//! over system defaults across all layers.
 //!
 //! Presence = visibility = executability (ADR-066 D1): there is no
 //! capability or exposure filter anywhere in the catalog.
@@ -46,6 +44,7 @@ impl std::fmt::Debug for CatalogEntry {
 #[derive(Debug, Clone, Default)]
 pub struct ToolCatalog {
     tools: SharedRegistry<(String, PrincipalId), CatalogEntry>,
+    parent: Option<Arc<ToolCatalog>>,
 }
 
 impl ToolCatalog {
@@ -55,8 +54,18 @@ impl ToolCatalog {
         Self::default()
     }
 
-    /// Register a tool under the given principal scope. Idempotent —
-    /// re-registering the same `(name, principal_id)` overwrites.
+    /// A private binding layer over a live parent catalog. Registrations
+    /// stay local; workspace/MCP changes in the parent remain visible.
+    #[must_use]
+    pub fn overlay(parent: Arc<Self>) -> Self {
+        Self {
+            tools: SharedRegistry::default(),
+            parent: Some(parent),
+        }
+    }
+
+    /// Register or explicitly replace a binding under the given principal scope.
+    /// Use register_default for non-replacing installation.
     pub async fn register(
         &self,
         tool: Arc<dyn Tool>,
@@ -83,6 +92,29 @@ impl ToolCatalog {
         self.register(tool, source, PrincipalId::system()).await;
     }
 
+    /// Install a default without replacing an existing binding. The check
+    /// and insert share one lock, including concurrent startup paths.
+    pub async fn register_default(
+        &self,
+        tool: Arc<dyn Tool>,
+        source: ToolSource,
+        principal_id: &PrincipalId,
+    ) {
+        let metadata = ToolMetadata::new(
+            tool.name().to_string(),
+            tool.description(),
+            tool.parameters(),
+            source,
+        );
+        self.tools
+            .write(|entries| {
+                entries
+                    .entry((metadata.name.clone(), principal_id.clone()))
+                    .or_insert(CatalogEntry { tool, metadata });
+            })
+            .await;
+    }
+
     /// Unregister `(name, principal_id)`. Returns whether an entry was
     /// removed.
     pub async fn unregister(&self, tool_name: &str, principal_id: &PrincipalId) -> bool {
@@ -99,17 +131,40 @@ impl ToolCatalog {
         tool_name: &str,
         principal_id: &PrincipalId,
     ) -> Option<(Arc<dyn Tool>, ToolMetadata)> {
-        let key = (tool_name.to_string(), principal_id.clone());
-        if let Some(entry) = self.tools.get(&key).await {
-            return Some((entry.tool, entry.metadata));
+        if let Some(entry) = self.get_exact(tool_name, principal_id).await {
+            return Some(entry);
         }
-        if principal_id == PrincipalId::system() {
-            return None;
+        // Saved cron/workflow calls may use pre-PascalCase names. Keep
+        // exact workspace/MCP names authoritative and alias only built-ins.
+        let canonical = crate::principal::runtime::builtin_tools::legacy_builtin_name(tool_name)?;
+        let (tool, metadata) = self.get_exact(canonical, principal_id).await?;
+        (metadata.source == ToolSource::BuiltIn).then_some((tool, metadata))
+    }
+
+    async fn get_exact(
+        &self,
+        tool_name: &str,
+        principal_id: &PrincipalId,
+    ) -> Option<(Arc<dyn Tool>, ToolMetadata)> {
+        // Principal entries take precedence over system defaults across
+        // every layer; the nearest binding wins within the same scope.
+        for scope in [principal_id, PrincipalId::system()] {
+            let mut layer = Some(self);
+            while let Some(catalog) = layer {
+                if let Some(entry) = catalog
+                    .tools
+                    .get(&(tool_name.to_string(), scope.clone()))
+                    .await
+                {
+                    return Some((entry.tool, entry.metadata));
+                }
+                layer = catalog.parent.as_deref();
+            }
+            if principal_id == PrincipalId::system() {
+                break;
+            }
         }
-        self.tools
-            .get(&(tool_name.to_string(), PrincipalId::system().clone()))
-            .await
-            .map(|e| (e.tool, e.metadata))
+        None
     }
 
     pub async fn get_tool_metadata(
@@ -127,14 +182,20 @@ impl ToolCatalog {
     /// catalog must be byte-stable across agentic-loop iterations or
     /// provider prompt caches break at the `tools[]` array.
     pub async fn list_tool_names(&self, principal_id: &PrincipalId) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .tools
-            .keys()
-            .await
-            .into_iter()
-            .filter(|(_, pid)| pid == PrincipalId::system() || pid == principal_id)
-            .map(|(name, _)| name)
-            .collect();
+        let mut names = Vec::new();
+        let mut layer = Some(self);
+        while let Some(catalog) = layer {
+            names.extend(
+                catalog
+                    .tools
+                    .keys()
+                    .await
+                    .into_iter()
+                    .filter(|(_, pid)| pid == PrincipalId::system() || pid == principal_id)
+                    .map(|(name, _)| name),
+            );
+            layer = catalog.parent.as_deref();
+        }
         names.sort_unstable();
         names.dedup();
         names
@@ -231,6 +292,61 @@ mod tests {
         assert!(catalog.get("Agent", &p1).await.is_some());
         assert!(catalog.get("Agent", PrincipalId::system()).await.is_none());
         assert!(catalog.get("Read", PrincipalId::system()).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn legacy_names_resolve_without_adding_wire_aliases() {
+        let catalog = ToolCatalog::new();
+        let owner = PrincipalId::generate();
+        for (legacy, canonical) in [
+            ("session", "Session"),
+            ("model_list", "ModelList"),
+            ("role_catalog", "RoleCatalog"),
+        ] {
+            catalog
+                .register(stub(canonical), ToolSource::BuiltIn, &owner)
+                .await;
+            let (_, metadata) = catalog.get(legacy, &owner).await.expect("legacy lookup");
+            assert_eq!(metadata.name, canonical);
+            assert!(catalog.get(legacy, PrincipalId::system()).await.is_none());
+        }
+        assert_eq!(
+            catalog.list_tool_names(&owner).await,
+            ["ModelList", "RoleCatalog", "Session"]
+        );
+
+        catalog
+            .register(
+                stub("model_list"),
+                ToolSource::Mcp {
+                    server: "test".into(),
+                },
+                &owner,
+            )
+            .await;
+        let (_, metadata) = catalog.get("model_list", &owner).await.unwrap();
+        assert_eq!(metadata.name, "model_list");
+        assert!(matches!(metadata.source, ToolSource::Mcp { .. }));
+
+        catalog
+            .register_system(stub("Session"), ToolSource::BuiltIn)
+            .await;
+        let other = PrincipalId::generate();
+        assert_eq!(
+            catalog.get("session", &other).await.unwrap().1.name,
+            "Session"
+        );
+        assert!(catalog.get("role_catalog", &other).await.is_none());
+        catalog
+            .register(
+                stub("RoleCatalog"),
+                ToolSource::Mcp {
+                    server: "test".into(),
+                },
+                &other,
+            )
+            .await;
+        assert!(catalog.get("role_catalog", &other).await.is_none());
     }
 
     #[tokio::test]

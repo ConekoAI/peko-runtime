@@ -33,6 +33,9 @@ pub mod session;
 pub mod skill;
 pub mod tasks;
 
+#[cfg(test)]
+mod schema_tests;
+
 // Root-only impls that didn't have a sat counterpart:
 pub mod model_call;
 pub mod model_list;

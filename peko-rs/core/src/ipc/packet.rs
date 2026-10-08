@@ -1846,7 +1846,7 @@ pub struct ModelSummary {
     /// Phase 2 of `feature/multi-model-subagents`: free-text
     /// user note attached to this entry. Surfaced on the IPC
     /// `model.list` / `model.show` replies and (via the
-    /// `model_list` builtin) to the parent agent so it can pick
+    /// `ModelList` builtin) to the parent agent so it can pick
     /// models using both `spec` flags and subjective annotations.
     /// `None` for entries written before Phase 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -115,7 +115,7 @@ impl SessionManagerRuntime {
     /// Per-call caller override (ADR-061 caller-awareness): a runtime
     /// identical to this one except the `current_session_id` cell is a
     /// FRESH cell pre-seeded with `id`. The manager, inbox registry,
-    /// and quota meter are shared. Used by the caller-aware `session`
+    /// and quota meter are shared. Used by the caller-aware `Session`
     /// tool so each call classifies against the `ToolContext`-carried
     /// session id — the token-resolved node on the `ExecuteTool` path —
     /// without mutating the shared cell (concurrent callers must not

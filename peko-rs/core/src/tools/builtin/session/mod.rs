@@ -1,4 +1,4 @@
-//! `session` built-in tool surface + the `SessionRuntime` port.
+//! `Session` built-in tool surface + the `SessionRuntime` port.
 //!
 //! The unified `SessionTool` plus the session DTOs (`SessionInfo`,
 //! `HistoryMessage`, `ToolCallInfo`, `ToolResultInfo`, `UsageStats`,
@@ -229,7 +229,7 @@ pub struct UsageStats {
     pub cache_hit_rate: Option<f64>,
 }
 
-/// Principal-scoped quota snapshot returned by the `session` tool's
+/// Principal-scoped quota snapshot returned by the `Session` tool's
 /// `status` action.
 ///
 /// Counters (`input_tokens`, `output_tokens`, `request_count`) are
@@ -322,7 +322,7 @@ pub struct SessionStatusResult {
     pub parent_session: Option<String>,
 }
 
-/// One match from a transcript search (`session` tool `find` action).
+/// One match from a transcript search (`Session` tool `find` action).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSearchHit {
     pub session_id: String,

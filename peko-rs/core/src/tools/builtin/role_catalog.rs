@@ -1,6 +1,6 @@
 //! Agent catalog tool
 //!
-//! Provides `role_catalog` so the root agent can discover the specialist
+//! Provides `RoleCatalog` so the root agent can discover the specialist
 //! agents available inside the current Principal.
 
 use async_trait::async_trait;
@@ -12,28 +12,41 @@ use peko_tools_core::traits::Tool;
 /// Tool for listing available agents in a Principal.
 pub struct AgentCatalogTool {
     agents: Vec<AgentPromptSummary>,
+    workspace: Option<std::path::PathBuf>,
 }
 
 impl AgentCatalogTool {
     /// Create a new catalog from the Principal's discovered agents.
     #[must_use]
     pub fn new(agents: Vec<AgentPromptSummary>) -> Self {
-        Self { agents }
+        Self {
+            agents,
+            workspace: None,
+        }
+    }
+
+    /// A stable principal-owned tool which discovers workspace roles at call time.
+    #[must_use]
+    pub fn from_workspace(workspace: std::path::PathBuf) -> Self {
+        Self {
+            agents: Vec::new(),
+            workspace: Some(workspace),
+        }
     }
 }
 
 #[async_trait]
 impl Tool for AgentCatalogTool {
     fn name(&self) -> &'static str {
-        "role_catalog"
+        "RoleCatalog"
     }
 
     fn description(&self) -> String {
-        r"List the specialist agents available in this Principal.
+        r"List the role templates available in this Principal.
 
-Returns an array of agents with `id`, `name`, `description`, and
-`enabled`. Only agents with `enabled: true` may be spawned via the
-`Agent` tool."
+Returns `{ total, agents }`; each entry has `id`, `name`,
+`description`, and `enabled`. Pass an enabled entry's `id` as the
+`Agent` tool's `role` argument."
             .to_string()
     }
 
@@ -46,8 +59,29 @@ Returns an array of agents with `id`, `name`, `description`, and
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let agents: Vec<serde_json::Value> = self
-            .agents
+        let discovered;
+        let summaries = if let Some(workspace) = &self.workspace {
+            let workspace = workspace.clone();
+            discovered = tokio::task::spawn_blocking(move || {
+                let mut roles: Vec<_> = crate::extensions::role::RoleAdapter::new()
+                    .discover_roles(&workspace.join("roles"))
+                    .into_iter()
+                    .map(|role| AgentPromptSummary {
+                        id: role.manifest.id,
+                        name: role.manifest.name,
+                        description: Some(role.manifest.description),
+                        enabled: true,
+                    })
+                    .collect();
+                roles.sort_by(|a, b| a.id.cmp(&b.id));
+                roles
+            })
+            .await?;
+            &discovered
+        } else {
+            &self.agents
+        };
+        let agents: Vec<serde_json::Value> = summaries
             .iter()
             .map(|a| {
                 json!({

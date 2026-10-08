@@ -188,10 +188,6 @@ impl Tool for WorkflowTool {
                 "timeout_ms": {
                     "type": "integer",
                     "description": "Run timeout in milliseconds (default 300000, max 3600000). On timeout the process is killed."
-                },
-                "_workflow_depth": {
-                    "type": "integer",
-                    "description": "Server-injected nesting depth (ExecuteTool run-token path). Callers must not set this; the daemon strips/overwrites it."
                 }
             },
             "required": ["path"],

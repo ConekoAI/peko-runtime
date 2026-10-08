@@ -91,7 +91,7 @@ rather than a passive request handler.
 
 - An agent *is* its session. Same entity, two faces.
 - **Generative face**: the `Agent` tool — `new`, `resume`, `compact`.
-- **Persistent face**: the `session` tool — `status`, `list`, `history`,
+- **Persistent face**: the `Session` tool — `status`, `list`, `history`,
   `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`, `move`.
 - Both tools operate on the same underlying node. The duality *is* the
   paradigm.
@@ -232,7 +232,7 @@ violation** and should be rejected in review.
 - Storing agent config, prompts, or tool state outside the session
   JSONL (e.g. a sibling config file the agent needs to be "rehydrated"
   from on resume).
-- The `Agent` tool and the `session` tool operating on different
+- The `Agent` tool and the `Session` tool operating on different
   underlying nodes for the same id.
 - Spawning a session that lacks one of the two faces (e.g. a session
   with no path to an LLM run, or an LLM run with no session record).

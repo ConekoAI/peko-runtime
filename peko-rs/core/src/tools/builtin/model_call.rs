@@ -350,7 +350,7 @@ impl Tool for ModelCallTool {
             "properties": {
                 "model": {
                     "type": "string",
-                    "description": "Catalog id of a configured model (see model_list). Defaults to the calling principal's preferred model."
+                    "description": "Catalog id of a configured model (see ModelList). Defaults to the calling principal's preferred model."
                 },
                 "prompt": {
                     "type": "string",
@@ -374,10 +374,24 @@ impl Tool for ModelCallTool {
                 },
                 "questions": {
                     "type": "object",
+                    "minProperties": 1,
                     "description": "Judgment mode: map of question key to question spec (`{\"type\": \"boolean\"|\"choice\"|\"score\", \"instructions\": \"...\"}`, plus `options` for choice or `min`/`max` for score). Passed through to the judgment API verbatim."
                 }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "oneOf": [
+                {
+                    "required": ["prompt"],
+                    "not": {"anyOf": [{"required": ["state"]}, {"required": ["questions"]}]}
+                },
+                {
+                    "required": ["state", "questions"],
+                    "not": {"anyOf": [
+                        {"required": ["prompt"]}, {"required": ["system"]},
+                        {"required": ["max_tokens"]}, {"required": ["temperature"]}
+                    ]}
+                }
+            ]
         })
     }
 

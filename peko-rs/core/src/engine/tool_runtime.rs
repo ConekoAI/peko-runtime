@@ -14,19 +14,11 @@
 //! (and other non-agent contexts) to resolve and execute built-in tools.
 
 use crate::common::paths::PathResolver;
-use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::tools::builtin::BashTool;
-use crate::tools::builtin::{ChannelReadTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
 use peko_channel::{ChannelPort, NoopChannelPort};
-use peko_cron::{
-    CronCreateTool, CronDeleteTool, CronHistoryTool, CronListTool, CronTriggerTool, CronUpdateTool,
-};
-use peko_tools_core::Tool;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::info;
 
 /// Standalone tool execution environment
 ///
@@ -136,96 +128,15 @@ impl ToolRuntime {
         })
     }
 
-    /// Register built-in tools with the given catalog
-    ///
-    /// This logic is extracted from `Agent::init_builtins_async()`.
-    ///
-    /// `AsyncSpawn` and `AsyncOutput` are **NOT** registered here. They
-    /// depend on per-agent state (AsyncExecutor + ToolingRuntime for
-    /// spawn-side lookups). Each agent registers its own via
-    /// `BuiltinToolAdapter::register_async_spawn_tool` and
-    /// `BuiltinToolAdapter::register_async_output_tool` once the agent
-    /// has constructed its executor and completion queue.
+    /// Install runtime defaults through the central built-in composition layer.
+    /// Missing tools are filled without replacing existing configured instances;
+    /// daemon, principal, and run phases supply their own dependency bindings.
     pub async fn register_builtins(
         catalog: &crate::tools::catalog::ToolCatalog,
         path_resolver: &PathResolver,
         channel_port: Arc<dyn ChannelPort>,
     ) -> Result<()> {
-        let workspace = path_resolver
-            .agent_workspace(".")
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        // F42 — Bash/Read/Write/Edit/Glob/Grep's default cwd is `<data_dir>/workspaces`,
-        // but PathResolver::ensure_dirs doesn't create it (it's lazy-created per-agent).
-        // Without this, every Bash call on a fresh principal fails with a context-less
-        // "Failed to execute Bash command" because `cmd.current_dir(<missing>)` chdir's
-        // before execve. Best-effort matches the daemon-init convention in
-        // `daemon/state.rs:771`. See scripts/e2e/reports/2026-08-01-bash-tool-cwd-bug.md.
-        let _ = tokio::fs::create_dir_all(&workspace).await;
-
-        let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(BashTool::new().with_workspace(workspace.clone())),
-            Arc::new(ReadTool::new().with_workspace(workspace.clone())),
-            // ADR-065: Write/Edit acquire a fail-fast per-file lock
-            // keyed on the canonical target path, so agents sharing
-            // this runtime cannot silently clobber each other's edits
-            // (the F33 ParallelGate only serializes within one agent).
-            Arc::new(
-                WriteTool::new()
-                    .with_workspace(workspace.clone())
-                    .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
-            ),
-            Arc::new(GlobTool::new().with_workspace(workspace.clone())),
-            Arc::new(GrepTool::new().with_workspace(workspace.clone())),
-            Arc::new(
-                EditTool::new()
-                    .with_workspace(workspace.clone())
-                    .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
-            ),
-            Arc::new(CronCreateTool::new()),
-            Arc::new(CronDeleteTool::new()),
-            Arc::new(CronListTool::new()),
-            Arc::new(CronUpdateTool::new()),
-            Arc::new(CronTriggerTool::new()),
-            Arc::new(CronHistoryTool::new()),
-            // PR-4a — channel reading as a tool. The principal's
-            // agentic loop calls this on demand; the daemon-side
-            // audit ring buffer (PR-3c) observes every channel event
-            // regardless of whether the tool fires. The principal
-            // boundary is preserved because the principal invokes the
-            // tool itself.
-            Arc::new(ChannelReadTool::new(channel_port.clone())),
-            // Sprint 4: `ChannelSend` is now per-agent (registered in
-            // `agents/agent.rs` with `caller_principal_did` bound at
-            // construction). The global registration is gone — the
-            // tool needs the caller's DID and (optionally) the
-            // cross-runtime ctx, both unavailable from a process-wide
-            // singleton. `ChannelRead` remains global because it
-            // doesn't need caller binding.
-        ];
-
-        // Built-in tools are visible to every principal and registered exactly
-        // once per process under PrincipalId::system(). The `register_builtins`
-        // call shape is the daemon-init path.
-        for tool in &tools {
-            if let Err(e) = BuiltinToolAdapter::register_tool_system(catalog, tool.clone()).await {
-                tracing::warn!(
-                    "Failed to register built-in tool '{}' with the catalog: {}",
-                    tool.name(),
-                    e
-                );
-            } else {
-                tracing::debug!(
-                    "Registered built-in tool '{}' with the catalog",
-                    tool.name()
-                );
-            }
-        }
-
-        info!("Registered {} built-in tools with ToolRuntime", tools.len());
-        Ok(())
+        crate::tools::installation::install_runtime(catalog, path_resolver, channel_port).await
     }
 
     /// Get the shared tooling runtime.

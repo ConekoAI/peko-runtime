@@ -10,7 +10,7 @@
 //!   the `AsyncExecutor` to run `tool_name` with `tool_params`. Fixed
 //!   dispatch; the invoked tool may itself call an LLM.
 //! - `message` → `Send` job: at fire time the message lands in the
-//!   principal's trunk session and runs a full agent turn, so the agent
+//!   creating session (trunk fallback) and runs a full agent turn, so the agent
 //!   composes fresh output (and can use tools, e.g. ChannelSend) on
 //!   every fire. LLM-driven; costs tokens per fire.
 
@@ -46,7 +46,7 @@ pub struct CronCreateArgs {
     /// Tool name to invoke at fire time. Mutually exclusive with `message`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
-    /// Instruction delivered to the principal's trunk session at fire time,
+    /// Instruction delivered to the creating session (trunk fallback) at fire time,
     /// running a full agent turn (dynamic, LLM-driven output). Mutually
     /// exclusive with `tool`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +54,7 @@ pub struct CronCreateArgs {
     /// Tool-call parameters for the scheduled `tool` call. Defaults to `{}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
-    /// Whether to post a steer message into the principal's root inbox
+    /// Whether to post a steer message into the creating session's inbox (trunk fallback)
     /// when the scheduled run completes (default `false`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_on_completion: Option<bool>,
@@ -152,10 +152,12 @@ impl Tool for CronCreateTool {
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "Instruction delivered to your trunk session at fire time, running a full agent turn (dynamic, LLM-driven output — e.g. \"compose a fresh ping and ChannelSend it\"). Mutually exclusive with `tool`."
+                    "minLength": 1,
+                    "description": "Instruction delivered to the creating session at fire time (trunk fallback), running a full agent turn (dynamic, LLM-driven output — e.g. \"compose a fresh ping and ChannelSend it\"). Mutually exclusive with `tool`."
                 },
                 "tool": {
                     "type": "string",
+                    "minLength": 1,
                     "description": "Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"ChannelSend\"). The scheduled job calls this tool with `params` at every fire — no scheduler model call. Invoked tools such as Agent may call an LLM and consume tokens. Mutually exclusive with `message`."
                 },
                 "params": {
@@ -164,11 +166,16 @@ impl Tool for CronCreateTool {
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "Whether to post a steer message into the principal's root inbox when the run completes. Defaults to false for cron-spawned runs."
+                    "description": "Whether to post a steer message into the creating session's inbox (trunk fallback) when the run completes. Defaults to false for cron-spawned runs."
                 },
                 "timeout_secs": {
                     "type": "integer",
                     "description": "Per-run timeout in seconds. Defaults to the executor's 7200s policy."
+                },
+                "one_shot": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Delete the job after its first fire. at/delay schedules are always one-shot, even when this is false."
                 },
                 "label": {
                     "type": "string",
@@ -176,7 +183,7 @@ impl Tool for CronCreateTool {
                 },
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression (5-field). Required unless at, interval_ms, or idle_ms is provided."
+                    "description": "Cron expression (5-field). Supply a schedule: delay, at, interval_ms, cron, or idle_ms. Explicit fields resolve in that order after delay; delay cannot be combined with another schedule."
                 },
                 "at": {
                     "type": "string",
@@ -198,7 +205,22 @@ impl Tool for CronCreateTool {
                     "type": "integer",
                     "description": "Idle duration in milliseconds before triggering"
                 }
-            }
+            },
+            "allOf": [
+                {"oneOf": [{"required": ["message"]}, {"required": ["tool"]}]},
+                {"anyOf": [
+                    {"required": ["delay"]}, {"required": ["at"]},
+                    {"required": ["interval_ms"]}, {"required": ["cron"]},
+                    {"required": ["idle_ms"]}
+                ]},
+                {
+                    "if": {"required": ["delay"]},
+                    "then": {"not": {"anyOf": [
+                        {"required": ["at"]}, {"required": ["interval_ms"]},
+                        {"required": ["cron"]}, {"required": ["idle_ms"]}
+                    ]}}
+                }
+            ]
         })
     }
 
@@ -329,9 +351,7 @@ mod tests {
         let tool = CronCreateTool::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
-        // Two mutually exclusive shapes (validated in code, not the
-        // schema — JSON-schema `oneOf` hurts more than it helps in
-        // model-facing tool contracts): `tool`+`params` → SpawnTool,
+        // Two mutually exclusive shapes: `tool`+`params` → SpawnTool,
         // `message` → Send. `message` was restored after Sprint 7's
         // SpawnTool-only Commit D left the Send fire path uncreatable
         // (the `peko cron` CLI that used to write Send jobs is retired).

@@ -26,8 +26,8 @@ pub struct BuiltinToolAdapter;
 
 impl BuiltinToolAdapter {
     /// Register a built-in tool under the given principal scope.
-    /// Idempotent — re-registering the same `(name, principal_id)`
-    /// overwrites.
+    /// Explicitly replaces an existing `(name, principal_id)` binding.
+    /// Production defaults use the non-replacing installation functions.
     pub async fn register_tool(
         catalog: &ToolCatalog,
         tool: Arc<dyn Tool>,
@@ -69,12 +69,8 @@ impl BuiltinToolAdapter {
         Self::register_tools(catalog, tools, PrincipalId::system()).await
     }
 
-    /// Register `AsyncSpawn` with per-agent wiring.
-    ///
-    /// Registered under the calling agent's `principal_id` rather than
-    /// the system scope, so each agent gets its own
-    /// `(AsyncSpawn, principal_id)` entry — the per-agent async family
-    /// introspection scoping.
+    /// Register a principal-owned async binding in the supplied catalog.
+    /// Production installation shares one executor across the principal's turns.
     pub async fn register_async_spawn_tool(
         catalog: &ToolCatalog,
         tool: Arc<crate::tools::builtin::AsyncSpawnTool>,
@@ -83,10 +79,7 @@ impl BuiltinToolAdapter {
         Self::register_tool(catalog, tool, principal_id).await
     }
 
-    /// Register `AsyncOutput` with per-agent wiring.
-    ///
-    /// Registered under the calling agent's `principal_id` (see
-    /// `register_async_spawn_tool` for rationale).
+    /// Register the companion principal-owned async output binding.
     pub async fn register_async_output_tool(
         catalog: &ToolCatalog,
         tool: Arc<crate::tools::builtin::AsyncOutputTool>,
@@ -95,15 +88,8 @@ impl BuiltinToolAdapter {
         Self::register_tool(catalog, tool, principal_id).await
     }
 
-    /// Phase 2 of `feature/multi-model-subagents`: register the
-    /// `model_list` builtin so the parent agent can discover what
-    /// models the principal has configured before picking which one
-    /// to spawn a subagent against.
-    ///
-    /// Registered under the calling agent's `principal_id` (not the
-    /// system scope) so each agent gets its own `model_list`
-    /// instance whose `Weak<ModelCatalog>` upgrades to the
-    /// principal's catalog at execute time.
+    /// Register a run-owned ModelList binding. Supply the run overlay catalog
+    /// so one run's model-list configuration cannot change another run's tools.
     pub async fn register_model_list_tool(
         catalog: &ToolCatalog,
         tool: Arc<crate::tools::builtin::ModelListTool>,
@@ -114,22 +100,22 @@ impl BuiltinToolAdapter {
 
     /// Get list of globally-registered built-in tool names.
     ///
-    /// These tools are registered once at daemon startup by
-    /// `engine::ToolRuntime::register_builtins` and are shared across
-    /// all agents.
+    /// These defaults are assembled by the runtime and daemon phases of
+    /// tools::installation, and inherited by every principal/run.
     #[must_use]
     pub fn global_tool_names() -> Vec<&'static str> {
-        crate::principal::runtime::builtin_tools::GLOBAL_TOOL_NAMES.to_vec()
+        crate::tools::installation::names_for_scope(
+            crate::tools::installation::BuiltinScope::Runtime,
+        )
     }
 
     /// Get list of agent-specific built-in tool names.
     ///
-    /// These tools require agent-specific runtime dependencies
-    /// (e.g. `SubagentExecutor`, caller identity) and are registered
-    /// per-agent in `Agent::init_builtins_async()`.
+    /// These tools bind a run's executor or model configuration in its
+    /// private catalog overlay. Principal services have their own lifetime.
     #[must_use]
     pub fn agent_specific_tool_names() -> Vec<&'static str> {
-        crate::principal::runtime::builtin_tools::AGENT_SPECIFIC_TOOL_NAMES.to_vec()
+        crate::tools::installation::AGENT_SPECIFIC_TOOL_NAMES.to_vec()
     }
 
     /// Get list of ALL built-in tool names (global + agent-specific).

@@ -24,7 +24,7 @@ use crate::principal::config::Exposure;
 use crate::principal::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalManager,
 };
-use crate::tools::builtin::channel::{ChannelSendResult, ChannelSendTool};
+use crate::tools::builtin::channel::{build_channel_send_tool, ChannelSendResult};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryError};
 use crate::tunnel::local_directory::LocalFirstAgentDirectory;
@@ -34,7 +34,6 @@ use peko_auth::Subject;
 use peko_channel::{ChannelEvent, ChannelPort, Checkpoint};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
-use peko_tools_core::Tool;
 
 /// A directory client that panics if consulted. Wrapping it inside
 /// `LocalFirstAgentDirectory` proves the hub fallback is never reached
@@ -197,6 +196,25 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
         cfg.did.as_ref().unwrap().0.clone()
     };
 
+    // Install before the tunnel context exists, as on an offline daemon.
+    let tooling = tool_runtime.tooling();
+    tooling.services().set_channel_port(channel_port.clone());
+    let tool = build_channel_send_tool(tooling, &caller_did).unwrap();
+    let tool_ctx =
+        peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+            .with_principal_id(caller.id.0.clone());
+    let offline = tool
+        .execute_with_context(
+            serde_json::json!({"channel": format!("principal:{target_did}"), "text": "ping"}),
+            &tool_ctx,
+        )
+        .await
+        .unwrap();
+    assert!(offline["error"]
+        .as_str()
+        .unwrap()
+        .contains("cross-runtime context"));
+
     let caller_runtime_id = "did:key:test-runtime".to_string();
     let ctx = Arc::new(CrossRuntimeA2aCtx {
         directory: Arc::new(LocalFirstAgentDirectory::new(
@@ -210,18 +228,8 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
         response_timeout: Duration::from_millis(200),
     });
 
-    // Sprint 4: ChannelSendTool replaces SendPeerTool. The principal
-    // branch is selected by the `principal:<did>` wire form on the
-    // `channel` parameter — exactly the same dispatch shape the
-    // LLM-facing tool will use. The principal branch needs a
-    // `ToolContext` (the F37 funnel supplies one in production); the
-    // test stands up a minimal context with the caller's principal id
-    // bound.
-    let tool = ChannelSendTool::new_with_peer(channel_port.clone(), caller_did.clone(), ctx);
-    let principal_id_string = caller.id.0.clone();
-    let tool_ctx =
-        peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
-            .with_principal_id(principal_id_string);
+    // Connecting later must activate the same tool without re-registration.
+    tooling.services().set_cross_runtime_a2a_ctx(ctx);
 
     let result = tool
         .execute_with_context(

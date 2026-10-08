@@ -111,7 +111,7 @@ pub struct SessionEntry {
     /// Retention cap on closed compaction pages (ADR-051): when the
     /// session has more closed pages than this, the OLDEST pages are
     /// rotated out (their events permanently deleted) until within the
-    /// cap. `None` = unlimited. Set via the `session` tool's `move`
+    /// cap. `None` = unlimited. Set via the `Session` tool's `move`
     /// action or the Agent tool's `page_limit` parameter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_limit: Option<u32>,

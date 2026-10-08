@@ -1183,7 +1183,7 @@ mod buffer_tests {
         );
     }
 
-    /// Round-trip a `model_list`-shaped response large enough that
+    /// Round-trip a `ModelList`-shaped response large enough that
     /// the *default* macOS `SO_SNDBUF` (2048 B) would reject it with
     /// `EMSGSIZE`, and verify the bumped server can deliver it back
     /// without truncation. This mirrors the exact failure mode the

@@ -41,9 +41,9 @@ pub struct AgentConfig {
     pub prompt: Option<String>,
 
     /// Phase 2 of `feature/multi-model-subagents`: whether the
-    /// `model_list` builtin is registered for this agent. Defaults
+    /// `ModelList` builtin is registered for this agent. Defaults
     /// to `true` because discoverability matters for the parent
-    /// agent's model-picking decisions — without `model_list` the
+    /// agent's model-picking decisions — without `ModelList` the
     /// parent must shell out to `peko model list` between turns,
     /// breaking the agentic flow. Off when the agent is run in a
     /// constrained mode that already knows the catalog statically
@@ -133,7 +133,7 @@ impl Default for AgentConfig {
             prompt: None,
             // F35 — opt-in deferred-tool discovery stub. Off by default
             // so a fresh runtime doesn't pay the prompt-token cost.
-            // Phase 2 — `model_list` on by default; parent agents
+            // Phase 2 — `ModelList` on by default; parent agents
             // need discovery to pick child models.
             enable_model_list: true,
             // Phase 2 inert fields. The renderer reads these from
@@ -162,7 +162,7 @@ mod tests {
         let config = super::AgentConfig::default();
         assert_eq!(config.name, "unnamed-agent");
         // F35 — opt-in deferred-tool discovery stub defaults off.
-        // Phase 2 — `model_list` defaults on so the parent agent can
+        // Phase 2 — `ModelList` defaults on so the parent agent can
         // discover the catalog before picking a child model.
         assert!(config.enable_model_list);
     }

@@ -37,7 +37,7 @@ of the coin:
   is the LLM side — three actions: `new` (spawn), `resume` (re-attach a
   run to an existing spawned session), `compact` (flag the session; the
   engine summarizes at the target's next run).
-- The `session` tool (`peko-rs/core/src/tools/builtin/session/tool.rs`)
+- The `Session` tool (`peko-rs/core/src/tools/builtin/session/tool.rs`)
   is the storage side — nine non-LLM actions: `status`, `list`,
   `history`, `search`, `rename`, `delete`, `branch`, `archive`,
   `unarchive`.
@@ -162,7 +162,7 @@ correctly.
 
 ### 2.3 Scoping: an agent operates only within its own subtree
 
-**(implemented)** An agent may use the `Agent`/`session` tools only inside
+**(implemented)** An agent may use the `Agent`/`Session` tools only inside
 its own scope (`peko-rs/core/src/session/ownership.rs`):
 
 - A caller in a base session manages the whole store (root ⇒ the entire

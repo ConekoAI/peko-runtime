@@ -1182,7 +1182,7 @@ mod tests {
         );
     }
 
-    // ── Caller-aware `session` tool on the ExecuteTool path ─────────
+    // ── Caller-aware `Session` tool on the ExecuteTool path ─────────
 
     /// Seed the fixture principal's REAL store with trunk + child
     /// (slugs t/c), ids prefixed for cross-principal distinctness.
@@ -1231,7 +1231,7 @@ mod tests {
         (trunk, child)
     }
 
-    /// Register the daemon-side caller-aware `session` tool on the
+    /// Register the daemon-side caller-aware `Session` tool on the
     /// fixture core (daemon/state.rs does this in production).
     async fn register_daemon_session_tool(fx: &Fixture) {
         crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
@@ -1246,7 +1246,7 @@ mod tests {
     }
 
     /// Pre-change evidence: without the daemon-side registration (and
-    /// no booted agent), `ExecuteTool("session")` resolves to nothing.
+    /// no booted agent), `ExecuteTool("Session")` resolves to nothing.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_unresolvable_without_daemon_registration() {
@@ -1254,7 +1254,7 @@ mod tests {
         let response = execute_tool(
             &fx.handler,
             30,
-            "session",
+            "Session",
             json!({"action": "list"}),
             "agent:nosess:cli:default",
             &fx.workspace,
@@ -1293,7 +1293,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             31,
-            "session",
+            "Session",
             json!({"action": "status"}),
             "agent:sesshead:workflow:run-1",
             &fx.workspace,
@@ -1361,7 +1361,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             32,
-            "session",
+            "Session",
             json!({"action": "status"}),
             "agent:sesstrunk:workflow:run-1",
             &fx.workspace,
@@ -1399,7 +1399,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             33,
-            "session",
+            "Session",
             json!({"action": "remove", "path": "sess:/t/c"}),
             "agent:sessdang:workflow:direct",
             &fx.workspace,
@@ -1450,7 +1450,7 @@ mod tests {
         let response = execute_tool(
             &fx.handler,
             34,
-            "session",
+            "Session",
             json!({"action": "remove", "path": "sess:/t/c"}),
             "agent:sessplain:workflow:direct",
             &fx.workspace,
@@ -1494,7 +1494,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             35,
-            "session",
+            "Session",
             json!({"action": "list"}),
             "agent:sessA:workflow:run-1",
             &fx.workspace,

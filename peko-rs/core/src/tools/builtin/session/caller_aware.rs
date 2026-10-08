@@ -1,4 +1,4 @@
-//! `CallerAwareSessionTool` — the `session` builtin with per-call
+//! `CallerAwareSessionTool` — the `Session` builtin with per-call
 //! caller resolution (ADR-061 caller-awareness).
 //!
 //! The stock `SessionTool` reads the caller from a construction-time
@@ -6,7 +6,7 @@
 //! start). On the agentic-loop path that cell IS the running session,
 //! so classification is correct; on the `ExecuteTool` (workflow) path
 //! the cell is stale — the registering agent's *last* run — and
-//! pre-boot principals have no `session` tool registered at all.
+//! pre-boot principals have no `Session` tool registered at all.
 //!
 //! This tool resolves the caller **per call** from
 //! `ToolContext.session_id` (the token-resolved node id on the
@@ -29,8 +29,8 @@
 //!   content are the same run UUID.
 //!
 //! Neither mode changes the `SessionRuntime` port trait, and the
-//! per-agent construction keeps its exact behavior. Capability gating
-//! stays `tool:session`; the registered name stays `session`.
+//! per-agent construction keeps its exact behavior. Both variants
+//! advertise the same `Session` name and schema.
 
 use std::sync::{Arc, Weak};
 
@@ -57,7 +57,7 @@ enum SessionCallerMode {
     Agent { runtime: SessionManagerRuntime },
 }
 
-/// `session` builtin with per-call caller resolution. See module docs.
+/// `Session` builtin with per-call caller resolution. See module docs.
 pub struct CallerAwareSessionTool {
     mode: SessionCallerMode,
     /// Static-surface delegate: the tool's name/description/schema are
@@ -161,9 +161,7 @@ impl std::fmt::Debug for CallerAwareSessionTool {
 #[async_trait]
 impl Tool for CallerAwareSessionTool {
     fn name(&self) -> &'static str {
-        // Must match the stock tool's registered name — the registry
-        // probe and the `tool:session` capability grant key off it.
-        "session"
+        "Session"
     }
 
     fn description(&self) -> String {
@@ -235,7 +233,7 @@ impl Tool for CallerAwareSessionTool {
 /// Stock-tool static surface for the daemon mode (a `SessionCache`
 /// runtime is never executed — description/schema only).
 fn metadata_tool() -> SessionTool {
-    SessionTool::new(Arc::new(SessionCache::new("session")) as SharedSessionRuntime)
+    SessionTool::new(Arc::new(SessionCache::new("Session")) as SharedSessionRuntime)
 }
 
 #[cfg(test)]
@@ -284,7 +282,7 @@ mod tests {
     }
 
     fn ctx_with_session(id: Option<&str>) -> ToolContext {
-        let ctx = ToolContext::default_for_tool("session");
+        let ctx = ToolContext::default_for_tool("Session");
         match id {
             Some(id) => ctx.with_session_id(id),
             None => ctx,
@@ -348,7 +346,7 @@ mod tests {
             Weak::new(),
             crate::async_exec::executor::standalone_inbox_registry(),
         );
-        let ctx = ToolContext::default_for_tool("session").with_principal_name("ghost");
+        let ctx = ToolContext::default_for_tool("Session").with_principal_name("ghost");
         let err = tool
             .execute_with_context(json!({"action": "list"}), &ctx)
             .await
@@ -380,7 +378,7 @@ mod tests {
             Weak::new(),
             crate::async_exec::executor::standalone_inbox_registry(),
         );
-        assert_eq!(daemon.name(), "session");
+        assert_eq!(daemon.name(), "Session");
         assert_eq!(daemon.parameters(), stock.parameters());
     }
 }

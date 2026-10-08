@@ -35,6 +35,7 @@
 
 pub mod agent;
 pub mod agent_compat;
+pub(crate) mod caller_aware;
 pub mod dto;
 pub mod subagent_runtime;
 

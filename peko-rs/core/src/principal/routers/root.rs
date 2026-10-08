@@ -368,7 +368,7 @@ mod tests {
         let prompt = default_root_prompt();
         assert_eq!(prompt.name, "root");
         assert!(
-            prompt.body.contains("role_catalog"),
+            prompt.body.contains("RoleCatalog"),
             "root agent prompt should mention role_catalog"
         );
     }

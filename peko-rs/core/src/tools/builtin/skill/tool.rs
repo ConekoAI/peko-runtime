@@ -100,7 +100,7 @@ impl Tool for SkillTool {
         r#"Invoke a SKILL.md body with argument substitution.
 
 Parameters:
-- name: required — skill name (must match a discovered SKILL.md directory name AND be in the principal's enabled allowlist).
+- name: required — skill name (must match a discovered SKILL.md directory name).
 - args: optional array of strings — positional arguments.
 
 Argument substitution (Claude-style):
@@ -123,7 +123,7 @@ Dynamic context (Claude-style):
 
 Returns:
 - { name, body } — the skill's body with dynamic context resolved, then arguments substituted.
-- { error, skill } — structured error: skill_not_enabled, skill_unreadable, or unknown_skill."#
+- { error, skill } — structured unknown_skill error. Unreadable or invalid skill files return a tool error."#
             .to_string()
     }
 

@@ -51,6 +51,7 @@
 pub mod builtin;
 pub mod catalog;
 pub mod dispatcher;
+pub mod installation;
 pub mod prompt_sections;
 pub mod registry;
 pub mod runtime;

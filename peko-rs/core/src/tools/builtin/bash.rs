@@ -505,8 +505,6 @@ This tool has FULL SYSTEM ACCESS when enabled. It can:
 - Read/write any file the OS user can access
 - Run commands in any directory
 
-Disable this tool in agent config if you don't need shell access.
-
 ## API
 ```json
 {{

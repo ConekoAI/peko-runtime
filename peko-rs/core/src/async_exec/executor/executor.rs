@@ -864,7 +864,8 @@ impl AsyncExecutor {
                     principal_name: context.principal_name,
                     abort_signal: Some(rx),
                 };
-                let (text, json, success) = tooling_for_closure.dispatcher().execute(spec).await?;
+                let (text, json, success) =
+                    peko_engine::ToolFunnel::execute(&*tooling_for_closure, spec).await?;
                 // F37: surface tool failure as an Err so the executor
                 // records `Failed { error }` (not `Completed` with
                 // error-JSON masquerading as success).

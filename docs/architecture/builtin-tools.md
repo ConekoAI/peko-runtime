@@ -1,529 +1,646 @@
 # Built-in Tools Catalog
 
-This document is the source of truth for peko-runtime's built-in tool surface.
-It is organized around the Claude Code core tool parity program: tools that
-match Claude's name and schema exactly are marked ✅; peko extensions are
-marked 🔧.
+Peko exposes **37 built-in tool names**, all in PascalCase. This reference
+describes the compiled Tool implementations; the emitted descriptions and
+JSON Schemas in source are the executable contract. MCP and workspace tools
+have their own names and schemas and are outside this inventory.
 
-Every registered tool is included in the native wire catalog (ADR-066 P4).
-The exposure enum, deferred-tool discovery, and `__tool_search` were removed;
-workspace tool registration remains principal-scoped.
+Every registered tool appears in the native wire catalog (ADR-066). ToolCatalog
+owns registration/lookup; ToolDispatcher validates arguments and emits one
+attributed audit event. Presence = visibility = executability; legacy principal
+capability grants do not filter tools.
 
-Tool execution uses `ToolDispatcher` through the engine's three-method
-`ToolFunnel` port. Catalog metadata lives in root's `tools::metadata`; tool
-traits and async statuses live in `peko-tools-core`. Legacy principal grant
-strings never reach tools, subagents, or prompts (ADR-066 P6). Peer and session
-ownership checks remain in their respective domains.
+## Naming and compatibility
 
-Agent actions (`new`, `resume`, `compact`, `branch`) reserve a slot in the
-principal-wide live-run pool (ADR-067). The default limit is 20, configured by
-`[governance].max_running_agents` in `principal.toml`. Peer, trunk, cron and
-recursive runs share it; waiting parents and detached runs count until their
-execution exits. Idle sessions consume no slots. Delegation depth is unrestricted.
-At capacity the call fails immediately with `ConcurrentLimitExceeded`, current
-and maximum counts, and guidance to try again after an existing run finishes.
-No run is queued and no target session is created or reseeded by a refused call.
+| Previous wire name | Canonical wire name |
+|---|---|
+| session | Session |
+| model_list | ModelList |
+| role_catalog | RoleCatalog |
 
-## Legend
+Legacy spellings resolve to the corresponding built-in when no exact tool name
+matches. They are lookup aliases, not additional wire catalog entries. Exact
+workspace/MCP names retain precedence; aliases do not cross principal scopes.
+Rust module names, configuration keys such as enable_model_list, IPC operation
+tags, action values, and parameter names retain their existing spelling.
 
-- **✅ Claude parity** — name, schema, and return shape match Claude Code's
-core built-in tool.
-- **🔧 Peko extension** — intentionally diverges from Claude Code (extra
-parameter, extra behavior, or no Claude equivalent).
-- **⏳ Pending** — not yet implemented on the parity branch.
+## Registration and lifetimes
 
-## Filesystem tools
+[installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
+installation phases, and the 37-name inventory. Metadata-only inventories and
+scope checks derive from its manifest.
 
-### `Read` 🔧
+| Lifetime | Tools | Installation |
+|---|---|---|
+| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron*, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
+| Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
+| Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
+| Principal services | Task*, Plan*, ChannelSend, Async* | When their session storage, plan, caller identity/channel, or inbox bindings become available |
+| Run bindings | Agent, Session, ModelList | Private catalog overlay; ModelList requires its flag and catalog |
 
-Read file contents with optional line ranges and binary support.
+Each run inherits live runtime/principal registrations through its overlay.
+Installing a run executor never replaces another run's binding. Workflow/IPC
+callbacks resolve the active overlay by the attributed principal and caller
+session; when no run is live, daemon Agent/Session adapters resolve principal
+services per call. All calls use the same dispatcher implementation, hooks,
+audit sink, and timeout router. Run admission remains principal-wide. ChannelSend
+keeps principal identity/reply locks and resolves the current tunnel context per
+call, including connections made after installation.
 
-```json
-{
-  "file_path": "string (required)",
-  "offset": "integer? (1-based line)",
-  "limit": "integer?",
-  "pages": "string? (PDF only, e.g. '1-5')"
-}
-```
+Async executors and task registries belong to the principal, so receipts remain
+resolvable after a run ends. AsyncSpawn stamps the caller session on each task;
+completion events go to that session's inbox. Background Bash and subagent tasks
+remain accessible through the existing principal-filtered registry fallback.
+These lifetimes do not introduce a new authorization boundary; the principal
+remains the trust boundary. See [ADR-069](adr/ADR-069-builtin-tool-installation-lifetimes.md).
 
-Return:
-```json
-{
-  "content": "string",
-  "path": "string",
-  "size_bytes": "integer",
-  "encoding": "utf8 | base64",
-  "total_lines?": "integer",
-  "start_line?": "integer",
-  "end_line?": "integer"
-}
-```
+## Parameter conventions
 
-**Peko extensions:** `encoding` parameter to force base64 (Claude auto-detects
-binary); binary auto-detection with base64 return.
+Required below means required by the top-level schema. Conditional requirements
+are stated under each tool and encoded in its schema. Defaults may be applied
+by runtime code rather than JSON Schema; schema defaults alone do not inject values.
 
-### `Write` 🔧
+## Files and shell
 
-Write or append content to files.
+### Read
 
-```json
-{
-  "file_path": "string (required)",
-  "content": "string (required)",
-  "mode": "create_new (default) | overwrite | append",
-  "encoding": "utf8 (default) | base64"
-}
-```
+Read text with inline line numbers, or binary content as base64.
 
-Return:
-```json
-{
-  "path": "string",
-  "bytes_written": "integer",
-  "size_bytes": "integer",
-  "mode": "create_new | overwrite | append",
-  "encoding": "utf8 | base64"
-}
-```
+[Implementation](../../peko-rs/core/src/tools/builtin/fs/read.rs)
 
-**Peko extensions:** `mode` and `encoding` parameters. The default mode is
-`create_new` to match Claude Code's safety invariant (writing an existing
-file errors). `overwrite` and `append` remain opt-in peko extensions.
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `file_path` | string | yes | — |
+| `offset` | integer | no | ≥ 1 |
+| `limit` | integer | no | ≥ 1 |
+| `encoding` | utf8 \| base64 | no | — |
 
-### `Edit` 🔧
+Offset is 1-based. Omitting limit reads through EOF. Encoding defaults to utf8; binary content is detected automatically. There is no PDF pages selector.
 
-Targeted string replacement in files.
+### Write
 
-```json
-{
-  "file_path": "string (required)",
-  "old_string": "string (required)",
-  "new_string": "string (required)",
-  "replace_all": "boolean (default false)"
-}
-```
+Create, overwrite, or append files; creates parent directories.
 
-Return:
-```json
-{
-  "path": "string",
-  "replacements": [{ "old": "string", "new": "string", "occurrences": "integer" }],
-  "total_replacements": "integer",
-  "success": "boolean"
-}
-```
+[Implementation](../../peko-rs/core/src/tools/builtin/fs/write.rs)
 
-**Peko extensions:** the return object includes `total_replacements` and
-`success` top-level fields, plus `success`/`error` per replacement. The
-canonical Claude shape is `{ path, replacements: [...] }`; the extras are
-non-breaking but make the tool 🔧.
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `file_path` | string | yes | — |
+| `content` | string | yes | — |
+| `mode` | overwrite \| create_new \| append | no | default "overwrite" |
+| `encoding` | utf8 \| base64 | no | default "utf8" |
 
-## Shell
+Mode defaults to overwrite; use create_new to refuse an existing file. Parent directories are created automatically.
 
-### `Bash` ✅
+### Edit
 
-Execute shell commands.
+Replace exact text; requires a unique match unless replace_all is true.
 
-```json
-{
-  "command": "string (required)",
-  "description": "string?",
-  "run_in_background": "boolean (default false)",
-  "timeout": "integer? (ms)"
-}
-```
+[Implementation](../../peko-rs/core/src/tools/builtin/fs/edit.rs)
 
-Return (blocking):
-```json
-{
-  "exit_code": "integer",
-  "stdout": "string",
-  "stderr": "string",
-  "success": "boolean"
-}
-```
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `file_path` | string | yes | — |
+| `old_string` | string | yes | — |
+| `new_string` | string | yes | — |
+| `replace_all` | boolean | no | default false |
 
-Return (background): async task receipt.
+old_string must match exactly and occur once unless replace_all is true.
 
-**Peko extension:** `cwd` parameter for per-tool working directory.
+### Glob
+
+Find files and optionally directories by glob pattern.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/fs/glob.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `pattern` | string | yes | — |
+| `path` | string | no | — |
+| `include_hidden` | boolean | no | default false |
+| `include_dirs` | boolean | no | default false |
+| `limit` | integer | no | default 1000, ≥ 1, ≤ 10000 |
+
+path defaults to the calling workspace. An explicit path overrides workspace injection.
+
+### Grep
+
+Regex search with context, filename-only, or count output.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/fs/grep.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `pattern` | string | yes | — |
+| `path` | string | no | — |
+| `include` | string | no | — |
+| `limit` | integer | no | default 100, ≥ 1, ≤ 1000 |
+| `include_content` | boolean | no | default true |
+| `context_before` | integer | no | default 0, ≥ 0, ≤ 10 |
+| `context_after` | integer | no | default 0, ≥ 0, ≤ 10 |
+| `context` | integer | no | ≥ 0, ≤ 10 |
+| `case_insensitive` | boolean | no | default false |
+| `include_hidden` | boolean | no | default false |
+| `output_mode` | content \| files_with_matches \| count | no | default "content" |
+
+context overrides context_before/context_after. Content/context controls apply only to content mode. Output is a plain-text string with accompanying JSON metadata.
+
+### Bash
+
+Execute shell commands, synchronously or in the background.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/bash.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `command` | string | yes | — |
+| `description` | string | no | — |
+| `cwd` | string | no | — |
+| `run_in_background` | boolean | no | default false |
+| `timeout` | integer | no | ≥ 1 |
+| `max_output_bytes` | integer | no | ≥ 1 |
+
+timeout is milliseconds. max_output_bytes defaults to 100000 per stream and is ignored in background mode. Background execution returns an async receipt.
+
+## Agents, roles, and skills
+
+### Agent
+
+Run work in a new, resumed, compacted, or branched session.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/messaging/agent.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `action` | new \| resume \| compact \| branch | no | default "new" |
+| `prompt` | string | yes | nonempty |
+| `role` | string | yes | nonempty |
+| `path` | string | yes | nonempty |
+| `model` | string | no | — |
+| `source` | string | no | — |
+| `overwrite` | boolean | no | — |
+| `page_limit` | integer | no | ≥ 1, ≤ 10000 |
+
+All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 1–10000, omitted for unlimited; exceeding it permanently deletes the oldest closed pages. model is ignored for compact. Legacy agent is accepted as an alias for role. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+
+### RoleCatalog
+
+Discover role templates available in the principal.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/role_catalog.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| — | — | — | No parameters |
+
+Returns {total, agents}. Entries expose id, name, description, and enabled; use an enabled entry’s id as Agent.role.
+
+### Skill
+
+Load a SKILL.md body, resolve dynamic shell context, and substitute arguments.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/skill/tool.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `name` | string | yes | — |
+| `args` | string[] | no | — |
+
+args is string[]. The body supports $ARGUMENTS, positional $0/$1/etc., named frontmatter arguments, and dynamic shell context. Presence in the principal workspace determines availability; there is no principal capability allowlist.
+
+## Session storage
+
+### Session
+
+Inspect and manage persisted sessions and compaction pages.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/session/tool.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `action` | status \| list \| history \| find \| copy \| move \| remove \| list_pages \| read_page \| search_pages | yes | — |
+| `path` | string | no | — |
+| `target` | string | no | — |
+| `query` | string | no | — |
+| `page` | integer | no | ≥ 1 |
+| `offset` | integer | no | default 0, ≥ 0 |
+| `max_results` | integer | no | default 20 |
+| `title` | string | no | — |
+| `page_limit` | integer | no | ≥ 0, ≤ 10000 |
+| `recursive` | boolean | no | default false |
+| `peer` | string | no | — |
+| `agent_name` | string | no | — |
+| `limit` | integer | no | — |
+| `active_minutes` | integer | no | — |
+| `include_tools` | boolean | no | default true |
+| `timezone` | string | no | — |
+
+action is required. See the action table below for conditional requirements and actual defaults. Absolute addresses use sess:/a/b; sess:/ identifies the trunk for reads. Omitted read paths select the calling session. Legacy agent_id remains an alias for the list agent_name filter; legacy label remains an alias for copy title. Mutation ownership/run guards remain in the session runtime.
+
+| Action | Purpose | Required fields besides action | Optional fields / runtime defaults |
+|---|---|---|---|
+| status | Metadata and usage | — | path, timezone |
+| list | List/filter sessions | — | path, peer, agent_name, active_minutes, limit=50 |
+| history | Messages | — | path, limit=100, include_tools=true |
+| find | Transcript search | query | path, peer, limit=50 |
+| copy | Copy to a new address | path, target | title |
+| move | Reparent/rename/update retention | path and at least one of target/title/page_limit | page_limit=0 means unlimited; maximum 10000 |
+| remove | Delete a session | path | recursive=false |
+| list_pages | Compaction page catalog | — | path |
+| read_page | Render one page | page (1-based) | path, offset=0, limit=200 |
+| search_pages | Search all pages | query | path, max_results=20 |
+
+Session manages storage; Agent runs work. A move/remove refuses the trunk,
+the current session, and actively running targets. Destructive operations remain
+subject to runtime ownership guards. Page retention prunes old pages permanently.
+
+## Channels
+
+### ChannelSend
+
+Post to a channel/group, ask a peer principal and await a reply, or send the originating user a note.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_send.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `channel` | string | yes | — |
+| `text` | string | yes | — |
+| `parent` | string | no | — |
+| `label` | string | no | — |
+
+channel selects dispatch: chan_<id> = post; principal:<did> = request/reply; user:<id> = note; group:<slug> = post. parent applies to bare/group posts; label applies to user notes and defaults to the agent name. User notes are limited to the originating user. Posts carry session attribution.
+
+### ChannelRead
+
+Read or search channel events with backward/forward pagination.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_read.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `channel` | string | yes | — |
+| `limit` | integer | no | ≥ 1 |
+| `query` | string | no | — |
+| `author` | string | no | — |
+| `before` | string | no | — |
+| `since` | string | no | — |
+
+Accepts chan_<id> or group:<slug>; caller membership is required. limit defaults to 50, capped at 1000 for reads and 200 for searches. Nonempty query or author activates search mode. since overrides before for reads and is ignored in search mode. Returns events oldest-to-newest with has_more and next_cursor.
+
+## Inference and workflows
+
+### ModelList
+
+List configured models, optionally filtered by capability and text.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/model_list.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `filter` | vision \| tools \| thinking \| priced \| json_mode | no | — |
+| `contains` | string | no | — |
+
+filter and contains are AND-combined; contains matches id, display_name, and note case-insensitively. Requires enable_model_list and a bound model catalog. Rust configuration names remain snake_case.
+
+### ModelCall
+
+Make one sessionless completion or structured judgment call.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/model_call.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `model` | string | no | — |
+| `prompt` | string | no | — |
+| `system` | string | no | — |
+| `max_tokens` | integer | no | — |
+| `temperature` | number | no | — |
+| `state` | string \| object | no | — |
+| `questions` | object | no | nonempty object |
+
+Exactly one mode is required: prompt for completion, or state plus a nonempty questions map for judgment. system/max_tokens/temperature are completion-only. model defaults to the principal’s preferred model. Judgment requires decisions:true; question specs are passed through and support boolean, choice (options), and score (min/max). Calls are attributed to the principal and metered.
+
+### Workflow
+
+Run a saved Python workflow from the principal’s workflows directory.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/workflow.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `path` | string | yes | — |
+| `args` | string[] | no | — |
+| `timeout_ms` | integer | no | — |
+
+path must resolve to a .py file inside workflows/. timeout_ms defaults to 300000 and caps at 3600000; zero/nonpositive values fall back to the default. The process receives runtime identity and can call tools through the workflow SDK. Nesting depth is injected internally from the run token and is absent from the public schema.
+
+## Session todos
+
+### TaskCreate
+
+Create a session-local todo.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/tasks/create.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `subject` | string | yes | — |
+| `description` | string | no | — |
+| `activeForm` | string | no | — |
+
+Todos are stored in the calling session’s todos.jsonl sidecar.
+
+### TaskGet
+
+Fetch one todo.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/tasks/get.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `taskId` | string | yes | — |
+
+### TaskList
+
+List session-local todos, optionally filtered by status.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/tasks/list.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `status_filter` | pending \| in_progress \| completed | no | — |
+
+### TaskUpdate
+
+Change a todo’s status and/or owner.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/tasks/update.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `taskId` | string | yes | — |
+| `status` | pending \| in_progress \| completed | no | — |
+| `owner` | string | no | — |
+
+At least one of status or owner is required, in addition to taskId.
+
+## Durable plans
+
+### PlanCreate
+
+Create a principal-owned durable plan with dependency nodes.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/plan/create.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `title` | string | yes | — |
+| `nodes` | object[] | yes | at least 1 item |
+
+nodes contains at least one object: {step, nodeId?, dependsOn?: string[], status?}. nodeId is auto-assigned when omitted; status defaults to pending. Plans belong to the principal and persist across sessions.
+
+### PlanList
+
+List all plans owned by the current principal.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/plan/list.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| — | — | — | No parameters |
+
+### PlanGet
+
+Fetch a plan record.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/plan/get.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `planId` | string | yes | — |
+
+### PlanAddStep
+
+Append a node to an open plan.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/plan/add_step.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `planId` | string | yes | — |
+| `step` | string | yes | — |
+| `nodeId` | string | no | — |
+| `dependsOn` | string[] | no | — |
+| `status` | pending \| in_progress \| completed \| blocked \| failed | no | — |
+
+nodeId is auto-assigned when omitted; status defaults to pending. Closed plans refuse new nodes.
+
+### PlanMarkStep
+
+Change a plan node’s status.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/plan/mark_step.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `planId` | string | yes | — |
+| `nodeId` | string | yes | — |
+| `status` | pending \| in_progress \| completed \| blocked \| failed | yes | — |
+| `reason` | string | no | — |
+
+reason applies to blocked/failed states. Statuses: pending, in_progress, completed, blocked, failed.
+
+### PlanRecordEvidence
+
+Attach an outcome summary and artifact references to a node.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/plan/record_evidence.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `planId` | string | yes | — |
+| `nodeId` | string | yes | — |
+| `output` | string | yes | — |
+| `artifacts` | string[] | no | — |
+| `decidedBy` | string | no | — |
+
+artifacts is string[] of paths/references; decidedBy is optional attribution.
+
+### PlanClose
+
+Close a plan with a reason.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/plan/close.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `planId` | string | yes | — |
+| `reason` | string | yes | — |
+
+Repeated closure returns AlreadyClosed.
+
+## Background execution
+
+### AsyncSpawn
+
+Start a tool in the background and return an async receipt.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/async_control/spawn.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `tool` | string | yes | — |
+| `params` | object | yes | — |
+| `label` | string | no | — |
+| `wake_on_completion` | boolean | no | — |
+| `timeout_secs` | integer \| null | no | ≥ 1 |
+
+params is forwarded verbatim. wake_on_completion defaults true; completion enters the spawning session’s inbox and may start an idle-session follow-up. timeout_secs defaults to the executor’s 7200-second policy; null/omit selects that default.
+
+### AsyncOutput
+
+Fetch output, optionally waiting for completion.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/async_control/output.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `task_id` | string | yes | — |
+| `block` | boolean | no | default false |
+| `timeout` | integer | no | ≥ 0 |
+| `tail_lines` | integer | no | default 0, ≥ 0 |
+
+block defaults false. With block=true, timeout defaults to 300000 milliseconds. tail_lines=0 returns full output; positive values select the last N lines.
+
+### AsyncStatus
+
+Inspect a background task’s state and metadata.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/async_control/status.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `task_id` | string | yes | — |
+
+### AsyncList
+
+List background tasks in the bound async runtime.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/async_control/list.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `status_filter` | pending \| running \| completed \| failed \| cancelled \| timed_out | no | — |
+| `tool_filter` | string | no | — |
+
+Uses the agent-bound async runtime. Statuses: pending, running, completed, failed, cancelled, timed_out.
+
+### AsyncStop
+
+Cancel a background task.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/async_control/stop.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `task_id` | string | yes | — |
 
 ## Scheduling
 
-### `CronCreate` 🔧
+### CronCreate
 
-Schedule future work. Two mutually exclusive job shapes:
+Schedule an instruction-driven agent turn or a fixed tool invocation.
 
-- **`message`** — an instruction delivered to the principal's trunk
-  session at fire time, running a full agent turn. Output is composed
-  fresh on every fire (LLM-driven, costs tokens per fire); the agent
-  reaches the user via `ChannelSend`. Use for reminders/pings whose
-  text should vary.
-- **`tool` + `params`** — a fixed tool call at fire time (no LLM cost).
-  The daemon asks the `AsyncExecutor` to run `tool_name` with
-  `tool_params` verbatim.
+[Implementation](../../peko-rs/cron/src/tools/create.rs)
 
-```json
-{
-  "message": "string (mode 1 — mutually exclusive with tool)",
-  "tool": "string (mode 2, e.g. \"Agent\", \"Bash\", \"ChannelSend\")",
-  "params": "object (mode 2, defaults to {})",
-  "wake_on_completion": "boolean (SpawnTool only, default false)",
-  "timeout_secs": "integer (SpawnTool only, default 7200s)"
-}
-```
-
-**Peko extensions:** the schema does not require `cron` because peko
-supports multiple schedule kinds (`at`, `interval_ms`, `idle_ms`). To
-schedule a classic cron job, supply `cron`; otherwise supply one of
-the extension fields. Extra fields:
-`label`, `at`, `interval_ms`, `timezone`, `idle_ms`.
-
-**Sprint 7 Commit D (2026-08-21)** restricted the tool to SpawnTool
-jobs only — `prompt` / `message` / `target` / `description` /
-`recurring` / `durable` / `task` were dropped from `CronCreateArgs`,
-and the `CronJobAction::Notify` variant + the engine's `run_notify_job`
-were deleted. **`message` was restored (2026-09-07)** after the
-retirement of the `peko cron` CLI left the `Send` fire path with no
-writer at all — `tool="Agent"` per fire proved fragile (the Agent tool
-is only registered once an agent run has happened, and its fixed
-`path` collides on repeat fires), while the trunk `Send` turn is the
-designed dynamic path. `target` stays dropped: the trunk is the only
-destination.
-
-### `CronDelete` 🔧
-
-```json
-{
-  "id": "string?",
-  "label": "string? (peko extension)"
-}
-```
-
-**Peko extensions:** accepts `label` as an alternative to `id` (the schema
-uses `oneOf` rather than requiring `id`). The canonical Claude call passes
-`id` only. **Sprint 7 Commit C** dropped the legacy `job_id` alias.
-
-### `CronUpdate` 🔧
-
-Patch a scheduled job's mutable fields by `id` (or `label`):
-
-```json
-{
-  "id": "string",
-  "label": "string? (alternative to id)",
-  "enabled": "boolean? (pause/resume; re-enabling resets the failure budget)",
-  "wake_on_completion": "boolean? (subscribe/unsubscribe the trunk inbox to each fire's result; tool jobs only)"
-}
-```
-
-At least one of `enabled` / `wake_on_completion` is required. Use this to
-unsubscribe from a noisy job's results, or to resume a paused job without
-recreating it.
-
-### `CronTrigger` 🔧
-
-Fire a scheduled job immediately, out of schedule, by `id` (or `label`).
-Works even when the job is **disabled** — this is the way to verify a
-freshly-created job's wiring before its first scheduled fire. The run
-executes in the background; a fire against a running job coalesces into
-the in-flight run (returns its `run_id`).
-
-```json
-{ "id": "string", "label": "string? (alternative to id)" }
-```
-
-Returns `{ "triggered": true, "job_id", "run_id", "note" }`. Check the
-outcome with `CronHistory`.
-
-### `CronHistory` 🔧
-
-Read a job's run history by `id` (or `label`), most recent first:
-
-```json
-{ "id": "string", "label": "string?", "limit": "integer? (default 10, max 50)" }
-```
-
-Returns `{ "job_id", "count", "runs": [...] }` where each run carries
-`status`, `started_at`, `finished_at`, `output`, and `error` — the error
-text and trend that `CronList`'s single `last_status` doesn't show.
-
-### `CronList` 🔧
-
-```json
-{}
-```
-
-Returns:
-```json
-{
-  "jobs": [ ... ],
-  "count": "integer"
-}
-```
-
-**Peko extensions:** the return is wrapped as `{ jobs, count }` instead of a
-bare array. Sprint 7 Commit A dropped `status_filter` / `kind_filter`
-(declared + schema'd but never read in `execute_with_context`).
-
-## Agent control
-
-### `Agent` ✅
-
-Spawn a subagent.
-
-```json
-{
-  "action": "new | resume | compact (default new)",
-  "prompt": "string (required for all actions — for compact, the task the session continues with after compacting)",
-  "agent": "string (required for all actions) — agent template name",
-  "path": "string (required for new + resume + compact)",
-  "model": "string? (ignored for compact)"
-}
-```
-
-**Peko extensions:** `action` (3-value enum: `new` | `resume` | `compact`),
-`path` (a uniform session address — see below; replaces the Claude Code
-`session_key` / `name` pair).
-
-**Path addressing (2026-09-08).** `path` is a uniform address for all
-actions: a RELATIVE slug segment (no `/`) resolves against the caller's
-session (`<caller>/<slug>`); an ABSOLUTE `/a/b` path resolves from the
-tree root. `new` is create-or-resume: when the addressed spawn-created
-session exists, the call attaches to it (recurring callers keep one
-continuous session); multi-segment absolute paths can only attach, not
-mint. Any session in the principal's store may be addressed (e.g. a
-peer's `/user-bob`) — the principal is the trust boundary, not the
-session tree.
-
-`compact` (2026-09-05) no longer flags the session for a later run — it
-starts a continuation run on the target immediately: the run
-force-compacts first (phase `standalone_turn`, bypassing the threshold /
-cooldown gates), then processes `prompt` against the compacted history,
-and the tool returns the run's outcome like `resume` does. Unlike
-`resume`, the target need not be a spawned session — any session in the
-caller's tree compacts (but never the caller's own session or an
-ancestor; the engine compacts those automatically).
-
-`agent` resolves to a Markdown file at
-`<workspace>/roles/<role>/ROLE.md` (directory layout) or
-`<workspace>/roles/<role>.md` (flat layout). The Markdown supplies the
-spawned subagent's system prompt body; the frontmatter supplies name +
-description. **Sprint 8** renamed the LLM-facing field from
-`subagent_type` to `agent` to match its semantic and retired the legacy
-global TOML fallback (`{PEKO_HOME}/agents/<name>/config.toml` — legacy).
-
-## Inference
-
-### `ModelCall` 🔧 (ADR-061 phase 2a)
-
-One-shot LLM call with **no session persistence, no tool-calling loop, no
-streaming** — the cheap primitive workflows (via `ExecuteTool`) and agents
-(mid-turn classification) use instead of spawning a subagent. Exactly one
-mode per call:
-
-```json
-{
-  "model":       "string? (catalog id; defaults to the calling principal's preferred model)",
-  "prompt":      "string? — completion mode",
-  "system":      "string? — completion mode",
-  "max_tokens":  "integer? — completion mode",
-  "temperature": "number? — completion mode",
-  "state":       "string | object? — judgment mode (with questions)",
-  "questions":   "object? — judgment mode: map of question key → {type: boolean|choice|score, instructions, ...}"
-}
-```
-
-Completion returns `{mode, text, model, usage}`; judgment returns
-`{mode, model, answers, usage?}` with per-question answers (incl.
-`probability` when the API reports it) passed through verbatim. Judgment
-mode POSTs `{model, state, questions}` to `{base_url}/v1/evaluate` and is
-only valid against catalog entries whose `ModelSpec` declares
-`decisions: true` (hand-edit `models.toml`; see DATA_MODEL.md §13¾).
-
-Every call is attributed server-side to the calling principal and charges
-its quota meter from provider-reported usage; completion mode applies the
-same `cost_per_call_max` pre-flight as subagent spawns. Calls without a
-resolvable calling principal are refused (no unmetered inference).
-
-## Workflows
-
-### `Workflow` 🔧 (ADR-061 phase 2b)
-
-Run an agent-authored Python workflow from the principal's `workflows/`
-directory as a subprocess. Procedural memory: a saved loop/poll/batch runs
-as code instead of a turn-by-turn agent loop; schedulable via
-`CronCreate` → `SpawnTool` → `Workflow`.
-
-```json
-{
-  "path": "string (required) — file under workflows/, e.g. \"triage.py\"",
-  "args": "string[]? — argv for the script",
-  "timeout_ms": "integer? — default 300000, hard cap 3600000"
-}
-```
-
-Return:
-
-```json
-{
-  "workflow": "triage.py",
-  "success": true,
-  "timed_out": false,
-  "exit_code": 0,
-  "duration_ms": 812,
-  "stdout": "… (bounded 16 KiB tail; truncation marker when cut)",
-  "stderr": "",
-  "stdout_truncated": false,
-  "stderr_truncated": false
-}
-```
-
-**Guardrails:** `path` must be relative and is canonicalized inside `workflows/`
-(absolute, Windows rooted or drive-prefixed paths, `..` and symlink escapes
-refused; non-`.py` refused). The child env is minimal
-(no daemon-env inheritance) with `PEKO_DAEMON_SOCK` / `PEKO_WORKSPACE` /
-`PEKO_PRINCIPAL_ID` / `PEKO_SESSION_KEY` / `PEKO_RUN_TOKEN` /
-`PEKO_WORKFLOW_DEPTH` injected — the workflow calls back through
-`ExecuteTool` with this principal's identity and the run token
-authenticating each callback (wire shape: DATA_MODEL.md §13½/§13⅞). The
-run token also carries the **calling session node**, so tree-relative
-callbacks behave as if the calling agent made them directly: `Agent new`
-parents under the caller, `CronCreate` fires into the caller's origin
-session, and `session` resolves the caller's store + status per call
-(`CallerAwareSessionTool`). Timeout
-or abort kills the child. A workflow at depth ≥ 2 may not spawn another
-workflow (server-derived depth, unspoofable from the wire).
-
-## Planning todos
-
-### `TaskCreate` ✅
-
-Create a planning todo item.
-
-```json
-{
-  "subject": "string (required)",
-  "description": "string?",
-  "activeForm": "string?"
-}
-```
-
-### `TaskGet` ✅
-
-```json
-{ "taskId": "string (required)" }
-```
-
-### `TaskList` ✅
-
-```json
-{
-  "status_filter": "string? (pending | in_progress | completed)"
-}
-```
-
-### `TaskUpdate` ✅
-
-```json
-{
-  "taskId": "string (required)",
-  "status": "pending | in_progress | completed",
-  "owner": "string?"
-}
-```
-
-Planning todos are stored in a per-session `todos.jsonl` sidecar.
-
-## Async execution control
-
-### `AsyncSpawn` 🔧
-
-Start any tool asynchronously and receive a task receipt.
-
-```json
-{
-  "tool": "string (required)",
-  "params": "object (required)",
-  "label": "string?"
-}
-```
-
-### `AsyncOutput` 🔧
-
-Read output from a running async task.
-
-```json
-{
-  "task_id": "string (required)",
-  "block": "boolean (default false)",
-  "timeout": "integer? (ms)",
-  "tail_lines": "integer?"
-}
-```
-
-### `AsyncStop` 🔧
-
-```json
-{ "task_id": "string (required)" }
-```
-
-### `AsyncStatus` 🔧
-
-```json
-{ "task_id": "string (required)" }
-```
-
-### `AsyncList` 🔧
-
-```json
-{
-  "status_filter": "string?",
-  "tool_filter": "string?"
-}
-```
-
-These tools map semantically to Claude Code's `TaskOutput` / `TaskStop` but use
-a peko-specific namespace because peko's async model is more general (any tool
-can be spawned async, not just Bash).
-
-## Out of scope
-
-The following peko tools are intentionally not part of the Claude core subset
-parity program:
-
-- `glob`, `grep` — peko-specific filesystem helpers.
-- `session` — peko-specific session introspection.
-- `message` — peko-specific channel messaging.
-- `ChannelSend` — peko channel write primitive: one tool with a typed-prefix `channel` parameter that selects the dispatch —
-  - `chan_<8 base36>`: bare post to the named channel (the original `ChannelSend` shape);
-  - `principal:<did>`: principal-to-principal RPC over the pair's standing DM channel (reply awaited up to 1 minute, mirrored back onto the caller's own DM channel; cross-runtime via the 12a/12b invite/mirror fan-out);
-  - `user:<id>`: fire-and-forget note to a human peer (delivered as a labeled session note by the originating agent or any subagent, gated to the originating user of the current run);
-  - `group:<slug>`: fire-and-forget post to a named group channel. Groups are multi-principal, multi-user channels (ADR-049): principal-authored posts never wake other members (D4 loop safety — members read on their own rhythm via `ChannelRead`); a `user:*`-authored root post wakes every member principal, each in its own per-`(principal, channel)` session, and the reply posts back to the group.
-  The legacy `send_peer` tool (sprint 2 rename of `principal_send`, itself the successor to `a2a_send` from ADR-023) is retired in sprint 4 — its principal branch (RPC) and user branch (messenger note) are now reachable through the `principal:<did>` and `user:<id>` channel-id forms respectively. The signed-RPC `PrincipalToPrincipalRequest` stack was retired in sprint 3 Phase 12b.
-- MCP-provided tools (`web_search`, `fetch`, etc.) — provided via MCP servers.
-- Skills — loaded through the built-in `Skill` tool (`{name, args}` → the
-  SKILL.md body as the tool result), not a prompt hook. The model learns
-  which skills exist from the per-turn skills catalog — one
-  `- {name}: {description}` line per `<workspace>/skills/<name>/SKILL.md`,
-  rendered into the tail `<runtime-context>` user message. See
-  [SKILLS.md](SKILLS.md).
-
-## Configuration gates
-
-| Family | Factory flag | Registrar flag | Default |
+| Parameter | Type | Required | Schema default / bounds |
 |---|---|---|---|
-| Filesystem | `enable_granular_fs` / `enable_granular_write` | same | `true` |
-| Shell | `enable_shell` | `enable_shell` | `true` |
-| Cron | `enable_cron` | `enable_cron` | `true` |
-| Agent | (per-agent registration) | (per-agent registration) | `true` |
-| Async control | `enable_async_tools` | `enable_async_tools` | `true` |
-| Planning todos | `enable_task_tools` | `enable_task_tools` | `true` |
+| `message` | string | no | nonempty |
+| `tool` | string | no | nonempty |
+| `params` | object | no | — |
+| `wake_on_completion` | boolean | no | — |
+| `timeout_secs` | integer | no | — |
+| `one_shot` | boolean | no | default false |
+| `label` | string | no | — |
+| `cron` | string | no | — |
+| `at` | string | no | — |
+| `delay` | string | no | — |
+| `interval_ms` | integer | no | — |
+| `timezone` | string | no | — |
+| `idle_ms` | integer | no | — |
 
-All tools also respect `disabled_tools: Vec<String>`.
+Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs uses the executor’s 7200-second policy. delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped.
 
-## Related
+### CronList
 
-- `src/tools/registry/factory.rs` — synchronous tool factory configuration.
-- `src/extensions/builtin/adapter.rs` — production built-in tool registration.
-- `src/extensions/framework/adapters/mod.rs` — canonical built-in tool name lists.
+List the calling principal’s scheduled jobs.
+
+[Implementation](../../peko-rs/cron/src/tools/list.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| — | — | — | No parameters |
+
+### CronDelete
+
+Delete a scheduled job.
+
+[Implementation](../../peko-rs/cron/src/tools/delete.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `id` | string | no | — |
+| `label` | string | no | — |
+
+Supply exactly one of id or label.
+
+### CronUpdate
+
+Pause/resume a job or change completion wake behavior.
+
+[Implementation](../../peko-rs/cron/src/tools/update.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `id` | string | no | — |
+| `label` | string | no | — |
+| `enabled` | boolean | no | — |
+| `wake_on_completion` | boolean | no | — |
+
+Requires id or label and at least one of enabled/wake_on_completion. A nonempty id takes precedence if both selectors are supplied. Re-enabling resets consecutive failures; completion subscription applies to tool jobs and uses the creating session (trunk fallback).
+
+### CronTrigger
+
+Fire a job now, including disabled jobs; coalesce with an in-flight run.
+
+[Implementation](../../peko-rs/cron/src/tools/trigger.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `id` | string | no | — |
+| `label` | string | no | — |
+
+Supply exactly one of id or label. Disabled jobs may be triggered; an in-flight job coalesces and returns its actual run_id.
+
+### CronHistory
+
+Fetch a job’s recent run history.
+
+[Implementation](../../peko-rs/cron/src/tools/history.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `id` | string | no | — |
+| `label` | string | no | — |
+| `limit` | integer | no | — |
+
+Supply exactly one of id or label. limit defaults to 10, caps at 50, and returns newest runs first.
+
+## Related contracts
+
+- [API_SURFACE.md](../../API_SURFACE.md)
+- [DATA_MODEL.md](../../DATA_MODEL.md)
+- [ADR-066](adr/ADR-066-pure-workspace-tooling.md)
+- [ToolCatalog](../../peko-rs/core/src/tools/catalog.rs)
+- [ToolDispatcher](../../peko-rs/core/src/tools/dispatcher.rs)

@@ -1,7 +1,7 @@
 //! CLI integration tests for agent-owned session management (the
 //! unified session/run framework — Phase 5b of the coin-model plan).
 //!
-//! Covers the `session` tool's stable-id lifecycle (no chapters: the
+//! Covers the `Session` tool's stable-id lifecycle (no chapters: the
 //! live `root:*` id never gains a `#` suffix; paging is
 //! storage-internal) and self-delete guard, and the `Agent` tool's
 //! spawn → `session list` → `action:"resume"` → `cleanup:"delete"`
@@ -169,14 +169,14 @@ async fn session_new_refused_live_id_stays_stable() {
     let second_needle = "sessnew-second-m4qx";
 
     let cli = PekoCli::new();
-    create_mock_principal_with_tools(&cli, principal, &mock_url, &["session"]);
+    create_mock_principal_with_tools(&cli, principal, &mock_url, &["Session"]);
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Send #1: the agent calls `session new` (refused — the action is
     // demoted) and reports.
     let script = serde_json::json!({
         first_needle: [
-            { "tool_call": { "name": "session", "arguments":
+            { "tool_call": { "name": "Session", "arguments":
                 serde_json::json!({ "action": "new", "title": "first chapter" }).to_string()
             } },
             "NEW_REFUSED",
@@ -273,7 +273,7 @@ async fn session_delete_current_session_refused() {
     let second_needle = "sessdel-second-b7wz";
 
     let cli = PekoCli::new();
-    create_mock_principal_with_tools(&cli, principal, &mock_url, &["session"]);
+    create_mock_principal_with_tools(&cli, principal, &mock_url, &["Session"]);
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Send #1: establish the live session.
@@ -294,7 +294,7 @@ async fn session_delete_current_session_refused() {
     // (matches the Agent tool's addressing surface).
     let script = serde_json::json!({
         second_needle: [
-            { "tool_call": { "name": "session", "arguments":
+            { "tool_call": { "name": "Session", "arguments":
                 serde_json::json!({ "action": "remove", "path": live_id }).to_string()
             } },
             "REMOVE_REFUSED",
@@ -352,7 +352,7 @@ async fn agent_spawn_list_resume_with_history() {
         &cli,
         principal,
         &mock_url,
-        &["Agent", "Write", "Read", "session", WORKER],
+        &["Agent", "Write", "Read", "Session", WORKER],
     );
     write_worker_subagent(&cli, principal);
     let _daemon = DaemonGuard::spawn(&cli);
@@ -363,7 +363,7 @@ async fn agent_spawn_list_resume_with_history() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({ "prompt": format!("Do part one. Needle '{c1}'."), "agent": WORKER }).to_string()
             } },
-            { "tool_call": { "name": "session", "arguments":
+            { "tool_call": { "name": "Session", "arguments":
                 serde_json::json!({ "action": "list" }).to_string()
             } },
             "SPAWN_DONE",
