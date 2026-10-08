@@ -1,4 +1,4 @@
-//! TaskCreate tool — create a planning todo.
+//! Task action create tool — create a planning todo.
 
 use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
@@ -7,11 +7,11 @@ use serde_json::json;
 use crate::tools::builtin::tasks::{missing_session_error, require_session_id, SharedTodoRuntime};
 
 /// Create a planning todo in the current session.
-pub struct TaskCreateTool {
+pub struct TaskCreateAction {
     runtime: SharedTodoRuntime,
 }
 
-impl TaskCreateTool {
+impl TaskCreateAction {
     /// Create a tool bound to the given todo runtime.
     #[must_use]
     pub fn new(runtime: SharedTodoRuntime) -> Self {
@@ -20,9 +20,9 @@ impl TaskCreateTool {
 }
 
 #[async_trait]
-impl Tool for TaskCreateTool {
+impl Tool for TaskCreateAction {
     fn name(&self) -> &'static str {
-        "TaskCreate"
+        "Task"
     }
 
     fn description(&self) -> String {
@@ -60,9 +60,9 @@ Returns the created todo including its taskId."
     }
 
     /// F33: task-list mutation — opt out of parallel dispatch. Two
-    /// concurrent `TaskCreate` calls in the same batch can race on
+    /// concurrent `Task action create` calls in the same batch can race on
     /// task-id assignment if the list is in-memory; mixed
-    /// `TaskCreate + TaskUpdate` on the same id races on the list
+    /// `Task action create + Task action update` on the same id races on the list
     /// mutation.
     fn parallelizable(&self) -> bool {
         false
@@ -88,7 +88,7 @@ Returns the created todo including its taskId."
         let subject = params
             .get("subject")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("TaskCreate requires 'subject'"))?;
+            .ok_or_else(|| anyhow::anyhow!("Task action create requires 'subject'"))?;
         let description = params
             .get("description")
             .and_then(|v| v.as_str())
@@ -117,15 +117,15 @@ mod tests {
     #[tokio::test]
     async fn test_task_create_basic() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskCreateTool::new(runtime);
+        let tool = TaskCreateAction::new(runtime);
 
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate")
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task")
             .with_session_id("agent:test:cli:default");
         let result = tool
             .execute_with_context(
                 json!({
                     "subject": "Write tests",
-                    "description": "Add unit tests for TaskCreate"
+                    "description": "Add unit tests for Task action create"
                 }),
                 &ctx,
             )
@@ -140,9 +140,9 @@ mod tests {
     #[tokio::test]
     async fn test_task_create_requires_subject() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskCreateTool::new(runtime);
+        let tool = TaskCreateAction::new(runtime);
 
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate")
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task")
             .with_session_id("agent:test:cli:default");
         let result = tool.execute_with_context(json!({}), &ctx).await;
         assert!(result.is_err());
@@ -151,9 +151,9 @@ mod tests {
     #[tokio::test]
     async fn test_task_create_requires_session() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskCreateTool::new(runtime);
+        let tool = TaskCreateAction::new(runtime);
 
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate");
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task");
         let result = tool
             .execute_with_context(json!({"subject": "X"}), &ctx)
             .await;

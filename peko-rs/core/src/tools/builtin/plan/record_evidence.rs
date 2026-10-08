@@ -1,4 +1,4 @@
-//! `PlanRecordEvidence` — record per-node evidence (output, artifacts, decided_by).
+//! `Plan action record_evidence` — record per-node evidence (output, artifacts, decided_by).
 
 use async_trait::async_trait;
 use peko_plan::{NodeEvidence, NodeId};
@@ -9,11 +9,11 @@ use crate::tools::builtin::plan::{require_principal_id, SharedPlanPort};
 
 /// Record per-node evidence: a free-form output string, an array of
 /// artifact paths, and an optional `decided_by` attribution.
-pub struct PlanRecordEvidenceTool {
+pub struct PlanRecordEvidenceAction {
     plan_port: SharedPlanPort,
 }
 
-impl PlanRecordEvidenceTool {
+impl PlanRecordEvidenceAction {
     #[must_use]
     pub fn new(plan_port: SharedPlanPort) -> Self {
         Self { plan_port }
@@ -21,9 +21,9 @@ impl PlanRecordEvidenceTool {
 }
 
 #[async_trait]
-impl Tool for PlanRecordEvidenceTool {
+impl Tool for PlanRecordEvidenceAction {
     fn name(&self) -> &'static str {
-        "PlanRecordEvidence"
+        "Plan"
     }
 
     fn description(&self) -> String {
@@ -79,17 +79,17 @@ found."
         let plan_id = params
             .get("planId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PlanRecordEvidence requires 'planId'"))?
+            .ok_or_else(|| anyhow::anyhow!("Plan action record_evidence requires 'planId'"))?
             .to_string();
         let node_id_str = params
             .get("nodeId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PlanRecordEvidence requires 'nodeId'"))?
+            .ok_or_else(|| anyhow::anyhow!("Plan action record_evidence requires 'nodeId'"))?
             .to_string();
         let output = params
             .get("output")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("PlanRecordEvidence requires 'output'"))?
+            .ok_or_else(|| anyhow::anyhow!("Plan action record_evidence requires 'output'"))?
             .to_string();
         let artifacts = params
             .get("artifacts")
@@ -127,19 +127,19 @@ found."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::plan::{PlanCreateTool, TestPlanPort};
+    use crate::tools::builtin::plan::{PlanCreateAction, TestPlanPort};
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
     fn ctx_with(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PlanRecordEvidence").with_principal_id(id.0)
+        ToolContext::for_hook_run("run", "tc", "Plan").with_principal_id(id.0)
     }
 
     #[tokio::test]
     async fn record_evidence_happy_path() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PlanCreateTool::new(port.clone());
+        let create = PlanCreateAction::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -149,7 +149,7 @@ mod tests {
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
         let node_id = created["nodes"][0]["nodeId"].as_str().unwrap().to_string();
-        let tool = PlanRecordEvidenceTool::new(port);
+        let tool = PlanRecordEvidenceAction::new(port);
         let updated = tool
             .execute_with_context(
                 json!({
@@ -173,7 +173,7 @@ mod tests {
     async fn record_evidence_soft_errors_on_unknown_node() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
-        let create = PlanCreateTool::new(port.clone());
+        let create = PlanCreateAction::new(port.clone());
         let created = create
             .execute_with_context(
                 json!({ "title": "t", "nodes": [{ "step": "a" }] }),
@@ -182,7 +182,7 @@ mod tests {
             .await
             .unwrap();
         let plan_id = created["planId"].as_str().unwrap().to_string();
-        let tool = PlanRecordEvidenceTool::new(port);
+        let tool = PlanRecordEvidenceAction::new(port);
         let res = tool
             .execute_with_context(
                 json!({

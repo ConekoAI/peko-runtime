@@ -244,7 +244,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
     }
 
     fn parameters(&self) -> serde_json::Value {
-        json!({
+        let schema = json!({
             "type": "object",
             "properties": {
                 "action": {
@@ -321,30 +321,53 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     "description": "Optional for 'status': timezone for timestamp formatting (e.g., 'America/New_York', 'UTC')"
                 }
             },
-            "required": ["action"],
-            "allOf": [
-                {
-                    "if": {"properties": {"action": {"enum": ["copy", "move", "remove"]}}},
-                    "then": {"required": ["path"]}
-                },
-                {
-                    "if": {"properties": {"action": {"const": "copy"}}},
-                    "then": {"required": ["target"]}
-                },
-                {
-                    "if": {"properties": {"action": {"const": "move"}}},
-                    "then": {"anyOf": [{"required": ["target"]}, {"required": ["title"]}, {"required": ["page_limit"]}]}
-                },
-                {
-                    "if": {"properties": {"action": {"enum": ["find", "search_pages"]}}},
-                    "then": {"required": ["query"]}
-                },
-                {
-                    "if": {"properties": {"action": {"const": "read_page"}}},
-                    "then": {"required": ["page"]}
-                }
-            ]
-        })
+        });
+        let variants = [
+            ("status", &["path", "timezone"][..], &[][..]),
+            (
+                "list",
+                &["path", "peer", "agent_name", "active_minutes", "limit"][..],
+                &[][..],
+            ),
+            ("history", &["path", "limit", "include_tools"][..], &[][..]),
+            (
+                "find",
+                &["query", "path", "peer", "limit"][..],
+                &["query"][..],
+            ),
+            (
+                "copy",
+                &["path", "target", "title"][..],
+                &["path", "target"][..],
+            ),
+            (
+                "move",
+                &["path", "target", "title", "page_limit"][..],
+                &["path"][..],
+            ),
+            ("remove", &["path", "recursive"][..], &["path"][..]),
+            ("list_pages", &["path"][..], &[][..]),
+            (
+                "read_page",
+                &["page", "path", "offset", "limit"][..],
+                &["page"][..],
+            ),
+            (
+                "search_pages",
+                &["query", "path", "max_results"][..],
+                &["query"][..],
+            ),
+        ];
+        let branches: Vec<_> = variants.into_iter().map(|(action, allowed, required)| {
+            let properties: serde_json::Map<String, serde_json::Value> = allowed.iter()
+                .map(|field| ((*field).to_string(), schema["properties"][*field].clone())).collect();
+            let mut branch = json!({"type": "object", "properties": properties, "required": required});
+            if action == "move" {
+                branch["anyOf"] = json!([{"required": ["target"]}, {"required": ["title"]}, {"required": ["page_limit"]}]);
+            }
+            (action, branch)
+        }).collect();
+        peko_tools_core::schema::action_schema(&branches)
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {

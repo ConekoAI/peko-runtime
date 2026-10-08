@@ -1,6 +1,6 @@
 //! `TodoStorageRuntime` — root-side adapter for the `TodoRuntime` port.
 //!
-//! Phase 10d lifts `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` into
+//! Phase 10d lifts `Task action create`/`Task action get`/`Task action list`/`Task action update` into
 //! `peko_tools_builtin::tasks`. The tool surface there speaks to a
 //! [`crate::tools::builtin::tasks::TodoRuntime`] port trait so the
 //! built-in crate can stay free of root-only deps. This file is the

@@ -1,4 +1,4 @@
-//! AsyncStop tool — cancel a background task.
+//! Async action stop tool — cancel a background task.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -10,11 +10,11 @@ use crate::tools::builtin::async_control::{
 };
 
 /// Cancel an async task.
-pub struct AsyncStopTool {
+pub struct AsyncStopAction {
     helper: AsyncTaskHelper,
 }
 
-impl AsyncStopTool {
+impl AsyncStopAction {
     /// Create a tool bound to a specific runtime.
     #[must_use]
     pub fn new(runtime: SharedAsyncRuntime) -> Self {
@@ -25,9 +25,9 @@ impl AsyncStopTool {
 }
 
 #[async_trait]
-impl Tool for AsyncStopTool {
+impl Tool for AsyncStopAction {
     fn name(&self) -> &'static str {
-        "AsyncStop"
+        "Async"
     }
 
     fn description(&self) -> String {
@@ -64,7 +64,7 @@ than an error."
         let task_id = params
             .get("task_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("AsyncStop requires 'task_id'"))?;
+            .ok_or_else(|| anyhow::anyhow!("Async action stop requires 'task_id'"))?;
 
         let result = self.helper.cancel_task(task_id).await;
         Ok(build_cancel_response(result, task_id))

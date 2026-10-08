@@ -2,7 +2,7 @@
 //!
 //! Owns the daemon-side tool execution IPC variant `ExecuteTool`
 //! (ADR-061 phase 1 — the synchronous workflow callback). The
-//! `AsyncSpawn`/`AsyncCancel` variants were retired 2026-09-27 with
+//! `Async action spawn`/`AsyncCancel` variants were retired 2026-09-27 with
 //! the rest of the dead IPC async-spawn path (ADR-063
 //! §3-D1): the CLI never executes tools (ADR-021), so nothing
 //! produced those packets. Async task control lives in the
@@ -1525,7 +1525,7 @@ mod tests {
         );
     }
 
-    /// Async* per-call stamping on the workflow path: `AsyncSpawn` via
+    /// Async* per-call stamping on the workflow path: `Async action spawn` via
     /// `ExecuteTool` with a node-carrying run token stamps the task's
     /// `parent_session_key` with the token's node id — and the
     /// completion event is delivered to THAT session's inbox
@@ -1557,7 +1557,7 @@ mod tests {
             .tooling()
             .catalog()
             .register(
-                Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+                Arc::new(crate::tools::builtin::AsyncTool::new(
                     Arc::clone(&runtime).as_shared(),
                 )),
                 crate::tools::metadata::ToolSource::BuiltIn,
@@ -1576,8 +1576,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             40,
-            "AsyncSpawn",
-            json!({"tool": "Glob", "params": {"pattern": "*.nothing", "path": fx.workspace.to_string_lossy()}}),
+            "Async", json!({"action":"spawn", "tool": "Glob", "params": {"pattern": "*.nothing", "path": fx.workspace.to_string_lossy()}}),
             "agent:asyncwf:workflow:run-1",
             &fx.workspace,
             Some(token),

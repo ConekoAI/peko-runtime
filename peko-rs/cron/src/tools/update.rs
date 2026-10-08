@@ -1,4 +1,4 @@
-//! `CronUpdate` tool — patch mutable fields of a scheduled job
+//! `Cron action update` tool — patch mutable fields of a scheduled job
 //!
 //! Updates a `CronJob` through the [`CronRuntime`] port set by the
 //! daemon at startup, like the sibling cron tools. Covers the two
@@ -15,23 +15,23 @@ use peko_tools_core::traits::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// `CronUpdate` tool — patch a scheduled job's mutable fields
-pub struct CronUpdateTool;
+/// `Cron action update` tool — patch a scheduled job's mutable fields
+pub struct CronUpdateAction;
 
-impl CronUpdateTool {
-    /// Create a new `CronUpdate` tool
+impl CronUpdateAction {
+    /// Create a new `Cron action update` tool
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for CronUpdateTool {
+impl Default for CronUpdateAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// `CronUpdate` tool arguments
+/// `Cron action update` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronUpdateArgs {
     /// Job ID to update
@@ -50,9 +50,9 @@ pub struct CronUpdateArgs {
 }
 
 #[async_trait]
-impl Tool for CronUpdateTool {
+impl Tool for CronUpdateAction {
     fn name(&self) -> &'static str {
-        "CronUpdate"
+        "Cron"
     }
 
     fn description(&self) -> String {
@@ -88,14 +88,14 @@ impl Tool for CronUpdateTool {
     }
 
     /// F33: cron DB write — opt out of parallel dispatch. See
-    /// `CronCreate::parallelizable` for the rationale.
+    /// `Cron action create::parallelizable` for the rationale.
     fn parallelizable(&self) -> bool {
         false
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(anyhow::anyhow!(
-            "CronUpdate requires a Principal context; use execute_with_context"
+            "Cron action update requires a Principal context; use execute_with_context"
         ))
     }
 
@@ -107,19 +107,21 @@ impl Tool for CronUpdateTool {
         let principal_id = ctx
             .principal_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CronUpdate requires a Principal context"))?
+            .ok_or_else(|| anyhow::anyhow!("Cron action update requires a Principal context"))?
             .clone();
 
         let runtime = global_runtime().ok_or_else(|| {
-            anyhow::anyhow!("CronUpdate requires the daemon's cron runtime; not initialized")
+            anyhow::anyhow!(
+                "Cron action update requires the daemon's cron runtime; not initialized"
+            )
         })?;
 
         let args: CronUpdateArgs = serde_json::from_value(params.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid CronUpdate arguments: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid Cron action update arguments: {e}"))?;
 
         if args.enabled.is_none() && args.wake_on_completion.is_none() {
             return Err(anyhow::anyhow!(
-                "CronUpdate requires at least one field to change: `enabled` or `wake_on_completion`"
+                "Cron action update requires at least one field to change: `enabled` or `wake_on_completion`"
             ));
         }
 
@@ -130,7 +132,7 @@ impl Tool for CronUpdateTool {
             resolve_id_by_label(&*runtime, &label, &principal_id).await?
         } else {
             return Err(anyhow::anyhow!(
-                "Either id or label is required for CronUpdate"
+                "Either id or label is required for Cron action update"
             ));
         };
 
@@ -152,13 +154,13 @@ mod tests {
 
     #[test]
     fn test_cron_update_tool_name() {
-        let tool = CronUpdateTool::new();
-        assert_eq!(tool.name(), "CronUpdate");
+        let tool = CronUpdateAction::new();
+        assert_eq!(tool.name(), "Cron");
     }
 
     #[test]
     fn test_cron_update_tool_parameters() {
-        let tool = CronUpdateTool::new();
+        let tool = CronUpdateAction::new();
         let params = tool.parameters();
         let props = params.get("properties").unwrap();
         assert!(props.get("id").is_some());

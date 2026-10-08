@@ -1,4 +1,4 @@
-//! `PlanList` — list every plan owned by the current principal.
+//! `Plan action list` — list every plan owned by the current principal.
 
 use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
@@ -7,11 +7,11 @@ use serde_json::json;
 use crate::tools::builtin::plan::{require_principal_id, SharedPlanPort};
 
 /// List all plans owned by the calling principal.
-pub struct PlanListTool {
+pub struct PlanListAction {
     plan_port: SharedPlanPort,
 }
 
-impl PlanListTool {
+impl PlanListAction {
     #[must_use]
     pub fn new(plan_port: SharedPlanPort) -> Self {
         Self { plan_port }
@@ -19,9 +19,9 @@ impl PlanListTool {
 }
 
 #[async_trait]
-impl Tool for PlanListTool {
+impl Tool for PlanListAction {
     fn name(&self) -> &'static str {
-        "PlanList"
+        "Plan"
     }
 
     fn description(&self) -> String {
@@ -64,7 +64,7 @@ by created_at ascending (matches PlanStorage::list_for_principal)."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::plan::{PlanCreateTool, TestPlanPort};
+    use crate::tools::builtin::plan::{PlanCreateAction, TestPlanPort};
     use peko_plan::NodeId;
     use peko_plan::PlanNode;
     use peko_plan::PlanNodeStatus;
@@ -73,7 +73,7 @@ mod tests {
     use serde_json::json;
 
     fn ctx_with_principal(id: peko_subject::PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", "PlanList").with_principal_id(id.0)
+        ToolContext::for_hook_run("run", "tc", "Plan").with_principal_id(id.0)
     }
 
     #[tokio::test]
@@ -103,7 +103,7 @@ mod tests {
             .await
             .unwrap();
 
-        let tool = PlanListTool::new(port);
+        let tool = PlanListAction::new(port);
         let r1 = tool
             .execute_with_context(json!({}), &ctx_with_principal(p1.clone()))
             .await
@@ -119,11 +119,11 @@ mod tests {
     #[tokio::test]
     async fn list_requires_principal_context() {
         let port = std::sync::Arc::new(TestPlanPort::new());
-        let tool = PlanListTool::new(port);
-        let ctx = ToolContext::for_hook_run("run", "tc", "PlanList");
+        let tool = PlanListAction::new(port);
+        let ctx = ToolContext::for_hook_run("run", "tc", "Plan");
         let r = tool.execute_with_context(json!({}), &ctx).await;
         assert!(r.is_err());
         // Reference the create tool to keep the import alive when only this test runs.
-        let _ = PlanCreateTool::new(std::sync::Arc::new(TestPlanPort::new()));
+        let _ = PlanCreateAction::new(std::sync::Arc::new(TestPlanPort::new()));
     }
 }

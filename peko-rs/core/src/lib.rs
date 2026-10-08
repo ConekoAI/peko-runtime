@@ -245,7 +245,7 @@ pub mod observability;
 // Infrastructure
 // ============================================================================
 
-// Background-task runtime (Bash background, AsyncSpawn/AsyncOutput, cron
+// Background-task runtime (Bash background, Async action spawn/Async action output, cron
 // firing, messaging) + the cross-boundary session inbox.
 pub mod async_exec;
 

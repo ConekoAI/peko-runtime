@@ -77,7 +77,7 @@ pub struct AsyncToolConfig {
     /// into the parent session's inbox at all.
     ///
     /// Default `true` — that push is the delivery mechanism for
-    /// `AsyncSpawn` / background `Bash` / subagent runs. The
+    /// `Async action spawn` / background `Bash` / subagent runs. The
     /// `AsyncExecutionRouter` sets it `false` at spawn (a call that
     /// completes inside the router's timeout already returned its
     /// result synchronously; an inbox event would be pure noise) and
@@ -91,7 +91,7 @@ pub struct AsyncToolConfig {
     ///
     /// `Some` only for spawn paths that can stream progress — today that
     /// is background `Bash`, whose child-process output is appended as it
-    /// is produced. Surfaced through `AsyncOutput` while the task runs
+    /// is produced. Surfaced through `Async action output` while the task runs
     /// and folded into the completion event when the task is cancelled or
     /// times out, where no real result ever materializes.
     ///

@@ -11,9 +11,7 @@
 //!
 //! - [`tools`] — the cron DTOs (`CronJob`, `CronJobAction`, `ScheduleKind`),
 //!   the `CronRuntime` port trait + global registry, the helper functions,
-//!   and the 6 tool impls (`CronCreateTool`, `CronDeleteTool`,
-//!   `CronListTool`, `CronUpdateTool`, `CronTriggerTool`,
-//!   `CronHistoryTool`).
+//!   and the Cron domain tool with six actions.
 //! - This file — the `CronScheduler` (engine + on-disk persistence),
 //!   `CronRun` records, `CronDatabase` schema. Daemon-internal state.
 //! - [`idle`] — scheduler-side submodule for idle detection.
@@ -43,9 +41,8 @@ pub use std::str::FromStr;
 #[allow(unused_imports)]
 pub use tools::{
     calculate_next_interval_anchored, calculate_next_run, global_runtime, normalize_cron_expr,
-    render_job_list, resolve_schedule_kind, set_global_runtime, CronCreateTool, CronDeleteTool,
-    CronHistoryTool, CronJob, CronJobAction, CronListTool, CronRuntime, CronTriggerTool,
-    CronUpdateTool, ScheduleKind, DEFAULT_MAX_RETRIES,
+    render_job_list, resolve_schedule_kind, set_global_runtime, CronJob, CronJobAction,
+    CronRuntime, CronTool, ScheduleKind, DEFAULT_MAX_RETRIES,
 };
 
 pub use idle::IdleDetector;
@@ -191,7 +188,7 @@ impl CronScheduler {
         // are accepted and then parked on the `now + 100 years` sentinel
         // by `calculate_next_run`, showing "active" but never firing —
         // a silent zombie (2026-08-07 field test, N2b). All creation
-        // surfaces (CronCreate tool, CLI `cron at`, IPC `CronAdd`)
+        // surfaces (Cron action create tool, CLI `cron at`, IPC `CronAdd`)
         // funnel through this function. Note this also changes the
         // legacy CLI behavior where a past `--at` fired immediately on
         // the next poll — that immediacy was accidental.
@@ -336,7 +333,7 @@ impl CronScheduler {
         }
     }
 
-    /// Patch mutable job fields in place (2026-09-07, `CronUpdate`).
+    /// Patch mutable job fields in place (2026-09-07, `Cron action update`).
     ///
     /// `enabled` flips the schedule gate; `wake_on_completion` toggles
     /// result subscription on `SpawnTool` jobs (a no-op on `Send` jobs,
@@ -828,7 +825,7 @@ mod tests {
 
     /// Phase 3b (2026-08-15): trunk-targeted Send jobs respect the
     /// keepalive interval floor at the `add_job` funnel (the path the
-    /// CLI `--target trunk` and the `CronCreate` tool both flow
+    /// CLI `--target trunk` and the `Cron action create` tool both flow
     /// through). Sub-minute `Every` intervals are refused; explicit
     /// (`At`, `Cron`) and idle-triggered schedules are unchanged.
     /// Phase 7: the trunk is the DEFAULT Send target, so

@@ -1,8 +1,8 @@
 //! Shared helpers for the Async* family of tools.
 //!
 //! These helpers encapsulate response building and tail-lines
-//! truncation so each standalone tool (`AsyncSpawn`, `AsyncOutput`,
-//! `AsyncStop`, `AsyncStatus`, `AsyncList`) stays small and focused.
+//! truncation so each standalone tool (`Async action spawn`, `Async action output`,
+//! `Async action stop`, `Async action status`, `Async action list`) stays small and focused.
 //!
 //! `AsyncTaskHelper` was previously imported from the framework host
 //! (`AsyncTaskRegistry`). The framework host now adapts any
@@ -55,7 +55,7 @@ impl AsyncTaskHelper {
 
     /// Borrow the underlying runtime handle.
     ///
-    /// `AsyncOutput` calls this for blocking reads. Most callers don't
+    /// `Async action output` calls this for blocking reads. Most callers don't
     /// need to escape the helper — prefer `lookup_task` / `list_tasks` /
     /// `cancel_task` when applicable.
     #[must_use]
@@ -120,7 +120,7 @@ pub fn build_list_response(tasks: Vec<TaskView>) -> serde_json::Value {
 
 /// Build a JSON response for a task cancellation.
 ///
-/// `AsyncStop` uses a three-way result shape:
+/// `Async action stop` uses a three-way result shape:
 /// - `Success` — the task was running and is now cancelled
 /// - `AlreadyTerminal` — the task was already in a terminal state; the
 ///   call is *successful* (the task can't be cancelled, but it didn't

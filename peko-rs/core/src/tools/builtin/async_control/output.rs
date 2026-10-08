@@ -1,4 +1,4 @@
-//! AsyncOutput tool — read the result of a background task.
+//! Async action output tool — read the result of a background task.
 //!
 //! Optionally blocks until the task reaches a terminal state via
 //! `AsyncRuntime::wait_for_completion`. The per-runtime adapter in
@@ -16,11 +16,11 @@ use crate::tools::builtin::async_control::{
 };
 
 /// Read the output of an async task.
-pub struct AsyncOutputTool {
+pub struct AsyncOutputAction {
     helper: AsyncTaskHelper,
 }
 
-impl AsyncOutputTool {
+impl AsyncOutputAction {
     /// Create a tool bound to a specific runtime.
     ///
     /// Blocking reads are routed through `AsyncRuntime::wait_for_completion`;
@@ -34,9 +34,9 @@ impl AsyncOutputTool {
 }
 
 #[async_trait]
-impl Tool for AsyncOutputTool {
+impl Tool for AsyncOutputAction {
     fn name(&self) -> &'static str {
-        "AsyncOutput"
+        "Async"
     }
 
     fn description(&self) -> String {
@@ -87,7 +87,7 @@ Returns: { task_id, status, is_terminal, result?, completed_at?, elapsed_seconds
         let task_id = params
             .get("task_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("AsyncOutput requires 'task_id'"))?;
+            .ok_or_else(|| anyhow::anyhow!("Async action output requires 'task_id'"))?;
         let block = params
             .get("block")
             .and_then(|v| v.as_bool())

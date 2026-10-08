@@ -106,7 +106,7 @@ pub struct AsyncTaskEntry {
     delivered: bool,
     /// Live progress buffer (§4.1). Shared with the executing closure —
     /// long-running tools append what they have produced so far, and the
-    /// buffer is surfaced through `AsyncOutput` on non-terminal tasks and
+    /// buffer is surfaced through `Async action output` on non-terminal tasks and
     /// through the completion event on cancel/timeout, where the real
     /// result never materializes. `Arc<Mutex<..>>` so the entry and the
     /// executing closure share the same buffer across the registry's
@@ -327,7 +327,7 @@ impl AsyncTaskEntry {
 const PROGRESS_BUFFER_MAX_BYTES: usize = 64 * 1024;
 
 /// Cap on the partial-output preview surfaced through the completion
-/// event and `AsyncOutput` — the agent gets a window into what the task
+/// event and `Async action output` — the agent gets a window into what the task
 /// produced, not the whole thing (the full tail stays in the task file
 /// for tools that stream there).
 pub const PARTIAL_OUTPUT_PREVIEW_BYTES: usize = 4 * 1024;

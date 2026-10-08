@@ -1,4 +1,4 @@
-//! TaskUpdate tool — update a planning todo's status or owner.
+//! Task action update tool — update a planning todo's status or owner.
 
 use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
@@ -9,11 +9,11 @@ use crate::tools::builtin::tasks::{
 };
 
 /// Update a planning todo in the current session.
-pub struct TaskUpdateTool {
+pub struct TaskUpdateAction {
     runtime: SharedTodoRuntime,
 }
 
-impl TaskUpdateTool {
+impl TaskUpdateAction {
     /// Create a tool bound to the given todo runtime.
     #[must_use]
     pub fn new(runtime: SharedTodoRuntime) -> Self {
@@ -22,16 +22,16 @@ impl TaskUpdateTool {
 }
 
 #[async_trait]
-impl Tool for TaskUpdateTool {
+impl Tool for TaskUpdateAction {
     fn name(&self) -> &'static str {
-        "TaskUpdate"
+        "Task"
     }
 
     fn description(&self) -> String {
         r"Update the status or owner of a planning todo.
 
 Parameters:
-- taskId: string (required) — the todo id returned by TaskCreate
+- taskId: string (required) — the todo id returned by Task action create
 - status: string? — new status ('pending', 'in_progress', or 'completed')
 - owner: string? — new owner/agent name
 
@@ -45,7 +45,7 @@ Returns the updated todo, or an error if it does not exist."
             "properties": {
                 "taskId": {
                     "type": "string",
-                    "description": "The todo id returned by TaskCreate (e.g., 'todo:abc123')."
+                    "description": "The todo id returned by Task action create (e.g., 'todo:abc123')."
                 },
                 "status": {
                     "type": "string",
@@ -66,7 +66,7 @@ Returns the updated todo, or an error if it does not exist."
     }
 
     /// F33: task-list mutation — opt out of parallel dispatch. See
-    /// `TaskCreate::parallelizable` for the rationale.
+    /// `Task action create::parallelizable` for the rationale.
     fn parallelizable(&self) -> bool {
         false
     }
@@ -85,7 +85,7 @@ Returns the updated todo, or an error if it does not exist."
         let task_id = params
             .get("taskId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("TaskUpdate requires 'taskId'"))?;
+            .ok_or_else(|| anyhow::anyhow!("Task action update requires 'taskId'"))?;
 
         let status = match params.get("status") {
             Some(v) => Some(parse_status_param(v)?),
@@ -98,7 +98,7 @@ Returns the updated todo, or an error if it does not exist."
 
         if status.is_none() && owner.is_none() {
             return Ok(json!({
-                "error": "TaskUpdate requires 'status' or 'owner'"
+                "error": "Task action update requires 'status' or 'owner'"
             }));
         }
 
@@ -116,22 +116,22 @@ Returns the updated todo, or an error if it does not exist."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::tasks::{TaskCreateTool, TestTodoRuntime};
+    use crate::tools::builtin::tasks::{TaskCreateAction, TestTodoRuntime};
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
     #[tokio::test]
     async fn test_task_update_status() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let create = TaskCreateTool::new(runtime.clone());
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate")
+        let create = TaskCreateAction::new(runtime.clone());
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task")
             .with_session_id("agent:test:cli:default");
         let created = create
             .execute_with_context(json!({"subject": "S"}), &ctx)
             .await
             .unwrap();
 
-        let tool = TaskUpdateTool::new(runtime);
+        let tool = TaskUpdateAction::new(runtime);
         let result = tool
             .execute_with_context(
                 json!({
@@ -150,28 +150,31 @@ mod tests {
     #[tokio::test]
     async fn test_task_update_missing_requires_mutation() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskUpdateTool::new(runtime);
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskUpdate")
+        let tool = TaskUpdateAction::new(runtime);
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task")
             .with_session_id("agent:test:cli:default");
         let result = tool
             .execute_with_context(json!({"taskId": "todo:nope"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(result["error"], "TaskUpdate requires 'status' or 'owner'");
+        assert_eq!(
+            result["error"],
+            "Task action update requires 'status' or 'owner'"
+        );
     }
 
     #[tokio::test]
     async fn test_task_update_owner_only() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let create = TaskCreateTool::new(runtime.clone());
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate")
-            .with_session_id("agent:test:cli:owner");
+        let create = TaskCreateAction::new(runtime.clone());
+        let ctx =
+            ToolContext::for_hook_run("run", "tc", "Task").with_session_id("agent:test:cli:owner");
         let created = create
             .execute_with_context(json!({"subject": "S"}), &ctx)
             .await
             .unwrap();
 
-        let tool = TaskUpdateTool::new(runtime);
+        let tool = TaskUpdateAction::new(runtime);
         let result = tool
             .execute_with_context(
                 json!({"taskId": created["taskId"], "owner": "claude"}),
@@ -186,9 +189,9 @@ mod tests {
     #[tokio::test]
     async fn test_task_update_not_found() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskUpdateTool::new(runtime);
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskUpdate")
-            .with_session_id("agent:test:cli:nf");
+        let tool = TaskUpdateAction::new(runtime);
+        let ctx =
+            ToolContext::for_hook_run("run", "tc", "Task").with_session_id("agent:test:cli:nf");
         let result = tool
             .execute_with_context(json!({"taskId": "todo:nope", "status": "completed"}), &ctx)
             .await
@@ -199,9 +202,9 @@ mod tests {
     #[tokio::test]
     async fn test_task_update_invalid_status() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskUpdateTool::new(runtime);
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskUpdate")
-            .with_session_id("agent:test:cli:iv");
+        let tool = TaskUpdateAction::new(runtime);
+        let ctx =
+            ToolContext::for_hook_run("run", "tc", "Task").with_session_id("agent:test:cli:iv");
         let result = tool
             .execute_with_context(json!({"taskId": "todo:nope", "status": "done"}), &ctx)
             .await;

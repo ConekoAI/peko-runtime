@@ -47,11 +47,11 @@ pub enum RequestPacket {
     /// sessions and audit trails.
 
     /// Execute a tool synchronously with the calling principal's
-    /// capabilities (ADR-061 phase 1). The synchronous counterpart of
+    /// identity and session attribution (ADR-061, ADR-066). The synchronous counterpart of
     /// the retired `AsyncSpawn` packet (removed 2026-09-27 with the
     /// dead IPC async-spawn path, ADR-063 (dead IPC path)): same
     /// server-side attribution (the principal is
-    /// resolved from `session_key`, grants and active extensions are
+    /// resolved from `session_key`, its registered catalog is
     /// derived from it server-side — never carried on the wire), but
     /// the handler awaits the result and returns it as
     /// `ResponsePacket::ToolExecuted` instead of a receipt. This is the
@@ -1102,8 +1102,8 @@ pub enum ResponsePacket {
     /// Cron job list response
     // 2026-08-25: cron is an internal principal tool. The legacy
     // `CronList` / `CronAdded` / `CronRemoved` IPC response variants
-    // were retired; principals interact with cron via `tool:Cron*`
-    // grants in the agentic-loop funnel.
+    // were retired; principals interact with Cron actions through the
+    // unfiltered tool catalog and the agentic-loop funnel.
 
     // ─── PR-2c: channel IPC response variants ────────────────────
     // Mirror the seven `RequestPacket::Channel*` variants 1:1.
@@ -2457,7 +2457,7 @@ mod tests {
     #[test]
     fn test_execute_tool_roundtrip() {
         // ADR-061 phase 1: the workflow callback packet mirrors the
-        // `AsyncSpawn` field set — never carries capabilities.
+        // execution attribution field set — never carries capabilities.
         let req = RequestPacket::ExecuteTool {
             request_id: 7,
             tool_name: "Glob".to_string(),

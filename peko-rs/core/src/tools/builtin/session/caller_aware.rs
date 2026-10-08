@@ -221,7 +221,7 @@ impl Tool for CallerAwareSessionTool {
                         tool.execute(params).await
                     }
                     // In-process dispatches without session ctx
-                    // (AsyncSpawn-internal, some cron paths): the
+                    // (Async action spawn-internal, some cron paths): the
                     // stock tool's shared-cell behavior, unchanged.
                     None => self.metadata_tool.execute(params).await,
                 }

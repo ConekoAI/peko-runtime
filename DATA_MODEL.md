@@ -26,14 +26,23 @@ Agent uses role; Session uses agent_name and title. IPC operation tags, actions,
 parameter names, and Rust configuration keys retain their own spelling.
 Every principal can use every registered tool; there is no tool allowlist.
 
-CronCreate now advertises the already-supported `one_shot` boolean; it continues
+Task, Plan, Cron, and Async now bundle their operations under required action
+fields (for example `{tool_name:"Task", params:{action:"create", subject:"review"}}`).
+Former per-action tool names are not registered and are not dispatch aliases.
+Update persisted cron invocations, workflows, and exact hook selectors to the
+new tool name and supply action in params. Historical JSONL records remain intact.
+Session rejects fields outside the selected action. Tool audit details add an
+`action` string (a declared default when omitted, or null if absent/undeclared), while parameters remain hashed.
+Storage formats for todos, plans, async receipts, and cron jobs are unchanged.
+
+Cron action create now advertises the already-supported `one_shot` boolean; it continues
 to set `delete_after_run`, and at/delay schedules remain one-shot automatically.
 Workflow nesting depth remains internal run-token metadata rather than a public
 tool parameter. No persisted schema or snapshot format changes are required.
 
 ## Cron interval audit timing
 
-CronTrigger's returned `run_id` is the persisted `CronRun.id`. Admission writes
+Cron action trigger's returned `run_id` is the persisted `CronRun.id`. Admission writes
 the open row before returning the ID or spawning work; timer/manual coalescing
 reuses that row. History and audit completion keep the same ID. Storage and
 wire shapes are unchanged.
@@ -1055,7 +1064,7 @@ Alongside each `.jsonl` file is an optional `.context.cache` file. It is a **der
 
 ### 5.6 Planning Todo Sidecar
 
-Planning todos created via the `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` tools are persisted in a per-session JSONL sidecar alongside the main conversation JSONL.
+Planning todos created via the `Task action create`/`Task action get`/`Task action list`/`Task action update` tools are persisted in a per-session JSONL sidecar alongside the main conversation JSONL.
 
 **Location:** `<session-id>.todos.jsonl`
 
@@ -1065,7 +1074,7 @@ Planning todos created via the `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` to
 {
   "taskId": "todo:abc123",
   "subject": "Write tests",
-  "description": "Add unit tests for TaskCreate",
+  "description": "Add unit tests for Task action create",
   "activeForm": "Writing tests",
   "status": "in_progress",
   "owner": "claude",
@@ -1522,7 +1531,7 @@ the target peer's child session (find-only — a note never provisions
 a child) and the `[notify]` self-view line to the trunk's JSONL when
 the trunk exists.
 
-Creation surface: the `CronCreate` tool's `target` param (valid only
+Creation surface: the `Cron action create` tool's `target` param (valid only
 together with `message`). The legacy `peko cron add / at / every /
 add-idle / add-event` CLI subcommands were retired on 2026-08-25
 when cron became a fully internal principal tool.

@@ -348,9 +348,9 @@ owner, so it reuses the same `peko send` permission path and session memory.
 
 Cron is now an **internal peko tool** (like Bash, Session). Operators
 interact with schedules by asking the peko itself to manage them via
-the `CronCreate` / `CronList` / `CronDelete` agentic-loop tools (gated
-by the peko's `tool:*` grants — same F37 funnel as any other
-internal tool). The legacy `peko cron` CLI was retired.
+the `Cron` tool with create/list/delete/update/trigger/history actions. Every
+principal can use registered tools; schedules remain owned by their principal.
+The `peko cron` CLI was retired.
 
 Supported schedules:
 
@@ -365,7 +365,7 @@ Supported schedules:
 
 | Attribute | Default | What it does |
 |-----------|---------|--------------|
-| `wake_on_completion` | `false` for cron-spawned runs (`true` for natural agent spawns) | When `true`, the executor posts a `SteeringMessage` into the peko's root inbox saying "Your N:NN cron job `{name}` completed. You can check details with the TaskOutput tool." |
+| `wake_on_completion` | `false` for cron-spawned runs (`true` for natural agent spawns) | When `true`, the executor posts a `SteeringMessage` into the peko's root inbox saying "Your N:NN cron job `{name}` completed. You can check details with the Async tool with action="output"." |
 | `timeout_secs` | `7200` (2h) for everyone | Per-run timeout. The cron tool overrides per call. |
 
 If the fire is an `Agent` tool run, the spawned session transcript
@@ -377,13 +377,12 @@ Send a message to your peko asking it to schedule the digest. From
 inside an agent turn (or as a user invoking the peko's chat):
 
 ```text
-CronCreate {
-  at: "+24h",
-  every: "1d",
+Cron {
+  action: "create",
+  interval_ms: 86400000,
   tool: "Agent",
-  params: { prompt: "Summarize my open tasks and today's priorities.", agent: "general-purpose", path: "/tmp/digest" },
-  name: "daily-digest",
-  principal_id: "my-principal"
+  params: { prompt: "Summarize my open tasks and today's priorities.", role: "root", path: "daily-digest" },
+  label: "daily-digest"
 }
 ```
 
@@ -392,12 +391,13 @@ CronCreate {
 Inside an agent turn:
 
 ```text
-CronCreate {
+Cron {
+  action: "create",
   tool: "Bash",
   params: { command: "echo nightly-backup && /opt/backup/run.sh" },
   wake_on_completion: true,
   timeout_secs: 3600,
-  every: 24h
+  interval_ms: 86400000
 }
 ```
 
@@ -407,8 +407,7 @@ turn opens with a one-line steer message pointing at the task id.
 
 Jobs are stored in the per-peko schedule file
 (`<data_dir>/principals/<name>/local/cron/schedule.toml`) and can be
-listed, inspected, and removed with the `CronList` and `CronDelete`
-tools from inside the owning peko's agent turn.
+listed, inspected, and removed with `Cron` with list/delete actions from inside the owning peko's agent turn.
 
 ---
 

@@ -1,39 +1,7 @@
-//! `peko_tools_builtin::cron` — Cron tool surface + `CronRuntime` port.
+//! Cron scheduling tool, runtime port, and persistent job DTOs.
 //!
-//! Phase 10b extracts the four cron tools (`cron.rs` helpers +
-//! `CronCreateTool`, `CronDeleteTool`, `CronListTool`) out of root.
-//! Per the Phase 10 plan rule ("Built-ins must not import daemon
-//! state"), the tools here do NOT call `crate::ipc::DaemonClient`
-//! directly. They speak to a runtime port trait
-//! ([`CronRuntime`]) that the daemon side implements.
-//!
-//! ## DTOs
-//!
-//! [`ScheduleKind`], [`CronJobAction`], and [`CronJob`] are
-//! serialization-friendly types shared between the tool side
-//! (peko-tools-builtin) and the daemon side (root's
-//! `src/cron/mod.rs`). For Phase 10b the daemon side keeps its own
-//! copy and re-exports these three from peko-tools-builtin via
-//! `pub use peko_tools_builtin::cron::{ScheduleKind, CronJobAction,
-//! CronJob};` — single source of truth going forward. A
-//! compile-time JSON-roundtrip test pins the two sides' shapes
-//! together. (Sprint 7 Commit B dropped the `DeliveryMode` enum and
-//! `CronJob.delivery` field — the engine's `Announce` side-effect
-//! was unread.)
-//!
-//! ## Port
-//!
-//! [`CronRuntime`] is the three-method surface the cron tools need:
-//! add / delete / list. The daemon implements it (see
-//! `src/cron/daemon_adapter.rs`).
-//!
-//! ## What stays in root
-//!
-//! `CronScheduler`, `CronDatabase`, `CronRun`, and the idle
-//! detection submodule are daemon-internal state and stay in
-//! `src/cron/` / `src/daemon/cron_engine/`. Only the
-//! serialization-friendly DTOs and the tool surface lift to
-//! peko-tools-builtin.
+//! Cron has six explicit actions. Private action handlers call CronRuntime;
+//! the daemon implements that port without a dependency back to core.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -106,7 +74,7 @@ pub const TRUNK_MIN_INTERVAL_MS: u64 = 60_000;
 /// (`None` and `"trunk"` are the same destination); other actions and
 /// schedule kinds pass through unchanged. Called from
 /// `CronScheduler::add_job` so every creation surface (CLI `peko cron
-/// add`, the `CronCreate` tool, in-process construction) funnels
+/// add`, the `Cron action create` tool, in-process construction) funnels
 /// through it.
 pub fn validate_trunk_send_interval(
     schedule: &ScheduleKind,
@@ -185,12 +153,12 @@ impl ScheduleKind {
 /// - [`Self::Send`] — at fire time the daemon delivers `message` to the
 ///   principal's trunk session as a user-message and runs a full agent
 ///   turn (LLM-driven, dynamic output; the agent answers via
-///   ChannelSend). Written by `CronCreate` with `message` (and formerly
+///   ChannelSend). Written by `Cron action create` with `message` (and formerly
 ///   by the retired `peko cron add` CLI).
 /// - [`Self::SpawnTool`] — at fire time the daemon asks the
 ///   `AsyncExecutor` to run `tool_name` with `tool_params` (fixed
 ///   dispatch; the invoked tool may itself call an LLM). Written by
-///   `CronCreate` with `tool` + `params`.
+///   `Cron action create` with `tool` + `params`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CronJobAction {
@@ -359,7 +327,7 @@ pub fn normalize_cron_expr(expr: &str) -> String {
     }
 }
 
-/// Resolve a schedule kind from `CronCreate` tool parameters.
+/// Resolve a schedule kind from `Cron action create` tool parameters.
 pub fn resolve_schedule_kind(params: &serde_json::Value) -> Result<ScheduleKind> {
     use std::str::FromStr;
 
@@ -412,7 +380,7 @@ pub fn resolve_schedule_kind(params: &serde_json::Value) -> Result<ScheduleKind>
 /// `s`/`m`/`h`/`d` suffix ("30s", "5m", "1h", "1d"). Hand-rolled to
 /// avoid a new dependency — the workspace has no humantime-style crate.
 /// Shared by the CLI (`--interval`, `--at "in 10m"`) and the
-/// `CronCreate` tool's `delay` arg.
+/// `Cron action create` tool's `delay` arg.
 pub fn parse_duration_ms(input: &str) -> Result<u64> {
     let input = input.trim();
     let (digits, mult) = match input.chars().last() {
@@ -512,8 +480,8 @@ pub fn calculate_next_interval_anchored(
     next
 }
 
-/// Render a list of [`CronJob`] values into the canonical `CronList`
-/// return shape shared by the CLI and the `CronList` tool.
+/// Render a list of [`CronJob`] values into the canonical `Cron action list`
+/// return shape shared by the CLI and the `Cron action list` tool.
 pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
     let jobs_json: Vec<_> = jobs
         .into_iter()
@@ -581,21 +549,21 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
     })
 }
 
-// ─── Submodules (the three cron tools) ────────────────────────────
+// ─── Private action handlers ────────────────────────────
 
-pub mod create;
-pub mod delete;
-pub mod history;
-pub mod list;
-pub mod trigger;
-pub mod update;
+mod create;
+mod delete;
+mod history;
+mod list;
+mod trigger;
+mod update;
 
-pub use create::CronCreateTool;
-pub use delete::CronDeleteTool;
-pub use history::CronHistoryTool;
-pub use list::CronListTool;
-pub use trigger::CronTriggerTool;
-pub use update::CronUpdateTool;
+pub(crate) use create::CronCreateAction;
+pub(crate) use delete::CronDeleteAction;
+pub(crate) use history::CronHistoryAction;
+pub(crate) use list::CronListAction;
+pub(crate) use trigger::CronTriggerAction;
+pub(crate) use update::CronUpdateAction;
 
 /// Register a job via the runtime port. Returns the standard
 /// `{"job_id", "label", "status", "next_run_at"}` JSON shape.
@@ -617,19 +585,12 @@ pub async fn add_job_via_runtime(
 
 // ─── Global runtime registration ──────────────────────────────────
 
-/// Global cron runtime slot. Set once at daemon startup; the
-/// `CronCreateTool` / `CronDeleteTool` / `CronListTool` constructors
-/// read from it.
-///
-/// The global is justified because the cron tools are constructed
-/// by the tool factory at agent-init time (long before any tool
-/// call) and the daemon's `CronEngine` is the only legitimate
-/// implementation. Tests that need a different runtime should
-/// construct the tools directly with `CronCreateTool::new(mock)`
-/// (and skip the global path).
+/// Cron runtime slot, installed once by the daemon. Cron actions resolve it
+/// at execution time, so the stable catalog can be installed before startup
+/// completes. A call before installation reports that cron is unavailable.
 static RUNTIME: OnceLock<Arc<dyn CronRuntime>> = OnceLock::new();
 
-/// Set the global cron runtime. Panics if called more than once.
+/// Install the cron runtime. Subsequent registrations leave it unchanged.
 pub fn set_global_runtime(runtime: Arc<dyn CronRuntime>) {
     if RUNTIME.set(runtime).is_err() {
         // Idempotent: if the same runtime is set twice, that's a
@@ -638,8 +599,7 @@ pub fn set_global_runtime(runtime: Arc<dyn CronRuntime>) {
     }
 }
 
-/// Read the global cron runtime. Returns `None` if not yet set
-/// (factory skips the cron tools in that case).
+/// Read the cron runtime, or `None` before daemon installation.
 pub fn global_runtime() -> Option<Arc<dyn CronRuntime>> {
     RUNTIME.get().cloned()
 }
@@ -940,3 +900,6 @@ mod tests {
         assert_eq!(entry["params"]["channel"], "chan_a1b2c3d4");
     }
 }
+
+mod tool;
+pub use tool::CronTool;

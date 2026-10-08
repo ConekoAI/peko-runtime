@@ -40,7 +40,7 @@ pub struct ToolDispatchContext {
     /// `QuotaMeter::unlimited()`.
     pub principal_id: Option<String>,
     /// Human-readable principal name (for Principal-scoped tools like
-    /// `CronCreate`).
+    /// `Cron action create`).
     pub principal_name: Option<String>,
 }
 
@@ -67,7 +67,7 @@ impl ToolDispatchContext {
     }
 
     /// Convenience: pre-fill principal_id for the
-    /// `AsyncSpawnTool` and `cron_engine` snapshot pattern.
+    /// `AsyncSpawnAction` and `cron_engine` snapshot pattern.
     #[must_use]
     pub fn for_principal(mut self, principal_id: String) -> Self {
         self.principal_id = Some(principal_id);
@@ -121,7 +121,7 @@ impl ToolDispatchContext {
 
     /// Build the `task_id` for the spawned task. Convention:
     /// `{tool_name}:{uuid_v4}` so multiple spawns of the same tool are
-    /// distinguishable in the registry (matches what `AsyncSpawnTool`
+    /// distinguishable in the registry (matches what `AsyncSpawnAction`
     /// and `cron_engine` do today).
     #[must_use]
     pub fn make_task_id(&self) -> String {

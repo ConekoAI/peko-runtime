@@ -4,20 +4,16 @@
 
 use crate::common::paths::PathResolver;
 use crate::tools::builtin::{
-    channel, messaging, AgentCatalogTool, AsyncListTool, AsyncOutputTool, AsyncSpawnTool,
-    AsyncStatusTool, AsyncStopTool, BashTool, CallerAwareSessionTool, ChannelReadTool, EditTool,
-    GlobTool, GrepTool, ModelCallTool, ModelListTool, PlanAddStepTool, PlanCloseTool,
-    PlanCreateTool, PlanGetTool, PlanListTool, PlanMarkStepTool, PlanRecordEvidenceTool, ReadTool,
-    SkillTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, WorkflowTool, WriteTool,
+    channel, messaging, AgentCatalogTool, AsyncTool, BashTool, CallerAwareSessionTool,
+    ChannelReadTool, EditTool, GlobTool, GrepTool, ModelCallTool, ModelListTool, PlanTool,
+    ReadTool, SkillTool, TaskTool, WorkflowTool, WriteTool,
 };
 use crate::tools::catalog::ToolCatalog;
 use crate::tools::metadata::ToolSource;
 use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
 use peko_channel::ChannelPort;
-use peko_cron::tools::{
-    CronCreateTool, CronDeleteTool, CronHistoryTool, CronListTool, CronTriggerTool, CronUpdateTool,
-};
+use peko_cron::tools::CronTool;
 use peko_subject::PrincipalId;
 use peko_tools_core::Tool;
 use std::path::{Path, PathBuf};
@@ -58,16 +54,15 @@ macro_rules! builtin_manifest {
 builtin_manifest! {
     RUNTIME_TOOL_NAMES: Runtime, Runtime, false => [
         "Bash", "Read", "Write", "Edit", "Glob", "Grep",
-        "CronCreate", "CronDelete", "CronList", "CronUpdate", "CronTrigger", "CronHistory", "ChannelRead"
+        "Cron", "ChannelRead"
     ];
     DAEMON_TOOL_NAMES: Runtime, Daemon, false => ["ModelCall", "Workflow"];
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
     WORKSPACE_TOOL_NAMES: Principal, Workspace, false => ["Skill", "RoleCatalog"];
     PRINCIPAL_SERVICE_TOOL_NAMES: Principal, PrincipalServices, false => [
-        "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "PlanCreate", "PlanList", "PlanGet",
-        "PlanAddStep", "PlanMarkStep", "PlanRecordEvidence", "PlanClose", "ChannelSend", "ModelList"
+        "Task", "Plan", "ChannelSend", "ModelList"
     ];
-    ASYNC_TOOL_NAMES: Principal, Async, false => ["AsyncSpawn", "AsyncOutput", "AsyncStatus", "AsyncList", "AsyncStop"];
+    ASYNC_TOOL_NAMES: Principal, Async, false => ["Async"];
 }
 
 /// Every compiled built-in wire name, in manifest order.
@@ -137,12 +132,7 @@ pub async fn install_runtime(
                 .with_workspace(workspace.clone())
                 .with_lock_dir(peko_tools_core::default_data_dir().join("locks")),
         ),
-        Arc::new(CronCreateTool::new()),
-        Arc::new(CronDeleteTool::new()),
-        Arc::new(CronListTool::new()),
-        Arc::new(CronUpdateTool::new()),
-        Arc::new(CronTriggerTool::new()),
-        Arc::new(CronHistoryTool::new()),
+        Arc::new(CronTool::new()),
         // PR-4a — channel reading as a tool. The principal's
         // agentic loop calls this on demand; the daemon-side
         // audit ring buffer (PR-3c) observes every channel event
@@ -236,23 +226,10 @@ pub(crate) async fn install_principal_services(
         let runtime = Arc::new(crate::session::todo_runtime_impl::TodoStorageRuntime::new(
             Arc::new(peko_session::todos::TodoStorage::new(dir)),
         ));
-        tools.extend([
-            Arc::new(TaskCreateTool::new(runtime.clone())) as Arc<dyn Tool>,
-            Arc::new(TaskGetTool::new(runtime.clone())),
-            Arc::new(TaskListTool::new(runtime.clone())),
-            Arc::new(TaskUpdateTool::new(runtime)),
-        ]);
+        tools.push(Arc::new(TaskTool::new(runtime)));
     }
     if let Some(port) = bindings.plan {
-        tools.extend([
-            Arc::new(PlanCreateTool::new(port.clone())) as Arc<dyn Tool>,
-            Arc::new(PlanListTool::new(port.clone())),
-            Arc::new(PlanGetTool::new(port.clone())),
-            Arc::new(PlanAddStepTool::new(port.clone())),
-            Arc::new(PlanMarkStepTool::new(port.clone())),
-            Arc::new(PlanRecordEvidenceTool::new(port.clone())),
-            Arc::new(PlanCloseTool::new(port)),
-        ]);
+        tools.push(Arc::new(PlanTool::new(port)));
     }
     if let Some(catalog) = bindings.model_catalog {
         tools.push(Arc::new(ModelListTool::new(Arc::downgrade(&catalog))));
@@ -288,13 +265,7 @@ pub(crate) async fn install_async(
         tooling.catalog(),
         principal,
         InstallationPhase::Async,
-        vec![
-            Arc::new(AsyncSpawnTool::new(runtime.clone())),
-            Arc::new(AsyncOutputTool::new(runtime.clone())),
-            Arc::new(AsyncStatusTool::new(runtime.clone())),
-            Arc::new(AsyncListTool::new(runtime.clone())),
-            Arc::new(AsyncStopTool::new(runtime)),
-        ],
+        vec![Arc::new(AsyncTool::new(runtime))],
     )
     .await
 }

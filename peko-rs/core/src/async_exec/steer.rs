@@ -5,7 +5,7 @@
 //! [`SteeringMessage`](super::executor::completion_queue::SteeringMessage)
 //! into the principal's root inbox instead of a `CompletionEvent`. The
 //! agent picks it up at its next iteration start and can call
-//! `AsyncOutput`/`AsyncOutput` for the full task result.
+//! `Async action output`/`Async action output` for the full task result.
 //!
 //! The format is intentionally simple and human-readable so the agent
 //! can act on it without parsing: the job's name (or task description),
@@ -18,7 +18,7 @@ use super::executor::types::AsyncTaskStatus;
 ///
 /// `job_name` is the schedule entry's `name` (or a fallback
 /// `"scheduled job"` if the caller did not provide one). `task_id`
-/// identifies the underlying `AsyncTask` for `AsyncOutput` lookups.
+/// identifies the underlying `AsyncTask` for `Async action output` lookups.
 /// `tool_name` is the tool the cron engine asked the executor to run.
 /// `outcome` is the terminal `AsyncTaskStatus` from the executor.
 #[must_use]
@@ -37,15 +37,15 @@ pub fn format_cron_steer_message(
         AsyncTaskStatus::Completed { .. } => "completed successfully",
         AsyncTaskStatus::Failed { error } => return format!(
             "Your scheduled cron job \"{label}\" ({tool_name}, task {task_id}) failed: {error}.\n\
-             You can check details with the AsyncOutput tool."
+             You can check details with the Async action output tool."
         ),
         AsyncTaskStatus::TimedOut { error } => return format!(
             "Your scheduled cron job \"{label}\" ({tool_name}, task {task_id}) timed out: {error}.\n\
-             You can check details with the AsyncOutput tool."
+             You can check details with the Async action output tool."
         ),
         AsyncTaskStatus::Cancelled => return format!(
             "Your scheduled cron job \"{label}\" ({tool_name}, task {task_id}) was cancelled.\n\
-             You can check details with the AsyncOutput tool."
+             You can check details with the Async action output tool."
         ),
         AsyncTaskStatus::Pending | AsyncTaskStatus::Running => {
             // Should not happen — the executor only calls this on a
@@ -55,7 +55,7 @@ pub fn format_cron_steer_message(
     };
     format!(
         "Your scheduled cron job \"{label}\" ({tool_name}, task {task_id}) {outcome_text}.\n\
-         You can check details with the AsyncOutput tool."
+         You can check details with the Async action output tool."
     )
 }
 
@@ -74,7 +74,7 @@ mod tests {
         assert!(msg.contains("shell:abc"));
         assert!(msg.contains("shell"));
         assert!(msg.contains("completed successfully"));
-        assert!(msg.contains("AsyncOutput"));
+        assert!(msg.contains("Async"));
     }
 
     #[test]

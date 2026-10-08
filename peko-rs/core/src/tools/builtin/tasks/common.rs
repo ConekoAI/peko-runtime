@@ -39,14 +39,14 @@ mod tests {
 
     #[test]
     fn require_session_id_missing() {
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate");
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task");
         let result = require_session_id(&ctx);
         assert!(result.is_err());
     }
 
     #[test]
     fn require_session_id_present() {
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate")
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task")
             .with_session_id("agent:test:cli:default");
         let result = require_session_id(&ctx).unwrap();
         assert_eq!(result, "agent:test:cli:default");

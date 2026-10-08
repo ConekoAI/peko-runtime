@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn directory_from_tool_params_returns_none_for_unknown_tool() {
         let root = PathBuf::from("/workspaces/agent/personal");
-        let dir = directory_from_tool_params("AsyncList", &serde_json::json!({}), &root);
+        let dir = directory_from_tool_params("Async", &serde_json::json!({"action":"list"}), &root);
         assert!(dir.is_none());
     }
 }

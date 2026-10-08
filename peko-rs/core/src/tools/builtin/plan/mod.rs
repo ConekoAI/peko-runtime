@@ -1,47 +1,20 @@
-//! `peko_plan` built-in tool surface — 7 tools that wrap the
-//! [`peko_plan::PlanPort`] trait.
-//!
-//! Mirrors the `tasks/` module shape: one file per tool, a shared
-//! [`SharedPlanPort`] type alias, a `missing_principal_error` helper,
-//! and an in-memory [`TestPlanPort`] fixture gated under `#[cfg(test)]`.
-//!
-//! The seven tools cover every [`peko_plan::PlanPort`] action an
-//! LLM-driven root agent should be able to invoke:
-//!
-//! | Tool | Port method |
-//! |---|---|
-//! | [`PlanCreateTool`] | [`peko_plan::PlanPort::create`] |
-//! | [`PlanListTool`] | [`peko_plan::PlanPort::list_for_principal`] |
-//! | [`PlanGetTool`] | [`peko_plan::PlanPort::get_for_principal`] |
-//! | [`PlanMarkStepTool`] | [`peko_plan::PlanPort::mark_node_status`] |
-//! | [`PlanRecordEvidenceTool`] | [`peko_plan::PlanPort::set_node_evidence`] |
-//! | [`PlanAddStepTool`] | [`peko_plan::PlanPort::add_node`] |
-//! | [`PlanCloseTool`] | [`peko_plan::PlanPort::close`] |
-//!
-//! All seven bind to the same `Arc<dyn PlanPort>` (held on
-//! [`crate::principal::Principal`] as `plan_port`, plumbed into
-//! [`crate::agents::Agent`] via `with_principal_plan_port`).
-//!
-//! ## Visibility
-//!
-//! ADR-066 P2: no capability gate — the Plan tools are visible to every
-//! principal (presence = executability).
+//! Plan domain actions backed by the principal-owned PlanPort.
 
-pub mod add_step;
-pub mod close;
-pub mod create;
-pub mod get;
-pub mod list;
-pub mod mark_step;
-pub mod record_evidence;
+mod add_step;
+mod close;
+mod create;
+mod get;
+mod list;
+mod mark_step;
+mod record_evidence;
 
-pub use add_step::PlanAddStepTool;
-pub use close::PlanCloseTool;
-pub use create::PlanCreateTool;
-pub use get::PlanGetTool;
-pub use list::PlanListTool;
-pub use mark_step::PlanMarkStepTool;
-pub use record_evidence::PlanRecordEvidenceTool;
+pub(crate) use add_step::PlanAddStepAction;
+pub(crate) use close::PlanCloseAction;
+pub(crate) use create::PlanCreateAction;
+pub(crate) use get::PlanGetAction;
+pub(crate) use list::PlanListAction;
+pub(crate) use mark_step::PlanMarkStepAction;
+pub(crate) use record_evidence::PlanRecordEvidenceAction;
 
 use anyhow::Result as AnyhowResult;
 use peko_plan::{NodeId, PlanNodeStatus, PlanPort};
@@ -368,3 +341,6 @@ impl PlanPort for TestPlanPort {
         Ok(rec.clone())
     }
 }
+
+mod tool;
+pub use tool::PlanTool;

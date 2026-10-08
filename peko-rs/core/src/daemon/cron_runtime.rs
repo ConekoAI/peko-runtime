@@ -10,7 +10,7 @@
 //! via [`peko_cron::global_runtime`] at execute time.
 //!
 //! 2026-08-25: cron is now an internal principal tool (like Bash,
-//! Session). The legacy `CronList`/`CronAdd`/... IPC variants and the
+//! Session). The legacy `Cron action list`/`CronAdd`/... IPC variants and the
 //! `peko cron` CLI were deleted; this adapter is the only cron
 //! read/write surface in the daemon. Per-principal `tool:Cron*`
 //! grants gate tool access (F37 funnel); this adapter itself does

@@ -1,4 +1,4 @@
-//! `CronList` tool — list scheduled jobs
+//! `Cron action list` tool — list scheduled jobs
 //!
 //! Lists `CronJob`s through the [`CronRuntime`] port set by the daemon
 //! at startup. Results are filtered to the current Principal from the
@@ -10,26 +10,26 @@ use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
 use serde_json::json;
 
-/// `CronList` tool — list scheduled jobs
-pub struct CronListTool;
+/// `Cron action list` tool — list scheduled jobs
+pub struct CronListAction;
 
-impl CronListTool {
-    /// Create a new `CronList` tool
+impl CronListAction {
+    /// Create a new `Cron action list` tool
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for CronListTool {
+impl Default for CronListAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Tool for CronListTool {
+impl Tool for CronListAction {
     fn name(&self) -> &'static str {
-        "CronList"
+        "Cron"
     }
 
     fn description(&self) -> String {
@@ -47,7 +47,7 @@ impl Tool for CronListTool {
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(anyhow::anyhow!(
-            "CronList requires a Principal context; use execute_with_context"
+            "Cron action list requires a Principal context; use execute_with_context"
         ))
     }
 
@@ -61,11 +61,11 @@ impl Tool for CronListTool {
         let principal_id = ctx
             .principal_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CronList requires a Principal context"))?
+            .ok_or_else(|| anyhow::anyhow!("Cron action list requires a Principal context"))?
             .clone();
 
         let runtime = global_runtime().ok_or_else(|| {
-            anyhow::anyhow!("CronList requires the daemon's cron runtime; not initialized")
+            anyhow::anyhow!("Cron action list requires the daemon's cron runtime; not initialized")
         })?;
 
         let jobs = runtime.list_jobs().await?;
@@ -83,13 +83,13 @@ mod tests {
 
     #[test]
     fn test_cron_list_tool_name() {
-        let tool = CronListTool::new();
-        assert_eq!(tool.name(), "CronList");
+        let tool = CronListAction::new();
+        assert_eq!(tool.name(), "Cron");
     }
 
     #[test]
     fn test_cron_list_tool_parameters() {
-        let tool = CronListTool::new();
+        let tool = CronListAction::new();
         let params = tool.parameters();
         // Sprint 7 Commit A: empty properties block (status_filter /
         // kind_filter were dropped — they had no consumer).

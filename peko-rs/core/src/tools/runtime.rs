@@ -386,7 +386,7 @@ impl ToolFunnel for ToolingRuntime {
         &self,
         call: ToolCallSpec,
     ) -> anyhow::Result<(String, serde_json::Value, bool)> {
-        // IPC/workflow and AsyncSpawn callbacks re-enter through the shared
+        // IPC/workflow and Async action spawn callbacks re-enter through the shared
         // runtime. Resolve their explicit caller session to its live binding,
         // rather than selecting whichever agent registered last.
         let key = call
@@ -714,8 +714,8 @@ mod tests {
             .execute(call(
                 &principal,
                 "session-a",
-                "AsyncSpawn",
-                json!({"tool":"Bound", "params":{}}),
+                "Async",
+                json!({"action":"spawn", "tool":"Bound", "params":{}}),
             ))
             .await
             .unwrap();
@@ -725,8 +725,8 @@ mod tests {
             .execute(call(
                 &principal,
                 "session-a",
-                "AsyncOutput",
-                json!({"task_id":task_id, "block":true, "timeout":5000}),
+                "Async",
+                json!({"action":"output", "task_id":task_id, "block":true, "timeout":5000}),
             ))
             .await
             .unwrap();
@@ -753,8 +753,8 @@ mod tests {
         let mut context_call = call(
             &principal,
             "session-a",
-            "AsyncSpawn",
-            json!({"tool":"CallerContext", "params":{}}),
+            "Async",
+            json!({"action":"spawn", "tool":"CallerContext", "params":{}}),
         );
         context_call.workspace = Some("/caller/workspace".into());
         context_call.principal_name = Some("caller-principal".into());
@@ -765,8 +765,7 @@ mod tests {
             .execute(call(
                 &principal,
                 "session-a",
-                "AsyncOutput",
-                json!({"task_id":context_receipt["task_id"], "block":true, "timeout":5000}),
+                "Async", json!({"action":"output", "task_id":context_receipt["task_id"], "block":true, "timeout":5000}),
             ))
             .await
             .unwrap();
@@ -785,8 +784,8 @@ mod tests {
             .execute(call(
                 &principal,
                 "session-b",
-                "AsyncOutput",
-                json!({"task_id":task_id}),
+                "Async",
+                json!({"action":"output", "task_id":task_id}),
             ))
             .await
             .unwrap();
@@ -798,8 +797,8 @@ mod tests {
                 .execute(call(
                     &foreign,
                     "session-b",
-                    "AsyncOutput",
-                    json!({"task_id":task_id})
+                    "Async",
+                    json!({"action":"output", "task_id":task_id})
                 ))
                 .await
                 .unwrap()

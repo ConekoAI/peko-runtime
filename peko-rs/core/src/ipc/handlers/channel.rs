@@ -58,7 +58,7 @@ pub(crate) trait ChannelHost: Send + Sync {
     /// **Default impl is no-op.** Test hosts don't need to override.
     /// The hook is sync (`()` return) so the IPC arm never blocks on
     /// it; future PRs that wire a real session-wake-up path (e.g.
-    /// `AsyncSpawn` of `ChannelRead` via `AsyncExecutor::spawn`)
+    /// `Async action spawn` of `ChannelRead` via `AsyncExecutor::spawn`)
     /// override this to fire the dispatch — the handler keeps the
     /// log + swallow contract.
     fn ensure_invitee_subscriber(&self, _invitee: &PrincipalId, _channel: &ChannelId) {}

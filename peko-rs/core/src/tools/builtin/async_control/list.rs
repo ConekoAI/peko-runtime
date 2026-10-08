@@ -1,4 +1,4 @@
-//! AsyncList tool — list background tasks in this runtime's scope.
+//! Async action list tool — list background tasks in this runtime's scope.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -9,11 +9,11 @@ use crate::tools::builtin::async_control::build_list_response;
 use crate::tools::builtin::async_control::{AsyncTaskHelper, SharedAsyncRuntime};
 
 /// List async tasks in this runtime's scope.
-pub struct AsyncListTool {
+pub struct AsyncListAction {
     helper: AsyncTaskHelper,
 }
 
-impl AsyncListTool {
+impl AsyncListAction {
     /// Create a tool bound to a specific runtime.
     #[must_use]
     pub fn new(runtime: SharedAsyncRuntime) -> Self {
@@ -24,9 +24,9 @@ impl AsyncListTool {
 }
 
 #[async_trait]
-impl Tool for AsyncListTool {
+impl Tool for AsyncListAction {
     fn name(&self) -> &'static str {
-        "AsyncList"
+        "Async"
     }
 
     fn description(&self) -> String {

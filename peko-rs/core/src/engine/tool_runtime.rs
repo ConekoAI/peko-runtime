@@ -275,14 +275,12 @@ mod tests {
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
         assert!(runtime.has_tool("Bash").await);
+        assert!(runtime.has_tool("Cron").await);
         assert!(runtime.has_tool("Read").await);
         assert!(runtime.has_tool("Write").await);
         assert!(runtime.has_tool("Glob").await);
         assert!(runtime.has_tool("Grep").await);
         assert!(runtime.has_tool("Edit").await);
-        assert!(runtime.has_tool("CronCreate").await);
-        assert!(runtime.has_tool("CronDelete").await);
-        assert!(runtime.has_tool("CronList").await);
     }
 
     #[tokio::test]

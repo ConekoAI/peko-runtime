@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Domain tool actions (2026-10-08)
+
+- Consolidate Task, Plan, Cron, and Async into four tools with explicit actions;
+  the native catalog now has 19 names. Remove the former per-action wire names
+  and public action-tool structs without compatibility aliases.
+- Reject missing actions, unknown fields, and fields belonging to another action;
+  tighten Session's ten action schemas while preserving defaults and ownership.
+- Preserve domain runtime ownership, Async receipts and completion routing, and
+  caller context. Task/Plan/Cron retain exclusive dispatch for their mutations
+  and conservatively serialize read actions through the same gate.
+- Include action in the single outer tool.call audit event; update prompts,
+  tool guidance, mock calls, and the full parameter catalog (ADR-071).
+
 ### Exact tool contracts and unfiltered availability (2026-10-08)
 
 - Remove old tool-name and argument aliases: Session/ModelList/RoleCatalog,

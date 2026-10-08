@@ -1,4 +1,4 @@
-//! `CronHistory` tool — read a scheduled job's run history
+//! `Cron action history` tool — read a scheduled job's run history
 //!
 //! Reads `CronRun` rows (status, timestamps, output, error) through the
 //! [`CronRuntime`] port. The data already lives in the principal's
@@ -14,23 +14,23 @@ use peko_tools_core::traits::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// `CronHistory` tool — read a scheduled job's run history
-pub struct CronHistoryTool;
+/// `Cron action history` tool — read a scheduled job's run history
+pub struct CronHistoryAction;
 
-impl CronHistoryTool {
-    /// Create a new `CronHistory` tool
+impl CronHistoryAction {
+    /// Create a new `Cron action history` tool
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for CronHistoryTool {
+impl Default for CronHistoryAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// `CronHistory` tool arguments
+/// `Cron action history` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronHistoryArgs {
     /// Job ID to read history for
@@ -45,13 +45,13 @@ pub struct CronHistoryArgs {
 }
 
 #[async_trait]
-impl Tool for CronHistoryTool {
+impl Tool for CronHistoryAction {
     fn name(&self) -> &'static str {
-        "CronHistory"
+        "Cron"
     }
 
     fn description(&self) -> String {
-        "Read a scheduled job's run history by ID (or label): per-fire status, start/finish timestamps, output, and error message — most recent first. Use it to debug why a job failed or what it did (CronList only shows the LAST fire's status, not the error text or trend).".to_string()
+        "Read a scheduled job's run history by ID (or label): per-fire status, start/finish timestamps, output, and error message — most recent first. Use it to debug why a job failed or what it did (Cron action list only shows the LAST fire's status, not the error text or trend).".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -86,7 +86,7 @@ impl Tool for CronHistoryTool {
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(anyhow::anyhow!(
-            "CronHistory requires a Principal context; use execute_with_context"
+            "Cron action history requires a Principal context; use execute_with_context"
         ))
     }
 
@@ -98,15 +98,17 @@ impl Tool for CronHistoryTool {
         let principal_id = ctx
             .principal_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CronHistory requires a Principal context"))?
+            .ok_or_else(|| anyhow::anyhow!("Cron action history requires a Principal context"))?
             .clone();
 
         let runtime = global_runtime().ok_or_else(|| {
-            anyhow::anyhow!("CronHistory requires the daemon's cron runtime; not initialized")
+            anyhow::anyhow!(
+                "Cron action history requires the daemon's cron runtime; not initialized"
+            )
         })?;
 
         let args: CronHistoryArgs = serde_json::from_value(params.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid CronHistory arguments: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid Cron action history arguments: {e}"))?;
 
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
             verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
@@ -115,7 +117,7 @@ impl Tool for CronHistoryTool {
             resolve_id_by_label(&*runtime, &label, &principal_id).await?
         } else {
             return Err(anyhow::anyhow!(
-                "Either id or label is required for CronHistory"
+                "Either id or label is required for Cron action history"
             ));
         };
 
@@ -135,17 +137,17 @@ mod tests {
 
     #[test]
     fn test_cron_history_tool_name() {
-        let tool = CronHistoryTool::new();
-        assert_eq!(tool.name(), "CronHistory");
+        let tool = CronHistoryAction::new();
+        assert_eq!(tool.name(), "Cron");
     }
 
     #[test]
     fn test_cron_history_tool_parameters() {
-        let tool = CronHistoryTool::new();
+        let tool = CronHistoryAction::new();
         let params = tool.parameters();
         let branches = params
             .get("oneOf")
-            .expect("CronHistory schema must use oneOf for id-or-label");
+            .expect("Cron action history schema must use oneOf for id-or-label");
         assert_eq!(branches.as_array().unwrap().len(), 2);
         let props = params.get("properties").unwrap();
         assert!(props.get("limit").is_some());

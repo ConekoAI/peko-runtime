@@ -49,7 +49,7 @@ pub async fn execute_tool_via_core(
 /// extension-scoped tools (e.g. `Skill`) can resolve per-principal
 /// state via `ExtensionStateRegistry` at handle time.
 /// `principal_name` is the human-readable Principal name used by
-/// Principal-scoped tools (e.g. `CronCreate`) to target jobs.
+/// Principal-scoped tools (e.g. `Cron action create`) to target jobs.
 /// `cancel` is the soft-interrupt `CancellationToken` (PR #128). When
 /// `Some`, this function bridges the token into a
 /// `watch::Receiver<bool>` (`AbortSignal`) via
@@ -61,7 +61,7 @@ pub async fn execute_tool_via_core(
 /// ADR-066 P3: delegates to [`ToolFunnel::execute`] with a packed
 /// [`ToolCallSpec`]. The cancel-bridging stays here (only
 /// `src/engine/tool_executor.rs` passes a cancel today) so the
-/// `'static` factory closures in `AsyncSpawnTool` / `cron_engine` can
+/// `'static` factory closures in `AsyncSpawnAction` / `cron_engine` can
 /// call `execute` directly without carrying the bridge's lifetime.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_tool_via_core_with_context(

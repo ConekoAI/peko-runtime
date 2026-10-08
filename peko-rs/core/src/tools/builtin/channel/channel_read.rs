@@ -1,6 +1,6 @@
 //! `ChannelRead` — `peko_channel_read` tool impl.
 //!
-//! Mirrors the shape of `PlanGetTool` (`plan/get.rs`):
+//! Mirrors the shape of `PlanGetAction` (`plan/get.rs`):
 //!   `pub struct X { port: Arc<dyn ...> }` with `execute_with_context`
 //!   pulling `PrincipalId` out of the `ToolContext`. The principal
 //!   membership boundary is enforced by ChannelPort; this tool is a thin
@@ -173,7 +173,7 @@ impl Tool for ChannelReadTool {
 
         // Resolve membership. We surface a soft-error JSON when the
         // caller isn't a member so the LLM can react, mirroring the
-        // PlanGet `not_found_error` pattern. `ChannelError::NotMember`
+        // Plan action get `not_found_error` pattern. `ChannelError::NotMember`
         // is the only "soft" we accept here — adapter-level errors
         // propagate as hard Err so the framework surfaces them as
         // `success=false`.

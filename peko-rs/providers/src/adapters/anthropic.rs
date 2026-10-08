@@ -323,7 +323,7 @@ impl AnthropicAdapter {
     /// Kimi's `https://api.minimaxi.com/anthropic` shim returns 429
     /// "engine overloaded" (instead of a proper 400) when a tool's
     /// `input_schema` contains `anyOf`. The combinators are a
-    /// documentation nicety for our tools (`CronDelete` and `TaskUpdate`
+    /// documentation nicety for our tools (`Cron action delete` and `Task action update`
     /// use them to say "either id or label"), not a functional
     /// requirement — the validation lives on the server side anyway
     /// because our tool executor rejects missing required fields with a

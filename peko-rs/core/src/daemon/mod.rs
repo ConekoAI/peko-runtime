@@ -277,7 +277,7 @@ impl Daemon {
             cron_async_executor,
             cron_tooling,
         ));
-        // Hand the engine to AppState so the `CronTrigger` tool (via
+        // Hand the engine to AppState so the `Cron action trigger` tool (via
         // `DaemonCronAdapter::trigger_job`) can dispatch manual fires
         // through the same coalescing / spawn logic scheduled fires use.
         app_state.set_cron_engine(Arc::new(
@@ -382,7 +382,7 @@ impl Daemon {
         // `peko-cron` and cannot import daemon state directly)
         // can dispatch through the F37 capability-gated funnel.
         // 2026-08-25: cron is a fully internal principal tool now —
-        // the legacy `CronList`/`CronAdd`/... IPC variants and the
+        // the legacy `Cron action list`/`CronAdd`/... IPC variants and the
         // `peko cron` CLI were deleted. The adapter is self-sufficient:
         // it owns the typed resolver + `PrincipalManager` and reads /
         // writes each principal's `<resolver>.cron_schedule(name)`
@@ -395,7 +395,7 @@ impl Daemon {
                 app_state.path_resolver.clone(),
                 std::sync::Arc::clone(app_state.principal_manager()),
             );
-            // Bind the cron engine for the `CronTrigger` tool's manual
+            // Bind the cron engine for the `Cron action trigger` tool's manual
             // fires (coalescing + spawn logic live on the engine).
             if let Some(engine) = self.cron_engine.as_ref() {
                 adapter = adapter.with_cron_engine(Arc::new(engine.clone()));

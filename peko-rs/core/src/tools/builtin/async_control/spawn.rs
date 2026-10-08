@@ -1,4 +1,4 @@
-//! AsyncSpawn tool — invoke any tool asynchronously.
+//! Async action spawn tool — invoke any tool asynchronously.
 //!
 //! Part of the Async* family that replaces the single `task` tool.
 //! Speaks to the [`AsyncRuntime`] port to dispatch via the F37 funnel.
@@ -11,11 +11,11 @@ use peko_tools_core::traits::Tool;
 use crate::tools::builtin::async_control::{SharedAsyncRuntime, SpawnRequest};
 
 /// Spawn an async task invoking any registered tool.
-pub struct AsyncSpawnTool {
+pub struct AsyncSpawnAction {
     runtime: SharedAsyncRuntime,
 }
 
-impl AsyncSpawnTool {
+impl AsyncSpawnAction {
     /// Construct with an async runtime.
     ///
     /// The runtime holds the per-agent `Weak<ToolingRuntime>`,
@@ -31,16 +31,16 @@ impl AsyncSpawnTool {
 }
 
 #[async_trait]
-impl Tool for AsyncSpawnTool {
+impl Tool for AsyncSpawnAction {
     fn name(&self) -> &'static str {
-        "AsyncSpawn"
+        "Async"
     }
 
     fn description(&self) -> String {
         r"Invoke any tool asynchronously and return a task receipt.
 
-The spawned task runs in the background. Use AsyncStatus/AsyncOutput to check
-progress and read results; use AsyncStop to cancel.
+The spawned task runs in the background. Use Async action status/Async action output to check
+progress and read results; use Async action stop to cancel.
 
 Parameters:
 - tool: string (required) — the tool name to invoke
@@ -102,7 +102,7 @@ Returns: { task_id, status, tool_name }"
     }
 }
 
-impl AsyncSpawnTool {
+impl AsyncSpawnAction {
     async fn execute_inner(
         &self,
         params: serde_json::Value,
@@ -111,12 +111,12 @@ impl AsyncSpawnTool {
         let tool_name = params
             .get("tool")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("AsyncSpawn requires 'tool'"))?
+            .ok_or_else(|| anyhow::anyhow!("Async action spawn requires 'tool'"))?
             .to_string();
         let tool_params = params
             .get("params")
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("AsyncSpawn requires 'params'"))?;
+            .ok_or_else(|| anyhow::anyhow!("Async action spawn requires 'params'"))?;
         let label = params
             .get("label")
             .and_then(|v| v.as_str())

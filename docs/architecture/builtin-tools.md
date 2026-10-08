@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **37 built-in tool names**, all in PascalCase. This reference
+Peko exposes **19 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -22,14 +22,14 @@ values, and parameter names retain their existing spelling.
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 37-name inventory. The complete inventory derives from its manifest.
+installation phases, and the 19-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
-| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron*, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
+| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
-| Principal services | Task*, Plan*, ChannelSend, ModelList, Async* | When their session storage, plan, caller identity/channel, or inbox bindings become available |
+| Principal services | Task, Plan, ChannelSend, ModelList, Async | When their session storage, plan, caller identity/channel, or inbox bindings become available |
 | Run bindings | Agent, Session | Private catalog overlay for caller execution dependencies |
 
 Each run inherits live runtime/principal registrations through its overlay.
@@ -42,7 +42,7 @@ keeps principal identity/reply locks and resolves the current tunnel context per
 call, including connections made after installation.
 
 Async executors and task registries belong to the principal, so receipts remain
-resolvable after a run ends. AsyncSpawn stamps the caller session on each task;
+resolvable after a run ends. Async action spawn stamps the caller session on each task;
 completion events go to that session's inbox. Background Bash and subagent tasks
 remain accessible through the existing principal-filtered registry fallback.
 These lifetimes do not introduce a new authorization boundary; the principal
@@ -50,7 +50,7 @@ remains the trust boundary. See [ADR-069](adr/ADR-069-builtin-tool-installation-
 
 ## Parameter conventions
 
-Required below means required by the top-level schema. Conditional requirements
+Required below means required for the documented action. Conditional requirements
 are stated under each tool and encoded in its schema. Defaults may be applied
 by runtime code rather than JSON Schema; schema defaults alone do not inject values.
 
@@ -175,7 +175,7 @@ Run work in a new, resumed, compacted, or branched session.
 | `overwrite` | boolean | no | — |
 | `page_limit` | integer | no | ≥ 1, ≤ 10000 |
 
-All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 1–10000, omitted for unlimited; exceeding it permanently deletes the oldest closed pages. model is ignored for compact. Legacy agent is accepted as an alias for role. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 1–10000, omitted for unlimited; exceeding it permanently deletes the oldest closed pages. model is ignored for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
 
 ### RoleCatalog
 
@@ -331,7 +331,11 @@ path must resolve to a .py file inside workflows/. timeout_ms defaults to 300000
 
 ## Session todos
 
-### TaskCreate
+### Task
+
+Required `action`: `create`, `get`, `list`, `update`. Each action accepts only its documented fields.
+
+#### create
 
 Create a session-local todo.
 
@@ -345,7 +349,7 @@ Create a session-local todo.
 
 Todos are stored in the calling session’s todos.jsonl sidecar.
 
-### TaskGet
+#### get
 
 Fetch one todo.
 
@@ -355,7 +359,7 @@ Fetch one todo.
 |---|---|---|---|
 | `taskId` | string | yes | — |
 
-### TaskList
+#### list
 
 List session-local todos, optionally filtered by status.
 
@@ -365,7 +369,7 @@ List session-local todos, optionally filtered by status.
 |---|---|---|---|
 | `status_filter` | pending \| in_progress \| completed | no | — |
 
-### TaskUpdate
+#### update
 
 Change a todo’s status and/or owner.
 
@@ -381,7 +385,11 @@ At least one of status or owner is required, in addition to taskId.
 
 ## Durable plans
 
-### PlanCreate
+### Plan
+
+Required `action`: `create`, `list`, `get`, `add_step`, `mark_step`, `record_evidence`, `close`. Each action accepts only its documented fields.
+
+#### create
 
 Create a principal-owned durable plan with dependency nodes.
 
@@ -394,7 +402,7 @@ Create a principal-owned durable plan with dependency nodes.
 
 nodes contains at least one object: {step, nodeId?, dependsOn?: string[], status?}. nodeId is auto-assigned when omitted; status defaults to pending. Plans belong to the principal and persist across sessions.
 
-### PlanList
+#### list
 
 List all plans owned by the current principal.
 
@@ -402,9 +410,9 @@ List all plans owned by the current principal.
 
 | Parameter | Type | Required | Schema default / bounds |
 |---|---|---|---|
-| — | — | — | No parameters |
+| `action` | string | yes | See action heading |
 
-### PlanGet
+#### get
 
 Fetch a plan record.
 
@@ -414,7 +422,7 @@ Fetch a plan record.
 |---|---|---|---|
 | `planId` | string | yes | — |
 
-### PlanAddStep
+#### add_step
 
 Append a node to an open plan.
 
@@ -430,7 +438,7 @@ Append a node to an open plan.
 
 nodeId is auto-assigned when omitted; status defaults to pending. Closed plans refuse new nodes.
 
-### PlanMarkStep
+#### mark_step
 
 Change a plan node’s status.
 
@@ -445,7 +453,7 @@ Change a plan node’s status.
 
 reason applies to blocked/failed states. Statuses: pending, in_progress, completed, blocked, failed.
 
-### PlanRecordEvidence
+#### record_evidence
 
 Attach an outcome summary and artifact references to a node.
 
@@ -461,7 +469,7 @@ Attach an outcome summary and artifact references to a node.
 
 artifacts is string[] of paths/references; decidedBy is optional attribution.
 
-### PlanClose
+#### close
 
 Close a plan with a reason.
 
@@ -476,7 +484,11 @@ Repeated closure returns AlreadyClosed.
 
 ## Background execution
 
-### AsyncSpawn
+### Async
+
+Required `action`: `spawn`, `output`, `status`, `list`, `stop`. Each action accepts only its documented fields.
+
+#### spawn
 
 Start a tool in the background and return an async receipt.
 
@@ -492,7 +504,7 @@ Start a tool in the background and return an async receipt.
 
 params is forwarded verbatim. wake_on_completion defaults true; completion enters the spawning session’s inbox and may start an idle-session follow-up. timeout_secs defaults to the executor’s 7200-second policy; null/omit selects that default.
 
-### AsyncOutput
+#### output
 
 Fetch output, optionally waiting for completion.
 
@@ -507,7 +519,7 @@ Fetch output, optionally waiting for completion.
 
 block defaults false. With block=true, timeout defaults to 300000 milliseconds. tail_lines=0 returns full output; positive values select the last N lines.
 
-### AsyncStatus
+#### status
 
 Inspect a background task’s state and metadata.
 
@@ -517,7 +529,7 @@ Inspect a background task’s state and metadata.
 |---|---|---|---|
 | `task_id` | string | yes | — |
 
-### AsyncList
+#### list
 
 List background tasks in the bound async runtime.
 
@@ -528,9 +540,9 @@ List background tasks in the bound async runtime.
 | `status_filter` | pending \| running \| completed \| failed \| cancelled \| timed_out | no | — |
 | `tool_filter` | string | no | — |
 
-Uses the agent-bound async runtime. Statuses: pending, running, completed, failed, cancelled, timed_out.
+Uses the principal-owned async runtime shared across runs. Statuses: pending, running, completed, failed, cancelled, timed_out.
 
-### AsyncStop
+#### stop
 
 Cancel a background task.
 
@@ -542,7 +554,11 @@ Cancel a background task.
 
 ## Scheduling
 
-### CronCreate
+### Cron
+
+Required `action`: `create`, `list`, `delete`, `update`, `trigger`, `history`. Each action accepts only its documented fields.
+
+#### create
 
 Schedule an instruction-driven agent turn or a fixed tool invocation.
 
@@ -566,7 +582,7 @@ Schedule an instruction-driven agent turn or a fixed tool invocation.
 
 Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs uses the executor’s 7200-second policy. delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped.
 
-### CronList
+#### list
 
 List the calling principal’s scheduled jobs.
 
@@ -574,9 +590,9 @@ List the calling principal’s scheduled jobs.
 
 | Parameter | Type | Required | Schema default / bounds |
 |---|---|---|---|
-| — | — | — | No parameters |
+| `action` | string | yes | See action heading |
 
-### CronDelete
+#### delete
 
 Delete a scheduled job.
 
@@ -589,7 +605,7 @@ Delete a scheduled job.
 
 Supply exactly one of id or label.
 
-### CronUpdate
+#### update
 
 Pause/resume a job or change completion wake behavior.
 
@@ -604,7 +620,7 @@ Pause/resume a job or change completion wake behavior.
 
 Requires id or label and at least one of enabled/wake_on_completion. A nonempty id takes precedence if both selectors are supplied. Re-enabling resets consecutive failures; completion subscription applies to tool jobs and uses the creating session (trunk fallback).
 
-### CronTrigger
+#### trigger
 
 Fire a job now, including disabled jobs; coalesce with an in-flight run.
 
@@ -617,7 +633,7 @@ Fire a job now, including disabled jobs; coalesce with an in-flight run.
 
 Supply exactly one of id or label. Disabled jobs may be triggered; an in-flight job coalesces and returns its actual run_id.
 
-### CronHistory
+#### history
 
 Fetch a job’s recent run history.
 

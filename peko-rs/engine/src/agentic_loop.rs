@@ -1005,7 +1005,7 @@ impl AgenticLoop {
                     .any(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()))
         });
 
-        // Push the resolved session id onto the core so `AsyncSpawn`
+        // Push the resolved session id onto the core so `Async action spawn`
         // can stamp `parent_session_key` on any task issued from this
         // loop. This is the only place that *always* knows the real id
         // (the `Agent::execute*` callers have already pushed it for the
@@ -1014,7 +1014,7 @@ impl AgenticLoop {
         // `run_inner`). Doing it here means every entry into the loop
         // — regardless of which `execute_*` path called us — ends up
         // with a real session key on the core before iteration 1
-        // begins, so even the first `AsyncSpawn` issued mid-iteration
+        // begins, so even the first `Async action spawn` issued mid-iteration
         // sees a real `parent_session_key` rather than the `"unknown"`
         // fallback. The session key is keyed by the loop's agent DID on
         // the shared `ToolingRuntime` so concurrent agents in daemon mode

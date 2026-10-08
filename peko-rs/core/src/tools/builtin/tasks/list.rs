@@ -1,4 +1,4 @@
-//! TaskList tool — list planning todos for the current session.
+//! Task action list tool — list planning todos for the current session.
 
 use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
@@ -9,11 +9,11 @@ use crate::tools::builtin::tasks::{
 };
 
 /// List planning todos for the current session.
-pub struct TaskListTool {
+pub struct TaskListAction {
     runtime: SharedTodoRuntime,
 }
 
-impl TaskListTool {
+impl TaskListAction {
     /// Create a tool bound to the given todo runtime.
     #[must_use]
     pub fn new(runtime: SharedTodoRuntime) -> Self {
@@ -22,9 +22,9 @@ impl TaskListTool {
 }
 
 #[async_trait]
-impl Tool for TaskListTool {
+impl Tool for TaskListAction {
     fn name(&self) -> &'static str {
-        "TaskList"
+        "Task"
     }
 
     fn description(&self) -> String {
@@ -76,15 +76,17 @@ Returns an array of todo objects."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::tasks::{TaskCreateTool, TestTodoRuntime, TodoRuntime, TodoStatus};
+    use crate::tools::builtin::tasks::{
+        TaskCreateAction, TestTodoRuntime, TodoRuntime, TodoStatus,
+    };
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
     #[tokio::test]
     async fn test_task_list_filtered() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let create = TaskCreateTool::new(runtime.clone());
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate")
+        let create = TaskCreateAction::new(runtime.clone());
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task")
             .with_session_id("agent:test:cli:default");
 
         let _a = create
@@ -105,7 +107,7 @@ mod tests {
             .await
             .unwrap();
 
-        let tool = TaskListTool::new(runtime);
+        let tool = TaskListAction::new(runtime);
         let all = tool.execute_with_context(json!({}), &ctx).await.unwrap();
         assert_eq!(all.as_array().unwrap().len(), 2);
 
@@ -120,9 +122,9 @@ mod tests {
     #[tokio::test]
     async fn test_task_list_empty() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskListTool::new(runtime);
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskList")
-            .with_session_id("agent:test:cli:empty");
+        let tool = TaskListAction::new(runtime);
+        let ctx =
+            ToolContext::for_hook_run("run", "tc", "Task").with_session_id("agent:test:cli:empty");
 
         let result = tool.execute_with_context(json!({}), &ctx).await.unwrap();
         assert!(result.as_array().unwrap().is_empty());
@@ -131,8 +133,8 @@ mod tests {
     #[tokio::test]
     async fn test_task_list_no_session() {
         let runtime = std::sync::Arc::new(TestTodoRuntime::new());
-        let tool = TaskListTool::new(runtime);
-        let ctx = ToolContext::for_hook_run("run", "tc", "TaskList");
+        let tool = TaskListAction::new(runtime);
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task");
         let result = tool.execute_with_context(json!({}), &ctx).await;
         assert!(result.is_err());
     }

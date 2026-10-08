@@ -1,27 +1,5 @@
-//! Built-in tool implementations — Phase F4 partial foldback.
-//!
-//! As of F4 the bulk of built-in tools live in root
-//! (`crate::tools::builtin::*`): filesystem (read/write/edit/glob/grep),
-//! async control (spawn/output/status/list/stop), session introspection,
-//! skill + YAML frontmatter + dynamic context preprocessor, messaging
-//! (Agent), tasks (create/get/list/update), and a couple of root-only
-//! tools (Bash, AgentCatalog). All lifted from
-//! `peko-tools-builtin` in this foldback; the sat now retains only the
-//! cron port (`cron/`) + `paths.rs` helpers
-//! + re-exports for the engine that doesn't depend on root.
-//!
-//! ## What stays in `peko-tools-builtin`
-//!
-//! - `cron` — `CronRuntime` port trait + 3 cron tool impls (create /
-//!   delete / list) + the DTOs (`ScheduleKind`, `CronJob`,
-//!   `CronJobAction`). Stays because `peko-cron` re-exports the DTOs
-//!   and `peko_core::daemon::cron_runtime` implements the port trait;
-//!   lifting the trait into root would reverse the leaf-crate dep
-//!   direction.
-//! - `paths` — tilde-expansion + similar path utilities. Lifted but
-//!   mirrored as a thin re-export in the sat for engine consumers.
+//! Built-in domain tools and runtime contracts. Cron lives in peko-cron.
 
-// Lifted in Phase F4:
 pub mod async_control;
 pub mod bash;
 pub mod channel;
@@ -36,19 +14,13 @@ pub mod tasks;
 #[cfg(test)]
 mod schema_tests;
 
-// Root-only impls that didn't have a sat counterpart:
 pub mod model_call;
 pub mod model_list;
 pub mod role_catalog;
 pub mod workflow;
 
-// Re-exports of every tool *struct* at the canonical namespace so
-// `crate::tools::builtin::X` matches what existed in the
-// `peko_tools_builtin::X` path before the foldback.
-pub use async_control::{
-    AsyncListTool, AsyncOutputTool, AsyncRuntime, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
-    SharedAsyncRuntime,
-};
+// Public domain tools and runtime ports.
+pub use async_control::{AsyncRuntime, AsyncTool, SharedAsyncRuntime};
 pub use bash::BashTool;
 pub use channel::{ChannelReadTool, ChannelSendTool};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
@@ -57,15 +29,12 @@ pub use messaging::{
 };
 pub use model_call::{ModelCallTool, MODEL_CALL_TOOL_NAME};
 pub use model_list::{ModelListTool, MODEL_LIST_TOOL_NAME};
-pub use plan::{
-    PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool, PlanMarkStepTool,
-    PlanRecordEvidenceTool,
-};
+pub use plan::PlanTool;
 pub use role_catalog::AgentCatalogTool;
 pub use session::caller_aware::CallerAwareSessionTool;
 pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
-pub use tasks::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool, Todo, TodoStatus};
+pub use tasks::{TaskTool, Todo, TodoStatus};
 pub use workflow::{
     WorkflowTool, WorkspaceWorkflowsPromptHandler, MAX_WORKFLOW_DEPTH,
     WORKFLOW_CATALOG_HOOK_PRIORITY, WORKFLOW_TOOL_NAME,

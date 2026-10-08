@@ -552,7 +552,7 @@ impl PrincipalUnpackager {
     /// `principal_id` to the imported principal's effective id
     /// (`config.id` → DID → name, the same resolution the cron tools
     /// use) so the trunk can see its restored heartbeat via
-    /// `CronList` immediately.
+    /// `Cron action list` immediately.
     async fn import_local_authored(
         &self,
         files: &HashMap<String, Vec<u8>>,

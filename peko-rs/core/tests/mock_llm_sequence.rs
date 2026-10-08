@@ -168,10 +168,10 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
     };
 
     let needle = "seq-needle-ghi789";
-    let tool_args = r#"{"at":"2099-01-01T00:00:00Z","agent_id":"x"}"#;
+    let tool_args = r#"{"action":"create","message":"remind me","at":"2099-01-01T00:00:00Z"}"#;
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "CronCreate", "arguments": tool_args } },
+            { "tool_call": { "name": "Cron", "arguments": tool_args } },
             "TOOL_SUCCESS",
         ]
     })
@@ -206,8 +206,8 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
     );
     let body1 = resp1.text().await.expect("read call 1 body");
     assert!(
-        body1.contains("\"CronCreate\""),
-        "call 1 did not include tool name 'CronCreate' in its stream\n{body1}",
+        body1.contains("\"Cron\""),
+        "call 1 did not include tool name 'Cron' in its stream\n{body1}",
     );
     // The tool-call chunk is emitted as a JSON string value, so the
     // inner quotes of `tool_args` are escaped to `\"` when the mock
